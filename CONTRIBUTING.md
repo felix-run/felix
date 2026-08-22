@@ -34,6 +34,10 @@ make install-full        # all extras
 - Do not add Cloudflare Workers / Durable Objects / Hyperdrive compute.
 - Optional features stay out of core — register via the plugin registry /
   `felix.plugins` entry points (see `felix.plugins`).
+- `make type` (and CI's typecheck job) needs the optional extras: unresolved
+  imports are errors by design, and a lean venv cannot resolve `temporalio`,
+  `boto3`, `duckdb`, `playwright`, `presidio`, … Run `make install-full` before
+  `make check`, or expect `make type` to tell you to.
 - Tests: `./scripts/test.sh` — it sets the in-memory stores the suite needs. A bare
   `uv run pytest` picks up `.env` and fails against a real Postgres. CI runs the same script
   after a lean, frozen `uv sync --frozen --dev`.

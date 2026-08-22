@@ -24,6 +24,8 @@ make up / up-lite / up-gcp / up-full   # Compose overlays under deploy/docker/
 ```
 
 `make type` and CI both run `ty check packages apps`; tests are excluded on purpose (fakes trip `ty`).
+Both need the optional extras installed (`make install-full`) — unresolved imports are errors, so a
+lean venv reports every optional dependency as one. `make type` checks for this and says so.
 
 ### Running tests
 

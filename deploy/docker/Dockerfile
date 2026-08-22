@@ -1,10 +1,15 @@
 # Felix multi-stage image — CPython 3.14 + Granian.
+#
+# Base images are pinned by tag AND digest so a rebuild is reproducible and a
+# retagged upstream image cannot change what ships. Dependabot updates the
+# digests; refresh by hand with:
+#   docker buildx imagetools inspect <image>:<tag>   # take the top-level Digest
 # Default image is LEAN (no aws/gcp/embeddings extras) for small VMs.
 # Build with extras: docker build --build-arg FELIX_EXTRAS="aws,gcp" .
 
-FROM ghcr.io/astral-sh/uv:0.9 AS uv
+FROM ghcr.io/astral-sh/uv:0.12@sha256:e85be844203885286c60ffad8a858d48afb6c5a5c237ca0e67f12e74b8f174b1 AS uv
 
-FROM python:3.14-slim AS builder
+FROM python:3.14-slim@sha256:ce40764625a4ff50df3548277632e7f96c4e77fe75fa848aae9885476e7df5a4 AS builder
 COPY --from=uv /uv /uvx /bin/
 
 ARG FELIX_EXTRAS=""
@@ -28,7 +33,8 @@ COPY alembic.ini ./
 # resolution CI tested. --locked asserts the lock still matches pyproject and
 # fails the build if it does not; --frozen would only skip re-locking, and would
 # happily build from a lock that no longer matches. Run `uv lock` and commit it.
-RUN set -eux; \
+RUN --mount=type=cache,target=/root/.cache/uv \
+    set -eux; \
     if [ -z "${FELIX_EXTRAS}" ]; then \
       uv sync --locked --no-dev; \
     else \
@@ -40,7 +46,7 @@ RUN set -eux; \
       uv sync --locked --no-dev "$@"; \
     fi
 
-FROM python:3.14-slim AS runtime
+FROM python:3.14-slim@sha256:ce40764625a4ff50df3548277632e7f96c4e77fe75fa848aae9885476e7df5a4 AS runtime
 
 ENV UV_CACHE_DIR=/tmp/uv \
     UV_NO_SYNC=1 \

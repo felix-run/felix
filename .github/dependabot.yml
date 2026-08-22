@@ -1,17 +1,37 @@
 version: 2
 updates:
+  # Python workspace (root pyproject + packages/* + apps/*), driven by uv.lock.
   - package-ecosystem: uv
     directory: "/"
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    groups:
+      python-minor-patch:
+        update-types: [minor, patch]
+      python-major:
+        update-types: [major]
+
+  # One grouped PR per week keeps the action bumps from piling up individually.
+  # Actions are pinned by commit SHA; Dependabot updates the SHA and the
+  # trailing version comment together.
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
-      interval: monthly
+      interval: weekly
     open-pull-requests-limit: 5
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # Dockerfile and Compose files all live under deploy/docker. The previous
+  # "/" entry found nothing: there is no Dockerfile at the repo root.
   - package-ecosystem: docker
-    directory: "/"
+    directories:
+      - "/deploy/docker"
     schedule:
-      interval: monthly
+      interval: weekly
     open-pull-requests-limit: 3
+    groups:
+      images:
+        patterns: ["*"]

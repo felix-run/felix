@@ -9,13 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- GitHub Actions are pinned by commit SHA, and all container base/service
+  images by digest, so a rebuild is reproducible and a retagged upstream image
+  cannot change what ships.
 - `scripts/test.sh` — the canonical test entry point. It sets the in-memory
   store environment the suite is designed for; `make test` and CI both use it.
 - `pre-commit` now runs in CI, so the hook config cannot silently break again.
 - `.editorconfig` matching the ruff configuration.
+- `make type` now says what to do when the optional extras are missing instead
+  of printing 27 unresolved-import errors.
 
 ### Changed
 
+- Dependabot: weekly grouped updates for actions and images; the docker
+  ecosystem now points at `deploy/docker` (the previous `/` entry matched
+  nothing — there is no Dockerfile at the repo root).
+- Builder image `uv` 0.9 → 0.12, `ty` 0.0.73 → 0.0.74, and the Docker build
+  caches uv downloads between builds.
 - Relicensed from MIT to Apache License 2.0 (adds an express patent grant and
   a trademark carve-out; contributions are inbound under the same license).
   Adds a `NOTICE` file; releases published under MIT remain MIT.
