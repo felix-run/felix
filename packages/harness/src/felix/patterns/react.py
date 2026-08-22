@@ -76,6 +76,7 @@ class _ReactAgent:
     tenant_id: str = "default"
     memory_capture: Any | None = None
     tools_retrieval: Any | None = None
+    procedural_memory: Any | None = None
     _tool_map: dict[str, Tool] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -84,9 +85,7 @@ class _ReactAgent:
     def _active_tools(self, messages: list[ChatMessage]) -> list[Tool]:
         return select_tools_from_ctx(self.tools, messages, self.tools_retrieval)
 
-    async def _dispatch(
-        self, call: ToolCall, thread_id: str | None
-    ) -> tuple[str, ChatMessage]:
+    async def _dispatch(self, call: ToolCall, thread_id: str | None) -> tuple[str, ChatMessage]:
         async def _run(span: Any) -> tuple[str, ChatMessage]:
             tool = self._tool_map.get(call.name)
             if tool is None:
@@ -198,9 +197,7 @@ class _ReactAgent:
         except Exception:
             logger.debug("model_change persist failed", exc_info=True)
 
-    async def _append_produced(
-        self, thread_id: str | None, messages: list[ChatMessage]
-    ) -> None:
+    async def _append_produced(self, thread_id: str | None, messages: list[ChatMessage]) -> None:
         if not thread_id or self.session_store is None or not messages:
             return
         try:
@@ -208,9 +205,7 @@ class _ReactAgent:
             from felix.session.types import chat_message_to_event
 
             session = self.session_store.open(thread_id)
-            await annotate_and_append(
-                session, [chat_message_to_event(m) for m in messages]
-            )
+            await annotate_and_append(session, [chat_message_to_event(m) for m in messages])
         except Exception:
             logger.debug("session append failed", exc_info=True)
 
@@ -238,6 +233,34 @@ class _ReactAgent:
         except Exception:
             logger.debug("memory capture failed", exc_info=True)
 
+    async def _inject_procedures(
+        self, messages: list[ChatMessage], tenant_id: str
+    ) -> list[ChatMessage]:
+        spec = self.procedural_memory
+        if spec is None or not getattr(spec, "enabled", False) or self.settings is None:
+            return messages
+        if any(
+            m.role == "system" and (m.content or "").startswith("[known procedures]")
+            for m in messages
+        ):
+            return messages
+        try:
+            from felix.memory.procedural import query_from_user_messages, retrieve_procedures
+
+            block = await retrieve_procedures(
+                self.settings,
+                tenant_id,
+                manifest_id=self.manifest_id,
+                query=query_from_user_messages(messages),
+                spec=spec,
+            )
+        except Exception:
+            logger.debug("procedural retrieve failed", exc_info=True)
+            return messages
+        if block:
+            messages.append(ChatMessage(role="system", content=block))
+        return messages
+
     async def invoke(self, input: InvokeInput) -> InvokeOutput:
         model = self._resolve_model(input)
         await self._persist_model_change(input)
@@ -264,6 +287,7 @@ class _ReactAgent:
             messages,
             context={"manifest_id": self.manifest_id, "thread_id": input.thread_id},
         )
+        messages = await self._inject_procedures(messages, tenant_id)
 
         produced: list[ChatMessage] = list(input.messages)
         # Persist inbound user messages on first turn.
@@ -316,9 +340,7 @@ class _ReactAgent:
                     produced.append(tool_msg)
                     tool_msgs.append(tool_msg)
                     if kind == "fatal":
-                        await self._append_produced(
-                            input.thread_id, [assistant, *tool_msgs]
-                        )
+                        await self._append_produced(input.thread_id, [assistant, *tool_msgs])
                         return InvokeOutput(messages=produced, final=assistant)
 
                 await self._append_produced(input.thread_id, [assistant, *tool_msgs])
@@ -379,6 +401,7 @@ class _ReactAgent:
             messages,
             context={"manifest_id": self.manifest_id, "thread_id": input.thread_id},
         )
+        messages = await self._inject_procedures(messages, tenant_id)
         produced: list[ChatMessage] = list(input.messages)
         await self._append_produced(
             input.thread_id, [m for m in input.messages if m.role == "user"]
@@ -535,6 +558,7 @@ def build_react_agent(ctx: PatternBuildContext) -> Agent:
         tenant_id=str(ctx.get("tenant_id") or "default"),
         memory_capture=ctx.get("memory_capture"),
         tools_retrieval=ctx.get("tools_retrieval"),
+        procedural_memory=ctx.get("procedural_memory"),
     )
 
 

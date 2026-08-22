@@ -68,6 +68,14 @@ def _wrap_tools(
     return [wrapper(t) for t in tools]
 
 
+def _append_unique_tools(resolved: list[Tool], extra: list[Tool]) -> None:
+    seen = {t.name for t in resolved}
+    for t in extra:
+        if t.name not in seen:
+            resolved.append(t)
+            seen.add(t.name)
+
+
 def apply_secret_masking(tools: list[Tool], secrets: list[str], manifest_id: str) -> list[Tool]:
     """Innermost: redact known secrets from tool output before anything else sees them."""
     if not secrets:
@@ -76,9 +84,7 @@ def apply_secret_masking(tools: list[Tool], secrets: list[str], manifest_id: str
     def wrap_one(tool: Tool) -> Tool:
         inner = tool.executor
 
-        async def execute(
-            args: ToolInput, ctx: ToolInvocationCtx | None = None
-        ) -> ToolOutput:
+        async def execute(args: ToolInput, ctx: ToolInvocationCtx | None = None) -> ToolOutput:
             out = await inner.execute(args, ctx)
             if is_wrapper_deny(out):
                 return out
@@ -132,9 +138,7 @@ def apply_policies(tools: list[Tool], policies: list[Policy], manifest_id: str) 
             return tool
         inner = tool.executor
 
-        async def execute(
-            args: ToolInput, ctx: ToolInvocationCtx | None = None
-        ) -> ToolOutput:
+        async def execute(args: ToolInput, ctx: ToolInvocationCtx | None = None) -> ToolOutput:
             req_ctx = try_get_context()
             scopes = req_ctx.auth.scopes if req_ctx else frozenset()
             for rule in rules:
@@ -183,9 +187,7 @@ def apply_command_screening(tools: list[Tool], screening: Any, manifest_id: str)
             return tool
         inner = tool.executor
 
-        async def execute(
-            args: ToolInput, ctx: ToolInvocationCtx | None = None
-        ) -> ToolOutput:
+        async def execute(args: ToolInput, ctx: ToolInvocationCtx | None = None) -> ToolOutput:
             cmd = str(args.get("command") or args.get("cmd") or "")
             if cmd and compiled:
                 for rx, decision, reason in compiled:
@@ -239,9 +241,7 @@ def apply_content_screening(tools: list[Tool], screening: Any, manifest_id: str)
             return tool
         inner = tool.executor
 
-        async def execute(
-            args: ToolInput, ctx: ToolInvocationCtx | None = None
-        ) -> ToolOutput:
+        async def execute(args: ToolInput, ctx: ToolInvocationCtx | None = None) -> ToolOutput:
             out = await inner.execute(args, ctx)
             if is_wrapper_deny(out):
                 return out
@@ -278,9 +278,7 @@ def apply_limits(tools: list[Tool], limits: Any, manifest_id: str) -> list[Tool]
     def wrap_one(tool: Tool) -> Tool:
         inner = tool.executor
 
-        async def execute(
-            args: ToolInput, ctx: ToolInvocationCtx | None = None
-        ) -> ToolOutput:
+        async def execute(args: ToolInput, ctx: ToolInvocationCtx | None = None) -> ToolOutput:
             req = try_get_context()
             if req is not None:
                 ls = req.limit_state
@@ -336,9 +334,7 @@ def apply_guardrails(tools: list[Tool], guardrails: Any, manifest_id: str) -> li
     def wrap_one(tool: Tool) -> Tool:
         inner = tool.executor
 
-        async def execute(
-            args: ToolInput, ctx: ToolInvocationCtx | None = None
-        ) -> ToolOutput:
+        async def execute(args: ToolInput, ctx: ToolInvocationCtx | None = None) -> ToolOutput:
             out = await inner.execute(args, ctx)
             if is_wrapper_deny(out):
                 return out
@@ -409,16 +405,12 @@ def apply_judges(tools: list[Tool], guardrails: Any, manifest_id: str) -> list[T
         return tools
 
     def wrap_one(tool: Tool) -> Tool:
-        applicable = [
-            j for j in judges if not j.target_tools or tool.name in j.target_tools
-        ]
+        applicable = [j for j in judges if not j.target_tools or tool.name in j.target_tools]
         if not applicable:
             return tool
         inner = tool.executor
 
-        async def execute(
-            args: ToolInput, ctx: ToolInvocationCtx | None = None
-        ) -> ToolOutput:
+        async def execute(args: ToolInput, ctx: ToolInvocationCtx | None = None) -> ToolOutput:
             out = await inner.execute(args, ctx)
             if is_wrapper_deny(out):
                 return out
@@ -450,9 +442,7 @@ def apply_judges(tools: list[Tool], guardrails: Any, manifest_id: str) -> list[T
 def wrap_final_response_judges(agent: Agent, guardrails: Any, manifest_id: str) -> Agent:
     """Apply final_response=True judges to the agent's reply."""
     _ = manifest_id
-    judges = [
-        j for j in getattr(guardrails, "judges", []) if getattr(j, "final_response", False)
-    ]
+    judges = [j for j in getattr(guardrails, "judges", []) if getattr(j, "final_response", False)]
     if not judges:
         return agent
 
@@ -482,9 +472,7 @@ def wrap_final_response_judges(agent: Agent, guardrails: Any, manifest_id: str) 
                 if score < threshold:
                     msg = ChatMessage(
                         role="assistant",
-                        content=(
-                            f"[judge denied] {j.name}: score={score:.2f} < {threshold}"
-                        ),
+                        content=(f"[judge denied] {j.name}: score={score:.2f} < {threshold}"),
                     )
                     return InvokeOutput(messages=[*result.messages[:-1], msg], final=msg)
             return result
@@ -510,9 +498,7 @@ def apply_approvals(tools: list[Tool], rules: list[ApprovalRule], manifest_id: s
             return tool
         inner = tool.executor
 
-        async def execute(
-            args: ToolInput, ctx: ToolInvocationCtx | None = None
-        ) -> ToolOutput:
+        async def execute(args: ToolInput, ctx: ToolInvocationCtx | None = None) -> ToolOutput:
             import hashlib
             import json
 
@@ -584,9 +570,7 @@ async def _resolve_system_prompt(manifest: Manifest, deps: BuildDeps) -> str:
         load_system_md,
     )
 
-    tenant_id = deps.tenant_id or (
-        deps.auth.principal.tenant_id if deps.auth else "default"
-    )
+    tenant_id = deps.tenant_id or (deps.auth.principal.tenant_id if deps.auth else "default")
 
     # SYSTEM.md: replace default prompt entirely when present.
     system_md = await load_system_md(
@@ -670,7 +654,9 @@ async def build_agent(
         try:
             m = load_bundled(manifest)
         except FileNotFoundError:
-            m = parse_manifest({"apiVersion": "felix/v1", "kind": "Agent", "metadata": {"name": manifest}})
+            m = parse_manifest(
+                {"apiVersion": "felix/v1", "kind": "Agent", "metadata": {"name": manifest}}
+            )
     elif isinstance(manifest, dict):
         m = parse_manifest(manifest)
     else:
@@ -692,9 +678,7 @@ async def build_agent(
 
         sub_agents: dict[str, Agent] = {}
         if m.spec.sub_agents:
-            builder = deps.sub_agent_builder or (
-                lambda name: build_agent(name, deps=deps)
-            )
+            builder = deps.sub_agent_builder or (lambda name: build_agent(name, deps=deps))
             for name in m.spec.sub_agents:
                 sub_agents[name] = await builder(name)
 
@@ -703,15 +687,9 @@ async def build_agent(
             resolved = deps.tools.resolve(tool_ids)
 
         if deps.extra_tools:
-            seen = {t.name for t in resolved}
-            for t in deps.extra_tools:
-                if t.name not in seen:
-                    resolved.append(t)
-                    seen.add(t.name)
+            _append_unique_tools(resolved, deps.extra_tools)
 
-        tenant_id = deps.tenant_id or (
-            deps.auth.principal.tenant_id if deps.auth else "default"
-        )
+        tenant_id = deps.tenant_id or (deps.auth.principal.tenant_id if deps.auth else "default")
         allow_http = bool(
             deps.settings
             and getattr(deps.settings, "environment", "") == "development"
@@ -723,14 +701,8 @@ async def build_agent(
             try:
                 from felix.mcp.client import tools_from_mcp_servers
 
-                mcp_tools = await tools_from_mcp_servers(
-                    list(m.spec.mcp), allow_http=allow_http
-                )
-                seen = {t.name for t in resolved}
-                for t in mcp_tools:
-                    if t.name not in seen:
-                        resolved.append(t)
-                        seen.add(t.name)
+                mcp_tools = await tools_from_mcp_servers(list(m.spec.mcp), allow_http=allow_http)
+                _append_unique_tools(resolved, mcp_tools)
             except Exception:
                 logger.warning("MCP client tool binding failed", exc_info=True)
 
@@ -740,13 +712,59 @@ async def build_agent(
                 from felix.a2a.peers import tools_from_peers
 
                 peer_tools = tools_from_peers(list(m.spec.peers), allow_http=allow_http)
-                seen = {t.name for t in resolved}
-                for t in peer_tools:
-                    if t.name not in seen:
-                        resolved.append(t)
-                        seen.add(t.name)
+                _append_unique_tools(resolved, peer_tools)
             except Exception:
                 logger.warning("peer tool binding failed", exc_info=True)
+
+        # Playwright browser tools (optional extra).
+        if m.spec.browser_tools:
+            try:
+                from felix.tools.browser import tools_from_browser_refs
+
+                _append_unique_tools(
+                    resolved,
+                    tools_from_browser_refs(list(m.spec.browser_tools), allow_http=allow_http),
+                )
+            except Exception:
+                logger.warning("browser tool binding failed", exc_info=True)
+
+        # Docker sandboxes + HTTP container gateways.
+        if m.spec.sandboxes:
+            try:
+                from felix.tools.sandboxes import tools_from_sandboxes
+
+                _append_unique_tools(resolved, tools_from_sandboxes(list(m.spec.sandboxes)))
+            except Exception:
+                logger.warning("sandbox tool binding failed", exc_info=True)
+
+        if m.spec.containers:
+            try:
+                from felix.tools.sandboxes import tools_from_containers
+
+                _append_unique_tools(
+                    resolved,
+                    tools_from_containers(list(m.spec.containers), allow_http=allow_http),
+                )
+            except Exception:
+                logger.warning("container tool binding failed", exc_info=True)
+
+        # Procedural memory write tool (retrieve happens per turn in ReAct).
+        if m.spec.procedural_memory.enabled and deps.settings is not None:
+            try:
+                from felix.memory.procedural import make_remember_procedure_tool
+
+                _append_unique_tools(
+                    resolved,
+                    [
+                        make_remember_procedure_tool(
+                            settings=deps.settings,
+                            tenant_id=tenant_id,
+                            manifest_id=m.metadata.name,
+                        )
+                    ],
+                )
+            except Exception:
+                logger.warning("procedural memory tool binding failed", exc_info=True)
 
         # Wire Agent Skills (progressive disclosure + bound skill tools).
         from felix.skills import (
@@ -756,9 +774,8 @@ async def build_agent(
             make_skill_tools,
             skill_catalog_xml,
         )
-        wants_skills = bool(m.spec.skills) or any(
-            t.name in SKILL_TOOL_NAMES for t in resolved
-        )
+
+        wants_skills = bool(m.spec.skills) or any(t.name in SKILL_TOOL_NAMES for t in resolved)
         if wants_skills:
             catalog = await load_manifest_skills(
                 list(m.spec.skills),
@@ -784,9 +801,7 @@ async def build_agent(
             catalog_block = skill_catalog_xml(catalog)
             if catalog_block:
                 system_prompt = (
-                    f"{system_prompt}\n\n---\n\n{catalog_block}"
-                    if system_prompt
-                    else catalog_block
+                    f"{system_prompt}\n\n---\n\n{catalog_block}" if system_prompt else catalog_block
                 )
 
         # Inject active long-term facts when memory capture/store is enabled.
@@ -806,9 +821,7 @@ async def build_agent(
                 )
                 if facts_block:
                     system_prompt = (
-                        f"{system_prompt}\n\n---\n\n{facts_block}"
-                        if system_prompt
-                        else facts_block
+                        f"{system_prompt}\n\n---\n\n{facts_block}" if system_prompt else facts_block
                     )
             except Exception:
                 logger.debug("active facts inject failed", exc_info=True)
@@ -818,13 +831,9 @@ async def build_agent(
         if m.spec.policies:
             resolved = apply_policies(resolved, m.spec.policies, m.metadata.name)
         if m.spec.command_screening.enabled:
-            resolved = apply_command_screening(
-                resolved, m.spec.command_screening, m.metadata.name
-            )
+            resolved = apply_command_screening(resolved, m.spec.command_screening, m.metadata.name)
         if m.spec.content_screening.enabled:
-            resolved = apply_content_screening(
-                resolved, m.spec.content_screening, m.metadata.name
-            )
+            resolved = apply_content_screening(resolved, m.spec.content_screening, m.metadata.name)
         if any_limit(m.spec.limits):
             resolved = apply_limits(resolved, m.spec.limits, m.metadata.name)
         if guardrails_enabled(m.spec.guardrails):
@@ -876,12 +885,11 @@ async def build_agent(
                 "tenant_id": tenant_id,
                 "memory_capture": m.spec.memory.capture,
                 "tools_retrieval": m.spec.tools_retrieval,
+                "procedural_memory": m.spec.procedural_memory,
             }
         )
         if judges_enabled(m.spec.guardrails):
-            agent = wrap_final_response_judges(
-                agent, m.spec.guardrails, m.metadata.name
-            )
+            agent = wrap_final_response_judges(agent, m.spec.guardrails, m.metadata.name)
         return agent
     finally:
         span.end()
