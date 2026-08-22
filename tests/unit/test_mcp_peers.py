@@ -87,6 +87,7 @@ async def test_mcp_rpc_and_tool_binding(monkeypatch: pytest.MonkeyPatch) -> None
     tools = await tools_from_mcp_servers([ref], allow_http=False)
     assert len(tools) == 1
     assert tools[0].name == "docs__search"
+    assert tools[0].executor.transport == "mcp"
     out = await tools[0].executor.execute({"q": "felix"}, ToolInvocationCtx())
     text = out if isinstance(out, str) else out.content
     assert "found:42" in text
@@ -138,6 +139,7 @@ async def test_peer_tool_message_send(monkeypatch: pytest.MonkeyPatch) -> None:
     tool = make_peer_tool(ref)
     assert tool.name == "peer__helper"
     assert tool.is_peer
+    assert tool.executor.transport == "a2a"
     out = await tool.executor.execute(
         {"message": "hello"}, ToolInvocationCtx()
     )

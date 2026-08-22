@@ -157,6 +157,7 @@ def _bind_remote_tool(
         handler=handler,
         raw_input_schema=schema if isinstance(schema, dict) else None,
         source=f"mcp:{ref.name}",
+        transport="mcp",
     )
 
 

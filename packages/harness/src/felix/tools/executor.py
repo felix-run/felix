@@ -27,8 +27,8 @@ class _FnExecutor:
         return await self._execute(args, ctx)
 
 
-def local_executor(execute: ExecuteFn) -> ToolExecutor:
-    return _FnExecutor("local", execute)
+def local_executor(execute: ExecuteFn, *, transport: str = "local") -> ToolExecutor:
+    return _FnExecutor(transport, execute)
 
 
 def wrap_executor(inner: Any, execute: Callable[..., Awaitable[ToolOutput]]) -> ToolExecutor:

@@ -109,6 +109,7 @@ def define_tool(
     peer: bool = False,
     source: str | None = None,
     fatal: bool = False,
+    transport: str = "local",
     validate: Callable[[ToolInput], ToolInput | Mapping[str, Any]] | None = None,
 ) -> Tool:
     from felix.tools.errors import tool_error_output
@@ -151,7 +152,7 @@ def define_tool(
         peer=peer or is_peer,
         source=source,
         fatal=fatal,
-        executor=local_executor(_execute),
+        executor=local_executor(_execute, transport=transport),
     )
 
 

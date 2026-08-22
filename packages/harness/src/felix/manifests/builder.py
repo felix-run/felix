@@ -226,18 +226,26 @@ _INJECTION_MARKERS = (
     "system prompt",
 )
 
+_UNTRUSTED_TRANSPORTS = frozenset({"mcp", "a2a", "browser", "container", "sandbox", "queue"})
+
+
+def _is_untrusted_tool(tool: Tool) -> bool:
+    if tool.executor.transport in _UNTRUSTED_TRANSPORTS:
+        return True
+    source = tool.source or ""
+    return source.startswith(("mcp", "peer", "a2a", "queue", "browser"))
+
 
 def apply_content_screening(tools: list[Tool], screening: Any, manifest_id: str) -> list[Tool]:
     if not getattr(screening, "enabled", False):
         return tools
     on_flag = getattr(screening, "on_flag", "quarantine")
-    untrusted = {"mcp", "a2a", "browser", "container", "sandbox"}
     named = set(getattr(screening, "tools", []) or [])
 
     def wrap_one(tool: Tool) -> Tool:
         if named and tool.name not in named:
             return tool
-        if not named and tool.executor.transport not in untrusted:
+        if not named and not _is_untrusted_tool(tool):
             return tool
         inner = tool.executor
 
@@ -747,6 +755,17 @@ async def build_agent(
                 )
             except Exception:
                 logger.warning("container tool binding failed", exc_info=True)
+
+        if m.spec.queues:
+            try:
+                from felix.tools.queues import tools_from_queues
+
+                _append_unique_tools(
+                    resolved,
+                    tools_from_queues(list(m.spec.queues), settings=deps.settings),
+                )
+            except Exception:
+                logger.warning("queue tool binding failed", exc_info=True)
 
         # Procedural memory write tool (retrieve happens per turn in ReAct).
         if m.spec.procedural_memory.enabled and deps.settings is not None:

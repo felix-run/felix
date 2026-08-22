@@ -56,6 +56,99 @@ from felix.patterns.model import register_builtin_providers  # noqa: E402
 
 register_builtin_providers()
 
+_TERMINAL_EVENTS = frozenset({"done", "on_chain_end"})
+
+
+@dataclass
+class _Tap:
+    output: InvokeOutput | None = None
+
+
+def _coerce_output(data: Any) -> InvokeOutput | None:
+    if isinstance(data, InvokeOutput):
+        return data
+    if not isinstance(data, dict):
+        return None
+    nested = data.get("output")
+    if isinstance(nested, InvokeOutput):
+        return nested
+    if isinstance(nested, dict):
+        inner = _coerce_output(nested)
+        if inner is not None:
+            return inner
+    final_raw = data.get("final")
+    if final_raw is None:
+        return None
+    final = (
+        final_raw if isinstance(final_raw, ChatMessage) else ChatMessage.model_validate(final_raw)
+    )
+    msgs_raw = data.get("messages") or []
+    messages = [
+        m if isinstance(m, ChatMessage) else ChatMessage.model_validate(m) for m in msgs_raw
+    ]
+    return InvokeOutput(messages=messages or [final], final=final)
+
+
+def _output_from_event(ev: Event) -> InvokeOutput | None:
+    if ev.event not in _TERMINAL_EVENTS:
+        return None
+    return _coerce_output(ev.data)
+
+
+async def _pipe_stream(
+    agent: Agent,
+    input: InvokeInput,
+    tap: _Tap,
+    *,
+    swallow_terminal: bool,
+) -> AsyncIterator[Event]:
+    async for ev in agent.stream_events(input):
+        captured = _output_from_event(ev)
+        if captured is not None:
+            tap.output = captured
+        if swallow_terminal and ev.event in _TERMINAL_EVENTS:
+            continue
+        yield ev
+
+
+def _terminal_events(result: InvokeOutput) -> list[Event]:
+    return [
+        Event(event="on_chain_end", data={"output": result}),
+        Event(
+            event="done",
+            data={
+                "final": result.final.model_dump(),
+                "messages": [m.model_dump() for m in result.messages],
+            },
+        ),
+    ]
+
+
+async def _yield_model_stream(
+    model: Any, messages: list[ChatMessage], collected: list[str]
+) -> AsyncIterator[Event]:
+    stream = getattr(model, "stream", None)
+    if stream is None:
+        result = await model.chat(messages, [])
+        text = result.message.content or ""
+        if text:
+            collected.append(text)
+            yield Event(
+                event="text_delta",
+                data={"chunk": {"content": text}, "delta": text},
+            )
+            yield Event(event="on_chat_model_stream", data={"chunk": {"content": text}})
+        return
+    async for delta in stream(messages, []):
+        if not delta:
+            continue
+        collected.append(delta)
+        yield Event(
+            event="text_delta",
+            data={"chunk": {"content": delta}, "delta": delta},
+        )
+        yield Event(event="on_chat_model_stream", data={"chunk": {"content": delta}})
+
 
 # --- plan tools (deep pattern) — persist via plans/store ----------------------
 
@@ -93,7 +186,12 @@ def _plan_tools() -> list[Tool]:
             steps = [{"id": "1", "title": goal, "status": "pending"}]
         else:
             steps = []
-        body = {"title": title or goal or "untitled", "goal": goal, "steps": steps, "status": "active"}
+        body = {
+            "title": title or goal or "untitled",
+            "goal": goal,
+            "steps": steps,
+            "status": "active",
+        }
         row = await plans_store.put_plan(
             req.settings,
             req.auth.tenant_id,
@@ -241,6 +339,34 @@ class _DelegatingAgent:
         )
 
     async def stream_events(self, input: InvokeInput) -> AsyncIterator[Event]:
+        if self.pattern == "deep" and self.inner is not None:
+            async for ev in self.inner.stream_events(input):
+                yield ev
+            return
+        if self.pattern == "router":
+            async for ev in self._stream_router(input):
+                yield ev
+            return
+        if self.pattern == "parallel":
+            async for ev in self._stream_parallel(input):
+                yield ev
+            return
+        if self.pattern == "groupchat":
+            async for ev in self._stream_groupchat(input):
+                yield ev
+            return
+        if self.pattern == "reflect":
+            async for ev in self._stream_reflect(input):
+                yield ev
+            return
+        if self.pattern == "plan_execute":
+            async for ev in self._stream_plan_execute(input):
+                yield ev
+            return
+        if self.inner is not None:
+            async for ev in self.inner.stream_events(input):
+                yield ev
+            return
         result = await self.invoke(input)
         if result.final.content:
             yield Event(
@@ -251,21 +377,10 @@ class _DelegatingAgent:
                 event="on_chat_model_stream",
                 data={"chunk": {"content": result.final.content}},
             )
-        yield Event(event="on_chain_end", data={"output": result})
-        yield Event(
-            event="done",
-            data={
-                "final": result.final.model_dump(),
-                "messages": [m.model_dump() for m in result.messages],
-            },
-        )
+        for ev in _terminal_events(result):
+            yield ev
 
-    async def _router(self, input: InvokeInput) -> InvokeOutput:
-        if not self.sub_agents:
-            return InvokeOutput(
-                messages=list(input.messages),
-                final=ChatMessage(role="assistant", content="[router] no sub_agents"),
-            )
+    async def _choose_child(self, input: InvokeInput) -> Agent:
         names = list(self.sub_agents.keys())
         model = _model_for(input, self.settings, self.model_spec)
         classify = [
@@ -282,7 +397,213 @@ class _DelegatingAgent:
         result = await model.chat(classify, [])
         record_usage(result, manifest_id=self.manifest_id, model_id=model.model_id)
         choice = result.message.content.strip().split()[0] if result.message.content else names[0]
-        child = self.sub_agents.get(choice) or self.sub_agents[names[0]]
+        return self.sub_agents.get(choice) or self.sub_agents[names[0]]
+
+    async def _stream_router(self, input: InvokeInput) -> AsyncIterator[Event]:
+        if not self.sub_agents:
+            result = await self._router(input)
+            for ev in _terminal_events(result):
+                yield ev
+            return
+        child = await self._choose_child(input)
+        async for ev in child.stream_events(input):
+            yield ev
+
+    async def _stream_parallel(self, input: InvokeInput) -> AsyncIterator[Event]:
+        import asyncio
+
+        if not self.sub_agents:
+            result = await self._parallel(input)
+            for ev in _terminal_events(result):
+                yield ev
+            return
+        child_input = InvokeInput(
+            messages=list(input.messages),
+            thread_id=None,
+            model_id=input.model_id,
+            tenant_id=input.tenant_id,
+        )
+        results = await asyncio.gather(*[a.invoke(child_input) for a in self.sub_agents.values()])
+        synthesis_bits = [
+            f"### {name}\n{r.final.content}"
+            for name, r in zip(self.sub_agents.keys(), results, strict=True)
+        ]
+        model = _model_for(input, self.settings, self.model_spec)
+        prompt = self.aggregator_prompt or self.system_prompt or "Synthesize the answers."
+        collected: list[str] = []
+        async for ev in _yield_model_stream(
+            model,
+            [
+                ChatMessage(role="system", content=prompt),
+                ChatMessage(
+                    role="user",
+                    content="Combine these specialist answers:\n\n" + "\n\n".join(synthesis_bits),
+                ),
+            ],
+            collected,
+        ):
+            yield ev
+        text = "".join(collected)
+        final = ChatMessage(role="assistant", content=text)
+        result = InvokeOutput(messages=[*input.messages, final], final=final)
+        for ev in _terminal_events(result):
+            yield ev
+
+    async def _stream_groupchat(self, input: InvokeInput) -> AsyncIterator[Event]:
+        if not self.sub_agents:
+            result = await self._groupchat(input)
+            for ev in _terminal_events(result):
+                yield ev
+            return
+        transcript = list(input.messages)
+        agents = list(self.sub_agents.values())
+        names = list(self.sub_agents.keys())
+        final = ChatMessage(role="assistant", content="")
+        for turn in range(self.max_turns):
+            agent = agents[turn % len(agents)]
+            child_input = InvokeInput(
+                messages=list(transcript),
+                thread_id=None,
+                model_id=input.model_id,
+                tenant_id=input.tenant_id,
+            )
+            tap = _Tap()
+            async for ev in _pipe_stream(agent, child_input, tap, swallow_terminal=True):
+                yield ev
+            content = tap.output.final.content if tap.output is not None else ""
+            stamped = ChatMessage(
+                role="assistant",
+                content=f"[{names[turn % len(names)]}] {content}",
+            )
+            transcript.append(stamped)
+            final = stamped
+        result = InvokeOutput(messages=transcript, final=final)
+        for ev in _terminal_events(result):
+            yield ev
+
+    async def _stream_reflect(self, input: InvokeInput) -> AsyncIterator[Event]:
+        base = self.inner or build_react_agent(
+            {
+                "tools": self.tools,
+                "system_prompt": self.system_prompt,
+                "model_spec": self.model_spec,
+                "manifest_id": self.manifest_id,
+                "manifest_version": self.manifest_version,
+                "settings": self.settings,
+            }
+        )
+        cfg = self.reflect_cfg
+        max_iter = int(getattr(cfg, "max_iterations", 2) or 2)
+        threshold = float(getattr(cfg, "threshold", 0.7) or 0.7)
+        criteria = str(getattr(cfg, "criteria", "") or "general helpfulness")
+        verifier_id = str(getattr(cfg, "verifier_model", "") or "")
+        current = input
+        messages = list(input.messages)
+        last = InvokeOutput(
+            messages=list(input.messages),
+            final=ChatMessage(role="assistant", content=""),
+        )
+        for i in range(max_iter):
+            tap = _Tap()
+            async for ev in _pipe_stream(base, current, tap, swallow_terminal=True):
+                yield ev
+            last = tap.output or await base.invoke(current)
+            if i == max_iter - 1:
+                break
+            score = await self._score(last.final.content, criteria, verifier_id)
+            if score >= threshold:
+                break
+            critique = (
+                f"Previous answer scored {score:.2f} (need ≥{threshold}). "
+                f"Improve against: {criteria}\n\nPrior answer:\n{last.final.content}"
+            )
+            current = InvokeInput(
+                messages=[*messages, ChatMessage(role="user", content=critique)],
+                thread_id=input.thread_id,
+                model_id=input.model_id,
+                tenant_id=input.tenant_id,
+            )
+        for ev in _terminal_events(last):
+            yield ev
+
+    async def _stream_plan_execute(self, input: InvokeInput) -> AsyncIterator[Event]:
+        cfg = self.plan_cfg
+        max_subtasks = int(getattr(cfg, "max_subtasks", 8) or 8)
+        model = _model_for(input, self.settings, self.model_spec)
+        plan_prompt = [
+            ChatMessage(
+                role="system",
+                content=self.system_prompt
+                or "Break the user goal into a numbered list of subtasks.",
+            ),
+            *input.messages,
+            ChatMessage(
+                role="user",
+                content=f"Return at most {max_subtasks} numbered subtasks, one per line.",
+            ),
+        ]
+        plan_result = await model.chat(plan_prompt, [])
+        record_usage(plan_result, manifest_id=self.manifest_id, model_id=model.model_id)
+        lines = [
+            ln.strip().lstrip("0123456789.-) ").strip()
+            for ln in plan_result.message.content.splitlines()
+            if ln.strip()
+        ][:max_subtasks]
+        if not lines:
+            lines = [input.messages[-1].content if input.messages else "complete the task"]
+
+        executor = self.inner or build_react_agent(
+            {
+                "tools": self.tools,
+                "system_prompt": self.system_prompt,
+                "model_spec": self.model_spec,
+                "manifest_id": self.manifest_id,
+                "manifest_version": self.manifest_version,
+                "settings": self.settings,
+                "recursion_limit": getattr(cfg, "executor_recursion_limit", 6),
+            }
+        )
+        notes: list[str] = []
+        for i, step in enumerate(lines, 1):
+            step_input = InvokeInput(
+                messages=[
+                    ChatMessage(
+                        role="user",
+                        content=f"Subtask {i}/{len(lines)}: {step}\nPrior notes:\n"
+                        + "\n".join(notes),
+                    )
+                ],
+                thread_id=None,
+                model_id=input.model_id,
+                tenant_id=input.tenant_id,
+            )
+            tap = _Tap()
+            async for ev in _pipe_stream(executor, step_input, tap, swallow_terminal=True):
+                yield ev
+            step_text = tap.output.final.content if tap.output is not None else ""
+            notes.append(f"{i}. {step} → {step_text}")
+
+        collected: list[str] = []
+        synth_messages = [
+            ChatMessage(role="system", content="Synthesize the final answer from subtask notes."),
+            *input.messages,
+            ChatMessage(role="user", content="Notes:\n" + "\n".join(notes)),
+        ]
+        async for ev in _yield_model_stream(model, synth_messages, collected):
+            yield ev
+        text = "".join(collected)
+        final = ChatMessage(role="assistant", content=text)
+        result = InvokeOutput(messages=[*input.messages, final], final=final)
+        for ev in _terminal_events(result):
+            yield ev
+
+    async def _router(self, input: InvokeInput) -> InvokeOutput:
+        if not self.sub_agents:
+            return InvokeOutput(
+                messages=list(input.messages),
+                final=ChatMessage(role="assistant", content="[router] no sub_agents"),
+            )
+        child = await self._choose_child(input)
         return await child.invoke(input)
 
     async def _parallel(self, input: InvokeInput) -> InvokeOutput:
@@ -300,9 +621,7 @@ class _DelegatingAgent:
             model_id=input.model_id,
             tenant_id=input.tenant_id,
         )
-        results = await asyncio.gather(
-            *[a.invoke(child_input) for a in self.sub_agents.values()]
-        )
+        results = await asyncio.gather(*[a.invoke(child_input) for a in self.sub_agents.values()])
         synthesis_bits = [
             f"### {name}\n{r.final.content}"
             for name, r in zip(self.sub_agents.keys(), results, strict=True)
@@ -471,7 +790,9 @@ class _DelegatingAgent:
 
         synth = await model.chat(
             [
-                ChatMessage(role="system", content="Synthesize the final answer from subtask notes."),
+                ChatMessage(
+                    role="system", content="Synthesize the final answer from subtask notes."
+                ),
                 *input.messages,
                 ChatMessage(role="user", content="Notes:\n" + "\n".join(notes)),
             ],
@@ -563,11 +884,14 @@ async def _build_reflect(ctx: PatternBuildContext) -> Agent:
 async def _build_plan_execute(ctx: PatternBuildContext) -> Agent:
     manifest = ctx.get("manifest")
     plan_cfg = getattr(getattr(manifest, "spec", None), "plan_execute", None)
+    recursion = getattr(plan_cfg, "executor_recursion_limit", 6)
+    inner = build_react_agent({**ctx, "recursion_limit": recursion})
     return _DelegatingAgent(
         tools=list(ctx.get("tools") or []),
         pattern="plan_execute",
         manifest_id=str(ctx.get("manifest_id") or ""),
         manifest_version=str(ctx.get("manifest_version") or "1.0.0"),
+        inner=inner,
         system_prompt=str(ctx.get("system_prompt") or ""),
         model_spec=ctx.get("model_spec"),
         settings=ctx.get("settings"),

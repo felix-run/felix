@@ -103,6 +103,7 @@ def make_peer_tool(ref: A2APeerRef, *, allow_http: bool = False) -> Tool:
         handler=handler,
         is_peer=True,
         source=f"peer:{ref.name}",
+        transport="a2a",
     )
 
 
