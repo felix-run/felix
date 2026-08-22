@@ -68,9 +68,15 @@ class ModelSpec(_Strict):
     max_tokens: int | None = None
     region: str | None = None
     cache: bool = False
-    thinking_budget: int | None = Field(default=None, ge=1024, le=64000)
+    thinking_budget: int | None = Field(default=None, ge=128, le=64000)
+    # Discrete thinking level; when set, overrides thinking_budget via level map.
+    thinking_level: (
+        Literal["off", "minimal", "low", "medium", "high", "xhigh", "max"] | None
+    ) = None
     fallbacks: list[str] = Field(default_factory=list)
     confidence_escalation: ConfidenceEscalation = Field(default_factory=ConfidenceEscalation)
+    # Optional USD / 1M token price overrides for usage cost attribution.
+    price: dict[str, float] = Field(default_factory=dict)
 
 
 class SystemPrompt(_Strict):
@@ -84,6 +90,15 @@ class SystemPrompt(_Strict):
     system_md: str | None = None
     # When set, append this key's contents after the composed prompt (APPEND_SYSTEM.md).
     append_system_md: str | None = None
+
+
+class PromptTemplateSpec(_Strict):
+    """Named user-message template expanded via ``$1`` / ``$@`` / ``${1:-default}``."""
+
+    name: str = Field(min_length=1, max_length=64)
+    body: str = ""
+    # Object-store / workspace key; used when body is empty or as override source.
+    file: str | None = None
 
 
 class SkillRef(_Strict):
@@ -222,6 +237,14 @@ class SessionSpec(_Strict):
     keep_recent_tokens: int = Field(default=20000, ge=0)
     # Approximate context window for overflow detection (chars/4 estimate).
     context_window_tokens: int = Field(default=128000, ge=1024)
+    # Steer drain: "all" (default) or "one-at-a-time".
+    steering_mode: Literal["all", "one-at-a-time"] = "all"
+    follow_up_mode: Literal["all", "one-at-a-time"] = "all"
+    # Summarize abandoned branch on rewind/fork when a model is available.
+    branch_summary: bool = True
+    # After a completed assistant turn, compact if over budget then continue
+    # (does not abort the stream).
+    compact_after_turn: bool = False
 
 
 class InboundAuth(_Strict):
@@ -302,6 +325,10 @@ class PlanExecuteSpec(_Strict):
 class ExecutionSpec(_Strict):
     mode: Literal["durable", "transient"] = "transient"
     resume_token_ttl_seconds: int | None = None
+    # Tool batch execution. "sequential" preserves steer-cancel mid-batch.
+    # "parallel" runs local tools concurrently (falls back to sequential for
+    # client/approval tools or when any tool forces sequential).
+    tools: Literal["parallel", "sequential"] = "sequential"
 
 
 class Policy(_Strict):
@@ -376,6 +403,7 @@ class Spec(_Strict):
     pattern: str = "react"
     model: ModelSpec = Field(default_factory=ModelSpec)
     system_prompt: SystemPrompt = Field(default_factory=SystemPrompt)
+    prompts: list[PromptTemplateSpec] = Field(default_factory=list)
     tools: list[str] = Field(default_factory=list)
     skills: list[SkillRef] = Field(default_factory=list)
     mcp: list[McpServerRef] = Field(default_factory=list, alias="mcp_servers")
@@ -454,6 +482,7 @@ __all__ = [
     "Metadata",
     "ModelSpec",
     "Policy",
+    "PromptTemplateSpec",
     "Spec",
     "any_limit",
     "assert_valid_manifest_name",

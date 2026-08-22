@@ -31,6 +31,7 @@ class _RunQueue:
     steer: asyncio.Queue[QueuedMessage] = field(default_factory=asyncio.Queue)
     follow_up: asyncio.Queue[QueuedMessage] = field(default_factory=asyncio.Queue)
     cancel_remaining_tools: bool = False
+    aborted: bool = False
 
 
 _queues: dict[str, _RunQueue] = {}
@@ -130,6 +131,65 @@ async def enqueue(
     return {"queued": qk.value, "thread_id": thread_id}
 
 
+async def request_abort(tenant_id: str, thread_id: str) -> dict[str, Any]:
+    """Abort the active run: cancel remaining tools and mark the queue aborted."""
+    client = await _get_redis()
+    if client is not None:
+        try:
+            await client.set(_redis_key(tenant_id, thread_id, "cancel"), "1", ex=3600)
+            await client.set(_redis_key(tenant_id, thread_id, "abort"), "1", ex=3600)
+        except Exception:
+            logger.debug("abort redis set failed", exc_info=True)
+    q = await ensure_run_queue(tenant_id, thread_id)
+    q.cancel_remaining_tools = True
+    q.aborted = True
+    try:
+        from felix.context import try_get_context
+
+        ctx = try_get_context()
+        if ctx is not None:
+            ctx.limit_state.aborted = True
+    except Exception:
+        pass
+    return {"ok": True, "aborted": True, "thread_id": thread_id}
+
+
+async def is_aborted(tenant_id: str, thread_id: str) -> bool:
+    client = await _get_redis()
+    if client is not None:
+        try:
+            if await client.get(_redis_key(tenant_id, thread_id, "abort")):
+                return True
+        except Exception:
+            logger.debug("abort redis read failed", exc_info=True)
+    q = await ensure_run_queue(tenant_id, thread_id)
+    return q.aborted
+
+
+async def clear_abort(tenant_id: str, thread_id: str) -> None:
+    client = await _get_redis()
+    if client is not None:
+        try:
+            await client.delete(_redis_key(tenant_id, thread_id, "abort"))
+        except Exception:
+            pass
+    q = await ensure_run_queue(tenant_id, thread_id)
+    q.aborted = False
+
+
+async def peek_steer_count(tenant_id: str, thread_id: str) -> int:
+    """Non-destructive count of queued steer messages (best-effort)."""
+    q = await ensure_run_queue(tenant_id, thread_id)
+    n = q.steer.qsize()
+    client = await _get_redis()
+    if client is not None:
+        try:
+            n += int(await client.llen(_redis_key(tenant_id, thread_id, QueueKind.STEER.value)))
+        except Exception:
+            pass
+    return n
+
+
 async def _drain_redis(tenant_id: str, thread_id: str, kind: str) -> list[QueuedMessage]:
     client = await _get_redis()
     if client is None:
@@ -148,7 +208,12 @@ async def _drain_redis(tenant_id: str, thread_id: str, kind: str) -> list[Queued
     return out
 
 
-async def drain_steer(tenant_id: str, thread_id: str) -> list[QueuedMessage]:
+async def drain_steer(
+    tenant_id: str,
+    thread_id: str,
+    *,
+    mode: Literal["all", "one-at-a-time"] = "all",
+) -> list[QueuedMessage]:
     remote = await _drain_redis(tenant_id, thread_id, QueueKind.STEER.value)
     q = await ensure_run_queue(tenant_id, thread_id)
     out: list[QueuedMessage] = list(remote)
@@ -157,10 +222,21 @@ async def drain_steer(tenant_id: str, thread_id: str) -> list[QueuedMessage]:
             out.append(q.steer.get_nowait())
         except asyncio.QueueEmpty:
             break
+    if mode == "one-at-a-time" and out:
+        # Re-queue the rest
+        rest = out[1:]
+        out = out[:1]
+        for msg in rest:
+            await q.steer.put(msg)
     return out
 
 
-async def drain_follow_up(tenant_id: str, thread_id: str) -> list[QueuedMessage]:
+async def drain_follow_up(
+    tenant_id: str,
+    thread_id: str,
+    *,
+    mode: Literal["all", "one-at-a-time"] = "all",
+) -> list[QueuedMessage]:
     remote = await _drain_redis(tenant_id, thread_id, QueueKind.FOLLOW_UP.value)
     q = await ensure_run_queue(tenant_id, thread_id)
     out: list[QueuedMessage] = list(remote)
@@ -169,10 +245,17 @@ async def drain_follow_up(tenant_id: str, thread_id: str) -> list[QueuedMessage]
             out.append(q.follow_up.get_nowait())
         except asyncio.QueueEmpty:
             break
+    if mode == "one-at-a-time" and out:
+        rest = out[1:]
+        out = out[:1]
+        for msg in rest:
+            await q.follow_up.put(msg)
     return out
 
 
 async def should_cancel_remaining_tools(tenant_id: str, thread_id: str) -> bool:
+    if await is_aborted(tenant_id, thread_id):
+        return True
     client = await _get_redis()
     if client is not None:
         try:
@@ -202,11 +285,15 @@ async def release_run_queue(tenant_id: str, thread_id: str) -> None:
 __all__ = [
     "QueueKind",
     "QueuedMessage",
+    "clear_abort",
     "clear_cancel_flag",
     "drain_follow_up",
     "drain_steer",
     "enqueue",
     "ensure_run_queue",
+    "is_aborted",
+    "peek_steer_count",
     "release_run_queue",
+    "request_abort",
     "should_cancel_remaining_tools",
 ]

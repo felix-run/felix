@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from felix.config import get_settings
-from felix.hooks import run_before_turn, run_filter_history
+from felix.hooks import run_after_tool, run_before_tool, run_before_turn, run_filter_history
 from felix.manifests.schema import ABSOLUTE_LIMITS, ModelSpec
 from felix.observability.metrics import record_counter
 from felix.observability.tracing import with_span
@@ -26,10 +26,12 @@ from felix.patterns.types import (
     ToolCall,
 )
 from felix.steer import (
+    clear_abort,
     clear_cancel_flag,
     drain_follow_up,
     drain_steer,
     ensure_run_queue,
+    is_aborted,
     release_run_queue,
     should_cancel_remaining_tools,
 )
@@ -42,6 +44,7 @@ from felix.tools.types import Tool, ToolInvocationCtx, is_wrapper_deny
 logger = logging.getLogger("felix.patterns.react")
 
 DEFAULT_RECURSION = 10
+_SEQUENTIAL_TRANSPORTS = frozenset({"client", "approval"})
 
 
 def _clamp(value: int, ceiling: int) -> int:
@@ -80,7 +83,12 @@ class _ReactAgent:
     memory_capture: Any | None = None
     tools_retrieval: Any | None = None
     procedural_memory: Any | None = None
+    tool_execution: str = "sequential"
+    steering_mode: str = "all"
+    follow_up_mode: str = "all"
+    compact_after_turn: bool = False
     _tool_map: dict[str, Tool] = field(init=False, repr=False)
+    _last_model_id: str | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         self._tool_map = {t.name: t for t in self.tools}
@@ -88,8 +96,44 @@ class _ReactAgent:
     def _active_tools(self, messages: list[ChatMessage]) -> list[Tool]:
         return select_tools_from_ctx(self.tools, messages, self.tools_retrieval)
 
-    async def _dispatch(self, call: ToolCall, thread_id: str | None) -> tuple[str, ChatMessage]:
-        async def _run(span: Any) -> tuple[str, ChatMessage]:
+    def _batch_mode(self, calls: list[ToolCall]) -> str:
+        mode = self.tool_execution or "sequential"
+        if mode != "parallel":
+            return "sequential"
+        for call in calls:
+            tool = self._tool_map.get(call.name)
+            if tool is None:
+                continue
+            transport = getattr(tool.executor, "transport", "local")
+            if transport in _SEQUENTIAL_TRANSPORTS:
+                return "sequential"
+            if getattr(tool, "execution_mode", None) == "sequential":
+                return "sequential"
+        return "parallel"
+
+    async def _dispatch(
+        self, call: ToolCall, thread_id: str | None
+    ) -> tuple[str, ChatMessage, bool]:
+        """Return (kind, tool_message, terminate)."""
+        preflight = await run_before_tool(
+            {"id": call.id, "name": call.name, "args": call.args},
+            context={"manifest_id": self.manifest_id, "thread_id": thread_id},
+        )
+        if preflight and preflight.get("block"):
+            reason = str(preflight.get("reason") or "blocked by before_tool hook")
+            terminate = bool(preflight.get("terminate"))
+            return (
+                "ok",
+                ChatMessage(
+                    role="tool",
+                    tool_call_id=call.id,
+                    name=call.name,
+                    content=f"[error/blocked] {reason}",
+                ),
+                terminate,
+            )
+
+        async def _run(span: Any) -> tuple[str, ChatMessage, bool]:
             tool = self._tool_map.get(call.name)
             if tool is None:
                 span.set_attribute("status", "error")
@@ -109,6 +153,7 @@ class _ReactAgent:
                         name=call.name,
                         content=f"[error/invalid_arguments] unknown tool: {call.name}",
                     ),
+                    False,
                 )
             span.set_attribute("tool.transport", tool.executor.transport)
             try:
@@ -131,6 +176,15 @@ class _ReactAgent:
                         "manifest_id": self.manifest_id,
                     },
                 )
+                after = await run_after_tool(
+                    {"id": call.id, "name": call.name, "args": call.args},
+                    result,
+                    is_error=bool(err),
+                    context={"manifest_id": self.manifest_id, "thread_id": thread_id},
+                )
+                terminate = bool(after and after.get("terminate"))
+                if after and after.get("content") is not None:
+                    content = str(after["content"])
                 return (
                     "ok",
                     ChatMessage(
@@ -139,6 +193,7 @@ class _ReactAgent:
                         name=call.name,
                         content=content,
                     ),
+                    terminate,
                 )
             except Exception as exc:
                 code = infer_error_code(exc)
@@ -152,6 +207,13 @@ class _ReactAgent:
                         "manifest_id": self.manifest_id,
                     },
                 )
+                after = await run_after_tool(
+                    {"id": call.id, "name": call.name, "args": call.args},
+                    None,
+                    is_error=True,
+                    context={"manifest_id": self.manifest_id, "thread_id": thread_id},
+                )
+                terminate = bool(after and after.get("terminate"))
                 if tool.fatal:
                     return (
                         "fatal",
@@ -161,6 +223,7 @@ class _ReactAgent:
                             name=call.name,
                             content=f"[fatal/{code.value}] {exc}",
                         ),
+                        terminate,
                     )
                 return (
                     "ok",
@@ -170,6 +233,7 @@ class _ReactAgent:
                         name=call.name,
                         content=f"[error/{code.value}] {exc}",
                     ),
+                    terminate,
                 )
 
         return await with_span("tool.call", _run, {"tool": call.name})
@@ -177,12 +241,103 @@ class _ReactAgent:
     def _resolve_model(self, input: InvokeInput) -> Any:
         settings = self.settings or get_settings()
         spec = _model_spec_with_override(self.model_spec, input.model_id)
+        # Apply live thinking level from thread meta or input when present.
+        level = getattr(input, "thinking_level", None)
+        if level:
+            from felix.session.thinking import apply_thinking_to_spec
+
+            spec = apply_thinking_to_spec(spec, level)
+        elif getattr(spec, "thinking_level", None):
+            from felix.session.thinking import apply_thinking_to_spec
+
+            spec = apply_thinking_to_spec(spec, spec.thinking_level)
         return build_model(settings, spec)
+
+    def _apply_handoff(
+        self, messages: list[ChatMessage], *, previous: str | None, next_id: str | None
+    ) -> list[ChatMessage]:
+        if not next_id:
+            return messages
+        try:
+            from felix.session.handoff import handoff_system_message
+
+            note = handoff_system_message(
+                messages, previous_model=previous, next_model=next_id
+            )
+            if note is not None:
+                # Insert after the first system message when present.
+                if messages and messages[0].role == "system":
+                    return [messages[0], note, *messages[1:]]
+                return [note, *messages]
+        except Exception:
+            logger.debug("handoff note failed", exc_info=True)
+        return messages
+
+    async def _maybe_compact_after_turn(
+        self,
+        messages: list[ChatMessage],
+        *,
+        thread_id: str | None,
+        model: Any,
+    ) -> list[ChatMessage]:
+        """Compact mid-run when over budget, then continue without aborting."""
+        if not self.compact_after_turn:
+            return messages
+        if not thread_id or self.session_store is None or self.session_strategy is None:
+            return messages
+        compact_now = getattr(self.session_strategy, "compact_now", None)
+        render = getattr(self.session_strategy, "render", None)
+        if not callable(render):
+            return messages
+        try:
+            from felix.session.compaction import estimate_messages_tokens
+
+            strategy = self.session_strategy
+            window = int(getattr(strategy, "context_window_tokens", 128000) or 128000)
+            reserve = int(getattr(strategy, "reserve_tokens", 16384) or 16384)
+            if estimate_messages_tokens(messages) <= max(0, window - reserve):
+                return messages
+            session = self.session_store.open(thread_id)
+            if callable(compact_now):
+                await compact_now(session, model=model, reason="after_turn")
+            rebuilt = await render(
+                session,
+                [],
+                {
+                    "system_prompt": self.system_prompt,
+                    "model": model,
+                    "force_compact": True,
+                    "compact_reason": "after_turn",
+                    "will_retry": True,
+                },
+            )
+            if rebuilt:
+                return rebuilt
+        except Exception:
+            logger.debug("compact_after_turn failed", exc_info=True)
+        return messages
+
+    async def _load_thinking_level(self, thread_id: str | None) -> str | None:
+        if not thread_id or self.settings is None:
+            return None
+        try:
+            from felix.session.thread_state import get_thread_meta
+
+            meta = await get_thread_meta(
+                settings=self.settings,
+                tenant_id=self.tenant_id,
+                thread_id=thread_id,
+            )
+            level = meta.get("thinking_level")
+            return str(level) if level and level != "off" else None
+        except Exception:
+            return None
 
     async def _persist_model_change(self, input: InvokeInput) -> None:
         if not input.model_id or not input.thread_id or self.session_store is None:
             return
         try:
+            from felix.session.thread_state import update_thread_meta
             from felix.session.tree import annotate_and_append
             from felix.session.types import AppendableEvent
 
@@ -197,20 +352,108 @@ class _ReactAgent:
                     )
                 ],
             )
+            await update_thread_meta(
+                settings=self.settings,
+                tenant_id=input.tenant_id or self.tenant_id,
+                thread_id=input.thread_id,
+                model_id=input.model_id,
+            )
         except Exception:
             logger.debug("model_change persist failed", exc_info=True)
 
-    async def _append_produced(self, thread_id: str | None, messages: list[ChatMessage]) -> None:
+    async def _append_produced(
+        self,
+        thread_id: str | None,
+        messages: list[ChatMessage],
+        *,
+        usage: dict[str, Any] | None = None,
+        status: str | None = None,
+    ) -> None:
         if not thread_id or self.session_store is None or not messages:
             return
         try:
             from felix.session.tree import annotate_and_append
             from felix.session.types import chat_message_to_event
 
+            events = []
+            for i, m in enumerate(messages):
+                ev = chat_message_to_event(m)
+                md = dict(ev.metadata or {})
+                if usage and i == len(messages) - 1 and m.role == "assistant":
+                    md["usage"] = usage
+                if status and m.role == "assistant":
+                    md["status"] = status
+                ev.metadata = md or None
+                events.append(ev)
             session = self.session_store.open(thread_id)
-            await annotate_and_append(session, [chat_message_to_event(m) for m in messages])
+            await annotate_and_append(session, events)
         except Exception:
             logger.debug("session append failed", exc_info=True)
+
+    async def _run_tool_batch(
+        self,
+        calls: list[ToolCall],
+        *,
+        thread_id: str | None,
+        tenant_id: str,
+    ) -> tuple[list[ChatMessage], bool, bool]:
+        """Execute tool calls. Returns (tool_msgs, had_fatal, all_terminate)."""
+        for call in calls:
+            if not call.id:
+                call.id = f"call_{uuid.uuid4().hex[:12]}"
+
+        mode = self._batch_mode(calls)
+        tool_msgs: list[ChatMessage] = []
+        terminates: list[bool] = []
+        had_fatal = False
+
+        if mode == "parallel" and len(calls) > 1:
+            results = await asyncio.gather(
+                *[self._dispatch(c, thread_id) for c in calls],
+                return_exceptions=True,
+            )
+            for call, res in zip(calls, results, strict=True):
+                if isinstance(res, BaseException):
+                    tool_msgs.append(
+                        ChatMessage(
+                            role="tool",
+                            tool_call_id=call.id,
+                            name=call.name,
+                            content=f"[error/internal] {res}",
+                        )
+                    )
+                    terminates.append(False)
+                    continue
+                kind, tool_msg, terminate = res
+                tool_msgs.append(tool_msg)
+                terminates.append(terminate)
+                if kind == "fatal":
+                    had_fatal = True
+        else:
+            for i, call in enumerate(calls):
+                if (
+                    thread_id
+                    and i > 0
+                    and await should_cancel_remaining_tools(tenant_id, thread_id)
+                ):
+                    skipped = ChatMessage(
+                        role="tool",
+                        tool_call_id=call.id,
+                        name=call.name,
+                        content="[cancelled] remaining tools interrupted by steer",
+                    )
+                    tool_msgs.append(skipped)
+                    terminates.append(True)
+                    continue
+                kind, tool_msg, terminate = await self._dispatch(call, thread_id)
+                tool_msgs.append(tool_msg)
+                terminates.append(terminate)
+                if kind == "fatal":
+                    had_fatal = True
+                    break
+
+        all_terminate = bool(terminates) and all(terminates)
+        return tool_msgs, had_fatal, all_terminate
 
     async def _maybe_capture_memory(
         self, input: InvokeInput, final: ChatMessage, model: Any
@@ -265,11 +508,16 @@ class _ReactAgent:
         return messages
 
     async def invoke(self, input: InvokeInput) -> InvokeOutput:
+        if not getattr(input, "thinking_level", None) and input.thread_id:
+            level = await self._load_thinking_level(input.thread_id)
+            if level:
+                input.thinking_level = level  # type: ignore[attr-defined]
         model = self._resolve_model(input)
         await self._persist_model_change(input)
         tenant_id = input.tenant_id or "default"
         if input.thread_id:
             await ensure_run_queue(tenant_id, input.thread_id)
+            await clear_abort(tenant_id, input.thread_id)
 
         messages: list[ChatMessage] = [
             ChatMessage(role="system", content=self.system_prompt),
@@ -286,6 +534,11 @@ class _ReactAgent:
             except Exception:
                 logger.debug("session render failed; using incoming messages", exc_info=True)
 
+        prev_model = self._last_model_id
+        current_model = input.model_id or getattr(model, "model_id", None)
+        messages = self._apply_handoff(messages, previous=prev_model, next_id=current_model)
+        self._last_model_id = current_model
+
         messages = await run_filter_history(
             messages,
             context={"manifest_id": self.manifest_id, "thread_id": input.thread_id},
@@ -293,7 +546,6 @@ class _ReactAgent:
         messages = await self._inject_procedures(messages, tenant_id)
 
         produced: list[ChatMessage] = list(input.messages)
-        # Persist inbound user messages on first turn.
         await self._append_produced(
             input.thread_id, [m for m in input.messages if m.role == "user"]
         )
@@ -301,6 +553,16 @@ class _ReactAgent:
 
         try:
             for _step in range(self.recursion_limit):
+                if input.thread_id and await is_aborted(tenant_id, input.thread_id):
+                    await self._append_produced(
+                        input.thread_id, [final] if final.content else [], status="aborted"
+                    )
+                    break
+
+                messages = await self._maybe_compact_after_turn(
+                    messages, thread_id=input.thread_id, model=model
+                )
+
                 injected = await run_before_turn(
                     messages,
                     context={"manifest_id": self.manifest_id, "thread_id": input.thread_id},
@@ -310,59 +572,58 @@ class _ReactAgent:
 
                 result = await model.chat(messages, self._active_tools(messages))
                 record_usage(result, manifest_id=self.manifest_id, model_id=model.model_id)
+                usage_block = None
+                if result.usage:
+                    from felix.usage.pricing import usage_with_cost
+
+                    usage_block = usage_with_cost(
+                        result.usage, model_id=model.model_id or ""
+                    )
                 assistant = result.message
                 messages.append(assistant)
                 produced.append(assistant)
                 final = assistant
 
                 if not assistant.tool_calls:
-                    await self._append_produced(input.thread_id, [assistant])
+                    await self._append_produced(
+                        input.thread_id, [assistant], usage=usage_block, status="complete"
+                    )
                     break
 
-                tool_msgs: list[ChatMessage] = []
-                for i, call in enumerate(assistant.tool_calls):
-                    if not call.id:
-                        call.id = f"call_{uuid.uuid4().hex[:12]}"
-                    if (
-                        input.thread_id
-                        and i > 0
-                        and await should_cancel_remaining_tools(tenant_id, input.thread_id)
-                    ):
-                        skipped = ChatMessage(
-                            role="tool",
-                            tool_call_id=call.id,
-                            name=call.name,
-                            content="[cancelled] remaining tools interrupted by steer",
-                        )
-                        messages.append(skipped)
-                        produced.append(skipped)
-                        tool_msgs.append(skipped)
-                        continue
-                    kind, tool_msg = await self._dispatch(call, input.thread_id)
+                tool_msgs, had_fatal, all_terminate = await self._run_tool_batch(
+                    list(assistant.tool_calls),
+                    thread_id=input.thread_id,
+                    tenant_id=tenant_id,
+                )
+                for tool_msg in tool_msgs:
                     messages.append(tool_msg)
                     produced.append(tool_msg)
-                    tool_msgs.append(tool_msg)
-                    if kind == "fatal":
-                        await self._append_produced(input.thread_id, [assistant, *tool_msgs])
-                        return InvokeOutput(messages=produced, final=assistant)
-
-                await self._append_produced(input.thread_id, [assistant, *tool_msgs])
+                await self._append_produced(
+                    input.thread_id, [assistant, *tool_msgs], usage=usage_block
+                )
+                if had_fatal:
+                    return InvokeOutput(messages=produced, final=assistant)
+                if all_terminate:
+                    break
+                if input.thread_id and await is_aborted(tenant_id, input.thread_id):
+                    break
                 if input.thread_id:
                     await clear_cancel_flag(tenant_id, input.thread_id)
-                    for steermsg in await drain_steer(tenant_id, input.thread_id):
+                    for steermsg in await drain_steer(
+                        tenant_id, input.thread_id, mode=self.steering_mode  # type: ignore[arg-type]
+                    ):
                         steer_chat = ChatMessage(role="user", content=steermsg.text)
                         messages.append(steer_chat)
                         produced.append(steer_chat)
                         await self._append_produced(input.thread_id, [steer_chat])
 
-            if input.thread_id:
-                for follow in await drain_follow_up(tenant_id, input.thread_id):
-                    # Follow-ups are returned as trailing user messages for the client
-                    # to re-invoke, or we can immediately continue one more turn.
+            if input.thread_id and not await is_aborted(tenant_id, input.thread_id):
+                for follow in await drain_follow_up(
+                    tenant_id, input.thread_id, mode=self.follow_up_mode  # type: ignore[arg-type]
+                ):
                     follow_chat = ChatMessage(role="user", content=follow.text)
                     produced.append(follow_chat)
                     await self._append_produced(input.thread_id, [follow_chat])
-                    # One more model turn for each follow-up.
                     messages.append(follow_chat)
                     result = await model.chat(messages, self._active_tools(messages))
                     record_usage(result, manifest_id=self.manifest_id, model_id=model.model_id)
@@ -380,11 +641,17 @@ class _ReactAgent:
         return InvokeOutput(messages=produced, final=final)
 
     async def stream_events(self, input: InvokeInput) -> AsyncIterator[Event]:
+        if not getattr(input, "thinking_level", None) and input.thread_id:
+            level = await self._load_thinking_level(input.thread_id)
+            if level:
+                input.thinking_level = level  # type: ignore[attr-defined]
         model = self._resolve_model(input)
         await self._persist_model_change(input)
         tenant_id = input.tenant_id or "default"
         if input.thread_id:
             await ensure_run_queue(tenant_id, input.thread_id)
+            await clear_abort(tenant_id, input.thread_id)
+            yield Event(event="session_progress", data={"phase": "turn"})
 
         messages: list[ChatMessage] = [
             ChatMessage(role="system", content=self.system_prompt),
@@ -401,6 +668,11 @@ class _ReactAgent:
             except Exception:
                 logger.debug("session render failed; using incoming messages", exc_info=True)
 
+        prev_model = self._last_model_id
+        current_model = input.model_id or getattr(model, "model_id", None)
+        messages = self._apply_handoff(messages, previous=prev_model, next_id=current_model)
+        self._last_model_id = current_model
+
         messages = await run_filter_history(
             messages,
             context={"manifest_id": self.manifest_id, "thread_id": input.thread_id},
@@ -414,6 +686,20 @@ class _ReactAgent:
 
         try:
             for _step in range(self.recursion_limit):
+                if input.thread_id and await is_aborted(tenant_id, input.thread_id):
+                    yield Event(event="aborted", data={"thread_id": input.thread_id})
+                    break
+
+                before_len = len(messages)
+                messages = await self._maybe_compact_after_turn(
+                    messages, thread_id=input.thread_id, model=model
+                )
+                if len(messages) != before_len:
+                    yield Event(
+                        event="session_progress",
+                        data={"phase": "compaction", "reason": "after_turn"},
+                    )
+
                 injected = await run_before_turn(
                     messages,
                     context={"manifest_id": self.manifest_id, "thread_id": input.thread_id},
@@ -423,17 +709,32 @@ class _ReactAgent:
 
                 chunks: list[str] = []
                 async for delta in model.stream(messages, self._active_tools(messages)):
+                    if input.thread_id and await is_aborted(tenant_id, input.thread_id):
+                        break
                     chunks.append(delta)
                     yield Event(
                         event="text_delta",
                         data={"chunk": {"content": delta}, "delta": delta},
                     )
                     yield Event(
-                        event="on_chat_model_stream",
-                        data={"chunk": {"content": delta}},
+                        event="session_progress",
+                        data={
+                            "progress": {
+                                "type": "assistant_delta",
+                                "kind": "text",
+                                "delta": delta,
+                            }
+                        },
                     )
                 result = await model.chat(messages, self._active_tools(messages))
                 record_usage(result, manifest_id=self.manifest_id, model_id=model.model_id)
+                usage_block = None
+                if result.usage:
+                    from felix.usage.pricing import usage_with_cost
+
+                    usage_block = usage_with_cost(
+                        result.usage, model_id=model.model_id or ""
+                    )
                 assistant = result.message
                 if not assistant.content and chunks:
                     assistant = ChatMessage(
@@ -445,74 +746,73 @@ class _ReactAgent:
                 produced.append(assistant)
                 final = assistant
                 if not assistant.tool_calls:
-                    await self._append_produced(input.thread_id, [assistant])
+                    await self._append_produced(
+                        input.thread_id, [assistant], usage=usage_block, status="complete"
+                    )
                     break
 
-                tool_msgs: list[ChatMessage] = []
-                for i, call in enumerate(assistant.tool_calls):
+                for call in assistant.tool_calls:
                     if not call.id:
                         call.id = f"call_{uuid.uuid4().hex[:12]}"
-                    if (
-                        input.thread_id
-                        and i > 0
-                        and await should_cancel_remaining_tools(tenant_id, input.thread_id)
-                    ):
-                        skipped = ChatMessage(
-                            role="tool",
-                            tool_call_id=call.id,
-                            name=call.name,
-                            content="[cancelled] remaining tools interrupted by steer",
-                        )
-                        yield Event(
-                            event="tool_cancelled",
-                            data={"name": call.name, "reason": "steer"},
-                        )
-                        messages.append(skipped)
-                        produced.append(skipped)
-                        tool_msgs.append(skipped)
-                        continue
                     yield Event(
                         event="tool_start",
                         data={"name": call.name, "input": call.args, "id": call.id},
                     )
                     yield Event(
-                        event="on_tool_start",
-                        data={"name": call.name, "input": call.args},
+                        event="tool_execution_update",
+                        data={"name": call.name, "id": call.id, "status": "running"},
                     )
-                    dispatch_task = asyncio.create_task(
-                        self._dispatch(call, input.thread_id)
-                    )
-                    while not dispatch_task.done():
-                        for item in await drain_side_events(input.thread_id):
-                            yield Event(event=str(item["event"]), data=dict(item["data"]))
-                        await asyncio.wait({dispatch_task}, timeout=0.05)
-                    for item in await drain_side_events(input.thread_id):
-                        yield Event(event=str(item["event"]), data=dict(item["data"]))
-                    _kind, tool_msg = dispatch_task.result()
+
+                tool_msgs, had_fatal, all_terminate = await self._run_tool_batch(
+                    list(assistant.tool_calls),
+                    thread_id=input.thread_id,
+                    tenant_id=tenant_id,
+                )
+                for item in await drain_side_events(input.thread_id):
+                    yield Event(event=str(item["event"]), data=dict(item["data"]))
+                for tool_msg in tool_msgs:
                     yield Event(
                         event="tool_end",
-                        data={"name": call.name, "output": tool_msg.content, "id": call.id},
+                        data={
+                            "name": tool_msg.name,
+                            "output": tool_msg.content,
+                            "id": tool_msg.tool_call_id,
+                        },
                     )
                     yield Event(
-                        event="on_tool_end",
-                        data={"name": call.name, "output": tool_msg.content},
+                        event="tool_execution_update",
+                        data={
+                            "name": tool_msg.name,
+                            "id": tool_msg.tool_call_id,
+                            "status": "complete",
+                        },
                     )
                     messages.append(tool_msg)
                     produced.append(tool_msg)
-                    tool_msgs.append(tool_msg)
 
-                await self._append_produced(input.thread_id, [assistant, *tool_msgs])
+                await self._append_produced(
+                    input.thread_id, [assistant, *tool_msgs], usage=usage_block
+                )
+                if had_fatal or all_terminate:
+                    break
+                if input.thread_id and await is_aborted(tenant_id, input.thread_id):
+                    yield Event(event="aborted", data={"thread_id": input.thread_id})
+                    break
                 if input.thread_id:
                     await clear_cancel_flag(tenant_id, input.thread_id)
-                    for steermsg in await drain_steer(tenant_id, input.thread_id):
+                    for steermsg in await drain_steer(
+                        tenant_id, input.thread_id, mode=self.steering_mode  # type: ignore[arg-type]
+                    ):
                         steer_chat = ChatMessage(role="user", content=steermsg.text)
                         messages.append(steer_chat)
                         produced.append(steer_chat)
                         yield Event(event="steer", data={"content": steermsg.text})
                         await self._append_produced(input.thread_id, [steer_chat])
 
-            if input.thread_id:
-                for follow in await drain_follow_up(tenant_id, input.thread_id):
+            if input.thread_id and not await is_aborted(tenant_id, input.thread_id):
+                for follow in await drain_follow_up(
+                    tenant_id, input.thread_id, mode=self.follow_up_mode  # type: ignore[arg-type]
+                ):
                     follow_chat = ChatMessage(role="user", content=follow.text)
                     produced.append(follow_chat)
                     yield Event(event="follow_up", data={"content": follow.text})
@@ -558,6 +858,18 @@ def build_react_agent(ctx: PatternBuildContext) -> Agent:
         int(recursion if recursion is not None else DEFAULT_RECURSION),
         ABSOLUTE_LIMITS["recursion_limit"],
     )
+    execution = ctx.get("execution")
+    session_spec = ctx.get("session_spec")
+    tool_exec = "sequential"
+    if execution is not None:
+        tool_exec = str(getattr(execution, "tools", None) or "sequential")
+    steer_mode = "all"
+    follow_mode = "all"
+    compact_after = False
+    if session_spec is not None:
+        steer_mode = str(getattr(session_spec, "steering_mode", None) or "all")
+        follow_mode = str(getattr(session_spec, "follow_up_mode", None) or "all")
+        compact_after = bool(getattr(session_spec, "compact_after_turn", False))
     return _ReactAgent(
         tools=list(ctx.get("tools") or []),
         pattern="react",
@@ -573,6 +885,10 @@ def build_react_agent(ctx: PatternBuildContext) -> Agent:
         memory_capture=ctx.get("memory_capture"),
         tools_retrieval=ctx.get("tools_retrieval"),
         procedural_memory=ctx.get("procedural_memory"),
+        tool_execution=tool_exec,
+        steering_mode=steer_mode,
+        follow_up_mode=follow_mode,
+        compact_after_turn=compact_after,
     )
 
 

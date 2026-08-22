@@ -8,7 +8,18 @@ from typing import Any, Literal, Protocol, runtime_checkable
 from felix.patterns.types import ChatMessage, ToolCall
 
 SessionEventKind = Literal[
-    "message", "tool_call", "tool_result", "thinking", "audit", "compaction", "model_change"
+    "message",
+    "tool_call",
+    "tool_result",
+    "thinking",
+    "audit",
+    "compaction",
+    "model_change",
+    "thinking_level_change",
+    "branch_summary",
+    "custom",
+    "label",
+    "session_info",
 ]
 # Legacy alias used by a thinner parallel draft.
 EventKind = Literal[
@@ -21,6 +32,11 @@ EventKind = Literal[
     "audit",
     "compaction",
     "model_change",
+    "thinking_level_change",
+    "branch_summary",
+    "custom",
+    "label",
+    "session_info",
 ]
 
 
@@ -112,6 +128,19 @@ class SessionStrategy(Protocol):
 
 def chat_message_to_event(m: ChatMessage) -> AppendableEvent:
     kind: SessionEventKind = "tool_result" if m.role == "tool" else "message"
+    md: dict[str, Any] | None = None
+    if m.attachments:
+        md = {
+            "attachments": [
+                {
+                    "url": a.url,
+                    "media_type": a.media_type,
+                    "filename": a.filename,
+                    "detail": a.detail,
+                }
+                for a in m.attachments
+            ]
+        }
     return AppendableEvent(
         kind=kind,
         role=m.role,
@@ -123,7 +152,39 @@ def chat_message_to_event(m: ChatMessage) -> AppendableEvent:
             if m.tool_calls
             else None
         ),
+        metadata=md,
     )
+
+
+_LLM_SKIP_KINDS = frozenset(
+    {
+        "audit",
+        "compaction",
+        "model_change",
+        "thinking_level_change",
+        "branch_summary",
+        "label",
+        "session_info",
+    }
+)
+
+
+def include_in_llm_context(e: SessionEvent) -> bool:
+    """Whether an event should be converted into model context.
+
+    ``custom`` entries are excluded unless ``metadata.in_context`` is true.
+    """
+    if e.kind == "custom":
+        return bool((e.metadata or {}).get("in_context"))
+    if e.kind in _LLM_SKIP_KINDS:
+        return False
+    if e.role == "system":
+        return False
+    return e.kind in {"message", "tool_result"} or e.role in {
+        "user",
+        "assistant",
+        "tool",
+    }
 
 
 def event_to_chat_message(e: SessionEvent) -> ChatMessage:
@@ -133,18 +194,34 @@ def event_to_chat_message(e: SessionEvent) -> ChatMessage:
             ToolCall(id=str(tc["id"]), name=str(tc["name"]), args=dict(tc.get("args") or {}))
             for tc in e.tool_calls
         ]
+    attachments = None
+    raw_atts = (e.metadata or {}).get("attachments")
+    if isinstance(raw_atts, list) and raw_atts:
+        from felix.patterns.types import ImageAttachment
+
+        attachments = [
+            ImageAttachment(
+                url=str(a.get("url") or ""),
+                media_type=str(a.get("media_type") or "image/png"),
+                filename=a.get("filename"),
+                detail=a.get("detail"),
+            )
+            for a in raw_atts
+            if isinstance(a, dict)
+        ]
     return ChatMessage(
         role=e.role or "assistant",  # type: ignore[arg-type]
         content=e.content or "",
         tool_call_id=e.tool_call_id,
         name=e.name,
         tool_calls=tool_calls,
+        attachments=attachments,
     )
 
 
 def analyze_wake(events: list[SessionEvent]) -> WakeState:
     head_seq = len(events)
-    turns = [e for e in events if e.kind not in {"audit", "compaction", "model_change"}]
+    turns = [e for e in events if include_in_llm_context(e)]
     if not turns:
         return WakeState(fresh=True, head_seq=head_seq)
 
@@ -194,4 +271,5 @@ __all__ = [
     "analyze_wake",
     "chat_message_to_event",
     "event_to_chat_message",
+    "include_in_llm_context",
 ]

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from felix.context import AuthContext, LimitState, RequestContext
 from felix.manifests.schema import ModelSpec, ToolsRetrievalSpec
 from felix.patterns.model import (
@@ -27,6 +28,23 @@ def test_openai_thinking_and_cache() -> None:
     assert body["reasoning_effort"] == "medium"
     assert body["thinking"] == {"type": "enabled", "budget_tokens": 8000}
     assert body["prompt_cache_key"] == "felix"
+
+
+@pytest.mark.asyncio
+async def test_openai_cache_key_uses_thread_id() -> None:
+    from felix.config import Settings
+    from felix.context import AuthContext, RequestContext, async_run_with_context
+
+    spec = ModelSpec(cache=True)
+    body: dict = {"model": "gpt-4.1", "messages": []}
+    ctx = RequestContext(
+        settings=Settings(allow_insecure=True, database_url="memory://c", object_store="memory"),
+        auth=AuthContext(),
+        thread_id="tenant:abc",
+    )
+    async with async_run_with_context(ctx):
+        apply_openai_thinking_cache(body, spec)
+    assert body["prompt_cache_key"] == "felix:tenant:abc"
 
 
 def test_anthropic_thinking_and_cache() -> None:

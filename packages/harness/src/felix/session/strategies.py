@@ -37,10 +37,10 @@ class FullReplaySessionStrategy:
         from felix.session.tree import active_branch_events
 
         branch = active_branch_events(events, session_id=getattr(session, "id", ""))
+        from felix.session.types import include_in_llm_context
+
         history = [
-            event_to_chat_message(e)
-            for e in branch
-            if e.kind in {"message", "tool_result"} and e.role != "system"
+            event_to_chat_message(e) for e in branch if include_in_llm_context(e)
         ]
         return [ChatMessage(role="system", content=system_prompt), *history, *incoming]
 
@@ -62,9 +62,9 @@ class WindowedSessionStrategy:
         from felix.session.tree import active_branch_events
 
         branch = active_branch_events(events, session_id=getattr(session, "id", ""))
-        filtered = [
-            e for e in branch if e.kind in {"message", "tool_result"} and e.role != "system"
-        ]
+        from felix.session.types import include_in_llm_context
+
+        filtered = [e for e in branch if include_in_llm_context(e)]
         pinned = [e for e in filtered if is_pinned(e)]
         unpinned = [e for e in filtered if not is_pinned(e)]
         windowed = unpinned[-self.max_turns :] if self.max_turns > 0 else []
@@ -105,8 +105,10 @@ class SummarizingSessionStrategy:
         if latest_summary and latest_summary.metadata:
             covered = int(latest_summary.metadata.get("covers_to_seq") or -1)
 
+        from felix.session.types import include_in_llm_context
+
         raw = [
-            e for e in all_events if e.kind != "audit" and e.role != "system" and e.seq > covered
+            e for e in all_events if include_in_llm_context(e) and e.seq > covered
         ]
         pinned = [e for e in raw if is_pinned(e)]
         compactable = [e for e in raw if not is_pinned(e)]
@@ -226,9 +228,9 @@ class SemanticSessionStrategy:
         from felix.session.tree import active_branch_events
 
         branch = active_branch_events(events, session_id=getattr(session, "id", ""))
-        candidates = [
-            e for e in branch if e.kind in {"message", "tool_result"} and e.role != "system"
-        ]
+        from felix.session.types import include_in_llm_context
+
+        candidates = [e for e in branch if include_in_llm_context(e)]
         pinned = [e for e in candidates if is_pinned(e)]
         unpinned = [e for e in candidates if not is_pinned(e)]
         query_text = " ".join(m.content for m in incoming if m.role == "user")

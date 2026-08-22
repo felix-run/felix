@@ -104,6 +104,21 @@ class PluginRegistry:
 
         get_agent_hooks().register_before_compact(hook)
 
+    def register_before_tool(self, hook: Callable[..., Any]) -> None:
+        from felix.hooks import get_agent_hooks
+
+        get_agent_hooks().register_before_tool(hook)
+
+    def register_after_tool(self, hook: Callable[..., Any]) -> None:
+        from felix.hooks import get_agent_hooks
+
+        get_agent_hooks().register_after_tool(hook)
+
+    def register_compact_failed(self, hook: Callable[..., Any]) -> None:
+        from felix.hooks import get_agent_hooks
+
+        get_agent_hooks().register_compact_failed(hook)
+
 
 _registry = PluginRegistry()
 

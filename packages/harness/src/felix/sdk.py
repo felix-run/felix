@@ -12,7 +12,7 @@ import httpx
 
 @dataclass
 class FelixClient:
-    """Minimal async client: prompt, stream, steer, follow_up, fork, rewind, set_model."""
+    """Minimal async client: prompt, stream, steer, follow_up, fork, rewind, abort, …"""
 
     base_url: str
     api_key: str | None = None
@@ -69,7 +69,6 @@ class FelixClient:
             "thread_id": thread_id if thread_id is not None else self._thread_id,
             "model": model or self._model,
         }
-        # Drop nulls
         body = {k: v for k, v in body.items() if v is not None}
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             resp = await client.post(
@@ -79,9 +78,6 @@ class FelixClient:
             )
             resp.raise_for_status()
             data = resp.json()
-            if data.get("thread_id"):
-                # Store suffix if server returned full id — clients usually pass suffix.
-                pass
             self._emit({"event": "prompt_result", "data": data})
             return data
 
@@ -185,15 +181,219 @@ class FelixClient:
             resp.raise_for_status()
             return resp.json()
 
-    async def compact(
+    async def abort(self, *, thread_id: str | None = None) -> dict[str, Any]:
+        tid = thread_id if thread_id is not None else self._thread_id
+        if not tid:
+            raise ValueError("thread_id required for abort")
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.post(
+                f"{self.base_url.rstrip('/')}/chat/abort",
+                headers=self._headers(),
+                json={"thread_id": tid},
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+    async def continue_run(
         self,
-        text: str = "Continue.",
         *,
+        thread_id: str | None = None,
         manifest: str | None = None,
+        model: str | None = None,
+    ) -> dict[str, Any]:
+        tid = thread_id if thread_id is not None else self._thread_id
+        if not tid:
+            raise ValueError("thread_id required for continue")
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.post(
+                f"{self.base_url.rstrip('/')}/chat/continue",
+                headers=self._headers(),
+                json={
+                    "thread_id": tid,
+                    "manifest": manifest or self._manifest,
+                    "model": model or self._model,
+                },
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+    async def set_thinking(
+        self,
+        thinking_level: str,
+        *,
         thread_id: str | None = None,
     ) -> dict[str, Any]:
-        """Trigger compaction by invoking with the thread's compacting session strategy."""
-        return await self.prompt(text, manifest=manifest, thread_id=thread_id)
+        tid = thread_id if thread_id is not None else self._thread_id
+        if not tid:
+            raise ValueError("thread_id required for set_thinking")
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.post(
+                f"{self.base_url.rstrip('/')}/chat/thinking",
+                headers=self._headers(),
+                json={"thread_id": tid, "thinking_level": thinking_level},
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+    async def compact(
+        self,
+        *,
+        thread_id: str | None = None,
+        manifest: str | None = None,
+        instructions: str | None = None,
+    ) -> dict[str, Any]:
+        tid = thread_id if thread_id is not None else self._thread_id
+        if not tid:
+            raise ValueError("thread_id required for compact")
+        body: dict[str, Any] = {
+            "thread_id": tid,
+            "manifest": manifest or self._manifest,
+        }
+        if instructions:
+            body["instructions"] = instructions
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.post(
+                f"{self.base_url.rstrip('/')}/chat/compact",
+                headers=self._headers(),
+                json=body,
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+    async def snapshot(self, *, thread_id: str | None = None) -> dict[str, Any]:
+        tid = thread_id if thread_id is not None else self._thread_id
+        if not tid:
+            raise ValueError("thread_id required for snapshot")
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.get(
+                f"{self.base_url.rstrip('/')}/chat/sessions/{tid}",
+                headers=self._headers(),
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+    async def list_sessions(self) -> dict[str, Any]:
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.get(
+                f"{self.base_url.rstrip('/')}/chat/sessions",
+                headers=self._headers(),
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+    async def append_custom(
+        self,
+        content: str,
+        *,
+        thread_id: str | None = None,
+        in_context: bool = False,
+        metadata: dict[str, Any] | None = None,
+        role: str = "system",
+    ) -> dict[str, Any]:
+        tid = thread_id if thread_id is not None else self._thread_id
+        if not tid:
+            raise ValueError("thread_id required for append_custom")
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.post(
+                f"{self.base_url.rstrip('/')}/chat/sessions/custom",
+                headers=self._headers(),
+                json={
+                    "thread_id": tid,
+                    "content": content,
+                    "in_context": in_context,
+                    "metadata": metadata or {},
+                    "role": role,
+                },
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+    async def export_session(self, *, thread_id: str | None = None) -> str:
+        tid = thread_id if thread_id is not None else self._thread_id
+        if not tid:
+            raise ValueError("thread_id required for export_session")
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.get(
+                f"{self.base_url.rstrip('/')}/chat/sessions/{tid}/export",
+                headers=self._headers(),
+            )
+            resp.raise_for_status()
+            return resp.text
+
+    async def acquire_lease(
+        self,
+        holder_id: str,
+        *,
+        thread_id: str | None = None,
+        mode: str = "exclusive",
+        ttl_seconds: float = 300.0,
+        token: str | None = None,
+    ) -> dict[str, Any]:
+        tid = thread_id if thread_id is not None else self._thread_id
+        if not tid:
+            raise ValueError("thread_id required for acquire_lease")
+        body: dict[str, Any] = {
+            "thread_id": tid,
+            "holder_id": holder_id,
+            "mode": mode,
+            "ttl_seconds": ttl_seconds,
+        }
+        if token:
+            body["token"] = token
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.post(
+                f"{self.base_url.rstrip('/')}/chat/sessions/lease",
+                headers=self._headers(),
+                json=body,
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+    async def release_lease(
+        self,
+        *,
+        thread_id: str | None = None,
+        holder_id: str | None = None,
+        token: str | None = None,
+    ) -> dict[str, Any]:
+        tid = thread_id if thread_id is not None else self._thread_id
+        if not tid:
+            raise ValueError("thread_id required for release_lease")
+        body: dict[str, Any] = {"thread_id": tid}
+        if holder_id:
+            body["holder_id"] = holder_id
+        if token:
+            body["token"] = token
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.post(
+                f"{self.base_url.rstrip('/')}/chat/sessions/lease/release",
+                headers=self._headers(),
+                json=body,
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+    async def resolve_ui(
+        self,
+        request_id: str,
+        *,
+        value: Any = None,
+        cancelled: bool = False,
+        note: str = "",
+    ) -> dict[str, Any]:
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.post(
+                f"{self.base_url.rstrip('/')}/chat/ui",
+                headers=self._headers(),
+                json={
+                    "request_id": request_id,
+                    "value": value,
+                    "cancelled": cancelled,
+                    "note": note,
+                },
+            )
+            resp.raise_for_status()
+            return resp.json()
 
 
 __all__ = ["FelixClient"]

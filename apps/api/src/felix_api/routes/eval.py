@@ -67,6 +67,44 @@ async def get_dataset(name: str, request: Request) -> Any:
     return row
 
 
+@router.post("/runs/compare")
+async def compare_eval_runs(body: dict[str, Any], request: Request) -> Any:
+    """Comparative eval: baseline vs candidates on one dataset."""
+    from felix.eval.compare import EvalHarness, run_comparative
+
+    dataset = body.get("dataset_name") or body.get("dataset")
+    if not dataset:
+        raise HTTPException(status_code=400, detail="dataset_name_required")
+    baseline_raw = body.get("baseline") or {}
+    if not baseline_raw.get("manifest"):
+        raise HTTPException(status_code=400, detail="baseline_manifest_required")
+    baseline = EvalHarness(
+        name=str(baseline_raw.get("name") or "baseline"),
+        manifest=str(baseline_raw["manifest"]),
+        mock=bool(body.get("mock") or baseline_raw.get("mock")),
+    )
+    candidates = [
+        EvalHarness(
+            name=str(c.get("name") or f"candidate-{i}"),
+            manifest=str(c["manifest"]),
+            mock=bool(body.get("mock") or c.get("mock")),
+        )
+        for i, c in enumerate(body.get("candidates") or [])
+        if c.get("manifest")
+    ]
+    threshold = body.get("judge_threshold")
+    return await run_comparative(
+        request.app.state.settings,
+        tools=request.app.state.tools,
+        tenant_id=_tenant(request),
+        dataset_name=str(dataset),
+        baseline=baseline,
+        candidates=candidates,
+        judge_threshold=float(threshold) if threshold is not None else None,
+        mock=bool(body.get("mock")),
+    )
+
+
 @router.post("/runs")
 async def start_eval_run(body: EvalRunRequest, request: Request) -> Any:
     from felix.eval.runner import start_run

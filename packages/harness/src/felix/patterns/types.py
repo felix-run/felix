@@ -14,8 +14,20 @@ Role = Literal["user", "assistant", "system", "tool"]
 @dataclass(slots=True)
 class ImageAttachment:
     url: str
-    media_type: str
+    media_type: str = "image/png"
     filename: str | None = None
+    detail: str | None = None  # openai: low|high|auto
+
+
+@dataclass(slots=True)
+class ContentBlock:
+    """Typed content part (text or image) for multimodal messages."""
+
+    type: Literal["text", "image_url", "image"]
+    text: str | None = None
+    url: str | None = None
+    media_type: str | None = None
+    detail: str | None = None
 
 
 @dataclass(slots=True)
@@ -33,6 +45,7 @@ class ChatMessage:
     name: str | None = None
     tool_calls: list[ToolCall] | None = None
     attachments: list[ImageAttachment] | None = None
+    content_blocks: list[ContentBlock] | None = None
     thinking: list[dict[str, Any]] | None = None
 
     @classmethod
@@ -59,12 +72,84 @@ class ChatMessage:
                 else tc
                 for tc in tool_calls_raw
             ]
+
+        content_raw = data.get("content")
+        text_content = ""
+        blocks: list[ContentBlock] | None = None
+        attachments: list[ImageAttachment] | None = None
+
+        if isinstance(content_raw, list):
+            blocks = []
+            parts: list[str] = []
+            atts: list[ImageAttachment] = []
+            for part in content_raw:
+                if not isinstance(part, dict):
+                    continue
+                ptype = str(part.get("type") or "text")
+                if ptype == "text":
+                    t = str(part.get("text") or "")
+                    parts.append(t)
+                    blocks.append(ContentBlock(type="text", text=t))
+                elif ptype in {"image_url", "image"}:
+                    url_obj = part.get("image_url") if isinstance(part.get("image_url"), dict) else {}
+                    url = str(
+                        part.get("url")
+                        or url_obj.get("url")
+                        or part.get("source", {}).get("url")
+                        or ""
+                    )
+                    media = str(
+                        part.get("media_type")
+                        or part.get("mime_type")
+                        or url_obj.get("media_type")
+                        or "image/png"
+                    )
+                    detail = part.get("detail") or url_obj.get("detail")
+                    blocks.append(
+                        ContentBlock(
+                            type="image_url",
+                            url=url,
+                            media_type=media,
+                            detail=str(detail) if detail else None,
+                        )
+                    )
+                    atts.append(
+                        ImageAttachment(
+                            url=url,
+                            media_type=media,
+                            filename=part.get("filename"),
+                            detail=str(detail) if detail else None,
+                        )
+                    )
+            text_content = "\n".join(p for p in parts if p)
+            attachments = atts or None
+            if not blocks:
+                blocks = None
+        else:
+            text_content = str(content_raw or "")
+
+        att_raw = data.get("attachments")
+        if att_raw and attachments is None:
+            attachments = [
+                ImageAttachment(
+                    url=str(a.get("url") or ""),
+                    media_type=str(a.get("media_type") or a.get("mime_type") or "image/png"),
+                    filename=a.get("filename"),
+                    detail=a.get("detail"),
+                )
+                if isinstance(a, dict)
+                else a
+                for a in att_raw
+            ]
+
         return cls(
             role=data.get("role") or "user",
-            content=str(data.get("content") or ""),
+            content=text_content,
             tool_call_id=data.get("tool_call_id"),
             name=data.get("name"),
             tool_calls=tool_calls,
+            attachments=attachments,
+            content_blocks=blocks or data.get("content_blocks"),
             thinking=data.get("thinking"),
         )
 
@@ -80,6 +165,27 @@ class ChatMessage:
             ]
         if self.thinking is not None:
             out["thinking"] = self.thinking
+        if self.attachments:
+            out["attachments"] = [
+                {
+                    "url": a.url,
+                    "media_type": a.media_type,
+                    "filename": a.filename,
+                    "detail": a.detail,
+                }
+                for a in self.attachments
+            ]
+        if self.content_blocks:
+            out["content_blocks"] = [
+                {
+                    "type": b.type,
+                    "text": b.text,
+                    "url": b.url,
+                    "media_type": b.media_type,
+                    "detail": b.detail,
+                }
+                for b in self.content_blocks
+            ]
         return out
 
 
@@ -89,6 +195,7 @@ class InvokeInput:
     thread_id: str | None = None
     model_id: str | None = None
     tenant_id: str | None = None
+    thinking_level: str | None = None
 
 
 @dataclass(slots=True)
@@ -139,6 +246,7 @@ class Agent(Protocol):
 __all__ = [
     "Agent",
     "ChatMessage",
+    "ContentBlock",
     "Event",
     "ImageAttachment",
     "InvokeInput",

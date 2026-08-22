@@ -943,6 +943,8 @@ async def build_agent(
                 "aggregator_prompt": m.spec.aggregator_prompt,
                 "session_store": deps.session_store,
                 "session_strategy": deps.session_strategy,
+                "session_spec": m.spec.session,
+                "execution": m.spec.execution,
                 "limits": m.spec.limits,
                 "settings": deps.settings,
                 "tenant_id": tenant_id,

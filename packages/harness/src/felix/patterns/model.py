@@ -109,7 +109,12 @@ def reasoning_effort_from_budget(budget: int) -> str:
     return "high"
 
 
-def apply_openai_thinking_cache(body: dict[str, Any], spec: Any) -> None:
+def apply_openai_thinking_cache(
+    body: dict[str, Any],
+    spec: Any,
+    *,
+    cache_key: str | None = None,
+) -> None:
     """Attach thinking budget + prompt cache hints to an OpenAI-style request."""
     budget = getattr(spec, "thinking_budget", None) if spec is not None else None
     if budget:
@@ -118,7 +123,19 @@ def apply_openai_thinking_cache(body: dict[str, Any], spec: Any) -> None:
         # LiteLLM / Anthropic-via-OpenAI also honor this block.
         body["thinking"] = {"type": "enabled", "budget_tokens": n}
     if spec is not None and getattr(spec, "cache", False):
-        body["prompt_cache_key"] = "felix"
+        key = cache_key
+        if not key:
+            key = "felix"
+            try:
+                from felix.context import try_get_context
+
+                ctx = try_get_context()
+                tid = getattr(ctx, "thread_id", None) if ctx is not None else None
+                if tid:
+                    key = f"felix:{tid}"
+            except Exception:
+                pass
+        body["prompt_cache_key"] = key
 
 
 def apply_anthropic_thinking_cache(body: dict[str, Any], spec: Any) -> None:
@@ -204,10 +221,68 @@ def record_usage(result: ModelChatResult, *, manifest_id: str, model_id: str | N
         logger.debug("usage_sink_failed", exc_info=True)
 
 
+def _anthropic_user_or_plain(m: ChatMessage) -> dict[str, Any]:
+    """Convert a non-tool message for Anthropic, including image blocks."""
+    if m.role == "user" and (m.attachments or m.content_blocks):
+        blocks: list[dict[str, Any]] = []
+        if m.content_blocks:
+            for b in m.content_blocks:
+                if b.type == "text" and b.text:
+                    blocks.append({"type": "text", "text": b.text})
+                elif b.url:
+                    blocks.append(
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "url",
+                                "url": b.url,
+                                "media_type": b.media_type or "image/png",
+                            },
+                        }
+                    )
+        else:
+            if m.content:
+                blocks.append({"type": "text", "text": m.content})
+            for att in m.attachments or []:
+                blocks.append(
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "url",
+                            "url": att.url,
+                            "media_type": att.media_type or "image/png",
+                        },
+                    }
+                )
+        return {"role": "user", "content": blocks or m.content}
+    return {"role": m.role, "content": m.content}
+
+
 def _messages_to_openai(messages: list[ChatMessage]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for m in messages:
-        item: dict[str, Any] = {"role": m.role, "content": m.content}
+        content: Any = m.content
+        if m.attachments or (m.content_blocks and any(b.type != "text" for b in m.content_blocks)):
+            parts: list[dict[str, Any]] = []
+            if m.content_blocks:
+                for b in m.content_blocks:
+                    if b.type == "text" and b.text:
+                        parts.append({"type": "text", "text": b.text})
+                    elif b.type in {"image_url", "image"} and b.url:
+                        img: dict[str, Any] = {"url": b.url}
+                        if b.detail:
+                            img["detail"] = b.detail
+                        parts.append({"type": "image_url", "image_url": img})
+            else:
+                if m.content:
+                    parts.append({"type": "text", "text": m.content})
+                for att in m.attachments or []:
+                    img = {"url": att.url}
+                    if att.detail:
+                        img["detail"] = att.detail
+                    parts.append({"type": "image_url", "image_url": img})
+            content = parts or m.content
+        item: dict[str, Any] = {"role": m.role, "content": content}
         if m.tool_call_id:
             item["tool_call_id"] = m.tool_call_id
         if m.name:
@@ -370,7 +445,7 @@ class _HttpModelClient:
                     )
                 converted.append({"role": "assistant", "content": blocks})
                 continue
-            converted.append({"role": m.role, "content": m.content})
+            converted.append(_anthropic_user_or_plain(m))
 
         body: dict[str, Any] = {
             "model": self.route.model,
@@ -543,7 +618,7 @@ class _HttpModelClient:
                     )
                 converted.append({"role": "assistant", "content": blocks})
                 continue
-            converted.append({"role": m.role, "content": m.content})
+            converted.append(_anthropic_user_or_plain(m))
 
         body: dict[str, Any] = {
             "model": self.route.model,

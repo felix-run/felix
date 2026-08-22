@@ -53,17 +53,23 @@ def _auth(request: Request) -> AuthContext:
 
 @router.get("/models")
 async def list_models(request: Request) -> dict[str, Any]:
-    """List bundled + discoverable manifests as OpenAI models."""
+    """List bundled + discoverable manifests as OpenAI models with Felix catalog metadata."""
+    from felix.usage.catalog import catalog_from_manifest
+
+    settings = request.app.state.settings
+    auth = _auth(request)
     names = list_bundled()
-    data = [
-        {
-            "id": name,
-            "object": "model",
-            "created": 0,
-            "owned_by": "felix",
-        }
-        for name in names
-    ]
+    data: list[dict[str, Any]] = []
+    for name in names:
+        manifest = None
+        try:
+            resolved = await resolve_tenant_manifest(
+                settings, auth.tenant_id, name, thread_id=None
+            )
+            manifest = resolved.manifest
+        except Exception:
+            manifest = None
+        data.append(catalog_from_manifest(name, manifest))
     return {"object": "list", "data": data}
 
 
