@@ -73,6 +73,15 @@ async def flush_audit() -> None:
     logger.info("audit_flush count=%s", n)
 
 
+@broker.task(schedule=[{"cron": "*/1 * * * *"}])
+async def flush_usage() -> None:
+    """Drain buffered usage (token) events to Postgres."""
+    from felix.usage.store import flush_pending
+
+    n = await flush_pending(_settings)
+    logger.info("usage_flush count=%s", n)
+
+
 @broker.task(schedule=[{"cron": "* * * * *"}])
 async def run_scheduled_jobs() -> None:
     """Fire due cron jobs (enabled rows only)."""

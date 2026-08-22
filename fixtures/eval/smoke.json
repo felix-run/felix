@@ -1,0 +1,30 @@
+{
+  "name": "smoke",
+  "description": "CI smoke dataset — scored with --mock (no live model).",
+  "items": [
+    {
+      "item_id": "hello",
+      "user_input": "Say hello",
+      "rubric": {
+        "contains": "hello",
+        "mock_answer": "hello from felix"
+      }
+    },
+    {
+      "item_id": "exact",
+      "user_input": "Reply with exactly: ok",
+      "rubric": {
+        "expect": "ok",
+        "mock_answer": "ok"
+      }
+    },
+    {
+      "item_id": "minlen",
+      "user_input": "Write a short note",
+      "rubric": {
+        "min_chars": 8,
+        "mock_answer": "long enough"
+      }
+    }
+  ]
+}

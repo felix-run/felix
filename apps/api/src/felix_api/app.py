@@ -32,6 +32,7 @@ from felix_api.routes import (
     mcp,
     openai_compat,
     plans,
+    usage,
     well_known,
 )
 from felix_api.routes import (
@@ -181,6 +182,7 @@ def create_app(
     app.include_router(jobs.router, prefix="/jobs")
     app.include_router(manifests.router, prefix="/manifests")
     app.include_router(eval_routes.router, prefix="/eval")
+    app.include_router(usage.router, prefix="/usage")
     app.include_router(a2a.router, prefix="/a2a")
     app.include_router(mcp.router, prefix="/mcp")
     app.include_router(well_known.router)

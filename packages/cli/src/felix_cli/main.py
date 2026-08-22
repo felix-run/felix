@@ -46,24 +46,52 @@ def eval_cmd(
     dataset: str = typer.Option(..., "--dataset", "-d", help="Dataset name."),
     manifest: str = typer.Option(..., "--manifest", "-m", help="Candidate manifest."),
     tenant: str = typer.Option("default", "--tenant", "-t"),
+    fixture: Path | None = typer.Option(
+        None,
+        "--fixture",
+        "-f",
+        help="Load dataset JSON before running (upsert).",
+    ),
+    mock: bool = typer.Option(
+        False,
+        "--mock",
+        help="Score with rubric mock_answer/expect (no live model).",
+    ),
 ) -> None:
     """Run an offline eval against a dataset."""
     import asyncio
 
     from felix.config import get_settings
+    from felix.eval import store as eval_store
     from felix.eval.runner import start_run
 
     settings = get_settings()
 
     async def _run() -> None:
+        name = dataset
+        if fixture is not None:
+            payload = json.loads(fixture.read_text(encoding="utf-8"))
+            name = str(payload.get("name") or dataset)
+            await eval_store.put_dataset(
+                settings,
+                tenant,
+                name,
+                description=str(payload.get("description") or ""),
+                items=list(payload.get("items") or []),
+            )
+            rprint(f"[green]loaded fixture[/green] {fixture} → dataset={name}")
         result = await start_run(
             settings,
             tools=None,
             tenant_id=tenant,
-            dataset_name=dataset,
+            dataset_name=name,
             candidate_manifest=manifest,
+            mock=mock,
         )
         rprint(result)
+        fails = int(result.get("fail_count") or 0)
+        if fails:
+            raise SystemExit(1)
 
     asyncio.run(_run())
 

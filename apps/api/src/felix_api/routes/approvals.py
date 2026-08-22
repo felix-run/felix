@@ -14,9 +14,17 @@ router = APIRouter(tags=["Approvals"])
 class DecideRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
-    decision: Literal["approved", "denied"]
+    decision: Literal["approved", "denied"] | None = None
+    # chat-ui sends ``status``; accept either field.
+    status: Literal["approved", "denied"] | None = None
     note: str = ""
     edited_args: dict[str, Any] | None = None
+
+    def resolved(self) -> Literal["approved", "denied"]:
+        value = self.decision or self.status
+        if value is None:
+            raise ValueError("decision required")
+        return value
 
 
 def _tenant(request: Request) -> str:
@@ -50,7 +58,7 @@ async def list_approvals(
         status=status,
         limit=limit,
     )
-    return {"items": items}
+    return {"items": items, "requests": items}
 
 
 @router.get("/{approval_id}")
@@ -69,11 +77,16 @@ async def get_approval(approval_id: str, request: Request) -> Any:
 async def decide_approval(approval_id: str, body: DecideRequest, request: Request) -> Any:
     from felix.approvals import store as approvals_store
 
+    try:
+        decision = body.resolved()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="decision_required") from exc
+
     row = await approvals_store.decide(
         request.app.state.settings,
         _tenant(request),
         approval_id,
-        decision=body.decision,
+        decision=decision,
         decided_by=_subj(request),
         note=body.note,
         edited_args=body.edited_args,

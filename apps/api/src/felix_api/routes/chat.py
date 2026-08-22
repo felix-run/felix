@@ -280,3 +280,40 @@ async def chat_rewind(body: RewindRequest, request: Request) -> dict[str, Any]:
         leaf_event_id=result.get("leaf_id"),
     )
     return result
+
+
+@router.get("/history/{thread_id}")
+async def chat_history(thread_id: str, request: Request) -> dict[str, Any]:
+    """Server-side transcript for a thread suffix (tenant-prefixed)."""
+    auth = _auth_from_request(request)
+    settings = request.app.state.settings
+    thread = effective_thread_id(auth.tenant_id, thread_id)
+    if thread is None:
+        raise HTTPException(status_code=400, detail="invalid_thread_id")
+    store = get_session_store(settings, tenant_id=auth.tenant_id)
+    events = await store.open(thread).get_events()
+    messages: list[dict[str, Any]] = []
+    for ev in events:
+        role = ev.role or ("assistant" if ev.kind == "assistant" else "user")
+        if ev.kind in {"message", "user", "assistant", "system"} or ev.content:
+            messages.append(
+                {
+                    "role": role,
+                    "content": ev.content or "",
+                    "seq": ev.seq,
+                    "kind": ev.kind,
+                }
+            )
+    return {"thread_id": thread, "messages": messages, "events": messages}
+
+
+@router.delete("/history/{thread_id}")
+async def chat_history_delete(thread_id: str, request: Request) -> dict[str, str]:
+    auth = _auth_from_request(request)
+    settings = request.app.state.settings
+    thread = effective_thread_id(auth.tenant_id, thread_id)
+    if thread is None:
+        raise HTTPException(status_code=400, detail="invalid_thread_id")
+    store = get_session_store(settings, tenant_id=auth.tenant_id)
+    await store.open(thread).reset()
+    return {"status": "deleted", "thread_id": thread}

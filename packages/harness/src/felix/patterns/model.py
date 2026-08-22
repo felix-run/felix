@@ -160,12 +160,48 @@ def record_usage(result: ModelChatResult, *, manifest_id: str, model_id: str | N
         return
     labels = {"manifest_id": manifest_id, "model": model_id or "default"}
     ctx = try_get_context()
+    tenant_id = "default"
     if ctx is not None:
         u = result.usage
         ctx.limit_state.tokens_input += u.input + u.cache_creation + u.cache_read
         ctx.limit_state.tokens_output += u.output
+        tenant_id = getattr(ctx.auth, "tenant_id", None) or "default"
+        settings = ctx.settings
+    else:
+        settings = get_settings()
     record_counter("felix_tokens", {**labels, "kind": "input"}, result.usage.input)
     record_counter("felix_tokens", {**labels, "kind": "output"}, result.usage.output)
+    try:
+        from felix.usage.store import record_tokens
+
+        record_tokens(
+            settings,
+            tenant_id=tenant_id,
+            manifest_id=manifest_id,
+            model_id=model_id or "",
+            tokens_input=result.usage.input,
+            tokens_output=result.usage.output,
+            cache_creation=result.usage.cache_creation,
+            cache_read=result.usage.cache_read,
+        )
+    except Exception:
+        logger.debug("usage_record_failed", exc_info=True)
+    try:
+        from felix.plugins import get_registry
+
+        factory = get_registry()._usage_sink_factory
+        if factory is not None:
+            sink = factory(settings)
+            record = getattr(sink, "record", None)
+            if callable(record):
+                record(
+                    tenant_id=tenant_id,
+                    manifest_id=manifest_id,
+                    model_id=model_id or "",
+                    usage=result.usage,
+                )
+    except Exception:
+        logger.debug("usage_sink_failed", exc_info=True)
 
 
 def _messages_to_openai(messages: list[ChatMessage]) -> list[dict[str, Any]]:

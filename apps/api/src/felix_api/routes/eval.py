@@ -21,9 +21,11 @@ class DatasetUpsert(BaseModel):
 class EvalRunRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
-    dataset_name: str
+    dataset_name: str | None = None
     candidate_manifest: str
     manifest_version: int | None = None
+    # Accepted for chat-ui compatibility; Python eval uses heuristic rubrics.
+    deterministic_judge: bool = False
 
 
 def _tenant(request: Request) -> str:
@@ -39,7 +41,7 @@ async def list_datasets(request: Request) -> dict[str, Any]:
     from felix.eval import store as eval_store
 
     items = await eval_store.list_datasets(request.app.state.settings, _tenant(request))
-    return {"items": items}
+    return {"items": items, "datasets": items}
 
 
 @router.put("/datasets/{name}")
@@ -69,6 +71,8 @@ async def get_dataset(name: str, request: Request) -> Any:
 async def start_eval_run(body: EvalRunRequest, request: Request) -> Any:
     from felix.eval.runner import start_run
 
+    if not body.dataset_name:
+        raise HTTPException(status_code=400, detail="dataset_name_required")
     return await start_run(
         request.app.state.settings,
         tools=request.app.state.tools,
@@ -79,12 +83,29 @@ async def start_eval_run(body: EvalRunRequest, request: Request) -> Any:
     )
 
 
+@router.post("/datasets/{name}/run")
+async def run_dataset(name: str, body: EvalRunRequest, request: Request) -> Any:
+    """Alias for chat-ui: POST /eval/datasets/{name}/run."""
+    from felix.eval.runner import start_run
+
+    _ = body.deterministic_judge
+    return await start_run(
+        request.app.state.settings,
+        tools=request.app.state.tools,
+        tenant_id=_tenant(request),
+        dataset_name=name,
+        candidate_manifest=body.candidate_manifest,
+        manifest_version=body.manifest_version,
+        mock=False,
+    )
+
+
 @router.get("/runs")
 async def list_eval_runs(request: Request) -> dict[str, Any]:
     from felix.eval import store as eval_store
 
     items = await eval_store.list_runs(request.app.state.settings, _tenant(request))
-    return {"items": items}
+    return {"items": items, "runs": items}
 
 
 @router.get("/runs/{run_id}")

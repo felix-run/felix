@@ -56,7 +56,7 @@ async def list_manifests(request: Request) -> dict[str, Any]:
     from felix.manifests import store as manifest_store
 
     rows = await manifest_store.list_active(request.app.state.settings, _tenant(request))
-    return {"items": rows}
+    return {"items": rows, "manifests": rows}
 
 
 @router.get("/{name}")

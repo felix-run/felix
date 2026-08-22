@@ -36,7 +36,7 @@ async def list_plans(
     from felix.plans import store as plans_store
 
     items = await plans_store.list_plans(request.app.state.settings, _tenant(request), limit=limit)
-    return {"items": items}
+    return {"items": items, "plans": items}
 
 
 @router.get("/{plan_id}")

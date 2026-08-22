@@ -253,6 +253,26 @@ class Fiber(Base):
     updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
 
+class UsageEvent(Base):
+    __tablename__ = "usage_events"
+
+    tenant_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    ts: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    manifest_id: Mapped[str] = mapped_column(Text, server_default="", default="")
+    model_id: Mapped[str] = mapped_column(Text, server_default="", default="")
+    kind: Mapped[str] = mapped_column(Text, server_default="tokens", default="tokens")
+    tokens_input: Mapped[int] = mapped_column(Integer, server_default="0", default=0)
+    tokens_output: Mapped[int] = mapped_column(Integer, server_default="0", default=0)
+    cache_creation: Mapped[int] = mapped_column(Integer, server_default="0", default=0)
+    cache_read: Mapped[int] = mapped_column(Integer, server_default="0", default=0)
+    meta_json: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, server_default=text("'{}'::jsonb"), default=dict
+    )
+
+    __table_args__ = (Index("idx_usage_tenant_ts", "tenant_id", "ts"),)
+
+
 class A2ATask(Base):
     """Persisted A2A task (message/send → tasks/get across api/worker)."""
 
@@ -310,4 +330,5 @@ __all__ = [
     "SessionEventRow",
     "SkillActivation",
     "ThreadState",
+    "UsageEvent",
 ]
