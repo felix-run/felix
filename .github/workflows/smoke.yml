@@ -74,3 +74,55 @@ jobs:
           echo
           test "$code" = "202"
           python3 -c 'import json; b=json.load(open("/tmp/cowork.json")); assert b.get("resume_token")'
+
+      - name: Session surfaces (thinking, lease, search, abort)
+        run: |
+          set -euo pipefail
+          AUTH="Authorization: Bearer ${API_KEY}"
+          TID="smoke-ci-$(date +%s)"
+
+          code="$(curl -sS -o /tmp/think.json -w '%{http_code}' --max-time 20 \
+            -X POST "$BASE_URL/chat/thinking" \
+            -H "$AUTH" -H 'content-type: application/json' \
+            -d "{\"thread_id\":\"$TID\",\"thinking_level\":\"low\"}")"
+          echo "POST /chat/thinking → $code"
+          cat /tmp/think.json; echo
+          test "$code" = "200"
+          python3 -c 'import json; b=json.load(open("/tmp/think.json")); assert b.get("ok") and b.get("thinking_level")=="low"'
+
+          code="$(curl -sS -o /tmp/lease.json -w '%{http_code}' --max-time 20 \
+            -X POST "$BASE_URL/chat/sessions/lease" \
+            -H "$AUTH" -H 'content-type: application/json' \
+            -d "{\"thread_id\":\"$TID\",\"holder_id\":\"smoke-ci\",\"mode\":\"exclusive\"}")"
+          echo "POST /chat/sessions/lease → $code"
+          cat /tmp/lease.json; echo
+          test "$code" = "200"
+          python3 -c 'import json; b=json.load(open("/tmp/lease.json")); assert b.get("ok") and b.get("token")'
+
+          code="$(curl -sS -o /tmp/custom.json -w '%{http_code}' --max-time 20 \
+            -X POST "$BASE_URL/chat/sessions/custom" \
+            -H "$AUTH" -H 'content-type: application/json' \
+            -d "{\"thread_id\":\"$TID\",\"role\":\"user\",\"content\":\"smoke-ci zucchini marker\",\"in_context\":true}")"
+          echo "POST /chat/sessions/custom → $code"
+          test "$code" = "200"
+
+          code="$(curl -sS -o /tmp/search.json -w '%{http_code}' --max-time 20 \
+            -H "$AUTH" "$BASE_URL/chat/sessions/search?q=zucchini&limit=5")"
+          echo "GET /chat/sessions/search → $code"
+          cat /tmp/search.json; echo
+          test "$code" = "200"
+          python3 -c 'import json; b=json.load(open("/tmp/search.json")); assert any("zucchini" in (h.get("content") or "") for h in b.get("hits") or [])'
+
+          code="$(curl -sS -o /tmp/abort.json -w '%{http_code}' --max-time 20 \
+            -X POST "$BASE_URL/chat/abort" \
+            -H "$AUTH" -H 'content-type: application/json' \
+            -d "{\"thread_id\":\"$TID\"}")"
+          echo "POST /chat/abort → $code"
+          cat /tmp/abort.json; echo
+          test "$code" = "200"
+          python3 -c 'import json; b=json.load(open("/tmp/abort.json")); assert b.get("ok"); assert (b.get("snapshot") or {}).get("phase")=="aborted"'
+
+          curl -sS --max-time 20 -X POST "$BASE_URL/chat/sessions/lease/release" \
+            -H "$AUTH" -H 'content-type: application/json' \
+            -d "{\"thread_id\":\"$TID\",\"holder_id\":\"smoke-ci\"}" >/dev/null
+          echo "session surfaces ok"

@@ -598,7 +598,7 @@ async def _build_thread_snapshot(
         thread
     )
     steer_n = await peek_steer_count(tenant_id, thread)
-    lease = lease_status(thread)
+    lease = await lease_status(thread)
     return build_snapshot(
         thread_id=thread,
         events=events,
@@ -625,7 +625,7 @@ async def acquire_session_lease(body: LeaseRequest, request: Request) -> dict[st
     thread = effective_thread_id(auth.tenant_id, body.thread_id)
     if thread is None:
         raise HTTPException(status_code=400, detail="invalid_thread_id")
-    result = acquire_lease(
+    result = await acquire_lease(
         thread,
         holder_id=body.holder_id,
         mode=body.mode,
@@ -650,7 +650,7 @@ async def release_session_lease(body: LeaseReleaseRequest, request: Request) -> 
     thread = effective_thread_id(auth.tenant_id, body.thread_id)
     if thread is None:
         raise HTTPException(status_code=400, detail="invalid_thread_id")
-    result = release_lease(thread, holder_id=body.holder_id, token=body.token)
+    result = await release_lease(thread, holder_id=body.holder_id, token=body.token)
     if not result.get("ok"):
         raise HTTPException(status_code=403, detail=result.get("error") or "release_failed")
     snapshot = await _build_thread_snapshot(

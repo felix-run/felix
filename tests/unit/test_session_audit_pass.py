@@ -359,17 +359,18 @@ def test_model_catalog_entry_shape() -> None:
     assert listed["id"] == "quick"
 
 
-def test_session_lease_exclusive() -> None:
+@pytest.mark.asyncio
+async def test_session_lease_exclusive() -> None:
     from felix.session.lease import acquire_lease, release_lease, reset_leases_for_tests
 
     reset_leases_for_tests()
-    a = acquire_lease("t:1", holder_id="tab-a", mode="exclusive")
+    a = await acquire_lease("t:1", holder_id="tab-a", mode="exclusive")
     assert a["ok"] is True
     assert a["status"]["locked"] is True
-    b = acquire_lease("t:1", holder_id="tab-b", mode="exclusive")
+    b = await acquire_lease("t:1", holder_id="tab-b", mode="exclusive")
     assert b["ok"] is False
-    release_lease("t:1", holder_id="tab-a", token=a["token"])
-    c = acquire_lease("t:1", holder_id="tab-b", mode="exclusive")
+    await release_lease("t:1", holder_id="tab-a", token=a["token"])
+    c = await acquire_lease("t:1", holder_id="tab-b", mode="exclusive")
     assert c["ok"] is True
 
 

@@ -5,6 +5,25 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Taskiq worker no longer dies on idle BRPOP (`redis-py` 8 default
+  `socket_timeout=5`); broker/result backend use `socket_timeout=None`.
+- Scheduler entrypoint awaits `run_scheduler` via `asyncio.run` (taskiq 0.12+).
+- Worker/scheduler Compose healthchecks disabled (image probe targets API `/health`).
+
+### Changed
+
+- Session leases prefer Redis (with in-process fallback) so exclusive/shared
+  attach works across API replicas.
+
+### Added
+
+- Session control routes: snapshots, FTS search, abort/continue, thinking
+  levels, leases, compact, UI prompts, JSONL export (see README Protocols).
+
 ## [0.1.0] — 2026-08-22
 
 ### Added

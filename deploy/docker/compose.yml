@@ -87,6 +87,9 @@ services:
         condition: service_started
     mem_limit: ${FELIX_WORKER_MEM_LIMIT:-512m}
     cpus: ${FELIX_WORKER_CPUS:-0.5}
+    # Image HEALTHCHECK probes API /health; disable so the worker isn't marked unhealthy.
+    healthcheck:
+      disable: true
     restart: unless-stopped
 
   # Enqueues labeled Taskiq cron tasks (audit flush, jobs, fibers, …).
@@ -116,6 +119,8 @@ services:
         condition: service_started
     mem_limit: ${FELIX_SCHEDULER_MEM_LIMIT:-256m}
     cpus: ${FELIX_SCHEDULER_CPUS:-0.25}
+    healthcheck:
+      disable: true
     restart: unless-stopped
 
   postgres:

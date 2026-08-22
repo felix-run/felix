@@ -22,6 +22,8 @@ def main() -> None:
 
 def scheduler_main() -> None:
     """Start the Taskiq scheduler (enqueues labeled cron tasks)."""
+    import asyncio
+
     from taskiq.cli.common_args import LogLevel
     from taskiq.cli.scheduler.args import SchedulerArgs
     from taskiq.cli.scheduler.run import run_scheduler
@@ -32,7 +34,8 @@ def scheduler_main() -> None:
         log_level=LogLevel.INFO,
         skip_first_run=False,
     )
-    sys.exit(run_scheduler(args) or 0)
+    # taskiq 0.12+ exposes async run_scheduler (CLI uses asyncio.run).
+    asyncio.run(run_scheduler(args))
 
 
 def temporal_main() -> None:

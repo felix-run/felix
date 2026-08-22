@@ -12,8 +12,11 @@ from taskiq_redis import ListQueueBroker, RedisAsyncResultBackend
 logger = logging.getLogger("felix.worker")
 
 _settings = get_settings()
-broker = ListQueueBroker(url=_settings.redis_url).with_result_backend(
-    RedisAsyncResultBackend(redis_url=_settings.redis_url)
+# redis-py 8 defaults socket_timeout=5s; ListQueueBroker BRPOP blocks forever
+# (taskiq-redis#127). Disable read timeout so idle workers stay alive.
+_redis_kwargs = {"socket_timeout": None, "socket_connect_timeout": 5.0}
+broker = ListQueueBroker(url=_settings.redis_url, **_redis_kwargs).with_result_backend(
+    RedisAsyncResultBackend(redis_url=_settings.redis_url, **_redis_kwargs)
 )
 scheduler = TaskiqScheduler(broker=broker, sources=[LabelScheduleSource(broker)])
 

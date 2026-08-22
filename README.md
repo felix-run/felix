@@ -146,6 +146,13 @@ Objects / Hyperdrive / R2-as-binding / Queues / Workflows compute in this stack.
 | Direct REST / SSE | `POST /chat`, `POST /chat/stream` |
 | Durable run poll | `GET /chat/runs/{resume_token}` |
 | Steer / follow-up | `POST /chat/steer` |
+| Abort / continue | `POST /chat/abort`, `POST /chat/continue` |
+| Thinking level | `POST /chat/thinking` |
+| Session snapshot | `GET /chat/sessions`, `GET /chat/sessions/{id}` |
+| Session search (FTS) | `GET /chat/sessions/search?q=` |
+| Session lease | `POST /chat/sessions/lease`, `…/lease/release` |
+| Session name / label / export | `POST /chat/sessions/name`, `…/label`, `GET …/export` |
+| Compact / UI prompt | `POST /chat/compact`, `POST /chat/ui` |
 | Session fork / rewind | `POST /chat/fork`, `POST /chat/rewind` |
 | OpenAI-compatible | `POST /v1/chat/completions`, `GET /v1/models` |
 | A2A JSON-RPC | `POST /a2a` |
