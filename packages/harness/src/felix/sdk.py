@@ -1,4 +1,4 @@
-"""Thin Python client for Felix HTTP surfaces (Pi SDK-shaped)."""
+"""Thin Python client for Felix HTTP surfaces."""
 
 from __future__ import annotations
 

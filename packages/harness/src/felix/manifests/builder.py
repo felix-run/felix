@@ -588,7 +588,7 @@ async def _resolve_system_prompt(manifest: Manifest, deps: BuildDeps) -> str:
         deps.auth.principal.tenant_id if deps.auth else "default"
     )
 
-    # Pi SYSTEM.md: replace default prompt entirely when present.
+    # SYSTEM.md: replace default prompt entirely when present.
     system_md = await load_system_md(
         sp.system_md,
         object_store=deps.object_store,

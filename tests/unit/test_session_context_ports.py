@@ -1,4 +1,4 @@
-"""Unit tests for Pi-inspired ports: skills, compaction, tree, steer, hooks, SDK shapes."""
+"""Unit tests for skills, compaction, session trees, steer, hooks, and SDK shapes."""
 
 from __future__ import annotations
 

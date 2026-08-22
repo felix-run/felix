@@ -1,4 +1,4 @@
-"""Token-threshold session compaction (Pi-style)."""
+"""Token-threshold session compaction."""
 
 from __future__ import annotations
 
