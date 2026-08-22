@@ -3,8 +3,8 @@
 Living tracker for what to build next. Update status in place; keep items
 concrete enough to pick up in a single session.
 
-**Repos:** `felix-run/felix` (harness) · `felix-run/web` (chat-ui + float + docs)  
-**Live:** [api.felix.run](https://api.felix.run) · [chat.felix.run](https://chat.felix.run) · [float.felix.run](https://float.felix.run) · [docs.felix.run](https://docs.felix.run)  
+**Repos:** `felix-run/felix` (harness) · `felix-run/web` (chat-ui + float + docs)
+**Live:** [api.felix.run](https://api.felix.run) · [chat.felix.run](https://chat.felix.run) · [float.felix.run](https://float.felix.run) · [docs.felix.run](https://docs.felix.run)
 **Last reviewed:** 2026-08-22 (post governance + inbound screening)
 
 ---

@@ -14,9 +14,9 @@ You own the **Felix test suite**: `tests/unit/`, `tests/integration/`, `tests/ev
 CI has no Postgres, no Valkey, no MinIO. The suite runs entirely on in-memory stores:
 
 ```bash
-.claude/scripts/felix-test.sh                                  # whole suite (~12s, 195 tests)
-.claude/scripts/felix-test.sh tests/unit/test_react_loop.py -q
-.claude/scripts/felix-test.sh -k "compact or rewind" -x
+./scripts/test.sh                                  # whole suite (~12s, 195 tests)
+./scripts/test.sh tests/unit/test_react_loop.py -q
+./scripts/test.sh -k "compact or rewind" -x
 ```
 
 A bare `uv run pytest` inherits `FELIX_DATABASE_URL` from `.env` and dies with a psycopg

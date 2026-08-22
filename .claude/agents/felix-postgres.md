@@ -38,7 +38,7 @@ You own the **Felix persistence layer**. Postgres is the system of record; the w
 
 ## Verify
 
-- `.claude/scripts/felix-test.sh tests/unit/test_stores_memory.py tests/unit/test_protocols_memory.py`
+- `./scripts/test.sh tests/unit/test_stores_memory.py tests/unit/test_protocols_memory.py`
 - Real-DB check when the user has Compose up: `make up` (ask first) → `uv run felix migrate head`,
   then `uv run felix migrate <previous>` to prove the downgrade, then back to `head`.
 - `uv run felix doctor` for connectivity.

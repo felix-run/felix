@@ -1,7 +1,7 @@
 ---
 name: api-surface
 description: Add or change a Felix HTTP surface — REST/SSE chat routes, the OpenAI-compatible /v1 endpoints, A2A JSON-RPC, MCP, the agent card, and the scoped management APIs — including middleware order, auth scopes, streaming events, and the client contract. Use when editing anything under apps/api/src/felix_api/routes/, adding an endpoint, or changing an SSE event or response shape.
-allowed-tools: Read Grep Glob Bash(.claude/scripts/felix-test.sh:*) Bash(curl:*)
+allowed-tools: Read Grep Glob Bash(./scripts/test.sh:*) Bash(curl:*)
 ---
 
 # Adding an API surface
@@ -53,8 +53,8 @@ pinning — that is a security bug, not a shortcut.
 ## Verify
 
 ```bash
-.claude/scripts/felix-test.sh tests/integration/test_http_surfaces.py tests/integration/test_health.py
-.claude/scripts/felix-test.sh tests/unit/test_mgmt_rbac.py        # when scopes changed
+./scripts/test.sh tests/integration/test_http_surfaces.py tests/integration/test_health.py
+./scripts/test.sh tests/unit/test_mgmt_rbac.py        # when scopes changed
 make dev   # then curl the surface
 curl -s localhost:8080/openapi.json | jq '.paths | keys'
 ```

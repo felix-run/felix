@@ -64,7 +64,8 @@ make install
 make migrate
 make dev         # Granian on :8080 with FELIX_AUTH_MODE=none, FELIX_OBJECT_STORE=fs
 make cli         # httpx REPL client
-make check       # ruff + ty + pytest
+make check       # ruff + ty + pytest + format check (matches CI)
+./scripts/test.sh -k <expr>   # one test; sets the in-memory stores the suite needs
 ```
 
 ### Small VMs / lean Docker

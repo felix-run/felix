@@ -1,18 +1,22 @@
 repos:
-  - repo: astral-sh/ruff-pre-commit
+  - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.16.4
     hooks:
-      - id: ruff
+      - id: ruff-check
         args: [--fix]
       - id: ruff-format
 
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v5.0.0
+    rev: v6.0.0
     hooks:
       - id: trailing-whitespace
       - id: end-of-file-fixer
       - id: check-yaml
-        exclude: ^deploy/helm/
+        # Helm templates are Go templates, and the Compose overlays use the
+        # `!override` / `!reset` tags, which a plain YAML parser cannot
+        # construct. Both are validated properly in CI instead:
+        # `helm lint` and `docker compose config -q`.
+        exclude: ^(deploy/helm/|deploy/docker/compose\.(lite|gcp)\.yml$)
       - id: check-added-large-files
         args: [--maxkb=1000]
       - id: check-merge-conflict

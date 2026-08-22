@@ -5,7 +5,7 @@ root="${CLAUDE_PROJECT_DIR:-.}"
 cd "$root" 2>/dev/null || exit 0
 
 echo "Felix harness (Python 3.14, uv workspace). Tests need the in-memory env:"
-echo "  .claude/scripts/felix-test.sh [pytest args]   # sets FELIX_DATABASE_URL=memory://ci etc."
+echo "  ./scripts/test.sh [pytest args]   # sets FELIX_DATABASE_URL=memory://ci etc."
 echo "A bare 'uv run pytest' picks up .env and fails against a real Postgres (pytest-env-guard hook blocks it)."
 
 [ -d .venv ] || echo "WARNING: .venv missing — run 'make install' (uv sync --dev) before lint/type/test."

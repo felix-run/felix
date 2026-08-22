@@ -11,7 +11,6 @@ separate **felix-web** repo.
 ├── skills/           11 Agent Skills (agentskills.io format, loaded on demand)
 ├── hooks/            13 lifecycle hooks (deterministic enforcement)
 ├── rules/            always-loaded invariants
-├── scripts/          felix-test.sh — the CI-equivalent test wrapper
 └── logs/             subagent audit trail (gitignored)
 ```
 
@@ -62,7 +61,7 @@ skill or subagent.
 | `SessionStart` | `session-start.sh` | Injects the test-env fact, warns on missing `.venv`/`.env`, reports Compose and docs-checkout state |
 | `SessionStart(compact)` | `compact-reminder.sh` | Re-injects the invariants most likely lost in a summary |
 | `PreToolUse(Edit\|Write)` | `protect-files.sh` | **Blocks** edits to `.env`, `secrets/`, `uv.lock`, generated dirs, and published migrations |
-| `PreToolUse(Bash)` | `pytest-env-guard.sh` | **Blocks** a bare `pytest`/`make test` that would hit the `.env` Postgres, and prints the wrapper to use |
+| `PreToolUse(Bash)` | `pytest-env-guard.sh` | **Blocks** a bare `pytest` that would hit the `.env` Postgres, and points at `./scripts/test.sh` |
 | `PreToolUse(Bash)` | `git-guard.sh` | **Blocks** force-push, `--no-verify`, `reset --hard`; warns when committing on `main` |
 | `PostToolUse(Edit\|Write)` | `ruff-format.sh` | Formats + autofixes the edited `.py`, reports what ruff could not fix |
 | `PostToolUse(Edit\|Write)` | `manifest-validate.sh` | Runs `felix validate-manifest` on a changed manifest |

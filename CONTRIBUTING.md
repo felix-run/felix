@@ -12,7 +12,8 @@ cp .env.example .env
 # openssl rand -hex 32  → set POSTGRES_PASSWORD
 
 make install      # lean core + dev
-make check        # ruff + ty + pytest
+pre-commit install # ruff lint/format on commit
+make check        # ruff + ty + pytest + format check (matches CI)
 make up           # Compose: api, worker, Postgres+pgvector, Valkey
 make migrate
 ```
@@ -22,7 +23,7 @@ Optional:
 ```bash
 make install-warehouse   # DuckDB analytics spill
 make install-full        # all extras
-pre-commit install       # after make install
+./scripts/test.sh -k <expr>   # one test / one theme
 ```
 
 ## Guidelines
@@ -33,7 +34,9 @@ pre-commit install       # after make install
 - Do not add Cloudflare Workers / Durable Objects / Hyperdrive compute.
 - Optional features stay out of core — register via the plugin registry /
   `felix.plugins` entry points (see `felix.plugins`).
-- Tests: `uv run pytest -q` (CI uses lean `uv sync --dev`).
+- Tests: `./scripts/test.sh` — it sets the in-memory stores the suite needs. A bare
+  `uv run pytest` picks up `.env` and fails against a real Postgres. CI runs the same script
+  after a lean, frozen `uv sync --frozen --dev`.
 
 ## Pull requests
 

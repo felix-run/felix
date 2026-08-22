@@ -7,26 +7,26 @@ CMD=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty')
 [ -z "$CMD" ] && exit 0
 
 case "$CMD" in
-  *pytest*|*"make test"*|*"make check"*) ;;
+  *pytest*) ;;
   *) exit 0 ;;
 esac
 
-# Already configured (inline or exported) — let it run.
-case "$CMD" in *FELIX_DATABASE_URL=*|*felix-test.sh*) exit 0 ;; esac
+# Entry points that set the in-memory env themselves — let them run.
+# scripts/test.sh is canonical; make test and make check delegate to it.
+case "$CMD" in
+  *FELIX_DATABASE_URL=*|*scripts/test.sh*|*"make test"*|*"make check"*) exit 0 ;;
+esac
 [ -n "$FELIX_DATABASE_URL" ] && exit 0
 
 cat >&2 <<'TXT'
 Blocked: this pytest run would inherit FELIX_DATABASE_URL from .env and fail against a real Postgres
 (sqlalchemy OperationalError: connection refused) — that is an environment failure, not a test failure.
 
-Use the wrapper, which sets the in-memory stores the suite is designed for:
-  .claude/scripts/felix-test.sh                       # whole suite
-  .claude/scripts/felix-test.sh tests/unit/test_react_loop.py -q
-  .claude/scripts/felix-test.sh -k compact
+Use the repo's test entry point, which sets the in-memory stores the suite is designed for:
+  ./scripts/test.sh                                   # whole suite
+  ./scripts/test.sh tests/unit/test_react_loop.py -q
+  ./scripts/test.sh -k compact
 
-Or prefix explicitly:
-  FELIX_ALLOW_INSECURE=true FELIX_AUTH_MODE=none FELIX_DATABASE_URL=memory://ci FELIX_OBJECT_STORE=memory uv run pytest -q
-
-For 'make check', run the three gates separately: 'make lint', 'make type', then the wrapper above.
+`make test` and `make check` go through the same script, so both are fine as-is.
 TXT
 exit 2

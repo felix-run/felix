@@ -50,6 +50,22 @@ jobs:
               - 'deploy/helm/**'
               - '.github/workflows/**'
 
+  pre-commit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Set up Python
+        run: uv python install 3.14
+      - name: Install dependencies
+        run: uv sync --locked --dev
+      - name: pre-commit
+        run: uv run pre-commit run --all-files --show-diff-on-failure
+
   lint:
     needs: changes
     if: needs.changes.outputs.python == 'true'
@@ -63,8 +79,10 @@ jobs:
           enable-cache: true
       - name: Set up Python
         run: uv python install 3.14
+      - name: Verify uv.lock is current
+        run: uv lock --check
       - name: Install dependencies
-        run: uv sync --all-extras --dev
+        run: uv sync --locked --all-extras --dev
       - name: Ruff lint
         run: uv run ruff check .
       - name: Ruff format check
@@ -84,7 +102,7 @@ jobs:
       - name: Set up Python
         run: uv python install 3.14
       - name: Install dependencies
-        run: uv sync --all-extras --dev
+        run: uv sync --locked --all-extras --dev
       - name: ty
         # Exclude tests — fakes and fixtures trip ty without adding prod signal.
         run: uv run ty check packages apps
@@ -104,16 +122,13 @@ jobs:
         run: uv python install 3.14
       # Use lean install in CI for speed; full extras remain available locally.
       - name: Install dependencies
-        run: uv sync --dev
+        run: uv sync --locked --dev
       - name: Bundle manifests
         run: uv run felix bundle-manifests
+      # ./scripts/test.sh owns the in-memory test environment — the same
+      # entry point `make test` uses, so CI and local runs cannot drift.
       - name: Pytest
-        run: uv run pytest -q
-        env:
-          FELIX_ALLOW_INSECURE: "true"
-          FELIX_AUTH_MODE: none
-          FELIX_DATABASE_URL: memory://ci
-          FELIX_OBJECT_STORE: memory
+        run: ./scripts/test.sh -q
 
   eval:
     needs: changes
@@ -129,7 +144,7 @@ jobs:
       - name: Set up Python
         run: uv python install 3.14
       - name: Install dependencies
-        run: uv sync --dev
+        run: uv sync --locked --dev
       - name: Mock eval fixture
         run: >
           uv run felix eval

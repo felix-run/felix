@@ -1,0 +1,26 @@
+# Matches the ruff configuration in pyproject.toml and the pre-commit hooks
+# (trailing-whitespace, end-of-file-fixer).
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+[*.py]
+max_line_length = 110
+
+[*.{yml,yaml,json,jsonc,toml,md}]
+indent_size = 2
+
+[*.md]
+trim_trailing_whitespace = false
+
+[Makefile]
+indent_style = tab
+
+[*.sh]
+indent_size = 2
