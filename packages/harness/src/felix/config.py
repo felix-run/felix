@@ -93,6 +93,10 @@ class Settings(BaseSettings):
     policy_bundle_pubkey: str = ""
 
     data_dir: str = Field(default="./data")
+    # Optional workspace root for AGENTS.md / SYSTEM.md / instruction file loading.
+    workspace_root: str = ""
+    # When true, auto-discover AGENTS.md from workspace_root / object store.
+    load_agents_md: bool = False
 
     @field_validator("auth_api_keys", mode="before")
     @classmethod

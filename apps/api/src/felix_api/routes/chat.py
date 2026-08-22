@@ -1,8 +1,8 @@
-"""POST /chat and /chat/stream — direct REST + SSE agent invocation."""
+"""POST /chat, /chat/stream, steer/follow-up, fork/rewind — REST + SSE agent surface."""
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -10,6 +10,9 @@ from felix.context import AuthContext, RequestContext, async_run_with_context, t
 from felix.patterns.model import ModelGatewayError
 from felix.patterns.types import ChatMessage, InvokeInput
 from felix.runtime import build_tenant_agent, resolve_tenant_manifest
+from felix.session.store import get_session_store
+from felix.session.tree import fork_thread, get_leaf, rewind_to
+from felix.steer import enqueue
 from pydantic import BaseModel, Field
 
 router = APIRouter(tags=["Threads"])
@@ -26,6 +29,33 @@ class ChatRequest(BaseModel):
         default=None,
         description="Optional thread-id suffix; server prefixes the tenant id.",
     )
+    model: str | None = Field(
+        default=None,
+        description="Optional mid-session model override (allowlisted against manifest fallbacks).",
+    )
+
+
+class SteerRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    thread_id: str = Field(min_length=1)
+    text: str = Field(min_length=1)
+    kind: Literal["steer", "follow_up"] = "steer"
+
+
+class ForkRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    thread_id: str = Field(min_length=1, description="Source thread suffix.")
+    new_thread_id: str = Field(min_length=1, description="Destination thread suffix.")
+    from_event_id: str | None = None
+
+
+class RewindRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    thread_id: str = Field(min_length=1)
+    event_id: str = Field(min_length=1)
 
 
 def effective_thread_id(tenant_id: str, suffix: str | None) -> str | None:
@@ -43,6 +73,35 @@ def _auth_from_request(request: Request) -> AuthContext:
     return AuthContext()
 
 
+def _allowlisted_model(manifest: Any, model_id: str | None, settings: Any = None) -> str | None:
+    if not model_id:
+        return None
+    from felix.config import DEFAULT_MODEL_ROUTES, get_settings
+
+    spec = getattr(getattr(manifest, "spec", None), "model", None)
+    primary = getattr(spec, "id", None)
+    fallbacks = list(getattr(spec, "fallbacks", None) or [])
+    allowed: set[str] = set(fallbacks)
+    if primary:
+        allowed.add(primary)
+    cfg = settings or get_settings()
+    allowed.add(cfg.default_model_id)
+    allowed.update(DEFAULT_MODEL_ROUTES.keys())
+    # Also accept provider/model keys present in FELIX_MODEL_ROUTES overrides via parse.
+    try:
+        from felix.patterns.model import parse_model_routes
+
+        allowed.update(parse_model_routes(cfg).keys())
+    except Exception:
+        pass
+    if model_id not in allowed:
+        raise HTTPException(
+            status_code=400,
+            detail=f"model_not_allowlisted:{model_id}",
+        )
+    return model_id
+
+
 @router.post("")
 @router.post("/")
 async def chat(body: ChatRequest, request: Request) -> dict[str, Any]:
@@ -56,6 +115,7 @@ async def chat(body: ChatRequest, request: Request) -> dict[str, Any]:
     resolved = await resolve_tenant_manifest(
         settings, auth.tenant_id, body.manifest, thread_id=thread
     )
+    model_id = _allowlisted_model(resolved.manifest, body.model, settings)
     messages = [ChatMessage.model_validate(m) for m in body.messages]
     req_ctx = RequestContext(
         settings=settings,
@@ -71,7 +131,14 @@ async def chat(body: ChatRequest, request: Request) -> dict[str, Any]:
                 tools=tools,
                 tenant_id=auth.tenant_id,
             )
-            result = await agent.invoke(InvokeInput(messages=messages, thread_id=thread))
+            result = await agent.invoke(
+                InvokeInput(
+                    messages=messages,
+                    thread_id=thread,
+                    model_id=model_id,
+                    tenant_id=auth.tenant_id,
+                )
+            )
         except ModelGatewayError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -80,6 +147,8 @@ async def chat(body: ChatRequest, request: Request) -> dict[str, Any]:
         "messages": [m.model_dump() for m in result.messages],
         "final": final.model_dump() if hasattr(final, "model_dump") else final,
         "thread_id": thread,
+        "model": model_id,
+        "leaf_id": get_leaf(thread) if thread else None,
     }
 
 
@@ -95,6 +164,7 @@ async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
     resolved = await resolve_tenant_manifest(
         settings, auth.tenant_id, body.manifest, thread_id=thread
     )
+    model_id = _allowlisted_model(resolved.manifest, body.model, settings)
     messages = [ChatMessage.model_validate(m) for m in body.messages]
     req_ctx = RequestContext(
         settings=settings,
@@ -114,10 +184,74 @@ async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
                 tenant_id=auth.tenant_id,
             )
             async for event in agent.stream_events(
-                InvokeInput(messages=messages, thread_id=thread)
+                InvokeInput(
+                    messages=messages,
+                    thread_id=thread,
+                    model_id=model_id,
+                    tenant_id=auth.tenant_id,
+                )
             ):
                 payload = event.model_dump() if hasattr(event, "model_dump") else event
                 yield f"data: {json.dumps(payload, default=str)}\n\n"
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(event_gen(), media_type="text/event-stream")
+
+
+@router.post("/steer")
+async def chat_steer(body: SteerRequest, request: Request) -> dict[str, Any]:
+    """Queue a steer (interrupt remaining tools) or follow-up (after idle) message."""
+    auth = _auth_from_request(request)
+    thread = effective_thread_id(auth.tenant_id, body.thread_id)
+    if thread is None:
+        raise HTTPException(status_code=400, detail="invalid_thread_id")
+    return await enqueue(
+        auth.tenant_id, thread, kind=body.kind, text=body.text
+    )
+
+
+@router.post("/fork")
+async def chat_fork(body: ForkRequest, request: Request) -> dict[str, Any]:
+    auth = _auth_from_request(request)
+    settings = request.app.state.settings
+    source_id = effective_thread_id(auth.tenant_id, body.thread_id)
+    dest_id = effective_thread_id(auth.tenant_id, body.new_thread_id)
+    if source_id is None or dest_id is None:
+        raise HTTPException(status_code=400, detail="invalid_thread_id")
+    store = get_session_store(settings, tenant_id=auth.tenant_id)
+    result = await fork_thread(
+        store.open(source_id),
+        store.open(dest_id),
+        from_event_id=body.from_event_id,
+    )
+    from felix.session.thread_state import persist_leaf
+
+    await persist_leaf(
+        settings=settings,
+        tenant_id=auth.tenant_id,
+        thread_id=dest_id,
+        leaf_event_id=result.get("leaf_id"),
+    )
+    return result
+
+
+@router.post("/rewind")
+async def chat_rewind(body: RewindRequest, request: Request) -> dict[str, Any]:
+    auth = _auth_from_request(request)
+    settings = request.app.state.settings
+    thread = effective_thread_id(auth.tenant_id, body.thread_id)
+    if thread is None:
+        raise HTTPException(status_code=400, detail="invalid_thread_id")
+    store = get_session_store(settings, tenant_id=auth.tenant_id)
+    result = await rewind_to(store.open(thread), body.event_id)
+    if not result.get("ok"):
+        raise HTTPException(status_code=404, detail=result.get("error", "rewind_failed"))
+    from felix.session.thread_state import persist_leaf
+
+    await persist_leaf(
+        settings=settings,
+        tenant_id=auth.tenant_id,
+        thread_id=thread,
+        leaf_event_id=result.get("leaf_id"),
+    )
+    return result

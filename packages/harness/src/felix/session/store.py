@@ -231,6 +231,8 @@ def _payload_to_appendable(event_type: str, payload: dict[str, Any]) -> Appendab
         "tool_result",
         "thinking",
         "audit",
+        "compaction",
+        "model_change",
         "user",
         "assistant",
         "tool",

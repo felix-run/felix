@@ -90,6 +90,21 @@ class PluginRegistry:
     def register_startup_hook(self, hook: Callable[..., Awaitable[Any]]) -> None:
         self._startup_hooks.append(hook)
 
+    def register_before_turn(self, hook: Callable[..., Any]) -> None:
+        from felix.hooks import get_agent_hooks
+
+        get_agent_hooks().register_before_turn(hook)
+
+    def register_filter_history(self, hook: Callable[..., Any]) -> None:
+        from felix.hooks import get_agent_hooks
+
+        get_agent_hooks().register_filter_history(hook)
+
+    def register_before_compact(self, hook: Callable[..., Any]) -> None:
+        from felix.hooks import get_agent_hooks
+
+        get_agent_hooks().register_before_compact(hook)
+
 
 _registry = PluginRegistry()
 

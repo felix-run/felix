@@ -27,7 +27,30 @@ from felix.tools.types import Tool, define_tool
 
 logger = logging.getLogger("felix.patterns")
 
-# Ensure react is registered.
+# Ensure react is registered — providers registered below after _model_for.
+
+
+def _model_for(input: InvokeInput, settings: Any, model_spec: Any) -> Any:
+    """Build a model client, applying request-level model_id override when present."""
+    spec = model_spec
+    if input.model_id:
+        from copy import deepcopy
+
+        from felix.manifests.schema import ModelSpec
+
+        if isinstance(model_spec, ModelSpec):
+            data = model_spec.model_dump()
+            data["id"] = input.model_id
+            spec = ModelSpec.model_validate(data)
+        else:
+            try:
+                spec = deepcopy(model_spec)
+                spec.id = input.model_id
+            except Exception:
+                spec = model_spec
+    return build_model(settings, spec)
+
+
 import felix.patterns.react  # noqa: E402, F401
 from felix.patterns.model import register_builtin_providers  # noqa: E402
 
@@ -221,10 +244,21 @@ class _DelegatingAgent:
         result = await self.invoke(input)
         if result.final.content:
             yield Event(
+                event="text_delta",
+                data={"chunk": {"content": result.final.content}, "delta": result.final.content},
+            )
+            yield Event(
                 event="on_chat_model_stream",
                 data={"chunk": {"content": result.final.content}},
             )
         yield Event(event="on_chain_end", data={"output": result})
+        yield Event(
+            event="done",
+            data={
+                "final": result.final.model_dump(),
+                "messages": [m.model_dump() for m in result.messages],
+            },
+        )
 
     async def _router(self, input: InvokeInput) -> InvokeOutput:
         if not self.sub_agents:
@@ -233,7 +267,7 @@ class _DelegatingAgent:
                 final=ChatMessage(role="assistant", content="[router] no sub_agents"),
             )
         names = list(self.sub_agents.keys())
-        model = build_model(self.settings, self.model_spec)
+        model = _model_for(input, self.settings, self.model_spec)
         classify = [
             ChatMessage(role="system", content=self.system_prompt or "Route to the best agent."),
             ChatMessage(
@@ -259,8 +293,13 @@ class _DelegatingAgent:
                 messages=list(input.messages),
                 final=ChatMessage(role="assistant", content="[parallel] no sub_agents"),
             )
-        # Children run without thread_id to avoid session races.
-        child_input = InvokeInput(messages=list(input.messages), thread_id=None)
+        # Children run without thread_id to avoid session races; keep model/tenant.
+        child_input = InvokeInput(
+            messages=list(input.messages),
+            thread_id=None,
+            model_id=input.model_id,
+            tenant_id=input.tenant_id,
+        )
         results = await asyncio.gather(
             *[a.invoke(child_input) for a in self.sub_agents.values()]
         )
@@ -268,7 +307,7 @@ class _DelegatingAgent:
             f"### {name}\n{r.final.content}"
             for name, r in zip(self.sub_agents.keys(), results, strict=True)
         ]
-        model = build_model(self.settings, self.model_spec)
+        model = _model_for(input, self.settings, self.model_spec)
         prompt = self.aggregator_prompt or self.system_prompt or "Synthesize the answers."
         synth = await model.chat(
             [
@@ -295,7 +334,12 @@ class _DelegatingAgent:
         final = ChatMessage(role="assistant", content="")
         for turn in range(self.max_turns):
             agent = agents[turn % len(agents)]
-            child_input = InvokeInput(messages=list(transcript), thread_id=None)
+            child_input = InvokeInput(
+                messages=list(transcript),
+                thread_id=None,
+                model_id=input.model_id,
+                tenant_id=input.tenant_id,
+            )
             result = await agent.invoke(child_input)
             stamped = ChatMessage(
                 role="assistant",
@@ -335,6 +379,8 @@ class _DelegatingAgent:
                 InvokeInput(
                     messages=[*messages, ChatMessage(role="user", content=critique)],
                     thread_id=input.thread_id,
+                    model_id=input.model_id,
+                    tenant_id=input.tenant_id,
                 )
             )
         return draft
@@ -371,7 +417,7 @@ class _DelegatingAgent:
     async def _plan_execute(self, input: InvokeInput) -> InvokeOutput:
         cfg = self.plan_cfg
         max_subtasks = int(getattr(cfg, "max_subtasks", 8) or 8)
-        model = build_model(self.settings, self.model_spec)
+        model = _model_for(input, self.settings, self.model_spec)
         plan_prompt = [
             ChatMessage(
                 role="system",
@@ -417,6 +463,8 @@ class _DelegatingAgent:
                         )
                     ],
                     thread_id=None,
+                    model_id=input.model_id,
+                    tenant_id=input.tenant_id,
                 )
             )
             notes.append(f"{i}. {step} → {step_result.final.content}")

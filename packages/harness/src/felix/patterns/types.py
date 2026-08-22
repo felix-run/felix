@@ -87,6 +87,8 @@ class ChatMessage:
 class InvokeInput:
     messages: list[ChatMessage]
     thread_id: str | None = None
+    model_id: str | None = None
+    tenant_id: str | None = None
 
 
 @dataclass(slots=True)

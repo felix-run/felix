@@ -7,9 +7,21 @@ from typing import Any, Literal, Protocol, runtime_checkable
 
 from felix.patterns.types import ChatMessage, ToolCall
 
-SessionEventKind = Literal["message", "tool_call", "tool_result", "thinking", "audit"]
+SessionEventKind = Literal[
+    "message", "tool_call", "tool_result", "thinking", "audit", "compaction", "model_change"
+]
 # Legacy alias used by a thinner parallel draft.
-EventKind = Literal["user", "assistant", "tool", "system", "message", "tool_result", "audit"]
+EventKind = Literal[
+    "user",
+    "assistant",
+    "tool",
+    "system",
+    "message",
+    "tool_result",
+    "audit",
+    "compaction",
+    "model_change",
+]
 
 
 @dataclass(slots=True)
@@ -132,7 +144,7 @@ def event_to_chat_message(e: SessionEvent) -> ChatMessage:
 
 def analyze_wake(events: list[SessionEvent]) -> WakeState:
     head_seq = len(events)
-    turns = [e for e in events if e.kind != "audit"]
+    turns = [e for e in events if e.kind not in {"audit", "compaction", "model_change"}]
     if not turns:
         return WakeState(fresh=True, head_seq=head_seq)
 

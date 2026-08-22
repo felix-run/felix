@@ -34,9 +34,12 @@ class FullReplaySessionStrategy:
             opts.system_prompt if isinstance(opts, SessionRenderOpts) else opts["system_prompt"]
         )
         events = await session.get_events()
+        from felix.session.tree import active_branch_events
+
+        branch = active_branch_events(events, session_id=getattr(session, "id", ""))
         history = [
             event_to_chat_message(e)
-            for e in events
+            for e in branch
             if e.kind in {"message", "tool_result"} and e.role != "system"
         ]
         return [ChatMessage(role="system", content=system_prompt), *history, *incoming]
@@ -56,8 +59,11 @@ class WindowedSessionStrategy:
             opts.system_prompt if isinstance(opts, SessionRenderOpts) else opts["system_prompt"]
         )
         events = await session.get_events()
+        from felix.session.tree import active_branch_events
+
+        branch = active_branch_events(events, session_id=getattr(session, "id", ""))
         filtered = [
-            e for e in events if e.kind in {"message", "tool_result"} and e.role != "system"
+            e for e in branch if e.kind in {"message", "tool_result"} and e.role != "system"
         ]
         pinned = [e for e in filtered if is_pinned(e)]
         unpinned = [e for e in filtered if not is_pinned(e)]
@@ -221,8 +227,11 @@ class SemanticSessionStrategy:
         query = " ".join(m.content for m in incoming if m.role == "user").lower()
         tokens = set(query.split()) if query else set()
         events = await session.get_events()
+        from felix.session.tree import active_branch_events
+
+        branch = active_branch_events(events, session_id=getattr(session, "id", ""))
         candidates = [
-            e for e in events if e.kind in {"message", "tool_result"} and e.role != "system"
+            e for e in branch if e.kind in {"message", "tool_result"} and e.role != "system"
         ]
         pinned = [e for e in candidates if is_pinned(e)]
 
@@ -251,15 +260,46 @@ class SemanticSessionStrategy:
         ]
 
 
-def get_session_strategy(spec: str) -> SessionStrategy:
-    """Parse strategy string: full_replay | windowed:N | summarizing:N | semantic:N."""
+def get_session_strategy(
+    spec: str,
+    *,
+    reserve_tokens: int = 16384,
+    keep_recent_tokens: int = 20000,
+    context_window_tokens: int = 128000,
+    compaction_enabled: bool = True,
+) -> SessionStrategy:
+    """Parse strategy string: full_replay | windowed:N | summarizing:N | semantic:N | compacting."""
+    from felix.session.compaction import CompactingSessionStrategy
+
     raw = (spec or "full_replay").strip()
     if raw.startswith("windowed:"):
         n = int(raw.split(":", 1)[1] or "20")
         return WindowedSessionStrategy(n)
     if raw.startswith("summarizing:"):
         n = int(raw.split(":", 1)[1] or "20")
-        return SummarizingSessionStrategy(n)
+        # Upgrade summarizing to token-aware compaction with a turn floor.
+        return CompactingSessionStrategy(
+            reserve_tokens=reserve_tokens,
+            keep_recent_tokens=keep_recent_tokens,
+            context_window_tokens=context_window_tokens,
+            enabled=compaction_enabled,
+            keep_turns=n,
+        )
+    if raw.startswith("compacting"):
+        # compacting or compacting:keepTurns
+        keep_turns = None
+        if ":" in raw:
+            try:
+                keep_turns = int(raw.split(":", 1)[1] or "0") or None
+            except ValueError:
+                keep_turns = None
+        return CompactingSessionStrategy(
+            reserve_tokens=reserve_tokens,
+            keep_recent_tokens=keep_recent_tokens,
+            context_window_tokens=context_window_tokens,
+            enabled=compaction_enabled,
+            keep_turns=keep_turns,
+        )
     if raw.startswith("semantic:"):
         n = int(raw.split(":", 1)[1] or "10")
         return SemanticSessionStrategy(n)

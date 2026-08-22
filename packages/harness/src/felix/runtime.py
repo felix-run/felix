@@ -36,17 +36,46 @@ async def build_tenant_agent(
     manifest: Any,
     tools: ToolProvider,
     tenant_id: str,
+    object_store: Any | None = None,
+    workspace_root: str | None = None,
+    load_agents_md: bool = False,
 ) -> Agent:
     session_store = get_session_store(settings, tenant_id=tenant_id)
     strategy_spec = getattr(getattr(manifest, "spec", None), "session", None)
     strategy_name = (
         getattr(strategy_spec, "strategy", "full_replay") if strategy_spec else "full_replay"
     )
+    reserve = int(getattr(strategy_spec, "reserve_tokens", 16384) or 16384)
+    keep_recent = int(getattr(strategy_spec, "keep_recent_tokens", 20000) or 20000)
+    context_window = int(getattr(strategy_spec, "context_window_tokens", 128000) or 128000)
+    compaction_enabled = bool(getattr(strategy_spec, "compaction_enabled", True))
+
+    store = object_store
+    if store is None:
+        try:
+            from felix.storage import build_object_store
+
+            store = build_object_store(settings)
+        except Exception:
+            store = None
+
     deps = BuildDeps(
         tools=tools,
         settings=settings,
         session_store=session_store,
-        session_strategy=get_session_strategy(strategy_name),
+        session_strategy=get_session_strategy(
+            strategy_name,
+            reserve_tokens=reserve,
+            keep_recent_tokens=keep_recent,
+            context_window_tokens=context_window,
+            compaction_enabled=compaction_enabled,
+        ),
+        object_store=store,
+        tenant_id=tenant_id,
+        workspace_root=workspace_root
+        or getattr(settings, "workspace_root", None)
+        or None,
+        load_agents_md=load_agents_md or bool(getattr(settings, "load_agents_md", False)),
     )
     return await build_agent(manifest, deps=deps, settings=settings)
 

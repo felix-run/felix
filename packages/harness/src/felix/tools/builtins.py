@@ -24,20 +24,28 @@ async def _calculator_handler(args: CalculatorArgs) -> str:
         return f"error: {err}"
 
 
-async def _list_skills(_args: dict[str, Any] | None = None) -> str:
+async def _list_skills_stub(_args: dict[str, Any] | None = None) -> str:
+    """Fallback when builder has not bound a skill catalog."""
     return "[]"
 
 
-async def _activate_skill(args: dict[str, Any]) -> str:
-    return f"activated:{args.get('name') or args.get('skill') or ''}"
+async def _activate_skill_stub(args: dict[str, Any]) -> str:
+    name = args.get("name") or args.get("skill") or ""
+    return f'{{"activated":"{name}","error":"no_skill_catalog"}}'
 
 
-async def _deactivate_skill(args: dict[str, Any]) -> str:
-    return f"deactivated:{args.get('name') or args.get('skill') or ''}"
+async def _deactivate_skill_stub(args: dict[str, Any]) -> str:
+    name = args.get("name") or args.get("skill") or ""
+    return f'{{"deactivated":"{name}","error":"no_skill_catalog"}}'
 
 
 def register_builtin_tools(provider: InMemoryToolProvider) -> None:
-    """Register core local tools (calculator + skill placeholders)."""
+    """Register core local tools (calculator + skill tool names).
+
+    Skill tools are replaced with catalog-bound implementations in
+    ``build_agent`` when the manifest declares ``spec.skills`` or lists
+    skill tool names.
+    """
     provider.register(
         "calculator",
         lambda: define_tool(
@@ -54,7 +62,7 @@ def register_builtin_tools(provider: InMemoryToolProvider) -> None:
         lambda: define_tool(
             name="list_skills",
             description="List available skills for this agent.",
-            handler=_list_skills,
+            handler=_list_skills_stub,
         ),
     )
     provider.register(
@@ -62,7 +70,7 @@ def register_builtin_tools(provider: InMemoryToolProvider) -> None:
         lambda: define_tool(
             name="activate_skill",
             description="Activate a named skill for the current turn.",
-            handler=_activate_skill,
+            handler=_activate_skill_stub,
         ),
     )
     provider.register(
@@ -70,7 +78,7 @@ def register_builtin_tools(provider: InMemoryToolProvider) -> None:
         lambda: define_tool(
             name="deactivate_skill",
             description="Deactivate a named skill.",
-            handler=_deactivate_skill,
+            handler=_deactivate_skill_stub,
         ),
     )
 

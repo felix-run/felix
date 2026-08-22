@@ -224,6 +224,20 @@ class SessionEventRow(Base):
     )
 
 
+class ThreadState(Base):
+    """Leaf pointer + labels for tree-structured sessions."""
+
+    __tablename__ = "thread_state"
+
+    tenant_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    thread_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    leaf_event_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    labels_json: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, server_default=text("'{}'::jsonb"), default=dict
+    )
+    updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+
 class Fiber(Base):
     __tablename__ = "fibers"
 
@@ -295,4 +309,5 @@ __all__ = [
     "Plan",
     "SessionEventRow",
     "SkillActivation",
+    "ThreadState",
 ]

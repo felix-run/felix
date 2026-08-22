@@ -50,6 +50,10 @@ class BuildDeps:
     settings: Any | None = None
     session_store: Any | None = None
     session_strategy: Any | None = None
+    object_store: Any | None = None
+    tenant_id: str | None = None
+    workspace_root: str | None = None
+    load_agents_md: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -574,20 +578,70 @@ def apply_approvals(tools: list[Tool], rules: list[ApprovalRule], manifest_id: s
 
 async def _resolve_system_prompt(manifest: Manifest, deps: BuildDeps) -> str:
     sp = manifest.spec.system_prompt
-    parts: list[str] = []
-    if sp.soul and deps.soul_loader and deps.auth:
-        try:
-            soul = deps.soul_loader(deps.auth.principal.tenant_id)
-            if hasattr(soul, "__await__"):
-                soul = await soul  # type: ignore[misc]
-            if soul:
-                parts.append(str(soul))
-        except Exception:
-            logger.debug("soul loader failed", exc_info=True)
-    if sp.base:
-        parts.append(sp.base)
-    if sp.inline:
-        parts.append(sp.inline)
+    from felix.context_files import (
+        load_agents_md_layer,
+        load_instruction_files,
+        load_system_md,
+    )
+
+    tenant_id = deps.tenant_id or (
+        deps.auth.principal.tenant_id if deps.auth else "default"
+    )
+
+    # Pi SYSTEM.md: replace default prompt entirely when present.
+    system_md = await load_system_md(
+        sp.system_md,
+        object_store=deps.object_store,
+        workspace_root=deps.workspace_root,
+        tenant_id=tenant_id,
+    )
+    if system_md:
+        parts = [system_md]
+    else:
+        parts: list[str] = []
+        if sp.soul and deps.soul_loader and deps.auth:
+            try:
+                soul = deps.soul_loader(deps.auth.principal.tenant_id)
+                if hasattr(soul, "__await__"):
+                    soul = await soul  # type: ignore[misc]
+                if soul:
+                    parts.append(str(soul))
+            except Exception:
+                logger.debug("soul loader failed", exc_info=True)
+        if sp.base:
+            parts.append(sp.base)
+        if sp.inline:
+            parts.append(sp.inline)
+
+    if sp.files:
+        file_parts = await load_instruction_files(
+            file_keys=list(sp.files),
+            object_store=deps.object_store,
+            workspace_root=deps.workspace_root,
+            tenant_id=tenant_id,
+        )
+        parts.extend(file_parts)
+
+    if deps.load_agents_md or sp.files or sp.system_md or sp.append_system_md:
+        # Also auto-discover AGENTS.md when any context-file feature is enabled.
+        agents = await load_agents_md_layer(
+            object_store=deps.object_store,
+            workspace_root=deps.workspace_root,
+            tenant_id=tenant_id,
+            enabled=True,
+        )
+        if agents and not any(agents in (p or "") for p in parts):
+            parts.append(agents)
+
+    append_md = await load_system_md(
+        sp.append_system_md,
+        object_store=deps.object_store,
+        workspace_root=deps.workspace_root,
+        tenant_id=tenant_id,
+    )
+    if append_md:
+        parts.append(append_md)
+
     return "\n\n---\n\n".join(p for p in parts if p)
 
 
@@ -654,6 +708,51 @@ async def build_agent(
                 if t.name not in seen:
                     resolved.append(t)
                     seen.add(t.name)
+
+        # Wire Agent Skills (progressive disclosure + bound skill tools).
+        from felix.skills import (
+            SKILL_TOOL_NAMES,
+            get_skill_activation_store,
+            load_manifest_skills,
+            make_skill_tools,
+            skill_catalog_xml,
+        )
+
+        tenant_id = deps.tenant_id or (
+            deps.auth.principal.tenant_id if deps.auth else "default"
+        )
+        wants_skills = bool(m.spec.skills) or any(
+            t.name in SKILL_TOOL_NAMES for t in resolved
+        )
+        if wants_skills:
+            catalog = await load_manifest_skills(
+                list(m.spec.skills),
+                tenant_id=tenant_id,
+                object_store=deps.object_store,
+            )
+            skill_tools = {
+                t.name: t
+                for t in make_skill_tools(
+                    catalog,
+                    activation_store=get_skill_activation_store(deps.settings),
+                    tenant_id=tenant_id,
+                    manifest_id=m.metadata.name,
+                )
+            }
+            resolved = [skill_tools.get(t.name, t) for t in resolved]
+            # Ensure skill tools exist when skills are declared but not listed.
+            if m.spec.skills:
+                have = {t.name for t in resolved}
+                for name, tool in skill_tools.items():
+                    if name not in have:
+                        resolved.append(tool)
+            catalog_block = skill_catalog_xml(catalog)
+            if catalog_block:
+                system_prompt = (
+                    f"{system_prompt}\n\n---\n\n{catalog_block}"
+                    if system_prompt
+                    else catalog_block
+                )
 
         # Governance pipeline (order matters — matches TS builder).
         resolved = apply_secret_masking(resolved, _collect_secrets(deps), m.metadata.name)

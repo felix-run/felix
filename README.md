@@ -126,12 +126,18 @@ Objects / Hyperdrive / R2-as-binding / Queues / Workflows compute in this stack.
 | Surface | Path |
 |---------|------|
 | Direct REST / SSE | `POST /chat`, `POST /chat/stream` |
+| Steer / follow-up | `POST /chat/steer` |
+| Session fork / rewind | `POST /chat/fork`, `POST /chat/rewind` |
 | OpenAI-compatible | `POST /v1/chat/completions`, `GET /v1/models` |
 | A2A JSON-RPC | `POST /a2a` |
 | MCP | `POST /mcp` |
 | Agent card | `GET /.well-known/agent-card.json` |
 
 Management: `/audit`, `/approvals`, `/plans`, `/jobs`, `/manifests`, `/eval`.
+
+Python client: `from felix.sdk import FelixClient` (`prompt`, `stream`, `steer`, `follow_up`, `fork`, `rewind`, `set_model`).
+
+Skills live under `skills/` (Agent Skills `SKILL.md`); declare them on a manifest with `spec.skills`. Session strategies include `compacting` (token-threshold) plus `windowed:N` / `semantic:N` / `full_replay`.
 
 ## Contributing
 

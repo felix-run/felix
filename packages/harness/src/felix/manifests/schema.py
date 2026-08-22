@@ -77,11 +77,19 @@ class SystemPrompt(_Strict):
     inline: str = ""
     soul: bool = False
     base: str = ""
+    # Object-store or workspace keys for instruction files (AGENTS.md, SYSTEM.md, …).
+    # Loaded after base/inline and appended; use replace_with_system_md for SYSTEM.md semantics.
+    files: list[str] = Field(default_factory=list)
+    # When set, load this key as a full system-prompt replacement (Pi SYSTEM.md).
+    system_md: str | None = None
+    # When set, append this key's contents after the composed prompt (Pi APPEND_SYSTEM.md).
+    append_system_md: str | None = None
 
 
 class SkillRef(_Strict):
     name: str
     version: str | None = None
+    description: str | None = None
 
 
 class McpServerRef(_Strict):
@@ -181,6 +189,13 @@ class MemorySpec(_Strict):
 
 class SessionSpec(_Strict):
     strategy: str = "full_replay"
+    # Token-threshold compaction (Pi-style). Used when strategy is "compacting"
+    # or starts with "compacting:"; also applied as upgrade to summarizing when set.
+    compaction_enabled: bool = True
+    reserve_tokens: int = Field(default=16384, ge=0)
+    keep_recent_tokens: int = Field(default=20000, ge=0)
+    # Approximate context window for overflow detection (chars/4 estimate).
+    context_window_tokens: int = Field(default=128000, ge=1024)
 
 
 class InboundAuth(_Strict):

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from felix.session.compaction import CompactingSessionStrategy
 from felix.session.store import InMemorySessionStore, PostgresSessionStore
 from felix.session.strategies import (
     FullReplaySessionStrategy,
     get_session_strategy,
 )
+from felix.session.tree import fork_thread, rewind_to
 from felix.session.types import (
     AppendableEvent,
     Session,
@@ -21,6 +23,7 @@ from felix.session.types import (
 
 __all__ = [
     "AppendableEvent",
+    "CompactingSessionStrategy",
     "FullReplaySessionStrategy",
     "InMemorySessionStore",
     "PostgresSessionStore",
@@ -32,5 +35,7 @@ __all__ = [
     "analyze_wake",
     "chat_message_to_event",
     "event_to_chat_message",
+    "fork_thread",
     "get_session_strategy",
+    "rewind_to",
 ]
