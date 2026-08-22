@@ -754,6 +754,30 @@ async def build_agent(
                     else catalog_block
                 )
 
+        # Inject active long-term facts when memory capture/store is enabled.
+        memory_capture = m.spec.memory.capture
+        if (
+            deps.settings is not None
+            and m.spec.memory.store != "none"
+            and (memory_capture.enabled or m.spec.memory.store in {"pgvector", "memory"})
+        ):
+            try:
+                from felix.memory.capture import active_facts_prompt
+
+                facts_block = await active_facts_prompt(
+                    deps.settings,
+                    tenant_id,
+                    manifest_id=m.metadata.name,
+                )
+                if facts_block:
+                    system_prompt = (
+                        f"{system_prompt}\n\n---\n\n{facts_block}"
+                        if system_prompt
+                        else facts_block
+                    )
+            except Exception:
+                logger.debug("active facts inject failed", exc_info=True)
+
         # Governance pipeline (order matters — matches TS builder).
         resolved = apply_secret_masking(resolved, _collect_secrets(deps), m.metadata.name)
         if m.spec.policies:
@@ -774,6 +798,17 @@ async def build_agent(
             resolved = apply_judges(resolved, m.spec.guardrails, m.metadata.name)
         if m.spec.approvals:
             resolved = apply_approvals(resolved, m.spec.approvals, m.metadata.name)
+
+        if m.spec.artifacts.enabled:
+            from felix.artifacts import apply_artifact_spill
+
+            resolved = apply_artifact_spill(
+                resolved,
+                m.spec.artifacts,
+                object_store=deps.object_store,
+                tenant_id=tenant_id,
+                manifest_id=m.metadata.name,
+            )
 
         final_prompt = (
             system_prompt
@@ -803,6 +838,8 @@ async def build_agent(
                 "session_strategy": deps.session_strategy,
                 "limits": m.spec.limits,
                 "settings": deps.settings,
+                "tenant_id": tenant_id,
+                "memory_capture": m.spec.memory.capture,
             }
         )
         if judges_enabled(m.spec.guardrails):

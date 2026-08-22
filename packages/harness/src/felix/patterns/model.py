@@ -351,10 +351,155 @@ class _HttpModelClient:
         tools: list[Tool],
         opts: ModelChatOptions | None = None,
     ) -> AsyncIterator[str]:
-        # v1: non-streaming chat then yield the full content once.
-        result = await self.chat(messages, tools, opts)
-        if result.message.content:
-            yield result.message.content
+        opts = opts or ModelChatOptions()
+        temperature = (
+            opts.temperature
+            if opts.temperature is not None
+            else getattr(self.spec, "temperature", 0)
+        )
+        max_tokens = opts.max_tokens or getattr(self.spec, "max_tokens", None)
+        if self.style == "anthropic":
+            async for chunk in self._stream_anthropic(messages, tools, temperature, max_tokens):
+                yield chunk
+            return
+        async for chunk in self._stream_openai(messages, tools, temperature, max_tokens):
+            yield chunk
+
+    async def _stream_openai(
+        self,
+        messages: list[ChatMessage],
+        tools: list[Tool],
+        temperature: float,
+        max_tokens: int | None,
+    ) -> AsyncIterator[str]:
+        body: dict[str, Any] = {
+            "model": self.route.model,
+            "messages": _messages_to_openai(messages),
+            "temperature": temperature,
+            "stream": True,
+        }
+        if max_tokens:
+            body["max_tokens"] = max_tokens
+        # Streaming path is text-oriented; tool calls use chat() in the agent loop.
+        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            async with client.stream(
+                "POST",
+                f"{self.base_url.rstrip('/')}/chat/completions",
+                json=body,
+                headers=headers,
+            ) as resp:
+                if resp.status_code >= 400:
+                    text = await resp.aread()
+                    raise ModelGatewayError(
+                        "openai", resp.status_code, text.decode("utf-8", errors="replace")
+                    )
+                async for line in resp.aiter_lines():
+                    if not line:
+                        continue
+                    if line.startswith("data:"):
+                        payload = line[5:].strip()
+                    elif line.startswith("{"):
+                        payload = line.strip()
+                    else:
+                        continue
+                    if payload == "[DONE]":
+                        break
+                    try:
+                        data = json.loads(payload)
+                    except json.JSONDecodeError:
+                        continue
+                    for choice in data.get("choices") or []:
+                        delta = choice.get("delta") or {}
+                        content = delta.get("content")
+                        if content:
+                            yield str(content)
+
+    async def _stream_anthropic(
+        self,
+        messages: list[ChatMessage],
+        tools: list[Tool],
+        temperature: float,
+        max_tokens: int | None,
+    ) -> AsyncIterator[str]:
+        system = ""
+        converted: list[dict[str, Any]] = []
+        for m in messages:
+            if m.role == "system":
+                system = (system + "\n" + m.content).strip() if system else m.content
+                continue
+            if m.role == "tool":
+                converted.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": m.tool_call_id,
+                                "content": m.content,
+                            }
+                        ],
+                    }
+                )
+                continue
+            if m.role == "assistant" and m.tool_calls:
+                blocks: list[dict[str, Any]] = []
+                if m.content:
+                    blocks.append({"type": "text", "text": m.content})
+                for tc in m.tool_calls:
+                    blocks.append(
+                        {"type": "tool_use", "id": tc.id, "name": tc.name, "input": tc.args}
+                    )
+                converted.append({"role": "assistant", "content": blocks})
+                continue
+            converted.append({"role": m.role, "content": m.content})
+
+        body: dict[str, Any] = {
+            "model": self.route.model,
+            "messages": converted,
+            "temperature": temperature,
+            "max_tokens": max_tokens or 4096,
+            "stream": True,
+        }
+        if system:
+            body["system"] = system
+        headers = {
+            "x-api-key": self.api_key,
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+        }
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            async with client.stream(
+                "POST",
+                f"{self.base_url.rstrip('/')}/v1/messages",
+                json=body,
+                headers=headers,
+            ) as resp:
+                if resp.status_code >= 400:
+                    text = await resp.aread()
+                    raise ModelGatewayError(
+                        "anthropic",
+                        resp.status_code,
+                        text.decode("utf-8", errors="replace"),
+                    )
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    payload = line[5:].strip()
+                    if not payload or payload == "[DONE]":
+                        continue
+                    try:
+                        data = json.loads(payload)
+                    except json.JSONDecodeError:
+                        continue
+                    if data.get("type") == "content_block_delta":
+                        delta = data.get("delta") or {}
+                        if delta.get("type") == "text_delta" and delta.get("text"):
+                            yield str(delta["text"])
+                    elif data.get("type") == "content_block_start":
+                        block = data.get("content_block") or {}
+                        if block.get("type") == "text" and block.get("text"):
+                            yield str(block["text"])
 
 
 @dataclass
@@ -399,9 +544,29 @@ class _FallbackClient:
         tools: list[Tool],
         opts: ModelChatOptions | None = None,
     ) -> AsyncIterator[str]:
-        result = await self.chat(messages, tools, opts)
-        if result.message.content:
-            yield result.message.content
+        chain = [self.primary, *self.fallbacks]
+        last_err: Exception | None = None
+        for i, client in enumerate(chain):
+            try:
+                async for chunk in client.stream(messages, tools, opts):
+                    yield chunk
+                if i > 0:
+                    record_counter(
+                        "felix_model_switch",
+                        {
+                            "from": self.primary.model_id,
+                            "to": client.model_id,
+                            "reason": "provider_error",
+                        },
+                    )
+                return
+            except Exception as exc:
+                if not _is_provider_error(exc):
+                    raise
+                last_err = exc
+                continue
+        assert last_err is not None
+        raise last_err
 
 
 @dataclass
@@ -444,10 +609,14 @@ class _EscalationClient:
         tools: list[Tool],
         opts: ModelChatOptions | None = None,
     ) -> AsyncIterator[str]:
+        # Confidence check needs the full reply; stream escalate path when needed.
         result = await self.chat(messages, tools, opts)
         if result.message.content:
-            yield result.message.content
-
+            # Chunk for smoother SSE when escalation used the chat path.
+            text = result.message.content
+            step = 48
+            for i in range(0, len(text), step):
+                yield text[i : i + step]
 
 def _is_provider_error(err: object) -> bool:
     if isinstance(err, ModelGatewayError):

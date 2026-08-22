@@ -72,6 +72,8 @@ class _ReactAgent:
     recursion_limit: int
     session_store: Any | None = None
     session_strategy: Any | None = None
+    tenant_id: str = "default"
+    memory_capture: Any | None = None
     _tool_map: dict[str, Tool] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -207,6 +209,30 @@ class _ReactAgent:
         except Exception:
             logger.debug("session append failed", exc_info=True)
 
+    async def _maybe_capture_memory(
+        self, input: InvokeInput, final: ChatMessage, model: Any
+    ) -> None:
+        capture = self.memory_capture
+        if capture is None or not getattr(capture, "enabled", False):
+            return
+        if self.settings is None:
+            return
+        user_text = " ".join(m.content for m in input.messages if m.role == "user")
+        try:
+            from felix.memory.capture import capture_from_turn
+
+            await capture_from_turn(
+                self.settings,
+                input.tenant_id or self.tenant_id,
+                manifest_id=self.manifest_id,
+                user_text=user_text,
+                assistant_text=final.content or "",
+                capture=capture,
+                model=model,
+            )
+        except Exception:
+            logger.debug("memory capture failed", exc_info=True)
+
     async def invoke(self, input: InvokeInput) -> InvokeOutput:
         model = self._resolve_model(input)
         await self._persist_model_change(input)
@@ -319,6 +345,7 @@ class _ReactAgent:
             if input.thread_id:
                 await release_run_queue(tenant_id, input.thread_id)
 
+        await self._maybe_capture_memory(input, final, model)
         return InvokeOutput(messages=produced, final=final)
 
     async def stream_events(self, input: InvokeInput) -> AsyncIterator[Event]:
@@ -469,6 +496,7 @@ class _ReactAgent:
             if input.thread_id:
                 await release_run_queue(tenant_id, input.thread_id)
 
+        await self._maybe_capture_memory(input, final, model)
         yield Event(
             event="on_chain_end",
             data={"output": InvokeOutput(messages=produced, final=final)},
@@ -499,6 +527,8 @@ def build_react_agent(ctx: PatternBuildContext) -> Agent:
         recursion_limit=limit,
         session_store=ctx.get("session_store"),
         session_strategy=ctx.get("session_strategy"),
+        tenant_id=str(ctx.get("tenant_id") or "default"),
+        memory_capture=ctx.get("memory_capture"),
     )
 
 
