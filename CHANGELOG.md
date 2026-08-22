@@ -5,15 +5,6 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Added
-
-- Durable **usage meters** (`usage_events`) flushed by the worker; `GET /usage`.
-- Eval **fixture + `--mock`** path for CI (`fixtures/eval/smoke.json`).
-- Chat **history** (`GET`/`DELETE /chat/history/{thread_id}`) and **audit metrics**.
-- Response aliases (`events`/`plans`/`requests`/`manifests`/`datasets`) for chat-ui clients.
-
 ## [0.1.0] — 2026-08-22
 
 ### Added
@@ -26,7 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Helm chart with PVC support, consumer shared secret, scheduler container, and
   pre-install/pre-upgrade **migrate Job**.
 - Durable fibers, audit spill to DuckDB (optional), JWT/api_key auth, plugins seam.
-- CLI: `migrate`, `eval`, `mint-jwt`, `bundle-manifests`, `doctor`, `version`.
+- Durable **usage meters** (`usage_events`) flushed by the worker; `GET /usage`.
+- Eval **fixture + `--mock`** path for CI (`fixtures/eval/smoke.json`).
+- Chat **history** (`GET`/`DELETE /chat/history/{thread_id}`) and **audit metrics**.
+- Response aliases (`events`/`plans`/`requests`/`manifests`/`datasets`) for chat-ui clients.
+- CLI: `migrate`, `eval`, `mint-jwt`, `bundle-manifests`, `doctor`, `version`, `temporal-worker`.
 - Typed packages (`py.typed`) for harness, CLI, API, and worker.
 
 [0.1.0]: https://github.com/felix-run/felix/releases/tag/v0.1.0

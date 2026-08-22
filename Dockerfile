@@ -25,14 +25,16 @@ COPY alembic.ini ./
 
 # Core install only. Optional: FELIX_EXTRAS=aws,gcp,otel (comma-separated)
 RUN set -eux; \
-    extra_args=""; \
-    if [ -n "${FELIX_EXTRAS}" ]; then \
-      for e in $(echo "${FELIX_EXTRAS}" | tr ',' ' '); do \
-        extra_args="$${extra_args} --extra $${e}"; \
+    if [ -z "${FELIX_EXTRAS}" ]; then \
+      uv sync --frozen --no-dev || uv sync --no-dev; \
+    else \
+      extras="$(echo "${FELIX_EXTRAS}" | tr ',' ' ')"; \
+      set --; \
+      for e in ${extras}; do \
+        set -- "$@" --extra "${e}"; \
       done; \
-    fi; \
-    # shellcheck disable=SC2086
-    uv sync --frozen --no-dev $${extra_args} || uv sync --no-dev $${extra_args}
+      uv sync --frozen --no-dev "$@" || uv sync --no-dev "$@"; \
+    fi
 
 FROM python:3.14-slim AS runtime
 
