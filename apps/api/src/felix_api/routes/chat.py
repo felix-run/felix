@@ -21,10 +21,13 @@ _SUFFIX_DELIMS = frozenset(":#")
 
 
 def _http_from_invoke_prep(exc: Exception) -> HTTPException | None:
+    from felix.governance.inbound import InboundScreeningError
     from felix.manifests.inbound_auth import InboundAuthError
     from felix.manifests.pin import ManifestDriftError
 
     if isinstance(exc, InboundAuthError):
+        return HTTPException(status_code=exc.status_code, detail=exc.detail)
+    if isinstance(exc, InboundScreeningError):
         return HTTPException(status_code=exc.status_code, detail=exc.detail)
     if isinstance(exc, ManifestDriftError):
         return HTTPException(status_code=409, detail=str(exc))
@@ -275,6 +278,15 @@ async def chat(body: ChatRequest, request: Request) -> Any:
     )
     if not messages:
         raise HTTPException(status_code=400, detail="messages_or_template_required")
+    try:
+        from felix.governance.inbound import apply_inbound_screening
+
+        messages = await apply_inbound_screening(resolved.manifest, messages, settings)
+    except Exception as exc:
+        http = _http_from_invoke_prep(exc)
+        if http is not None:
+            raise http from exc
+        raise
     execution = getattr(getattr(resolved.manifest, "spec", None), "execution", None)
     if getattr(execution, "mode", "transient") == "durable":
         from felix.durability.runs import start_durable_chat
@@ -378,6 +390,15 @@ async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
     )
     if not messages:
         raise HTTPException(status_code=400, detail="messages_or_template_required")
+    try:
+        from felix.governance.inbound import apply_inbound_screening
+
+        messages = await apply_inbound_screening(resolved.manifest, messages, settings)
+    except Exception as exc:
+        http = _http_from_invoke_prep(exc)
+        if http is not None:
+            raise http from exc
+        raise
     req_ctx = RequestContext(
         settings=settings,
         auth=auth,

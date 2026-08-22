@@ -424,7 +424,8 @@ class CommandScreening(_Strict):
 
 class ContentScreening(_Strict):
     enabled: bool = False
-    model: str = "llama-3-fast"
+    # Empty = marker-based only; set a model id to add an LLM injection score.
+    model: str = ""
     tools: list[str] = Field(default_factory=list)
     on_flag: Literal["quarantine", "block"] = "quarantine"
 

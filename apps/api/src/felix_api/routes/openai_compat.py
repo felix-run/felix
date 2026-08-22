@@ -100,6 +100,19 @@ async def chat_completions(body: ChatCompletionsRequest, request: Request) -> An
     messages = [
         ChatMessage.model_validate({"role": m.role, "content": m.content or ""}) for m in body.messages
     ]
+    try:
+        from felix.governance.inbound import apply_inbound_screening
+
+        messages = await apply_inbound_screening(resolved.manifest, messages, settings)
+    except Exception as exc:
+        from felix.governance.inbound import InboundScreeningError as _ISE
+
+        if isinstance(exc, _ISE):
+            return JSONResponse(
+                {"error": {"message": exc.detail, "type": "content_filter", "code": exc.detail}},
+                status_code=exc.status_code,
+            )
+        raise
     req_ctx = RequestContext(
         settings=settings,
         auth=auth,

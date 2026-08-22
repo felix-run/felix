@@ -258,6 +258,7 @@ def apply_content_screening(tools: list[Tool], screening: Any, manifest_id: str)
         return tools
     on_flag = getattr(screening, "on_flag", "quarantine")
     named = set(getattr(screening, "tools", []) or [])
+    model_id = (getattr(screening, "model", "") or "").strip()
 
     def wrap_one(tool: Tool) -> Tool:
         if named and tool.name not in named:
@@ -270,8 +271,16 @@ def apply_content_screening(tools: list[Tool], screening: Any, manifest_id: str)
             out = await inner.execute(args, ctx)
             if is_wrapper_deny(out):
                 return out
-            content = tool_output_content(out).lower()
-            if any(m in content for m in _INJECTION_MARKERS):
+            content = tool_output_content(out)
+            lower = content.lower()
+            flagged = any(m in lower for m in _INJECTION_MARKERS)
+            if not flagged and model_id:
+                from felix.config import get_settings
+                from felix.governance.inbound import _llm_injection_score
+
+                score = await _llm_injection_score(get_settings(), content, model_id)
+                flagged = score is not None and score >= 0.8
+            if flagged:
                 record_counter(
                     "felix_content_screening",
                     {"manifest_id": manifest_id, "tool": tool.name, "action": on_flag},

@@ -88,8 +88,10 @@ spec:
 
 Runtime also enforces `spec.auth.inbound`, routes inbound MCP through the
 compiled agent, emits audit events from the agent loop, and redacts durable
-state. Tenant isolation is application-level `tenant_id` by default; enable
-Postgres RLS with migration `0006_tenant_rls` and `FELIX_DATABASE_RLS=true`
+state. User turns are screened when `content_screening.enabled` and/or
+`guardrails.providers: [pii]` targets `input` (block or redact). Tenant
+isolation is application-level `tenant_id` by default; enable Postgres RLS
+with migration `0006_tenant_rls` and `FELIX_DATABASE_RLS=true`
 (sets `app.tenant_id` / `app.rls_bypass` GUCs per transaction).
 
 ## Management API scopes

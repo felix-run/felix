@@ -78,6 +78,8 @@ spec:
   content_screening:
     enabled: true
     on_flag: quarantine
+    # Optional LLM screener — leave empty for marker-only (default).
+    # model: llama-3-fast
 
   command_screening:
     enabled: true
