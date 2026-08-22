@@ -875,6 +875,7 @@ async def build_agent(
                 "settings": deps.settings,
                 "tenant_id": tenant_id,
                 "memory_capture": m.spec.memory.capture,
+                "tools_retrieval": m.spec.tools_retrieval,
             }
         )
         if judges_enabled(m.spec.guardrails):

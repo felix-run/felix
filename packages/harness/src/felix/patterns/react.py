@@ -33,6 +33,7 @@ from felix.steer import (
     should_cancel_remaining_tools,
 )
 from felix.tools.errors import infer_error_code, read_tool_error_code, tool_output_content
+from felix.tools.retrieval import select_tools_from_ctx
 from felix.tools.types import Tool, ToolInvocationCtx, is_wrapper_deny
 
 logger = logging.getLogger("felix.patterns.react")
@@ -74,10 +75,14 @@ class _ReactAgent:
     session_strategy: Any | None = None
     tenant_id: str = "default"
     memory_capture: Any | None = None
+    tools_retrieval: Any | None = None
     _tool_map: dict[str, Tool] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         self._tool_map = {t.name: t for t in self.tools}
+
+    def _active_tools(self, messages: list[ChatMessage]) -> list[Tool]:
+        return select_tools_from_ctx(self.tools, messages, self.tools_retrieval)
 
     async def _dispatch(
         self, call: ToolCall, thread_id: str | None
@@ -276,7 +281,7 @@ class _ReactAgent:
                 if injected:
                     messages.extend(injected)
 
-                result = await model.chat(messages, self.tools)
+                result = await model.chat(messages, self._active_tools(messages))
                 record_usage(result, manifest_id=self.manifest_id, model_id=model.model_id)
                 assistant = result.message
                 messages.append(assistant)
@@ -334,7 +339,7 @@ class _ReactAgent:
                     await self._append_produced(input.thread_id, [follow_chat])
                     # One more model turn for each follow-up.
                     messages.append(follow_chat)
-                    result = await model.chat(messages, self.tools)
+                    result = await model.chat(messages, self._active_tools(messages))
                     record_usage(result, manifest_id=self.manifest_id, model_id=model.model_id)
                     assistant = result.message
                     messages.append(assistant)
@@ -390,7 +395,7 @@ class _ReactAgent:
                     messages.extend(injected)
 
                 chunks: list[str] = []
-                async for delta in model.stream(messages, self.tools):
+                async for delta in model.stream(messages, self._active_tools(messages)):
                     chunks.append(delta)
                     yield Event(
                         event="text_delta",
@@ -400,7 +405,7 @@ class _ReactAgent:
                         event="on_chat_model_stream",
                         data={"chunk": {"content": delta}},
                     )
-                result = await model.chat(messages, self.tools)
+                result = await model.chat(messages, self._active_tools(messages))
                 record_usage(result, manifest_id=self.manifest_id, model_id=model.model_id)
                 assistant = result.message
                 if not assistant.content and chunks:
@@ -477,7 +482,7 @@ class _ReactAgent:
                     yield Event(event="follow_up", data={"content": follow.text})
                     await self._append_produced(input.thread_id, [follow_chat])
                     messages.append(follow_chat)
-                    result = await model.chat(messages, self.tools)
+                    result = await model.chat(messages, self._active_tools(messages))
                     record_usage(result, manifest_id=self.manifest_id, model_id=model.model_id)
                     assistant = result.message
                     messages.append(assistant)
@@ -529,6 +534,7 @@ def build_react_agent(ctx: PatternBuildContext) -> Agent:
         session_strategy=ctx.get("session_strategy"),
         tenant_id=str(ctx.get("tenant_id") or "default"),
         memory_capture=ctx.get("memory_capture"),
+        tools_retrieval=ctx.get("tools_retrieval"),
     )
 
 

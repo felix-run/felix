@@ -100,6 +100,61 @@ def parse_model_routes(settings: Settings | None = None) -> dict[str, ModelRoute
     return routes
 
 
+def reasoning_effort_from_budget(budget: int) -> str:
+    """Map Anthropic-style budget tokens onto OpenAI ``reasoning_effort``."""
+    if budget < 4096:
+        return "low"
+    if budget < 16384:
+        return "medium"
+    return "high"
+
+
+def apply_openai_thinking_cache(body: dict[str, Any], spec: Any) -> None:
+    """Attach thinking budget + prompt cache hints to an OpenAI-style request."""
+    budget = getattr(spec, "thinking_budget", None) if spec is not None else None
+    if budget:
+        n = int(budget)
+        body["reasoning_effort"] = reasoning_effort_from_budget(n)
+        # LiteLLM / Anthropic-via-OpenAI also honor this block.
+        body["thinking"] = {"type": "enabled", "budget_tokens": n}
+    if spec is not None and getattr(spec, "cache", False):
+        body["prompt_cache_key"] = "felix"
+
+
+def apply_anthropic_thinking_cache(body: dict[str, Any], spec: Any) -> None:
+    """Attach extended thinking + ephemeral cache_control to an Anthropic request."""
+    if spec is None:
+        return
+    budget = getattr(spec, "thinking_budget", None)
+    if budget:
+        n = int(budget)
+        body["thinking"] = {"type": "enabled", "budget_tokens": n}
+        # Anthropic requires temperature=1 when thinking is enabled.
+        body["temperature"] = 1
+        current = int(body.get("max_tokens") or 4096)
+        if current <= n:
+            body["max_tokens"] = n + 1024
+    if getattr(spec, "cache", False):
+        system = body.get("system")
+        if isinstance(system, str) and system:
+            body["system"] = [
+                {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
+            ]
+        tools = body.get("tools")
+        if isinstance(tools, list) and tools:
+            last = dict(tools[-1])
+            last["cache_control"] = {"type": "ephemeral"}
+            tools[-1] = last
+
+
+def _openai_usage(usage_raw: dict[str, Any]) -> TokenUsage:
+    # prompt_tokens already includes cached tokens.
+    return TokenUsage(
+        input=int(usage_raw.get("prompt_tokens") or 0),
+        output=int(usage_raw.get("completion_tokens") or 0),
+    )
+
+
 def record_usage(result: ModelChatResult, *, manifest_id: str, model_id: str | None = None) -> None:
     if not result.usage:
         return
@@ -220,6 +275,7 @@ class _HttpModelClient:
             body["max_tokens"] = max_tokens
         if tools:
             body["tools"] = _tools_to_openai(tools)
+        apply_openai_thinking_cache(body, self.spec)
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
         async with httpx.AsyncClient(timeout=120.0) as client:
             resp = await client.post(f"{self.base_url.rstrip('/')}/chat/completions", json=body, headers=headers)
@@ -238,10 +294,7 @@ class _HttpModelClient:
                 tool_calls=tool_calls,
             ),
             stop_reason=stop,
-            usage=TokenUsage(
-                input=int(usage_raw.get("prompt_tokens") or 0),
-                output=int(usage_raw.get("completion_tokens") or 0),
-            ),
+            usage=_openai_usage(usage_raw),
         )
 
     async def _chat_anthropic(
@@ -300,6 +353,7 @@ class _HttpModelClient:
                 }
                 for t in tools
             ]
+        apply_anthropic_thinking_cache(body, self.spec)
         headers = {
             "x-api-key": self.api_key,
             "anthropic-version": "2023-06-01",
@@ -380,6 +434,7 @@ class _HttpModelClient:
         }
         if max_tokens:
             body["max_tokens"] = max_tokens
+        apply_openai_thinking_cache(body, self.spec)
         # Streaming path is text-oriented; tool calls use chat() in the agent loop.
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
         async with httpx.AsyncClient(timeout=120.0) as client:
@@ -463,6 +518,7 @@ class _HttpModelClient:
         }
         if system:
             body["system"] = system
+        apply_anthropic_thinking_cache(body, self.spec)
         headers = {
             "x-api-key": self.api_key,
             "anthropic-version": "2023-06-01",
@@ -722,8 +778,11 @@ __all__ = [
     "ModelProvider",
     "ModelRoute",
     "TokenUsage",
+    "apply_anthropic_thinking_cache",
+    "apply_openai_thinking_cache",
     "build_model",
     "parse_model_routes",
+    "reasoning_effort_from_budget",
     "record_usage",
     "register_builtin_providers",
 ]

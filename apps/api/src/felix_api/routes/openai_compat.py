@@ -35,6 +35,15 @@ class ChatCompletionsRequest(BaseModel):
     user: str | None = None
 
 
+def _usage_payload(ctx: RequestContext) -> dict[str, int]:
+    ls = ctx.limit_state
+    return {
+        "prompt_tokens": ls.tokens_input,
+        "completion_tokens": ls.tokens_output,
+        "total_tokens": ls.tokens_input + ls.tokens_output,
+    }
+
+
 def _auth(request: Request) -> AuthContext:
     ctx = try_get_context()
     if ctx is not None:
@@ -114,6 +123,7 @@ async def chat_completions(body: ChatCompletionsRequest, request: Request) -> An
                 "created": created,
                 "model": body.model,
                 "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                "usage": _usage_payload(req_ctx),
             }
             yield f"data: {json.dumps(done)}\n\n"
             yield "data: [DONE]\n\n"
@@ -154,5 +164,5 @@ async def chat_completions(body: ChatCompletionsRequest, request: Request) -> An
                 "finish_reason": "stop",
             }
         ],
-        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        "usage": _usage_payload(req_ctx),
     }
