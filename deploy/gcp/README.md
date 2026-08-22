@@ -29,8 +29,22 @@ Install extras: `uv sync --extra gcp` (or image build with `FELIX_EXTRAS=gcp`).
 
 ## GCE + Compose
 
+On the VM (`/opt/felix`), set:
+
 ```bash
-# on the VM, repo at /opt/felix
+FELIX_SECRETS_BACKEND=gcp
+FELIX_GCP_PROJECT=your-project
+FELIX_DOCKER_EXTRAS=gcp
+# Leave Anthropic empty — hydrate from Secret Manager:
+#   secret id: felix-anthropic-api-key  (or ANTHROPIC_API_KEY)
+ANTHROPIC_API_KEY=
+FELIX_ANTHROPIC_API_KEY=
+```
+
+Grant the VM service account `roles/secretmanager.secretAccessor` on that secret,
+then:
+
+```bash
 make up-gcp
 # or:
 docker compose -f deploy/docker/compose.yml \

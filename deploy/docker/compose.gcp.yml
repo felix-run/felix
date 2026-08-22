@@ -1,11 +1,23 @@
-# GCP / public VM overlay — tunnel-only API; no host publish for DB/cache.
+# GCP / public VM overlay — tunnel-only API; Secret Manager + no host DB/cache.
 # Usage on GCE (repo root / /opt/felix):
 #   make up-gcp
 #   docker compose -f deploy/docker/compose.yml \
 #     -f deploy/docker/compose.gcp.yml -f deploy/docker/compose.lite.yml \
 #     --project-directory . up -d --build
+#
+# Expects host .env:
+#   FELIX_SECRETS_BACKEND=gcp
+#   FELIX_GCP_PROJECT=<project>
+#   FELIX_DOCKER_EXTRAS=gcp
+# and Secret Manager secret `felix-anthropic-api-key` (or ANTHROPIC_API_KEY).
 
 name: felix
+
+x-gcp-secrets: &gcp-secrets
+  FELIX_SECRETS_BACKEND: ${FELIX_SECRETS_BACKEND:-gcp}
+  FELIX_GCP_PROJECT: ${FELIX_GCP_PROJECT:?set FELIX_GCP_PROJECT for secrets_backend=gcp}
+  # Leave empty so hydrate_secrets pulls from Secret Manager.
+  FELIX_ANTHROPIC_API_KEY: ${FELIX_ANTHROPIC_API_KEY:-}
 
 services:
   api:
@@ -16,14 +28,30 @@ services:
       - felix-data:/data
       - ${FELIX_WORKSPACE_HOST:-./workspace}:/workspace
     environment:
+      <<: *gcp-secrets
       FELIX_WORKSPACE_ROOT: /workspace
+    # Reach GCE metadata for ADC inside the container network.
+    extra_hosts:
+      - "metadata.google.internal:169.254.169.254"
+      - "metadata:169.254.169.254"
 
   worker:
     volumes:
       - felix-data:/data
       - ${FELIX_WORKSPACE_HOST:-./workspace}:/workspace
     environment:
+      <<: *gcp-secrets
       FELIX_WORKSPACE_ROOT: /workspace
+    extra_hosts:
+      - "metadata.google.internal:169.254.169.254"
+      - "metadata:169.254.169.254"
+
+  scheduler:
+    environment:
+      <<: *gcp-secrets
+    extra_hosts:
+      - "metadata.google.internal:169.254.169.254"
+      - "metadata:169.254.169.254"
 
   postgres:
     ports: !override []

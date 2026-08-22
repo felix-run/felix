@@ -18,6 +18,7 @@ _HYDRATE_MAP: dict[str, tuple[str, ...]] = {
     "anthropic_api_key": (
         "ANTHROPIC_API_KEY",
         "anthropic_api_key",
+        "felix-anthropic-api-key",
         "felix/anthropic_api_key",
     ),
     "openai_api_key": ("OPENAI_API_KEY", "openai_api_key", "felix/openai_api_key"),

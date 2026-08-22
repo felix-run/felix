@@ -1,0 +1,72 @@
+name: Smoke
+
+# Prod health + one chat turn against the live API.
+# Does not block PR CI. Requires repo secret FELIX_SMOKE_API_KEY
+# (a key present in the server's FELIX_AUTH_API_KEYS map).
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 */6 * * *"
+
+concurrency:
+  group: smoke
+  cancel-in-progress: true
+
+jobs:
+  api:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      BASE_URL: https://api.felix.run
+      API_KEY: ${{ secrets.FELIX_SMOKE_API_KEY }}
+    steps:
+      - name: Require smoke API key
+        run: |
+          if [ -z "$API_KEY" ]; then
+            echo "Set repo secret FELIX_SMOKE_API_KEY" >&2
+            exit 1
+          fi
+
+      - name: Health
+        run: |
+          set -euo pipefail
+          body="$(curl -sfS --max-time 20 "$BASE_URL/health")"
+          echo "$body"
+          echo "$body" | grep -q '"status":"ok"'
+
+      - name: Cowork chat (durable poll)
+        run: |
+          set -euo pipefail
+          AUTH="Authorization: Bearer ${API_KEY}"
+          # cowork is durable → expect 202 + resume_token, then poll.
+          code="$(curl -sS -o /tmp/chat.json -w '%{http_code}' --max-time 60 \
+            -X POST "$BASE_URL/chat" \
+            -H "$AUTH" \
+            -H 'content-type: application/json' \
+            -d '{"manifest":"cowork","messages":[{"role":"user","content":"Reply with exactly: pong"}]}')"
+          echo "POST /chat → $code"
+          cat /tmp/chat.json
+          echo
+          if [ "$code" = "202" ]; then
+            token="$(python3 -c 'import json; print(json.load(open("/tmp/chat.json"))["resume_token"])')"
+            for i in $(seq 1 40); do
+              curl -sfS --max-time 20 -H "$AUTH" \
+                "$BASE_URL/chat/runs/${token}" -o /tmp/run.json
+              status="$(python3 -c 'import json; print((json.load(open("/tmp/run.json")).get("status") or "").lower())')"
+              echo "poll $i status=$status"
+              case "$status" in
+                completed|succeeded|failed|error) break ;;
+              esac
+              sleep 3
+            done
+            cat /tmp/run.json
+            echo
+            status="$(python3 -c 'import json; print((json.load(open("/tmp/run.json")).get("status") or "").lower())')"
+            test "$status" = "completed" -o "$status" = "succeeded"
+          elif [ "$code" = "200" ]; then
+            python3 -c 'import json; b=json.load(open("/tmp/chat.json")); assert "final" in b or "content" in str(b)'
+          else
+            echo "unexpected status $code" >&2
+            exit 1
+          fi

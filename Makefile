@@ -55,7 +55,7 @@ up-lite:
 	$(COMPOSE_LITE) up --build
 
 up-gcp:
-	$(COMPOSE_GCP) up --build -d
+	FELIX_DOCKER_EXTRAS=$${FELIX_DOCKER_EXTRAS:-gcp} $(COMPOSE_GCP) up --build -d
 
 up-full:
 	FELIX_DOCKER_EXTRAS=$${FELIX_DOCKER_EXTRAS:-aws} FELIX_OBJECT_STORE=s3 \
