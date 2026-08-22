@@ -9,8 +9,9 @@ name: felix
 
 services:
   api:
-    # Tunnel-only on public VMs — do not publish the API port on the host.
-    ports: !override []
+    # Loopback only — Cloudflare tunnel on the host reaches 127.0.0.1:8080.
+    ports: !override
+      - "127.0.0.1:8080:8080"
     volumes:
       - felix-data:/data
       - ${FELIX_WORKSPACE_HOST:-./workspace}:/workspace
