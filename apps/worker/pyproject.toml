@@ -3,7 +3,7 @@ name = "felix-worker"
 version = "0.1.0"
 description = "Felix worker — Taskiq jobs for audit, cron, fibers, retention."
 requires-python = ">=3.14"
-license = { text = "MIT" }
+license = "Apache-2.0"
 dependencies = [
     "felix-harness",
 ]

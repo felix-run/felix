@@ -3,7 +3,7 @@ name = "felix-api"
 version = "0.1.0"
 description = "Felix API — FastAPI HTTP surface for the agent harness."
 requires-python = ">=3.14"
-license = { text = "MIT" }
+license = "Apache-2.0"
 dependencies = [
     "felix-harness",
     "granian>=2.8.1",

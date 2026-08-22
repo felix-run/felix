@@ -1,7 +1,7 @@
 # Felix
 
 [![CI](https://github.com/felix-run/felix/actions/workflows/ci.yml/badge.svg)](https://github.com/felix-run/felix/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
 **Felix** is a self-hostable managed **agents harness**. You author agents as
 YAML manifests (`apiVersion: felix/v1`); Felix compiles them into governed
@@ -177,4 +177,5 @@ Security reports: [SECURITY.md](SECURITY.md).
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+Apache License 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
+Contributions are accepted under the same license (Apache-2.0 §5).

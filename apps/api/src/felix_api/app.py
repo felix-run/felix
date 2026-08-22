@@ -104,7 +104,7 @@ def create_app(
             "url": "https://docs.felix.run",
         },
         license_info={
-            "name": "MIT",
+            "name": "Apache-2.0",
             "url": "https://github.com/felix-run/felix/blob/main/LICENSE",
         },
         lifespan=lifespan,

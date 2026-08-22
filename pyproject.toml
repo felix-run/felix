@@ -3,7 +3,7 @@ name = "felix"
 version = "0.1.0"
 description = "Felix — a self-hostable managed agents harness. YAML manifests compile into governed agents with durable fibers, memory, skills, eval, approvals, and sandboxes — over OpenAI, A2A, MCP, and SSE."
 readme = "README.md"
-license = { text = "MIT" }
+license = "Apache-2.0"
 authors = [{ name = "Blake Bauman", email = "blake.bauman@gmail.com" }]
 requires-python = ">=3.14"
 dependencies = [
