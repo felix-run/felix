@@ -94,12 +94,14 @@ def create_app(
         version=harness_version,
         summary="Self-hostable managed agents harness.",
         description=(
-            "Felix compiles an `apiVersion: felix/v1` manifest into a runnable agent "
-            "and exposes it over OpenAI-compatible, A2A, MCP, and direct REST/SSE surfaces."
+            "Felix compiles an `apiVersion: felix/v1` manifest into a governed agent "
+            "with durable fibers, memory, skills, eval, approvals, and sandboxes — "
+            "exposed over OpenAI-compatible, A2A, MCP, and REST/SSE surfaces. "
+            "Fork, rewind, and steer live runs."
         ),
         contact={
             "name": "Felix",
-            "url": "https://github.com/felix-run/felix",
+            "url": "https://docs.felix.run",
         },
         license_info={
             "name": "MIT",

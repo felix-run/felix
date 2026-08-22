@@ -49,5 +49,5 @@ async def test_openapi_contact_and_license() -> None:
     assert resp.status_code == 200
     spec = resp.json()
     assert spec["info"]["title"] == "Felix"
-    assert spec["info"]["contact"]["url"] == "https://github.com/felix-run/felix"
+    assert spec["info"]["contact"]["url"] == "https://docs.felix.run"
     assert spec["info"]["license"]["name"] == "MIT"

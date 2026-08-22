@@ -1,8 +1,9 @@
 # Contributing to Felix
 
 Thanks for helping improve Felix. This is a self-hostable **agents harness** —
-manifest-driven agents with governance, durable execution, and multi-protocol
-surfaces (`apiVersion: felix/v1`).
+YAML manifests (`apiVersion: felix/v1`) compile into governed agents with
+durable fibers, memory, skills, eval, approvals, and sandboxes, exposed over
+OpenAI, A2A, MCP, and SSE.
 
 ## Development
 

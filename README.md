@@ -4,13 +4,24 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 **Felix** is a self-hostable managed **agents harness**. You author agents as
-YAML manifests (`apiVersion: felix/v1`), and Felix compiles them into runnable
-agents with governance, durable execution, and multi-protocol surfaces.
+YAML manifests (`apiVersion: felix/v1`); Felix compiles them into governed
+agents with durable fibers, memory, skills, eval, approvals, and sandboxes —
+served over OpenAI, A2A, MCP, and SSE. Fork, rewind, and steer live runs.
+Deploy with Docker, Helm, AWS, or GCP on infrastructure you operate.
 
-Repository: [github.com/felix-run/felix](https://github.com/felix-run/felix)
+Docs: [docs.felix.run](https://docs.felix.run) ·
+Web UI: [github.com/felix-run/web](https://github.com/felix-run/web)
 
-Web UI + docs (Cloudflare Workers, separate repo):
-[github.com/felix-run/web](https://github.com/felix-run/web)
+## What you get
+
+- **Manifests** — `felix/v1` YAML; bundled agents in `manifests/`
+- **Governance** — auth, approvals, audit, usage meters
+- **Durable execution** — fibers (Temporal optional), steer / follow-up
+- **Session control** — fork, rewind, compacting / windowed / semantic
+- **Memory and skills** — durable facts, procedural memory, Agent Skills
+- **Surfaces** — REST/SSE, OpenAI-compatible `/v1`, A2A, MCP
+- **Eval** — datasets, fixtures, `--mock` CI path
+- **Deploy** — lean Docker, Helm, AWS, or GCP
 
 ## Quick start
 

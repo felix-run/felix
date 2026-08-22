@@ -1,10 +1,10 @@
 apiVersion: v2
 name: felix
-description: Felix — a self-hostable managed agents harness.
+description: Felix — self-hostable managed agents harness (manifests, governance, durable fibers, OpenAI / A2A / MCP).
 type: application
 version: 0.1.0
 appVersion: "0.1.0"
-home: https://github.com/felix-run/felix
+home: https://docs.felix.run
 sources:
   - https://github.com/felix-run/felix
 maintainers:

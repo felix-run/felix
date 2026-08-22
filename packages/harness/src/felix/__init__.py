@@ -1,4 +1,4 @@
-"""Felix — a self-hostable managed agents harness."""
+"""Felix — self-hostable managed agents harness (manifests, governance, durable fibers)."""
 
 from __future__ import annotations
 

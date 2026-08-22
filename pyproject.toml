@@ -1,7 +1,7 @@
 [project]
 name = "felix"
 version = "0.1.0"
-description = "Felix — a self-hostable managed agents harness. Manifest-driven agents with governance, durable execution, and multi-protocol surfaces."
+description = "Felix — a self-hostable managed agents harness. YAML manifests compile into governed agents with durable fibers, memory, skills, eval, approvals, and sandboxes — over OpenAI, A2A, MCP, and SSE."
 readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "Blake Bauman", email = "blake.bauman@gmail.com" }]
@@ -14,10 +14,10 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/felix-run/felix"
+Homepage = "https://docs.felix.run"
 Repository = "https://github.com/felix-run/felix"
 Issues = "https://github.com/felix-run/felix/issues"
-Documentation = "https://github.com/felix-run/felix#readme"
+Documentation = "https://docs.felix.run"
 
 # Forward extras so `uv sync --extra aws` works from the repo root.
 [project.optional-dependencies]
