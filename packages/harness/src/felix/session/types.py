@@ -148,9 +148,7 @@ def chat_message_to_event(m: ChatMessage) -> AppendableEvent:
         tool_call_id=m.tool_call_id,
         name=m.name,
         tool_calls=(
-            [{"id": tc.id, "name": tc.name, "args": tc.args} for tc in m.tool_calls]
-            if m.tool_calls
-            else None
+            [{"id": tc.id, "name": tc.name, "args": tc.args} for tc in m.tool_calls] if m.tool_calls else None
         ),
         metadata=md,
     )

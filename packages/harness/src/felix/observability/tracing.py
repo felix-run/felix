@@ -73,7 +73,7 @@ def manifest_span(name: str, version: str) -> SpanContext:
     return make_span("manifest", {"manifest_name": name, "manifest_version": version})
 
 
-async def with_span(
+async def with_span[T](
     name: str,
     fn: Callable[[SpanContext], Awaitable[T]],
     attributes: dict[str, SpanAttributeValue] | None = None,
@@ -130,10 +130,7 @@ def setup_observability(settings: Any) -> bool:
         from opentelemetry.sdk.trace import TracerProvider
         from opentelemetry.sdk.trace.export import BatchSpanProcessor
     except ImportError:
-        logger.warning(
-            "FELIX_OTEL_ENABLED=true but otel extra is not installed "
-            "(uv sync --extra otel)"
-        )
+        logger.warning("FELIX_OTEL_ENABLED=true but otel extra is not installed (uv sync --extra otel)")
         return False
 
     endpoint = getattr(settings, "otel_endpoint", "") or "http://localhost:4317"

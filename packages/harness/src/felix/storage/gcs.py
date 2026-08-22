@@ -21,9 +21,7 @@ class GcsObjectStore:
             try:
                 from google.cloud import storage
             except ImportError as e:
-                raise RuntimeError(
-                    "GCS backend requires: uv sync --extra gcp (google-cloud-storage)"
-                ) from e
+                raise RuntimeError("GCS backend requires: uv sync --extra gcp (google-cloud-storage)") from e
             self._client = storage.Client()
             self._bucket = self._client.bucket(self._bucket_name)
 
@@ -41,9 +39,7 @@ class GcsObjectStore:
 
         return await asyncio.to_thread(_get)
 
-    async def put(
-        self, key: str, data: bytes, *, content_type: str = "application/octet-stream"
-    ) -> None:
+    async def put(self, key: str, data: bytes, *, content_type: str = "application/octet-stream") -> None:
         import asyncio
 
         self._ensure()

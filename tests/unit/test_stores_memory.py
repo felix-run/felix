@@ -32,9 +32,7 @@ MINIMAL_MANIFEST = {
 @pytest.mark.asyncio
 async def test_manifest_store_roundtrip(memory_settings: Settings) -> None:
     manifest = parse_manifest(MINIMAL_MANIFEST)
-    created = await manifest_store.put_version(
-        memory_settings, "t1", "quick", manifest, created_by="tester"
-    )
+    created = await manifest_store.put_version(memory_settings, "t1", "quick", manifest, created_by="tester")
     assert created["version"] == 1
     assert created["manifest"]["metadata"]["name"] == "quick"
 

@@ -61,9 +61,7 @@ def model_catalog_entry(
                 "inputPerMillion": float(prices.get("input") or 0),
                 "outputPerMillion": float(prices.get("output") or 0),
                 "cacheReadPerMillion": float(prices.get("cache_read") or 0),
-                "cacheWritePerMillion": float(
-                    prices.get("cache_write") or prices.get("input") or 0
-                ),
+                "cacheWritePerMillion": float(prices.get("cache_write") or prices.get("input") or 0),
             },
             "modalities": modalities or ["text"],
             "supportedThinkingLevels": supported_thinking_levels(model_id),

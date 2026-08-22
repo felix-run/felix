@@ -63,9 +63,7 @@ async def list_models(request: Request) -> dict[str, Any]:
     for name in names:
         manifest = None
         try:
-            resolved = await resolve_tenant_manifest(
-                settings, auth.tenant_id, name, thread_id=None
-            )
+            resolved = await resolve_tenant_manifest(settings, auth.tenant_id, name, thread_id=None)
             manifest = resolved.manifest
         except Exception:
             manifest = None
@@ -81,12 +79,8 @@ async def chat_completions(body: ChatCompletionsRequest, request: Request) -> An
     thread = f"{auth.tenant_id}:{body.user}" if body.user else None
 
     try:
-        resolved = await resolve_tenant_manifest(
-            settings, auth.tenant_id, body.model, thread_id=thread
-        )
-        await prepare_tenant_invoke(
-            settings, resolved=resolved, auth=auth, thread_id=thread
-        )
+        resolved = await resolve_tenant_manifest(settings, auth.tenant_id, body.model, thread_id=thread)
+        await prepare_tenant_invoke(settings, resolved=resolved, auth=auth, thread_id=thread)
     except Exception as exc:
         from felix.manifests.inbound_auth import InboundAuthError
         from felix.manifests.pin import ManifestDriftError
@@ -104,8 +98,7 @@ async def chat_completions(body: ChatCompletionsRequest, request: Request) -> An
         raise
 
     messages = [
-        ChatMessage.model_validate({"role": m.role, "content": m.content or ""})
-        for m in body.messages
+        ChatMessage.model_validate({"role": m.role, "content": m.content or ""}) for m in body.messages
     ]
     req_ctx = RequestContext(
         settings=settings,

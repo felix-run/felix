@@ -81,9 +81,7 @@ def test_select_tools_keeps_used_and_ranks() -> None:
             tool_calls=[ToolCall(id="1", name="calculator", args={})],
         ),
     ]
-    selected = select_tools(
-        tools, messages, ToolsRetrievalSpec(enabled=True, top_k=2)
-    )
+    selected = select_tools(tools, messages, ToolsRetrievalSpec(enabled=True, top_k=2))
     names = [t.name for t in selected]
     assert "calculator" in names  # already used
     assert "web_search" in names
@@ -95,9 +93,7 @@ def test_select_tools_disabled_returns_all() -> None:
     async def _h(_a=None, _c=None):
         return "ok"
 
-    tools = [
-        define_tool(name=f"t{i}", description=f"tool {i}", handler=_h) for i in range(5)
-    ]
+    tools = [define_tool(name=f"t{i}", description=f"tool {i}", handler=_h) for i in range(5)]
     out = select_tools(
         tools,
         [ChatMessage(role="user", content="hi")],

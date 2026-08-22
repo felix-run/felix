@@ -30,18 +30,14 @@ class FullReplaySessionStrategy:
         incoming: list[ChatMessage],
         opts: SessionRenderOpts | dict[str, Any],
     ) -> list[ChatMessage]:
-        system_prompt = (
-            opts.system_prompt if isinstance(opts, SessionRenderOpts) else opts["system_prompt"]
-        )
+        system_prompt = opts.system_prompt if isinstance(opts, SessionRenderOpts) else opts["system_prompt"]
         events = await session.get_events()
         from felix.session.tree import active_branch_events
 
         branch = active_branch_events(events, session_id=getattr(session, "id", ""))
         from felix.session.types import include_in_llm_context
 
-        history = [
-            event_to_chat_message(e) for e in branch if include_in_llm_context(e)
-        ]
+        history = [event_to_chat_message(e) for e in branch if include_in_llm_context(e)]
         return [ChatMessage(role="system", content=system_prompt), *history, *incoming]
 
 
@@ -55,9 +51,7 @@ class WindowedSessionStrategy:
         incoming: list[ChatMessage],
         opts: SessionRenderOpts | dict[str, Any],
     ) -> list[ChatMessage]:
-        system_prompt = (
-            opts.system_prompt if isinstance(opts, SessionRenderOpts) else opts["system_prompt"]
-        )
+        system_prompt = opts.system_prompt if isinstance(opts, SessionRenderOpts) else opts["system_prompt"]
         events = await session.get_events()
         from felix.session.tree import active_branch_events
 
@@ -107,9 +101,7 @@ class SummarizingSessionStrategy:
 
         from felix.session.types import include_in_llm_context
 
-        raw = [
-            e for e in all_events if include_in_llm_context(e) and e.seq > covered
-        ]
+        raw = [e for e in all_events if include_in_llm_context(e) and e.seq > covered]
         pinned = [e for e in raw if is_pinned(e)]
         compactable = [e for e in raw if not is_pinned(e)]
 
@@ -186,8 +178,7 @@ class SummarizingSessionStrategy:
                 note = ChatMessage(
                     role="system",
                     content=(
-                        f"[session] summarization failed; "
-                        f"kept last {self.keep} of {len(compactable)} turns."
+                        f"[session] summarization failed; kept last {self.keep} of {len(compactable)} turns."
                     ),
                 )
                 merged = sorted([*pinned, *newer], key=lambda e: e.seq)
@@ -219,9 +210,7 @@ class SemanticSessionStrategy:
         incoming: list[ChatMessage],
         opts: SessionRenderOpts | dict[str, Any],
     ) -> list[ChatMessage]:
-        system_prompt = (
-            opts.system_prompt if isinstance(opts, SessionRenderOpts) else opts["system_prompt"]
-        )
+        system_prompt = opts.system_prompt if isinstance(opts, SessionRenderOpts) else opts["system_prompt"]
         query = " ".join(m.content for m in incoming if m.role == "user").lower()
         tokens = set(query.split()) if query else set()
         events = await session.get_events()

@@ -21,9 +21,7 @@ class HttpExecutor:
         self._method = method.upper()
         self._allow_http = allow_http
 
-    async def execute(
-        self, args: ToolInput, ctx: ToolInvocationCtx | None = None
-    ) -> ToolOutput:
+    async def execute(self, args: ToolInput, ctx: ToolInvocationCtx | None = None) -> ToolOutput:
         import httpx
 
         _ = ctx
@@ -38,9 +36,7 @@ class EchoExecutor:
 
     transport = "local"
 
-    async def execute(
-        self, args: ToolInput, ctx: ToolInvocationCtx | None = None
-    ) -> ToolOutput:
+    async def execute(self, args: ToolInput, ctx: ToolInvocationCtx | None = None) -> ToolOutput:
         _ = ctx
         return str(args)
 
@@ -67,9 +63,7 @@ class SandboxExecutor:
         self._network_disabled = network_disabled
         self._mem_limit = mem_limit
 
-    async def execute(
-        self, args: ToolInput, ctx: ToolInvocationCtx | None = None
-    ) -> ToolOutput:
+    async def execute(self, args: ToolInput, ctx: ToolInvocationCtx | None = None) -> ToolOutput:
         import json
 
         _ = ctx

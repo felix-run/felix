@@ -35,9 +35,7 @@ class FilesystemObjectStore:
             return None
         return path.read_bytes()
 
-    async def put(
-        self, key: str, data: bytes, *, content_type: str = "application/octet-stream"
-    ) -> None:
+    async def put(self, key: str, data: bytes, *, content_type: str = "application/octet-stream") -> None:
         _ = content_type
         path = self._path(key)
         path.parent.mkdir(parents=True, exist_ok=True)

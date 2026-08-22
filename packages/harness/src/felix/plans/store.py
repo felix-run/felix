@@ -38,15 +38,9 @@ def _plan_dict(row: Plan | dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def list_plans(
-    settings: Settings, tenant_id: str, *, limit: int = 50
-) -> list[dict[str, Any]]:
+async def list_plans(settings: Settings, tenant_id: str, *, limit: int = 50) -> list[dict[str, Any]]:
     if _use_memory(settings):
-        items = [
-            _plan_dict(row)
-            for (t, _), row in _memory_plans.items()
-            if t == tenant_id
-        ]
+        items = [_plan_dict(row) for (t, _), row in _memory_plans.items() if t == tenant_id]
         items.sort(key=lambda r: r["updated_at"], reverse=True)
         return items[:limit]
 
@@ -54,18 +48,13 @@ async def list_plans(
     async with factory() as db:
         rows = (
             await db.scalars(
-                select(Plan)
-                .where(Plan.tenant_id == tenant_id)
-                .order_by(Plan.updated_at.desc())
-                .limit(limit)
+                select(Plan).where(Plan.tenant_id == tenant_id).order_by(Plan.updated_at.desc()).limit(limit)
             )
         ).all()
         return [_plan_dict(r) for r in rows]
 
 
-async def get_plan(
-    settings: Settings, tenant_id: str, plan_id: str
-) -> dict[str, Any] | None:
+async def get_plan(settings: Settings, tenant_id: str, plan_id: str) -> dict[str, Any] | None:
     if _use_memory(settings):
         row = _memory_plans.get((tenant_id, plan_id))
         return _plan_dict(row) if row else None
@@ -131,9 +120,7 @@ async def delete_plan(settings: Settings, tenant_id: str, plan_id: str) -> bool:
 
     factory = get_session_factory(settings=settings)
     async with factory() as db:
-        result = await db.execute(
-            delete(Plan).where(Plan.tenant_id == tenant_id, Plan.id == plan_id)
-        )
+        result = await db.execute(delete(Plan).where(Plan.tenant_id == tenant_id, Plan.id == plan_id))
         await db.commit()
         return result.rowcount > 0
 

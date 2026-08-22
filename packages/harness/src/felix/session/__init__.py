@@ -26,6 +26,7 @@ from felix.session.types import (
 )
 
 __all__ = [
+    "THINKING_LEVELS",
     "AppendableEvent",
     "CompactingSessionStrategy",
     "FullReplaySessionStrategy",
@@ -35,7 +36,6 @@ __all__ = [
     "SessionEvent",
     "SessionStore",
     "SessionStrategy",
-    "THINKING_LEVELS",
     "WakeState",
     "analyze_wake",
     "budget_for_level",

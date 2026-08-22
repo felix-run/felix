@@ -406,9 +406,7 @@ def _heuristic_judge_score(content: str, criteria: str) -> float:
 def apply_judges(tools: list[Tool], guardrails: Any, manifest_id: str) -> list[Tool]:
     """Apply tool-output judges using criteria/threshold heuristics."""
     _ = manifest_id
-    judges = [
-        j for j in getattr(guardrails, "judges", []) if not getattr(j, "final_response", False)
-    ]
+    judges = [j for j in getattr(guardrails, "judges", []) if not getattr(j, "final_response", False)]
     if not judges:
         return tools
 
@@ -520,9 +518,9 @@ def apply_approvals(tools: list[Tool], rules: list[ApprovalRule], manifest_id: s
                 try:
                     from felix.approvals import store as approvals_store
 
-                    sig = hashlib.sha256(
-                        json.dumps(args, sort_keys=True, default=str).encode()
-                    ).hexdigest()[:32]
+                    sig = hashlib.sha256(json.dumps(args, sort_keys=True, default=str).encode()).hexdigest()[
+                        :32
+                    ]
                     approved = await approvals_store.find_approved(
                         req.settings,
                         req.auth.tenant_id,
@@ -561,9 +559,7 @@ def apply_approvals(tools: list[Tool], rules: list[ApprovalRule], manifest_id: s
                     )
 
                 approval_id = str(pending_row.get("id") or "")
-                thread_id = (ctx.thread_id if ctx else None) or (
-                    req.thread_id if req else None
-                )
+                thread_id = (ctx.thread_id if ctx else None) or (req.thread_id if req else None)
                 await emit_side_event(
                     thread_id,
                     "approval_required",
@@ -697,9 +693,7 @@ async def build_agent(
         try:
             m = load_bundled(manifest)
         except FileNotFoundError:
-            m = parse_manifest(
-                {"apiVersion": "felix/v1", "kind": "Agent", "metadata": {"name": manifest}}
-            )
+            m = parse_manifest({"apiVersion": "felix/v1", "kind": "Agent", "metadata": {"name": manifest}})
     elif isinstance(manifest, dict):
         m = parse_manifest(manifest)
     else:
@@ -928,8 +922,7 @@ async def build_agent(
             )
 
         final_prompt = (
-            system_prompt
-            or f"You are {m.metadata.name}. Use your tools when needed to answer accurately."
+            system_prompt or f"You are {m.metadata.name}. Use your tools when needed to answer accurately."
         )
 
         pattern_builder = get_pattern(m.spec.pattern)

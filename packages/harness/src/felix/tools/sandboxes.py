@@ -27,9 +27,7 @@ class SandboxArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     code: str = Field(default="", description="Python source to run in the sandbox.")
-    path: str | None = Field(
-        default=None, description="Optional workspace path the snippet may touch."
-    )
+    path: str | None = Field(default=None, description="Optional workspace path the snippet may touch.")
     stdin: dict[str, Any] | None = Field(
         default=None, description="Optional JSON payload written to the container stdin."
     )
@@ -66,11 +64,7 @@ class _SandboxToolExecutor:
         if self._path_prefix and path and not path.startswith(self._path_prefix):
             return f"sandbox_error: path must start with {self._path_prefix!r}"
         code = str(args.get("code") or "")
-        command = (
-            ["python", "-c", code]
-            if code
-            else ["python", "-c", "import sys; print(sys.stdin.read())"]
-        )
+        command = ["python", "-c", code] if code else ["python", "-c", "import sys; print(sys.stdin.read())"]
         runner = SandboxExecutor(
             image=self._image,
             command=command,
@@ -171,8 +165,7 @@ def tools_from_containers(
         out.append(
             define_tool_with_executor(
                 name=name,
-                description=ref.description
-                or f"Invoke container image {ref.image} via {ref.gateway_url}.",
+                description=ref.description or f"Invoke container image {ref.image} via {ref.gateway_url}.",
                 args=ContainerArgs,
                 executor=_ContainerExecutor(
                     gateway_url=ref.gateway_url,

@@ -114,9 +114,7 @@ def make_remember_procedure_tool(
 
     return define_tool(
         name="remember_procedure",
-        description=(
-            "Store a reusable how-to so it can be retrieved on later turns (procedural memory)."
-        ),
+        description=("Store a reusable how-to so it can be retrieved on later turns (procedural memory)."),
         args=RememberProcedureArgs,
         handler=handler,
         source="memory",

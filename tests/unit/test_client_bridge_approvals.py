@@ -37,9 +37,7 @@ async def test_client_bridge_complete() -> None:
 
 @pytest.mark.asyncio
 async def test_client_tool_executor_roundtrip() -> None:
-    tools = tools_from_client_refs(
-        [ClientToolRef(name="local_open", description="Open something")]
-    )
+    tools = tools_from_client_refs([ClientToolRef(name="local_open", description="Open something")])
     tool = tools[0]
     assert tool.executor.transport == "client"
 

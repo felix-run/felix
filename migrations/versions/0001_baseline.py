@@ -168,9 +168,7 @@ def upgrade() -> None:
         sa.Column("updated_by", sa.Text(), server_default="", nullable=False),
         sa.Column("canary_version", sa.Integer(), nullable=True),
         sa.Column("canary_weight", sa.Integer(), server_default="0", nullable=False),
-        sa.CheckConstraint(
-            "canary_weight BETWEEN 0 AND 100", name="ck_manifest_active_canary_weight"
-        ),
+        sa.CheckConstraint("canary_weight BETWEEN 0 AND 100", name="ck_manifest_active_canary_weight"),
         sa.PrimaryKeyConstraint("tenant_id", "name"),
     )
 
@@ -240,9 +238,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("tenant_id", "id"),
     )
     op.execute("ALTER TABLE memory_vectors ADD COLUMN embedding vector(768) NOT NULL")
-    op.execute(
-        "CREATE INDEX idx_memvec_hnsw ON memory_vectors USING hnsw (embedding vector_cosine_ops)"
-    )
+    op.execute("CREATE INDEX idx_memvec_hnsw ON memory_vectors USING hnsw (embedding vector_cosine_ops)")
 
     op.create_table(
         "session_events",

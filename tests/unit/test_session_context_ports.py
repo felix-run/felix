@@ -13,7 +13,7 @@ from felix.session.compaction import CompactingSessionStrategy, estimate_tokens
 from felix.session.store import InMemorySessionStore
 from felix.session.strategies import get_session_strategy
 from felix.session.tree import annotate_and_append, fork_thread, get_event_id, get_leaf, rewind_to
-from felix.session.types import AppendableEvent, SessionEvent
+from felix.session.types import AppendableEvent
 from felix.skills.loader import load_manifest_skills, parse_skill_md, skill_catalog_xml
 from felix.skills.store import InMemorySkillActivationStore
 from felix.skills.tools import make_skill_tools
@@ -57,7 +57,10 @@ async def test_skill_tools_activate() -> None:
         bundled_dir=Path(__file__).resolve().parents[2] / "skills",
     )
     store = InMemorySkillActivationStore()
-    tools = {t.name: t for t in make_skill_tools(catalog, activation_store=store, tenant_id="t", manifest_id="quick")}
+    tools = {
+        t.name: t
+        for t in make_skill_tools(catalog, activation_store=store, tenant_id="t", manifest_id="quick")
+    }
     listed = await tools["list_skills"].executor.execute({}, ToolInvocationCtx())
     data = json.loads(listed if isinstance(listed, str) else listed.content)
     assert any(s["name"] == "calculator-help" for s in data)
@@ -157,7 +160,9 @@ async def test_plugin_hooks() -> None:
         return [ChatMessage(role="system", content="injected")]
 
     async def filter_hist(history, _ctx):
-        return [m for m in history if getattr(m, "role", None) != "system" or "keep" in getattr(m, "content", "")]
+        return [
+            m for m in history if getattr(m, "role", None) != "system" or "keep" in getattr(m, "content", "")
+        ]
 
     hooks.register_before_turn(inject)
     hooks.register_filter_history(filter_hist)
@@ -210,9 +215,7 @@ async def test_context_files_from_store() -> None:
 
     store = MemoryObjectStore()
     await store.put("AGENTS.md", b"# Project\nUse tabs.")
-    parts = await load_instruction_files(
-        file_keys=["AGENTS.md"], object_store=store, tenant_id="t"
-    )
+    parts = await load_instruction_files(file_keys=["AGENTS.md"], object_store=store, tenant_id="t")
     assert parts and "Use tabs" in parts[0]
 
 

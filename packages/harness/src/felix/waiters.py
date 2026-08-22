@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 from typing import Any
@@ -22,10 +23,8 @@ async def _get_redis() -> Any | None:
     global _redis, _redis_loop, _redis_failed
     loop_id = id(asyncio.get_running_loop())
     if _redis is not None and _redis_loop != loop_id:
-        try:
+        with contextlib.suppress(Exception):
             await _redis.aclose()
-        except Exception:
-            pass
         _redis = None
         _redis_loop = None
         _redis_failed = False

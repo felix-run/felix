@@ -62,10 +62,7 @@ class ChatMessage:
                     id=str(tc.get("id") or ""),
                     name=str(tc.get("name") or tc.get("function", {}).get("name") or ""),
                     args=dict(
-                        tc.get("args")
-                        or tc.get("arguments")
-                        or tc.get("function", {}).get("arguments")
-                        or {}
+                        tc.get("args") or tc.get("arguments") or tc.get("function", {}).get("arguments") or {}
                     ),
                 )
                 if isinstance(tc, dict)
@@ -93,10 +90,7 @@ class ChatMessage:
                 elif ptype in {"image_url", "image"}:
                     url_obj = part.get("image_url") if isinstance(part.get("image_url"), dict) else {}
                     url = str(
-                        part.get("url")
-                        or url_obj.get("url")
-                        or part.get("source", {}).get("url")
-                        or ""
+                        part.get("url") or url_obj.get("url") or part.get("source", {}).get("url") or ""
                     )
                     media = str(
                         part.get("media_type")
@@ -160,9 +154,7 @@ class ChatMessage:
         if self.name is not None:
             out["name"] = self.name
         if self.tool_calls is not None:
-            out["tool_calls"] = [
-                {"id": tc.id, "name": tc.name, "args": tc.args} for tc in self.tool_calls
-            ]
+            out["tool_calls"] = [{"id": tc.id, "name": tc.name, "args": tc.args} for tc in self.tool_calls]
         if self.thinking is not None:
             out["thinking"] = self.thinking
         if self.attachments:

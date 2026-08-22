@@ -80,9 +80,7 @@ class Approval(Base):
     manifest_id: Mapped[str] = mapped_column(Text, server_default="", default="")
     tool_name: Mapped[str] = mapped_column(Text, nullable=False)
     call_signature: Mapped[str] = mapped_column(Text, nullable=False)
-    args_json: Mapped[dict[str, Any]] = mapped_column(
-        JSONB, server_default=text("'{}'::jsonb"), default=dict
-    )
+    args_json: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default=text("'{}'::jsonb"), default=dict)
     principal_subj: Mapped[str] = mapped_column(Text, server_default="", default="")
     status: Mapped[str] = mapped_column(Text, server_default="pending", default="pending")
     created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
@@ -102,9 +100,7 @@ class SkillActivation(Base):
 
     tenant_id: Mapped[str] = mapped_column(Text, primary_key=True)
     manifest_id: Mapped[str] = mapped_column(Text, primary_key=True)
-    active_skills: Mapped[list[Any]] = mapped_column(
-        JSONB, server_default=text("'[]'::jsonb"), default=list
-    )
+    active_skills: Mapped[list[Any]] = mapped_column(JSONB, server_default=text("'[]'::jsonb"), default=list)
     updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
 
@@ -141,9 +137,7 @@ class ManifestActive(Base):
     canary_weight: Mapped[int] = mapped_column(Integer, server_default="0", default=0)
 
     __table_args__ = (
-        CheckConstraint(
-            "canary_weight BETWEEN 0 AND 100", name="ck_manifest_active_canary_weight"
-        ),
+        CheckConstraint("canary_weight BETWEEN 0 AND 100", name="ck_manifest_active_canary_weight"),
     )
 
 
@@ -181,9 +175,7 @@ class EvalRun(Base):
     status: Mapped[str] = mapped_column(Text, server_default="in_progress", default="in_progress")
     pass_count: Mapped[int] = mapped_column(Integer, server_default="0", default=0)
     fail_count: Mapped[int] = mapped_column(Integer, server_default="0", default=0)
-    scores_json: Mapped[list[Any]] = mapped_column(
-        JSONB, server_default=text("'[]'::jsonb"), default=list
-    )
+    scores_json: Mapped[list[Any]] = mapped_column(JSONB, server_default=text("'[]'::jsonb"), default=list)
     manifest_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
@@ -219,9 +211,7 @@ class SessionEventRow(Base):
     tool_calls: Mapped[list[Any] | None] = mapped_column(JSONB, nullable=True)
     event_metadata: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
 
-    __table_args__ = (
-        Index("idx_session_events_tenant_thread", "tenant_id", "thread_id", "seq"),
-    )
+    __table_args__ = (Index("idx_session_events_tenant_thread", "tenant_id", "thread_id", "seq"),)
 
 
 class ThreadState(Base):
@@ -266,9 +256,7 @@ class UsageEvent(Base):
     tokens_output: Mapped[int] = mapped_column(Integer, server_default="0", default=0)
     cache_creation: Mapped[int] = mapped_column(Integer, server_default="0", default=0)
     cache_read: Mapped[int] = mapped_column(Integer, server_default="0", default=0)
-    meta_json: Mapped[dict[str, Any]] = mapped_column(
-        JSONB, server_default=text("'{}'::jsonb"), default=dict
-    )
+    meta_json: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default=text("'{}'::jsonb"), default=dict)
 
     __table_args__ = (Index("idx_usage_tenant_ts", "tenant_id", "ts"),)
 
@@ -284,12 +272,8 @@ class A2ATask(Base):
     status_json: Mapped[dict[str, Any]] = mapped_column(
         JSONB, server_default=text("'{}'::jsonb"), default=dict
     )
-    artifacts_json: Mapped[list[Any]] = mapped_column(
-        JSONB, server_default=text("'[]'::jsonb"), default=list
-    )
-    task_json: Mapped[dict[str, Any]] = mapped_column(
-        JSONB, server_default=text("'{}'::jsonb"), default=dict
-    )
+    artifacts_json: Mapped[list[Any]] = mapped_column(JSONB, server_default=text("'[]'::jsonb"), default=list)
+    task_json: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default=text("'{}'::jsonb"), default=dict)
     created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
     updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
 

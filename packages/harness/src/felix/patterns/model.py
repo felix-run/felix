@@ -95,7 +95,7 @@ def parse_model_routes(settings: Settings | None = None) -> dict[str, ModelRoute
             override = json.loads(settings.model_routes)
             for k, v in override.items():
                 routes[k] = ModelRoute(provider=v["provider"], model=v["model"])
-        except (json.JSONDecodeError, KeyError, TypeError):
+        except json.JSONDecodeError, KeyError, TypeError:
             logger.warning("invalid FELIX_MODEL_ROUTES; using defaults")
     return routes
 
@@ -154,9 +154,7 @@ def apply_anthropic_thinking_cache(body: dict[str, Any], spec: Any) -> None:
     if getattr(spec, "cache", False):
         system = body.get("system")
         if isinstance(system, str) and system:
-            body["system"] = [
-                {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
-            ]
+            body["system"] = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
         tools = body.get("tools")
         if isinstance(tools, list) and tools:
             last = dict(tools[-1])
@@ -360,9 +358,7 @@ class _HttpModelClient:
     ) -> ModelChatResult:
         opts = opts or ModelChatOptions()
         temperature = (
-            opts.temperature
-            if opts.temperature is not None
-            else getattr(self.spec, "temperature", 0)
+            opts.temperature if opts.temperature is not None else getattr(self.spec, "temperature", 0)
         )
         max_tokens = opts.max_tokens or getattr(self.spec, "max_tokens", None)
 
@@ -389,7 +385,9 @@ class _HttpModelClient:
         apply_openai_thinking_cache(body, self.spec)
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
         async with httpx.AsyncClient(timeout=120.0) as client:
-            resp = await client.post(f"{self.base_url.rstrip('/')}/chat/completions", json=body, headers=headers)
+            resp = await client.post(
+                f"{self.base_url.rstrip('/')}/chat/completions", json=body, headers=headers
+            )
             if resp.status_code >= 400:
                 raise ModelGatewayError("openai", resp.status_code, resp.text)
             data = resp.json()
@@ -440,9 +438,7 @@ class _HttpModelClient:
                 if m.content:
                     blocks.append({"type": "text", "text": m.content})
                 for tc in m.tool_calls:
-                    blocks.append(
-                        {"type": "tool_use", "id": tc.id, "name": tc.name, "input": tc.args}
-                    )
+                    blocks.append({"type": "tool_use", "id": tc.id, "name": tc.name, "input": tc.args})
                 converted.append({"role": "assistant", "content": blocks})
                 continue
             converted.append(_anthropic_user_or_plain(m))
@@ -518,9 +514,7 @@ class _HttpModelClient:
     ) -> AsyncIterator[str]:
         opts = opts or ModelChatOptions()
         temperature = (
-            opts.temperature
-            if opts.temperature is not None
-            else getattr(self.spec, "temperature", 0)
+            opts.temperature if opts.temperature is not None else getattr(self.spec, "temperature", 0)
         )
         max_tokens = opts.max_tokens or getattr(self.spec, "max_tokens", None)
         if self.style == "anthropic":
@@ -548,38 +542,38 @@ class _HttpModelClient:
         apply_openai_thinking_cache(body, self.spec)
         # Streaming path is text-oriented; tool calls use chat() in the agent loop.
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            async with client.stream(
+        async with (
+            httpx.AsyncClient(timeout=120.0) as client,
+            client.stream(
                 "POST",
                 f"{self.base_url.rstrip('/')}/chat/completions",
                 json=body,
                 headers=headers,
-            ) as resp:
-                if resp.status_code >= 400:
-                    text = await resp.aread()
-                    raise ModelGatewayError(
-                        "openai", resp.status_code, text.decode("utf-8", errors="replace")
-                    )
-                async for line in resp.aiter_lines():
-                    if not line:
-                        continue
-                    if line.startswith("data:"):
-                        payload = line[5:].strip()
-                    elif line.startswith("{"):
-                        payload = line.strip()
-                    else:
-                        continue
-                    if payload == "[DONE]":
-                        break
-                    try:
-                        data = json.loads(payload)
-                    except json.JSONDecodeError:
-                        continue
-                    for choice in data.get("choices") or []:
-                        delta = choice.get("delta") or {}
-                        content = delta.get("content")
-                        if content:
-                            yield str(content)
+            ) as resp,
+        ):
+            if resp.status_code >= 400:
+                text = await resp.aread()
+                raise ModelGatewayError("openai", resp.status_code, text.decode("utf-8", errors="replace"))
+            async for line in resp.aiter_lines():
+                if not line:
+                    continue
+                if line.startswith("data:"):
+                    payload = line[5:].strip()
+                elif line.startswith("{"):
+                    payload = line.strip()
+                else:
+                    continue
+                if payload == "[DONE]":
+                    break
+                try:
+                    data = json.loads(payload)
+                except json.JSONDecodeError:
+                    continue
+                for choice in data.get("choices") or []:
+                    delta = choice.get("delta") or {}
+                    content = delta.get("content")
+                    if content:
+                        yield str(content)
 
     async def _stream_anthropic(
         self,
@@ -613,9 +607,7 @@ class _HttpModelClient:
                 if m.content:
                     blocks.append({"type": "text", "text": m.content})
                 for tc in m.tool_calls:
-                    blocks.append(
-                        {"type": "tool_use", "id": tc.id, "name": tc.name, "input": tc.args}
-                    )
+                    blocks.append({"type": "tool_use", "id": tc.id, "name": tc.name, "input": tc.args})
                 converted.append({"role": "assistant", "content": blocks})
                 continue
             converted.append(_anthropic_user_or_plain(m))
@@ -635,38 +627,40 @@ class _HttpModelClient:
             "anthropic-version": "2023-06-01",
             "Content-Type": "application/json",
         }
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            async with client.stream(
+        async with (
+            httpx.AsyncClient(timeout=120.0) as client,
+            client.stream(
                 "POST",
                 f"{self.base_url.rstrip('/')}/v1/messages",
                 json=body,
                 headers=headers,
-            ) as resp:
-                if resp.status_code >= 400:
-                    text = await resp.aread()
-                    raise ModelGatewayError(
-                        "anthropic",
-                        resp.status_code,
-                        text.decode("utf-8", errors="replace"),
-                    )
-                async for line in resp.aiter_lines():
-                    if not line.startswith("data:"):
-                        continue
-                    payload = line[5:].strip()
-                    if not payload or payload == "[DONE]":
-                        continue
-                    try:
-                        data = json.loads(payload)
-                    except json.JSONDecodeError:
-                        continue
-                    if data.get("type") == "content_block_delta":
-                        delta = data.get("delta") or {}
-                        if delta.get("type") == "text_delta" and delta.get("text"):
-                            yield str(delta["text"])
-                    elif data.get("type") == "content_block_start":
-                        block = data.get("content_block") or {}
-                        if block.get("type") == "text" and block.get("text"):
-                            yield str(block["text"])
+            ) as resp,
+        ):
+            if resp.status_code >= 400:
+                text = await resp.aread()
+                raise ModelGatewayError(
+                    "anthropic",
+                    resp.status_code,
+                    text.decode("utf-8", errors="replace"),
+                )
+            async for line in resp.aiter_lines():
+                if not line.startswith("data:"):
+                    continue
+                payload = line[5:].strip()
+                if not payload or payload == "[DONE]":
+                    continue
+                try:
+                    data = json.loads(payload)
+                except json.JSONDecodeError:
+                    continue
+                if data.get("type") == "content_block_delta":
+                    delta = data.get("delta") or {}
+                    if delta.get("type") == "text_delta" and delta.get("text"):
+                        yield str(delta["text"])
+                elif data.get("type") == "content_block_start":
+                    block = data.get("content_block") or {}
+                    if block.get("type") == "text" and block.get("text"):
+                        yield str(block["text"])
 
 
 @dataclass
@@ -785,13 +779,12 @@ class _EscalationClient:
             for i in range(0, len(text), step):
                 yield text[i : i + step]
 
+
 def _is_provider_error(err: object) -> bool:
     if isinstance(err, ModelGatewayError):
         return err.status >= 500 or err.status == 429
     status = getattr(err, "status", None) or getattr(err, "status_code", None)
-    if isinstance(status, int) and (status >= 500 or status == 429):
-        return True
-    return False
+    return bool(isinstance(status, int) and (status >= 500 or status == 429))
 
 
 def _make_anthropic(model_id: str, route: ModelRoute, spec: Any, settings: Settings) -> ModelClient:
@@ -833,9 +826,15 @@ def _make_ollama(model_id: str, route: ModelRoute, spec: Any, settings: Settings
 
 
 def register_builtin_providers() -> None:
-    register_model_provider("anthropic", lambda mid, route, spec, settings: _make_anthropic(mid, route, spec, settings))
-    register_model_provider("openai", lambda mid, route, spec, settings: _make_openai(mid, route, spec, settings))
-    register_model_provider("ollama", lambda mid, route, spec, settings: _make_ollama(mid, route, spec, settings))
+    register_model_provider(
+        "anthropic", lambda mid, route, spec, settings: _make_anthropic(mid, route, spec, settings)
+    )
+    register_model_provider(
+        "openai", lambda mid, route, spec, settings: _make_openai(mid, route, spec, settings)
+    )
+    register_model_provider(
+        "ollama", lambda mid, route, spec, settings: _make_ollama(mid, route, spec, settings)
+    )
 
 
 def build_one_model(settings: Settings, spec: Any, logical_id: str) -> ModelClient:

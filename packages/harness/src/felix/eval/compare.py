@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from felix.config import Settings
-from felix.eval.runner import _mock_answer, _score_answer, start_run
+from felix.eval.runner import _score_answer, start_run
 
 logger = logging.getLogger("felix.eval.compare")
 
@@ -158,7 +158,7 @@ async def llm_judge_score(
         f"Criteria: {criteria}\n"
         f"Question: {user_input}\n"
         f"Answer: {answer}\n"
-        f"Reply with ONLY a JSON object: {{\"score\": 0.0, \"reason\": \"...\"}}"
+        f'Reply with ONLY a JSON object: {{"score": 0.0, "reason": "..."}}'
     )
     try:
         from felix.patterns.types import ChatMessage

@@ -21,9 +21,7 @@ def test_composition_defines_installed_plugins() -> None:
     assert composition.is_file()
     tree = ast.parse(composition.read_text(encoding="utf-8"))
     names = {
-        node.name
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        node.name for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
     assert "installed_plugins" in names
     assert "compose" in names

@@ -188,10 +188,7 @@ async def test_router_forwards_child_stream(monkeypatch: pytest.MonkeyPatch) -> 
         },
     )
     events = [
-        ev
-        async for ev in agent.stream_events(
-            InvokeInput(messages=[ChatMessage(role="user", content="hi")])
-        )
+        ev async for ev in agent.stream_events(InvokeInput(messages=[ChatMessage(role="user", content="hi")]))
     ]
     deltas = "".join(e.text for e in events if e.event == "text_delta")
     assert deltas == "Hello"
@@ -214,10 +211,7 @@ async def test_groupchat_streams_each_child(monkeypatch: pytest.MonkeyPatch) -> 
         },
     )
     events = [
-        ev
-        async for ev in agent.stream_events(
-            InvokeInput(messages=[ChatMessage(role="user", content="hi")])
-        )
+        ev async for ev in agent.stream_events(InvokeInput(messages=[ChatMessage(role="user", content="hi")]))
     ]
     deltas = [e.text for e in events if e.event == "text_delta"]
     assert deltas == ["A1", "B1"]
@@ -228,9 +222,7 @@ async def test_groupchat_streams_each_child(monkeypatch: pytest.MonkeyPatch) -> 
 async def test_parallel_streams_synthesis(monkeypatch: pytest.MonkeyPatch) -> None:
     import felix.patterns as patterns
 
-    monkeypatch.setattr(
-        patterns, "_model_for", lambda *a, **k: _FakeModel(stream_chunks=("X", "Y"))
-    )
+    monkeypatch.setattr(patterns, "_model_for", lambda *a, **k: _FakeModel(stream_chunks=("X", "Y")))
     agent = patterns._DelegatingAgent(
         tools=[],
         pattern="parallel",
@@ -239,10 +231,7 @@ async def test_parallel_streams_synthesis(monkeypatch: pytest.MonkeyPatch) -> No
         sub_agents={"a": _FakeStreamAgent("one"), "b": _FakeStreamAgent("two")},
     )
     events = [
-        ev
-        async for ev in agent.stream_events(
-            InvokeInput(messages=[ChatMessage(role="user", content="hi")])
-        )
+        ev async for ev in agent.stream_events(InvokeInput(messages=[ChatMessage(role="user", content="hi")]))
     ]
     deltas = "".join(e.text for e in events if e.event == "text_delta")
     assert deltas == "XY"
@@ -262,10 +251,7 @@ async def test_deep_forwards_inner_stream() -> None:
         inner=inner,
     )
     events = [
-        ev
-        async for ev in agent.stream_events(
-            InvokeInput(messages=[ChatMessage(role="user", content="hi")])
-        )
+        ev async for ev in agent.stream_events(InvokeInput(messages=[ChatMessage(role="user", content="hi")]))
     ]
     assert "".join(e.text for e in events if e.event == "text_delta") == "token"
     assert events[-1].event == "done"

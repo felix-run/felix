@@ -17,9 +17,7 @@ class ObjectStore(Protocol):
     """Blob store for manifests, artifacts, workspace, audit warehouse."""
 
     async def get(self, key: str) -> bytes | None: ...
-    async def put(
-        self, key: str, data: bytes, *, content_type: str = "application/octet-stream"
-    ) -> None: ...
+    async def put(self, key: str, data: bytes, *, content_type: str = "application/octet-stream") -> None: ...
     async def delete(self, key: str) -> None: ...
     async def exists(self, key: str) -> bool: ...
 
@@ -33,9 +31,7 @@ class MemoryObjectStore:
     async def get(self, key: str) -> bytes | None:
         return self._data.get(key)
 
-    async def put(
-        self, key: str, data: bytes, *, content_type: str = "application/octet-stream"
-    ) -> None:
+    async def put(self, key: str, data: bytes, *, content_type: str = "application/octet-stream") -> None:
         self._data[key] = data
 
     async def delete(self, key: str) -> None:

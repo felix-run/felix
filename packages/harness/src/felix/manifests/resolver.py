@@ -19,9 +19,7 @@ ACTIVE_TTL_MS = 30_000
 
 class ManifestStore(Protocol):
     async def get_active(self, tenant_id: str, name: str) -> ActivePointer | None: ...
-    async def get_version(
-        self, tenant_id: str, name: str, version: int
-    ) -> Manifest | None: ...
+    async def get_version(self, tenant_id: str, name: str, version: int) -> Manifest | None: ...
 
 
 class ObjectStore(Protocol):
@@ -119,11 +117,7 @@ async def _read_tenant_postgres(
 
     variant: ManifestVariant = "stable"
     resolved_version = pointer.version
-    if (
-        opts.pin_version is None
-        and pointer.canary_version is not None
-        and pointer.canary_weight > 0
-    ):
+    if opts.pin_version is None and pointer.canary_version is not None and pointer.canary_weight > 0:
         variant = pick_variant(
             tenant_id=tenant_id,
             thread_id=opts.thread_id or "",

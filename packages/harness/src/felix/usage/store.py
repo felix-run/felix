@@ -16,6 +16,7 @@ from felix.db.session import _use_memory, get_session_factory
 def now_ms() -> int:
     return int(time.time() * 1000)
 
+
 _pending: list[dict[str, Any]] = []
 _memory_events: list[dict[str, Any]] = []
 

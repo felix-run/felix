@@ -70,9 +70,7 @@ class ModelSpec(_Strict):
     cache: bool = False
     thinking_budget: int | None = Field(default=None, ge=128, le=64000)
     # Discrete thinking level; when set, overrides thinking_budget via level map.
-    thinking_level: (
-        Literal["off", "minimal", "low", "medium", "high", "xhigh", "max"] | None
-    ) = None
+    thinking_level: Literal["off", "minimal", "low", "medium", "high", "xhigh", "max"] | None = None
     fallbacks: list[str] = Field(default_factory=list)
     confidence_escalation: ConfidenceEscalation = Field(default_factory=ConfidenceEscalation)
     # Optional USD / 1M token price overrides for usage cost attribution.
@@ -378,9 +376,7 @@ class Limits(_Strict):
     )
     max_peer_hops: int | None = Field(default=None, ge=1, le=ABSOLUTE_LIMITS["max_peer_hops"])
     max_input_tokens: int | None = Field(default=None, ge=1, le=ABSOLUTE_LIMITS["max_input_tokens"])
-    max_output_tokens: int | None = Field(
-        default=None, ge=1, le=ABSOLUTE_LIMITS["max_output_tokens"]
-    )
+    max_output_tokens: int | None = Field(default=None, ge=1, le=ABSOLUTE_LIMITS["max_output_tokens"])
     precount: bool = False
 
 

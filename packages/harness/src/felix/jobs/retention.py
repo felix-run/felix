@@ -52,8 +52,7 @@ async def run_retention_sweep(settings: Settings) -> dict[str, int]:
             drop_keys = [
                 k
                 for k, r in rows.items()
-                if r.get("superseded_seq") is not None
-                and int(r.get("created_at") or 0) < mem_cutoff
+                if r.get("superseded_seq") is not None and int(r.get("created_at") or 0) < mem_cutoff
             ]
             for k in drop_keys:
                 rows.pop(k, None)
@@ -67,9 +66,7 @@ async def run_retention_sweep(settings: Settings) -> dict[str, int]:
         r = await db.execute(delete(AuditEvent).where(AuditEvent.ts < audit_cutoff))
         counts["audit_events"] = int(r.rowcount or 0)
 
-        r = await db.execute(
-            delete(Plan).where(Plan.expires_at.is_not(None), Plan.expires_at < ts)
-        )
+        r = await db.execute(delete(Plan).where(Plan.expires_at.is_not(None), Plan.expires_at < ts))
         counts["plans"] = int(r.rowcount or 0)
 
         r = await db.execute(

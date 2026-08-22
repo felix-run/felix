@@ -19,11 +19,7 @@ def _extract_text(params: dict[str, Any]) -> str:
         return message
     parts = message.get("parts") if isinstance(message, dict) else None
     if isinstance(parts, list):
-        texts = [
-            str(p.get("text") or p.get("content") or "")
-            for p in parts
-            if isinstance(p, dict)
-        ]
+        texts = [str(p.get("text") or p.get("content") or "") for p in parts if isinstance(p, dict)]
         joined = "\n".join(t for t in texts if t)
         if joined:
             return joined
@@ -85,19 +81,11 @@ async def handle_rpc(
                 "artifacts": [],
             },
         )
-        call_auth = auth or AuthContext(
-            tenant_id=tenant_id, principal_sub="a2a", anonymous=False
-        )
+        call_auth = auth or AuthContext(tenant_id=tenant_id, principal_sub="a2a", anonymous=False)
         try:
-            resolved = await resolve_tenant_manifest(
-                settings, tenant_id, name, thread_id=thread
-            )
-            await prepare_tenant_invoke(
-                settings, resolved=resolved, auth=call_auth, thread_id=thread
-            )
-            req_ctx = RequestContext(
-                settings=settings, auth=call_auth, manifest_id=name, thread_id=thread
-            )
+            resolved = await resolve_tenant_manifest(settings, tenant_id, name, thread_id=thread)
+            await prepare_tenant_invoke(settings, resolved=resolved, auth=call_auth, thread_id=thread)
+            req_ctx = RequestContext(settings=settings, auth=call_auth, manifest_id=name, thread_id=thread)
             async with async_run_with_context(req_ctx):
                 agent = await build_tenant_agent(
                     settings,
@@ -154,9 +142,7 @@ async def handle_rpc(
 
     if method == "tasks/cancel":
         task_id = str(params.get("id") or params.get("taskId") or "")
-        task = (
-            await task_store.cancel_task(settings, tenant_id, task_id) if task_id else None
-        )
+        task = await task_store.cancel_task(settings, tenant_id, task_id) if task_id else None
         if task is None:
             return {
                 "jsonrpc": "2.0",

@@ -7,7 +7,7 @@ import json
 import pytest
 from felix.a2a.peers import make_peer_tool, tools_from_peers
 from felix.manifests.schema import A2APeerRef, McpServerRef
-from felix.mcp.client import list_remote_tools, mcp_rpc, tools_from_mcp_servers
+from felix.mcp.client import tools_from_mcp_servers
 from felix.tools.types import ToolInvocationCtx
 
 
@@ -140,9 +140,7 @@ async def test_peer_tool_message_send(monkeypatch: pytest.MonkeyPatch) -> None:
     assert tool.name == "peer__helper"
     assert tool.is_peer
     assert tool.executor.transport == "a2a"
-    out = await tool.executor.execute(
-        {"message": "hello"}, ToolInvocationCtx()
-    )
+    out = await tool.executor.execute({"message": "hello"}, ToolInvocationCtx())
     text = out if isinstance(out, str) else out.content
     assert "peer says hi" in text
 

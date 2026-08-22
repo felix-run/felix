@@ -44,16 +44,11 @@ def apply_artifact_spill(
             artifact_id = uuid.uuid4().hex
             key = f"artifacts/{tenant_id}/{manifest_id}/{artifact_id}.txt"
             try:
-                await object_store.put(
-                    key, content.encode("utf-8"), content_type="text/plain; charset=utf-8"
-                )
+                await object_store.put(key, content.encode("utf-8"), content_type="text/plain; charset=utf-8")
             except Exception:
                 logger.debug("artifact spill failed; returning truncated output", exc_info=True)
                 head = content[:preview]
-                return (
-                    f"{head}\n\n…[truncated {len(content) - preview} chars; "
-                    f"artifact store write failed]"
-                )
+                return f"{head}\n\n…[truncated {len(content) - preview} chars; artifact store write failed]"
             head = content[:preview]
             return (
                 f"{head}\n\n…[artifact:{artifact_id} key={key} "

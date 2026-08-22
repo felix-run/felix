@@ -66,25 +66,15 @@ def _active_dict(row: ManifestActive | dict[str, Any]) -> dict[str, Any]:
 
 async def list_active(settings: Settings, tenant_id: str) -> list[dict[str, Any]]:
     if _use_memory(settings):
-        return [
-            _active_dict(row)
-            for (t, n), row in _memory_active.items()
-            if t == tenant_id
-        ]
+        return [_active_dict(row) for (t, n), row in _memory_active.items() if t == tenant_id]
 
     factory = get_session_factory(settings=settings)
     async with factory() as db:
-        rows = (
-            await db.scalars(
-                select(ManifestActive).where(ManifestActive.tenant_id == tenant_id)
-            )
-        ).all()
+        rows = (await db.scalars(select(ManifestActive).where(ManifestActive.tenant_id == tenant_id))).all()
         return [_active_dict(r) for r in rows]
 
 
-async def get_version(
-    settings: Settings, tenant_id: str, name: str, version: int
-) -> dict[str, Any] | None:
+async def get_version(settings: Settings, tenant_id: str, name: str, version: int) -> dict[str, Any] | None:
     if _use_memory(settings):
         row = _memory_manifests.get((tenant_id, name, version))
         return _version_dict(row) if row else None
@@ -108,9 +98,7 @@ async def put_version(
     ts = now_ms()
 
     if _use_memory(settings):
-        versions = [
-            v for (t, n, v) in _memory_manifests if t == tenant_id and n == name
-        ]
+        versions = [v for (t, n, v) in _memory_manifests if t == tenant_id and n == name]
         next_version = max(versions, default=0) + 1
         row = {
             "tenant_id": tenant_id,
@@ -182,9 +170,7 @@ async def set_canary(
     if canary_version is not None:
         version_row = await get_version(settings, tenant_id, name, canary_version)
         if version_row is None:
-            raise LookupError(
-                f"Unknown canary version: {name}@{canary_version}"
-            )
+            raise LookupError(f"Unknown canary version: {name}@{canary_version}")
 
     if _use_memory(settings):
         active = _memory_active.get((tenant_id, name))
@@ -278,9 +264,7 @@ class PostgresManifestStore:
                 canary_weight=active.canary_weight,
             )
 
-    async def get_version(
-        self, tenant_id: str, name: str, version: int
-    ) -> Manifest | None:
+    async def get_version(self, tenant_id: str, name: str, version: int) -> Manifest | None:
         row = await get_version(self._settings, tenant_id, name, version)
         if row is None:
             return None

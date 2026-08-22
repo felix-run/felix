@@ -84,15 +84,10 @@ def serialize_conversation(events: list[SessionEvent], *, truncate_tool: int = 2
         if e.kind == "tool_result" or role == "tool":
             body = e.content or ""
             if len(body) > truncate_tool:
-                body = (
-                    body[:truncate_tool]
-                    + f"\n...[truncated {len(body) - truncate_tool} chars]"
-                )
+                body = body[:truncate_tool] + f"\n...[truncated {len(body) - truncate_tool} chars]"
             lines.append(f"[Tool result]: {body}")
         elif e.tool_calls:
-            calls = "; ".join(
-                f"{tc.get('name')}({tc.get('args')})" for tc in e.tool_calls
-            )
+            calls = "; ".join(f"{tc.get('name')}({tc.get('args')})" for tc in e.tool_calls)
             if e.content:
                 lines.append(f"[Assistant]: {e.content}")
             lines.append(f"[Assistant tool calls]: {calls}")
@@ -148,9 +143,7 @@ def extract_file_ops_from_events(events: list[SessionEvent]) -> dict[str, list[s
 
 
 def _is_valid_cut_point(event: SessionEvent) -> bool:
-    if event.kind in _NON_CUT_KINDS or event.role == "tool":
-        return False
-    return True
+    return not (event.kind in _NON_CUT_KINDS or event.role == "tool")
 
 
 def _find_cut(
@@ -259,8 +252,7 @@ class CompactingSessionStrategy:
                 e.kind == "compaction"
                 or (
                     e.kind == "audit"
-                    and (e.metadata or {}).get("type")
-                    in {COMPACTION_METADATA_TYPE, SUMMARY_METADATA_TYPE}
+                    and (e.metadata or {}).get("type") in {COMPACTION_METADATA_TYPE, SUMMARY_METADATA_TYPE}
                 )
             )
         ]
@@ -449,8 +441,8 @@ class CompactingSessionStrategy:
                     mid = getattr(model, "model_id", "") or ""
                     usage_meta = usage_with_cost(result.usage, model_id=mid)
                     try:
-                        from felix.usage.store import record_tokens
                         from felix.config import get_settings
+                        from felix.usage.store import record_tokens
 
                         record_tokens(
                             get_settings(),
@@ -478,8 +470,7 @@ class CompactingSessionStrategy:
                 note = ChatMessage(
                     role="system",
                     content=(
-                        f"[session] compaction failed; kept {len(kept)} recent events "
-                        f"(dropped {len(older)})."
+                        f"[session] compaction failed; kept {len(kept)} recent events (dropped {len(older)})."
                     ),
                 )
                 merged = sorted([*pinned, *kept], key=lambda e: e.seq)
@@ -506,9 +497,7 @@ class CompactingSessionStrategy:
                 "type": COMPACTION_METADATA_TYPE,
                 "covers_to_seq": older[-1].seq,
                 "first_kept_seq": first_kept.seq if first_kept else None,
-                "first_kept_entry_id": (first_kept.metadata or {}).get("event_id")
-                if first_kept
-                else None,
+                "first_kept_entry_id": (first_kept.metadata or {}).get("event_id") if first_kept else None,
                 "tokens_before": context_tokens,
                 "retainedTail": retained,
                 "details": file_ops,
@@ -540,8 +529,8 @@ class CompactingSessionStrategy:
 
 __all__ = [
     "COMPACTION_METADATA_TYPE",
-    "CompactingSessionStrategy",
     "STRUCTURED_SUMMARY_PROMPT",
+    "CompactingSessionStrategy",
     "estimate_event_tokens",
     "estimate_messages_tokens",
     "estimate_tokens",

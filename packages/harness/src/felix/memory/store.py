@@ -12,8 +12,10 @@ from felix.config import Settings
 from felix.db.models import MemoryVector
 from felix.db.session import _use_memory, get_session_factory
 
+
 def now_ms() -> int:
     return int(time.time() * 1000)
+
 
 _memory_rows: dict[tuple[str, str], dict[str, Any]] = {}
 
@@ -89,9 +91,7 @@ async def put_memory(
     return row
 
 
-async def supersede(
-    settings: Settings, tenant_id: str, memory_id: str, at_seq: int
-) -> None:
+async def supersede(settings: Settings, tenant_id: str, memory_id: str, at_seq: int) -> None:
     if _use_memory(settings):
         row = _memory_rows.get((tenant_id, memory_id))
         if row is not None:
@@ -141,9 +141,7 @@ async def list_active(
         return [_row_dict(r) for r in (await db.scalars(stmt)).all()]
 
 
-async def consolidate_pools(
-    settings: Settings, *, max_facts: int = 500
-) -> int:
+async def consolidate_pools(settings: Settings, *, max_facts: int = 500) -> int:
     """Exact content-hash dedupe of active facts (not LLM summarization).
 
     ``max_facts`` caps how many active rows are scanned per pass (matches

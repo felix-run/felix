@@ -89,9 +89,7 @@ async def list_approvals(
         return [_approval_dict(r) for r in rows]
 
 
-async def get_approval(
-    settings: Settings, tenant_id: str, approval_id: str
-) -> dict[str, Any] | None:
+async def get_approval(settings: Settings, tenant_id: str, approval_id: str) -> dict[str, Any] | None:
     if _use_memory(settings):
         row = _memory_approvals.get((tenant_id, approval_id))
         return _approval_dict(row) if row else None

@@ -43,9 +43,7 @@ async def screen_content(
     if block_on_injection:
         for rx in _INJECTION:
             if rx.search(text):
-                return ScreeningVerdict(
-                    denied=True, reason="prompt_injection_marker"
-                )
+                return ScreeningVerdict(denied=True, reason="prompt_injection_marker")
 
     redacted = text
     if redact_pii:

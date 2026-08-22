@@ -6,16 +6,17 @@ Uses Redis lists when available so steer works across API replicas.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any, Literal
 
 logger = logging.getLogger("felix.steer")
 
 
-class QueueKind(str, Enum):
+class QueueKind(StrEnum):
     STEER = "steer"
     FOLLOW_UP = "follow_up"
 
@@ -53,10 +54,8 @@ async def _get_redis() -> Any | None:
     global _redis, _redis_loop, _redis_failed
     loop_id = id(asyncio.get_running_loop())
     if _redis is not None and _redis_loop != loop_id:
-        try:
+        with contextlib.suppress(Exception):
             await _redis.aclose()
-        except Exception:
-            pass
         _redis = None
         _redis_loop = None
         _redis_failed = False
@@ -169,10 +168,8 @@ async def is_aborted(tenant_id: str, thread_id: str) -> bool:
 async def clear_abort(tenant_id: str, thread_id: str) -> None:
     client = await _get_redis()
     if client is not None:
-        try:
+        with contextlib.suppress(Exception):
             await client.delete(_redis_key(tenant_id, thread_id, "abort"))
-        except Exception:
-            pass
     q = await ensure_run_queue(tenant_id, thread_id)
     q.aborted = False
 
@@ -183,10 +180,8 @@ async def peek_steer_count(tenant_id: str, thread_id: str) -> int:
     n = q.steer.qsize()
     client = await _get_redis()
     if client is not None:
-        try:
+        with contextlib.suppress(Exception):
             n += int(await client.llen(_redis_key(tenant_id, thread_id, QueueKind.STEER.value)))
-        except Exception:
-            pass
     return n
 
 

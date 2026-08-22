@@ -12,17 +12,11 @@ from felix.config import Settings
 class SkillActivationStore(Protocol):
     async def get_active(self, tenant_id: str, manifest_id: str) -> list[str]: ...
 
-    async def set_active(
-        self, tenant_id: str, manifest_id: str, skills: list[str]
-    ) -> list[str]: ...
+    async def set_active(self, tenant_id: str, manifest_id: str, skills: list[str]) -> list[str]: ...
 
-    async def activate(
-        self, tenant_id: str, manifest_id: str, name: str
-    ) -> list[str]: ...
+    async def activate(self, tenant_id: str, manifest_id: str, name: str) -> list[str]: ...
 
-    async def deactivate(
-        self, tenant_id: str, manifest_id: str, name: str
-    ) -> list[str]: ...
+    async def deactivate(self, tenant_id: str, manifest_id: str, name: str) -> list[str]: ...
 
 
 class InMemorySkillActivationStore:
@@ -32,24 +26,18 @@ class InMemorySkillActivationStore:
     async def get_active(self, tenant_id: str, manifest_id: str) -> list[str]:
         return list(self._data.get((tenant_id, manifest_id), []))
 
-    async def set_active(
-        self, tenant_id: str, manifest_id: str, skills: list[str]
-    ) -> list[str]:
+    async def set_active(self, tenant_id: str, manifest_id: str, skills: list[str]) -> list[str]:
         unique = list(dict.fromkeys(skills))
         self._data[(tenant_id, manifest_id)] = unique
         return unique
 
-    async def activate(
-        self, tenant_id: str, manifest_id: str, name: str
-    ) -> list[str]:
+    async def activate(self, tenant_id: str, manifest_id: str, name: str) -> list[str]:
         current = await self.get_active(tenant_id, manifest_id)
         if name not in current:
             current.append(name)
         return await self.set_active(tenant_id, manifest_id, current)
 
-    async def deactivate(
-        self, tenant_id: str, manifest_id: str, name: str
-    ) -> list[str]:
+    async def deactivate(self, tenant_id: str, manifest_id: str, name: str) -> list[str]:
         current = [s for s in await self.get_active(tenant_id, manifest_id) if s != name]
         return await self.set_active(tenant_id, manifest_id, current)
 
@@ -59,7 +47,6 @@ class PostgresSkillActivationStore:
         self._session_factory = session_factory
 
     async def get_active(self, tenant_id: str, manifest_id: str) -> list[str]:
-        from sqlalchemy import select
 
         from felix.db.models import SkillActivation
 
@@ -69,9 +56,7 @@ class PostgresSkillActivationStore:
                 return []
             return list(row.active_skills or [])
 
-    async def set_active(
-        self, tenant_id: str, manifest_id: str, skills: list[str]
-    ) -> list[str]:
+    async def set_active(self, tenant_id: str, manifest_id: str, skills: list[str]) -> list[str]:
         from felix.db.models import SkillActivation
 
         unique = list(dict.fromkeys(skills))
@@ -93,17 +78,13 @@ class PostgresSkillActivationStore:
             await db.commit()
         return unique
 
-    async def activate(
-        self, tenant_id: str, manifest_id: str, name: str
-    ) -> list[str]:
+    async def activate(self, tenant_id: str, manifest_id: str, name: str) -> list[str]:
         current = await self.get_active(tenant_id, manifest_id)
         if name not in current:
             current.append(name)
         return await self.set_active(tenant_id, manifest_id, current)
 
-    async def deactivate(
-        self, tenant_id: str, manifest_id: str, name: str
-    ) -> list[str]:
+    async def deactivate(self, tenant_id: str, manifest_id: str, name: str) -> list[str]:
         current = [s for s in await self.get_active(tenant_id, manifest_id) if s != name]
         return await self.set_active(tenant_id, manifest_id, current)
 

@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import builtins
+from collections.abc import Callable, Sequence
 from typing import Protocol, runtime_checkable
 
 from felix.tools.types import Tool
@@ -13,8 +14,9 @@ ToolFactory = Callable[[], Tool]
 @runtime_checkable
 class ToolProvider(Protocol):
     def get(self, name: str) -> Tool: ...
-    def resolve(self, names: list[str] | tuple[str, ...]) -> list[Tool]: ...
-    def list(self) -> list[str]: ...
+    def resolve(self, names: Sequence[str]) -> builtins.list[Tool]: ...
+    # Method name shadows builtin list; annotate via builtins.list.
+    def list(self) -> builtins.list[str]: ...
     def has(self, name: str) -> bool: ...
 
 
@@ -41,9 +43,9 @@ class InMemoryToolProvider:
         self._cache[name] = tool
         return tool
 
-    def resolve(self, names: list[str] | tuple[str, ...]) -> list[Tool]:
+    def resolve(self, names: Sequence[str]) -> builtins.list[Tool]:
         seen: set[str] = set()
-        out: list[Tool] = []
+        out: builtins.list[Tool] = []
         for name in names:
             if name in seen:
                 continue
@@ -51,11 +53,11 @@ class InMemoryToolProvider:
             out.append(self.get(name))
         return out
 
-    def list(self) -> list[str]:
-        return list(self._factories.keys())
+    def list(self) -> builtins.list[str]:
+        return builtins.list(self._factories.keys())
 
     # Alias used by some composition call sites.
-    def list_names(self) -> list[str]:
+    def list_names(self) -> builtins.list[str]:
         return self.list()
 
 

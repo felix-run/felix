@@ -9,9 +9,7 @@ from felix.session.types import SessionEvent, analyze_wake
 
 SessionPhase = Literal["idle", "turn", "compaction", "branch_summary", "retry", "aborted"]
 
-_PHASES = frozenset(
-    {"idle", "turn", "compaction", "branch_summary", "retry", "aborted"}
-)
+_PHASES = frozenset({"idle", "turn", "compaction", "branch_summary", "retry", "aborted"})
 
 
 def event_to_transcript_item(ev: SessionEvent) -> dict[str, Any]:
@@ -67,9 +65,7 @@ def build_snapshot(
         if ev.kind == "model_change" or md.get("type") == "model_change":
             resolved_model = str(md.get("model_id") or ev.content or resolved_model or "")
         if ev.kind == "thinking_level_change" or md.get("type") == "thinking_level_change":
-            resolved_thinking = str(
-                md.get("thinking_level") or ev.content or resolved_thinking or ""
-            )
+            resolved_thinking = str(md.get("thinking_level") or ev.content or resolved_thinking or "")
 
     phase_norm: str = phase if phase in _PHASES else "idle"
     if wake.pending_tool_calls and phase_norm == "idle":
@@ -98,8 +94,7 @@ def build_snapshot(
             "headSeq": wake.head_seq,
             "endedOnAssistant": wake.ended_on_assistant,
             "pendingToolCalls": [
-                {"id": tc.id, "name": tc.name, "args": tc.args}
-                for tc in wake.pending_tool_calls
+                {"id": tc.id, "name": tc.name, "args": tc.args} for tc in wake.pending_tool_calls
             ],
         },
     }

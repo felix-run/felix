@@ -65,9 +65,7 @@ async def test_canary_requires_existing_version(settings: Settings) -> None:
             "spec": {"pattern": "react"},
         }
     )
-    v1 = await manifest_store.put_version(
-        settings, "default", "canary-agent", m, created_by="t"
-    )
+    v1 = await manifest_store.put_version(settings, "default", "canary-agent", m, created_by="t")
     assert v1["version"] == 1
 
     with pytest.raises(LookupError):

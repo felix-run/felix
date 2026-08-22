@@ -201,9 +201,7 @@ def test_pin_drift_detected() -> None:
 
 
 def test_inbound_auth_anonymous_blocked() -> None:
-    m = parse_manifest(
-        _base_manifest(auth={"inbound": {"allow_anonymous": False, "required_scopes": ["x"]}})
-    )
+    m = parse_manifest(_base_manifest(auth={"inbound": {"allow_anonymous": False, "required_scopes": ["x"]}}))
     with pytest.raises(InboundAuthError) as ei:
         enforce_inbound_auth(m, AuthContext(anonymous=True))
     assert ei.value.status_code == 401
@@ -241,9 +239,7 @@ async def test_session_and_audit_redact_secrets(tmp_path) -> None:
 
     store = InMemorySessionStore()
     session = store.open("t:thread")
-    await session.append(
-        AppendableEvent(kind="message", role="user", content="token=supersecretvalue123")
-    )
+    await session.append(AppendableEvent(kind="message", role="user", content="token=supersecretvalue123"))
     events = await session.get_events()
     assert events[0].content is not None
     assert "supersecretvalue123" not in events[0].content

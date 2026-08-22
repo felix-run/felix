@@ -43,9 +43,7 @@ async def test_browser_missing_playwright(monkeypatch: pytest.MonkeyPatch) -> No
         raise ImportError("no playwright")
 
     monkeypatch.setattr(browser_mod, "_load_playwright", _boom)
-    tools = tools_from_browser_refs(
-        [BrowserToolRef(name="browse", binding="chromium", op="content")]
-    )
+    tools = tools_from_browser_refs([BrowserToolRef(name="browse", binding="chromium", op="content")])
     assert tools[0].executor.transport == "browser"
     out = await tools[0].executor.execute({"url": "https://example.com"}, ToolInvocationCtx())
     text = out if isinstance(out, str) else out.content
@@ -112,9 +110,7 @@ async def test_browser_content_and_guards(monkeypatch: pytest.MonkeyPatch) -> No
     out = await tools[0].executor.execute({"url": "https://example.com/docs"}, ToolInvocationCtx())
     assert "hello from page" in (out if isinstance(out, str) else out.content)
 
-    blocked = await tools[0].executor.execute(
-        {"url": "https://evil.example/x"}, ToolInvocationCtx()
-    )
+    blocked = await tools[0].executor.execute({"url": "https://evil.example/x"}, ToolInvocationCtx())
     assert "must start with" in (blocked if isinstance(blocked, str) else blocked.content)
 
     loopback = await tools[0].executor.execute({"url": "http://127.0.0.1/"}, ToolInvocationCtx())
@@ -153,9 +149,7 @@ async def test_sandbox_tool_runs_via_executor(monkeypatch: pytest.MonkeyPatch) -
     )
     assert tools[0].name == "run_python"
     assert tools[0].executor.transport == "sandbox"
-    denied = await tools[0].executor.execute(
-        {"code": "print(1)", "path": "/tmp/x"}, ToolInvocationCtx()
-    )
+    denied = await tools[0].executor.execute({"code": "print(1)", "path": "/tmp/x"}, ToolInvocationCtx())
     assert "path must start" in (denied if isinstance(denied, str) else denied.content)
     out = await tools[0].executor.execute(
         {"code": "print(1)", "path": "/workspace/app.py"}, ToolInvocationCtx()
@@ -321,9 +315,7 @@ async def test_react_injects_procedures() -> None:
         model_id = "test"
 
         async def chat(self, messages: list[ChatMessage], tools: list) -> _Result:
-            assert any(
-                m.role == "system" and "known procedures" in (m.content or "") for m in messages
-            )
+            assert any(m.role == "system" and "known procedures" in (m.content or "") for m in messages)
             return _Result()
 
     agent = build_react_agent(

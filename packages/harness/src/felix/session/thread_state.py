@@ -215,9 +215,7 @@ async def list_thread_metadata(
 
     factory = get_session_factory(settings=settings)
     async with factory() as db:
-        rows = (
-            await db.scalars(select(ThreadState).where(ThreadState.tenant_id == tenant_id))
-        ).all()
+        rows = (await db.scalars(select(ThreadState).where(ThreadState.tenant_id == tenant_id))).all()
         for row in rows:
             lj = row.labels_json or {}
             items.append(

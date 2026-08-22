@@ -61,8 +61,8 @@ def apply_thinking_to_spec(spec: object, level: ThinkingLevel | str) -> object:
         return ModelSpec.model_validate(data)
     try:
         clone = deepcopy(spec)
-        setattr(clone, "thinking_budget", budget)
-        setattr(clone, "thinking_level", parse_thinking_level(str(level)))
+        clone.thinking_budget = budget
+        clone.thinking_level = parse_thinking_level(str(level))
         return clone
     except Exception:
         return spec

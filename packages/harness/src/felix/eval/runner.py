@@ -78,9 +78,7 @@ async def start_run(
     resolved = None
     if not mock:
         try:
-            resolved = await resolve_tenant_manifest(
-                settings, tenant_id, candidate_manifest
-            )
+            resolved = await resolve_tenant_manifest(settings, tenant_id, candidate_manifest)
         except Exception as exc:
             logger.exception("eval_resolve_failed")
             completed = await eval_store.complete_run(

@@ -52,9 +52,7 @@ def register_builtin_tools(provider: InMemoryToolProvider) -> None:
         "calculator",
         lambda: define_tool(
             name="calculator",
-            description=(
-                "Evaluate a basic arithmetic expression (supports + - * / and parentheses)."
-            ),
+            description=("Evaluate a basic arithmetic expression (supports + - * / and parentheses)."),
             args=CalculatorArgs,
             handler=_calculator_handler,
         ),

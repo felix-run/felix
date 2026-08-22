@@ -4,15 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeAlias, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     pass
 
-ToolInput: TypeAlias = dict[str, Any]
-WrapperSource = Literal[
-    "policy", "limits", "guardrails", "approvals", "command", "screening"
-]
+type ToolInput = dict[str, Any]
+WrapperSource = Literal["policy", "limits", "guardrails", "approvals", "command", "screening"]
 
 # Module-private marker — never a string key. Only deny_output can stamp it.
 _WRAPPER_DENY_MARKER: object = object()
@@ -24,7 +22,7 @@ class ToolOutputDict:
     metadata: dict[Any, Any] = field(default_factory=dict)
 
 
-ToolOutput: TypeAlias = str | ToolOutputDict | dict[str, Any]
+type ToolOutput = str | ToolOutputDict | dict[str, Any]
 
 
 @dataclass(slots=True)
@@ -40,9 +38,7 @@ class ToolExecutor(Protocol):
     @property
     def transport(self) -> str: ...
 
-    async def execute(
-        self, args: ToolInput, ctx: ToolInvocationCtx | None = None
-    ) -> ToolOutput: ...
+    async def execute(self, args: ToolInput, ctx: ToolInvocationCtx | None = None) -> ToolOutput: ...
 
 
 @dataclass(slots=True)

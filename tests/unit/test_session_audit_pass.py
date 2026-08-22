@@ -69,14 +69,10 @@ def test_estimate_cost_and_usage() -> None:
 def test_include_in_llm_context_custom() -> None:
     plain = _ev(0, kind="custom", role="assistant", content="ui-only")
     assert not include_in_llm_context(plain)
-    in_ctx = _ev(
-        1, kind="custom", role="user", content="plugin note", metadata={"in_context": True}
-    )
+    in_ctx = _ev(1, kind="custom", role="user", content="plugin note", metadata={"in_context": True})
     assert include_in_llm_context(in_ctx)
     assert include_in_llm_context(_ev(2, kind="message", role="user", content="hi"))
-    assert not include_in_llm_context(
-        _ev(3, kind="thinking_level_change", role="system", content="high")
-    )
+    assert not include_in_llm_context(_ev(3, kind="thinking_level_change", role="system", content="high"))
 
 
 def test_build_snapshot_resolves_thinking() -> None:
@@ -105,9 +101,7 @@ def test_abandoned_events_after_common_ancestor() -> None:
     a = _ev(0, content="a", metadata={"event_id": "a"})
     b = _ev(1, role="assistant", content="b", metadata={"event_id": "b", "parent_id": "a"})
     c = _ev(2, content="c", metadata={"event_id": "c", "parent_id": "b"})
-    abandoned = abandoned_events(
-        [a, b, c], old_leaf_id="c", new_leaf_id="b", session_id="s"
-    )
+    abandoned = abandoned_events([a, b, c], old_leaf_id="c", new_leaf_id="b", session_id="s")
     ids = [(e.metadata or {}).get("event_id") for e in abandoned]
     assert ids == ["c"]
 
@@ -246,15 +240,11 @@ def test_react_batch_mode_parallel_vs_sequential() -> None:
         tool_execution="parallel",
     )
     assert (
-        agent._batch_mode(
-            [ToolCall(id="1", name="a", args={}), ToolCall(id="2", name="a", args={})]
-        )
+        agent._batch_mode([ToolCall(id="1", name="a", args={}), ToolCall(id="2", name="a", args={})])
         == "parallel"
     )
     assert (
-        agent._batch_mode(
-            [ToolCall(id="1", name="a", args={}), ToolCall(id="2", name="b", args={})]
-        )
+        agent._batch_mode([ToolCall(id="1", name="a", args={}), ToolCall(id="2", name="b", args={})])
         == "sequential"
     )
 

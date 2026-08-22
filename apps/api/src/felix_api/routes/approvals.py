@@ -65,9 +65,7 @@ async def list_approvals(
 async def get_approval(approval_id: str, request: Request) -> Any:
     from felix.approvals import store as approvals_store
 
-    row = await approvals_store.get_approval(
-        request.app.state.settings, _tenant(request), approval_id
-    )
+    row = await approvals_store.get_approval(request.app.state.settings, _tenant(request), approval_id)
     if row is None:
         raise HTTPException(status_code=404, detail="not_found")
     return row

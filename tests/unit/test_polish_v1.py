@@ -87,8 +87,7 @@ class _MemSession:
 @pytest.mark.asyncio
 async def test_summarizing_no_model_emits_notice() -> None:
     events = [
-        SessionEvent(seq=i, ts=float(i), kind="message", role="user", content=f"msg-{i}")
-        for i in range(6)
+        SessionEvent(seq=i, ts=float(i), kind="message", role="user", content=f"msg-{i}") for i in range(6)
     ]
     session = _MemSession(events)
     strategy = SummarizingSessionStrategy(keep=2)

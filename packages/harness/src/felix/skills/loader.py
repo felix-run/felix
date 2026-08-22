@@ -63,9 +63,7 @@ def skill_catalog_xml(catalog: SkillCatalog) -> str:
     ]
     for skill in public:
         lines.append(
-            f'  <skill name="{skill.name}">\n'
-            f"    <description>{skill.description}</description>\n"
-            f"  </skill>"
+            f'  <skill name="{skill.name}">\n    <description>{skill.description}</description>\n  </skill>'
         )
     lines.append("</available_skills>")
     return "\n".join(lines)
@@ -108,9 +106,7 @@ def load_skills_from_dir(root: Path) -> SkillCatalog:
             raw = skill_md.read_text(encoding="utf-8")
         except OSError:
             continue
-        skill = parse_skill_md(
-            raw, fallback_name=skill_md.parent.name, path=str(skill_md)
-        )
+        skill = parse_skill_md(raw, fallback_name=skill_md.parent.name, path=str(skill_md))
         if skill and skill.name not in catalog.skills:
             catalog.skills[skill.name] = skill
     for md in root.glob("*.md"):

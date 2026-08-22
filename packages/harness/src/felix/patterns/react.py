@@ -111,9 +111,7 @@ class _ReactAgent:
                 return "sequential"
         return "parallel"
 
-    async def _dispatch(
-        self, call: ToolCall, thread_id: str | None
-    ) -> tuple[str, ChatMessage, bool]:
+    async def _dispatch(self, call: ToolCall, thread_id: str | None) -> tuple[str, ChatMessage, bool]:
         """Return (kind, tool_message, terminate)."""
         preflight = await run_before_tool(
             {"id": call.id, "name": call.name, "args": call.args},
@@ -273,9 +271,7 @@ class _ReactAgent:
         try:
             from felix.session.handoff import handoff_system_message
 
-            note = handoff_system_message(
-                messages, previous_model=previous, next_model=next_id
-            )
+            note = handoff_system_message(messages, previous_model=previous, next_model=next_id)
             if note is not None:
                 # Insert after the first system message when present.
                 if messages and messages[0].role == "system":
@@ -443,11 +439,7 @@ class _ReactAgent:
                     had_fatal = True
         else:
             for i, call in enumerate(calls):
-                if (
-                    thread_id
-                    and i > 0
-                    and await should_cancel_remaining_tools(tenant_id, thread_id)
-                ):
+                if thread_id and i > 0 and await should_cancel_remaining_tools(tenant_id, thread_id):
                     skipped = ChatMessage(
                         role="tool",
                         tool_call_id=call.id,
@@ -467,9 +459,7 @@ class _ReactAgent:
         all_terminate = bool(terminates) and all(terminates)
         return tool_msgs, had_fatal, all_terminate
 
-    async def _maybe_capture_memory(
-        self, input: InvokeInput, final: ChatMessage, model: Any
-    ) -> None:
+    async def _maybe_capture_memory(self, input: InvokeInput, final: ChatMessage, model: Any) -> None:
         capture = self.memory_capture
         if capture is None or not getattr(capture, "enabled", False):
             return
@@ -491,16 +481,11 @@ class _ReactAgent:
         except Exception:
             logger.debug("memory capture failed", exc_info=True)
 
-    async def _inject_procedures(
-        self, messages: list[ChatMessage], tenant_id: str
-    ) -> list[ChatMessage]:
+    async def _inject_procedures(self, messages: list[ChatMessage], tenant_id: str) -> list[ChatMessage]:
         spec = self.procedural_memory
         if spec is None or not getattr(spec, "enabled", False) or self.settings is None:
             return messages
-        if any(
-            m.role == "system" and (m.content or "").startswith("[known procedures]")
-            for m in messages
-        ):
+        if any(m.role == "system" and (m.content or "").startswith("[known procedures]") for m in messages):
             return messages
         try:
             from felix.memory.procedural import query_from_user_messages, retrieve_procedures
@@ -558,9 +543,7 @@ class _ReactAgent:
         messages = await self._inject_procedures(messages, tenant_id)
 
         produced: list[ChatMessage] = list(input.messages)
-        await self._append_produced(
-            input.thread_id, [m for m in input.messages if m.role == "user"]
-        )
+        await self._append_produced(input.thread_id, [m for m in input.messages if m.role == "user"])
         final = ChatMessage(role="assistant", content="")
 
         from felix.audit.emit import emit_agent_audit
@@ -604,9 +587,7 @@ class _ReactAgent:
                 if result.usage:
                     from felix.usage.pricing import usage_with_cost
 
-                    usage_block = usage_with_cost(
-                        result.usage, model_id=model.model_id or ""
-                    )
+                    usage_block = usage_with_cost(result.usage, model_id=model.model_id or "")
                 assistant = result.message
                 messages.append(assistant)
                 produced.append(assistant)
@@ -626,9 +607,7 @@ class _ReactAgent:
                 for tool_msg in tool_msgs:
                     messages.append(tool_msg)
                     produced.append(tool_msg)
-                await self._append_produced(
-                    input.thread_id, [assistant, *tool_msgs], usage=usage_block
-                )
+                await self._append_produced(input.thread_id, [assistant, *tool_msgs], usage=usage_block)
                 if had_fatal:
                     return InvokeOutput(messages=produced, final=assistant)
                 if all_terminate:
@@ -638,7 +617,9 @@ class _ReactAgent:
                 if input.thread_id:
                     await clear_cancel_flag(tenant_id, input.thread_id)
                     for steermsg in await drain_steer(
-                        tenant_id, input.thread_id, mode=self.steering_mode  # type: ignore[arg-type]
+                        tenant_id,
+                        input.thread_id,
+                        mode=self.steering_mode,  # type: ignore[arg-type]
                     ):
                         steer_chat = ChatMessage(role="user", content=steermsg.text)
                         messages.append(steer_chat)
@@ -647,7 +628,9 @@ class _ReactAgent:
 
             if input.thread_id and not await is_aborted(tenant_id, input.thread_id):
                 for follow in await drain_follow_up(
-                    tenant_id, input.thread_id, mode=self.follow_up_mode  # type: ignore[arg-type]
+                    tenant_id,
+                    input.thread_id,
+                    mode=self.follow_up_mode,  # type: ignore[arg-type]
                 ):
                     follow_chat = ChatMessage(role="user", content=follow.text)
                     produced.append(follow_chat)
@@ -718,9 +701,7 @@ class _ReactAgent:
         )
         messages = await self._inject_procedures(messages, tenant_id)
         produced: list[ChatMessage] = list(input.messages)
-        await self._append_produced(
-            input.thread_id, [m for m in input.messages if m.role == "user"]
-        )
+        await self._append_produced(input.thread_id, [m for m in input.messages if m.role == "user"])
         final = ChatMessage(role="assistant", content="")
 
         try:
@@ -771,9 +752,7 @@ class _ReactAgent:
                 if result.usage:
                     from felix.usage.pricing import usage_with_cost
 
-                    usage_block = usage_with_cost(
-                        result.usage, model_id=model.model_id or ""
-                    )
+                    usage_block = usage_with_cost(result.usage, model_id=model.model_id or "")
                 assistant = result.message
                 if not assistant.content and chunks:
                     assistant = ChatMessage(
@@ -829,9 +808,7 @@ class _ReactAgent:
                     messages.append(tool_msg)
                     produced.append(tool_msg)
 
-                await self._append_produced(
-                    input.thread_id, [assistant, *tool_msgs], usage=usage_block
-                )
+                await self._append_produced(input.thread_id, [assistant, *tool_msgs], usage=usage_block)
                 if had_fatal or all_terminate:
                     break
                 if input.thread_id and await is_aborted(tenant_id, input.thread_id):
@@ -840,7 +817,9 @@ class _ReactAgent:
                 if input.thread_id:
                     await clear_cancel_flag(tenant_id, input.thread_id)
                     for steermsg in await drain_steer(
-                        tenant_id, input.thread_id, mode=self.steering_mode  # type: ignore[arg-type]
+                        tenant_id,
+                        input.thread_id,
+                        mode=self.steering_mode,  # type: ignore[arg-type]
                     ):
                         steer_chat = ChatMessage(role="user", content=steermsg.text)
                         messages.append(steer_chat)
@@ -850,7 +829,9 @@ class _ReactAgent:
 
             if input.thread_id and not await is_aborted(tenant_id, input.thread_id):
                 for follow in await drain_follow_up(
-                    tenant_id, input.thread_id, mode=self.follow_up_mode  # type: ignore[arg-type]
+                    tenant_id,
+                    input.thread_id,
+                    mode=self.follow_up_mode,  # type: ignore[arg-type]
                 ):
                     follow_chat = ChatMessage(role="user", content=follow.text)
                     produced.append(follow_chat)

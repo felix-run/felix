@@ -96,9 +96,7 @@ async def start_durable_chat(
     }
 
 
-async def get_durable_run(
-    settings: Settings, tenant_id: str, resume_token: str
-) -> dict[str, Any] | None:
+async def get_durable_run(settings: Settings, tenant_id: str, resume_token: str) -> dict[str, Any] | None:
     row = await get_fiber(settings, tenant_id, resume_token)
     if row is None:
         return None

@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import json
-
 import pytest
 from felix.config import Settings
 from felix.manifests.schema import ArtifactsSpec, MemoryCapture
 from felix.memory.capture import _heuristic_facts, active_facts_prompt, capture_from_turn
-from felix.memory.store import list_active, put_memory
+from felix.memory.store import list_active
 from felix.patterns.types import ChatMessage
 from felix.storage import MemoryObjectStore
 from felix.tools.types import ToolInvocationCtx, define_tool

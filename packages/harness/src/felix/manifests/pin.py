@@ -54,14 +54,9 @@ def assert_pin_matches(
             f"pinned={expected[:12]}… current={actual[:12]}…"
         )
     pinned_version = pinned.get("manifest_version")
-    if (
-        pinned_version is not None
-        and version is not None
-        and int(pinned_version) != int(version)
-    ):
+    if pinned_version is not None and version is not None and int(pinned_version) != int(version):
         raise ManifestDriftError(
-            f"manifest version drift for {manifest.metadata.name}: "
-            f"pinned={pinned_version} current={version}"
+            f"manifest version drift for {manifest.metadata.name}: pinned={pinned_version} current={version}"
         )
 
 
@@ -80,9 +75,7 @@ async def ensure_thread_pin(
     if not thread_id:
         return fields
 
-    meta = await get_thread_meta(
-        settings=settings, tenant_id=tenant_id, thread_id=thread_id
-    )
+    meta = await get_thread_meta(settings=settings, tenant_id=tenant_id, thread_id=thread_id)
     pinned = {
         "manifest_name": meta.get("manifest_name"),
         "manifest_version": meta.get("manifest_version"),

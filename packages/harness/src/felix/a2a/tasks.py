@@ -13,6 +13,7 @@ from felix.db.session import _use_memory, get_session_factory
 def now_ms() -> int:
     return int(time.time() * 1000)
 
+
 _memory_tasks: dict[tuple[str, str], dict[str, Any]] = {}
 
 
@@ -36,9 +37,7 @@ def _task_dict(row: A2ATask | dict[str, Any]) -> dict[str, Any]:
     return stored
 
 
-async def put_task(
-    settings: Settings, tenant_id: str, task: dict[str, Any]
-) -> dict[str, Any]:
+async def put_task(settings: Settings, tenant_id: str, task: dict[str, Any]) -> dict[str, Any]:
     task_id = str(task["id"])
     ts = now_ms()
     status = task.get("status") if isinstance(task.get("status"), dict) else {"state": "unknown"}
@@ -88,9 +87,7 @@ async def put_task(
         return _task_dict(row)
 
 
-async def get_task(
-    settings: Settings, tenant_id: str, task_id: str
-) -> dict[str, Any] | None:
+async def get_task(settings: Settings, tenant_id: str, task_id: str) -> dict[str, Any] | None:
     if _use_memory(settings):
         row = _memory_tasks.get((tenant_id, task_id))
         return _task_dict(row) if row else None
@@ -101,9 +98,7 @@ async def get_task(
         return _task_dict(row) if row else None
 
 
-async def cancel_task(
-    settings: Settings, tenant_id: str, task_id: str
-) -> dict[str, Any] | None:
+async def cancel_task(settings: Settings, tenant_id: str, task_id: str) -> dict[str, Any] | None:
     existing = await get_task(settings, tenant_id, task_id)
     if existing is None:
         return None

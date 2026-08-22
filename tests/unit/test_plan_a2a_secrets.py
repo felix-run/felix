@@ -29,9 +29,7 @@ def memory_settings(tmp_path) -> Settings:
 async def test_plan_tools_persist(memory_settings: Settings) -> None:
     tools = {t.name: t for t in _plan_tools()}
     auth = AuthContext(tenant_id="t1", principal_sub="tester", anonymous=False)
-    req = RequestContext(
-        settings=memory_settings, auth=auth, manifest_id="deep", thread_id="th1"
-    )
+    req = RequestContext(settings=memory_settings, auth=auth, manifest_id="deep", thread_id="th1")
     async with async_run_with_context(req):
         created = await tools["plan_create"].executor.execute(
             {"title": "Ship", "goal": "land feature", "plan_id": "p1"}
@@ -89,9 +87,7 @@ async def test_fiber_get_after_stash(memory_settings: Settings) -> None:
 
 
 @pytest.mark.asyncio
-async def test_hydrate_secrets_from_env(
-    memory_settings: Settings, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_hydrate_secrets_from_env(memory_settings: Settings, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-secret-value")
     memory_settings.anthropic_api_key = ""
     found = await hydrate_secrets(memory_settings)

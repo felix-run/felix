@@ -15,7 +15,7 @@ from felix.db.session import _use_memory, get_session_factory
 
 logger = logging.getLogger("felix.durability.fibers")
 
-now_ms = lambda: int(time.time() * 1000)  # noqa: E731
+now_ms = lambda: int(time.time() * 1000)
 
 _memory_fibers: dict[tuple[str, str], dict[str, Any]] = {}
 
@@ -169,17 +169,11 @@ async def _run_fiber_step(settings: Settings, row: dict[str, Any]) -> dict[str, 
                 tenant_id = row["tenant_id"]
                 auth = AuthContext(tenant_id=tenant_id, principal_sub="fiber", anonymous=False)
                 thread = thread_id or f"{tenant_id}:fiber:{row['id']}"
-                resolved = await resolve_tenant_manifest(
-                    settings, tenant_id, manifest_id, thread_id=thread
-                )
+                resolved = await resolve_tenant_manifest(settings, tenant_id, manifest_id, thread_id=thread)
                 pinned = state.get("pin") if isinstance(state.get("pin"), dict) else None
                 if pinned:
-                    assert_pin_matches(
-                        pinned, resolved.manifest, version=resolved.version
-                    )
-                await prepare_tenant_invoke(
-                    settings, resolved=resolved, auth=auth, thread_id=thread
-                )
+                    assert_pin_matches(pinned, resolved.manifest, version=resolved.version)
+                await prepare_tenant_invoke(settings, resolved=resolved, auth=auth, thread_id=thread)
                 req_ctx = RequestContext(
                     settings=settings,
                     auth=auth,
@@ -209,11 +203,7 @@ async def _run_fiber_step(settings: Settings, row: dict[str, Any]) -> dict[str, 
                         )
                     )
                 answer = result.final.content if result.final else ""
-                final = (
-                    result.final.model_dump()
-                    if result.final
-                    else {"role": "assistant", "content": ""}
-                )
+                final = result.final.model_dump() if result.final else {"role": "assistant", "content": ""}
             except Exception as exc:
                 logger.exception("fiber_invoke_failed id=%s", row["id"])
                 error = str(exc)
@@ -251,9 +241,7 @@ async def resume_due_fibers(settings: Settings) -> int:
             if (row.get("state_json") or {}).get("backend") == "temporal":
                 continue
             due_sleep = (
-                row["status"] == "sleeping"
-                and row.get("wake_at") is not None
-                and row["wake_at"] <= ts
+                row["status"] == "sleeping" and row.get("wake_at") is not None and row["wake_at"] <= ts
             )
             if due_sleep:
                 row["status"] = "running"
@@ -279,15 +267,9 @@ async def resume_due_fibers(settings: Settings) -> int:
                 row.status = "running"
                 row.wake_at = None
                 row.updated_at = ts
-            runnable = (
-                await db.scalars(select(Fiber).where(Fiber.status.in_(("running", "pending"))))
-            ).all()
+            runnable = (await db.scalars(select(Fiber).where(Fiber.status.in_(("running", "pending"))))).all()
             await db.commit()
-            due = [
-                _fiber_dict(r)
-                for r in runnable
-                if (r.state_json or {}).get("backend") != "temporal"
-            ]
+            due = [_fiber_dict(r) for r in runnable if (r.state_json or {}).get("backend") != "temporal"]
 
     ran = 0
     for row in due:

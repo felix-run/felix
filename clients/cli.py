@@ -44,7 +44,7 @@ def main() -> None:
         while True:
             try:
                 line = input("you> ").strip()
-            except (EOFError, KeyboardInterrupt):
+            except EOFError, KeyboardInterrupt:
                 print("\nbye")
                 break
             if line in {"exit", "quit"}:

@@ -47,9 +47,7 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.BigInteger(), nullable=False),
         sa.PrimaryKeyConstraint("tenant_id", "id"),
     )
-    op.create_index(
-        "idx_a2a_tasks_tenant_updated", "a2a_tasks", ["tenant_id", "updated_at"]
-    )
+    op.create_index("idx_a2a_tasks_tenant_updated", "a2a_tasks", ["tenant_id", "updated_at"])
 
 
 def downgrade() -> None:

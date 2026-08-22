@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 from pathlib import Path
@@ -101,10 +102,8 @@ async def _list_dir(args: PathArgs) -> str:
         rel = str(child.relative_to(root))
         item: dict[str, Any] = {"path": rel, "type": kind}
         if child.is_file():
-            try:
+            with contextlib.suppress(OSError):
                 item["size"] = child.stat().st_size
-            except OSError:
-                pass
         entries.append(item)
     return json.dumps({"path": str(target.relative_to(root)), "entries": entries})
 
@@ -179,10 +178,7 @@ async def _search_files(args: SearchFilesArgs) -> str:
         return f"error: {exc}"
     if not target.exists():
         return f"error: not found: {args.path}"
-    if target.is_file():
-        files = [target]
-    else:
-        files = [p for p in target.rglob("*") if p.is_file()]
+    files = [target] if target.is_file() else [p for p in target.rglob("*") if p.is_file()]
 
     pattern: re.Pattern[str] | None = None
     if args.regex:

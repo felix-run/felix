@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 
 from fastapi import APIRouter, Query, Request
@@ -72,10 +73,8 @@ async def audit_metrics(
         if status in {"error", "failed"} or payload.get("error"):
             row["errors"] += 1
         latency = payload.get("latency_ms") or payload.get("duration_ms") or 0
-        try:
+        with contextlib.suppress(TypeError, ValueError):
             row["latency_ms_sum"] += float(latency)
-        except (TypeError, ValueError):
-            pass
     rollup = []
     for row in tools.values():
         calls = max(1, int(row["calls"]))

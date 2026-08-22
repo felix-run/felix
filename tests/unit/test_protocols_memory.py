@@ -22,9 +22,7 @@ async def test_mcp_tools_list_and_call(settings: Settings) -> None:
     from felix.mcp.server import handle_rpc
 
     tools = compose(settings)
-    listed = await handle_rpc(
-        settings=settings, tools=tools, method="tools/list", params={}, rpc_id=1
-    )
+    listed = await handle_rpc(settings=settings, tools=tools, method="tools/list", params={}, rpc_id=1)
     names = {t["name"] for t in listed["result"]["tools"]}
     assert "calculator" in names
 

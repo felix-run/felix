@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from felix.a2a.server import handle_rpc
 from felix.config import Settings
 from felix.tools.provider import InMemoryToolProvider

@@ -79,13 +79,9 @@ def _coerce_output(data: Any) -> InvokeOutput | None:
     final_raw = data.get("final")
     if final_raw is None:
         return None
-    final = (
-        final_raw if isinstance(final_raw, ChatMessage) else ChatMessage.model_validate(final_raw)
-    )
+    final = final_raw if isinstance(final_raw, ChatMessage) else ChatMessage.model_validate(final_raw)
     msgs_raw = data.get("messages") or []
-    messages = [
-        m if isinstance(m, ChatMessage) else ChatMessage.model_validate(m) for m in msgs_raw
-    ]
+    messages = [m if isinstance(m, ChatMessage) else ChatMessage.model_validate(m) for m in msgs_raw]
     return InvokeOutput(messages=messages or [final], final=final)
 
 
@@ -425,8 +421,7 @@ class _DelegatingAgent:
         )
         results = await asyncio.gather(*[a.invoke(child_input) for a in self.sub_agents.values()])
         synthesis_bits = [
-            f"### {name}\n{r.final.content}"
-            for name, r in zip(self.sub_agents.keys(), results, strict=True)
+            f"### {name}\n{r.final.content}" for name, r in zip(self.sub_agents.keys(), results, strict=True)
         ]
         model = _model_for(input, self.settings, self.model_spec)
         prompt = self.aggregator_prompt or self.system_prompt or "Synthesize the answers."
@@ -533,8 +528,7 @@ class _DelegatingAgent:
         plan_prompt = [
             ChatMessage(
                 role="system",
-                content=self.system_prompt
-                or "Break the user goal into a numbered list of subtasks.",
+                content=self.system_prompt or "Break the user goal into a numbered list of subtasks.",
             ),
             *input.messages,
             ChatMessage(
@@ -569,8 +563,7 @@ class _DelegatingAgent:
                 messages=[
                     ChatMessage(
                         role="user",
-                        content=f"Subtask {i}/{len(lines)}: {step}\nPrior notes:\n"
-                        + "\n".join(notes),
+                        content=f"Subtask {i}/{len(lines)}: {step}\nPrior notes:\n" + "\n".join(notes),
                     )
                 ],
                 thread_id=None,
@@ -623,8 +616,7 @@ class _DelegatingAgent:
         )
         results = await asyncio.gather(*[a.invoke(child_input) for a in self.sub_agents.values()])
         synthesis_bits = [
-            f"### {name}\n{r.final.content}"
-            for name, r in zip(self.sub_agents.keys(), results, strict=True)
+            f"### {name}\n{r.final.content}" for name, r in zip(self.sub_agents.keys(), results, strict=True)
         ]
         model = _model_for(input, self.settings, self.model_spec)
         prompt = self.aggregator_prompt or self.system_prompt or "Synthesize the answers."
@@ -719,7 +711,9 @@ class _DelegatingAgent:
                 [
                     ChatMessage(
                         role="system",
-                        content="Score 0.0–1.0 whether the answer meets the criteria. Reply with a number only.",
+                        content=(
+                            "Score 0.0-1.0 whether the answer meets the criteria. Reply with a number only."
+                        ),
                     ),
                     ChatMessage(
                         role="user",
@@ -740,8 +734,7 @@ class _DelegatingAgent:
         plan_prompt = [
             ChatMessage(
                 role="system",
-                content=self.system_prompt
-                or "Break the user goal into a numbered list of subtasks.",
+                content=self.system_prompt or "Break the user goal into a numbered list of subtasks.",
             ),
             *input.messages,
             ChatMessage(
@@ -777,8 +770,7 @@ class _DelegatingAgent:
                     messages=[
                         ChatMessage(
                             role="user",
-                            content=f"Subtask {i}/{len(lines)}: {step}\nPrior notes:\n"
-                            + "\n".join(notes),
+                            content=f"Subtask {i}/{len(lines)}: {step}\nPrior notes:\n" + "\n".join(notes),
                         )
                     ],
                     thread_id=None,
@@ -790,9 +782,7 @@ class _DelegatingAgent:
 
         synth = await model.chat(
             [
-                ChatMessage(
-                    role="system", content="Synthesize the final answer from subtask notes."
-                ),
+                ChatMessage(role="system", content="Synthesize the final answer from subtask notes."),
                 *input.messages,
                 ChatMessage(role="user", content="Notes:\n" + "\n".join(notes)),
             ],

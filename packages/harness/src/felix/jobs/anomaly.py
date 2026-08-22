@@ -24,9 +24,7 @@ BASELINE_MS = 24 * 60 * 60 * 1000  # 24h baseline
 async def run_anomaly_scan(settings: Settings, *, tenant_id: str = "default") -> list[dict]:
     """Flag tenants/manifests whose recent audit volume exceeds baseline * factor."""
     ts = now_ms()
-    events, _ = await audit_store.list_events(
-        settings, tenant_id, limit=500, cursor=None
-    )
+    events, _ = await audit_store.list_events(settings, tenant_id, limit=500, cursor=None)
     if not events and _use_memory(settings):
         return []
 

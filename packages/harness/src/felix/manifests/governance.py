@@ -31,9 +31,7 @@ def apply_transparency_notice(system_prompt: str, manifest_name: str) -> str:
 def _effective_forbid_plaintext(manifest: Manifest, settings: Any | None) -> bool:
     if manifest.spec.governance.forbid_plaintext_secrets:
         return True
-    return bool(
-        settings is not None and getattr(settings, "environment", "") == "production"
-    )
+    return bool(settings is not None and getattr(settings, "environment", "") == "production")
 
 
 def _has_access_control(manifest: Manifest) -> bool:
@@ -42,9 +40,7 @@ def _has_access_control(manifest: Manifest) -> bool:
 
 
 def _has_boundary_control(manifest: Manifest) -> bool:
-    return bool(manifest.spec.policies) or bool(manifest.spec.approvals) or any_limit(
-        manifest.spec.limits
-    )
+    return bool(manifest.spec.policies) or bool(manifest.spec.approvals) or any_limit(manifest.spec.limits)
 
 
 def _has_data_governance(manifest: Manifest) -> bool:
@@ -68,9 +64,7 @@ def validate_governance(manifest: Manifest, settings: Any | None = None) -> None
     # Frameworks force the confidentiality / drift flags on.
     if frameworks:
         if not gov.forbid_plaintext_secrets:
-            errors.append(
-                "governance.forbid_plaintext_secrets must be true when frameworks are set"
-            )
+            errors.append("governance.forbid_plaintext_secrets must be true when frameworks are set")
         if not gov.pin_compile:
             errors.append("governance.pin_compile must be true when frameworks are set")
 
@@ -104,9 +98,7 @@ def validate_governance(manifest: Manifest, settings: Any | None = None) -> None
             if any(a.allow_unattended for a in manifest.spec.approvals):
                 errors.append("eu_ai_act high risk: approvals.allow_unattended must be false")
         if not _has_data_governance(manifest):
-            errors.append(
-                "eu_ai_act: content_screening.enabled or guardrails with input target required"
-            )
+            errors.append("eu_ai_act: content_screening.enabled or guardrails with input target required")
 
     if errors:
         raise GovernanceError("; ".join(errors))

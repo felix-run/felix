@@ -76,7 +76,5 @@ async def delete_job(name: str, request: Request) -> dict[str, str]:
 async def list_job_runs(name: str, request: Request, limit: int = 20) -> dict[str, Any]:
     from felix.jobs import store as jobs_store
 
-    items = await jobs_store.list_runs(
-        request.app.state.settings, _tenant(request), name, limit=limit
-    )
+    items = await jobs_store.list_runs(request.app.state.settings, _tenant(request), name, limit=limit)
     return {"items": items}

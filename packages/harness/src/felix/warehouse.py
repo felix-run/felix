@@ -52,9 +52,7 @@ class NoneWarehouse:
 
     name = "none"
 
-    async def export_audit_events(
-        self, events: list[dict[str, Any]], *, table: str = "audit_events"
-    ) -> int:
+    async def export_audit_events(self, events: list[dict[str, Any]], *, table: str = "audit_events") -> int:
         _ = (events, table)
         return 0
 
@@ -70,9 +68,7 @@ class MemoryWarehouse:
     def __init__(self) -> None:
         self.tables: dict[str, list[dict[str, Any]]] = {}
 
-    async def export_audit_events(
-        self, events: list[dict[str, Any]], *, table: str = "audit_events"
-    ) -> int:
+    async def export_audit_events(self, events: list[dict[str, Any]], *, table: str = "audit_events") -> int:
         bucket = self.tables.setdefault(table, [])
         for e in events:
             bucket.append(_normalize_event(e))
@@ -96,8 +92,7 @@ class DuckDbWarehouse:
             import duckdb
         except ImportError as exc:  # pragma: no cover
             raise RuntimeError(
-                "FELIX_WAREHOUSE=duckdb requires felix-harness[warehouse] "
-                "(uv sync --extra warehouse)"
+                "FELIX_WAREHOUSE=duckdb requires felix-harness[warehouse] (uv sync --extra warehouse)"
             ) from exc
         return duckdb.connect(str(self.path))
 
@@ -109,18 +104,12 @@ class DuckDbWarehouse:
         finally:
             con.close()
 
-    async def export_audit_events(
-        self, events: list[dict[str, Any]], *, table: str = "audit_events"
-    ) -> int:
+    async def export_audit_events(self, events: list[dict[str, Any]], *, table: str = "audit_events") -> int:
         if not events:
             return 0
         con = self._connect()
         try:
-            con.execute(
-                f"CREATE TABLE IF NOT EXISTS {table} ("
-                + ", ".join(AUDIT_DDL_COLUMNS)
-                + ")"
-            )
+            con.execute(f"CREATE TABLE IF NOT EXISTS {table} (" + ", ".join(AUDIT_DDL_COLUMNS) + ")")
             rows = [_event_tuple(e) for e in events]
             con.executemany(
                 f"INSERT INTO {table} VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -169,9 +158,7 @@ class ClickHouseWarehouse:
         client.query("SELECT 1")
         return True
 
-    async def export_audit_events(
-        self, events: list[dict[str, Any]], *, table: str = "audit_events"
-    ) -> int:
+    async def export_audit_events(self, events: list[dict[str, Any]], *, table: str = "audit_events") -> int:
         if not events:
             return 0
         client = self._client()
@@ -202,9 +189,7 @@ class ClickHouseWarehouse:
                 "payload",
             ],
         )
-        logger.info(
-            "warehouse_export backend=clickhouse table=%s rows=%s", table, len(rows)
-        )
+        logger.info("warehouse_export backend=clickhouse table=%s rows=%s", table, len(rows))
         return len(rows)
 
 
@@ -247,9 +232,7 @@ class DorisWarehouse:
         finally:
             con.close()
 
-    async def export_audit_events(
-        self, events: list[dict[str, Any]], *, table: str = "audit_events"
-    ) -> int:
+    async def export_audit_events(self, events: list[dict[str, Any]], *, table: str = "audit_events") -> int:
         if not events:
             return 0
         con = self._connect()
@@ -278,9 +261,7 @@ class DorisWarehouse:
                     "VALUES (%s,%s,%s,%s,%s,%s,%s)",
                     rows,
                 )
-            logger.info(
-                "warehouse_export backend=doris table=%s rows=%s", table, len(events)
-            )
+            logger.info("warehouse_export backend=doris table=%s rows=%s", table, len(events))
             return len(events)
         finally:
             con.close()

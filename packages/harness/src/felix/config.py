@@ -108,8 +108,7 @@ class Settings(BaseSettings):
         if self.auth_mode == "none" and not self.allow_insecure:
             if self.environment != "development":
                 raise RuntimeError(
-                    "FELIX_AUTH_MODE=none requires FELIX_ALLOW_INSECURE=true "
-                    "(development only)."
+                    "FELIX_AUTH_MODE=none requires FELIX_ALLOW_INSECURE=true (development only)."
                 )
         if self.scale_out:
             if "sqlite" in self.database_url:

@@ -21,9 +21,7 @@ class _FnExecutor:
     def transport(self) -> str:
         return self._transport
 
-    async def execute(
-        self, args: ToolInput, ctx: ToolInvocationCtx | None = None
-    ) -> ToolOutput:
+    async def execute(self, args: ToolInput, ctx: ToolInvocationCtx | None = None) -> ToolOutput:
         return await self._execute(args, ctx)
 
 

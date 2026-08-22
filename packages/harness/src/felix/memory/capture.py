@@ -43,10 +43,7 @@ def _heuristic_facts(text: str, *, max_facts: int, min_chars: int) -> list[str]:
         if len(candidate) < min_chars:
             continue
         lower = candidate.lower()
-        if any(
-            skip in lower
-            for skip in ("i think", "maybe", "not sure", "could you", "please", "?")
-        ):
+        if any(skip in lower for skip in ("i think", "maybe", "not sure", "could you", "please", "?")):
             continue
         # Prefer declarative sentences.
         if candidate[0].isupper() and candidate.endswith("."):

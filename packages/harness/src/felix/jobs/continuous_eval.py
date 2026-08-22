@@ -15,14 +15,10 @@ from felix.tools.builtins import default_tool_provider
 logger = logging.getLogger("felix.jobs.continuous_eval")
 
 
-async def run_continuous_eval(
-    settings: Settings, *, tenant_id: str = "default"
-) -> dict[str, Any]:
+async def run_continuous_eval(settings: Settings, *, tenant_id: str = "default") -> dict[str, Any]:
     """Sample recent audit user_input and score canary manifests via start_run."""
     active = await manifest_store.list_active(settings, tenant_id)
-    canaries = [
-        a for a in active if a.get("canary_version") and a.get("canary_weight", 0) > 0
-    ]
+    canaries = [a for a in active if a.get("canary_version") and a.get("canary_weight", 0) > 0]
     if not canaries:
         return {"runs": 0, "reason": "no_canaries"}
 
@@ -76,9 +72,7 @@ async def run_continuous_eval(
             )
             runs += 1
         except Exception:
-            logger.exception(
-                "continuous_eval_failed tenant=%s manifest=%s", tenant_id, name
-            )
+            logger.exception("continuous_eval_failed tenant=%s manifest=%s", tenant_id, name)
         logger.info(
             "continuous_eval tenant=%s manifest=%s canary=%s samples=%s",
             tenant_id,

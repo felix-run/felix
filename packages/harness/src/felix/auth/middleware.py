@@ -67,9 +67,7 @@ async def authenticate_request(
 
     if mode == "api_key":
         token = ""
-        if auth_header.lower().startswith("bearer ") or auth_header.lower().startswith(
-            "apikey "
-        ):
+        if auth_header.lower().startswith("bearer ") or auth_header.lower().startswith("apikey "):
             token = auth_header.split(" ", 1)[1].strip()
         else:
             token = request.headers.get("x-api-key") or ""

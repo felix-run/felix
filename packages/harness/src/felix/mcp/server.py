@@ -38,12 +38,8 @@ async def _compiled_tools(
     """Resolve + compile the tenant manifest; return (agent, governed tools)."""
     from felix.runtime import build_tenant_agent, prepare_tenant_invoke, resolve_tenant_manifest
 
-    resolved = await resolve_tenant_manifest(
-        settings, auth.tenant_id, manifest_name, thread_id=None
-    )
-    await prepare_tenant_invoke(
-        settings, resolved=resolved, auth=auth, thread_id=None
-    )
+    resolved = await resolve_tenant_manifest(settings, auth.tenant_id, manifest_name, thread_id=None)
+    await prepare_tenant_invoke(settings, resolved=resolved, auth=auth, thread_id=None)
     agent = await build_tenant_agent(
         settings,
         manifest=resolved.manifest,
@@ -64,9 +60,7 @@ async def handle_rpc(
     auth: AuthContext | None = None,
 ) -> dict[str, Any]:
     call_auth = auth or AuthContext()
-    manifest_name = str(
-        params.get("manifest") or getattr(settings, "default_manifest", "quick") or "quick"
-    )
+    manifest_name = str(params.get("manifest") or getattr(settings, "default_manifest", "quick") or "quick")
 
     if method == "initialize":
         return {

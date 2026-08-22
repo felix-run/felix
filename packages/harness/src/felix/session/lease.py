@@ -7,6 +7,7 @@ in-process state for single-process / unit tests.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import secrets
@@ -17,7 +18,7 @@ from typing import Any
 logger = logging.getLogger("felix.session.lease")
 
 # thread_id -> Lease (in-process fallback)
-_leases: dict[str, "SessionLease"] = {}
+_leases: dict[str, SessionLease] = {}
 _force_memory = False
 _redis: Any | None = None
 _redis_loop: int | None = None
@@ -49,10 +50,8 @@ async def _get_redis() -> Any | None:
         return None
     loop_id = id(asyncio.get_running_loop())
     if _redis is not None and _redis_loop != loop_id:
-        try:
+        with contextlib.suppress(Exception):
             await _redis.aclose()
-        except Exception:
-            pass
         _redis = None
         _redis_loop = None
         _redis_failed = False
@@ -222,7 +221,7 @@ async def _load_remote(client: Any, thread_id: str) -> dict[str, Any] | None:
         return None
     try:
         data = json.loads(raw)
-    except (TypeError, json.JSONDecodeError):
+    except TypeError, json.JSONDecodeError:
         await client.delete(_redis_key(thread_id))
         return None
     if float(data.get("expires_at") or 0) <= _now():
@@ -370,11 +369,7 @@ async def release_lease(
                 "status": _status_from_payload(existing),
             }
         observers = list(existing.get("observers") or [])
-        if (
-            holder_id
-            and existing.get("holder_id") != holder_id
-            and holder_id not in observers
-        ):
+        if holder_id and existing.get("holder_id") != holder_id and holder_id not in observers:
             return {
                 "ok": False,
                 "error": "not_holder",

@@ -60,9 +60,7 @@ async def resolve_peer_ref(ref: A2APeerRef, provider: SecretsProvider) -> A2APee
     return ref.model_copy(update={"auth": auth})
 
 
-async def resolve_container_ref(
-    ref: ContainerRef, provider: SecretsProvider
-) -> ContainerRef:
+async def resolve_container_ref(ref: ContainerRef, provider: SecretsProvider) -> ContainerRef:
     auth = await resolve_secret_value(provider, ref.auth) if ref.auth else ""
     return ref.model_copy(update={"auth": auth})
 

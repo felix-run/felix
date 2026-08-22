@@ -69,12 +69,8 @@ async def _invoke_job_manifest(
 
     auth = AuthContext(tenant_id=tenant_id, principal_sub="cron", anonymous=False)
     thread = f"{tenant_id}:job:{job['name']}"
-    resolved = await resolve_tenant_manifest(
-        settings, tenant_id, manifest_id, thread_id=thread
-    )
-    req_ctx = RequestContext(
-        settings=settings, auth=auth, manifest_id=manifest_id, thread_id=thread
-    )
+    resolved = await resolve_tenant_manifest(settings, tenant_id, manifest_id, thread_id=thread)
+    req_ctx = RequestContext(settings=settings, auth=auth, manifest_id=manifest_id, thread_id=thread)
     async with async_run_with_context(req_ctx):
         agent = await build_tenant_agent(
             settings,
@@ -109,9 +105,7 @@ async def run_due_jobs(settings: Settings, *, tenant_id: str = "default") -> int
             result: dict[str, Any] = {"status": "ok"}
             if job.get("manifest_id"):
                 try:
-                    result = await _invoke_job_manifest(
-                        settings, tenant_id=tenant_id, job=job
-                    )
+                    result = await _invoke_job_manifest(settings, tenant_id=tenant_id, job=job)
                 except Exception as exc:
                     logger.exception("job_invoke_failed name=%s", job.get("name"))
                     result = {"status": "error", "error": str(exc)}

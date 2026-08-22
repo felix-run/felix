@@ -30,9 +30,7 @@ async def _write_message(proc: asyncio.subprocess.Process, payload: dict[str, An
     await proc.stdin.drain()
 
 
-async def _read_message(
-    proc: asyncio.subprocess.Process, *, wait_s: float = 30.0
-) -> dict[str, Any]:
+async def _read_message(proc: asyncio.subprocess.Process, *, wait_s: float = 30.0) -> dict[str, Any]:
     if proc.stdout is None:
         raise RuntimeError("MCP stdio process has no stdout")
 

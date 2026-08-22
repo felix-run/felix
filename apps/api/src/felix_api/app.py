@@ -144,9 +144,7 @@ def create_app(
             tenant = "default"
             if auth is not None:
                 principal = getattr(auth, "principal", None)
-                tenant = getattr(principal, "tenant_id", None) or getattr(
-                    auth, "tenant_id", "default"
-                )
+                tenant = getattr(principal, "tenant_id", None) or getattr(auth, "tenant_id", "default")
             key = f"tenant:{tenant}"
         allowed = await check_rate_limit(key, rate_config)
         if not allowed:

@@ -61,8 +61,8 @@ async def prepare_waiter(approval_id: str) -> None:
 
 
 __all__ = [
-    "ApprovalDecision",
     "DEFAULT_TIMEOUT_SECONDS",
+    "ApprovalDecision",
     "prepare_waiter",
     "signal_decision",
     "wait_for_decision",

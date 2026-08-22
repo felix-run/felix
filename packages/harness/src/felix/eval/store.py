@@ -87,19 +87,11 @@ def _run_dict(row: EvalRun | dict[str, Any]) -> dict[str, Any]:
 
 async def list_datasets(settings: Settings, tenant_id: str) -> list[dict[str, Any]]:
     if _use_memory(settings):
-        return [
-            _dataset_dict(row)
-            for (t, _), row in _memory_datasets.items()
-            if t == tenant_id
-        ]
+        return [_dataset_dict(row) for (t, _), row in _memory_datasets.items() if t == tenant_id]
 
     factory = get_session_factory(settings=settings)
     async with factory() as db:
-        rows = (
-            await db.scalars(
-                select(EvalDataset).where(EvalDataset.tenant_id == tenant_id)
-            )
-        ).all()
+        rows = (await db.scalars(select(EvalDataset).where(EvalDataset.tenant_id == tenant_id))).all()
         return [_dataset_dict(r) for r in rows]
 
 
@@ -134,9 +126,7 @@ async def put_dataset(
                 "created_at": ts,
             }
         stored_items = [
-            _item_dict(i)
-            for (t, d, _), i in _memory_items.items()
-            if t == tenant_id and d == name
+            _item_dict(i) for (t, d, _), i in _memory_items.items() if t == tenant_id and d == name
         ]
         return _dataset_dict(row, items=stored_items)
 
@@ -177,18 +167,12 @@ async def put_dataset(
         return _dataset_dict(row, items=[_item_dict(i) for i in stored])
 
 
-async def get_dataset(
-    settings: Settings, tenant_id: str, name: str
-) -> dict[str, Any] | None:
+async def get_dataset(settings: Settings, tenant_id: str, name: str) -> dict[str, Any] | None:
     if _use_memory(settings):
         row = _memory_datasets.get((tenant_id, name))
         if row is None:
             return None
-        items = [
-            _item_dict(i)
-            for (t, d, _), i in _memory_items.items()
-            if t == tenant_id and d == name
-        ]
+        items = [_item_dict(i) for (t, d, _), i in _memory_items.items() if t == tenant_id and d == name]
         return _dataset_dict(row, items=items)
 
     factory = get_session_factory(settings=settings)
@@ -209,11 +193,7 @@ async def get_dataset(
 
 async def list_runs(settings: Settings, tenant_id: str) -> list[dict[str, Any]]:
     if _use_memory(settings):
-        items = [
-            _run_dict(row)
-            for (t, _), row in _memory_runs.items()
-            if t == tenant_id
-        ]
+        items = [_run_dict(row) for (t, _), row in _memory_runs.items() if t == tenant_id]
         items.sort(key=lambda r: r["started_at"], reverse=True)
         return items
 
@@ -221,17 +201,13 @@ async def list_runs(settings: Settings, tenant_id: str) -> list[dict[str, Any]]:
     async with factory() as db:
         rows = (
             await db.scalars(
-                select(EvalRun)
-                .where(EvalRun.tenant_id == tenant_id)
-                .order_by(EvalRun.started_at.desc())
+                select(EvalRun).where(EvalRun.tenant_id == tenant_id).order_by(EvalRun.started_at.desc())
             )
         ).all()
         return [_run_dict(r) for r in rows]
 
 
-async def get_run(
-    settings: Settings, tenant_id: str, run_id: str
-) -> dict[str, Any] | None:
+async def get_run(settings: Settings, tenant_id: str, run_id: str) -> dict[str, Any] | None:
     if _use_memory(settings):
         row = _memory_runs.get((tenant_id, run_id))
         return _run_dict(row) if row else None

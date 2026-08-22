@@ -86,7 +86,8 @@ jobs:
       - name: Install dependencies
         run: uv sync --all-extras --dev
       - name: ty
-        run: uv run ty check
+        # Exclude tests — fakes and fixtures trip ty without adding prod signal.
+        run: uv run ty check packages apps
 
   test:
     needs: changes

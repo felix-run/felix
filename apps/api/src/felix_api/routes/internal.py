@@ -50,9 +50,7 @@ def _require_consumer_secret(request: Request) -> None:
 
 
 @router.post("/sessions/{session_id}/events")
-async def append_session_event(
-    session_id: str, body: SessionEventWrite, request: Request
-) -> dict[str, Any]:
+async def append_session_event(session_id: str, body: SessionEventWrite, request: Request) -> dict[str, Any]:
     """Append a queue write-back event after content screening."""
     from felix.governance.content_screening import screen_content
     from felix.session.store import append_event
@@ -75,9 +73,7 @@ async def append_session_event(
                 break
     if text:
         verdict = await screen_content(text, settings=settings)
-        if getattr(verdict, "denied", False) or (
-            isinstance(verdict, dict) and verdict.get("denied")
-        ):
+        if getattr(verdict, "denied", False) or (isinstance(verdict, dict) and verdict.get("denied")):
             raise HTTPException(status_code=422, detail="content_screening_denied")
 
     event = await append_event(

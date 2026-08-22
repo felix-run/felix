@@ -28,6 +28,8 @@ def _http_from_invoke_prep(exc: Exception) -> HTTPException | None:
         return HTTPException(status_code=exc.status_code, detail=exc.detail)
     if isinstance(exc, ManifestDriftError):
         return HTTPException(status_code=409, detail=str(exc))
+    if isinstance(exc, ValueError) and str(exc).startswith("secret not found"):
+        return HTTPException(status_code=503, detail=str(exc))
     return None
 
 
@@ -251,20 +253,14 @@ async def chat(body: ChatRequest, request: Request) -> Any:
         raise HTTPException(status_code=400, detail="manifest_required")
 
     try:
-        resolved = await resolve_tenant_manifest(
-            settings, auth.tenant_id, body.manifest, thread_id=thread
-        )
-        await prepare_tenant_invoke(
-            settings, resolved=resolved, auth=auth, thread_id=thread
-        )
+        resolved = await resolve_tenant_manifest(settings, auth.tenant_id, body.manifest, thread_id=thread)
+        await prepare_tenant_invoke(settings, resolved=resolved, auth=auth, thread_id=thread)
     except Exception as exc:
         http = _http_from_invoke_prep(exc)
         if http is not None:
             raise http from exc
         if isinstance(exc, (LookupError, ValueError)):
-            raise HTTPException(
-                status_code=404, detail=f"unknown_manifest:{body.manifest}"
-            ) from exc
+            raise HTTPException(status_code=404, detail=f"unknown_manifest:{body.manifest}") from exc
         raise
     model_id = _allowlisted_model(resolved.manifest, body.model, settings)
     messages = [ChatMessage.model_validate(m) for m in body.messages]
@@ -320,6 +316,11 @@ async def chat(body: ChatRequest, request: Request) -> Any:
             )
         except ModelGatewayError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
+        except Exception as exc:
+            http = _http_from_invoke_prep(exc)
+            if http is not None:
+                raise http from exc
+            raise
 
     final = result.final
     return {
@@ -355,20 +356,14 @@ async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
         raise HTTPException(status_code=400, detail="manifest_required")
 
     try:
-        resolved = await resolve_tenant_manifest(
-            settings, auth.tenant_id, body.manifest, thread_id=thread
-        )
-        await prepare_tenant_invoke(
-            settings, resolved=resolved, auth=auth, thread_id=thread
-        )
+        resolved = await resolve_tenant_manifest(settings, auth.tenant_id, body.manifest, thread_id=thread)
+        await prepare_tenant_invoke(settings, resolved=resolved, auth=auth, thread_id=thread)
     except Exception as exc:
         http = _http_from_invoke_prep(exc)
         if http is not None:
             raise http from exc
         if isinstance(exc, (LookupError, ValueError)):
-            raise HTTPException(
-                status_code=404, detail=f"unknown_manifest:{body.manifest}"
-            ) from exc
+            raise HTTPException(status_code=404, detail=f"unknown_manifest:{body.manifest}") from exc
         raise
     model_id = _allowlisted_model(resolved.manifest, body.model, settings)
     messages = [ChatMessage.model_validate(m) for m in body.messages]
@@ -492,9 +487,9 @@ async def chat_rewind(body: RewindRequest, request: Request) -> dict[str, Any]:
     from felix.session.thread_state import load_leaf, persist_leaf, update_thread_meta
     from felix.session.tree import get_leaf
 
-    old_leaf = await load_leaf(
-        settings=settings, tenant_id=auth.tenant_id, thread_id=thread
-    ) or get_leaf(thread)
+    old_leaf = await load_leaf(settings=settings, tenant_id=auth.tenant_id, thread_id=thread) or get_leaf(
+        thread
+    )
     result = await rewind_to(session, body.event_id)
     if not result.get("ok"):
         raise HTTPException(status_code=404, detail=result.get("error", "rewind_failed"))
@@ -525,7 +520,7 @@ async def chat_rewind(body: RewindRequest, request: Request) -> dict[str, Any]:
             from felix.patterns.model import build_model
 
             model = build_model(settings, resolved.manifest.spec.model)
-        except (LookupError, ValueError):
+        except LookupError, ValueError:
             model = None
     if summarize is None:
         summarize = True
@@ -627,9 +622,7 @@ async def _build_thread_snapshot(
     store = get_session_store(settings, tenant_id=tenant_id)
     events = await store.open(thread).get_events()
     meta = await get_thread_meta(settings=settings, tenant_id=tenant_id, thread_id=thread)
-    leaf = await load_leaf(settings=settings, tenant_id=tenant_id, thread_id=thread) or get_leaf(
-        thread
-    )
+    leaf = await load_leaf(settings=settings, tenant_id=tenant_id, thread_id=thread) or get_leaf(thread)
     steer_n = await peek_steer_count(tenant_id, thread)
     lease = await lease_status(thread)
     return build_snapshot(
@@ -770,9 +763,7 @@ async def list_sessions(request: Request) -> dict[str, Any]:
     from felix.session.thread_state import list_thread_metadata
 
     auth = _auth_from_request(request)
-    items = await list_thread_metadata(
-        settings=request.app.state.settings, tenant_id=auth.tenant_id
-    )
+    items = await list_thread_metadata(settings=request.app.state.settings, tenant_id=auth.tenant_id)
     return {"sessions": items, "items": items}
 
 
@@ -781,9 +772,7 @@ async def search_sessions_route(request: Request, q: str = "", limit: int = 20) 
     from felix.session.search import search_sessions
 
     auth = _auth_from_request(request)
-    hits = await search_sessions(
-        request.app.state.settings, auth.tenant_id, q, limit=limit
-    )
+    hits = await search_sessions(request.app.state.settings, auth.tenant_id, q, limit=limit)
     return {"query": q, "hits": hits}
 
 
@@ -916,20 +905,14 @@ async def chat_continue(body: ContinueRequest, request: Request) -> Any:
         raise HTTPException(status_code=400, detail="already_complete")
 
     try:
-        resolved = await resolve_tenant_manifest(
-            settings, auth.tenant_id, body.manifest, thread_id=thread
-        )
-        await prepare_tenant_invoke(
-            settings, resolved=resolved, auth=auth, thread_id=thread
-        )
+        resolved = await resolve_tenant_manifest(settings, auth.tenant_id, body.manifest, thread_id=thread)
+        await prepare_tenant_invoke(settings, resolved=resolved, auth=auth, thread_id=thread)
     except Exception as exc:
         http = _http_from_invoke_prep(exc)
         if http is not None:
             raise http from exc
         if isinstance(exc, (LookupError, ValueError)):
-            raise HTTPException(
-                status_code=404, detail=f"unknown_manifest:{body.manifest}"
-            ) from exc
+            raise HTTPException(status_code=404, detail=f"unknown_manifest:{body.manifest}") from exc
         raise
     model_id = _allowlisted_model(resolved.manifest, body.model, settings)
     # Empty incoming — session strategy rebuilds context from leaf.
@@ -946,9 +929,7 @@ async def chat_continue(body: ContinueRequest, request: Request) -> Any:
     )
     from felix.session.thread_state import update_thread_meta
 
-    await update_thread_meta(
-        settings=settings, tenant_id=auth.tenant_id, thread_id=thread, phase="retry"
-    )
+    await update_thread_meta(settings=settings, tenant_id=auth.tenant_id, thread_id=thread, phase="retry")
     async with async_run_with_context(req_ctx):
         try:
             agent = await build_tenant_agent(
@@ -967,9 +948,12 @@ async def chat_continue(body: ContinueRequest, request: Request) -> Any:
             )
         except ModelGatewayError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
-    await update_thread_meta(
-        settings=settings, tenant_id=auth.tenant_id, thread_id=thread, phase="idle"
-    )
+        except Exception as exc:
+            http = _http_from_invoke_prep(exc)
+            if http is not None:
+                raise http from exc
+            raise
+    await update_thread_meta(settings=settings, tenant_id=auth.tenant_id, thread_id=thread, phase="idle")
     return {
         "messages": [m.model_dump() for m in result.messages],
         "final": result.final.model_dump() if hasattr(result.final, "model_dump") else result.final,
@@ -1022,9 +1006,7 @@ async def chat_compact(body: CompactRequest, request: Request) -> dict[str, Any]
     if thread is None:
         raise HTTPException(status_code=400, detail="invalid_thread_id")
     try:
-        resolved = await resolve_tenant_manifest(
-            settings, auth.tenant_id, body.manifest, thread_id=thread
-        )
+        resolved = await resolve_tenant_manifest(settings, auth.tenant_id, body.manifest, thread_id=thread)
     except (LookupError, ValueError) as exc:
         raise HTTPException(status_code=404, detail=f"unknown_manifest:{body.manifest}") from exc
 
@@ -1038,9 +1020,7 @@ async def chat_compact(body: CompactRequest, request: Request) -> dict[str, Any]
     strategy = CompactingSessionStrategy(
         reserve_tokens=int(getattr(strategy_spec, "reserve_tokens", 16384) or 16384),
         keep_recent_tokens=int(getattr(strategy_spec, "keep_recent_tokens", 20000) or 20000),
-        context_window_tokens=int(
-            getattr(strategy_spec, "context_window_tokens", 128000) or 128000
-        ),
+        context_window_tokens=int(getattr(strategy_spec, "context_window_tokens", 128000) or 128000),
         enabled=True,
     )
     model = build_model(settings, resolved.manifest.spec.model)
@@ -1054,10 +1034,6 @@ async def chat_compact(body: CompactRequest, request: Request) -> dict[str, Any]
         instructions=body.instructions,
         reason="manual",
     )
-    await update_thread_meta(
-        settings=settings, tenant_id=auth.tenant_id, thread_id=thread, phase="idle"
-    )
-    snapshot = await _build_thread_snapshot(
-        settings=settings, tenant_id=auth.tenant_id, thread=thread
-    )
+    await update_thread_meta(settings=settings, tenant_id=auth.tenant_id, thread_id=thread, phase="idle")
+    snapshot = await _build_thread_snapshot(settings=settings, tenant_id=auth.tenant_id, thread=thread)
     return {**result, "thread_id": thread, "snapshot": snapshot}

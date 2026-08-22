@@ -74,23 +74,15 @@ def _run_dict(row: JobRun | dict[str, Any]) -> dict[str, Any]:
 
 async def list_jobs(settings: Settings, tenant_id: str) -> list[dict[str, Any]]:
     if _use_memory(settings):
-        return [
-            _job_dict(row)
-            for (t, _), row in _memory_jobs.items()
-            if t == tenant_id
-        ]
+        return [_job_dict(row) for (t, _), row in _memory_jobs.items() if t == tenant_id]
 
     factory = get_session_factory(settings=settings)
     async with factory() as db:
-        rows = (
-            await db.scalars(select(Job).where(Job.tenant_id == tenant_id))
-        ).all()
+        rows = (await db.scalars(select(Job).where(Job.tenant_id == tenant_id))).all()
         return [_job_dict(r) for r in rows]
 
 
-async def get_job(
-    settings: Settings, tenant_id: str, name: str
-) -> dict[str, Any] | None:
+async def get_job(settings: Settings, tenant_id: str, name: str) -> dict[str, Any] | None:
     if _use_memory(settings):
         row = _memory_jobs.get((tenant_id, name))
         return _job_dict(row) if row else None
@@ -197,14 +189,8 @@ async def delete_job(settings: Settings, tenant_id: str, name: str) -> bool:
 
     factory = get_session_factory(settings=settings)
     async with factory() as db:
-        await db.execute(
-            delete(JobRun).where(
-                JobRun.tenant_id == tenant_id, JobRun.job_name == name
-            )
-        )
-        result = await db.execute(
-            delete(Job).where(Job.tenant_id == tenant_id, Job.name == name)
-        )
+        await db.execute(delete(JobRun).where(JobRun.tenant_id == tenant_id, JobRun.job_name == name))
+        result = await db.execute(delete(Job).where(Job.tenant_id == tenant_id, Job.name == name))
         await db.commit()
         return result.rowcount > 0
 
@@ -213,11 +199,7 @@ async def list_runs(
     settings: Settings, tenant_id: str, name: str, *, limit: int = 20
 ) -> list[dict[str, Any]]:
     if _use_memory(settings):
-        items = [
-            _run_dict(row)
-            for (t, j, _), row in _memory_runs.items()
-            if t == tenant_id and j == name
-        ]
+        items = [_run_dict(row) for (t, j, _), row in _memory_runs.items() if t == tenant_id and j == name]
         items.sort(key=lambda r: r["started_at"], reverse=True)
         return items[:limit]
 

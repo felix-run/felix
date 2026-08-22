@@ -160,9 +160,7 @@ async def fork_thread(
 ) -> dict[str, Any]:
     """Copy the active branch (or path to ``from_event_id``) into ``dest`` as a new linear tree."""
     events = await source.get_events()
-    branch = active_branch_events(
-        events, session_id=source.id, leaf_id=from_event_id or get_leaf(source.id)
-    )
+    branch = active_branch_events(events, session_id=source.id, leaf_id=from_event_id or get_leaf(source.id))
     if from_event_id:
         # Truncate branch at from_event_id
         trimmed: list[SessionEvent] = []

@@ -75,9 +75,10 @@ async def search_sessions(
             # Prefer generated tsvector column when migration applied; fall back to ILIKE.
             try:
                 rows = (
-                    await db.execute(
-                        text(
-                            """
+                    (
+                        await db.execute(
+                            text(
+                                """
                             SELECT tenant_id, thread_id, seq, content,
                                    event_metadata->>'event_id' AS event_id,
                                    ts_rank(content_tsv, plainto_tsquery('english', :q)) AS rank
@@ -87,17 +88,21 @@ async def search_sessions(
                             ORDER BY rank DESC
                             LIMIT :lim
                             """
-                        ),
-                        {"tenant": tenant_id, "q": q, "lim": limit},
+                            ),
+                            {"tenant": tenant_id, "q": q, "lim": limit},
+                        )
                     )
-                ).mappings().all()
+                    .mappings()
+                    .all()
+                )
                 return [dict(r) for r in rows]
             except Exception:
                 logger.debug("fts unavailable; falling back to ILIKE", exc_info=True)
                 rows = (
-                    await db.execute(
-                        text(
-                            """
+                    (
+                        await db.execute(
+                            text(
+                                """
                             SELECT tenant_id, thread_id, seq, content,
                                    event_metadata->>'event_id' AS event_id
                             FROM session_events
@@ -106,10 +111,13 @@ async def search_sessions(
                             ORDER BY seq DESC
                             LIMIT :lim
                             """
-                        ),
-                        {"tenant": tenant_id, "pat": f"%{q}%", "lim": limit},
+                            ),
+                            {"tenant": tenant_id, "pat": f"%{q}%", "lim": limit},
+                        )
                     )
-                ).mappings().all()
+                    .mappings()
+                    .all()
+                )
                 return [dict(r) for r in rows]
     except Exception:
         logger.debug("session search failed", exc_info=True)

@@ -124,9 +124,7 @@ def mint_jwt(
 
 @app.command("bundle-manifests")
 def bundle_manifests(
-    out: Path | None = typer.Option(
-        None, "--out", "-o", help="Write JSON Schema / bundle summary here."
-    ),
+    out: Path | None = typer.Option(None, "--out", "-o", help="Write JSON Schema / bundle summary here."),
 ) -> None:
     """Validate bundled manifests and optionally emit JSON Schema."""
     from felix.manifests.loader import list_bundled, load_bundled

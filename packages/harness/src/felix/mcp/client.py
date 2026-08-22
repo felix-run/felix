@@ -134,9 +134,7 @@ def _bind_remote_tool(
         if ref.transport == "stdio":
             from felix.mcp.stdio import stdio_rpc
 
-            result = await stdio_rpc(
-                ref, "tools/call", {"name": remote_name, "arguments": args or {}}
-            )
+            result = await stdio_rpc(ref, "tools/call", {"name": remote_name, "arguments": args or {}})
         else:
             result = await mcp_rpc(
                 ref.url,
@@ -188,9 +186,7 @@ async def tools_from_mcp_servers(
             try:
                 out.append(_bind_remote_tool(ref, remote, allow_http=allow_http))
             except Exception:
-                logger.debug(
-                    "skip remote tool %s from %s", remote.get("name"), ref.name, exc_info=True
-                )
+                logger.debug("skip remote tool %s from %s", remote.get("name"), ref.name, exc_info=True)
     return out
 
 

@@ -52,13 +52,9 @@ class S3ObjectStore:
                 return None
             raise
 
-    async def put(
-        self, key: str, data: bytes, *, content_type: str = "application/octet-stream"
-    ) -> None:
+    async def put(self, key: str, data: bytes, *, content_type: str = "application/octet-stream") -> None:
         client = await self._get_client()
-        await client.put_object(
-            Bucket=self._bucket, Key=key, Body=data, ContentType=content_type
-        )
+        await client.put_object(Bucket=self._bucket, Key=key, Body=data, ContentType=content_type)
 
     async def delete(self, key: str) -> None:
         client = await self._get_client()

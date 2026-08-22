@@ -64,8 +64,7 @@ class FelixClient:
     ) -> dict[str, Any]:
         body = {
             "manifest": manifest or self._manifest,
-            "messages": messages
-            or [{"role": "user", "content": text}],
+            "messages": messages or [{"role": "user", "content": text}],
             "thread_id": thread_id if thread_id is not None else self._thread_id,
             "model": model or self._model,
         }
@@ -96,26 +95,28 @@ class FelixClient:
             "model": model or self._model,
         }
         body = {k: v for k, v in body.items() if v is not None}
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            async with client.stream(
+        async with (
+            httpx.AsyncClient(timeout=self.timeout) as client,
+            client.stream(
                 "POST",
                 f"{self.base_url.rstrip('/')}/chat/stream",
                 headers=self._headers(),
                 json=body,
-            ) as resp:
-                resp.raise_for_status()
-                async for line in resp.aiter_lines():
-                    if not line.startswith("data:"):
-                        continue
-                    payload = line[5:].strip()
-                    if payload == "[DONE]":
-                        break
-                    try:
-                        event = json.loads(payload)
-                    except json.JSONDecodeError:
-                        continue
-                    self._emit(event)
-                    yield event
+            ) as resp,
+        ):
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if not line.startswith("data:"):
+                    continue
+                payload = line[5:].strip()
+                if payload == "[DONE]":
+                    break
+                try:
+                    event = json.loads(payload)
+                except json.JSONDecodeError:
+                    continue
+                self._emit(event)
+                yield event
 
     async def steer(self, text: str, *, thread_id: str | None = None) -> dict[str, Any]:
         tid = thread_id if thread_id is not None else self._thread_id

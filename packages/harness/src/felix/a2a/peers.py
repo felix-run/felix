@@ -19,9 +19,7 @@ class PeerArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     message: str = Field(min_length=1, description="Message to send to the peer agent.")
-    manifest: str | None = Field(
-        default=None, description="Optional peer manifest name override."
-    )
+    manifest: str | None = Field(default=None, description="Optional peer manifest name override.")
 
 
 def _auth_headers(auth: str) -> dict[str, str]:
@@ -48,11 +46,7 @@ def _extract_peer_text(body: dict[str, Any]) -> str:
     if isinstance(message, dict):
         parts = message.get("parts")
         if isinstance(parts, list):
-            texts = [
-                str(p.get("text") or p.get("content") or "")
-                for p in parts
-                if isinstance(p, dict)
-            ]
+            texts = [str(p.get("text") or p.get("content") or "") for p in parts if isinstance(p, dict)]
             joined = "\n".join(t for t in texts if t)
             if joined:
                 return joined
@@ -87,9 +81,7 @@ def make_peer_tool(ref: A2APeerRef, *, allow_http: bool = False) -> Tool:
         if args.manifest:
             payload["params"]["manifest"] = args.manifest  # type: ignore[index]
         async with httpx.AsyncClient(timeout=60.0, follow_redirects=False) as client:
-            resp = await client.post(
-                endpoint, json=payload, headers=_auth_headers(ref.auth)
-            )
+            resp = await client.post(endpoint, json=payload, headers=_auth_headers(ref.auth))
             resp.raise_for_status()
             body = resp.json()
         if not isinstance(body, dict):

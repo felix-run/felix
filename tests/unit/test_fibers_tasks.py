@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from felix.a2a import tasks as task_store
 from felix.config import Settings
 from felix.durability.fibers import create_fiber, resume_due_fibers

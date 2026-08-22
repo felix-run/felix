@@ -9,8 +9,8 @@ async def main() -> None:
     from felix.config import get_settings
     from felix.eval import store as eval_store
     from felix.jobs import store as jobs_store
-    from felix.manifests.loader import load_bundled
     from felix.manifests import store as manifest_store
+    from felix.manifests.loader import load_bundled
 
     settings = get_settings()
     # Prefer memory when no Postgres is up during local seed demos.
@@ -27,9 +27,7 @@ async def main() -> None:
             m = load_bundled(name)
         except FileNotFoundError:
             continue
-        row = await manifest_store.put_version(
-            settings, tenant, name, m, created_by="seed", comment="seed"
-        )
+        row = await manifest_store.put_version(settings, tenant, name, m, created_by="seed", comment="seed")
         print(f"  manifest {name}@{row['version']}")
 
     await jobs_store.put_job(
