@@ -30,7 +30,8 @@ pre-commit install       # after make install
 - Match existing patterns in `packages/harness` (Protocols, `FELIX_` settings).
 - Keep the default Docker/Compose path **lean** (no heavy extras unless gated).
 - Do not add Cloudflare Workers / Durable Objects / Hyperdrive compute.
-- Commerce stays out of core — plugin seam only.
+- Optional features stay out of core — register via the plugin registry /
+  `felix.plugins` entry points (see `felix.plugins`).
 - Tests: `uv run pytest -q` (CI uses lean `uv sync --dev`).
 
 ## Pull requests

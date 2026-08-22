@@ -1,4 +1,4 @@
-"""Baseline harness tables (no commerce).
+"""Baseline harness tables.
 
 Revision ID: 0001_baseline
 Revises:

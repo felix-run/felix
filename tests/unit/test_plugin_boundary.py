@@ -29,14 +29,11 @@ def test_composition_defines_installed_plugins() -> None:
     assert "compose" in names
 
 
-def test_no_hardcoded_commerce_import_outside_composition_seat() -> None:
-    """Core must not hard-import optional plugin packages."""
+def test_no_hardcoded_optional_plugin_imports() -> None:
+    """Core must not hard-import optional plugin packages by name."""
     banned = {"felix_commerce", "felix_enterprise"}
     offenders: list[str] = []
     for path in _py_files(HARNESS) + _py_files(API):
-        # plugins.py may mention package names in load_optional_plugins discovery.
-        if path.name in {"plugins.py", "composition.py"}:
-            continue
         text = path.read_text(encoding="utf-8")
         for name in banned:
             if f"import {name}" in text or f"from {name}" in text:

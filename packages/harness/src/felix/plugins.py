@@ -1,12 +1,11 @@
 """Plugin seam — core never imports optional feature packages.
 
-Mirrors TypeScript FelixPlugin + Memoturn PluginRegistry: routes, tools,
-auth modes, cron tasks, rate-limit keys. Commerce / EE register here.
+Optional packages register routes, tools, auth modes, cron tasks, and
+rate-limit keys via the registry (or ``felix.plugins`` entry points).
 """
 
 from __future__ import annotations
 
-import importlib
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -119,20 +118,35 @@ def installed_plugins() -> list[Any]:
 
 
 def load_optional_plugins(reg: PluginRegistry | None = None) -> bool:
-    """Discover optional packages if installed — core never hard-imports them."""
+    """Load optional plugins from ``felix.plugins`` entry points if installed.
+
+    Core never hard-imports third-party packages. Install a package that
+    declares an entry point in group ``felix.plugins``; its ``register(registry)``
+    callable is invoked once at startup.
+    """
     registry = reg or _registry
     if registry._loaded:
         return bool(registry.plugins)
     registry._loaded = True
     loaded = False
-    for pkg in ("felix_commerce", "felix_enterprise"):
+    try:
+        from importlib.metadata import entry_points
+    except ImportError:  # pragma: no cover
+        return False
+
+    eps = entry_points()
+    if hasattr(eps, "select"):
+        selected = eps.select(group="felix.plugins")
+    else:  # pragma: no cover — Python <3.10 style
+        selected = eps.get("felix.plugins", ())
+    for ep in selected:
         try:
-            mod = importlib.import_module(pkg)
-        except ImportError:
+            register = ep.load()
+        except Exception:
+            logger.exception("failed loading plugin entry point %s", ep.name)
             continue
-        register = getattr(mod, "register", None)
         if callable(register):
             register(registry)
             loaded = True
-            logger.info("loaded optional plugin package %s", pkg)
+            logger.info("loaded optional plugin entry point %s", ep.name)
     return loaded
