@@ -37,7 +37,7 @@ environment failure, not a code failure — a `PreToolUse` hook blocks it and pr
 |---|---|---|
 | Lint | `uv run ruff check .` | line-length 110, `py314` target |
 | Format | `uv run ruff format .` / `--check .` | CI runs the check separately |
-| Types | `uv run ty check packages apps` | `make type`; CI excludes `tests/` deliberately |
+| Types | `uv run ty check packages apps` | `make type`; needs `make install-full` (unresolved imports are errors, and a lean venv cannot resolve the extras); CI excludes `tests/` deliberately |
 | Tests | `./scripts/test.sh` | 195 tests, 1 skipped |
 | Manifests | `uv run felix bundle-manifests` | loads + validates every file in `manifests/` |
 | Eval | `uv run felix eval --dataset smoke --manifest quick --fixture fixtures/eval/smoke.json --mock` | no model calls |

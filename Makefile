@@ -36,7 +36,17 @@ fmt:
 
 type:
 	# Same scope as CI — tests are excluded on purpose (fakes and fixtures
-	# trip ty without adding production signal).
+	# trip ty without adding production signal). Needs the optional extras:
+	# unresolved imports are errors by design, and a lean venv cannot resolve
+	# temporalio, boto3, duckdb, playwright, presidio, … CI installs
+	# --all-extras for exactly this reason.
+	@uv run --no-sync python -c "import temporalio" >/dev/null 2>&1 || { \
+		echo ""; \
+		echo "ty needs the optional extras installed — run 'make install-full'."; \
+		echo "A lean venv ('make install') reports every optional import as an"; \
+		echo "unresolved-import error; CI type-checks with --all-extras."; \
+		echo ""; \
+		exit 1; }
 	uv run ty check packages apps
 
 test:
