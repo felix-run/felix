@@ -1,4 +1,4 @@
-# GCP / public VM overlay — no host publish for DB/cache; workspace mount.
+# GCP / public VM overlay — tunnel-only API; no host publish for DB/cache.
 # Usage on GCE (repo root / /opt/felix):
 #   make up-gcp
 #   docker compose -f deploy/docker/compose.yml \
@@ -9,6 +9,8 @@ name: felix
 
 services:
   api:
+    # Tunnel-only on public VMs — do not publish the API port on the host.
+    ports: !override []
     volumes:
       - felix-data:/data
       - ${FELIX_WORKSPACE_HOST:-./workspace}:/workspace
