@@ -9,6 +9,9 @@ agents with governance, durable execution, and multi-protocol surfaces.
 
 Repository: [github.com/felix-run/felix](https://github.com/felix-run/felix)
 
+Web UI + docs (Cloudflare Workers, separate repo):
+[github.com/felix-run/web](https://github.com/felix-run/web)
+
 ## Quick start
 
 ```bash
