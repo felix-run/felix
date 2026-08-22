@@ -709,6 +709,45 @@ async def build_agent(
                     resolved.append(t)
                     seen.add(t.name)
 
+        tenant_id = deps.tenant_id or (
+            deps.auth.principal.tenant_id if deps.auth else "default"
+        )
+        allow_http = bool(
+            deps.settings
+            and getattr(deps.settings, "environment", "") == "development"
+            and getattr(deps.settings, "allow_insecure", False)
+        )
+
+        # Outbound MCP servers → remote tools.
+        if m.spec.mcp:
+            try:
+                from felix.mcp.client import tools_from_mcp_servers
+
+                mcp_tools = await tools_from_mcp_servers(
+                    list(m.spec.mcp), allow_http=allow_http
+                )
+                seen = {t.name for t in resolved}
+                for t in mcp_tools:
+                    if t.name not in seen:
+                        resolved.append(t)
+                        seen.add(t.name)
+            except Exception:
+                logger.warning("MCP client tool binding failed", exc_info=True)
+
+        # A2A peers → peer__{name} tools.
+        if m.spec.peers:
+            try:
+                from felix.a2a.peers import tools_from_peers
+
+                peer_tools = tools_from_peers(list(m.spec.peers), allow_http=allow_http)
+                seen = {t.name for t in resolved}
+                for t in peer_tools:
+                    if t.name not in seen:
+                        resolved.append(t)
+                        seen.add(t.name)
+            except Exception:
+                logger.warning("peer tool binding failed", exc_info=True)
+
         # Wire Agent Skills (progressive disclosure + bound skill tools).
         from felix.skills import (
             SKILL_TOOL_NAMES,
@@ -716,10 +755,6 @@ async def build_agent(
             load_manifest_skills,
             make_skill_tools,
             skill_catalog_xml,
-        )
-
-        tenant_id = deps.tenant_id or (
-            deps.auth.principal.tenant_id if deps.auth else "default"
         )
         wants_skills = bool(m.spec.skills) or any(
             t.name in SKILL_TOOL_NAMES for t in resolved

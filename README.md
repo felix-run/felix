@@ -139,6 +139,8 @@ Python client: `from felix.sdk import FelixClient` (`prompt`, `stream`, `steer`,
 
 Skills live under `skills/` (Agent Skills `SKILL.md`); declare them on a manifest with `spec.skills`. Session strategies include `compacting` (token-threshold) plus `windowed:N` / `semantic:N` / `full_replay`.
 
+Outbound integrations from the manifest: `spec.mcp_servers` (HTTP MCP client → `server__tool` tools) and `spec.peers` (A2A `peer__name` tools). Large tool outputs can spill via `spec.artifacts`; durable facts via `spec.memory.capture`.
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
