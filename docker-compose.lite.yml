@@ -1,0 +1,44 @@
+# Overlay for small VMs / constrained Docker hosts (~2–4 GiB RAM).
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.lite.yml up --build
+#
+# Drops MinIO (uses FELIX_OBJECT_STORE=fs), tightens memory, and skips
+# publishing DB/cache ports to the host.
+
+name: felix-lite
+
+services:
+  api:
+    environment:
+      FELIX_OBJECT_STORE: fs
+    mem_limit: 512m
+    cpus: "0.75"
+
+  worker:
+    environment:
+      FELIX_OBJECT_STORE: fs
+    mem_limit: 384m
+    cpus: "0.5"
+
+  postgres:
+    command:
+      - postgres
+      - -c
+      - shared_buffers=64MB
+      - -c
+      - max_connections=40
+      - -c
+      - effective_cache_size=128MB
+      - -c
+      - work_mem=2MB
+      - -c
+      - maintenance_work_mem=32MB
+    ports: !override []
+    mem_limit: 320m
+    cpus: "0.75"
+
+  valkey:
+    command: ["valkey-server", "--maxmemory", "32mb", "--maxmemory-policy", "allkeys-lru"]
+    ports: !override []
+    mem_limit: 64m
+    cpus: "0.2"

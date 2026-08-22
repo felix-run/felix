@@ -1,0 +1,100 @@
+replicaCount: 1
+
+image:
+  repository: felix
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+service:
+  type: ClusterIP
+  port: 8080
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  host: ""
+  tls: []
+
+config:
+  FELIX_ENVIRONMENT: production
+  FELIX_AUTH_MODE: jwt
+  # Lean chart default — use s3/gcs only with matching image extras (aws/gcp).
+  FELIX_OBJECT_STORE: fs
+  FELIX_DATA_DIR: /data
+  FELIX_DEFAULT_MANIFEST: quick
+  FELIX_DURABILITY: fibers
+  FELIX_HIBERNATE_AFTER_SECONDS: "300"
+  FELIX_OTEL_ENABLED: "false"
+  FELIX_WAREHOUSE: none
+
+secrets:
+  existingSecret: ""
+  databaseUrl: ""
+  redisUrl: ""
+  s3AccessKey: ""
+  s3SecretKey: ""
+  anthropicApiKey: ""
+  openaiApiKey: ""
+  jwksPrivate: ""
+  jwksPublic: ""
+  oauthCacheKey: ""
+  # Required for /internal/* when auth_mode != none (or production).
+  consumerSharedSecret: ""
+
+s3:
+  endpoint: ""
+  bucket: felix-bundles
+  region: us-east-1
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+resources:
+  # Small-VM friendly defaults; raise for production traffic.
+  requests:
+    cpu: 50m
+    memory: 192Mi
+  limits:
+    cpu: "1"
+    memory: 1Gi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+podSecurityContext:
+  fsGroup: 10001
+  runAsNonRoot: true
+  runAsUser: 10001
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+# Writable /data for FELIX_OBJECT_STORE=fs (and warehouse duckdb files).
+# Enable when using fs so pods survive restarts.
+persistence:
+  enabled: false
+  existingClaim: ""
+  size: 10Gi
+  accessMode: ReadWriteOnce
+  storageClass: ""

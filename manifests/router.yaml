@@ -1,0 +1,36 @@
+# yaml-language-server: $schema=../schemas/manifest.schema.json
+apiVersion: felix/v1
+kind: Agent
+metadata:
+  name: router
+  version: 1.0.0
+  description: Felix router — classifies intent and dispatches to a sub-agent.
+  tags: [router, default]
+
+spec:
+  pattern: router
+
+  model:
+    temperature: 0
+
+  system_prompt:
+    inline: |
+      You are a query classifier. Given the user's message, choose exactly one
+      of the following routes:
+      - quick: direct questions, calculations, factual lookups, simple tasks.
+      - deep: complex research, multi-step analysis with a plan.
+      - support: troubleshooting, step-by-step guidance, how-to instructions.
+      For skill management (list/activate/deactivate), choose quick.
+
+  sub_agents:
+    - quick
+    - deep
+    - support
+
+  memory:
+    checkpointer: postgres
+    store: pgvector
+
+  auth:
+    inbound:
+      allow_anonymous: true

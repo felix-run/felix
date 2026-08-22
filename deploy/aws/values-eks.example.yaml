@@ -1,0 +1,22 @@
+# Example overrides for EKS (merge into values via -f).
+# Image must include aws extra: docker build --build-arg FELIX_EXTRAS=aws
+image:
+  repository: 123456789012.dkr.ecr.us-east-1.amazonaws.com/felix
+  tag: latest
+
+config:
+  FELIX_CLOUD_PROVIDER: aws
+  FELIX_OBJECT_STORE: s3
+  FELIX_S3_ENDPOINT: ""
+  FELIX_SECRETS_BACKEND: aws
+  FELIX_AUTH_MODE: jwt
+
+s3:
+  endpoint: ""
+  bucket: felix-bundles
+  region: us-east-1
+
+serviceAccount:
+  create: true
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/felix

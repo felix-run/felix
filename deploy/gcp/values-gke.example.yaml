@@ -1,0 +1,18 @@
+# Example overrides for GKE (merge into values via -f).
+# Image must include gcp extra: docker build --build-arg FELIX_EXTRAS=gcp
+image:
+  repository: us-docker.pkg.dev/your-project/felix/felix
+  tag: latest
+
+config:
+  FELIX_CLOUD_PROVIDER: gcp
+  FELIX_OBJECT_STORE: gcs
+  FELIX_SECRETS_BACKEND: gcp
+  FELIX_AUTH_MODE: jwt
+  FELIX_GCP_PROJECT: your-project
+  FELIX_GCS_BUCKET: felix-bundles
+
+serviceAccount:
+  create: true
+  annotations:
+    iam.gke.io/gcp-service-account: felix@your-project.iam.gserviceaccount.com

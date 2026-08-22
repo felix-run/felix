@@ -1,0 +1,39 @@
+# yaml-language-server: $schema=../schemas/manifest.schema.json
+apiVersion: felix/v1
+kind: Agent
+metadata:
+  name: hybrid-router
+  version: 1.0.0
+  description: >-
+    Hybrid routing — a Claude Haiku classifier picks the intent, then dispatches
+    to open-source Llama sub-agents. The strong model only pays for the short
+    classification turn; execution stays on Ollama.
+  tags: [router, hybrid, oss]
+
+spec:
+  pattern: router
+
+  model:
+    id: claude-haiku-4
+    temperature: 0
+
+  system_prompt:
+    inline: |
+      You are a query classifier. Given the user's message, choose exactly one
+      of the following routes:
+      - oss-only: anything needing tools — calculations, skill management, or
+        tasks that benefit from memory/recall.
+      - quick: simple direct questions, quick factual replies, casual chat.
+      When in doubt, choose quick.
+
+  sub_agents:
+    - oss-only
+    - quick
+
+  memory:
+    checkpointer: postgres
+    store: pgvector
+
+  auth:
+    inbound:
+      allow_anonymous: true

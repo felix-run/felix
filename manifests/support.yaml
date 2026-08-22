@@ -1,0 +1,34 @@
+# yaml-language-server: $schema=../schemas/manifest.schema.json
+apiVersion: felix/v1
+kind: Agent
+metadata:
+  name: support
+  version: 1.0.0
+  description: Felix support agent — step-by-step troubleshooting and how-tos.
+  tags: [support, ops]
+
+spec:
+  pattern: react
+
+  model:
+    temperature: 0
+
+  system_prompt:
+    inline: |
+      You are Felix in support mode — a patient, helpful AI assistant
+      specializing in troubleshooting and step-by-step guidance.
+      Break down complex problems into manageable steps. Always confirm
+      understanding before moving on. Use your tools to verify answers.
+      Always refer to yourself as Felix, never as Claude or any other name.
+
+  tools:
+    - calculator
+    - list_skills
+
+  memory:
+    checkpointer: postgres
+    store: pgvector
+
+  auth:
+    inbound:
+      allow_anonymous: true

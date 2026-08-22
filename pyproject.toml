@@ -1,0 +1,81 @@
+[project]
+name = "felix"
+version = "0.1.0"
+description = "Felix — a self-hostable managed agents harness. Manifest-driven agents with governance, durable execution, and multi-protocol surfaces."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Blake Bauman", email = "blake.bauman@gmail.com" }]
+requires-python = ">=3.14"
+dependencies = [
+    "felix-harness",
+    "felix-cli",
+    "felix-api",
+    "felix-worker",
+]
+
+[project.urls]
+Homepage = "https://github.com/felix-run/felix"
+Repository = "https://github.com/felix-run/felix"
+Issues = "https://github.com/felix-run/felix/issues"
+Documentation = "https://github.com/felix-run/felix#readme"
+
+# Forward extras so `uv sync --extra aws` works from the repo root.
+[project.optional-dependencies]
+aws = ["felix-harness[aws]"]
+gcp = ["felix-harness[gcp]"]
+otel = ["felix-harness[otel]"]
+mcp = ["felix-harness[mcp]"]
+browser = ["felix-harness[browser]"]
+embeddings = ["felix-harness[embeddings]"]
+warehouse = ["felix-harness[warehouse]"]
+warehouse-clickhouse = ["felix-harness[warehouse-clickhouse]"]
+warehouse-doris = ["felix-harness[warehouse-doris]"]
+temporal = ["felix-harness[temporal]"]
+sandbox = ["felix-harness[sandbox]"]
+pii = ["felix-harness[pii]"]
+full = [
+    "felix-harness[aws,gcp,otel,mcp]",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "pytest-timeout>=2.4.0",
+    "anyio>=4.14.2",
+    "ruff>=0.16.4",
+    "ty>=0.0.73",
+    "fakeredis>=2.37.1",
+    "httpx>=0.28.1",
+    "pre-commit>=4.6.2",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["packages/*", "apps/*"]
+
+[tool.uv.sources]
+felix-harness = { workspace = true }
+felix-cli = { workspace = true }
+felix-api = { workspace = true }
+felix-worker = { workspace = true }
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+src = ["packages", "apps", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC", "SIM", "RUF"]
+ignore = ["B008"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+timeout = 120
+timeout_method = "thread"
+
+[tool.ty.environment]
+python-version = "3.14"

@@ -1,0 +1,152 @@
+# Felix local stack — api, worker, Postgres+pgvector, Valkey, MinIO.
+# Small VMs: `docker compose -f docker-compose.yml -f docker-compose.lite.yml up --build`
+# Full (MinIO + aws extra): `docker compose --profile full up --build`
+
+name: felix
+
+x-felix-env: &felix-env
+  FELIX_ENVIRONMENT: development
+  FELIX_ALLOW_INSECURE: ${FELIX_ALLOW_INSECURE:-true}
+  FELIX_AUTH_MODE: ${FELIX_AUTH_MODE:-none}
+  FELIX_DATABASE_URL: postgresql+psycopg://felix:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (openssl rand -hex 32)}@postgres:5432/felix
+  FELIX_REDIS_URL: redis://valkey:6379/0
+  FELIX_ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  FELIX_OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  FELIX_DEFAULT_MANIFEST: ${FELIX_DEFAULT_MANIFEST:-quick}
+  FELIX_OLLAMA_BASE_URL: ${FELIX_OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+  # Analytics spill (recommended duckdb). Requires FELIX_DOCKER_EXTRAS=warehouse
+  FELIX_WAREHOUSE: ${FELIX_WAREHOUSE:-none}
+  FELIX_DATA_DIR: /data
+  FELIX_SECRETS_BACKEND: ${FELIX_SECRETS_BACKEND:-env}
+
+services:
+  api:
+    build:
+      context: .
+      args:
+        # Lean by default. Override: FELIX_DOCKER_EXTRAS=aws,gcp
+        FELIX_EXTRAS: ${FELIX_DOCKER_EXTRAS:-}
+    image: felix:latest
+    command: ["felix-api"]
+    ports:
+      - "8080:8080"
+    environment:
+      <<: *felix-env
+      # Default to filesystem store so lean images work without MinIO/aws extra.
+      FELIX_OBJECT_STORE: ${FELIX_OBJECT_STORE:-fs}
+      FELIX_S3_ENDPOINT: ${FELIX_S3_ENDPOINT:-http://minio:9000}
+      FELIX_S3_ACCESS_KEY: ${MINIO_ROOT_USER:-felix}
+      FELIX_S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-}
+      FELIX_S3_BUCKET: felix-bundles
+    volumes:
+      - felix-data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+    mem_limit: ${FELIX_API_MEM_LIMIT:-768m}
+    cpus: ${FELIX_API_CPUS:-1.0}
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      args:
+        FELIX_EXTRAS: ${FELIX_DOCKER_EXTRAS:-}
+    image: felix:latest
+    command: ["felix-worker"]
+    environment:
+      <<: *felix-env
+      FELIX_OBJECT_STORE: ${FELIX_OBJECT_STORE:-fs}
+      FELIX_S3_ENDPOINT: ${FELIX_S3_ENDPOINT:-http://minio:9000}
+      FELIX_S3_ACCESS_KEY: ${MINIO_ROOT_USER:-felix}
+      FELIX_S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-}
+      FELIX_S3_BUCKET: felix-bundles
+    volumes:
+      - felix-data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+      api:
+        condition: service_started
+    mem_limit: ${FELIX_WORKER_MEM_LIMIT:-512m}
+    cpus: ${FELIX_WORKER_CPUS:-0.5}
+    restart: unless-stopped
+
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: felix
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (openssl rand -hex 32)}
+      POSTGRES_DB: felix
+    # Tuned for small VMs; override via FELIX_PG_ARGS for larger hosts.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=${FELIX_PG_SHARED_BUFFERS:-128MB}
+      - -c
+      - max_connections=${FELIX_PG_MAX_CONNECTIONS:-100}
+      - -c
+      - effective_cache_size=${FELIX_PG_EFFECTIVE_CACHE:-256MB}
+      - -c
+      - work_mem=${FELIX_PG_WORK_MEM:-4MB}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "${FELIX_PG_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U felix"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    mem_limit: ${FELIX_PG_MEM_LIMIT:-512m}
+    cpus: ${FELIX_PG_CPUS:-1.0}
+    restart: unless-stopped
+
+  # Valkey — BSD-3 Redis-protocol fork (Redis 7.4+ left OSI licensing).
+  valkey:
+    image: valkey/valkey:8-alpine
+    command: ["valkey-server", "--maxmemory", "${FELIX_VALKEY_MAXMEMORY:-64mb}", "--maxmemory-policy", "allkeys-lru"]
+    volumes:
+      - valkey-data:/data
+    ports:
+      - "${FELIX_VALKEY_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    mem_limit: ${FELIX_VALKEY_MEM_LIMIT:-128m}
+    cpus: ${FELIX_VALKEY_CPUS:-0.25}
+    restart: unless-stopped
+
+  # Optional object store — enable with: docker compose --profile full up
+  minio:
+    profiles: ["full"]
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-felix}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in .env for profile=full}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    mem_limit: ${FELIX_MINIO_MEM_LIMIT:-256m}
+    cpus: ${FELIX_MINIO_CPUS:-0.5}
+    restart: unless-stopped
+
+volumes:
+  felix-data:
+  postgres-data:
+  valkey-data:
+  minio-data:

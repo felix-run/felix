@@ -1,0 +1,141 @@
+# Felix
+
+[![CI](https://github.com/felix-run/felix/actions/workflows/ci.yml/badge.svg)](https://github.com/felix-run/felix/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+**Felix** is a self-hostable managed **agents harness**. You author agents as
+YAML manifests (`apiVersion: felix/v1`), and Felix compiles them into runnable
+agents with governance, durable execution, and multi-protocol surfaces.
+
+Repository: [github.com/felix-run/felix](https://github.com/felix-run/felix)
+
+## Quick start
+
+```bash
+cp .env.example .env
+# set POSTGRES_PASSWORD (and MINIO_ROOT_PASSWORD only if using --profile full):
+#   openssl rand -hex 32
+
+make install          # lean core + dev (small VMs / CI)
+make up               # api :8080, worker, pgvector, Valkey (fs object store)
+# make up-lite        # tighter memory caps for ~2–4 GiB hosts
+# make up-full        # + MinIO + aws extra (FELIX_DOCKER_EXTRAS=aws)
+make migrate
+curl -s http://localhost:8080/health | jq
+```
+
+For cloud SDKs / embeddings / browser locally: `make install-full`.
+
+Chat against the bundled `quick` manifest (anonymous allowed):
+
+```bash
+curl -s -X POST http://localhost:8080/chat \
+  -H 'content-type: application/json' \
+  -d '{"manifest":"quick","messages":[{"role":"user","content":"What is 7 * 6?"}]}' | jq
+```
+
+Or use the OpenAI-compatible surface (`model` = manifest name):
+
+```bash
+curl -s http://localhost:8080/v1/chat/completions \
+  -H 'content-type: application/json' \
+  -d '{"model":"quick","messages":[{"role":"user","content":"hi"}]}' | jq
+```
+
+Local DX without Compose:
+
+```bash
+make install
+make migrate
+make dev         # Granian on :8080 with FELIX_AUTH_MODE=none, FELIX_OBJECT_STORE=fs
+make cli         # httpx REPL client
+make check       # ruff + ty + pytest
+```
+
+### Small VMs / lean Docker
+
+Default images and Compose stay **lean**:
+
+| Concern | Default | Full / cloud |
+|---------|---------|--------------|
+| Object store | `FELIX_OBJECT_STORE=fs` (local dir) | `s3` / `gcs` + `felix-harness[aws\|gcp]` |
+| Image extras | none | `FELIX_DOCKER_EXTRAS=aws,gcp` |
+| Compose | api + worker + Postgres + Valkey | `--profile full` adds MinIO |
+| Memory | compose `mem_limit` caps | raise via `FELIX_*_MEM_LIMIT` |
+
+```bash
+make up-lite   # docker-compose.lite.yml — ~2–4 GiB hosts
+```
+
+Heavy optional deps (Playwright, sentence-transformers, DuckDB, Presidio, Temporal)
+are **never** in the default image — install via extras only when needed.
+
+### Analytics warehouse (locked)
+
+Postgres is the system of record. The warehouse is optional append-only spill
+for audit / eval analytics (worker flush after Postgres write).
+
+| Choice | When | Extra |
+|--------|------|-------|
+| `none` (lean default) | No analytics spill | — |
+| **`duckdb` (recommended)** | Small VMs, embedded file under `FELIX_DATA_DIR/warehouse` | `warehouse` |
+| `clickhouse` | High-volume audit / events scale-out | `warehouse-clickhouse` |
+| `doris` | Already operating Apache Doris / MySQL-protocol BI | `warehouse-doris` |
+
+```bash
+uv sync --extra warehouse
+# or: make install-warehouse
+# FELIX_WAREHOUSE=duckdb
+# Docker: FELIX_DOCKER_EXTRAS=warehouse FELIX_WAREHOUSE=duckdb
+```
+
+## Architecture
+
+```
+Client → Ingress (Caddy / Traefik / nginx / Cloudflare DNS+CDN)
+           ├─ felix-api   (CPython 3.14, Granian, FastAPI)
+           └─ felix-worker (Taskiq: audit, cron, fibers, retention)
+                  │
+     Postgres+pgvector · Valkey · object store (fs | S3 | GCS)
+```
+
+- **`apps/api`** — HTTP: `/chat`, `/v1`, `/a2a`, `/mcp`, management APIs, OpenAPI
+- **`apps/worker`** — background: audit flush, scheduled jobs, memory consolidation, retention, anomaly, continuous eval, fiber scheduler
+- **`packages/harness`** — manifests, patterns, tools, session, governance, auth, plugins
+- **`packages/cli`** — `felix migrate|eval|mint-jwt|bundle-manifests|version`
+- **`manifests/`** — bundled agents (`quick`, `deep`, `router`, `oss-only`, `hybrid-router`, `support`)
+
+Felix is **service- and cloud-agnostic**: the harness talks to Postgres, a
+cache, and an object store through Protocols — not a single vendor SDK.
+**AWS and GCP are first-class** (S3 / Secrets Manager / GCS / Secret Manager via
+optional extras `felix-harness[aws]` and `felix-harness[gcp]`). Small VMs can
+use `FELIX_OBJECT_STORE=fs` with zero cloud SDKs. Set
+`FELIX_OBJECT_STORE=s3|gcs|fs|memory` and `FELIX_SECRETS_BACKEND=env|file|aws|gcp`.
+Deploy notes: `deploy/aws/`, `deploy/gcp/`. Helm: enable `persistence` when using
+`fs` so `/data` survives restarts. Production JWT/api_key deploys need
+`FELIX_CONSUMER_SHARED_SECRET` for `POST /internal/*`.
+
+Felix runs on infrastructure **you** operate. Cloudflare DNS, CDN, TLS, and WAF
+in front of your origin are fine. There is **no** Cloudflare Workers / Durable
+Objects / Hyperdrive / R2-as-binding / Queues / Workflows compute in this stack.
+
+## Protocols
+
+| Surface | Path |
+|---------|------|
+| Direct REST / SSE | `POST /chat`, `POST /chat/stream` |
+| OpenAI-compatible | `POST /v1/chat/completions`, `GET /v1/models` |
+| A2A JSON-RPC | `POST /a2a` |
+| MCP | `POST /mcp` |
+| Agent card | `GET /.well-known/agent-card.json` |
+
+Management: `/audit`, `/approvals`, `/plans`, `/jobs`, `/manifests`, `/eval`.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
+Security reports: [SECURITY.md](SECURITY.md).
+
+## License
+
+MIT — see [LICENSE](LICENSE).

@@ -1,0 +1,560 @@
+"""Model client — chat/stream with fallbacks and confidence escalation."""
+
+from __future__ import annotations
+
+import json
+import logging
+from collections.abc import AsyncIterator
+from dataclasses import dataclass
+from typing import Any, Literal, Protocol, runtime_checkable
+
+import httpx
+
+from felix.config import DEFAULT_MODEL_ROUTES, Settings, get_settings
+from felix.context import try_get_context
+from felix.observability.metrics import record_counter
+from felix.patterns.model_registry import (
+    get_model_provider,
+    list_model_providers,
+    register_model_provider,
+)
+from felix.patterns.types import ChatMessage, ToolCall
+from felix.tools.types import Tool
+
+logger = logging.getLogger("felix.patterns.model")
+
+StopReason = Literal["end_turn", "tool_use", "max_tokens", "stop_sequence", "unknown"]
+
+
+@dataclass(slots=True)
+class ModelRoute:
+    provider: str
+    model: str
+
+
+@dataclass(slots=True)
+class TokenUsage:
+    input: int = 0
+    output: int = 0
+    cache_creation: int = 0
+    cache_read: int = 0
+
+
+@dataclass(slots=True)
+class ModelChatOptions:
+    temperature: float | None = None
+    max_tokens: int | None = None
+    signal: Any | None = None
+
+
+@dataclass(slots=True)
+class ModelChatResult:
+    message: ChatMessage
+    stop_reason: StopReason = "end_turn"
+    usage: TokenUsage | None = None
+
+
+@runtime_checkable
+class ModelProvider(Protocol):
+    """Protocol for provider-backed model clients."""
+
+    model_id: str
+    route: ModelRoute
+
+    async def chat(
+        self,
+        messages: list[ChatMessage],
+        tools: list[Tool],
+        opts: ModelChatOptions | None = None,
+    ) -> ModelChatResult: ...
+
+    def stream(
+        self,
+        messages: list[ChatMessage],
+        tools: list[Tool],
+        opts: ModelChatOptions | None = None,
+    ) -> AsyncIterator[str]: ...
+
+
+# Alias used throughout patterns
+ModelClient = ModelProvider
+
+
+class ModelGatewayError(Exception):
+    def __init__(self, label: str, status: int, body: str) -> None:
+        super().__init__(f"{label}: {status} {body[:200]}")
+        self.status = status
+        self.name = "ModelGatewayError"
+
+
+def parse_model_routes(settings: Settings | None = None) -> dict[str, ModelRoute]:
+    settings = settings or get_settings()
+    routes = {k: ModelRoute(**v) for k, v in DEFAULT_MODEL_ROUTES.items()}
+    if settings.model_routes.strip():
+        try:
+            override = json.loads(settings.model_routes)
+            for k, v in override.items():
+                routes[k] = ModelRoute(provider=v["provider"], model=v["model"])
+        except (json.JSONDecodeError, KeyError, TypeError):
+            logger.warning("invalid FELIX_MODEL_ROUTES; using defaults")
+    return routes
+
+
+def record_usage(result: ModelChatResult, *, manifest_id: str, model_id: str | None = None) -> None:
+    if not result.usage:
+        return
+    labels = {"manifest_id": manifest_id, "model": model_id or "default"}
+    ctx = try_get_context()
+    if ctx is not None:
+        u = result.usage
+        ctx.limit_state.tokens_input += u.input + u.cache_creation + u.cache_read
+        ctx.limit_state.tokens_output += u.output
+    record_counter("felix_tokens", {**labels, "kind": "input"}, result.usage.input)
+    record_counter("felix_tokens", {**labels, "kind": "output"}, result.usage.output)
+
+
+def _messages_to_openai(messages: list[ChatMessage]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for m in messages:
+        item: dict[str, Any] = {"role": m.role, "content": m.content}
+        if m.tool_call_id:
+            item["tool_call_id"] = m.tool_call_id
+        if m.name:
+            item["name"] = m.name
+        if m.tool_calls:
+            item["tool_calls"] = [
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {"name": tc.name, "arguments": json.dumps(tc.args)},
+                }
+                for tc in m.tool_calls
+            ]
+        out.append(item)
+    return out
+
+
+def _tool_json_schema(tool: Tool) -> dict[str, Any]:
+    if tool.raw_input_schema is not None:
+        return tool.raw_input_schema
+    schema = tool.args_schema
+    if schema is None:
+        return {"type": "object", "properties": {}}
+    if isinstance(schema, dict):
+        return schema
+    if hasattr(schema, "model_json_schema"):
+        return schema.model_json_schema()
+    return {"type": "object", "properties": {}}
+
+
+def _tools_to_openai(tools: list[Tool]) -> list[dict[str, Any]]:
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": t.name,
+                "description": t.description,
+                "parameters": _tool_json_schema(t),
+            },
+        }
+        for t in tools
+    ]
+
+
+def _parse_openai_tool_calls(raw: list[dict[str, Any]] | None) -> list[ToolCall] | None:
+    if not raw:
+        return None
+    calls: list[ToolCall] = []
+    for tc in raw:
+        fn = tc.get("function") or {}
+        args_raw = fn.get("arguments") or "{}"
+        try:
+            args = json.loads(args_raw) if isinstance(args_raw, str) else dict(args_raw)
+        except json.JSONDecodeError:
+            args = {"_raw": args_raw}
+        calls.append(ToolCall(id=str(tc.get("id") or ""), name=str(fn.get("name") or ""), args=args))
+    return calls
+
+
+@dataclass
+class _HttpModelClient:
+    model_id: str
+    route: ModelRoute
+    settings: Settings
+    spec: Any
+    base_url: str
+    api_key: str
+    style: Literal["openai", "anthropic"]
+
+    async def chat(
+        self,
+        messages: list[ChatMessage],
+        tools: list[Tool],
+        opts: ModelChatOptions | None = None,
+    ) -> ModelChatResult:
+        opts = opts or ModelChatOptions()
+        temperature = (
+            opts.temperature
+            if opts.temperature is not None
+            else getattr(self.spec, "temperature", 0)
+        )
+        max_tokens = opts.max_tokens or getattr(self.spec, "max_tokens", None)
+
+        if self.style == "anthropic":
+            return await self._chat_anthropic(messages, tools, temperature, max_tokens)
+        return await self._chat_openai(messages, tools, temperature, max_tokens)
+
+    async def _chat_openai(
+        self,
+        messages: list[ChatMessage],
+        tools: list[Tool],
+        temperature: float,
+        max_tokens: int | None,
+    ) -> ModelChatResult:
+        body: dict[str, Any] = {
+            "model": self.route.model,
+            "messages": _messages_to_openai(messages),
+            "temperature": temperature,
+        }
+        if max_tokens:
+            body["max_tokens"] = max_tokens
+        if tools:
+            body["tools"] = _tools_to_openai(tools)
+        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            resp = await client.post(f"{self.base_url.rstrip('/')}/chat/completions", json=body, headers=headers)
+            if resp.status_code >= 400:
+                raise ModelGatewayError("openai", resp.status_code, resp.text)
+            data = resp.json()
+        choice = (data.get("choices") or [{}])[0]
+        msg = choice.get("message") or {}
+        usage_raw = data.get("usage") or {}
+        tool_calls = _parse_openai_tool_calls(msg.get("tool_calls"))
+        stop: StopReason = "tool_use" if tool_calls else "end_turn"
+        return ModelChatResult(
+            message=ChatMessage(
+                role="assistant",
+                content=str(msg.get("content") or ""),
+                tool_calls=tool_calls,
+            ),
+            stop_reason=stop,
+            usage=TokenUsage(
+                input=int(usage_raw.get("prompt_tokens") or 0),
+                output=int(usage_raw.get("completion_tokens") or 0),
+            ),
+        )
+
+    async def _chat_anthropic(
+        self,
+        messages: list[ChatMessage],
+        tools: list[Tool],
+        temperature: float,
+        max_tokens: int | None,
+    ) -> ModelChatResult:
+        system = ""
+        converted: list[dict[str, Any]] = []
+        for m in messages:
+            if m.role == "system":
+                system = (system + "\n" + m.content).strip() if system else m.content
+                continue
+            if m.role == "tool":
+                converted.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": m.tool_call_id,
+                                "content": m.content,
+                            }
+                        ],
+                    }
+                )
+                continue
+            if m.role == "assistant" and m.tool_calls:
+                blocks: list[dict[str, Any]] = []
+                if m.content:
+                    blocks.append({"type": "text", "text": m.content})
+                for tc in m.tool_calls:
+                    blocks.append(
+                        {"type": "tool_use", "id": tc.id, "name": tc.name, "input": tc.args}
+                    )
+                converted.append({"role": "assistant", "content": blocks})
+                continue
+            converted.append({"role": m.role, "content": m.content})
+
+        body: dict[str, Any] = {
+            "model": self.route.model,
+            "messages": converted,
+            "temperature": temperature,
+            "max_tokens": max_tokens or 4096,
+        }
+        if system:
+            body["system"] = system
+        if tools:
+            body["tools"] = [
+                {
+                    "name": t.name,
+                    "description": t.description,
+                    "input_schema": _tool_json_schema(t),
+                }
+                for t in tools
+            ]
+        headers = {
+            "x-api-key": self.api_key,
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+        }
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            resp = await client.post(
+                f"{self.base_url.rstrip('/')}/v1/messages",
+                json=body,
+                headers=headers,
+            )
+            if resp.status_code >= 400:
+                raise ModelGatewayError("anthropic", resp.status_code, resp.text)
+            data = resp.json()
+        content_blocks = data.get("content") or []
+        text_parts: list[str] = []
+        tool_calls: list[ToolCall] = []
+        for b in content_blocks:
+            if b.get("type") == "text":
+                text_parts.append(str(b.get("text") or ""))
+            elif b.get("type") == "tool_use":
+                tool_calls.append(
+                    ToolCall(
+                        id=str(b.get("id") or ""),
+                        name=str(b.get("name") or ""),
+                        args=dict(b.get("input") or {}),
+                    )
+                )
+        usage_raw = data.get("usage") or {}
+        stop: StopReason = "tool_use" if tool_calls else "end_turn"
+        return ModelChatResult(
+            message=ChatMessage(
+                role="assistant",
+                content="".join(text_parts),
+                tool_calls=tool_calls or None,
+            ),
+            stop_reason=stop,
+            usage=TokenUsage(
+                input=int(usage_raw.get("input_tokens") or 0),
+                output=int(usage_raw.get("output_tokens") or 0),
+                cache_creation=int(usage_raw.get("cache_creation_input_tokens") or 0),
+                cache_read=int(usage_raw.get("cache_read_input_tokens") or 0),
+            ),
+        )
+
+    async def stream(
+        self,
+        messages: list[ChatMessage],
+        tools: list[Tool],
+        opts: ModelChatOptions | None = None,
+    ) -> AsyncIterator[str]:
+        # v1: non-streaming chat then yield the full content once.
+        result = await self.chat(messages, tools, opts)
+        if result.message.content:
+            yield result.message.content
+
+
+@dataclass
+class _FallbackClient:
+    primary: ModelClient
+    fallbacks: list[ModelClient]
+    model_id: str
+    route: ModelRoute
+
+    async def chat(
+        self,
+        messages: list[ChatMessage],
+        tools: list[Tool],
+        opts: ModelChatOptions | None = None,
+    ) -> ModelChatResult:
+        chain = [self.primary, *self.fallbacks]
+        last_err: Exception | None = None
+        for i, client in enumerate(chain):
+            try:
+                result = await client.chat(messages, tools, opts)
+                if i > 0:
+                    record_counter(
+                        "felix_model_switch",
+                        {
+                            "from": self.primary.model_id,
+                            "to": client.model_id,
+                            "reason": "provider_error",
+                        },
+                    )
+                return result
+            except Exception as exc:
+                if not _is_provider_error(exc):
+                    raise
+                last_err = exc
+                continue
+        assert last_err is not None
+        raise last_err
+
+    async def stream(
+        self,
+        messages: list[ChatMessage],
+        tools: list[Tool],
+        opts: ModelChatOptions | None = None,
+    ) -> AsyncIterator[str]:
+        result = await self.chat(messages, tools, opts)
+        if result.message.content:
+            yield result.message.content
+
+
+@dataclass
+class _EscalationClient:
+    primary: ModelClient
+    escalate_to: ModelClient
+    markers: list[str]
+    min_response_chars: int
+    model_id: str
+    route: ModelRoute
+
+    def _low_confidence(self, text: str) -> bool:
+        lower = text.lower()
+        if len(text.strip()) < self.min_response_chars:
+            return True
+        return any(m.lower() in lower for m in self.markers)
+
+    async def chat(
+        self,
+        messages: list[ChatMessage],
+        tools: list[Tool],
+        opts: ModelChatOptions | None = None,
+    ) -> ModelChatResult:
+        result = await self.primary.chat(messages, tools, opts)
+        if result.message.tool_calls or not self._low_confidence(result.message.content):
+            return result
+        record_counter(
+            "felix_model_switch",
+            {
+                "from": self.primary.model_id,
+                "to": self.escalate_to.model_id,
+                "reason": "low_confidence",
+            },
+        )
+        return await self.escalate_to.chat(messages, tools, opts)
+
+    async def stream(
+        self,
+        messages: list[ChatMessage],
+        tools: list[Tool],
+        opts: ModelChatOptions | None = None,
+    ) -> AsyncIterator[str]:
+        result = await self.chat(messages, tools, opts)
+        if result.message.content:
+            yield result.message.content
+
+
+def _is_provider_error(err: object) -> bool:
+    if isinstance(err, ModelGatewayError):
+        return err.status >= 500 or err.status == 429
+    status = getattr(err, "status", None) or getattr(err, "status_code", None)
+    if isinstance(status, int) and (status >= 500 or status == 429):
+        return True
+    return False
+
+
+def _make_anthropic(model_id: str, route: ModelRoute, spec: Any, settings: Settings) -> ModelClient:
+    return _HttpModelClient(
+        model_id=model_id,
+        route=route,
+        settings=settings,
+        spec=spec,
+        base_url="https://api.anthropic.com",
+        api_key=settings.anthropic_api_key,
+        style="anthropic",
+    )
+
+
+def _make_openai(model_id: str, route: ModelRoute, spec: Any, settings: Settings) -> ModelClient:
+    base = settings.litellm_base_url or "https://api.openai.com/v1"
+    return _HttpModelClient(
+        model_id=model_id,
+        route=route,
+        settings=settings,
+        spec=spec,
+        base_url=base if base.endswith("/v1") else f"{base.rstrip('/')}/v1",
+        api_key=settings.openai_api_key,
+        style="openai",
+    )
+
+
+def _make_ollama(model_id: str, route: ModelRoute, spec: Any, settings: Settings) -> ModelClient:
+    base = settings.ollama_base_url.rstrip("/") + "/v1"
+    return _HttpModelClient(
+        model_id=model_id,
+        route=route,
+        settings=settings,
+        spec=spec,
+        base_url=base,
+        api_key="ollama",
+        style="openai",
+    )
+
+
+def register_builtin_providers() -> None:
+    register_model_provider("anthropic", lambda mid, route, spec, settings: _make_anthropic(mid, route, spec, settings))
+    register_model_provider("openai", lambda mid, route, spec, settings: _make_openai(mid, route, spec, settings))
+    register_model_provider("ollama", lambda mid, route, spec, settings: _make_ollama(mid, route, spec, settings))
+
+
+def build_one_model(settings: Settings, spec: Any, logical_id: str) -> ModelClient:
+    routes = parse_model_routes(settings)
+    route = routes.get(logical_id)
+    if route is None:
+        raise ValueError(f"Model '{logical_id}' is not in MODEL_ROUTES")
+    factory = get_model_provider(route.provider)
+    if factory is None:
+        raise ValueError(
+            f"Unknown model provider '{route.provider}' — registered: "
+            f"{', '.join(list_model_providers()) or '(none)'}"
+        )
+    return factory(logical_id, route, spec, settings)
+
+
+def build_model(settings: Settings | None, spec: Any) -> ModelClient:
+    settings = settings or get_settings()
+    if not list_model_providers():
+        register_builtin_providers()
+    primary_id = getattr(spec, "id", None) or settings.default_model_id
+    client = build_one_model(settings, spec, primary_id)
+    fallbacks_ids = list(getattr(spec, "fallbacks", None) or [])
+    if fallbacks_ids:
+        fallbacks = [build_one_model(settings, spec, fid) for fid in fallbacks_ids]
+        client = _FallbackClient(
+            primary=client,
+            fallbacks=fallbacks,
+            model_id=client.model_id,
+            route=client.route,
+        )
+    esc = getattr(spec, "confidence_escalation", None)
+    if esc is not None and getattr(esc, "enabled", False) and getattr(esc, "escalate_to", ""):
+        escalate = build_one_model(settings, spec, esc.escalate_to)
+        client = _EscalationClient(
+            primary=client,
+            escalate_to=escalate,
+            markers=list(esc.low_confidence_markers),
+            min_response_chars=esc.min_response_chars,
+            model_id=client.model_id,
+            route=client.route,
+        )
+    return client
+
+
+__all__ = [
+    "ModelChatOptions",
+    "ModelChatResult",
+    "ModelClient",
+    "ModelGatewayError",
+    "ModelProvider",
+    "ModelRoute",
+    "TokenUsage",
+    "build_model",
+    "parse_model_routes",
+    "record_usage",
+    "register_builtin_providers",
+]

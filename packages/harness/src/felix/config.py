@@ -1,0 +1,134 @@
+"""Felix settings — pydantic-settings with FELIX_ env prefix."""
+
+from __future__ import annotations
+
+from functools import lru_cache
+from typing import Any, Literal
+
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_prefix="FELIX_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    # --- runtime ---
+    environment: Literal["development", "staging", "production"] = "development"
+    host: str = "0.0.0.0"
+    port: int = 8080
+    log_level: str = "INFO"
+    allow_insecure: bool = False  # required if auth_mode=none and host binds public
+
+    # --- auth ---
+    auth_mode: Literal["none", "api_key", "jwt"] = "none"
+    auth_api_keys: str = ""  # JSON map token -> {tenant_id, sub, scopes[]}
+    jwt_verifiers: str = ""  # comma-separated scheme:issuer (access|cognito|self)
+    jwks_public: str = ""  # PEM or JWKS JSON for self-issued
+    jwks_private: str = ""  # PEM for minting (CLI)
+    oauth_cache_key: str = ""  # base64 32-byte AES key
+
+    # --- data plane (cloud-agnostic; AWS + GCP first) ---
+    database_url: str = "postgresql+psycopg://felix:felix@localhost:5432/felix"
+    redis_url: str = "redis://localhost:6379/0"
+    # Object store: s3 (AWS/MinIO) | gcs (GCP) | fs (local dir, small VMs) | memory
+    # Lean default is fs — matches Docker image without aws/gcp extras.
+    object_store: Literal["s3", "gcs", "fs", "memory"] = "fs"
+    object_store_path: str = ""  # FELIX_OBJECT_STORE=fs → under data_dir/objects if empty
+    s3_endpoint: str = "http://localhost:9000"  # empty = AWS default endpoint
+    s3_access_key: str = "felix"
+    s3_secret_key: str = "felixsecret"
+    s3_bucket: str = "felix-bundles"
+    s3_region: str = "us-east-1"
+    gcs_bucket: str = ""
+    # Secrets: env | file | aws | gcp
+    secrets_backend: Literal["env", "file", "aws", "gcp"] = "env"
+    secrets_dir: str = "./secrets"
+    # Extra secret names to resolve via backend for output masking (comma-separated)
+    secret_names: str = ""
+    aws_region: str = "us-east-1"
+    gcp_project: str = ""
+    # Deploy target hint (docs/helm only — runtime stays agnostic)
+    cloud_provider: Literal["local", "aws", "gcp", "azure", "other"] = "local"
+
+    # --- models ---
+    default_model_id: str = "claude-sonnet-4"
+    anthropic_api_key: str = ""
+    openai_api_key: str = ""
+    ollama_base_url: str = "http://localhost:11434"
+    litellm_base_url: str = ""
+    model_routes: str = ""  # JSON override of logical id -> {provider, model}
+
+    # --- durability ---
+    durability: Literal["fibers", "temporal"] = "fibers"
+    temporal_host: str = "localhost:7233"
+    temporal_namespace: str = "default"
+
+    # --- scale-out ---
+    scale_out: bool = False
+    replica_id: str = "local"
+
+    # --- observability ---
+    otel_enabled: bool = False
+    otel_endpoint: str = "http://localhost:4317"
+
+    # --- analytics warehouse (append-only spill; Postgres is SoR) ---
+    # Lean default: none. Recommended when enabling spill: duckdb
+    # (felix-harness[warehouse]). Scale-out: clickhouse first; doris if
+    # you already operate Apache Doris / want MySQL-protocol BI.
+    warehouse: Literal["none", "duckdb", "clickhouse", "doris", "memory"] = "none"
+    warehouse_path: str = ""  # duckdb file; default $FELIX_DATA_DIR/warehouse/felix.duckdb
+    warehouse_url: str = ""  # clickhouse http(s)://… or doris mysql://…
+    warehouse_database: str = "felix"
+
+    # --- misc ---
+    default_manifest: str = "quick"
+    hibernate_after_seconds: int = 300
+    consumer_shared_secret: str = ""
+    webhook_secret: str = ""
+    policy_bundle_pubkey: str = ""
+
+    data_dir: str = Field(default="./data")
+
+    @field_validator("auth_api_keys", mode="before")
+    @classmethod
+    def _strip_keys(cls, v: Any) -> Any:
+        return v if v is not None else ""
+
+    def validate_runtime(self) -> None:
+        """Fail fast on unsafe or incomplete configuration."""
+        if self.auth_mode == "none" and not self.allow_insecure:
+            if self.environment != "development":
+                raise RuntimeError(
+                    "FELIX_AUTH_MODE=none requires FELIX_ALLOW_INSECURE=true "
+                    "(development only)."
+                )
+        if self.scale_out:
+            if "sqlite" in self.database_url:
+                raise RuntimeError("Scale-out requires Postgres (FELIX_DATABASE_URL).")
+            if self.object_store == "memory":
+                raise RuntimeError("Scale-out requires a shared object store (s3|gcs|fs).")
+            if self.object_store == "s3" and not self.s3_bucket:
+                raise RuntimeError("Scale-out S3 requires FELIX_S3_BUCKET.")
+            if self.object_store == "gcs" and not self.gcs_bucket:
+                raise RuntimeError("Scale-out GCS requires FELIX_GCS_BUCKET.")
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()
+
+
+# Logical model routes — Workers AI dropped; Ollama / LiteLLM fill the OSS slot.
+DEFAULT_MODEL_ROUTES: dict[str, dict[str, str]] = {
+    "claude-sonnet-4": {"provider": "anthropic", "model": "claude-sonnet-4-20250514"},
+    "claude-haiku-4": {"provider": "anthropic", "model": "claude-haiku-4-20250414"},
+    "gpt-4.1": {"provider": "openai", "model": "gpt-4.1"},
+    "gpt-4.1-mini": {"provider": "openai", "model": "gpt-4.1-mini"},
+    "llama-3-pro": {"provider": "ollama", "model": "llama3.3:70b"},
+    "llama-3-fast": {"provider": "ollama", "model": "llama3.2"},
+}

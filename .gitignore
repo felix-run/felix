@@ -1,0 +1,49 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+*.so
+build/
+dist/
+wheels/
+*.egg-info
+.eggs/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Tooling / caches
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+.ty_cache/
+.coverage
+htmlcov/
+.cache/
+*.cover
+.hypothesis/
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+
+# Local data / runtime
+data/
+*.db
+*.sqlite3
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Docker / uv
+uv.lock.bak
+.docker/
+
+# Logs
+*.log

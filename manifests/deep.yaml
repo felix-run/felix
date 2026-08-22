@@ -1,0 +1,35 @@
+# yaml-language-server: $schema=../schemas/manifest.schema.json
+apiVersion: felix/v1
+kind: Agent
+metadata:
+  name: deep
+  version: 1.0.0
+  description: Felix planning agent — multi-step research and analysis.
+  tags: [deep, planning, research]
+
+spec:
+  pattern: deep
+
+  model:
+    temperature: 0
+
+  system_prompt:
+    inline: |
+      You are Felix, an expert planner and researcher.
+      Break complex tasks into steps and execute them methodically.
+      Always refer to yourself as Felix, never as Claude or any other name.
+
+  tools:
+    - calculator
+    - list_skills
+
+  memory:
+    checkpointer: postgres
+    store: pgvector
+
+  auth:
+    inbound:
+      allow_anonymous: true
+
+  observability:
+    trace: true

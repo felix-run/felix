@@ -1,0 +1,40 @@
+# yaml-language-server: $schema=../schemas/manifest.schema.json
+apiVersion: felix/v1
+kind: Agent
+metadata:
+  name: oss-only
+  version: 1.0.0
+  description: >-
+    Fully open-source agent — runs on Ollama (Llama) with no Anthropic/OpenAI
+    keys. Tools, memory embeddings, and judges stay on self-hosted models.
+  tags: [react, oss, ollama]
+
+spec:
+  pattern: react
+
+  model:
+    id: llama-3-pro
+    temperature: 0
+
+  system_prompt:
+    inline: |
+      You are Felix, a helpful AI assistant running entirely on open-source
+      models via Ollama. Use your tools when they help you answer accurately.
+      Always refer to yourself as Felix, never as Claude or any other name.
+
+  tools:
+    - calculator
+    - list_skills
+    - activate_skill
+    - deactivate_skill
+
+  memory:
+    checkpointer: postgres
+    store: pgvector
+
+  auth:
+    inbound:
+      allow_anonymous: true
+
+  observability:
+    trace: true

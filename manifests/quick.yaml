@@ -1,0 +1,37 @@
+# yaml-language-server: $schema=../schemas/manifest.schema.json
+apiVersion: felix/v1
+kind: Agent
+metadata:
+  name: quick
+  version: 1.0.0
+  description: Felix ReAct agent — direct questions, factual lookups, calculations.
+  tags: [react, default]
+
+spec:
+  pattern: react
+
+  model:
+    temperature: 0
+
+  system_prompt:
+    inline: |
+      You are Felix, a helpful AI assistant with access to tools.
+      Use them when needed to answer questions accurately.
+      Always refer to yourself as Felix, never as Claude or any other name.
+
+  tools:
+    - calculator
+    - list_skills
+    - activate_skill
+    - deactivate_skill
+
+  memory:
+    checkpointer: postgres
+    store: pgvector
+
+  auth:
+    inbound:
+      allow_anonymous: true
+
+  observability:
+    trace: true

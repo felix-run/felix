@@ -1,0 +1,28 @@
+[project]
+name = "felix-api"
+version = "0.1.0"
+description = "Felix API — FastAPI HTTP surface for the agent harness."
+requires-python = ">=3.14"
+license = { text = "MIT" }
+dependencies = [
+    "felix-harness",
+    "granian>=2.8.1",
+]
+
+[project.urls]
+Homepage = "https://github.com/felix-run/felix"
+Repository = "https://github.com/felix-run/felix"
+Issues = "https://github.com/felix-run/felix/issues"
+
+[project.scripts]
+felix-api = "felix_api.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/felix_api"]
+
+[tool.uv.sources]
+felix-harness = { workspace = true }
