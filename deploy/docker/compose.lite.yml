@@ -7,7 +7,7 @@
 # Drops MinIO (uses FELIX_OBJECT_STORE=fs), tightens memory, and skips
 # publishing DB/cache ports to the host.
 
-name: felix-lite
+name: felix
 
 services:
   api:
