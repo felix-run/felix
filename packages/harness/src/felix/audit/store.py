@@ -132,22 +132,33 @@ async def flush_pending(settings: Settings) -> int:
     if _use_memory(settings):
         _memory_events.extend(batch)
     else:
+        from collections import defaultdict
+
+        from felix.db.session import apply_tenant_rls, rls_tenant
+
+        by_tenant: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for event in batch:
+            by_tenant[str(event.get("tenant_id") or "default")].append(event)
+
         factory = get_session_factory(settings=settings)
-        async with factory() as db:
-            for event in batch:
-                db.add(
-                    AuditEvent(
-                        tenant_id=event["tenant_id"],
-                        id=event["id"],
-                        ts=event["ts"],
-                        event_type=event["event_type"],
-                        manifest_id=event.get("manifest_id", ""),
-                        principal_subj=event.get("principal_subj", ""),
-                        status=event.get("status", ""),
-                        payload_json=event.get("payload_json") or {},
-                    )
-                )
-            await db.commit()
+        for tenant_id, events in by_tenant.items():
+            with rls_tenant(tenant_id):
+                async with factory() as db:
+                    await apply_tenant_rls(db, settings, tenant_id)
+                    for event in events:
+                        db.add(
+                            AuditEvent(
+                                tenant_id=event["tenant_id"],
+                                id=event["id"],
+                                ts=event["ts"],
+                                event_type=event["event_type"],
+                                manifest_id=event.get("manifest_id", ""),
+                                principal_subj=event.get("principal_subj", ""),
+                                status=event.get("status", ""),
+                                payload_json=event.get("payload_json") or {},
+                            )
+                        )
+                    await db.commit()
 
     if getattr(settings, "warehouse", "none") not in {"none", "", None}:
         from felix.warehouse import export_audit_events

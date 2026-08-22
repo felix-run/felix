@@ -344,17 +344,15 @@ def apply_limits(tools: list[Tool], limits: Any, manifest_id: str) -> list[Tool]
     return _wrap_tools(tools, wrap_one)
 
 
-_PII_PATTERNS = (
-    (__import__("re").compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"), "email"),
-    (__import__("re").compile(r"\b\d{3}-\d{2}-\d{4}\b"), "ssn"),
-)
-
-
 def apply_guardrails(tools: list[Tool], guardrails: Any, manifest_id: str) -> list[Tool]:
     providers = set(getattr(guardrails, "providers", []) or [])
     if "pii" not in providers:
         return tools
     block = bool(getattr(guardrails, "block_on_match", False))
+    targets = set(getattr(guardrails, "targets", []) or [])
+    # Default targets include output; skip wrapping when only input is requested.
+    if targets and "output" not in targets and "final_response" not in targets:
+        return tools
 
     def wrap_one(tool: Tool) -> Tool:
         inner = tool.executor
@@ -364,13 +362,12 @@ def apply_guardrails(tools: list[Tool], guardrails: Any, manifest_id: str) -> li
             if is_wrapper_deny(out):
                 return out
             content = tool_output_content(out)
-            matched = False
-            for rx, kind in _PII_PATTERNS:
-                if rx.search(content):
-                    matched = True
-                    content = rx.sub(f"[REDACTED:{kind}]", content)
-            if matched and block:
+            from felix.governance.pii import redact_pii
+
+            result = redact_pii(content)
+            if result.matched and block:
                 return deny_output("[guardrails] PII blocked", "guardrails")
+            content = result.text
             if isinstance(out, str):
                 return content
             out.content = content
@@ -420,8 +417,32 @@ def _heuristic_judge_score(content: str, criteria: str) -> float:
     return hit / len(tokens)
 
 
+async def _judge_score(content: str, judge: Any, *, settings: Any | None = None) -> float:
+    """Heuristic score, or LLM score when ``judge.model`` is set."""
+    criteria = getattr(judge, "criteria", "") or ""
+    model_id = (getattr(judge, "model", "") or "").strip()
+    if not model_id or settings is None:
+        return _heuristic_judge_score(content, criteria)
+    try:
+        from felix.eval.compare import llm_judge_score
+        from felix.manifests.schema import ModelSpec
+        from felix.patterns.model import build_model
+
+        model = build_model(settings, ModelSpec(id=model_id))
+        result = await llm_judge_score(
+            model,
+            user_input="",
+            answer=content,
+            criteria=criteria,
+            threshold=float(getattr(judge, "threshold", 0.7) or 0.7),
+        )
+        return float(result.get("score") or 0.0)
+    except Exception:
+        return _heuristic_judge_score(content, criteria)
+
+
 def apply_judges(tools: list[Tool], guardrails: Any, manifest_id: str) -> list[Tool]:
-    """Apply tool-output judges using criteria/threshold heuristics."""
+    """Apply tool-output judges (heuristic, or LLM when JudgeRule.model is set)."""
     _ = manifest_id
     judges = [j for j in getattr(guardrails, "judges", []) if not getattr(j, "final_response", False)]
     if not judges:
@@ -438,8 +459,11 @@ def apply_judges(tools: list[Tool], guardrails: Any, manifest_id: str) -> list[T
             if is_wrapper_deny(out):
                 return out
             content = tool_output_content(out)
+            from felix.config import get_settings
+
+            settings = get_settings()
             for j in applicable:
-                score = _heuristic_judge_score(content, getattr(j, "criteria", "") or "")
+                score = await _judge_score(content, j, settings=settings)
                 threshold = float(getattr(j, "threshold", 0.7) or 0.7)
                 if score < threshold:
                     return deny_output(
@@ -489,8 +513,11 @@ def wrap_final_response_judges(agent: Agent, guardrails: Any, manifest_id: str) 
         async def invoke(self, input: InvokeInput) -> InvokeOutput:
             result = await self._inner.invoke(input)
             content = result.final.content if result.final else ""
+            from felix.config import get_settings
+
+            settings = get_settings()
             for j in judges:
-                score = _heuristic_judge_score(content, getattr(j, "criteria", "") or "")
+                score = await _judge_score(content, j, settings=settings)
                 threshold = float(getattr(j, "threshold", 0.7) or 0.7)
                 if score < threshold:
                     msg = ChatMessage(

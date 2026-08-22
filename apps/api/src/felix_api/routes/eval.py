@@ -29,8 +29,10 @@ class EvalRunRequest(BaseModel):
     dataset_name: str | None = None
     candidate_manifest: str
     manifest_version: int | None = None
-    # Accepted for chat-ui compatibility; Python eval uses heuristic rubrics.
+    # When true, skip LLM judges and use rubric heuristics only.
     deterministic_judge: bool = False
+    # When true (and not deterministic), score items with an LLM judge.
+    use_llm_judge: bool = False
 
 
 @router.get("/datasets")
@@ -120,6 +122,8 @@ async def start_eval_run(body: EvalRunRequest, request: Request) -> Any:
         dataset_name=body.dataset_name,
         candidate_manifest=body.candidate_manifest,
         manifest_version=body.manifest_version,
+        deterministic_judge=body.deterministic_judge,
+        use_llm_judge=not body.deterministic_judge and bool(body.use_llm_judge),
     )
 
 
@@ -129,7 +133,6 @@ async def run_dataset(name: str, body: EvalRunRequest, request: Request) -> Any:
     from felix.eval.runner import start_run
 
     require_mgmt_scopes(request, SCOPE_EVAL_WRITE)
-    _ = body.deterministic_judge
     return await start_run(
         request.app.state.settings,
         tools=request.app.state.tools,
@@ -138,6 +141,8 @@ async def run_dataset(name: str, body: EvalRunRequest, request: Request) -> Any:
         candidate_manifest=body.candidate_manifest,
         manifest_version=body.manifest_version,
         mock=False,
+        deterministic_judge=body.deterministic_judge,
+        use_llm_judge=not body.deterministic_judge and bool(body.use_llm_judge),
     )
 
 

@@ -57,6 +57,11 @@ def eval_cmd(
         "--mock",
         help="Score with rubric mock_answer/expect (no live model).",
     ),
+    llm_judge: bool = typer.Option(
+        False,
+        "--llm-judge",
+        help="Score with an LLM judge (ignored with --mock).",
+    ),
 ) -> None:
     """Run an offline eval against a dataset."""
     import asyncio
@@ -82,11 +87,12 @@ def eval_cmd(
             rprint(f"[green]loaded fixture[/green] {fixture} → dataset={name}")
         result = await start_run(
             settings,
-            tools=None,
             tenant_id=tenant,
             dataset_name=name,
             candidate_manifest=manifest,
             mock=mock,
+            use_llm_judge=llm_judge and not mock,
+            deterministic_judge=not llm_judge,
         )
         rprint(result)
         fails = int(result.get("fail_count") or 0)

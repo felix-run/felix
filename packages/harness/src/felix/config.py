@@ -34,6 +34,8 @@ class Settings(BaseSettings):
 
     # --- data plane (cloud-agnostic; AWS + GCP first) ---
     database_url: str = "postgresql+psycopg://felix:felix@localhost:5432/felix"
+    # Opt-in Postgres RLS (requires migration 0006). Sets app.tenant_id per txn.
+    database_rls: bool = False
     redis_url: str = "redis://localhost:6379/0"
     # Object store: s3 (AWS/MinIO) | gcs (GCP) | fs (local dir, small VMs) | memory
     # Lean default is fs — matches Docker image without aws/gcp extras.

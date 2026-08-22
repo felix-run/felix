@@ -62,21 +62,24 @@ async def run_retention_sweep(settings: Settings) -> dict[str, int]:
         return counts
 
     factory = get_session_factory(settings=settings)
-    async with factory() as db:
-        r = await db.execute(delete(AuditEvent).where(AuditEvent.ts < audit_cutoff))
-        counts["audit_events"] = int(r.rowcount or 0)
+    from felix.db.session import rls_bypass
 
-        r = await db.execute(delete(Plan).where(Plan.expires_at.is_not(None), Plan.expires_at < ts))
-        counts["plans"] = int(r.rowcount or 0)
+    with rls_bypass():
+        async with factory() as db:
+            r = await db.execute(delete(AuditEvent).where(AuditEvent.ts < audit_cutoff))
+            counts["audit_events"] = int(r.rowcount or 0)
 
-        r = await db.execute(
-            delete(MemoryVector).where(
-                MemoryVector.superseded_seq.is_not(None),
-                MemoryVector.created_at < mem_cutoff,
+            r = await db.execute(delete(Plan).where(Plan.expires_at.is_not(None), Plan.expires_at < ts))
+            counts["plans"] = int(r.rowcount or 0)
+
+            r = await db.execute(
+                delete(MemoryVector).where(
+                    MemoryVector.superseded_seq.is_not(None),
+                    MemoryVector.created_at < mem_cutoff,
+                )
             )
-        )
-        counts["memory_vectors"] = int(r.rowcount or 0)
-        await db.commit()
+            counts["memory_vectors"] = int(r.rowcount or 0)
+            await db.commit()
 
     logger.info("retention_sweep %s", counts)
     return counts

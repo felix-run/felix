@@ -151,6 +151,7 @@ async def llm_judge_score(
     user_input: str,
     answer: str,
     criteria: str,
+    threshold: float = 0.7,
 ) -> dict[str, Any]:
     """Optional model-backed judge. Returns score in [0, 1]."""
     prompt = (
@@ -173,10 +174,12 @@ async def llm_judge_score(
         if start >= 0 and end > start:
             data = json.loads(text[start : end + 1])
             score = float(data.get("score") or 0)
+            score = max(0.0, min(1.0, score))
             return {
-                "score": max(0.0, min(1.0, score)),
+                "score": score,
                 "reason": str(data.get("reason") or ""),
-                "pass": score >= 1.0,
+                "pass": score >= threshold,
+                "rule": "llm_judge",
             }
     except Exception:
         logger.debug("llm judge failed", exc_info=True)

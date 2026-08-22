@@ -36,6 +36,8 @@ config:
   FELIX_HIBERNATE_AFTER_SECONDS: "300"
   FELIX_OTEL_ENABLED: "false"
   FELIX_WAREHOUSE: none
+  # Opt-in after alembic upgrade to 0006_tenant_rls.
+  FELIX_DATABASE_RLS: "false"
 
 secrets:
   # Prefer an existing K8s Secret or External Secrets Operator (see README).

@@ -15,11 +15,6 @@ _INJECTION = (
     re.compile(r"<\s*/?\s*system\s*>", re.I),
 )
 
-_PII = (
-    (re.compile(r"\b\d{3}-\d{2}-\d{4}\b"), "ssn"),
-    (re.compile(r"\b(?:\d[ -]*?){13,19}\b"), "card"),
-)
-
 
 @dataclass(slots=True)
 class ScreeningVerdict:
@@ -45,14 +40,13 @@ async def screen_content(
             if rx.search(text):
                 return ScreeningVerdict(denied=True, reason="prompt_injection_marker")
 
-    redacted = text
     if redact_pii:
-        for rx, kind in _PII:
-            if rx.search(redacted):
-                redacted = rx.sub(f"[REDACTED:{kind}]", redacted)
+        from felix.governance.pii import redact_pii as _redact
 
-    if redacted != text:
-        return ScreeningVerdict(denied=False, reason="pii_redacted", redacted=redacted)
+        result = _redact(text)
+        if result.matched and result.text != text:
+            return ScreeningVerdict(denied=False, reason="pii_redacted", redacted=result.text)
+
     return ScreeningVerdict(denied=False)
 
 

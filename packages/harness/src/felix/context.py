@@ -60,17 +60,23 @@ def try_get_context() -> RequestContext | None:
 
 @contextmanager
 def run_with_context(ctx: RequestContext) -> Iterator[RequestContext]:
+    from felix.db.session import rls_tenant
+
     token = _ctx.set(ctx)
-    try:
-        yield ctx
-    finally:
-        _ctx.reset(token)
+    with rls_tenant(ctx.auth.tenant_id):
+        try:
+            yield ctx
+        finally:
+            _ctx.reset(token)
 
 
 @asynccontextmanager
 async def async_run_with_context(ctx: RequestContext) -> AsyncIterator[RequestContext]:
+    from felix.db.session import rls_tenant
+
     token = _ctx.set(ctx)
-    try:
-        yield ctx
-    finally:
-        _ctx.reset(token)
+    with rls_tenant(ctx.auth.tenant_id):
+        try:
+            yield ctx
+        finally:
+            _ctx.reset(token)

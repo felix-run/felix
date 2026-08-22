@@ -33,6 +33,58 @@ def _score_answer(answer: str, rubric: dict[str, Any]) -> tuple[bool, float, str
     return ok, 1.0 if ok else 0.0, "nonempty"
 
 
+def _wants_llm_judge(rubric: dict[str, Any], *, deterministic_judge: bool) -> bool:
+    if deterministic_judge:
+        return False
+    if rubric.get("llm_judge") is False:
+        return False
+    return bool(rubric.get("llm_judge") or rubric.get("judge_criteria") or rubric.get("judge_model"))
+
+
+async def _maybe_llm_judge(
+    settings: Settings,
+    *,
+    user_input: str,
+    answer: str,
+    rubric: dict[str, Any],
+    heuristic: tuple[bool, float, str],
+) -> dict[str, Any]:
+    ok, score, rule = heuristic
+    criteria = str(rubric.get("judge_criteria") or rubric.get("criteria") or "relevance")
+    threshold = float(rubric.get("judge_threshold") or 0.7)
+    model_id = str(rubric.get("judge_model") or "llama-3-fast")
+    try:
+        from felix.eval.compare import llm_judge_score
+        from felix.manifests.schema import ModelSpec
+        from felix.patterns.model import build_model
+
+        model = build_model(settings, ModelSpec(id=model_id))
+        judged = await llm_judge_score(
+            model,
+            user_input=user_input,
+            answer=answer,
+            criteria=criteria,
+            threshold=threshold,
+        )
+        return {
+            "pass": bool(judged.get("pass")),
+            "score": float(judged.get("score") or 0),
+            "rule": str(judged.get("rule") or "llm_judge"),
+            "reason": str(judged.get("reason") or ""),
+            "heuristic_pass": ok,
+            "heuristic_score": score,
+            "heuristic_rule": rule,
+        }
+    except Exception as exc:
+        logger.debug("llm_judge unavailable: %s", exc, exc_info=True)
+        return {
+            "pass": ok,
+            "score": score,
+            "rule": rule,
+            "reason": f"llm_fallback:{exc}",
+        }
+
+
 async def start_run(
     settings: Settings,
     *,
@@ -42,6 +94,8 @@ async def start_run(
     candidate_manifest: str,
     manifest_version: int | None = None,
     mock: bool = False,
+    deterministic_judge: bool = False,
+    use_llm_judge: bool = False,
 ) -> dict[str, Any]:
     dataset = await eval_store.get_dataset(settings, tenant_id, dataset_name)
     items = (dataset or {}).get("items") or []
@@ -95,6 +149,8 @@ async def start_run(
         item_id = str(item.get("item_id") or item.get("id") or "")
         user_input = str(item.get("user_input") or "")
         rubric = dict(item.get("rubric") or item.get("rubric_json") or {})
+        if use_llm_judge and "llm_judge" not in rubric:
+            rubric = {**rubric, "llm_judge": True}
         req_ctx = RequestContext(
             settings=settings,
             auth=auth,
@@ -120,13 +176,28 @@ async def start_run(
                         )
                     )
                 answer = result.final.content if result.final else ""
-            ok, score, rule = _score_answer(answer, rubric)
-            if ok:
-                passes += 1
+            heuristic = _score_answer(answer, rubric)
+            if _wants_llm_judge(rubric, deterministic_judge=deterministic_judge) and not mock:
+                judged = await _maybe_llm_judge(
+                    settings,
+                    user_input=user_input,
+                    answer=answer,
+                    rubric=rubric,
+                    heuristic=heuristic,
+                )
+                ok = bool(judged["pass"])
+                score_row = {
+                    "item_id": item_id,
+                    "pass": ok,
+                    "score": judged["score"],
+                    "rule": judged["rule"],
+                    "answer": answer[:500],
+                    "mock": mock,
+                    "reason": judged.get("reason"),
+                }
             else:
-                fails += 1
-            scores.append(
-                {
+                ok, score, rule = heuristic
+                score_row = {
                     "item_id": item_id,
                     "pass": ok,
                     "score": score,
@@ -134,7 +205,11 @@ async def start_run(
                     "answer": answer[:500],
                     "mock": mock,
                 }
-            )
+            if ok:
+                passes += 1
+            else:
+                fails += 1
+            scores.append(score_row)
         except Exception as exc:
             fails += 1
             scores.append({"item_id": item_id, "pass": False, "error": str(exc)})

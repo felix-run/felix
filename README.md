@@ -10,7 +10,8 @@ served over OpenAI, A2A, MCP, and SSE. Fork, rewind, and steer live runs.
 Deploy with Docker, Helm, AWS, or GCP on infrastructure you operate.
 
 Docs: [docs.felix.run](https://docs.felix.run) ·
-Web UI: [github.com/felix-run/web](https://github.com/felix-run/web)
+Web UI: [github.com/felix-run/web](https://github.com/felix-run/web) ·
+Roadmap: [docs/roadmap.md](docs/roadmap.md)
 
 ## What you get
 

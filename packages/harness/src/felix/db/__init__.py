@@ -16,7 +16,14 @@ from felix.db.models import (
     SessionEventRow,
     SkillActivation,
 )
-from felix.db.session import get_engine, get_session_factory, session_scope
+from felix.db.session import (
+    get_engine,
+    get_session_factory,
+    rls_bypass,
+    rls_tenant,
+    session_scope,
+    tenant_session,
+)
 
 __all__ = [
     "A2ATask",
@@ -33,5 +40,8 @@ __all__ = [
     "SkillActivation",
     "get_engine",
     "get_session_factory",
+    "rls_bypass",
+    "rls_tenant",
     "session_scope",
+    "tenant_session",
 ]

@@ -35,6 +35,11 @@ out until `FELIX_MCP_AUTH_TOKEN` exists — scoped chat works without it.
 Production (`FELIX_ENVIRONMENT=production`) or `governance.forbid_plaintext_secrets: true`
 rejects Bearer/long-token auth and non-ref MCP `env` values.
 
+PII: `spec.guardrails.providers: [pii]` uses **Presidio** when
+`felix-harness[pii]` is installed, otherwise a regex fallback. Eval LLM judges
+are opt-in via rubric `llm_judge` / `judge_criteria` or `felix eval --llm-judge`
+(CI stays on `--mock`).
+
 ### AWS
 
 ```bash
@@ -83,8 +88,9 @@ spec:
 
 Runtime also enforces `spec.auth.inbound`, routes inbound MCP through the
 compiled agent, emits audit events from the agent loop, and redacts durable
-state. Tenant isolation remains application-level `tenant_id` (add Postgres
-RLS yourself if required).
+state. Tenant isolation is application-level `tenant_id` by default; enable
+Postgres RLS with migration `0006_tenant_rls` and `FELIX_DATABASE_RLS=true`
+(sets `app.tenant_id` / `app.rls_bypass` GUCs per transaction).
 
 ## Management API scopes
 
