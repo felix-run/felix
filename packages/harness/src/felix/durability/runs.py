@@ -45,6 +45,7 @@ async def start_durable_chat(
     thread_id: str | None,
     model_id: str | None,
     execution: ExecutionSpec,
+    pin: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Enqueue an invoke fiber and optionally start a Temporal workflow."""
     ttl = _ttl_seconds(settings, execution)
@@ -63,6 +64,8 @@ async def start_durable_chat(
         "stash": {},
         "expires_at": expires_at,
     }
+    if pin:
+        state["pin"] = pin
     fiber = await create_fiber(
         settings,
         tenant_id,

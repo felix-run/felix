@@ -44,14 +44,17 @@ async def create_fiber(
     wake_at: int | None = None,
     status: str = "pending",
 ) -> dict[str, Any]:
+    from felix.secrets import redact_json
+
     fiber_id = uuid.uuid4().hex
     ts = now_ms()
+    safe_state = redact_json(state or {})
     row = {
         "tenant_id": tenant_id,
         "id": fiber_id,
         "kind": kind,
         "status": "sleeping" if wake_at else status,
-        "state_json": state or {},
+        "state_json": safe_state if isinstance(safe_state, dict) else {},
         "wake_at": wake_at,
         "created_at": ts,
         "updated_at": ts,
@@ -68,7 +71,12 @@ async def create_fiber(
 
 
 async def _save_fiber(settings: Settings, row: dict[str, Any]) -> None:
+    from felix.secrets import redact_json
+
     row["updated_at"] = now_ms()
+    state = row.get("state_json") or {}
+    safe = redact_json(state)
+    row["state_json"] = safe if isinstance(safe, dict) else {}
     if _use_memory(settings):
         _memory_fibers[(row["tenant_id"], row["id"])] = row
         return
@@ -148,8 +156,13 @@ async def _run_fiber_step(settings: Settings, row: dict[str, Any]) -> dict[str, 
         if manifest_id:
             try:
                 from felix.context import AuthContext, RequestContext, async_run_with_context
+                from felix.manifests.pin import assert_pin_matches
                 from felix.patterns.types import ChatMessage, InvokeInput
-                from felix.runtime import build_tenant_agent, resolve_tenant_manifest
+                from felix.runtime import (
+                    build_tenant_agent,
+                    prepare_tenant_invoke,
+                    resolve_tenant_manifest,
+                )
                 from felix.tools.builtins import default_tool_provider
 
                 provider = default_tool_provider()
@@ -158,6 +171,14 @@ async def _run_fiber_step(settings: Settings, row: dict[str, Any]) -> dict[str, 
                 thread = thread_id or f"{tenant_id}:fiber:{row['id']}"
                 resolved = await resolve_tenant_manifest(
                     settings, tenant_id, manifest_id, thread_id=thread
+                )
+                pinned = state.get("pin") if isinstance(state.get("pin"), dict) else None
+                if pinned:
+                    assert_pin_matches(
+                        pinned, resolved.manifest, version=resolved.version
+                    )
+                await prepare_tenant_invoke(
+                    settings, resolved=resolved, auth=auth, thread_id=thread
                 )
                 req_ctx = RequestContext(
                     settings=settings,

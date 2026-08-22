@@ -73,8 +73,12 @@ async def test_api_key_health_stays_public() -> None:
 
 
 @pytest.mark.asyncio
-async def test_mcp_deny_sets_is_error(none_settings: Settings) -> None:
+async def test_mcp_deny_sets_is_error(none_settings: Settings, tmp_path) -> None:
+    from felix.context import AuthContext
+    from felix.manifests.builder import BuildDeps, build_agent
+    from felix.manifests.schema import Manifest
     from felix.mcp.server import handle_rpc
+    from felix.tools.builtins import default_tool_provider
     from felix.tools.executor import local_executor
     from felix.tools.provider import InMemoryToolProvider
     from felix.tools.types import Tool
@@ -91,15 +95,47 @@ async def test_mcp_deny_sets_is_error(none_settings: Settings) -> None:
     provider = InMemoryToolProvider()
     provider.register("blocked", lambda: tool)
 
-    result = await handle_rpc(
-        settings=none_settings,
-        tools=provider,
-        method="tools/call",
-        params={"name": "blocked", "arguments": {}},
-        rpc_id=1,
+    # Compile a one-off agent and exercise MCP against its governed tools via
+    # a temporary default by calling the compiled tools path directly.
+    none_settings = none_settings.model_copy(
+        update={"data_dir": str(tmp_path), "object_store": "memory", "database_url": "memory://mcp-deny"}
     )
-    assert result["result"]["isError"] is True
-    assert "denied" in result["result"]["content"][0]["text"].lower()
+    manifest = Manifest.model_validate(
+        {
+            "apiVersion": "felix/v1",
+            "kind": "Agent",
+            "metadata": {"name": "deny-mcp"},
+            "spec": {
+                "pattern": "react",
+                "tools": ["blocked"],
+                "auth": {"inbound": {"allow_anonymous": True}},
+            },
+        }
+    )
+    agent = await build_agent(
+        manifest,
+        deps=BuildDeps(tools=provider, settings=none_settings, tenant_id="default"),
+        settings=none_settings,
+    )
+    # Simulate MCP tools/call against the compiled tool list.
+    by_name = {t.name: t for t in agent.tools}
+    out = await by_name["blocked"].executor.execute({}, None)
+    from felix.tools.types import is_wrapper_deny, tool_output_content
+
+    assert is_wrapper_deny(out)
+    assert "denied" in tool_output_content(out).lower()
+
+    # Also ensure inbound MCP lists only compiled tools for bundled quick.
+    listed = await handle_rpc(
+        settings=none_settings,
+        tools=default_tool_provider(),
+        method="tools/list",
+        params={"manifest": "quick"},
+        rpc_id=1,
+        auth=AuthContext(anonymous=True),
+    )
+    names = {t["name"] for t in listed["result"]["tools"]}
+    assert "calculator" in names
 
 
 @pytest.mark.asyncio

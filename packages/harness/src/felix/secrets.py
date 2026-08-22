@@ -5,13 +5,22 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 logger = logging.getLogger("felix.secrets")
 
 # Values resolved via hydrate_secrets — used for output masking.
 _resolved_secret_values: list[str] = []
+
+# Manifest auth/env may use ``secret:NAME`` (or ``{"secret": "NAME"}``).
+_SECRET_REF_RE = re.compile(r"^secret:(.+)$", re.IGNORECASE)
+# Heuristic: Bearer/Basic tokens or long hex/base64-looking blobs.
+_PLAINTEXT_AUTH_RE = re.compile(
+    r"^(?:bearer\s+\S+|basic\s+\S+|[A-Za-z0-9+/_-]{24,}={0,2})$",
+    re.IGNORECASE,
+)
 
 # Settings attrs that may hold secrets, and candidate names in the secrets backend.
 _HYDRATE_MAP: dict[str, tuple[str, ...]] = {
@@ -185,6 +194,102 @@ def collected_secret_values(settings: object | None = None) -> list[str]:
     return out
 
 
+def register_resolved_secret(value: str) -> None:
+    """Add a runtime-resolved secret to the masking list (deduped)."""
+    global _resolved_secret_values
+    if not value or len(value) < 8:
+        return
+    if value in _resolved_secret_values:
+        return
+    _resolved_secret_values = [*_resolved_secret_values, value]
+
+
+def normalize_secret_ref(value: str | dict[str, Any] | None) -> str:
+    """Normalize ``secret:NAME`` or ``{"secret": "NAME"}`` to a string form."""
+    if value is None:
+        return ""
+    if isinstance(value, dict):
+        name = value.get("secret")
+        if name is None or not str(name).strip():
+            raise ValueError("secret ref object requires non-empty 'secret' key")
+        return f"secret:{str(name).strip()}"
+    return str(value)
+
+
+def secret_ref_name(value: str | dict[str, Any] | None) -> str | None:
+    """Return the backend secret name if ``value`` is a secret ref, else None."""
+    try:
+        normalized = normalize_secret_ref(value)
+    except ValueError:
+        return None
+    if not normalized:
+        return None
+    m = _SECRET_REF_RE.match(normalized.strip())
+    if not m:
+        return None
+    name = m.group(1).strip()
+    return name or None
+
+
+def is_secret_ref(value: str | dict[str, Any] | None) -> bool:
+    return secret_ref_name(value) is not None
+
+
+def looks_like_plaintext_secret(value: str | None) -> bool:
+    """True when a non-ref auth/env string looks like an embedded credential."""
+    if not value or not value.strip():
+        return False
+    if is_secret_ref(value):
+        return False
+    return bool(_PLAINTEXT_AUTH_RE.match(value.strip()))
+
+
+async def resolve_secret_value(
+    provider: SecretsProvider,
+    value: str | dict[str, Any] | None,
+    *,
+    register: bool = True,
+) -> str:
+    """Resolve a secret ref via ``provider``; pass through literal non-ref strings."""
+    if value is None:
+        return ""
+    name = secret_ref_name(value)
+    if name is None:
+        return normalize_secret_ref(value) if isinstance(value, dict) else str(value)
+    resolved = await provider.get(name)
+    if resolved is None:
+        raise ValueError(f"secret not found: {name}")
+    if register:
+        register_resolved_secret(resolved)
+    return resolved
+
+
+def redact_text(text: str, secrets: list[str] | None = None) -> str:
+    """Replace known secret substrings with ``[REDACTED]``."""
+    if not text:
+        return text
+    vals = secrets if secrets is not None else collected_secret_values()
+    out = text
+    for s in vals:
+        if s and s in out:
+            out = out.replace(s, "[REDACTED]")
+    return out
+
+
+def redact_json(obj: Any, secrets: list[str] | None = None) -> Any:
+    """Recursively redact secret substrings in JSON-compatible structures."""
+    vals = secrets if secrets is not None else collected_secret_values()
+    if not vals:
+        return obj
+    if isinstance(obj, str):
+        return redact_text(obj, vals)
+    if isinstance(obj, dict):
+        return {k: redact_json(v, vals) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [redact_json(v, vals) for v in obj]
+    return obj
+
+
 __all__ = [
     "AwsSecretsManager",
     "EnvSecrets",
@@ -194,4 +299,12 @@ __all__ = [
     "build_secrets",
     "collected_secret_values",
     "hydrate_secrets",
+    "is_secret_ref",
+    "looks_like_plaintext_secret",
+    "normalize_secret_ref",
+    "redact_json",
+    "redact_text",
+    "register_resolved_secret",
+    "resolve_secret_value",
+    "secret_ref_name",
 ]

@@ -22,12 +22,15 @@ class JsonRpcRequest(BaseModel):
 @router.post("")
 @router.post("/")
 async def a2a_rpc(body: JsonRpcRequest, request: Request) -> dict[str, Any]:
+    from felix.context import AuthContext
+
     ctx = try_get_context()
-    tenant = ctx.auth.tenant_id if ctx else "default"
+    auth = ctx.auth if ctx else AuthContext()
     return await handle_rpc(
         settings=request.app.state.settings,
         tools=request.app.state.tools,
-        tenant_id=tenant,
+        tenant_id=auth.tenant_id,
+        auth=auth,
         method=body.method,
         params=body.params,
         rpc_id=body.id,

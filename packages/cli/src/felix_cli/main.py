@@ -145,6 +145,34 @@ def bundle_manifests(
         rprint(json.dumps({"manifests": names}, indent=2))
 
 
+@app.command("validate-manifest")
+def validate_manifest_cmd(
+    path: Path = typer.Argument(..., help="Path to a felix/v1 Agent YAML or JSON file."),
+    environment: str = typer.Option(
+        "development",
+        "--environment",
+        "-e",
+        help="Assumed FELIX_ENVIRONMENT for governance checks.",
+    ),
+) -> None:
+    """Validate a manifest schema + opt-in governance frameworks (GitOps CI)."""
+    from felix.config import Settings
+    from felix.manifests.governance import GovernanceError, validate_governance
+    from felix.manifests.loader import load_manifest_file
+
+    settings = Settings(environment=environment)  # type: ignore[arg-type]
+    try:
+        manifest = load_manifest_file(path)
+        validate_governance(manifest, settings)
+    except GovernanceError as exc:
+        rprint(f"[red]governance fail[/red] {path}: {exc}")
+        raise SystemExit(1) from exc
+    except Exception as exc:
+        rprint(f"[red]invalid[/red] {path}: {exc}")
+        raise SystemExit(1) from exc
+    rprint(f"[green]ok[/green] {path} ({manifest.metadata.name})")
+
+
 @app.command("doctor")
 def doctor_cmd() -> None:
     """Check runtime configuration (read-only)."""

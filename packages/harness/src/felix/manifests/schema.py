@@ -114,8 +114,27 @@ class McpServerRef(_Strict):
     args: list[str] = Field(default_factory=list)
     cwd: str = ""
     env: dict[str, str] = Field(default_factory=dict)
+    # Literal token or ``secret:NAME`` / ``{"secret": "NAME"}`` (resolved at compile).
     auth: str = ""
     transport: Literal["http", "sse", "stdio"] = "sse"
+
+    @field_validator("auth", mode="before")
+    @classmethod
+    def _normalize_auth(cls, v: Any) -> str:
+        from felix.secrets import normalize_secret_ref
+
+        return normalize_secret_ref(v)
+
+    @field_validator("env", mode="before")
+    @classmethod
+    def _normalize_env(cls, v: Any) -> dict[str, str]:
+        from felix.secrets import normalize_secret_ref
+
+        if not v:
+            return {}
+        if not isinstance(v, dict):
+            raise ValueError("env must be a mapping")
+        return {str(k): normalize_secret_ref(val) for k, val in v.items()}
 
     @field_validator("url")
     @classmethod
@@ -141,6 +160,13 @@ class A2APeerRef(_Strict):
     url: str
     auth: str = ""
 
+    @field_validator("auth", mode="before")
+    @classmethod
+    def _normalize_auth(cls, v: Any) -> str:
+        from felix.secrets import normalize_secret_ref
+
+        return normalize_secret_ref(v)
+
     @field_validator("url")
     @classmethod
     def _safe_url(cls, v: str) -> str:
@@ -158,6 +184,13 @@ class ContainerRef(_Strict):
     auth: str = ""
     args_schema: dict[str, Any] | None = None
     fatal: bool = False
+
+    @field_validator("auth", mode="before")
+    @classmethod
+    def _normalize_auth(cls, v: Any) -> str:
+        from felix.secrets import normalize_secret_ref
+
+        return normalize_secret_ref(v)
 
     @field_validator("gateway_url")
     @classmethod
@@ -399,6 +432,18 @@ class ContentScreening(_Strict):
     on_flag: Literal["quarantine", "block"] = "quarantine"
 
 
+class GovernanceSpec(_Strict):
+    """Opt-in framework mapping — compile-time requirements, not a certification."""
+
+    frameworks: list[Literal["soc2", "eu_ai_act"]] = Field(default_factory=list)
+    # EU AI Act deployer hint for human-oversight strictness.
+    risk_tier: Literal["limited", "high"] = "limited"
+    transparency_notice: bool = False
+    forbid_plaintext_secrets: bool = False
+    pin_compile: bool = False
+    retention_days: int | None = Field(default=None, ge=1, le=3650)
+
+
 class Spec(_Strict):
     pattern: str = "react"
     model: ModelSpec = Field(default_factory=ModelSpec)
@@ -434,6 +479,7 @@ class Spec(_Strict):
     command_screening: CommandScreening = Field(default_factory=CommandScreening)
     anomaly: AnomalySpec = Field(default_factory=AnomalySpec)
     approvals: list[ApprovalRule] = Field(default_factory=list)
+    governance: GovernanceSpec = Field(default_factory=GovernanceSpec)
     recursion_limit: int | None = Field(default=None, ge=1, le=ABSOLUTE_LIMITS["recursion_limit"])
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
@@ -476,6 +522,7 @@ __all__ = [
     "CommandScreening",
     "ContentScreening",
     "ExecutionSpec",
+    "GovernanceSpec",
     "Guardrails",
     "Limits",
     "Manifest",

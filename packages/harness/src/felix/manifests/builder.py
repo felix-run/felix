@@ -739,22 +739,32 @@ async def build_agent(
             and getattr(deps.settings, "allow_insecure", False)
         )
 
+        # Governance compile checks (frameworks + plaintext secret policy).
+        from felix.manifests.governance import apply_transparency_notice, validate_governance
+        from felix.manifests.secret_refs import resolve_outbound_secrets
+
+        validate_governance(m, deps.settings)
+        if m.spec.governance.transparency_notice:
+            system_prompt = apply_transparency_notice(system_prompt or "", m.metadata.name)
+
+        mcp_refs, peer_refs, container_refs = await resolve_outbound_secrets(m, deps.settings)
+
         # Outbound MCP servers → remote tools.
-        if m.spec.mcp:
+        if mcp_refs:
             try:
                 from felix.mcp.client import tools_from_mcp_servers
 
-                mcp_tools = await tools_from_mcp_servers(list(m.spec.mcp), allow_http=allow_http)
+                mcp_tools = await tools_from_mcp_servers(mcp_refs, allow_http=allow_http)
                 _append_unique_tools(resolved, mcp_tools)
             except Exception:
                 logger.warning("MCP client tool binding failed", exc_info=True)
 
         # A2A peers → peer__{name} tools.
-        if m.spec.peers:
+        if peer_refs:
             try:
                 from felix.a2a.peers import tools_from_peers
 
-                peer_tools = tools_from_peers(list(m.spec.peers), allow_http=allow_http)
+                peer_tools = tools_from_peers(peer_refs, allow_http=allow_http)
                 _append_unique_tools(resolved, peer_tools)
             except Exception:
                 logger.warning("peer tool binding failed", exc_info=True)
@@ -789,13 +799,13 @@ async def build_agent(
             except Exception:
                 logger.warning("sandbox tool binding failed", exc_info=True)
 
-        if m.spec.containers:
+        if container_refs:
             try:
                 from felix.tools.sandboxes import tools_from_containers
 
                 _append_unique_tools(
                     resolved,
-                    tools_from_containers(list(m.spec.containers), allow_http=allow_http),
+                    tools_from_containers(container_refs, allow_http=allow_http),
                 )
             except Exception:
                 logger.warning("container tool binding failed", exc_info=True)

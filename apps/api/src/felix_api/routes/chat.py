@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from felix.context import AuthContext, RequestContext, async_run_with_context, try_get_context
 from felix.patterns.model import ModelGatewayError
 from felix.patterns.types import ChatMessage, InvokeInput
-from felix.runtime import build_tenant_agent, resolve_tenant_manifest
+from felix.runtime import build_tenant_agent, prepare_tenant_invoke, resolve_tenant_manifest
 from felix.session.store import get_session_store
 from felix.session.tree import fork_thread, get_leaf, rewind_to
 from felix.steer import enqueue
@@ -18,6 +18,17 @@ from pydantic import BaseModel, Field
 router = APIRouter(tags=["Threads"])
 
 _SUFFIX_DELIMS = frozenset(":#")
+
+
+def _http_from_invoke_prep(exc: Exception) -> HTTPException | None:
+    from felix.manifests.inbound_auth import InboundAuthError
+    from felix.manifests.pin import ManifestDriftError
+
+    if isinstance(exc, InboundAuthError):
+        return HTTPException(status_code=exc.status_code, detail=exc.detail)
+    if isinstance(exc, ManifestDriftError):
+        return HTTPException(status_code=409, detail=str(exc))
+    return None
 
 
 class ChatRequest(BaseModel):
@@ -243,8 +254,18 @@ async def chat(body: ChatRequest, request: Request) -> Any:
         resolved = await resolve_tenant_manifest(
             settings, auth.tenant_id, body.manifest, thread_id=thread
         )
-    except (LookupError, ValueError) as exc:
-        raise HTTPException(status_code=404, detail=f"unknown_manifest:{body.manifest}") from exc
+        await prepare_tenant_invoke(
+            settings, resolved=resolved, auth=auth, thread_id=thread
+        )
+    except Exception as exc:
+        http = _http_from_invoke_prep(exc)
+        if http is not None:
+            raise http from exc
+        if isinstance(exc, (LookupError, ValueError)):
+            raise HTTPException(
+                status_code=404, detail=f"unknown_manifest:{body.manifest}"
+            ) from exc
+        raise
     model_id = _allowlisted_model(resolved.manifest, body.model, settings)
     messages = [ChatMessage.model_validate(m) for m in body.messages]
     messages = await _apply_template(
@@ -261,6 +282,7 @@ async def chat(body: ChatRequest, request: Request) -> Any:
     execution = getattr(getattr(resolved.manifest, "spec", None), "execution", None)
     if getattr(execution, "mode", "transient") == "durable":
         from felix.durability.runs import start_durable_chat
+        from felix.manifests.pin import pin_fields
 
         payload = await start_durable_chat(
             settings,
@@ -270,6 +292,7 @@ async def chat(body: ChatRequest, request: Request) -> Any:
             thread_id=thread,
             model_id=model_id,
             execution=execution,
+            pin=pin_fields(resolved.manifest, version=resolved.version),
         )
         return JSONResponse(payload, status_code=202)
 
@@ -335,8 +358,18 @@ async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
         resolved = await resolve_tenant_manifest(
             settings, auth.tenant_id, body.manifest, thread_id=thread
         )
-    except (LookupError, ValueError) as exc:
-        raise HTTPException(status_code=404, detail=f"unknown_manifest:{body.manifest}") from exc
+        await prepare_tenant_invoke(
+            settings, resolved=resolved, auth=auth, thread_id=thread
+        )
+    except Exception as exc:
+        http = _http_from_invoke_prep(exc)
+        if http is not None:
+            raise http from exc
+        if isinstance(exc, (LookupError, ValueError)):
+            raise HTTPException(
+                status_code=404, detail=f"unknown_manifest:{body.manifest}"
+            ) from exc
+        raise
     model_id = _allowlisted_model(resolved.manifest, body.model, settings)
     messages = [ChatMessage.model_validate(m) for m in body.messages]
     messages = await _apply_template(
@@ -886,8 +919,18 @@ async def chat_continue(body: ContinueRequest, request: Request) -> Any:
         resolved = await resolve_tenant_manifest(
             settings, auth.tenant_id, body.manifest, thread_id=thread
         )
-    except (LookupError, ValueError) as exc:
-        raise HTTPException(status_code=404, detail=f"unknown_manifest:{body.manifest}") from exc
+        await prepare_tenant_invoke(
+            settings, resolved=resolved, auth=auth, thread_id=thread
+        )
+    except Exception as exc:
+        http = _http_from_invoke_prep(exc)
+        if http is not None:
+            raise http from exc
+        if isinstance(exc, (LookupError, ValueError)):
+            raise HTTPException(
+                status_code=404, detail=f"unknown_manifest:{body.manifest}"
+            ) from exc
+        raise
     model_id = _allowlisted_model(resolved.manifest, body.model, settings)
     # Empty incoming — session strategy rebuilds context from leaf.
     messages = [ChatMessage(role="user", content="Continue.")]

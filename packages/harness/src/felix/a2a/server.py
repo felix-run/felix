@@ -40,8 +40,9 @@ async def handle_rpc(
     method: str,
     params: dict[str, Any],
     rpc_id: str | int | None,
+    auth: AuthContext | None = None,
 ) -> dict[str, Any]:
-    from felix.runtime import build_tenant_agent, resolve_tenant_manifest
+    from felix.runtime import build_tenant_agent, prepare_tenant_invoke, resolve_tenant_manifest
 
     if method == "agent/authenticatedExtendedCard":
         from felix.a2a.card import build_agent_card
@@ -84,13 +85,18 @@ async def handle_rpc(
                 "artifacts": [],
             },
         )
-        auth = AuthContext(tenant_id=tenant_id, principal_sub="a2a", anonymous=False)
+        call_auth = auth or AuthContext(
+            tenant_id=tenant_id, principal_sub="a2a", anonymous=False
+        )
         try:
             resolved = await resolve_tenant_manifest(
                 settings, tenant_id, name, thread_id=thread
             )
+            await prepare_tenant_invoke(
+                settings, resolved=resolved, auth=call_auth, thread_id=thread
+            )
             req_ctx = RequestContext(
-                settings=settings, auth=auth, manifest_id=name, thread_id=thread
+                settings=settings, auth=call_auth, manifest_id=name, thread_id=thread
             )
             async with async_run_with_context(req_ctx):
                 agent = await build_tenant_agent(
@@ -114,6 +120,14 @@ async def handle_rpc(
                 ],
             }
         except Exception as exc:
+            from felix.manifests.inbound_auth import InboundAuthError
+
+            if isinstance(exc, InboundAuthError):
+                return {
+                    "jsonrpc": "2.0",
+                    "id": rpc_id,
+                    "error": {"code": -32001, "message": exc.detail},
+                }
             task = {
                 "id": task_id,
                 "status": {

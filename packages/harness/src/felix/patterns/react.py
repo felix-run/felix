@@ -25,6 +25,8 @@ from felix.patterns.types import (
     InvokeOutput,
     ToolCall,
 )
+from felix.side_events import drain as drain_side_events
+from felix.side_events import release as release_side_events
 from felix.steer import (
     clear_abort,
     clear_cancel_flag,
@@ -35,8 +37,6 @@ from felix.steer import (
     release_run_queue,
     should_cancel_remaining_tools,
 )
-from felix.side_events import drain as drain_side_events
-from felix.side_events import release as release_side_events
 from felix.tools.errors import infer_error_code, read_tool_error_code, tool_output_content
 from felix.tools.retrieval import select_tools_from_ctx
 from felix.tools.types import Tool, ToolInvocationCtx, is_wrapper_deny
@@ -174,6 +174,18 @@ class _ReactAgent:
                         "transport": tool.executor.transport,
                         "status": status,
                         "manifest_id": self.manifest_id,
+                    },
+                )
+                from felix.audit.emit import emit_agent_audit
+
+                emit_agent_audit(
+                    "tool_call" if status != "denied" else "policy_deny",
+                    status=status,
+                    manifest_id=self.manifest_id,
+                    payload={
+                        "tool": call.name,
+                        "tool_call_id": call.id,
+                        "thread_id": thread_id,
                     },
                 )
                 after = await run_after_tool(
@@ -551,6 +563,22 @@ class _ReactAgent:
         )
         final = ChatMessage(role="assistant", content="")
 
+        from felix.audit.emit import emit_agent_audit
+
+        user_preview = next(
+            (m.content for m in input.messages if m.role == "user" and m.content),
+            "",
+        )
+        emit_agent_audit(
+            "user_input",
+            status="ok",
+            manifest_id=self.manifest_id,
+            payload={
+                "user_input": (user_preview or "")[:2000],
+                "thread_id": input.thread_id,
+            },
+        )
+
         try:
             for _step in range(self.recursion_limit):
                 if input.thread_id and await is_aborted(tenant_id, input.thread_id):
@@ -637,6 +665,17 @@ class _ReactAgent:
                 await release_run_queue(tenant_id, input.thread_id)
                 await release_side_events(input.thread_id)
 
+        from felix.audit.emit import emit_agent_audit
+
+        emit_agent_audit(
+            "final_response",
+            status="ok",
+            manifest_id=self.manifest_id,
+            payload={
+                "thread_id": input.thread_id,
+                "chars": len(final.content or ""),
+            },
+        )
         await self._maybe_capture_memory(input, final, model)
         return InvokeOutput(messages=produced, final=final)
 

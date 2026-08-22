@@ -13,7 +13,7 @@ from felix.context import AuthContext, RequestContext, async_run_with_context, t
 from felix.manifests.loader import list_bundled
 from felix.patterns.model import ModelGatewayError
 from felix.patterns.types import ChatMessage, InvokeInput
-from felix.runtime import build_tenant_agent, resolve_tenant_manifest
+from felix.runtime import build_tenant_agent, prepare_tenant_invoke, resolve_tenant_manifest
 from pydantic import BaseModel, Field
 
 router = APIRouter(tags=["OpenAI"])
@@ -80,9 +80,29 @@ async def chat_completions(body: ChatCompletionsRequest, request: Request) -> An
     auth = _auth(request)
     thread = f"{auth.tenant_id}:{body.user}" if body.user else None
 
-    resolved = await resolve_tenant_manifest(
-        settings, auth.tenant_id, body.model, thread_id=thread
-    )
+    try:
+        resolved = await resolve_tenant_manifest(
+            settings, auth.tenant_id, body.model, thread_id=thread
+        )
+        await prepare_tenant_invoke(
+            settings, resolved=resolved, auth=auth, thread_id=thread
+        )
+    except Exception as exc:
+        from felix.manifests.inbound_auth import InboundAuthError
+        from felix.manifests.pin import ManifestDriftError
+
+        if isinstance(exc, InboundAuthError):
+            return JSONResponse(
+                {"error": {"message": exc.detail, "type": "auth_error", "code": exc.detail}},
+                status_code=exc.status_code,
+            )
+        if isinstance(exc, ManifestDriftError):
+            return JSONResponse(
+                {"error": {"message": str(exc), "type": "manifest_drift", "code": "conflict"}},
+                status_code=409,
+            )
+        raise
+
     messages = [
         ChatMessage.model_validate({"role": m.role, "content": m.content or ""})
         for m in body.messages

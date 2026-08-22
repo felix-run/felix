@@ -29,18 +29,23 @@ class _MemorySession:
 
     async def append_batch(self, events: list[AppendableEvent]) -> None:
         now = time.time()
+        from felix.secrets import redact_json, redact_text
+
         for ev in events:
+            content = ev.content
+            if isinstance(content, str):
+                content = redact_text(content)
             self._events.append(
                 SessionEvent(
                     seq=len(self._events),
                     ts=ev.ts if ev.ts is not None else now,
                     kind=ev.kind,
                     role=ev.role,
-                    content=ev.content,
+                    content=content,
                     tool_call_id=ev.tool_call_id,
                     name=ev.name,
-                    tool_calls=ev.tool_calls,
-                    metadata=ev.metadata,
+                    tool_calls=redact_json(ev.tool_calls) if ev.tool_calls else ev.tool_calls,
+                    metadata=redact_json(ev.metadata) if ev.metadata else ev.metadata,
                 )
             )
 
@@ -97,6 +102,7 @@ class _PostgresSession:
         from sqlalchemy import func, select
 
         from felix.db.models import SessionEventRow
+        from felix.secrets import redact_json, redact_text
 
         async with self.session_factory() as db:
             head = await db.scalar(
@@ -108,6 +114,9 @@ class _PostgresSession:
             next_seq = int(head) + 1
             now = time.time()
             for i, ev in enumerate(events):
+                content = ev.content
+                if isinstance(content, str):
+                    content = redact_text(content)
                 db.add(
                     SessionEventRow(
                         tenant_id=self.tenant_id,
@@ -116,11 +125,11 @@ class _PostgresSession:
                         ts=ev.ts if ev.ts is not None else now,
                         kind=ev.kind,
                         role=ev.role,
-                        content=ev.content,
+                        content=content,
                         tool_call_id=ev.tool_call_id,
                         name=ev.name,
-                        tool_calls=ev.tool_calls,
-                        event_metadata=ev.metadata,
+                        tool_calls=redact_json(ev.tool_calls) if ev.tool_calls else ev.tool_calls,
+                        event_metadata=redact_json(ev.metadata) if ev.metadata else ev.metadata,
                     )
                 )
             await db.commit()

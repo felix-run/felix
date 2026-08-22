@@ -6,6 +6,8 @@ from typing import Any
 
 from felix.config import Settings
 from felix.manifests.builder import BuildDeps, build_agent
+from felix.manifests.inbound_auth import enforce_inbound_auth
+from felix.manifests.pin import ensure_thread_pin
 from felix.manifests.resolver import ResolvedManifest, resolve_manifest
 from felix.manifests.store import PostgresManifestStore
 from felix.patterns.types import Agent
@@ -27,6 +29,25 @@ async def resolve_tenant_manifest(
         name,
         thread_id=thread_id,
         manifest_store=PostgresManifestStore(settings),
+    )
+
+
+async def prepare_tenant_invoke(
+    settings: Settings,
+    *,
+    resolved: ResolvedManifest,
+    auth: Any,
+    thread_id: str | None = None,
+) -> None:
+    """Enforce inbound auth + compile pin before building/invoking an agent."""
+    enforce_inbound_auth(resolved.manifest, auth)
+    tenant_id = getattr(auth, "tenant_id", None) or "default"
+    await ensure_thread_pin(
+        settings=settings,
+        tenant_id=tenant_id,
+        thread_id=thread_id,
+        manifest=resolved.manifest,
+        version=resolved.version,
     )
 
 
@@ -80,4 +101,4 @@ async def build_tenant_agent(
     return await build_agent(manifest, deps=deps, settings=settings)
 
 
-__all__ = ["build_tenant_agent", "resolve_tenant_manifest"]
+__all__ = ["build_tenant_agent", "prepare_tenant_invoke", "resolve_tenant_manifest"]

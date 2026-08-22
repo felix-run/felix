@@ -40,7 +40,10 @@ def record_event(
     **fields: Any,
 ) -> None:
     """Buffer an audit event for later flush."""
+    from felix.secrets import redact_json
+
     _ = settings
+    payload = fields.get("payload_json") or fields.get("payload") or {}
     event = {
         "tenant_id": tenant_id,
         "id": fields.get("id") or uuid.uuid4().hex,
@@ -49,7 +52,7 @@ def record_event(
         "manifest_id": fields.get("manifest_id", ""),
         "principal_subj": fields.get("principal_subj", ""),
         "status": fields.get("status", ""),
-        "payload_json": fields.get("payload_json") or fields.get("payload") or {},
+        "payload_json": redact_json(payload) if payload else {},
     }
     _pending.append(event)
 
