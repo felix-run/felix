@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from felix.security.ssrf import assert_safe_outbound_url
 
@@ -94,15 +94,31 @@ class SkillRef(_Strict):
 
 class McpServerRef(_Strict):
     name: str
-    url: str
+    url: str = ""
+    command: str = ""
+    args: list[str] = Field(default_factory=list)
+    cwd: str = ""
+    env: dict[str, str] = Field(default_factory=dict)
     auth: str = ""
     transport: Literal["http", "sse", "stdio"] = "sse"
 
     @field_validator("url")
     @classmethod
     def _safe_url(cls, v: str) -> str:
+        if not v:
+            return v
         assert_safe_outbound_url(v)
         return v
+
+    @model_validator(mode="after")
+    def _transport_fields(self) -> McpServerRef:
+        if self.transport == "stdio":
+            if not self.command.strip():
+                raise ValueError("stdio MCP servers require command")
+            return self
+        if not self.url:
+            raise ValueError("http/sse MCP servers require url")
+        return self
 
 
 class A2APeerRef(_Strict):
@@ -291,9 +307,7 @@ class Limits(_Strict):
         default=None, gt=0, le=ABSOLUTE_LIMITS["max_wall_clock_seconds"]
     )
     max_peer_hops: int | None = Field(default=None, ge=1, le=ABSOLUTE_LIMITS["max_peer_hops"])
-    max_input_tokens: int | None = Field(
-        default=None, ge=1, le=ABSOLUTE_LIMITS["max_input_tokens"]
-    )
+    max_input_tokens: int | None = Field(default=None, ge=1, le=ABSOLUTE_LIMITS["max_input_tokens"])
     max_output_tokens: int | None = Field(
         default=None, ge=1, le=ABSOLUTE_LIMITS["max_output_tokens"]
     )
@@ -381,9 +395,7 @@ class Spec(_Strict):
     command_screening: CommandScreening = Field(default_factory=CommandScreening)
     anomaly: AnomalySpec = Field(default_factory=AnomalySpec)
     approvals: list[ApprovalRule] = Field(default_factory=list)
-    recursion_limit: int | None = Field(
-        default=None, ge=1, le=ABSOLUTE_LIMITS["recursion_limit"]
-    )
+    recursion_limit: int | None = Field(default=None, ge=1, le=ABSOLUTE_LIMITS["recursion_limit"])
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 

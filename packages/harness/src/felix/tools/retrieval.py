@@ -51,8 +51,8 @@ def select_tools(
 ) -> list[Tool]:
     """Return at most ``top_k`` tools, always keeping tools already used this thread.
 
-    Ranking is keyword overlap on name+description (no embeddings required).
-    When retrieval is disabled or the catalog is small, the full list is returned.
+    Ranking uses embeddings when ``felix-harness[embeddings]`` is installed,
+    otherwise keyword overlap on name+description.
     """
     if spec is None or not spec.enabled:
         return tools
@@ -60,7 +60,8 @@ def select_tools(
         return tools
 
     used = used_tool_names(messages)
-    query_tokens = _tokens(query_from_messages(messages))
+    query = query_from_messages(messages)
+    query_tokens = _tokens(query)
     by_name = {t.name: t for t in tools}
 
     selected: list[Tool] = []
@@ -71,11 +72,26 @@ def select_tools(
             selected.append(tool)
             seen.add(name)
 
-    ranked = sorted(
-        [t for t in tools if t.name not in seen],
-        key=lambda t: score_tool(t, query_tokens),
-        reverse=True,
-    )
+    remaining = [t for t in tools if t.name not in seen]
+    ranked: list[Tool]
+    order = None
+    model = str(getattr(spec, "model", "") or "")
+    if model:
+        try:
+            from felix.embeddings import rank_indices_by_query
+
+            blobs = [f"{t.name} {t.description}" for t in remaining]
+            order = rank_indices_by_query(query, blobs, model)
+        except Exception:
+            order = None
+    if order is None:
+        ranked = sorted(
+            remaining,
+            key=lambda t: score_tool(t, query_tokens),
+            reverse=True,
+        )
+    else:
+        ranked = [remaining[i] for i in order]
     for tool in ranked:
         if len(selected) >= spec.top_k:
             break
@@ -94,7 +110,8 @@ def select_tools_from_ctx(
     if not isinstance(spec, ToolsRetrievalSpec):
         enabled = bool(getattr(spec, "enabled", False))
         top_k = int(getattr(spec, "top_k", 20) or 20)
-        spec = ToolsRetrievalSpec(enabled=enabled, top_k=top_k)
+        model = str(getattr(spec, "model", "") or "bge-base-en-v1.5")
+        spec = ToolsRetrievalSpec(enabled=enabled, top_k=top_k, model=model)
     return select_tools(tools, messages, spec)
 
 

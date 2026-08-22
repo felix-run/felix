@@ -104,7 +104,7 @@ Client → Ingress (Caddy / Traefik / nginx / Cloudflare DNS+CDN)
 - **`apps/worker`** — background consumer: audit flush, scheduled jobs, memory consolidation, retention, anomaly, continuous eval, fiber resume
 - **`felix-scheduler`** — enqueues labeled Taskiq cron tasks (required alongside the worker)
 - **`packages/harness`** — manifests, patterns, tools, session, governance, auth, plugins
-- **`packages/cli`** — `felix migrate|eval|mint-jwt|bundle-manifests|doctor|version`
+- **`packages/cli`** — `felix migrate|eval|mint-jwt|bundle-manifests|doctor|version|temporal-worker`
 - **`manifests/`** — bundled agents (`quick`, `deep`, `router`, `oss-only`, `hybrid-router`, `support`)
 
 Felix is **service- and cloud-agnostic**: the harness talks to Postgres, a
@@ -126,6 +126,7 @@ Objects / Hyperdrive / R2-as-binding / Queues / Workflows compute in this stack.
 | Surface | Path |
 |---------|------|
 | Direct REST / SSE | `POST /chat`, `POST /chat/stream` |
+| Durable run poll | `GET /chat/runs/{resume_token}` |
 | Steer / follow-up | `POST /chat/steer` |
 | Session fork / rewind | `POST /chat/fork`, `POST /chat/rewind` |
 | OpenAI-compatible | `POST /v1/chat/completions`, `GET /v1/models` |
@@ -139,7 +140,7 @@ Python client: `from felix.sdk import FelixClient` (`prompt`, `stream`, `steer`,
 
 Skills live under `skills/` (Agent Skills `SKILL.md`); declare them on a manifest with `spec.skills`. Session strategies include `compacting` (token-threshold) plus `windowed:N` / `semantic:N` / `full_replay`.
 
-Outbound integrations from the manifest: `spec.mcp_servers` (HTTP MCP client → `server__tool` tools), `spec.peers` (A2A `peer__name` tools), `spec.browser_tools` (Playwright extra), `spec.sandboxes` / `spec.containers`, and `spec.queues` (Redis list enqueue/dequeue). Large tool outputs can spill via `spec.artifacts`; durable facts via `spec.memory.capture`; how-tos via `spec.procedural_memory`.
+Outbound integrations from the manifest: `spec.mcp_servers` (HTTP or stdio MCP client → `server__tool` tools), `spec.peers` (A2A `peer__name` tools), `spec.browser_tools` (Playwright extra), `spec.sandboxes` / `spec.containers`, and `spec.queues` (Redis list enqueue/dequeue). Large tool outputs can spill via `spec.artifacts`; durable facts via `spec.memory.capture`; how-tos via `spec.procedural_memory`. `spec.execution.mode: durable` enqueues a fiber (Temporal optional) and returns `202` with a `resume_token`. Tool retrieval / semantic sessions / procedural recall use embeddings when `felix-harness[embeddings]` is installed.
 
 ## Contributing
 

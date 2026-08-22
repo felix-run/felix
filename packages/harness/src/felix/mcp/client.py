@@ -43,7 +43,7 @@ async def mcp_rpc(
     *,
     auth: str = "",
     allow_http: bool = False,
-    timeout: float = 30.0,
+    wait_s: float = 30.0,
 ) -> dict[str, Any]:
     """POST a JSON-RPC request to an MCP HTTP endpoint."""
     assert_safe_outbound_url(url, allow_http=allow_http)
@@ -53,7 +53,7 @@ async def mcp_rpc(
         "method": method,
         "params": params or {},
     }
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+    async with httpx.AsyncClient(timeout=wait_s, follow_redirects=False) as client:
         resp = await client.post(url, json=payload, headers=_headers(auth))
         resp.raise_for_status()
         # Some MCP HTTP servers return SSE; take the first JSON data line if needed.
@@ -87,8 +87,9 @@ async def list_remote_tools(
     allow_http: bool = False,
 ) -> list[dict[str, Any]]:
     if ref.transport == "stdio":
-        logger.warning("MCP stdio transport not supported for %s; skipping", ref.name)
-        return []
+        from felix.mcp.stdio import list_stdio_tools
+
+        return await list_stdio_tools(ref)
     try:
         await mcp_rpc(
             ref.url,
@@ -103,9 +104,7 @@ async def list_remote_tools(
         )
     except Exception:
         logger.debug("MCP initialize failed for %s (continuing)", ref.name, exc_info=True)
-    result = await mcp_rpc(
-        ref.url, "tools/list", {}, auth=ref.auth, allow_http=allow_http
-    )
+    result = await mcp_rpc(ref.url, "tools/list", {}, auth=ref.auth, allow_http=allow_http)
     tools = result.get("tools") if isinstance(result, dict) else None
     if not isinstance(tools, list):
         return []
@@ -122,19 +121,30 @@ def _bind_remote_tool(
     remote_name = str(remote["name"])
     local_name = f"{ref.name}__{remote_name}" if name_prefix else remote_name
     description = str(remote.get("description") or f"MCP tool {remote_name} via {ref.name}")
-    schema = remote.get("inputSchema") or remote.get("input_schema") or {
-        "type": "object",
-        "properties": {},
-    }
+    schema = (
+        remote.get("inputSchema")
+        or remote.get("input_schema")
+        or {
+            "type": "object",
+            "properties": {},
+        }
+    )
 
     async def handler(args: dict[str, Any], _ctx: ToolInvocationCtx | None = None) -> str:
-        result = await mcp_rpc(
-            ref.url,
-            "tools/call",
-            {"name": remote_name, "arguments": args or {}},
-            auth=ref.auth,
-            allow_http=allow_http,
-        )
+        if ref.transport == "stdio":
+            from felix.mcp.stdio import stdio_rpc
+
+            result = await stdio_rpc(
+                ref, "tools/call", {"name": remote_name, "arguments": args or {}}
+            )
+        else:
+            result = await mcp_rpc(
+                ref.url,
+                "tools/call",
+                {"name": remote_name, "arguments": args or {}},
+                auth=ref.auth,
+                allow_http=allow_http,
+            )
         if isinstance(result, dict):
             content = result.get("content")
             if isinstance(content, list):

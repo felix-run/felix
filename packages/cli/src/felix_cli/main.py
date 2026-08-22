@@ -160,6 +160,22 @@ def doctor_cmd() -> None:
         settings.object_store in {"fs", "s3", "gcs", "memory"},
         settings.object_store,
     )
+    check(
+        "durability",
+        settings.durability in {"fibers", "temporal"},
+        settings.durability,
+    )
+    if settings.durability == "temporal":
+        try:
+            import temporalio  # noqa: F401
+        except ImportError:
+            check(
+                "temporal extra",
+                False,
+                "uv sync --extra temporal",
+            )
+        else:
+            check("temporal extra", True, settings.temporal_host)
     data = P(settings.data_dir)
     try:
         data.mkdir(parents=True, exist_ok=True)
@@ -217,6 +233,17 @@ def doctor_cmd() -> None:
 
     asyncio.run(_ping())
     raise SystemExit(0 if ok else 1)
+
+
+@app.command("temporal-worker")
+def temporal_worker_cmd() -> None:
+    """Run a Temporal worker for durable fibers (task queue felix-fibers)."""
+    import asyncio
+
+    from felix.config import get_settings
+    from felix.durability.temporal import run_worker
+
+    asyncio.run(run_worker(get_settings()))
 
 
 if __name__ == "__main__":

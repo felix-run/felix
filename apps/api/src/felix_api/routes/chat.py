@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from felix.context import AuthContext, RequestContext, async_run_with_context, try_get_context
 from felix.patterns.model import ModelGatewayError
 from felix.patterns.types import ChatMessage, InvokeInput
@@ -104,7 +104,7 @@ def _allowlisted_model(manifest: Any, model_id: str | None, settings: Any = None
 
 @router.post("")
 @router.post("/")
-async def chat(body: ChatRequest, request: Request) -> dict[str, Any]:
+async def chat(body: ChatRequest, request: Request) -> Any:
     settings = request.app.state.settings
     tools = request.app.state.tools
     auth = _auth_from_request(request)
@@ -117,6 +117,21 @@ async def chat(body: ChatRequest, request: Request) -> dict[str, Any]:
     )
     model_id = _allowlisted_model(resolved.manifest, body.model, settings)
     messages = [ChatMessage.model_validate(m) for m in body.messages]
+    execution = getattr(getattr(resolved.manifest, "spec", None), "execution", None)
+    if getattr(execution, "mode", "transient") == "durable":
+        from felix.durability.runs import start_durable_chat
+
+        payload = await start_durable_chat(
+            settings,
+            auth.tenant_id,
+            manifest_id=body.manifest,
+            messages=messages,
+            thread_id=thread,
+            model_id=model_id,
+            execution=execution,
+        )
+        return JSONResponse(payload, status_code=202)
+
     req_ctx = RequestContext(
         settings=settings,
         auth=auth,
@@ -150,6 +165,18 @@ async def chat(body: ChatRequest, request: Request) -> dict[str, Any]:
         "model": model_id,
         "leaf_id": get_leaf(thread) if thread else None,
     }
+
+
+@router.get("/runs/{resume_token}")
+async def chat_run(resume_token: str, request: Request) -> dict[str, Any]:
+    """Poll a durable chat fiber started with ``spec.execution.mode: durable``."""
+    from felix.durability.runs import get_durable_run
+
+    auth = _auth_from_request(request)
+    row = await get_durable_run(request.app.state.settings, auth.tenant_id, resume_token)
+    if row is None:
+        raise HTTPException(status_code=404, detail="run_not_found")
+    return row
 
 
 @router.post("/stream")
@@ -205,9 +232,7 @@ async def chat_steer(body: SteerRequest, request: Request) -> dict[str, Any]:
     thread = effective_thread_id(auth.tenant_id, body.thread_id)
     if thread is None:
         raise HTTPException(status_code=400, detail="invalid_thread_id")
-    return await enqueue(
-        auth.tenant_id, thread, kind=body.kind, text=body.text
-    )
+    return await enqueue(auth.tenant_id, thread, kind=body.kind, text=body.text)
 
 
 @router.post("/fork")

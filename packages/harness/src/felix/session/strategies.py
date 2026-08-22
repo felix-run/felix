@@ -106,9 +106,7 @@ class SummarizingSessionStrategy:
             covered = int(latest_summary.metadata.get("covers_to_seq") or -1)
 
         raw = [
-            e
-            for e in all_events
-            if e.kind != "audit" and e.role != "system" and e.seq > covered
+            e for e in all_events if e.kind != "audit" and e.role != "system" and e.seq > covered
         ]
         pinned = [e for e in raw if is_pinned(e)]
         compactable = [e for e in raw if not is_pinned(e)]
@@ -150,9 +148,7 @@ class SummarizingSessionStrategy:
 
         if model is not None:
             try:
-                text = "\n".join(
-                    f"{e.role}: {e.content}" for e in older if e.content
-                )
+                text = "\n".join(f"{e.role}: {e.content}" for e in older if e.content)
                 result = await model.chat(
                     [
                         ChatMessage(
@@ -210,7 +206,7 @@ class SummarizingSessionStrategy:
 
 
 class SemanticSessionStrategy:
-    """Top-N relevance by keyword overlap (not embeddings — labeled as such)."""
+    """Top-N relevance by embeddings when available, else keyword overlap."""
 
     def __init__(self, top_n: int) -> None:
         self.top_n = top_n
@@ -234,21 +230,35 @@ class SemanticSessionStrategy:
             e for e in branch if e.kind in {"message", "tool_result"} and e.role != "system"
         ]
         pinned = [e for e in candidates if is_pinned(e)]
+        unpinned = [e for e in candidates if not is_pinned(e)]
+        query_text = " ".join(m.content for m in incoming if m.role == "user")
+        used_embeddings = False
+        ranked: list[SessionEvent]
+        try:
+            from felix.embeddings import rank_indices_by_query
 
-        def score(e: SessionEvent) -> int:
-            words = set((e.content or "").lower().split())
-            return len(tokens & words)
+            blobs = [e.content or "" for e in unpinned]
+            order = rank_indices_by_query(query_text, blobs, "bge-base-en-v1.5")
+            if order is not None:
+                ranked = [unpinned[i] for i in order][: self.top_n]
+                used_embeddings = True
+            else:
+                ranked = []
+        except Exception:
+            ranked = []
+        if not used_embeddings:
 
-        ranked = sorted(
-            [e for e in candidates if not is_pinned(e)],
-            key=score,
-            reverse=True,
-        )[: self.top_n]
+            def score(e: SessionEvent) -> int:
+                words = set((e.content or "").lower().split())
+                return len(tokens & words)
+
+            ranked = sorted(unpinned, key=score, reverse=True)[: self.top_n]
         merged = sorted([*pinned, *ranked], key=lambda e: e.seq)
+        kind = "embeddings" if used_embeddings else "keyword overlap, not embeddings"
         note = ChatMessage(
             role="system",
             content=(
-                f"[session] semantic selection (keyword overlap, not embeddings): "
+                f"[session] semantic selection ({kind}): "
                 f"included {len(merged)} of {len(candidates)} events (top_n={self.top_n})."
             ),
         )

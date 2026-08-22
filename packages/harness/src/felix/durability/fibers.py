@@ -15,7 +15,7 @@ from felix.db.session import _use_memory, get_session_factory
 
 logger = logging.getLogger("felix.durability.fibers")
 
-now_ms = lambda: int(time.time() * 1000)
+now_ms = lambda: int(time.time() * 1000)  # noqa: E731
 
 _memory_fibers: dict[tuple[str, str], dict[str, Any]] = {}
 
@@ -108,6 +108,13 @@ async def _run_fiber_step(settings: Settings, row: dict[str, Any]) -> dict[str, 
         await _save_fiber(settings, row)
         return row
 
+    expires_at = state.get("expires_at")
+    if expires_at is not None and now_ms() > int(expires_at):
+        row["status"] = "expired"
+        row["wake_at"] = None
+        await _save_fiber(settings, row)
+        return row
+
     step = steps[cursor]
     op = str(step.get("op") or "complete")
 
@@ -132,7 +139,11 @@ async def _run_fiber_step(settings: Settings, row: dict[str, Any]) -> dict[str, 
     if op == "invoke":
         manifest_id = str(step.get("manifest_id") or "")
         prompt = str(step.get("prompt") or stash.get("prompt") or "continue")
+        raw_messages = step.get("messages") or stash.get("messages")
+        model_id = step.get("model_id") or stash.get("model_id")
+        thread_id = str(step.get("thread_id") or stash.get("thread_id") or "")
         answer = ""
+        final: dict[str, Any] | str = ""
         error = ""
         if manifest_id:
             try:
@@ -143,10 +154,8 @@ async def _run_fiber_step(settings: Settings, row: dict[str, Any]) -> dict[str, 
 
                 provider = default_tool_provider()
                 tenant_id = row["tenant_id"]
-                auth = AuthContext(
-                    tenant_id=tenant_id, principal_sub="fiber", anonymous=False
-                )
-                thread = f"{tenant_id}:fiber:{row['id']}"
+                auth = AuthContext(tenant_id=tenant_id, principal_sub="fiber", anonymous=False)
+                thread = thread_id or f"{tenant_id}:fiber:{row['id']}"
                 resolved = await resolve_tenant_manifest(
                     settings, tenant_id, manifest_id, thread_id=thread
                 )
@@ -156,6 +165,13 @@ async def _run_fiber_step(settings: Settings, row: dict[str, Any]) -> dict[str, 
                     manifest_id=manifest_id,
                     thread_id=thread,
                 )
+                if isinstance(raw_messages, list) and raw_messages:
+                    messages = [
+                        m if isinstance(m, ChatMessage) else ChatMessage.model_validate(m)
+                        for m in raw_messages
+                    ]
+                else:
+                    messages = [ChatMessage(role="user", content=prompt)]
                 async with async_run_with_context(req_ctx):
                     agent = await build_tenant_agent(
                         settings,
@@ -165,15 +181,27 @@ async def _run_fiber_step(settings: Settings, row: dict[str, Any]) -> dict[str, 
                     )
                     result = await agent.invoke(
                         InvokeInput(
-                            messages=[ChatMessage(role="user", content=prompt)],
+                            messages=messages,
                             thread_id=thread,
+                            model_id=str(model_id) if model_id else None,
+                            tenant_id=tenant_id,
                         )
                     )
                 answer = result.final.content if result.final else ""
-            except Exception as exc:  # noqa: BLE001
+                final = (
+                    result.final.model_dump()
+                    if result.final
+                    else {"role": "assistant", "content": ""}
+                )
+            except Exception as exc:
                 logger.exception("fiber_invoke_failed id=%s", row["id"])
                 error = str(exc)
-        stash["last"] = {"answer": answer, "error": error, "manifest_id": manifest_id}
+        stash["last"] = {
+            "answer": answer,
+            "final": final,
+            "error": error,
+            "manifest_id": manifest_id,
+        }
         state["stash"] = stash
         state["cursor"] = cursor + 1
         row["state_json"] = state
@@ -199,7 +227,14 @@ async def resume_due_fibers(settings: Settings) -> int:
 
     if _use_memory(settings):
         for row in _memory_fibers.values():
-            if row["status"] == "sleeping" and row.get("wake_at") is not None and row["wake_at"] <= ts:
+            if (row.get("state_json") or {}).get("backend") == "temporal":
+                continue
+            due_sleep = (
+                row["status"] == "sleeping"
+                and row.get("wake_at") is not None
+                and row["wake_at"] <= ts
+            )
+            if due_sleep:
                 row["status"] = "running"
                 row["wake_at"] = None
                 due.append(dict(row))
@@ -218,16 +253,20 @@ async def resume_due_fibers(settings: Settings) -> int:
                 )
             ).all()
             for row in sleeping:
+                if (row.state_json or {}).get("backend") == "temporal":
+                    continue
                 row.status = "running"
                 row.wake_at = None
                 row.updated_at = ts
             runnable = (
-                await db.scalars(
-                    select(Fiber).where(Fiber.status.in_(("running", "pending")))
-                )
+                await db.scalars(select(Fiber).where(Fiber.status.in_(("running", "pending"))))
             ).all()
             await db.commit()
-            due = [_fiber_dict(r) for r in runnable]
+            due = [
+                _fiber_dict(r)
+                for r in runnable
+                if (r.state_json or {}).get("backend") != "temporal"
+            ]
 
     ran = 0
     for row in due:
@@ -236,9 +275,7 @@ async def resume_due_fibers(settings: Settings) -> int:
     return ran
 
 
-async def get_fiber(
-    settings: Settings, tenant_id: str, fiber_id: str
-) -> dict[str, Any] | None:
+async def get_fiber(settings: Settings, tenant_id: str, fiber_id: str) -> dict[str, Any] | None:
     if _use_memory(settings):
         row = _memory_fibers.get((tenant_id, fiber_id))
         return _fiber_dict(row) if row else None
@@ -248,4 +285,15 @@ async def get_fiber(
         return _fiber_dict(fiber) if fiber else None
 
 
-__all__ = ["create_fiber", "get_fiber", "resume_due_fibers"]
+advance_fiber = _run_fiber_step
+save_fiber = _save_fiber
+
+
+__all__ = [
+    "advance_fiber",
+    "create_fiber",
+    "get_fiber",
+    "now_ms",
+    "resume_due_fibers",
+    "save_fiber",
+]

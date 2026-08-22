@@ -35,7 +35,23 @@ def query_from_user_messages(messages: list[ChatMessage]) -> str:
     return " ".join(m.content for m in messages if m.role == "user" and m.content)
 
 
-def rank_procedures(rows: list[dict[str, Any]], query: str, top_k: int) -> list[dict[str, Any]]:
+def rank_procedures(
+    rows: list[dict[str, Any]],
+    query: str,
+    top_k: int,
+    *,
+    embedding_model: str = "",
+) -> list[dict[str, Any]]:
+    if embedding_model:
+        try:
+            from felix.embeddings import rank_indices_by_query
+
+            blobs = [str(r.get("content") or "") for r in rows]
+            order = rank_indices_by_query(query, blobs, embedding_model)
+            if order is not None:
+                return [rows[i] for i in order[:top_k]]
+        except Exception:
+            logger.debug("procedural embedding rank failed", exc_info=True)
     q = _tokens(query)
     if not q:
         return rows[:top_k]
@@ -69,7 +85,7 @@ async def retrieve_procedures(
     except Exception:
         logger.debug("procedural list_active failed", exc_info=True)
         return ""
-    picked = rank_procedures(rows, query, spec.top_k)
+    picked = rank_procedures(rows, query, spec.top_k, embedding_model=spec.embedding_model)
     if not picked:
         return ""
     lines = [f"- {r['content']}" for r in picked if r.get("content")]

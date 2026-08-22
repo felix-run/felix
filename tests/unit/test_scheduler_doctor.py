@@ -31,9 +31,10 @@ def test_doctor_memory_ok(tmp_path: Path, monkeypatch) -> None:
 
 
 def test_scheduler_entrypoint_importable() -> None:
-    from felix_worker.main import scheduler_main
+    from felix_worker.main import scheduler_main, temporal_main
 
     assert callable(scheduler_main)
+    assert callable(temporal_main)
 
 
 def test_plugin_cron_register_helper() -> None:
