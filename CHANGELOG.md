@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `tests/unit/test_invariants.py` — the repo rules are now enforced rather than
+  documented: `.env.example` covers every `Settings` field, no optional
+  dependency is imported at module scope, every Postgres-touching module has a
+  `memory://` path, and the governance wrapper order in `builder.py` is fixed.
+- `scripts/lean-import-check.py` and a CI `lean` job that imports all 156
+  modules with no extras installed — the default image's promise, checked.
+- `scripts/validate-toolkit.py` and a CI `toolkit` job; `.claude/**` and
+  `CLAUDE.md` are now inside the CI path filter instead of bypassing every gate.
+- Six settings that existed only in `config.py` are documented in
+  `.env.example`: `FELIX_DATABASE_RLS`, `FELIX_SCALE_OUT`, `FELIX_REPLICA_ID`,
+  `FELIX_OTEL_ENDPOINT`, `FELIX_WEBHOOK_SECRET`, and `FELIX_POLICY_BUNDLE_PUBKEY`
+  (the last is declared but not yet consumed by any code path).
 - GitHub Actions are pinned by commit SHA, and all container base/service
   images by digest, so a rebuild is reproducible and a retagged upstream image
   cannot change what ships.
