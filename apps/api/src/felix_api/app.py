@@ -96,6 +96,14 @@ def create_app(
             "Felix compiles an `apiVersion: felix/v1` manifest into a runnable agent "
             "and exposes it over OpenAI-compatible, A2A, MCP, and direct REST/SSE surfaces."
         ),
+        contact={
+            "name": "Felix",
+            "url": "https://github.com/felix-run/felix",
+        },
+        license_info={
+            "name": "MIT",
+            "url": "https://github.com/felix-run/felix/blob/main/LICENSE",
+        },
         lifespan=lifespan,
     )
     # Eager state so ASGI tests / middleware work before lifespan starts.

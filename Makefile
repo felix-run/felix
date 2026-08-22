@@ -1,4 +1,4 @@
-.PHONY: help install install-full install-warehouse lint fmt type test check dev up up-lite up-full down cli seed migrate docker-build
+.PHONY: help install install-full install-warehouse lint fmt type test check dev up up-lite up-full down cli seed migrate doctor docker-build
 
 help:
 	@echo "Felix dev targets:"
@@ -10,7 +10,7 @@ help:
 	@echo "  up                docker compose (lean: fs object store, mem caps)"
 	@echo "  up-lite           compose + lite overlay (~2–4 GiB hosts)"
 	@echo "  up-full           compose --profile full (MinIO; set FELIX_DOCKER_EXTRAS=aws)"
-	@echo "  down / cli / seed / migrate"
+	@echo "  down / cli / seed / migrate / doctor"
 	@echo "  Warehouse: FELIX_WAREHOUSE=duckdb + FELIX_DOCKER_EXTRAS=warehouse"
 
 install:
@@ -59,11 +59,14 @@ down:
 docker-build:
 	docker build --build-arg FELIX_EXTRAS="$${FELIX_DOCKER_EXTRAS:-}" -t felix:latest .
 
+migrate:
+	uv run felix migrate head
+
+doctor:
+	uv run felix doctor
+
 cli:
 	uv run python clients/cli.py
 
 seed:
 	uv run python scripts/seed.py
-
-migrate:
-	uv run felix migrate head

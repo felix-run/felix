@@ -31,3 +31,23 @@ async def test_health() -> None:
         body = resp.json()
         assert body["status"] == "ok"
         assert "env" in body
+
+
+@pytest.mark.asyncio
+async def test_openapi_contact_and_license() -> None:
+    from felix_api.app import create_app
+
+    settings = Settings(
+        allow_insecure=True,
+        auth_mode="none",
+        environment="development",
+    )
+    app = create_app(settings=settings, plugins=[])
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/openapi.json")
+    assert resp.status_code == 200
+    spec = resp.json()
+    assert spec["info"]["title"] == "Felix"
+    assert spec["info"]["contact"]["url"] == "https://github.com/felix-run/felix"
+    assert spec["info"]["license"]["name"] == "MIT"

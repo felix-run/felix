@@ -14,8 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Surfaces: `/chat`, OpenAI-compatible `/v1`, A2A, MCP, management APIs.
 - Lean Docker Compose (api, worker, **scheduler**, Postgres+pgvector, Valkey)
   with optional MinIO (`--profile full`).
-- Helm chart with PVC support, consumer shared secret, and scheduler container.
+- Helm chart with PVC support, consumer shared secret, scheduler container, and
+  pre-install/pre-upgrade **migrate Job**.
 - Durable fibers, audit spill to DuckDB (optional), JWT/api_key auth, plugins seam.
 - CLI: `migrate`, `eval`, `mint-jwt`, `bundle-manifests`, `doctor`, `version`.
+- Typed packages (`py.typed`) for harness, CLI, API, and worker.
 
 [0.1.0]: https://github.com/felix-run/felix/releases/tag/v0.1.0

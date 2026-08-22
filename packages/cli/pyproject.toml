@@ -1,7 +1,7 @@
 [project]
 name = "felix-cli"
 version = "0.1.0"
-description = "Felix CLI — migrate, eval, mint-jwt, bundle-manifests."
+description = "Felix CLI — migrate, eval, mint-jwt, bundle-manifests, doctor."
 requires-python = ">=3.14"
 license = { text = "MIT" }
 dependencies = [

@@ -32,9 +32,6 @@ Install extras: `uv sync --extra aws` (or image build with `FELIX_EXTRAS=aws`).
 ## Helm
 
 ```bash
-# Apply migrations before/after install (Job not bundled yet):
-#   kubectl run felix-migrate --rm -it --image=... -- felix migrate head
-
 helm upgrade --install felix ./deploy/helm/felix \
   -f deploy/aws/values-eks.example.yaml \
   --set secrets.databaseUrl="$FELIX_DATABASE_URL" \
@@ -44,9 +41,10 @@ helm upgrade --install felix ./deploy/helm/felix \
   --set secrets.jwksPrivate="$FELIX_JWKS_PRIVATE"
 ```
 
-The chart runs **api**, **worker**, and **scheduler** containers. For lean `fs`
-object store (not recommended on EKS), set `persistence.enabled=true` so `/data`
-uses a PVC.
+The chart runs a **pre-install/pre-upgrade migrate Job** (`felix migrate head`), then
+**api**, **worker**, and **scheduler**. Disable with `--set migrate.enabled=false`.
+For lean `fs` object store (not recommended on EKS), set `persistence.enabled=true`
+so `/data` uses a PVC.
 
 See `deploy/helm/felix/values.yaml` for all knobs. Auth should be `jwt` or
 `api_key` in production (`FELIX_ALLOW_INSECURE` must stay false).

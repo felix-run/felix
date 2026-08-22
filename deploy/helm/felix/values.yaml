@@ -98,3 +98,16 @@ persistence:
   size: 10Gi
   accessMode: ReadWriteOnce
   storageClass: ""
+
+# Alembic via `felix migrate head` before install/upgrade (Helm pre-hook).
+migrate:
+  enabled: true
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 300
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      cpu: "250m"
+      memory: 256Mi

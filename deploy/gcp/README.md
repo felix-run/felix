@@ -39,9 +39,9 @@ helm upgrade --install felix ./deploy/helm/felix \
   --set secrets.jwksPrivate="$FELIX_JWKS_PRIVATE"
 ```
 
-The chart runs **api**, **worker**, and **scheduler**. Apply migrations with
-`felix migrate head` (Job not bundled yet). For lean `fs` object store, set
-`persistence.enabled=true`.
+The chart runs a **pre-install/pre-upgrade migrate Job**, then **api**, **worker**,
+and **scheduler**. Disable with `--set migrate.enabled=false`. For lean `fs`
+object store, set `persistence.enabled=true`.
 
 See `deploy/helm/felix/values.yaml` for all knobs. Auth should be `jwt` or
 `api_key` in production.
