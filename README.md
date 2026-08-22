@@ -122,8 +122,8 @@ Client → Ingress (Caddy / Traefik / nginx / Cloudflare DNS+CDN)
 - **`apps/worker`** — background consumer: audit flush, scheduled jobs, memory consolidation, retention, anomaly, continuous eval, fiber resume
 - **`felix-scheduler`** — enqueues labeled Taskiq cron tasks (required alongside the worker)
 - **`packages/harness`** — manifests, patterns, tools, session, governance, auth, plugins
-- **`packages/cli`** — `felix migrate|eval|mint-jwt|bundle-manifests|doctor|version|temporal-worker`
-- **`manifests/`** — bundled agents (`quick`, `deep`, `router`, `oss-only`, `hybrid-router`, `support`)
+- **`packages/cli`** — `felix migrate|eval|mint-jwt|bundle-manifests|validate-manifest|doctor|version|temporal-worker`
+- **`manifests/`** — bundled agents (`quick`, `deep`, `router`, `oss-only`, `hybrid-router`, `support`, `cowork`, `governed`)
 
 Felix is **service- and cloud-agnostic**: the harness talks to Postgres, a
 cache, and an object store through Protocols — not a single vendor SDK.
@@ -131,7 +131,9 @@ cache, and an object store through Protocols — not a single vendor SDK.
 optional extras `felix-harness[aws]` and `felix-harness[gcp]`). Small VMs can
 use `FELIX_OBJECT_STORE=fs` with zero cloud SDKs. Set
 `FELIX_OBJECT_STORE=s3|gcs|fs|memory` and `FELIX_SECRETS_BACKEND=env|file|aws|gcp`.
-Deploy notes: `deploy/aws/`, `deploy/gcp/`. Helm: enable `persistence` when using
+Deploy notes: `deploy/aws/`, `deploy/gcp/`. Manifest secrets + opt-in SOC2 /
+EU AI Act mapping: [`deploy/GOVERNANCE.md`](deploy/GOVERNANCE.md). Helm: enable
+`persistence` when using
 `fs` so `/data` survives restarts. Production JWT/api_key deploys need
 `FELIX_CONSUMER_SHARED_SECRET` for `POST /internal/*`.
 

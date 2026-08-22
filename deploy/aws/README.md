@@ -48,3 +48,6 @@ so `/data` uses a PVC.
 
 See `deploy/helm/felix/values.yaml` for all knobs. Auth should be `jwt` or
 `api_key` in production (`FELIX_ALLOW_INSECURE` must stay false).
+
+For manifest `secret:NAME` refs, compile pins, and the bundled `governed`
+example, see [GOVERNANCE.md](../GOVERNANCE.md).

@@ -72,3 +72,6 @@ object store, set `persistence.enabled=true`.
 
 See `deploy/helm/felix/values.yaml` for all knobs. Auth should be `jwt` or
 `api_key` in production.
+
+For manifest `secret:NAME` refs, compile pins, and the bundled `governed`
+example, see [GOVERNANCE.md](../GOVERNANCE.md).

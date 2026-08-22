@@ -1,0 +1,98 @@
+# yaml-language-server: $schema=../schemas/manifest.schema.json
+# Production-shaped example — JWT/api_key callers only.
+# Validate: felix validate-manifest manifests/governed.yaml -e production
+# Docs: deploy/GOVERNANCE.md
+apiVersion: felix/v1
+kind: Agent
+metadata:
+  name: governed
+  version: 1.0.0
+  description: >
+    Production-shaped Felix agent with opt-in SOC2 / EU AI Act control mapping,
+    secret refs for outbound MCP, inbound scopes, and compile pinning.
+  tags: [react, governance, production]
+
+spec:
+  pattern: react
+
+  model:
+    temperature: 0
+
+  system_prompt:
+    inline: |
+      You are Felix in governed mode — a careful assistant for production workloads.
+      Prefer tools when they improve accuracy. Do not invent credentials or URLs.
+      Always refer to yourself as Felix, never as Claude or any other name.
+
+  tools:
+    - calculator
+    - list_skills
+    - activate_skill
+    - deactivate_skill
+
+  skills:
+    - name: calculator-help
+
+  # Outbound MCP — auth is a vault/env ref, never a plaintext token in git.
+  # Create FELIX_MCP_AUTH_TOKEN (or matching Secrets Manager id) before enabling.
+  mcp_servers:
+    - name: docs
+      url: https://example.com/mcp
+      transport: http
+      auth: secret:FELIX_MCP_AUTH_TOKEN
+
+  session:
+    strategy: compacting
+    reserve_tokens: 16384
+    keep_recent_tokens: 20000
+    context_window_tokens: 128000
+    compaction_enabled: true
+
+  memory:
+    checkpointer: postgres
+    store: pgvector
+
+  auth:
+    inbound:
+      allow_anonymous: false
+      schemes: [jwt, api_key]
+      required_scopes: [chat:write]
+
+  policies:
+    - id: calc-scope
+      description: Calculator requires tools:calc
+      required_scopes: [tools:calc]
+      tools: [calculator]
+
+  limits:
+    max_tool_calls: 100
+    max_wall_clock_seconds: 600
+
+  approvals:
+    - id: skill-activate
+      description: Confirm skill activation
+      tools: [activate_skill]
+      ttl_seconds: 600
+      allow_unattended: false
+
+  content_screening:
+    enabled: true
+    on_flag: quarantine
+
+  guardrails:
+    providers: [pii]
+    targets: [input, output]
+
+  anomaly:
+    enabled: true
+
+  observability:
+    trace: true
+
+  governance:
+    frameworks: [soc2, eu_ai_act]
+    risk_tier: limited
+    transparency_notice: true
+    forbid_plaintext_secrets: true
+    pin_compile: true
+    retention_days: 30

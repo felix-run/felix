@@ -51,9 +51,24 @@ def test_bundled_manifests_load() -> None:
     if not manifests_dir.is_dir():
         pytest.skip("manifests/ missing")
     names = list_bundled(bundled_dir=manifests_dir)
-    for name in ("quick", "deep", "router", "oss-only", "hybrid-router", "support"):
+    for name in ("quick", "deep", "router", "oss-only", "hybrid-router", "support", "governed"):
         assert name in names, name
         m = load_bundled(name, bundled_dir=manifests_dir)
         assert m.apiVersion == "felix/v1"
         loaded = load_manifest_file(manifests_dir / f"{name}.yaml")
         assert loaded.metadata.name == name
+
+
+def test_governed_manifest_passes_production_governance() -> None:
+    from felix.config import Settings
+    from felix.manifests.governance import validate_governance
+    from felix.manifests.loader import load_bundled
+
+    root = Path(__file__).resolve().parents[2]
+    manifests_dir = root / "manifests"
+    if not manifests_dir.is_dir():
+        pytest.skip("manifests/ missing")
+    m = load_bundled("governed", bundled_dir=manifests_dir)
+    validate_governance(m, Settings(environment="production", allow_insecure=True))
+    assert m.spec.governance.pin_compile is True
+    assert m.spec.mcp[0].auth.startswith("secret:")
