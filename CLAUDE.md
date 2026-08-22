@@ -44,6 +44,19 @@ make check                                          # lint + type + test + forma
 (`felix/db/session.py:_use_memory`, `felix/session/store.py:get_session_store`) — that is
 the supported no-infrastructure test path, not a mock layer.
 
+Structural gates (fast, no infrastructure):
+
+```bash
+./scripts/test.sh tests/unit/test_invariants.py   # repo invariants, enforced
+uv sync --locked --no-dev && uv run --no-sync python scripts/lean-import-check.py
+python3 scripts/validate-toolkit.py               # .claude/ hooks, settings, skills
+```
+
+`tests/unit/test_invariants.py` turns the rules below into failures: `.env.example` covers every
+`Settings` field, no optional dependency is imported at module scope, every Postgres-touching module
+has a `memory://` path, and the governance wrapper order is unchanged. Change a rule deliberately and
+you update the test with it.
+
 Eval smoke (no model calls): `uv run felix eval --dataset smoke --manifest quick --fixture fixtures/eval/smoke.json --mock`.
 
 ## Architecture

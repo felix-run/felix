@@ -72,6 +72,11 @@ skill or subagent.
 | `SubagentStop` | `subagent-log.sh` | Appends a delegation audit line to `.claude/logs/` |
 | statusLine | `statusline.sh` | branch · dirty count · model · local API health |
 
+CI validates this directory on every change (the `toolkit` job runs
+`scripts/validate-toolkit.py`): hook scripts parse and are executable, `settings.json` references
+only scripts that exist, subagent frontmatter is well-formed, and skill frontmatter stays inside the
+six Agent Skills spec fields.
+
 Test a hook by feeding it its event JSON:
 
 ```bash

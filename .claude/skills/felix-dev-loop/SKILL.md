@@ -40,6 +40,9 @@ environment failure, not a code failure — a `PreToolUse` hook blocks it and pr
 | Types | `uv run ty check packages apps` | `make type`; needs `make install-full` (unresolved imports are errors, and a lean venv cannot resolve the extras); CI excludes `tests/` deliberately |
 | Tests | `./scripts/test.sh` | 195 tests, 1 skipped |
 | Manifests | `uv run felix bundle-manifests` | loads + validates every file in `manifests/` |
+| Invariants | `./scripts/test.sh tests/unit/test_invariants.py` | env coverage, lean imports, memory twins, wrapper order |
+| Lean imports | `uv sync --locked --no-dev && uv run --no-sync python scripts/lean-import-check.py` | proves the default image can import every module |
+| Toolkit | `python3 scripts/validate-toolkit.py` | `.claude/` hooks, settings, subagents, skills |
 | Eval | `uv run felix eval --dataset smoke --manifest quick --fixture fixtures/eval/smoke.json --mock` | no model calls |
 
 `make check` runs all four gates (lint, type, test, format check) and matches CI exactly.

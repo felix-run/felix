@@ -20,6 +20,7 @@ jobs:
       python: ${{ steps.filter.outputs.python }}
       docker: ${{ steps.filter.outputs.docker }}
       helm: ${{ steps.filter.outputs.helm }}
+      toolkit: ${{ steps.filter.outputs.toolkit }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
@@ -48,6 +49,11 @@ jobs:
               - '.github/workflows/**'
             helm:
               - 'deploy/helm/**'
+              - '.github/workflows/**'
+            toolkit:
+              - '.claude/**'
+              - 'CLAUDE.md'
+              - 'scripts/validate-toolkit.py'
               - '.github/workflows/**'
 
   pre-commit:
@@ -157,6 +163,39 @@ jobs:
           FELIX_AUTH_MODE: none
           FELIX_DATABASE_URL: memory://ci
           FELIX_OBJECT_STORE: memory
+
+  lean:
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - name: Set up Python
+        run: uv python install 3.14
+      # No dev group, no extras — exactly what the default Docker image gets.
+      # An optional dependency imported at module scope fails here instead of
+      # in an operator's container.
+      - name: Lean install
+        run: uv sync --locked --no-dev
+      # Every module, not just the top-level packages: a stray import in a
+      # module nothing else pulls in would otherwise stay invisible.
+      - name: Import every module
+        run: uv run --no-sync python scripts/lean-import-check.py
+      - name: CLI runs
+        run: uv run --no-sync felix version
+
+  toolkit:
+    needs: changes
+    if: needs.changes.outputs.toolkit == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Validate hooks, settings, subagents, and skills
+        run: python3 scripts/validate-toolkit.py
 
   helm:
     needs: changes
