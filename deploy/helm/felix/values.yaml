@@ -38,6 +38,8 @@ config:
   FELIX_WAREHOUSE: none
 
 secrets:
+  # Prefer an existing K8s Secret or External Secrets Operator (see README).
+  # Chart-managed stringData is for bootstrap only — do not commit real tokens.
   existingSecret: ""
   databaseUrl: ""
   redisUrl: ""
@@ -50,6 +52,28 @@ secrets:
   oauthCacheKey: ""
   # Required for /internal/* when auth_mode != none (or production).
   consumerSharedSecret: ""
+
+# Sync platform secrets from a cluster SecretStore (AWS SM / GCP SM / Vault…).
+# When enabled, set secrets.existingSecret to the target secret name (defaults
+# to the release name) so Deployments keep using envFrom secretRef.
+externalSecrets:
+  enabled: false
+  refreshInterval: 1h
+  targetSecretName: ""
+  secretStore:
+    name: felix-secret-store
+    kind: ClusterSecretStore
+  data:
+    - secretKey: FELIX_DATABASE_URL
+      remoteKey: felix/database-url
+    - secretKey: FELIX_REDIS_URL
+      remoteKey: felix/redis-url
+    - secretKey: FELIX_ANTHROPIC_API_KEY
+      remoteKey: felix/anthropic-api-key
+    - secretKey: FELIX_OPENAI_API_KEY
+      remoteKey: felix/openai-api-key
+    - secretKey: FELIX_CONSUMER_SHARED_SECRET
+      remoteKey: felix/consumer-shared-secret
 
 s3:
   endpoint: ""

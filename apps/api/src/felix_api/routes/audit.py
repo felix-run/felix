@@ -6,17 +6,9 @@ import contextlib
 from typing import Any
 
 from fastapi import APIRouter, Query, Request
-from felix.context import try_get_context
+from felix.auth.mgmt import SCOPE_AUDIT_READ, require_mgmt_scopes, tenant_id_from_request
 
 router = APIRouter(tags=["Audit"])
-
-
-def _tenant(request: Request) -> str:
-    ctx = try_get_context()
-    if ctx is not None:
-        return ctx.auth.tenant_id
-    auth = getattr(request.state, "auth", None)
-    return getattr(auth, "tenant_id", "default") if auth else "default"
 
 
 @router.get("")
@@ -30,9 +22,10 @@ async def list_audit(
 ) -> dict[str, Any]:
     from felix.audit import store as audit_store
 
+    require_mgmt_scopes(request, SCOPE_AUDIT_READ)
     items, next_cursor = await audit_store.list_events(
         request.app.state.settings,
-        _tenant(request),
+        tenant_id_from_request(request),
         limit=limit,
         cursor=cursor,
         event_type=event_type,
@@ -51,9 +44,10 @@ async def audit_metrics(
     """Roll up recent ``tool_call`` audit rows for the inspector metrics panel."""
     from felix.audit import store as audit_store
 
+    require_mgmt_scopes(request, SCOPE_AUDIT_READ)
     items, _ = await audit_store.list_events(
         request.app.state.settings,
-        _tenant(request),
+        tenant_id_from_request(request),
         limit=limit,
         event_type="tool_call",
     )

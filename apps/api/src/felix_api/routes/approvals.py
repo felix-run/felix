@@ -5,7 +5,13 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from felix.context import try_get_context
+from felix.auth.mgmt import (
+    SCOPE_APPROVALS_READ,
+    SCOPE_APPROVALS_WRITE,
+    require_mgmt_scopes,
+    subject_from_request,
+    tenant_id_from_request,
+)
 from pydantic import BaseModel
 
 router = APIRouter(tags=["Approvals"])
@@ -27,22 +33,6 @@ class DecideRequest(BaseModel):
         return value
 
 
-def _tenant(request: Request) -> str:
-    ctx = try_get_context()
-    if ctx is not None:
-        return ctx.auth.tenant_id
-    auth = getattr(request.state, "auth", None)
-    return getattr(auth, "tenant_id", "default") if auth else "default"
-
-
-def _subj(request: Request) -> str:
-    ctx = try_get_context()
-    if ctx is not None:
-        return ctx.auth.principal_sub
-    auth = getattr(request.state, "auth", None)
-    return getattr(auth, "principal_sub", "anonymous") if auth else "anonymous"
-
-
 @router.get("")
 @router.get("/")
 async def list_approvals(
@@ -52,9 +42,10 @@ async def list_approvals(
 ) -> dict[str, Any]:
     from felix.approvals import store as approvals_store
 
+    require_mgmt_scopes(request, SCOPE_APPROVALS_READ)
     items = await approvals_store.list_approvals(
         request.app.state.settings,
-        _tenant(request),
+        tenant_id_from_request(request),
         status=status,
         limit=limit,
     )
@@ -65,7 +56,10 @@ async def list_approvals(
 async def get_approval(approval_id: str, request: Request) -> Any:
     from felix.approvals import store as approvals_store
 
-    row = await approvals_store.get_approval(request.app.state.settings, _tenant(request), approval_id)
+    require_mgmt_scopes(request, SCOPE_APPROVALS_READ)
+    row = await approvals_store.get_approval(
+        request.app.state.settings, tenant_id_from_request(request), approval_id
+    )
     if row is None:
         raise HTTPException(status_code=404, detail="not_found")
     return row
@@ -76,6 +70,7 @@ async def decide_approval(approval_id: str, body: DecideRequest, request: Reques
     from felix.approvals import store as approvals_store
     from felix.approvals.interrupt import signal_decision
 
+    require_mgmt_scopes(request, SCOPE_APPROVALS_WRITE)
     try:
         decision = body.resolved()
     except ValueError as exc:
@@ -83,10 +78,10 @@ async def decide_approval(approval_id: str, body: DecideRequest, request: Reques
 
     row = await approvals_store.decide(
         request.app.state.settings,
-        _tenant(request),
+        tenant_id_from_request(request),
         approval_id,
         decision=decision,
-        decided_by=_subj(request),
+        decided_by=subject_from_request(request),
         note=body.note,
         edited_args=body.edited_args,
     )

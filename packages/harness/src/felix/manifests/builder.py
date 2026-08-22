@@ -173,10 +173,16 @@ def apply_command_screening(tools: list[Tool], screening: Any, manifest_id: str)
         return tools
     import re
 
-    compiled = [
-        (re.compile(r.pattern, re.I), r.decision, r.reason or r.pattern)
-        for r in getattr(screening, "rules", [])
-    ]
+    rules = list(getattr(screening, "rules", []) or [])
+    if getattr(screening, "include_defaults", True):
+        from felix.manifests.schema import CommandRule
+
+        existing = {r.pattern for r in rules}
+        for pattern, decision, reason in _DEFAULT_COMMAND_RULES:
+            if pattern not in existing:
+                rules.append(CommandRule(pattern=pattern, decision=decision, reason=reason))
+
+    compiled = [(re.compile(r.pattern, re.I), r.decision, r.reason or r.pattern) for r in rules]
     targets = set(getattr(screening, "target_tools", []) or [])
 
     def wrap_one(tool: Tool) -> Tool:
@@ -217,6 +223,17 @@ def apply_command_screening(tools: list[Tool], screening: Any, manifest_id: str)
         )
 
     return _wrap_tools(tools, wrap_one)
+
+
+# Default deny/approval patterns when command_screening.include_defaults is true.
+_DEFAULT_COMMAND_RULES: tuple[tuple[str, str, str], ...] = (
+    (r"rm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+)*(/|~|/etc|/var|/usr|/home)", "deny", "destructive rm"),
+    (r"\bmkfs\b|\bdd\s+if=", "deny", "disk wipe"),
+    (r":\(\)\s*\{\s*:\|:&\s*\}\s*;", "deny", "fork bomb"),
+    (r"\bcurl\b.*\|\s*(ba)?sh\b|\bwget\b.*\|\s*(ba)?sh\b", "deny", "pipe remote shell"),
+    (r"\bchmod\s+(-R\s+)?777\b", "require_approval", "world-writable chmod"),
+    (r"\bsudo\b|\bsu\s", "require_approval", "privilege escalation"),
+)
 
 
 _INJECTION_MARKERS = (

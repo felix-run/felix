@@ -33,13 +33,13 @@ spec:
   skills:
     - name: calculator-help
 
-  # Outbound MCP — auth is a vault/env ref, never a plaintext token in git.
-  # Create FELIX_MCP_AUTH_TOKEN (or matching Secrets Manager id) before enabling.
-  mcp_servers:
-    - name: docs
-      url: https://example.com/mcp
-      transport: http
-      auth: secret:FELIX_MCP_AUTH_TOKEN
+  # Optional outbound MCP — leave commented until the secret exists.
+  # Uncomment and set FELIX_MCP_AUTH_TOKEN (env / Secrets Manager) first:
+  # mcp_servers:
+  #   - name: docs
+  #     url: https://example.com/mcp
+  #     transport: http
+  #     auth: secret:FELIX_MCP_AUTH_TOKEN
 
   session:
     strategy: compacting
@@ -78,6 +78,10 @@ spec:
   content_screening:
     enabled: true
     on_flag: quarantine
+
+  command_screening:
+    enabled: true
+    include_defaults: true
 
   guardrails:
     providers: [pii]

@@ -5,7 +5,12 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
-from felix.context import try_get_context
+from felix.auth.mgmt import (
+    SCOPE_EVAL_READ,
+    SCOPE_EVAL_WRITE,
+    require_mgmt_scopes,
+    tenant_id_from_request,
+)
 from pydantic import BaseModel, Field
 
 router = APIRouter(tags=["Eval"])
@@ -28,19 +33,12 @@ class EvalRunRequest(BaseModel):
     deterministic_judge: bool = False
 
 
-def _tenant(request: Request) -> str:
-    ctx = try_get_context()
-    if ctx is not None:
-        return ctx.auth.tenant_id
-    auth = getattr(request.state, "auth", None)
-    return getattr(auth, "tenant_id", "default") if auth else "default"
-
-
 @router.get("/datasets")
 async def list_datasets(request: Request) -> dict[str, Any]:
     from felix.eval import store as eval_store
 
-    items = await eval_store.list_datasets(request.app.state.settings, _tenant(request))
+    require_mgmt_scopes(request, SCOPE_EVAL_READ)
+    items = await eval_store.list_datasets(request.app.state.settings, tenant_id_from_request(request))
     return {"items": items, "datasets": items}
 
 
@@ -48,9 +46,10 @@ async def list_datasets(request: Request) -> dict[str, Any]:
 async def upsert_dataset(name: str, body: DatasetUpsert, request: Request) -> Any:
     from felix.eval import store as eval_store
 
+    require_mgmt_scopes(request, SCOPE_EVAL_WRITE)
     return await eval_store.put_dataset(
         request.app.state.settings,
-        _tenant(request),
+        tenant_id_from_request(request),
         name,
         description=body.description,
         items=body.items,
@@ -61,7 +60,8 @@ async def upsert_dataset(name: str, body: DatasetUpsert, request: Request) -> An
 async def get_dataset(name: str, request: Request) -> Any:
     from felix.eval import store as eval_store
 
-    row = await eval_store.get_dataset(request.app.state.settings, _tenant(request), name)
+    require_mgmt_scopes(request, SCOPE_EVAL_READ)
+    row = await eval_store.get_dataset(request.app.state.settings, tenant_id_from_request(request), name)
     if row is None:
         raise HTTPException(status_code=404, detail="not_found")
     return row
@@ -72,6 +72,7 @@ async def compare_eval_runs(body: dict[str, Any], request: Request) -> Any:
     """Comparative eval: baseline vs candidates on one dataset."""
     from felix.eval.compare import EvalHarness, run_comparative
 
+    require_mgmt_scopes(request, SCOPE_EVAL_WRITE)
     dataset = body.get("dataset_name") or body.get("dataset")
     if not dataset:
         raise HTTPException(status_code=400, detail="dataset_name_required")
@@ -96,7 +97,7 @@ async def compare_eval_runs(body: dict[str, Any], request: Request) -> Any:
     return await run_comparative(
         request.app.state.settings,
         tools=request.app.state.tools,
-        tenant_id=_tenant(request),
+        tenant_id=tenant_id_from_request(request),
         dataset_name=str(dataset),
         baseline=baseline,
         candidates=candidates,
@@ -109,12 +110,13 @@ async def compare_eval_runs(body: dict[str, Any], request: Request) -> Any:
 async def start_eval_run(body: EvalRunRequest, request: Request) -> Any:
     from felix.eval.runner import start_run
 
+    require_mgmt_scopes(request, SCOPE_EVAL_WRITE)
     if not body.dataset_name:
         raise HTTPException(status_code=400, detail="dataset_name_required")
     return await start_run(
         request.app.state.settings,
         tools=request.app.state.tools,
-        tenant_id=_tenant(request),
+        tenant_id=tenant_id_from_request(request),
         dataset_name=body.dataset_name,
         candidate_manifest=body.candidate_manifest,
         manifest_version=body.manifest_version,
@@ -126,11 +128,12 @@ async def run_dataset(name: str, body: EvalRunRequest, request: Request) -> Any:
     """Alias for chat-ui: POST /eval/datasets/{name}/run."""
     from felix.eval.runner import start_run
 
+    require_mgmt_scopes(request, SCOPE_EVAL_WRITE)
     _ = body.deterministic_judge
     return await start_run(
         request.app.state.settings,
         tools=request.app.state.tools,
-        tenant_id=_tenant(request),
+        tenant_id=tenant_id_from_request(request),
         dataset_name=name,
         candidate_manifest=body.candidate_manifest,
         manifest_version=body.manifest_version,
@@ -142,7 +145,8 @@ async def run_dataset(name: str, body: EvalRunRequest, request: Request) -> Any:
 async def list_eval_runs(request: Request) -> dict[str, Any]:
     from felix.eval import store as eval_store
 
-    items = await eval_store.list_runs(request.app.state.settings, _tenant(request))
+    require_mgmt_scopes(request, SCOPE_EVAL_READ)
+    items = await eval_store.list_runs(request.app.state.settings, tenant_id_from_request(request))
     return {"items": items, "runs": items}
 
 
@@ -150,7 +154,8 @@ async def list_eval_runs(request: Request) -> dict[str, Any]:
 async def get_eval_run(run_id: str, request: Request) -> Any:
     from felix.eval import store as eval_store
 
-    row = await eval_store.get_run(request.app.state.settings, _tenant(request), run_id)
+    require_mgmt_scopes(request, SCOPE_EVAL_READ)
+    row = await eval_store.get_run(request.app.state.settings, tenant_id_from_request(request), run_id)
     if row is None:
         raise HTTPException(status_code=404, detail="not_found")
     return row

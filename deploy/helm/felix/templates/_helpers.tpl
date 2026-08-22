@@ -34,6 +34,8 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- define "felix.secretName" -}}
 {{- if .Values.secrets.existingSecret -}}
 {{- .Values.secrets.existingSecret -}}
+{{- else if and .Values.externalSecrets.enabled .Values.externalSecrets.targetSecretName -}}
+{{- .Values.externalSecrets.targetSecretName -}}
 {{- else -}}
 {{- include "felix.fullname" . -}}
 {{- end -}}

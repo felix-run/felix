@@ -41,11 +41,11 @@ spec:
               value: "true"
             - name: FELIX_OBJECT_STORE
               value: "memory"
-            {{- if .Values.secrets.existingSecret }}
+            {{- if or .Values.secrets.existingSecret .Values.externalSecrets.enabled }}
             - name: FELIX_DATABASE_URL
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.secrets.existingSecret }}
+                  name: {{ include "felix.secretName" . }}
                   key: FELIX_DATABASE_URL
             {{- else }}
             - name: FELIX_DATABASE_URL

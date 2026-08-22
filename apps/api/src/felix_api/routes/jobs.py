@@ -5,7 +5,12 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
-from felix.context import try_get_context
+from felix.auth.mgmt import (
+    SCOPE_JOBS_READ,
+    SCOPE_JOBS_WRITE,
+    require_mgmt_scopes,
+    tenant_id_from_request,
+)
 from pydantic import BaseModel, Field
 
 router = APIRouter(tags=["Jobs"])
@@ -20,20 +25,13 @@ class JobUpsert(BaseModel):
     enabled: bool = True
 
 
-def _tenant(request: Request) -> str:
-    ctx = try_get_context()
-    if ctx is not None:
-        return ctx.auth.tenant_id
-    auth = getattr(request.state, "auth", None)
-    return getattr(auth, "tenant_id", "default") if auth else "default"
-
-
 @router.get("")
 @router.get("/")
 async def list_jobs(request: Request) -> dict[str, Any]:
     from felix.jobs import store as jobs_store
 
-    items = await jobs_store.list_jobs(request.app.state.settings, _tenant(request))
+    require_mgmt_scopes(request, SCOPE_JOBS_READ)
+    items = await jobs_store.list_jobs(request.app.state.settings, tenant_id_from_request(request))
     return {"items": items}
 
 
@@ -41,7 +39,8 @@ async def list_jobs(request: Request) -> dict[str, Any]:
 async def get_job(name: str, request: Request) -> Any:
     from felix.jobs import store as jobs_store
 
-    row = await jobs_store.get_job(request.app.state.settings, _tenant(request), name)
+    require_mgmt_scopes(request, SCOPE_JOBS_READ)
+    row = await jobs_store.get_job(request.app.state.settings, tenant_id_from_request(request), name)
     if row is None:
         raise HTTPException(status_code=404, detail="not_found")
     return row
@@ -51,9 +50,10 @@ async def get_job(name: str, request: Request) -> Any:
 async def upsert_job(name: str, body: JobUpsert, request: Request) -> Any:
     from felix.jobs import store as jobs_store
 
+    require_mgmt_scopes(request, SCOPE_JOBS_WRITE)
     return await jobs_store.put_job(
         request.app.state.settings,
-        _tenant(request),
+        tenant_id_from_request(request),
         name,
         schedule=body.schedule,
         manifest_id=body.manifest_id,
@@ -66,7 +66,8 @@ async def upsert_job(name: str, body: JobUpsert, request: Request) -> Any:
 async def delete_job(name: str, request: Request) -> dict[str, str]:
     from felix.jobs import store as jobs_store
 
-    ok = await jobs_store.delete_job(request.app.state.settings, _tenant(request), name)
+    require_mgmt_scopes(request, SCOPE_JOBS_WRITE)
+    ok = await jobs_store.delete_job(request.app.state.settings, tenant_id_from_request(request), name)
     if not ok:
         raise HTTPException(status_code=404, detail="not_found")
     return {"status": "deleted"}
@@ -76,5 +77,8 @@ async def delete_job(name: str, request: Request) -> dict[str, str]:
 async def list_job_runs(name: str, request: Request, limit: int = 20) -> dict[str, Any]:
     from felix.jobs import store as jobs_store
 
-    items = await jobs_store.list_runs(request.app.state.settings, _tenant(request), name, limit=limit)
+    require_mgmt_scopes(request, SCOPE_JOBS_READ)
+    items = await jobs_store.list_runs(
+        request.app.state.settings, tenant_id_from_request(request), name, limit=limit
+    )
     return {"items": items}

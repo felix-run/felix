@@ -71,4 +71,6 @@ def test_governed_manifest_passes_production_governance() -> None:
     m = load_bundled("governed", bundled_dir=manifests_dir)
     validate_governance(m, Settings(environment="production", allow_insecure=True))
     assert m.spec.governance.pin_compile is True
-    assert m.spec.mcp[0].auth.startswith("secret:")
+    assert m.spec.command_screening.include_defaults is True
+    # Outbound MCP is optional in the example (commented until secret exists).
+    assert m.spec.mcp == []

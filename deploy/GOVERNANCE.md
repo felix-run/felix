@@ -21,7 +21,8 @@ felix mint-jwt --sub ops --tenant default --scopes chat:write,tools:calc
 ```
 
 `quick` / `support` stay anonymous for local DX. Prefer `governed` (or a
-fork) for JWT / API-key production.
+fork) for JWT / API-key production. Outbound MCP in `governed` is commented
+out until `FELIX_MCP_AUTH_TOKEN` exists — scoped chat works without it.
 
 ## Secret injection
 
@@ -57,9 +58,10 @@ See [gcp/README.md](gcp/README.md). Prefer Workload Identity.
 
 ### Helm
 
-Use `secrets.existingSecret` (or External Secrets) instead of baking tokens into
+Prefer `secrets.existingSecret` or **External Secrets Operator**
+(`externalSecrets.enabled` in the chart) instead of baking tokens into
 Helm values. Platform keys still hydrate via env; manifest `secret:NAME` looks
-up the same backend.
+up the same `FELIX_SECRETS_BACKEND`. See [helm/README.md](helm/README.md).
 
 ## Governance frameworks
 
@@ -83,6 +85,27 @@ Runtime also enforces `spec.auth.inbound`, routes inbound MCP through the
 compiled agent, emits audit events from the agent loop, and redacts durable
 state. Tenant isolation remains application-level `tenant_id` (add Postgres
 RLS yourself if required).
+
+## Management API scopes
+
+When `FELIX_AUTH_MODE` is `jwt` or `api_key`, management routes require scopes
+(skipped for `auth_mode=none`). `admin` or `*` bypasses checks; `*:write`
+implies the matching `*:read`.
+
+| Scope | Routes |
+|-------|--------|
+| `manifests:read` / `manifests:write` | `/manifests` |
+| `audit:read` | `/audit` |
+| `approvals:read` / `approvals:write` | `/approvals` |
+| `jobs:read` / `jobs:write` | `/jobs` |
+| `plans:read` / `plans:write` | `/plans` |
+| `eval:read` / `eval:write` | `/eval` |
+| `usage:read` | `/usage` |
+
+```bash
+felix mint-jwt --sub ops --tenant default \
+  --scopes audit:read,manifests:write,approvals:write,jobs:write
+```
 
 ## GitOps check
 
