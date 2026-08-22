@@ -49,7 +49,7 @@ manifest that exercises it.
 uv run felix validate-manifest manifests/<name>.yaml -e development
 uv run felix validate-manifest manifests/<name>.yaml -e production   # governance-bearing manifests
 uv run felix bundle-manifests                                        # every bundled manifest still loads
-.claude/scripts/felix-test.sh tests/unit/test_manifest_schema.py tests/unit/test_manifest_governance.py
+./scripts/test.sh tests/unit/test_manifest_schema.py tests/unit/test_manifest_governance.py
 ```
 
 Optional live smoke when the API is up: `curl -s localhost:8080/chat -H 'content-type: application/json'

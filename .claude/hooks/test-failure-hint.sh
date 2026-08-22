@@ -9,7 +9,7 @@ OUT=$(printf '%s' "$INPUT" | jq -r '[.tool_response.stdout?, .tool_response.stde
 hint=""
 case "$OUT" in
   *"connection to server"*|*OperationalError*|*"Connection refused"*)
-    hint="Postgres/Valkey is not reachable. For tests use .claude/scripts/felix-test.sh (memory:// stores, no services). For the app use 'make up' then 'make migrate'." ;;
+    hint="Postgres/Valkey is not reachable. For tests use ./scripts/test.sh (memory:// stores, no services). For the app use 'make up' then 'make migrate'." ;;
   *"Unknown bundled manifest"*)
     hint="load_bundled() resolves manifests/ from the repo root, cwd, then the packaged bundled/ dir — run from the repo root, and check the manifest name matches the file stem in manifests/." ;;
   *"Unknown pattern"*)

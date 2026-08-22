@@ -38,7 +38,7 @@ strong, consistent one.
    `manifests/builder.py` → `patterns/react.py` is the request path worth tracing once.
 2. Implement the smallest change that fits the existing structure.
 3. Verify, always, in this order — paste real output, never claim a pass you did not see:
-   - `.claude/scripts/felix-test.sh <path or -k expr>` (the in-memory env; a bare `pytest` fails
+   - `./scripts/test.sh <path or -k expr>` (the in-memory env; a bare `pytest` fails
      against the `.env` Postgres)
    - `uv run ruff check <files>` and `uv run ruff format <files>`
    - `uv run ty check packages apps` when types or imports moved

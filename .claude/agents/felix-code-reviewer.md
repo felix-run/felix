@@ -39,7 +39,7 @@ code to judge fit — a diff-only review misses the failures that matter here.
 ## Verification
 
 Run what is cheap and decisive before reporting: `uv run ruff check <changed files>`,
-`.claude/scripts/felix-test.sh <related tests>`, `uv run ty check packages apps`. A finding you
+`./scripts/test.sh <related tests>`, `uv run ty check packages apps`. A finding you
 could have falsified by running a command, and did not, is not ready to report.
 
 ## Output

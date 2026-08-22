@@ -23,19 +23,19 @@ make doctor             # felix doctor — config/connectivity preflight
 make up / up-lite / up-gcp / up-full   # Compose overlays under deploy/docker/
 ```
 
-`ty check packages apps` is what CI type-checks (tests are excluded — fakes trip `ty`).
+`make type` and CI both run `ty check packages apps`; tests are excluded on purpose (fakes trip `ty`).
 
 ### Running tests
 
 The repo `.env` points `FELIX_DATABASE_URL` at a real Postgres, and pydantic-settings
-reads it, so a bare `uv run pytest` fails on DB-touching tests. Use the CI env:
+reads it, so a bare `uv run pytest` fails on DB-touching tests. `./scripts/test.sh` sets the
+in-memory environment and is what `make test` and CI both run:
 
 ```bash
-FELIX_ALLOW_INSECURE=true FELIX_AUTH_MODE=none \
-FELIX_DATABASE_URL=memory://ci FELIX_OBJECT_STORE=memory \
-  uv run pytest -q                                  # full suite (~12s)
-  … uv run pytest tests/unit/test_react_loop.py -q  # one file
-  … uv run pytest tests/unit/test_react_loop.py -k compact -q
+./scripts/test.sh                                   # full suite (~12s)
+./scripts/test.sh tests/unit/test_react_loop.py -q  # one file
+./scripts/test.sh -k compact                        # one theme
+make check                                          # lint + type + test + format check
 ```
 
 `memory://` in the DB URL flips every store to its in-memory implementation
@@ -131,8 +131,8 @@ cron labels). `felix-scheduler` must run alongside `felix-worker` or nothing fir
 `.claude/` holds project-scoped subagents, skills, and hooks tuned to this repo — see
 [.claude/README.md](.claude/README.md) for the full map. The parts that change how you work:
 
-- **Run tests with `.claude/scripts/felix-test.sh`** (a `PreToolUse` hook blocks a bare `pytest`,
-  which would hit the `.env` Postgres).
+- **Run tests with `./scripts/test.sh`** (or `make test`) — a `PreToolUse` hook blocks a bare
+  `pytest`, which would hit the `.env` Postgres.
 - **Skills load on demand** for the deep procedures: `felix-dev-loop`, `manifest-authoring`,
   `governance-pipeline`, `api-surface`, `postgres-migrations`, `plugin-seam`, `security-review`,
   `docs-sync`, `deploy-runbook`, `python-conventions`, `branch-pr-workflow`.

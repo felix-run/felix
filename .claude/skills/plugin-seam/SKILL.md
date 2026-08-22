@@ -1,7 +1,7 @@
 ---
 name: plugin-seam
 description: How optional features attach to Felix without polluting core — the plugin registry, felix.plugins entry points, the composition wiring root, and the lean-default rule for heavy dependencies and extras. Use when adding an optional feature, an extra, a new tool provider, an authenticator, a cron task, or when the plugin-boundary test fails.
-allowed-tools: Read Grep Glob Bash(uv:*) Bash(.claude/scripts/felix-test.sh:*)
+allowed-tools: Read Grep Glob Bash(uv:*) Bash(./scripts/test.sh:*)
 ---
 
 # The plugin seam
@@ -62,5 +62,5 @@ The default install and the default Docker image must stay small enough for a 2�
 3. Register via a `felix.plugins` entry point so `load_optional_plugins()` discovers it, or add the
    single line in `composition.py` if it ships in this repo.
 4. Gate any settings behind `FELIX_` config with an off-by-default value.
-5. Verify: `.claude/scripts/felix-test.sh tests/unit/test_plugin_boundary.py` and a lean install
+5. Verify: `./scripts/test.sh tests/unit/test_plugin_boundary.py` and a lean install
    (`uv sync --dev`) with the feature absent — core must still import and serve.

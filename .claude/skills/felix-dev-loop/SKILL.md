@@ -2,7 +2,7 @@
 name: felix-dev-loop
 description: The verified change loop for the Felix Python harness — how to install, run the API locally, run tests under the in-memory memory:// path, and pass the exact gates CI enforces (ruff, ty, pytest, manifest bundling, mock eval). Use before running any test or lint command in this repo, when a command fails with a Postgres connection error, or when asked to verify, check, or validate a change.
 compatibility: Requires Python 3.14, uv, and (for the full stack) Docker. Designed for Claude Code.
-allowed-tools: Bash(uv:*) Bash(make:*) Bash(.claude/scripts/felix-test.sh:*) Read Grep Glob
+allowed-tools: Bash(uv:*) Bash(make:*) Bash(./scripts/test.sh:*) Read Grep Glob
 ---
 
 # Felix dev loop
@@ -10,12 +10,14 @@ allowed-tools: Bash(uv:*) Bash(make:*) Bash(.claude/scripts/felix-test.sh:*) Rea
 ## Run tests (read this before your first pytest)
 
 ```bash
-.claude/scripts/felix-test.sh                                   # whole suite, ~12s
-.claude/scripts/felix-test.sh tests/unit/test_react_loop.py -q  # one file
-.claude/scripts/felix-test.sh -k "compact or fork" -x           # one theme
+./scripts/test.sh                                   # whole suite, ~12s
+./scripts/test.sh tests/unit/test_react_loop.py -q  # one file
+./scripts/test.sh -k "compact or fork" -x           # one theme
+make test                                           # same script
 ```
 
-The wrapper exports what CI exports:
+`scripts/test.sh` is the canonical entry point — `make test`, CI, and
+`./scripts/test.sh` all delegate to it. It exports:
 
 ```
 FELIX_ALLOW_INSECURE=true FELIX_AUTH_MODE=none
@@ -35,13 +37,12 @@ environment failure, not a code failure — a `PreToolUse` hook blocks it and pr
 |---|---|---|
 | Lint | `uv run ruff check .` | line-length 110, `py314` target |
 | Format | `uv run ruff format .` / `--check .` | CI runs the check separately |
-| Types | `uv run ty check packages apps` | CI excludes `tests/` deliberately |
-| Tests | `.claude/scripts/felix-test.sh` | 195 tests, 1 skipped |
+| Types | `uv run ty check packages apps` | `make type`; CI excludes `tests/` deliberately |
+| Tests | `./scripts/test.sh` | 195 tests, 1 skipped |
 | Manifests | `uv run felix bundle-manifests` | loads + validates every file in `manifests/` |
 | Eval | `uv run felix eval --dataset smoke --manifest quick --fixture fixtures/eval/smoke.json --mock` | no model calls |
 
-`make check` runs lint + type + test + format-check, but its pytest leg hits the `.env` Postgres —
-run `make lint`, `make type`, then the wrapper instead.
+`make check` runs all four gates (lint, type, test, format check) and matches CI exactly.
 
 Don't "fix" a ruff rule the repo disables: `[tool.ruff.lint] ignore` in `pyproject.toml` documents
 why each one is off (`E731`, `SIM102`, `ASYNC109/240`, `RUF001/002`, …).

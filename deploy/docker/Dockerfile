@@ -24,16 +24,20 @@ COPY migrations ./migrations
 COPY alembic.ini ./
 
 # Core install only. Optional: FELIX_EXTRAS=aws,gcp,otel (comma-separated)
+# Always --locked: the image must be built from the committed uv.lock, the same
+# resolution CI tested. --locked asserts the lock still matches pyproject and
+# fails the build if it does not; --frozen would only skip re-locking, and would
+# happily build from a lock that no longer matches. Run `uv lock` and commit it.
 RUN set -eux; \
     if [ -z "${FELIX_EXTRAS}" ]; then \
-      uv sync --frozen --no-dev || uv sync --no-dev; \
+      uv sync --locked --no-dev; \
     else \
       extras="$(echo "${FELIX_EXTRAS}" | tr ',' ' ')"; \
       set --; \
       for e in ${extras}; do \
         set -- "$@" --extra "${e}"; \
       done; \
-      uv sync --frozen --no-dev "$@" || uv sync --no-dev "$@"; \
+      uv sync --locked --no-dev "$@"; \
     fi
 
 FROM python:3.14-slim AS runtime

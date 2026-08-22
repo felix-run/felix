@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `scripts/test.sh` — the canonical test entry point. It sets the in-memory
+  store environment the suite is designed for; `make test` and CI both use it.
+- `pre-commit` now runs in CI, so the hook config cannot silently break again.
+- `.editorconfig` matching the ruff configuration.
+
 ### Changed
 
 - Relicensed from MIT to Apache License 2.0 (adds an express patent grant and
@@ -15,6 +22,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `pre-commit install` failed for every contributor: the ruff repo entry was
+  missing its `https://github.com/` prefix, so hook installation could never
+  clone it. `pre-commit validate-config` passes on the broken file — only
+  `install-hooks` surfaces it.
+- `make check` failed on any machine with a `.env`: the pytest leg inherited
+  `FELIX_DATABASE_URL` and ran against a real Postgres, and `make type`
+  checked `tests/` while CI checks only `packages apps`.
+- The Docker build no longer falls back to an unfrozen `uv sync`, which could
+  silently produce an image from a different dependency resolution than CI
+  tested. CI now also verifies `uv.lock` is current and installs `--frozen`.
 - Taskiq worker no longer dies on idle BRPOP (`redis-py` 8 default
   `socket_timeout=5`); broker/result backend use `socket_timeout=None`.
 - Scheduler entrypoint awaits `run_scheduler` via `asyncio.run` (taskiq 0.12+).

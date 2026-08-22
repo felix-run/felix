@@ -10,6 +10,7 @@ help:
 	@echo "  install-full      uv sync --all-extras --dev"
 	@echo "  install-warehouse uv sync --extra warehouse --dev (DuckDB analytics)"
 	@echo "  lint/fmt/type/test/check"
+	@echo "  test              ./scripts/test.sh (in-memory stores; args: ./scripts/test.sh -k expr)"
 	@echo "  dev               run API locally (auth=none)"
 	@echo "  up                deploy/docker compose (lean: fs object store, mem caps)"
 	@echo "  up-lite           + lite overlay (~2–4 GiB hosts)"
@@ -34,10 +35,12 @@ fmt:
 	uv run ruff format .
 
 type:
-	uv run ty check
+	# Same scope as CI — tests are excluded on purpose (fakes and fixtures
+	# trip ty without adding production signal).
+	uv run ty check packages apps
 
 test:
-	uv run pytest -q
+	./scripts/test.sh
 
 check: lint type test
 	uv run ruff format --check .

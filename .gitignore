@@ -48,6 +48,10 @@ uv.lock.bak
 # Logs
 *.log
 
+# Claude Code: personal overrides stay local, the shared toolkit is tracked
+.claude/settings.local.json
+.claude/logs/
+
 # Local agent workspace mount
 workspace/*
 !workspace/README.md

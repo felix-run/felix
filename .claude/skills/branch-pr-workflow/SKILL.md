@@ -31,7 +31,7 @@ Commit or push **only when the user asks**.
    ```bash
    uv run ruff check . && uv run ruff format --check .
    uv run ty check packages apps
-   .claude/scripts/felix-test.sh
+   ./scripts/test.sh
    uv run felix bundle-manifests            # when manifests/ or the schema changed
    ```
 

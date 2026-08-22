@@ -19,7 +19,7 @@ Rules that hold across the whole repo. Violating one is a blocking review findin
 - **Protocols, not vendors.** Storage, secrets, model providers, and the warehouse are swappable
   implementations behind Protocols.
 - **`memory://` must keep working.** Every store has an in-memory twin; that is the CI test path.
-  Run tests with `.claude/scripts/felix-test.sh`, never a bare `pytest`.
+  Run tests with `./scripts/test.sh` (or `make test`), never a bare `pytest`.
 - **A model change needs an Alembic revision**, and published revisions are never edited.
 - **A new `FELIX_` setting** lands in `felix/config.py` + `.env.example` + the README table, with a
   `validate_runtime()` guard if it enables an unsafe combination.
