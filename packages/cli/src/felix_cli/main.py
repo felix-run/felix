@@ -223,7 +223,7 @@ def doctor_cmd() -> None:
                 from felix.db.session import get_engine
                 from sqlalchemy import text
 
-                engine = get_engine(settings=settings)
+                engine = get_engine(settings.database_url)
                 async with engine.connect() as conn:
                     await conn.execute(text("SELECT 1"))
                 check("database", True, "reachable")
