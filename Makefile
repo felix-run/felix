@@ -1,4 +1,8 @@
-.PHONY: help install install-full install-warehouse lint fmt type test check dev up up-lite up-full down cli seed migrate doctor docker-build
+.PHONY: help install install-full install-warehouse lint fmt type test check dev up up-lite up-gcp up-full down cli seed migrate doctor docker-build
+
+COMPOSE := docker compose -f deploy/docker/compose.yml --project-directory .
+COMPOSE_LITE := $(COMPOSE) -f deploy/docker/compose.lite.yml
+COMPOSE_GCP := $(COMPOSE) -f deploy/docker/compose.gcp.yml -f deploy/docker/compose.lite.yml
 
 help:
 	@echo "Felix dev targets:"
@@ -7,8 +11,9 @@ help:
 	@echo "  install-warehouse uv sync --extra warehouse --dev (DuckDB analytics)"
 	@echo "  lint/fmt/type/test/check"
 	@echo "  dev               run API locally (auth=none)"
-	@echo "  up                docker compose (lean: fs object store, mem caps)"
-	@echo "  up-lite           compose + lite overlay (~2–4 GiB hosts)"
+	@echo "  up                deploy/docker compose (lean: fs object store, mem caps)"
+	@echo "  up-lite           + lite overlay (~2–4 GiB hosts)"
+	@echo "  up-gcp            + gcp+lite overlays (no DB/cache publish)"
 	@echo "  up-full           compose --profile full (MinIO; set FELIX_DOCKER_EXTRAS=aws)"
 	@echo "  down / cli / seed / migrate / doctor"
 	@echo "  Warehouse: FELIX_WAREHOUSE=duckdb + FELIX_DOCKER_EXTRAS=warehouse"
@@ -44,20 +49,23 @@ dev:
 		uv run felix-api
 
 up:
-	docker compose up --build
+	$(COMPOSE) up --build
 
 up-lite:
-	docker compose -f docker-compose.yml -f docker-compose.lite.yml up --build
+	$(COMPOSE_LITE) up --build
+
+up-gcp:
+	$(COMPOSE_GCP) up --build -d
 
 up-full:
 	FELIX_DOCKER_EXTRAS=$${FELIX_DOCKER_EXTRAS:-aws} FELIX_OBJECT_STORE=s3 \
-		docker compose --profile full up --build
+		$(COMPOSE) --profile full up --build
 
 down:
-	docker compose --profile full down
+	$(COMPOSE) --profile full down
 
 docker-build:
-	docker build --build-arg FELIX_EXTRAS="$${FELIX_DOCKER_EXTRAS:-}" -t felix:latest .
+	docker build -f deploy/docker/Dockerfile --build-arg FELIX_EXTRAS="$${FELIX_DOCKER_EXTRAS:-}" -t felix:latest .
 
 migrate:
 	uv run felix migrate head

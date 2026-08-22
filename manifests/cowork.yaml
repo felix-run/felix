@@ -1,0 +1,100 @@
+# yaml-language-server: $schema=../schemas/manifest.schema.json
+apiVersion: felix/v1
+kind: Agent
+metadata:
+  name: cowork
+  version: 1.0.0
+  description: Felix workspace agent — goals, files, client tools, and approvals.
+  tags: [react, workspace, durable]
+
+spec:
+  pattern: react
+
+  model:
+    temperature: 0
+
+  system_prompt:
+    inline: |
+      You are Felix, a workspace agent.
+      Complete user goals by reading and editing files in the workspace, using
+      client tools when local/browser actions are required, and pausing for
+      approval when a gated tool is invoked.
+      Prefer small, reversible changes. Summarize what you did when finished.
+      Always refer to yourself as Felix, never as Claude or any other name.
+
+  tools:
+    - calculator
+    - list_dir
+    - read_file
+    - write_file
+    - search_files
+    - list_skills
+    - activate_skill
+    - deactivate_skill
+
+  client_tools:
+    - name: local_shell
+      description: Run a shell command in the user's local environment.
+      args_schema:
+        type: object
+        properties:
+          command:
+            type: string
+            description: Shell command to run.
+          cwd:
+            type: string
+            description: Optional working directory.
+        required: [command]
+        additionalProperties: false
+      timeout_seconds: 300
+    - name: local_open
+      description: Open a local path or URL in the user's environment.
+      args_schema:
+        type: object
+        properties:
+          target:
+            type: string
+            description: File path or URL to open.
+        required: [target]
+        additionalProperties: false
+      timeout_seconds: 60
+
+  skills:
+    - name: calculator-help
+
+  approvals:
+    - id: workspace-write
+      description: Confirm writes to the workspace
+      tools: [write_file]
+      ttl_seconds: 600
+    - id: client-shell
+      description: Confirm local shell commands
+      tools: [local_shell]
+      ttl_seconds: 600
+
+  limits:
+    max_tool_calls: 200
+    max_wall_clock_seconds: 3600
+
+  max_turns: 40
+
+  execution:
+    mode: durable
+
+  session:
+    strategy: compacting
+    reserve_tokens: 16384
+    keep_recent_tokens: 20000
+    context_window_tokens: 128000
+    compaction_enabled: true
+
+  memory:
+    checkpointer: postgres
+    store: pgvector
+
+  auth:
+    inbound:
+      allow_anonymous: true
+
+  observability:
+    trace: true

@@ -1,13 +1,17 @@
 # Felix local stack — api, worker, Postgres+pgvector, Valkey, MinIO.
-# Small VMs: `docker compose -f docker-compose.yml -f docker-compose.lite.yml up --build`
-# Full (MinIO + aws extra): `docker compose --profile full up --build`
+# Run from repo root (see deploy/docker/README.md):
+#   make up
+#   make up-lite
+#   docker compose -f deploy/docker/compose.yml --project-directory . up --build
 
 name: felix
 
 x-felix-env: &felix-env
-  FELIX_ENVIRONMENT: development
+  FELIX_ENVIRONMENT: ${FELIX_ENVIRONMENT:-development}
   FELIX_ALLOW_INSECURE: ${FELIX_ALLOW_INSECURE:-true}
   FELIX_AUTH_MODE: ${FELIX_AUTH_MODE:-none}
+  FELIX_AUTH_API_KEYS: ${FELIX_AUTH_API_KEYS:-}
+  FELIX_CONSUMER_SHARED_SECRET: ${FELIX_CONSUMER_SHARED_SECRET:-}
   FELIX_DATABASE_URL: postgresql+psycopg://felix:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (openssl rand -hex 32)}@postgres:5432/felix
   FELIX_REDIS_URL: redis://valkey:6379/0
   FELIX_ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
@@ -16,6 +20,7 @@ x-felix-env: &felix-env
   FELIX_DEFAULT_MODEL_ID: ${FELIX_DEFAULT_MODEL_ID:-claude-sonnet-4}
   FELIX_MODEL_ROUTES: ${FELIX_MODEL_ROUTES:-}
   FELIX_OLLAMA_BASE_URL: ${FELIX_OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+  FELIX_WORKSPACE_ROOT: ${FELIX_WORKSPACE_ROOT:-/workspace}
   # Analytics spill (recommended duckdb). Requires FELIX_DOCKER_EXTRAS=warehouse
   FELIX_WAREHOUSE: ${FELIX_WAREHOUSE:-none}
   FELIX_DATA_DIR: /data
@@ -25,6 +30,7 @@ services:
   api:
     build:
       context: .
+      dockerfile: deploy/docker/Dockerfile
       args:
         # Lean by default. Override: FELIX_DOCKER_EXTRAS=aws,gcp
         FELIX_EXTRAS: ${FELIX_DOCKER_EXTRAS:-}
@@ -42,6 +48,7 @@ services:
       FELIX_S3_BUCKET: felix-bundles
     volumes:
       - felix-data:/data
+      - ${FELIX_WORKSPACE_HOST:-./workspace}:/workspace
     depends_on:
       postgres:
         condition: service_healthy
@@ -54,6 +61,7 @@ services:
   worker:
     build:
       context: .
+      dockerfile: deploy/docker/Dockerfile
       args:
         FELIX_EXTRAS: ${FELIX_DOCKER_EXTRAS:-}
     image: felix:latest
@@ -67,6 +75,7 @@ services:
       FELIX_S3_BUCKET: felix-bundles
     volumes:
       - felix-data:/data
+      - ${FELIX_WORKSPACE_HOST:-./workspace}:/workspace
     depends_on:
       postgres:
         condition: service_healthy
@@ -82,6 +91,7 @@ services:
   scheduler:
     build:
       context: .
+      dockerfile: deploy/docker/Dockerfile
       args:
         FELIX_EXTRAS: ${FELIX_DOCKER_EXTRAS:-}
     image: felix:latest
@@ -125,8 +135,9 @@ services:
       - work_mem=${FELIX_PG_WORK_MEM:-4MB}
     volumes:
       - postgres-data:/var/lib/postgresql/data
+    # Bind loopback only — use lite overlay to publish nothing on small/public VMs.
     ports:
-      - "${FELIX_PG_PORT:-5432}:5432"
+      - "127.0.0.1:${FELIX_PG_PORT:-5432}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U felix"]
       interval: 5s
@@ -143,7 +154,7 @@ services:
     volumes:
       - valkey-data:/data
     ports:
-      - "${FELIX_VALKEY_PORT:-6379}:6379"
+      - "127.0.0.1:${FELIX_VALKEY_PORT:-6379}:6379"
     healthcheck:
       test: ["CMD", "valkey-cli", "ping"]
       interval: 5s

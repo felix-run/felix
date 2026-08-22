@@ -76,6 +76,7 @@ async def get_approval(approval_id: str, request: Request) -> Any:
 @router.post("/{approval_id}/decide")
 async def decide_approval(approval_id: str, body: DecideRequest, request: Request) -> Any:
     from felix.approvals import store as approvals_store
+    from felix.approvals.interrupt import signal_decision
 
     try:
         decision = body.resolved()
@@ -93,4 +94,10 @@ async def decide_approval(approval_id: str, body: DecideRequest, request: Reques
     )
     if row is None:
         raise HTTPException(status_code=404, detail="not_found")
+    await signal_decision(
+        approval_id,
+        decision,
+        edited_args=body.edited_args,
+        note=body.note,
+    )
     return row

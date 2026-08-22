@@ -43,6 +43,15 @@ class SteerRequest(BaseModel):
     kind: Literal["steer", "follow_up"] = "steer"
 
 
+class ToolResultRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    thread_id: str = Field(min_length=1)
+    tool_call_id: str = Field(min_length=1)
+    content: str | dict[str, Any] | list[Any] = ""
+    error: bool = False
+
+
 class ForkRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
@@ -111,10 +120,15 @@ async def chat(body: ChatRequest, request: Request) -> Any:
     thread = effective_thread_id(auth.tenant_id, body.thread_id)
     if body.thread_id and thread is None:
         raise HTTPException(status_code=400, detail="invalid_thread_id")
+    if not (body.manifest or "").strip():
+        raise HTTPException(status_code=400, detail="manifest_required")
 
-    resolved = await resolve_tenant_manifest(
-        settings, auth.tenant_id, body.manifest, thread_id=thread
-    )
+    try:
+        resolved = await resolve_tenant_manifest(
+            settings, auth.tenant_id, body.manifest, thread_id=thread
+        )
+    except (LookupError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail=f"unknown_manifest:{body.manifest}") from exc
     model_id = _allowlisted_model(resolved.manifest, body.model, settings)
     messages = [ChatMessage.model_validate(m) for m in body.messages]
     execution = getattr(getattr(resolved.manifest, "spec", None), "execution", None)
@@ -187,10 +201,15 @@ async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
     thread = effective_thread_id(auth.tenant_id, body.thread_id)
     if body.thread_id and thread is None:
         raise HTTPException(status_code=400, detail="invalid_thread_id")
+    if not (body.manifest or "").strip():
+        raise HTTPException(status_code=400, detail="manifest_required")
 
-    resolved = await resolve_tenant_manifest(
-        settings, auth.tenant_id, body.manifest, thread_id=thread
-    )
+    try:
+        resolved = await resolve_tenant_manifest(
+            settings, auth.tenant_id, body.manifest, thread_id=thread
+        )
+    except (LookupError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail=f"unknown_manifest:{body.manifest}") from exc
     model_id = _allowlisted_model(resolved.manifest, body.model, settings)
     messages = [ChatMessage.model_validate(m) for m in body.messages]
     req_ctx = RequestContext(
@@ -233,6 +252,30 @@ async def chat_steer(body: SteerRequest, request: Request) -> dict[str, Any]:
     if thread is None:
         raise HTTPException(status_code=400, detail="invalid_thread_id")
     return await enqueue(auth.tenant_id, thread, kind=body.kind, text=body.text)
+
+
+@router.post("/tool_result")
+async def chat_tool_result(body: ToolResultRequest, request: Request) -> dict[str, Any]:
+    """Complete a client-executed tool that paused the active agent run."""
+    from felix.tools.client_bridge import client_tool_result_json, complete_result
+
+    auth = _auth_from_request(request)
+    thread = effective_thread_id(auth.tenant_id, body.thread_id)
+    if thread is None:
+        raise HTTPException(status_code=400, detail="invalid_thread_id")
+    content = client_tool_result_json(body.content)
+    signaled = await complete_result(
+        thread,
+        body.tool_call_id,
+        content,
+        error=body.error,
+    )
+    return {
+        "ok": True,
+        "signaled": signaled,
+        "thread_id": thread,
+        "tool_call_id": body.tool_call_id,
+    }
 
 
 @router.post("/fork")

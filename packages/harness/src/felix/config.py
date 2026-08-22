@@ -129,8 +129,8 @@ def get_settings() -> Settings:
 
 # Logical model routes — Workers AI dropped; Ollama / LiteLLM fill the OSS slot.
 DEFAULT_MODEL_ROUTES: dict[str, dict[str, str]] = {
-    "claude-sonnet-4": {"provider": "anthropic", "model": "claude-sonnet-4-20250514"},
-    "claude-haiku-4": {"provider": "anthropic", "model": "claude-haiku-4-20250414"},
+    "claude-sonnet-4": {"provider": "anthropic", "model": "claude-sonnet-4-5"},
+    "claude-haiku-4": {"provider": "anthropic", "model": "claude-haiku-4-5-20251001"},
     "gpt-4.1": {"provider": "openai", "model": "gpt-4.1"},
     "gpt-4.1-mini": {"provider": "openai", "model": "gpt-4.1-mini"},
     "llama-3-pro": {"provider": "ollama", "model": "llama3.3:70b"},

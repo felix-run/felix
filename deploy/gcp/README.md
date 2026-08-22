@@ -27,6 +27,19 @@ FELIX_CONSUMER_SHARED_SECRET=$(openssl rand -hex 32)  # required for /internal
 Prefer Workload Identity over JSON key files.
 Install extras: `uv sync --extra gcp` (or image build with `FELIX_EXTRAS=gcp`).
 
+## GCE + Compose
+
+```bash
+# on the VM, repo at /opt/felix
+make up-gcp
+# or:
+docker compose -f deploy/docker/compose.yml \
+  -f deploy/docker/compose.gcp.yml -f deploy/docker/compose.lite.yml \
+  --project-directory . up -d --build
+```
+
+See `deploy/docker/README.md`.
+
 ## Helm
 
 ```bash

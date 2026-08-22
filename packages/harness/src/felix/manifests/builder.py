@@ -510,8 +510,12 @@ def apply_approvals(tools: list[Tool], rules: list[ApprovalRule], manifest_id: s
             import hashlib
             import json
 
+            from felix.approvals.interrupt import wait_for_decision
+            from felix.side_events import emit as emit_side_event
+
             req = try_get_context()
             granted = bool((req.extras if req else {}).get(f"approval:{tool.name}"))
+            pending_row: dict[str, object] | None = None
             if not granted and req is not None:
                 try:
                     from felix.approvals import store as approvals_store
@@ -531,7 +535,7 @@ def apply_approvals(tools: list[Tool], rules: list[ApprovalRule], manifest_id: s
                         if approved.get("edited_args"):
                             args = dict(approved["edited_args"])
                     else:
-                        await approvals_store.create_pending(
+                        pending_row = await approvals_store.create_pending(
                             req.settings,
                             req.auth.tenant_id,
                             manifest_id=manifest_id,
@@ -550,10 +554,41 @@ def apply_approvals(tools: list[Tool], rules: list[ApprovalRule], manifest_id: s
                     "felix_approval_required",
                     {"manifest_id": manifest_id, "tool": tool.name, "rule": rule.id},
                 )
-                return deny_output(
-                    f"[approval required] tool={tool.name} rule={rule.id}",
-                    "approvals",
+                if pending_row is None:
+                    return deny_output(
+                        f"[approval required] tool={tool.name} rule={rule.id}",
+                        "approvals",
+                    )
+
+                approval_id = str(pending_row.get("id") or "")
+                thread_id = (ctx.thread_id if ctx else None) or (
+                    req.thread_id if req else None
                 )
+                await emit_side_event(
+                    thread_id,
+                    "approval_required",
+                    {
+                        "approval_id": approval_id,
+                        "tool_name": tool.name,
+                        "args": dict(args),
+                        "rule_id": rule.id,
+                        "thread_id": thread_id,
+                        "tool_call_id": ctx.tool_call_id if ctx else None,
+                    },
+                )
+                decision = await wait_for_decision(
+                    approval_id,
+                    timeout=float(rule.ttl_seconds) if rule.ttl_seconds else None,
+                )
+                if decision.decision != "approved":
+                    note = decision.note or "denied"
+                    return deny_output(
+                        f"[approval {note}] tool={tool.name} rule={rule.id}",
+                        "approvals",
+                    )
+                if decision.edited_args:
+                    args = dict(decision.edited_args)
+                return await inner.execute(args, ctx)
             return await inner.execute(args, ctx)
 
         return Tool(
@@ -735,6 +770,15 @@ async def build_agent(
                 )
             except Exception:
                 logger.warning("browser tool binding failed", exc_info=True)
+
+        # Client-executed tools (browser/desktop float posts results back).
+        if m.spec.client_tools:
+            try:
+                from felix.tools.client_bridge import tools_from_client_refs
+
+                _append_unique_tools(resolved, tools_from_client_refs(list(m.spec.client_tools)))
+            except Exception:
+                logger.warning("client tool binding failed", exc_info=True)
 
         # Docker sandboxes + HTTP container gateways.
         if m.spec.sandboxes:

@@ -47,3 +47,7 @@ uv.lock.bak
 
 # Logs
 *.log
+
+# Local agent workspace mount
+workspace/*
+!workspace/README.md

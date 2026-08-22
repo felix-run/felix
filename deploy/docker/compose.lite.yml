@@ -1,6 +1,8 @@
 # Overlay for small VMs / constrained Docker hosts (~2–4 GiB RAM).
-# Usage:
-#   docker compose -f docker-compose.yml -f docker-compose.lite.yml up --build
+# Usage (repo root):
+#   make up-lite
+#   docker compose -f deploy/docker/compose.yml -f deploy/docker/compose.lite.yml \
+#     --project-directory . up --build
 #
 # Drops MinIO (uses FELIX_OBJECT_STORE=fs), tightens memory, and skips
 # publishing DB/cache ports to the host.

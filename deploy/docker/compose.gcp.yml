@@ -1,0 +1,29 @@
+# GCP / public VM overlay — no host publish for DB/cache; workspace mount.
+# Usage on GCE (repo root / /opt/felix):
+#   make up-gcp
+#   docker compose -f deploy/docker/compose.yml \
+#     -f deploy/docker/compose.gcp.yml -f deploy/docker/compose.lite.yml \
+#     --project-directory . up -d --build
+
+name: felix
+
+services:
+  api:
+    volumes:
+      - felix-data:/data
+      - ${FELIX_WORKSPACE_HOST:-./workspace}:/workspace
+    environment:
+      FELIX_WORKSPACE_ROOT: /workspace
+
+  worker:
+    volumes:
+      - felix-data:/data
+      - ${FELIX_WORKSPACE_HOST:-./workspace}:/workspace
+    environment:
+      FELIX_WORKSPACE_ROOT: /workspace
+
+  postgres:
+    ports: !override []
+
+  valkey:
+    ports: !override []

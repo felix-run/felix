@@ -40,12 +40,14 @@ async def _deactivate_skill_stub(args: dict[str, Any]) -> str:
 
 
 def register_builtin_tools(provider: InMemoryToolProvider) -> None:
-    """Register core local tools (calculator + skill tool names).
+    """Register core local tools (calculator, workspace, skill tool names).
 
     Skill tools are replaced with catalog-bound implementations in
     ``build_agent`` when the manifest declares ``spec.skills`` or lists
     skill tool names.
     """
+    from felix.tools.workspace import register_workspace_tools
+
     provider.register(
         "calculator",
         lambda: define_tool(
@@ -57,6 +59,7 @@ def register_builtin_tools(provider: InMemoryToolProvider) -> None:
             handler=_calculator_handler,
         ),
     )
+    register_workspace_tools(provider)
     provider.register(
         "list_skills",
         lambda: define_tool(

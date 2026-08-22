@@ -67,8 +67,12 @@ Default images and Compose stay **lean**:
 | Memory | compose `mem_limit` caps | raise via `FELIX_*_MEM_LIMIT` |
 
 ```bash
-make up-lite   # docker-compose.lite.yml — ~2–4 GiB hosts
+make up-lite   # deploy/docker/compose.lite.yml — ~2–4 GiB hosts
+make up-gcp    # GCE / public VM: no DB/cache host ports
 ```
+
+Docker packaging lives under `deploy/docker/` (see that README). Always run Compose
+from the repo root (`make up` sets `--project-directory .`).
 
 Heavy optional deps (Playwright, sentence-transformers, DuckDB, Presidio, Temporal)
 are **never** in the default image — install via extras only when needed.

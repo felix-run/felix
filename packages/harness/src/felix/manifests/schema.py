@@ -14,11 +14,11 @@ MANIFEST_KIND = "Agent"
 MANIFEST_NAME_RE = re.compile(r"^[a-zA-Z0-9._-]+$")
 
 ABSOLUTE_LIMITS = {
-    "max_tool_calls": 200,
-    "max_wall_clock_seconds": 600,
+    "max_tool_calls": 500,
+    "max_wall_clock_seconds": 3600,
     "max_peer_hops": 5,
     "recursion_limit": 50,
-    "max_turns": 20,
+    "max_turns": 100,
     "max_input_tokens": 1_000_000,
     "max_output_tokens": 100_000,
 }
@@ -179,6 +179,16 @@ class BrowserToolRef(_Strict):
     timeout_ms: int | None = None
     path_prefix: str = ""
     args_schema: dict[str, Any] | None = None
+    fatal: bool = False
+
+
+class ClientToolRef(_Strict):
+    """Tool executed by the connected client; the server waits for a result."""
+
+    name: str = Field(min_length=1)
+    description: str = ""
+    args_schema: dict[str, Any] | None = None
+    timeout_seconds: float | None = Field(default=None, gt=0, le=3600)
     fatal: bool = False
 
 
@@ -374,6 +384,7 @@ class Spec(_Strict):
     queues: list[QueueRef] = Field(default_factory=list)
     sandboxes: list[SandboxRef] = Field(default_factory=list)
     browser_tools: list[BrowserToolRef] = Field(default_factory=list)
+    client_tools: list[ClientToolRef] = Field(default_factory=list)
     sub_agents: list[str] = Field(default_factory=list)
     aggregator_prompt: str = ""
     max_turns: int = Field(default=4, ge=1, le=ABSOLUTE_LIMITS["max_turns"])
@@ -433,6 +444,7 @@ __all__ = [
     "MANIFEST_KIND",
     "MANIFEST_NAME_RE",
     "ApprovalRule",
+    "ClientToolRef",
     "CommandScreening",
     "ContentScreening",
     "ExecutionSpec",

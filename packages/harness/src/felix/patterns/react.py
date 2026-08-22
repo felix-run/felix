@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from collections.abc import AsyncIterator
@@ -32,6 +33,8 @@ from felix.steer import (
     release_run_queue,
     should_cancel_remaining_tools,
 )
+from felix.side_events import drain as drain_side_events
+from felix.side_events import release as release_side_events
 from felix.tools.errors import infer_error_code, read_tool_error_code, tool_output_content
 from felix.tools.retrieval import select_tools_from_ctx
 from felix.tools.types import Tool, ToolInvocationCtx, is_wrapper_deny
@@ -371,6 +374,7 @@ class _ReactAgent:
         finally:
             if input.thread_id:
                 await release_run_queue(tenant_id, input.thread_id)
+                await release_side_events(input.thread_id)
 
         await self._maybe_capture_memory(input, final, model)
         return InvokeOutput(messages=produced, final=final)
@@ -475,7 +479,16 @@ class _ReactAgent:
                         event="on_tool_start",
                         data={"name": call.name, "input": call.args},
                     )
-                    _kind, tool_msg = await self._dispatch(call, input.thread_id)
+                    dispatch_task = asyncio.create_task(
+                        self._dispatch(call, input.thread_id)
+                    )
+                    while not dispatch_task.done():
+                        for item in await drain_side_events(input.thread_id):
+                            yield Event(event=str(item["event"]), data=dict(item["data"]))
+                        await asyncio.wait({dispatch_task}, timeout=0.05)
+                    for item in await drain_side_events(input.thread_id):
+                        yield Event(event=str(item["event"]), data=dict(item["data"]))
+                    _kind, tool_msg = dispatch_task.result()
                     yield Event(
                         event="tool_end",
                         data={"name": call.name, "output": tool_msg.content, "id": call.id},
@@ -523,6 +536,7 @@ class _ReactAgent:
         finally:
             if input.thread_id:
                 await release_run_queue(tenant_id, input.thread_id)
+                await release_side_events(input.thread_id)
 
         await self._maybe_capture_memory(input, final, model)
         yield Event(
