@@ -15,6 +15,7 @@ Issues = "https://github.com/felix-run/felix/issues"
 
 [project.scripts]
 felix-worker = "felix_worker.main:main"
+felix-scheduler = "felix_worker.main:scheduler_main"
 
 [build-system]
 requires = ["hatchling"]

@@ -22,16 +22,31 @@ FELIX_SECRETS_BACKEND=aws
 FELIX_AWS_REGION=us-east-1
 FELIX_DATABASE_URL=postgresql+psycopg://...
 FELIX_REDIS_URL=redis://...
+FELIX_AUTH_MODE=jwt
+FELIX_CONSUMER_SHARED_SECRET=$(openssl rand -hex 32)  # required for /internal
 ```
 
 Use IRSA / instance roles instead of long-lived access keys when possible.
-Install extras: `uv sync --extra aws` (or image build with `[aws]`).
+Install extras: `uv sync --extra aws` (or image build with `FELIX_EXTRAS=aws`).
 
 ## Helm
 
 ```bash
+# Apply migrations before/after install (Job not bundled yet):
+#   kubectl run felix-migrate --rm -it --image=... -- felix migrate head
+
 helm upgrade --install felix ./deploy/helm/felix \
-  -f deploy/aws/values-eks.example.yaml
+  -f deploy/aws/values-eks.example.yaml \
+  --set secrets.databaseUrl="$FELIX_DATABASE_URL" \
+  --set secrets.redisUrl="$FELIX_REDIS_URL" \
+  --set secrets.consumerSharedSecret="$FELIX_CONSUMER_SHARED_SECRET" \
+  --set secrets.jwksPublic="$FELIX_JWKS_PUBLIC" \
+  --set secrets.jwksPrivate="$FELIX_JWKS_PRIVATE"
 ```
 
-See `deploy/helm/felix/values.yaml` for all knobs. Auth should be `jwt` or `api_key` in production (`FELIX_ALLOW_INSECURE` must stay false).
+The chart runs **api**, **worker**, and **scheduler** containers. For lean `fs`
+object store (not recommended on EKS), set `persistence.enabled=true` so `/data`
+uses a PVC.
+
+See `deploy/helm/felix/values.yaml` for all knobs. Auth should be `jwt` or
+`api_key` in production (`FELIX_ALLOW_INSECURE` must stay false).

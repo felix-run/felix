@@ -150,6 +150,40 @@ spec:
                   key: FELIX_REDIS_URL
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+        - name: scheduler
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["felix-scheduler"]
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: data
+              mountPath: /data
+          envFrom:
+            - configMapRef:
+                name: {{ include "felix.fullname" . }}
+          env:
+            - name: FELIX_DATA_DIR
+              value: /data
+            - name: FELIX_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "felix.secretName" . }}
+                  key: FELIX_DATABASE_URL
+            - name: FELIX_REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "felix.secretName" . }}
+                  key: FELIX_REDIS_URL
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: "250m"
+              memory: 256Mi
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

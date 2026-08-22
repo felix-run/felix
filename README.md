@@ -93,16 +93,18 @@ uv sync --extra warehouse
 
 ```
 Client → Ingress (Caddy / Traefik / nginx / Cloudflare DNS+CDN)
-           ├─ felix-api   (CPython 3.14, Granian, FastAPI)
-           └─ felix-worker (Taskiq: audit, cron, fibers, retention)
+           ├─ felix-api        (CPython 3.14, Granian, FastAPI)
+           ├─ felix-worker     (Taskiq consumer)
+           └─ felix-scheduler  (Taskiq cron enqueue)
                   │
      Postgres+pgvector · Valkey · object store (fs | S3 | GCS)
 ```
 
 - **`apps/api`** — HTTP: `/chat`, `/v1`, `/a2a`, `/mcp`, management APIs, OpenAPI
-- **`apps/worker`** — background: audit flush, scheduled jobs, memory consolidation, retention, anomaly, continuous eval, fiber scheduler
+- **`apps/worker`** — background consumer: audit flush, scheduled jobs, memory consolidation, retention, anomaly, continuous eval, fiber resume
+- **`felix-scheduler`** — enqueues labeled Taskiq cron tasks (required alongside the worker)
 - **`packages/harness`** — manifests, patterns, tools, session, governance, auth, plugins
-- **`packages/cli`** — `felix migrate|eval|mint-jwt|bundle-manifests|version`
+- **`packages/cli`** — `felix migrate|eval|mint-jwt|bundle-manifests|doctor|version`
 - **`manifests/`** — bundled agents (`quick`, `deep`, `router`, `oss-only`, `hybrid-router`, `support`)
 
 Felix is **service- and cloud-agnostic**: the harness talks to Postgres, a

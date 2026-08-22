@@ -32,12 +32,17 @@ jobs:
               - 'tests/**'
               - 'migrations/**'
               - 'manifests/**'
+              - 'scripts/**'
+              - 'clients/**'
+              - 'alembic.ini'
+              - 'Makefile'
               - 'pyproject.toml'
               - 'uv.lock'
               - '.github/workflows/**'
             docker:
               - 'Dockerfile'
               - 'docker-compose.yml'
+              - 'docker-compose.lite.yml'
               - 'apps/**'
               - 'packages/**'
               - 'pyproject.toml'
@@ -121,3 +126,15 @@ jobs:
       - uses: azure/setup-helm@v4
       - name: Helm lint
         run: helm lint deploy/helm/felix
+
+  docker:
+    needs: changes
+    if: needs.changes.outputs.docker == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+      - name: Compose config
+        run: docker compose -f docker-compose.yml config --quiet
+      - name: Build lean image
+        run: docker build --build-arg FELIX_EXTRAS= -t felix:ci .

@@ -19,11 +19,49 @@ scheduler = TaskiqScheduler(broker=broker, sources=[LabelScheduleSource(broker)]
 
 
 @broker.on_event(TaskiqEvents.WORKER_STARTUP)
-async def _hydrate_secrets(_state: object) -> None:
+async def _on_worker_startup(_state: object) -> None:
+    from felix.plugins import get_registry, load_optional_plugins
     from felix.secrets import hydrate_secrets
 
     await hydrate_secrets(_settings)
-    logger.info("secrets_hydrated backend=%s", _settings.secrets_backend)
+    load_optional_plugins()
+    _register_plugin_cron_tasks()
+    logger.info(
+        "worker_startup secrets_backend=%s plugins=%s",
+        _settings.secrets_backend,
+        len(get_registry().plugins),
+    )
+
+
+def _register_plugin_cron_tasks() -> None:
+    """Register optional plugin cron runners as Taskiq tasks (best-effort).
+
+    Plugins that expose ``cron_tasks`` get a Taskiq task named
+    ``plugin_<name>`` scheduled every minute. The plugin ``run`` coroutine
+    is invoked with no args; richer schedules can be added later.
+    """
+    from felix.plugins import get_registry
+
+    for plugin in get_registry().plugins:
+        cron_tasks = getattr(plugin, "cron_tasks", ()) or ()
+        for task in cron_tasks:
+            name = f"plugin_{getattr(task, 'name', 'unnamed')}"
+            run = getattr(task, "run", None)
+            if not callable(run):
+                continue
+            if name in broker.local_task_registry:
+                continue
+
+            async def _runner(_run=run, _name=name) -> None:
+                await _run()
+                logger.info("plugin_cron name=%s", _name)
+
+            broker.register_task(
+                _runner,
+                task_name=name,
+                schedule=[{"cron": "* * * * *"}],
+            )
+            logger.info("plugin_cron_registered name=%s", name)
 
 
 @broker.task(schedule=[{"cron": "*/1 * * * *"}])

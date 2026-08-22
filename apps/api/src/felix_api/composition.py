@@ -3,7 +3,7 @@
 ``installed_plugins()`` is the ONLY core-side line that may list plugins.
 Removing a feature is deleting its entry (or uninstalling the optional package
 that ``load_optional_plugins`` discovers). Tool registration for plugins
-happens here; route mounting and cron tasks consume the same list.
+happens here; the worker registers plugin ``cron_tasks`` on startup.
 """
 
 from __future__ import annotations

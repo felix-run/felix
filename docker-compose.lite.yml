@@ -20,6 +20,12 @@ services:
     mem_limit: 384m
     cpus: "0.5"
 
+  scheduler:
+    environment:
+      FELIX_OBJECT_STORE: fs
+    mem_limit: 192m
+    cpus: "0.25"
+
   postgres:
     command:
       - postgres

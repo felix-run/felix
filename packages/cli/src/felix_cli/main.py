@@ -117,5 +117,107 @@ def bundle_manifests(
         rprint(json.dumps({"manifests": names}, indent=2))
 
 
+@app.command("doctor")
+def doctor_cmd() -> None:
+    """Check runtime configuration (read-only)."""
+    import asyncio
+    from pathlib import Path as P
+
+    from felix.config import get_settings
+
+    settings = get_settings()
+    ok = True
+
+    def check(label: str, passed: bool, detail: str = "") -> None:
+        nonlocal ok
+        mark = "[green]ok[/green]" if passed else "[red]FAIL[/red]"
+        if not passed:
+            ok = False
+        suffix = f" — {detail}" if detail else ""
+        rprint(f"  {mark}  {label}{suffix}")
+
+    rprint("[bold]Felix doctor[/bold]")
+    check("auth_mode", settings.auth_mode in {"none", "api_key", "jwt"}, settings.auth_mode)
+    if settings.auth_mode == "none":
+        check(
+            "allow_insecure (required for auth_mode=none outside loopback)",
+            settings.allow_insecure or settings.environment == "development",
+            f"allow_insecure={settings.allow_insecure}",
+        )
+    if settings.auth_mode == "jwt":
+        check("jwks_public configured", bool(settings.jwks_public.strip()))
+        check("jwt_verifiers configured", bool(settings.jwt_verifiers.strip()))
+    if settings.auth_mode == "api_key":
+        check("auth_api_keys configured", bool(settings.auth_api_keys.strip()))
+    if settings.auth_mode != "none" or settings.environment == "production":
+        check(
+            "consumer_shared_secret (for /internal)",
+            bool(settings.consumer_shared_secret.strip()),
+        )
+
+    check(
+        "object_store",
+        settings.object_store in {"fs", "s3", "gcs", "memory"},
+        settings.object_store,
+    )
+    data = P(settings.data_dir)
+    try:
+        data.mkdir(parents=True, exist_ok=True)
+        probe = data / ".felix-doctor"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        check("data_dir writable", True, str(data))
+    except OSError as exc:
+        check("data_dir writable", False, str(exc))
+
+    async def _ping() -> None:
+        # Database
+        if settings.database_url.startswith("memory://"):
+            check("database", True, "memory://")
+        else:
+            try:
+                from felix.db.session import get_engine
+                from sqlalchemy import text
+
+                engine = get_engine(settings=settings)
+                async with engine.connect() as conn:
+                    await conn.execute(text("SELECT 1"))
+                check("database", True, "reachable")
+            except Exception as exc:
+                check("database", False, str(exc)[:120])
+
+        # Redis / Valkey
+        try:
+            import redis.asyncio as redis
+
+            client = redis.from_url(settings.redis_url)
+            await client.ping()
+            await client.aclose()
+            check("redis", True, "reachable")
+        except Exception as exc:
+            check("redis", False, str(exc)[:120])
+
+        # Object store factory
+        try:
+            from felix.storage import build_object_store
+
+            store = build_object_store(settings)
+            check("object_store backend", store is not None, type(store).__name__)
+        except Exception as exc:
+            check("object_store backend", False, str(exc)[:120])
+
+        # Warehouse
+        try:
+            from felix.warehouse import build_warehouse
+
+            wh = build_warehouse(settings)
+            check("warehouse", True, wh.name)
+        except Exception as exc:
+            check("warehouse", False, str(exc)[:120])
+
+    asyncio.run(_ping())
+    raise SystemExit(0 if ok else 1)
+
+
 if __name__ == "__main__":
     app()

@@ -76,6 +76,34 @@ services:
     cpus: ${FELIX_WORKER_CPUS:-0.5}
     restart: unless-stopped
 
+  # Enqueues labeled Taskiq cron tasks (audit flush, jobs, fibers, …).
+  scheduler:
+    build:
+      context: .
+      args:
+        FELIX_EXTRAS: ${FELIX_DOCKER_EXTRAS:-}
+    image: felix:latest
+    command: ["felix-scheduler"]
+    environment:
+      <<: *felix-env
+      FELIX_OBJECT_STORE: ${FELIX_OBJECT_STORE:-fs}
+      FELIX_S3_ENDPOINT: ${FELIX_S3_ENDPOINT:-http://minio:9000}
+      FELIX_S3_ACCESS_KEY: ${MINIO_ROOT_USER:-felix}
+      FELIX_S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-}
+      FELIX_S3_BUCKET: felix-bundles
+    volumes:
+      - felix-data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+      worker:
+        condition: service_started
+    mem_limit: ${FELIX_SCHEDULER_MEM_LIMIT:-256m}
+    cpus: ${FELIX_SCHEDULER_CPUS:-0.25}
+    restart: unless-stopped
+
   postgres:
     image: pgvector/pgvector:pg17
     environment:
