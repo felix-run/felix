@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Relicensed from MIT to Apache License 2.0 (adds an express patent grant and
+  a trademark carve-out; contributions are inbound under the same license).
+  Adds a `NOTICE` file; releases published under MIT remain MIT.
+
 ### Fixed
 
 - Taskiq worker no longer dies on idle BRPOP (`redis-py` 8 default

@@ -51,4 +51,4 @@ async def test_openapi_contact_and_license() -> None:
     assert spec["info"]["title"] == "Felix"
     # FastAPI may normalize contact URLs with a trailing slash.
     assert spec["info"]["contact"]["url"].rstrip("/") == "https://docs.felix.run"
-    assert spec["info"]["license"]["name"] == "MIT"
+    assert spec["info"]["license"]["name"] == "Apache-2.0"

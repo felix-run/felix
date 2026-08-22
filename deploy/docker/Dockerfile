@@ -16,7 +16,7 @@ ENV UV_COMPILE_BYTECODE=1 \
 
 WORKDIR /app
 
-COPY pyproject.toml uv.lock README.md ./
+COPY pyproject.toml uv.lock README.md LICENSE NOTICE ./
 COPY packages ./packages
 COPY apps ./apps
 COPY manifests ./manifests

@@ -41,6 +41,12 @@ pre-commit install       # after make install
 - Note how you tested (`make check`, Compose smoke, etc.).
 - Update `.env.example` / README when adding settings.
 
+## License
+
+Felix is licensed under the [Apache License 2.0](LICENSE). By submitting a
+contribution you agree it is licensed under those same terms, per Apache-2.0
+§5 — no separate CLA is required.
+
 ## Code of conduct
 
 See [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
