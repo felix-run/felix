@@ -240,11 +240,11 @@ def test_react_batch_mode_parallel_vs_sequential() -> None:
         tool_execution="parallel",
     )
     assert (
-        agent._batch_mode([ToolCall(id="1", name="a", args={}), ToolCall(id="2", name="a", args={})])
+        agent._tools.batch_mode([ToolCall(id="1", name="a", args={}), ToolCall(id="2", name="a", args={})])
         == "parallel"
     )
     assert (
-        agent._batch_mode([ToolCall(id="1", name="a", args={}), ToolCall(id="2", name="b", args={})])
+        agent._tools.batch_mode([ToolCall(id="1", name="a", args={}), ToolCall(id="2", name="b", args={})])
         == "sequential"
     )
 

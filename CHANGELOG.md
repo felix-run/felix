@@ -23,6 +23,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fans out across tool calls, model calls, session writes, and audit events, and nothing
   tied them together before.
 
+### Fixed
+
+- **Streaming runs produced no audit record for the turn.** `invoke` and `stream_events`
+  were near-copies of one loop, and they had drifted: the non-streaming path emitted
+  `user_input` and `final_response` audit events, the streaming path emitted neither, and
+  nothing outside the pattern emitted them either. `deploy/GOVERNANCE.md` presents the
+  audit log as the compliance evidence trail, and streaming is the default path for any
+  chat UI, so the primary path was the one with no record. Tool-level audit was
+  unaffected — it lives in the shared dispatch.
+- **An aborted streaming run was not recorded to the session.** The non-streaming path
+  appended the partial answer with status `aborted`; the streaming path only emitted an
+  event. Both now do both.
+- **A fatal tool error still drained follow-ups on the streaming path.** The
+  non-streaming path returned immediately. A run that ended on a fatal tool error is not
+  in a state a follow-up can continue from, so neither path drains them now, and the
+  `final_response` audit records status `error`.
+
 ### Added
 
 - **Compaction recovers from a context overflow.** The trigger is a token estimate —
