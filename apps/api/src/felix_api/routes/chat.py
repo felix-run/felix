@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Literal
 
@@ -19,6 +20,31 @@ from pydantic import BaseModel, Field
 from felix_api.threads import effective_thread_id
 
 logger = logging.getLogger("felix_api.routes.chat")
+
+# Emitted by _with_heartbeat when the upstream stream has been quiet.
+_HEARTBEAT = object()
+SSE_HEARTBEAT_SECONDS = 15.0
+
+
+async def _with_heartbeat(stream: Any, interval: float = SSE_HEARTBEAT_SECONDS) -> Any:
+    """Yield upstream events, injecting a heartbeat sentinel during quiet periods.
+
+    A long tool call emits nothing, and proxy idle timeouts are commonly 60s, so a
+    perfectly healthy run was being disconnected mid-flight.
+    """
+    iterator = stream.__aiter__()
+    while True:
+        nxt = asyncio.ensure_future(iterator.__anext__())
+        while True:
+            done, _ = await asyncio.wait({nxt}, timeout=interval)
+            if done:
+                break
+            yield _HEARTBEAT
+        try:
+            yield nxt.result()
+        except StopAsyncIteration:
+            return
+
 
 router = APIRouter(tags=["Threads"])
 
@@ -405,26 +431,55 @@ async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
     async def event_gen():
         import json
 
-        async with async_run_with_context(req_ctx):
-            agent = await build_tenant_agent(
-                settings,
-                manifest=resolved.manifest,
-                tools=tools,
-                tenant_id=auth.tenant_id,
-            )
-            async for event in agent.stream_events(
-                InvokeInput(
-                    messages=messages,
-                    thread_id=thread,
-                    model_id=model_id,
+        try:
+            async with async_run_with_context(req_ctx):
+                agent = await build_tenant_agent(
+                    settings,
+                    manifest=resolved.manifest,
+                    tools=tools,
                     tenant_id=auth.tenant_id,
                 )
-            ):
-                payload = event.model_dump() if hasattr(event, "model_dump") else event
-                yield f"data: {json.dumps(payload, default=str)}\n\n"
+                stream = agent.stream_events(
+                    InvokeInput(
+                        messages=messages,
+                        thread_id=thread,
+                        model_id=model_id,
+                        tenant_id=auth.tenant_id,
+                    )
+                )
+                async for event in _with_heartbeat(stream):
+                    if event is _HEARTBEAT:
+                        # A comment frame keeps proxies and load balancers from closing
+                        # an idle connection during a long tool call; clients ignore it.
+                        yield ": keep-alive\n\n"
+                        continue
+                    payload = event.model_dump() if hasattr(event, "model_dump") else event
+                    yield f"data: {json.dumps(payload, default=str)}\n\n"
+        except asyncio.CancelledError:
+            # The client hung up. Nothing to send; let the cancellation propagate so the
+            # run is torn down instead of continuing to burn model tokens.
+            raise
+        except Exception as exc:
+            # Without this the body simply stopped under an already-sent 200 OK, with no
+            # error event and no [DONE] — the client could not tell success from failure.
+            logger.exception("chat stream failed thread=%s", thread)
+            yield (
+                "event: error\n"
+                f"data: {json.dumps({'error': {'message': str(exc)[:200], 'type': 'stream_error'}})}\n\n"
+            )
         yield "data: [DONE]\n\n"
 
-    return StreamingResponse(event_gen(), media_type="text/event-stream")
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={
+            "cache-control": "no-cache",
+            "connection": "keep-alive",
+            # nginx buffers proxied responses by default, which defeats streaming
+            # entirely — the client gets everything at once when the run finishes.
+            "x-accel-buffering": "no",
+        },
+    )
 
 
 @router.post("/steer")

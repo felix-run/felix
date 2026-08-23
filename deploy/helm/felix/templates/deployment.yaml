@@ -107,18 +107,26 @@ spec:
               value: {{ .Values.s3.bucket | quote }}
             - name: FELIX_S3_REGION
               value: {{ .Values.s3.region | quote }}
+          # Readiness probes dependencies and takes the pod out of rotation when they
+          # are down; liveness does no I/O and only restarts a wedged process. Both
+          # pointed at /health, which returned a static ok — so a pod with a dead
+          # database reported Ready, and a real outage never restarted anything.
           readinessProbe:
             httpGet:
-              path: /health
+              path: /ready
               port: http
             initialDelaySeconds: 5
             periodSeconds: 10
+            failureThreshold: 3
           livenessProbe:
             httpGet:
-              path: /health
+              path: /live
               port: http
             initialDelaySeconds: 15
             periodSeconds: 20
+            # Higher than readiness on purpose: a dependency blip must not restart a
+            # process that is otherwise healthy.
+            failureThreshold: 6
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
         - name: worker
