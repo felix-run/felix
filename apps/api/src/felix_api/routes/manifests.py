@@ -12,6 +12,7 @@ from felix.auth.mgmt import (
     subject_from_request,
     tenant_id_from_request,
 )
+from felix.manifests.governance import GovernanceError, assert_stdio_allowed
 from felix.manifests.loader import parse_manifest
 from felix.manifests.schema import Manifest
 from pydantic import BaseModel, Field
@@ -80,6 +81,11 @@ async def upsert_manifest(name: str, body: ManifestUpsert, request: Request) -> 
     parsed: Manifest = parse_manifest(body.manifest)
     if parsed.metadata.name != name:
         raise HTTPException(status_code=400, detail="name_mismatch")
+    # Refuse at write time: compiling this manifest would spawn the command.
+    try:
+        assert_stdio_allowed(parsed, request.app.state.settings)
+    except GovernanceError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     row = await manifest_store.put_version(
         request.app.state.settings,
         tenant_id_from_request(request),

@@ -5,10 +5,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 from typing import Any
 
 from felix.manifests.schema import McpServerRef
+from felix.security.stdio_policy import assert_stdio_command_allowed, stdio_child_env
 
 logger = logging.getLogger("felix.mcp.stdio")
 
@@ -73,12 +73,19 @@ async def stdio_rpc(
     params: dict[str, Any] | None = None,
     *,
     wait_s: float = 30.0,
+    settings: Any | None = None,
 ) -> dict[str, Any]:
     """Spawn ``ref.command``, handshake, call ``method``, then terminate."""
     if not ref.command:
         raise RuntimeError("stdio MCP ref has no command")
-    env = os.environ.copy()
-    env.update(ref.env or {})
+    # Defense in depth: the manifest was already checked on write and at compile, but
+    # this is the only place the process is actually created.
+    if settings is None:
+        from felix.config import get_settings
+
+        settings = get_settings()
+    assert_stdio_command_allowed(ref.command, settings)
+    env = stdio_child_env(ref.env)
     proc = await asyncio.create_subprocess_exec(
         ref.command,
         *list(ref.args),

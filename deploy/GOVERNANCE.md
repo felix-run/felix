@@ -68,6 +68,25 @@ Prefer `secrets.existingSecret` or **External Secrets Operator**
 Helm values. Platform keys still hydrate via env; manifest `secret:NAME` looks
 up the same `FELIX_SECRETS_BACKEND`. See [helm/README.md](helm/README.md).
 
+## MCP stdio is off by default
+
+`spec.mcp_servers` with `transport: stdio` spawns a subprocess from manifest-supplied
+argv, at compile time. That is arbitrary code execution as the API process, reachable by
+anyone holding `manifests:write`, so it is disabled unless the operator opts in:
+
+```bash
+FELIX_MCP_STDIO_ALLOWED_COMMANDS=/usr/local/bin/uvx,/usr/bin/npx
+```
+
+Matching is exact on the string the manifest supplies or its resolved absolute path —
+allowlisting `/usr/bin/npx` does not allow a bare `npx` resolved through `PATH`. The
+child process does **not** inherit the API environment; it receives
+`PATH`/`HOME`/`LANG`/`LC_ALL`/`TZ` plus the keys declared in `mcp_servers[].env` (with
+`secret:NAME` refs resolved), and loader variables such as `LD_PRELOAD` and `PYTHONPATH`
+are rejected. Prefer `transport: http`/`sse` where you can.
+
+`FELIX_AUTH_MODE=none` is refused on any non-loopback bind, in every environment.
+
 ## Governance frameworks
 
 ```yaml
