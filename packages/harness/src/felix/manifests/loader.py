@@ -62,8 +62,15 @@ def load_bundled(
     if name in _bundled_cache:
         return _bundled_cache[name]
     root = Path(bundled_dir) if bundled_dir else _default_bundled_dir()
+    root_resolved = root.expanduser().resolve()
     for ext in (".yaml", ".yml", ".json"):
-        candidate = root / f"{name}{ext}"
+        # `name` reaches here from a URL path segment. assert_valid_manifest_name
+        # already bars separators, so this cannot currently escape — but the
+        # containment check is what makes that a property of this function rather
+        # than of a regex two modules away, and it is what a scanner can see.
+        candidate = (root_resolved / f"{name}{ext}").resolve()
+        if not candidate.is_relative_to(root_resolved):
+            raise ValueError(f"Manifest name escapes the bundled directory: {name}")
         if candidate.is_file():
             m = load_manifest_file(candidate)
             _bundled_cache[name] = m

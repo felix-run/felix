@@ -17,6 +17,8 @@ from felix.manifests.loader import parse_manifest
 from felix.manifests.schema import Manifest
 from pydantic import BaseModel, Field
 
+from felix_api.threads import effective_thread_id
+
 router = APIRouter(tags=["Manifests"])
 
 
@@ -52,7 +54,19 @@ async def list_manifests(request: Request) -> dict[str, Any]:
 
 
 @router.get("/{name}")
-async def get_manifest(name: str, request: Request, version: int | None = None) -> Any:
+async def get_manifest(
+    name: str,
+    request: Request,
+    version: int | None = None,
+    thread_id: str | None = None,
+) -> Any:
+    """Resolve a manifest as a request would see it.
+
+    ``thread_id`` is the same suffix the chat routes take. Canary assignment is a
+    deterministic hash over (tenant, thread, manifest, both versions), so without
+    a thread there is nothing to hash and ``variant`` is always ``stable`` — pass
+    the thread to learn which side actually serves it.
+    """
     from felix.manifests import store as manifest_store
     from felix.runtime import resolve_tenant_manifest
 
@@ -64,7 +78,10 @@ async def get_manifest(name: str, request: Request, version: int | None = None) 
         if row is None:
             raise HTTPException(status_code=404, detail="not_found")
         return row
-    resolved = await resolve_tenant_manifest(settings, tenant, name)
+    thread = effective_thread_id(tenant, thread_id)
+    if thread_id and thread is None:
+        raise HTTPException(status_code=400, detail="invalid_thread_id")
+    resolved = await resolve_tenant_manifest(settings, tenant, name, thread_id=thread)
     return {
         "name": name,
         "version": resolved.version,

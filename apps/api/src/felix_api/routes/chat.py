@@ -16,11 +16,11 @@ from felix.session.tree import fork_thread, get_leaf, rewind_to
 from felix.steer import enqueue
 from pydantic import BaseModel, Field
 
+from felix_api.threads import effective_thread_id
+
 logger = logging.getLogger("felix_api.routes.chat")
 
 router = APIRouter(tags=["Threads"])
-
-_SUFFIX_DELIMS = frozenset(":#")
 
 
 def _http_from_invoke_prep(exc: Exception) -> HTTPException | None:
@@ -172,14 +172,6 @@ class UiResponseRequest(BaseModel):
     value: Any = None
     cancelled: bool = False
     note: str = ""
-
-
-def effective_thread_id(tenant_id: str, suffix: str | None) -> str | None:
-    if not suffix:
-        return None
-    if any(c in suffix for c in _SUFFIX_DELIMS):
-        return None
-    return f"{tenant_id}:{suffix}"
 
 
 def _auth_from_request(request: Request) -> AuthContext:
