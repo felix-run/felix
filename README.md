@@ -190,6 +190,11 @@ Manifests reference **logical** model ids, mapped to wire ids by `FELIX_MODEL_RO
 | `gpt-4.1` / `gpt-4.1-mini` | openai | same |
 | `llama-3-pro` / `llama-3-fast` | ollama | `llama3.3:70b` / `llama3.2` |
 
+Model calls retry rate limits and transient upstream failures with backoff, honouring
+`Retry-After`; `spec.model.fallbacks` still switches models after retries are exhausted.
+Recalled memory facts are rendered as a per-run prelude rather than folded into the
+system prompt, so the cached prompt prefix stays stable across turns.
+
 Request parameters are selected per model (`patterns/capabilities.py`): the current
 Claude generation takes adaptive thinking plus `output_config.effort`, while pre-4.6
 models take a fixed `budget_tokens`. `spec.model.thinking_budget` works on both — it is
