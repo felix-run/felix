@@ -33,6 +33,14 @@ Rank findings by this threat model:
 
 Detailed checklist: [references/checklist.md](references/checklist.md).
 
+## What CI already covers
+
+Do not spend review time on what the `Security` workflow checks on every PR:
+CodeQL (`security-and-quality` queries), `pip-audit` over the locked dependency
+set including extras, a gitleaks scan of the full history, and Trivy on the
+built image. Your job is the half a scanner cannot do — tenant isolation,
+control ordering, injection paths, and whether a guard is reachable.
+
 ## Method
 
 1. Scope the diff (`git diff HEAD`, untracked files, or the named surface).

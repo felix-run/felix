@@ -48,6 +48,7 @@ dev = [
     "fakeredis>=2.37.1",
     "httpx>=0.28.1",
     "pre-commit>=4.6.2",
+    "pytest-cov>=7.1.0",
 ]
 
 [tool.uv]
@@ -87,6 +88,26 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["E501", "RUF012", "RUF034"]
+
+# Coverage is measured in CI with `--cov --cov-fail-under`; it is deliberately
+# not in pytest addopts so a single-test run stays fast.
+[tool.coverage.run]
+source = [
+    "packages/harness/src/felix",
+    "packages/cli/src/felix_cli",
+    "apps/api/src/felix_api",
+    "apps/worker/src/felix_worker",
+]
+branch = false
+
+[tool.coverage.report]
+skip_covered = false
+show_missing = true
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "@overload",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
