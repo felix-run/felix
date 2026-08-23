@@ -5,7 +5,7 @@ concrete enough to pick up in a single session.
 
 **Repos:** `felix-run/felix` (harness) · `felix-run/web` (chat-ui + float + docs)
 **Live:** [api.felix.run](https://api.felix.run) · [chat.felix.run](https://chat.felix.run) · [float.felix.run](https://float.felix.run) · [docs.felix.run](https://docs.felix.run)
-**Last reviewed:** 2026-08-23 (post harness audit wave, PRs #34–#41)
+**Last reviewed:** 2026-08-23 (post cross-harness port audit, PRs #43–#44)
 
 ---
 
@@ -126,6 +126,71 @@ Files: `packages/harness/src/felix/sdk.py`,
 - [ ] **Schema cleanup pass** — delete dead `memory.checkpointer` aliases
       (`agentcore` / `do` / `sqlite`) and any other unused fields after
       enforce-or-drop decisions above.
+
+#### From the cross-harness port audit (Aug 2026)
+
+Read against a sibling runtime that solved the same problems from a stateful,
+per-agent-SQLite starting point. Its actor / hibernation / hash-ring machinery is
+a **non-goal** here — all of it exists to serialise writes to owner-local SQLite,
+which shared Postgres makes unnecessary. What is portable is what it built *on
+top of* durable state. Ordered by value; the first two need no migration.
+
+- [ ] **SSE stream resume** — frames are `data: {json}` with no `id:`, so there
+      is no `Last-Event-ID` to resume from, and `side_events.py` is a
+      module-global single-consumer `asyncio.Queue`: an approval emitted on
+      replica B is invisible to the SSE consumer on replica A, which then blocks
+      on the (Redis-backed) waiter until timeout. A Redis Stream per thread with
+      an in-process ring as the `memory://` twin. Add `id:` only — adding
+      `event:` would move existing frames off `onmessage` and silently break
+      every current client. Closes **Wire-contract snapshot** above and
+      *reconnect-to-snapshot* under Product.
+- [ ] **Long-term memory is inert end to end** — all eight bundled manifests
+      declare `store: pgvector`; `put_memory` writes `embedding_json: None`
+      unconditionally, no vector column or index exists in any revision, recall
+      is `ORDER BY created_at`, there are no memory routes and no memory tools,
+      and `capture` is disabled everywhere. The public docs already state the
+      opposite (`manifest-reference.mdx:378`: "pgvector, HNSW"). Port hybrid
+      recall — full-text + topic-key + vector fused with RRF — behind an
+      `Embedder` protocol whose default is a no-op, so the lean install degrades
+      to full-text. Folds in provenance: `origin_seq`/`superseded_seq` exist and
+      nothing populates or queries them, and `consolidate_pools` writes a
+      millisecond timestamp into the ordinal column.
+- [ ] **Tamper-evident audit chain** — `seq` + `prev_hash` + keyed-HMAC per row,
+      per tenant, with `verify_chain` reporting the first break. Allocate the
+      chain at write time inside the insert transaction, under a per-tenant
+      advisory lock (`session/store.py:93` is the precedent): that is what keeps
+      a `DurableBuffer` drop from reading as tampering, since a seq is only ever
+      consumed by a row that is actually inserted. Hash a `payload_sha256`
+      column rather than the payload bytes — `jsonb` does not preserve key order.
+      Retention needs a pruning anchor or it breaks the chain it prunes.
+- [ ] **Signed completion webhooks** — closes the durable loop above: today a
+      `202` can only be polled. Deliver from the **worker**, since the fiber
+      reaches terminal state under its cron and the API replica that accepted the
+      request may be gone. A dead letter is `status='dead'` on the same durable
+      row, not a second store. `spec.webhooks` should select operator-registered
+      endpoint ids, never carry URLs — a manifest author holds a tenant scope,
+      and a tenant-supplied URL on a path carrying run output is an exfiltration
+      channel that SSRF checks do not address.
+- [ ] **Fiber engine ergonomics** — `_run_fiber_step` advances **one op per
+      sweep** against a `* * * * *` cron, so a four-op fiber takes four minutes
+      of wall clock, nearly all idle. Run the handler to suspension inside one
+      claim; clear `heartbeat_at` on suspend so sleeping is distinguishable from
+      crashed. Then `ctx.step(key, fn)` memoization and an append-only
+      `fiber_steps` table, so a crash mid-tool-loop resumes instead of replaying
+      a whole `invoke`. Extend the lease inside `step` — it is sized for one op.
+- [ ] **Governed `http_fetch` tool** — the model cannot read a URL today.
+      The sibling's capability bridge is the wrong shape here: `dispatch_rpc`
+      bypasses all nine governance wrappers, including content screening on a
+      fetched page, which is attacker-controlled input. As a tool it inherits the
+      whole stack. Prerequisite: pin the connection to the validated address —
+      `HttpExecutor` validates the URL then hands it to httpx, which re-resolves.
+- [!] **Model-call middleware chain** — considered and rejected. A
+      plugin-supplied `wrap_tool_call` is an unordered hole through the
+      nine-wrapper stack whose order `test_invariants.py` pins as immutable, and
+      `wrap_model_call`'s only real users are retry and fallback, which already
+      exist and belong where they can see the provider. A custom fallback is a
+      registered `ModelProvider`. The one genuine gap is a per-tool per-turn call
+      cap, which is a field on `Limits`.
 
 #### From the harness audit (Aug 2026)
 
@@ -255,6 +320,33 @@ remainder, none of it blocking.
 ---
 
 ## Shipped (recent)
+
+### Cross-harness port audit (Aug 2026)
+
+Second pass against a sibling runtime, this time looking for features to port.
+Like the first, it mostly found bugs — in code that two sessions had each half
+fixed, and in a delivery path nothing asserted end to end.
+
+- [x] **Migrations were never executed by CI.** The `conformance` job runs a real
+      pgvector Postgres (#39), but built its schema with `Base.metadata.create_all`
+      — so no revision ran, and the DDL that lives only in a migration was never
+      present. `create_all` cannot produce a generated column or a GIN index, which
+      is exactly what the memory and audit work depends on. The Postgres arm now
+      applies `alembic upgrade head`, and three tests assert every revision applies,
+      reverses, and produces `session_events.content_tsv` and its index (#45)
+
+- [x] **Recalled memory facts never reached the model on a threaded chat.**
+      `_assemble_messages` built the list with the prelude, then let the session
+      strategy replace it wholesale. Four existing tests asserted the block was
+      *built* correctly; none that it survived assembly (#43)
+- [x] **Embeddings ran on the event loop**, stalling every concurrent request on
+      the worker — tool retrieval reaches the encoder up to four times per loop
+      step. Threaded, with the cheap keyword path kept inline and a guard pinned
+      to the code it mirrors by test (#44)
+
+The port items themselves are under **Next → Harness → From the cross-harness
+port audit**. The streaming double-inference this pass also flagged was already
+fixed by `#36`.
 
 ### Harness audit wave (Aug 2026)
 

@@ -20,7 +20,15 @@ target_metadata = Base.metadata
 
 
 def get_url() -> str:
-    return get_settings().database_url
+    """The database to migrate.
+
+    Normally `FELIX_DATABASE_URL`. A caller driving Alembic in-process — the store
+    conformance suite, which migrates a throwaway database while the ambient settings
+    still point at `memory://` — passes an override through `config.attributes` rather
+    than mutating the environment and clearing the settings cache.
+    """
+    override = config.attributes.get("felix_url")
+    return str(override) if override else get_settings().database_url
 
 
 def run_migrations_offline() -> None:
