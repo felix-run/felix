@@ -29,6 +29,7 @@ def _approval_dict(row: Approval | dict[str, Any]) -> dict[str, Any]:
             "call_signature": row.call_signature,
             "args_json": row.args_json,
             "principal_subj": row.principal_subj,
+            "consumed_at": row.consumed_at,
             "status": row.status,
             "created_at": row.created_at,
             "decided_at": row.decided_at,
@@ -47,6 +48,7 @@ def _approval_dict(row: Approval | dict[str, Any]) -> dict[str, Any]:
         "call_signature": data["call_signature"],
         "args": data.get("args_json") or data.get("args") or {},
         "principal_subj": data.get("principal_subj", ""),
+        "consumed_at": data.get("consumed_at"),
         "status": data["status"],
         "created_at": data["created_at"],
         "decided_at": data.get("decided_at"),
@@ -107,8 +109,16 @@ async def find_approved(
     manifest_id: str,
     tool_name: str,
     call_signature: str,
+    principal_subj: str | None = None,
+    unconsumed_only: bool = False,
 ) -> dict[str, Any] | None:
-    """Return an approved grant for this call signature, if still valid."""
+    """Return an approved grant for this call signature, if still valid.
+
+    ``principal_subj`` implements ``ApprovalRule.bind_principal``: without it, principal
+    A's approval authorizes principal B's byte-identical call in the same tenant.
+    ``unconsumed_only`` implements ``ApprovalRule.one_shot``: without it, a single grant
+    authorizes unlimited replays until it expires.
+    """
     ts = now_ms()
     if _use_memory(settings):
         for row in _memory_approvals.values():
@@ -121,6 +131,10 @@ async def find_approved(
             ):
                 exp = row.get("expires_at")
                 if exp is not None and exp < ts:
+                    continue
+                if principal_subj is not None and row.get("principal_subj", "") != principal_subj:
+                    continue
+                if unconsumed_only and row.get("consumed_at") is not None:
                     continue
                 return _approval_dict(row)
         return None
@@ -139,6 +153,10 @@ async def find_approved(
             .order_by(Approval.decided_at.desc())
             .limit(1)
         )
+        if principal_subj is not None:
+            stmt = stmt.where(Approval.principal_subj == principal_subj)
+        if unconsumed_only:
+            stmt = stmt.where(Approval.consumed_at.is_(None))
         row = (await db.scalars(stmt)).first()
         if row is None:
             return None
@@ -275,7 +293,39 @@ async def decide(
         return _approval_dict(row)
 
 
+async def consume_approval(settings: Settings, tenant_id: str, approval_id: str) -> bool:
+    """Mark a one_shot grant spent. Returns False when it was already consumed.
+
+    The check-and-set is a single conditional UPDATE so two concurrent identical calls
+    cannot both spend the same grant.
+    """
+    ts = now_ms()
+    if _use_memory(settings):
+        row = _memory_approvals.get((tenant_id, approval_id))
+        if row is None or row.get("consumed_at") is not None:
+            return False
+        row["consumed_at"] = ts
+        return True
+
+    from sqlalchemy import update
+
+    factory = get_session_factory(settings=settings)
+    async with factory() as db:
+        result = await db.execute(
+            update(Approval)
+            .where(
+                Approval.tenant_id == tenant_id,
+                Approval.id == approval_id,
+                Approval.consumed_at.is_(None),
+            )
+            .values(consumed_at=ts)
+        )
+        await db.commit()
+        return bool(getattr(result, "rowcount", 0))
+
+
 __all__ = [
+    "consume_approval",
     "create_pending",
     "decide",
     "find_approved",

@@ -113,6 +113,22 @@ isolation is application-level `tenant_id` by default; enable Postgres RLS
 with migration `0006_tenant_rls` and `FELIX_DATABASE_RLS=true`
 (sets `app.tenant_id` / `app.rls_bypass` GUCs per transaction).
 
+## Approval semantics
+
+| Field | Behaviour |
+|-------|-----------|
+| `ttl_seconds` | How long the run waits for a decision before failing closed. |
+| `one_shot` | The grant is marked consumed on use; a replay of the same call needs a new approval. |
+| `bind_principal` | Only the principal who was approved may use the grant. Without it, any principal in the tenant can reuse it. |
+| `allow_unattended` | EU AI Act high-risk manifests must set this to `false`. |
+
+Approvals are matched on `(tenant, manifest, tool, sha256(args))` and stored in Postgres
+— never in model-visible state, so the model cannot forge one. Every failure path
+(no request context, store error, waiter timeout) denies.
+
+`command_screening` rules with `decision: require_approval` go through the same flow and
+wait up to `command_screening.approval_ttl_seconds` (default 300).
+
 ## Management API scopes
 
 When `FELIX_AUTH_MODE` is `jwt` or `api_key`, management routes require scopes

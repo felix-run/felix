@@ -8,6 +8,7 @@ from typing import Any
 
 from sqlalchemy import select
 
+from felix.buffers import DurableBuffer
 from felix.config import Settings
 from felix.db.models import UsageEvent
 from felix.db.session import _use_memory, get_session_factory
@@ -17,7 +18,7 @@ def now_ms() -> int:
     return int(time.time() * 1000)
 
 
-_pending: list[dict[str, Any]] = []
+_pending = DurableBuffer("usage")
 _memory_events: list[dict[str, Any]] = []
 
 
@@ -109,15 +110,23 @@ async def query(
 
 async def flush_pending(settings: Settings) -> int:
     """Drain buffered usage events to Postgres (or memory)."""
-    if not _pending:
+    batch = _pending.take()
+    if not batch:
         return 0
 
-    batch = list(_pending)
-    _pending.clear()
+    try:
+        await _write_batch(settings, batch)
+    except Exception:
+        # Usage drives billing — a failed commit must not silently lose the meter.
+        _pending.requeue(batch)
+        raise
+    return len(batch)
 
+
+async def _write_batch(settings: Settings, batch: list[dict[str, Any]]) -> None:
     if _use_memory(settings):
         _memory_events.extend(batch)
-        return len(batch)
+        return
 
     factory = get_session_factory(settings=settings)
     async with factory() as db:
@@ -138,22 +147,27 @@ async def flush_pending(settings: Settings) -> int:
                 )
             )
         await db.commit()
-    return len(batch)
 
 
 def pending_count() -> int:
     return len(_pending)
 
 
+def pending_buffer() -> DurableBuffer:
+    """The process-local usage buffer (diagnostics, metrics, tests)."""
+    return _pending
+
+
 def clear_memory() -> None:
     """Test helper."""
-    _pending.clear()
+    _pending.reset_for_tests()
     _memory_events.clear()
 
 
 __all__ = [
     "clear_memory",
     "flush_pending",
+    "pending_buffer",
     "pending_count",
     "query",
     "record_tokens",
