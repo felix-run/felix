@@ -7,9 +7,9 @@ separate **felix-web** repo.
 ```
 .claude/
 ├── settings.json     hook registration, permission allow/ask/deny, status line
-├── agents/           9 subagents (delegated, isolated context)
-├── skills/           11 Agent Skills (agentskills.io format, loaded on demand)
-├── hooks/            13 lifecycle hooks (deterministic enforcement)
+├── agents/           11 subagents (delegated, isolated context)
+├── skills/           14 Agent Skills (agentskills.io format, loaded on demand)
+├── hooks/            14 lifecycle hooks (deterministic enforcement)
 ├── rules/            always-loaded invariants
 └── logs/             subagent audit trail (gitignored)
 ```
@@ -25,6 +25,8 @@ Delegate with the Agent tool or by name. Each runs in its own context and report
 | `felix-devops` | Docker/Compose, Helm, AWS/GCP, CI, lean-image and memory budgets |
 | `felix-code-reviewer` | Correctness + invariant review of a diff, branch, or PR |
 | `felix-security-reviewer` | Tenant isolation, auth/scopes, screening, secrets, SSRF, sandboxes (opus) |
+| `felix-quality-reviewer` | Carrying cost: altitude, complexity, dead code, duplication, type/API ergonomics |
+| `felix-test-quality-reviewer` | Whether tests are worth having — assertion strength, mocks, brittleness, edges |
 | `felix-manifest-architect` | `felix/v1` manifests and schema↔builder wiring |
 | `felix-test-engineer` | Tests under the `memory://` path, fixtures, eval |
 | `felix-dx-maintainer` | Makefile, CLI, pre-commit, and this toolkit |
@@ -49,6 +51,9 @@ these skills are portable to any skills-compatible agent.
 | `docs-sync` | Surface → doc page mapping across both repos (+ `references/page-map.md`) |
 | `deploy-runbook` | Compose overlays, Helm, production configuration checklist |
 | `python-conventions` | Style, Protocols, lazy imports, async, ruff/ty exemptions |
+| `code-quality` | Complexity budgets, altitude, real vs deliberate duplication (+ `references/felix-hotspots.md`) |
+| `dead-code-audit` | Proving unreachability before deleting (+ `references/felix-reachability.md`) |
+| `test-quality` | Assertion strength, mocks vs in-memory twins, coverage shape (+ `references/felix-test-map.md`) |
 | `branch-pr-workflow` | Branch naming, feature-scoped PRs, commit style, PR gates |
 
 ## Hooks — `.claude/hooks/*.sh`
@@ -67,6 +72,7 @@ skill or subagent.
 | `PostToolUse(Edit\|Write)` | `manifest-validate.sh` | Runs `felix validate-manifest` on a changed manifest |
 | `PostToolUse(Edit\|Write)` | `settings-sync-reminder.sh` | Names the in-repo companion file a change requires |
 | `PostToolUse(Edit\|Write)` | `doc-sync-reminder.sh` | Names the public MDX page a changed surface must update |
+| `PostToolUse(Edit\|Write)` | `quality-ratchet.sh` | Reports a `.py` whose function/module metrics got worse than at `HEAD` |
 | `PostToolUseFailure(Bash)` | `test-failure-hint.sh` | Translates this repo's recurring failures into the actual fix |
 | `Stop` | `doc-drift-stop.sh` | Blocks the turn once per drift-set when documented surfaces changed with no doc update |
 | `SubagentStop` | `subagent-log.sh` | Appends a delegation audit line to `.claude/logs/` |
