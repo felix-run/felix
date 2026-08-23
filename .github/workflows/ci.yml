@@ -133,8 +133,10 @@ jobs:
         run: uv run felix bundle-manifests
       # ./scripts/test.sh owns the in-memory test environment — the same
       # entry point `make test` uses, so CI and local runs cannot drift.
+      # Coverage floor is the measured number, ratcheted up deliberately —
+      # never an aspirational one, which only teaches people to bypass it.
       - name: Pytest
-        run: ./scripts/test.sh -q
+        run: ./scripts/test.sh -q --cov --cov-report=term:skip-covered --cov-fail-under=60
 
   eval:
     needs: changes
@@ -222,3 +224,14 @@ jobs:
           MINIO_ROOT_PASSWORD: ci-compose-check-not-a-secret
       - name: Build lean image
         run: docker build -f deploy/docker/Dockerfile --build-arg FELIX_EXTRAS= -t felix:ci .
+      # Scans the image we actually ship, OS packages included. Unfixed
+      # findings are reported but do not fail the build — there is nothing to
+      # act on until upstream ships a patch.
+      - name: Scan the image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: felix:ci
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL

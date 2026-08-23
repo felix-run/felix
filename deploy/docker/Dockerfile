@@ -61,6 +61,19 @@ WORKDIR /app
 
 COPY --from=builder /app /app
 
+# Patch OS packages, then drop pip: the venv is built by uv in the builder
+# stage and copied whole, so the runtime needs neither pip nor its vendored
+# libraries (which carry their own CVEs). Both shrink the attack surface of
+# what actually ships.
+RUN set -eux; \
+    apt-get update; \
+    apt-get upgrade -y --no-install-recommends; \
+    rm -rf /var/lib/apt/lists/*; \
+    python -m pip uninstall -y pip 2>/dev/null || true; \
+    rm -rf /usr/local/lib/python3.14/site-packages/pip \
+           /usr/local/lib/python3.14/site-packages/pip-*.dist-info \
+           /usr/local/lib/python3.14/ensurepip
+
 RUN mkdir -p /data \
     && useradd --uid 10001 --create-home --shell /usr/sbin/nologin felix \
     && chown -R felix:felix /app /data

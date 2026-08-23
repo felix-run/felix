@@ -1,0 +1,74 @@
+name: Security
+
+# Felix brokers tenant data, resolves secrets, executes tools, and makes
+# outbound requests on model instruction. These scans are the cheap, automatic
+# half of that; the felix-security-reviewer subagent covers the judgement half.
+#
+# Actions and images are pinned by commit SHA / digest, as everywhere else.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly, so a CVE published after a PR merges is still found.
+    - cron: "23 5 * * 1"
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  codeql:
+    name: CodeQL
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@c16c0f3f2812ec4bb3750a5ed64873fe2ce0fbef # codeql-bundle-v2.26.3
+        with:
+          languages: python
+          queries: security-and-quality
+      - name: Analyze
+        uses: github/codeql-action/analyze@c16c0f3f2812ec4bb3750a5ed64873fe2ce0fbef # codeql-bundle-v2.26.3
+        with:
+          category: /language:python
+
+  dependencies:
+    name: Dependency CVEs
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - name: Set up Python
+        run: uv python install 3.14
+      # --all-extras: the extras ship to operators too, so a CVE in boto3 or
+      # playwright matters even though the lean image does not install them.
+      # --no-emit-workspace: pip-audit cannot hash editable local packages.
+      - name: Export the locked dependency set
+        run: uv export --no-dev --no-emit-workspace --all-extras --format requirements-txt > requirements-audit.txt
+      - name: Audit
+        run: uv run --with pip-audit --no-project pip-audit -r requirements-audit.txt --progress-spinner off
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # full history — a secret removed in a later commit still leaked
+      - name: gitleaks
+        run: |
+          docker run --rm -v "$PWD:/repo" \
+            zricethezav/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
+            git /repo --redact --verbose --exit-code 1

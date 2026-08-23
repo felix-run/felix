@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Security scanning: CodeQL, a `pip-audit` CVE check over the locked
+  dependency set (all extras), a gitleaks secret scan of the full history, and
+  a Trivy scan of the image CI builds.
+- Test coverage is measured and gated at the current 60%, ratcheted upward
+  deliberately rather than set aspirationally.
 - `tests/unit/test_invariants.py` — the repo rules are now enforced rather than
   documented: `.env.example` covers every `Settings` field, no optional
   dependency is imported at module scope, every Postgres-touching module has a
@@ -44,6 +49,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The runtime image no longer ships `pip`. Its vendored copies of `msgpack`
+  and `setuptools` carried HIGH CVEs (GHSA-6v7p-g79w-8964, CVE-2025-47273)
+  even though neither is a Felix dependency; the venv is built by uv in the
+  builder stage, so the runtime never needed pip. The runtime stage also
+  applies pending OS security updates, clearing four util-linux CVEs that
+  `python:3.14-slim` has not picked up yet. The image scans clean.
 - `pre-commit install` failed for every contributor: the ruff repo entry was
   missing its `https://github.com/` prefix, so hook installation could never
   clone it. `pre-commit validate-config` passes on the broken file — only
