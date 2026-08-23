@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`GET /ready` and `GET /live`.** `/health` returned a static `{"status":"ok"}` while
+  the Helm chart wired **both** the readiness and the liveness probe to it — so a pod
+  with a dead database reported Ready and received traffic, and a genuine dependency
+  outage never restarted anything. `/ready` probes the database, cache, and object store
+  (bounded, so a hung dependency fails rather than hangs) and returns 503 when any is
+  down; `/live` does no I/O, because a dependency blip must not restart an otherwise
+  healthy process. `/health` stays as a liveness alias so existing deploys and smoke
+  tests keep working. Helm probes now point at the right one each, with a higher
+  `failureThreshold` on liveness than readiness.
+- **Request correlation.** Every response carries `x-request-id`, honouring an inbound
+  one when supplied, and the id is attached to every log record — a single chat request
+  fans out across tool calls, model calls, session writes, and audit events, and nothing
+  tied them together before.
+
+### Fixed
+
+- **`FELIX_LOG_LEVEL` was never applied**, and `structlog` was a hard dependency that
+  nothing imported. Logging is now configured at startup, with JSON output in production
+  and readable text elsewhere.
+- **SSE streams had no error path, heartbeat, or anti-buffering headers.** A mid-stream
+  failure truncated the body under an already-sent `200 OK` with no error event and no
+  `[DONE]`, so a client could not distinguish success from failure; a long tool call
+  emitted nothing and hit proxy idle timeouts; and nginx buffered the response by
+  default, defeating streaming entirely. Streams now emit an `error` event and always
+  terminate with `[DONE]`, send a keep-alive comment during quiet periods, set
+  `x-accel-buffering: no`, and let client disconnects cancel the run instead of
+  continuing to burn model tokens.
+
 ### Fixed
 
 - **Every chat request leaked an S3 client.** `build_object_store` was called inside

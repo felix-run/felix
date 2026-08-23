@@ -13,6 +13,13 @@ from fastapi.responses import JSONResponse
 from felix import __version__ as harness_version
 from felix.auth.middleware import AuthMiddleware
 from felix.config import Settings, get_settings
+from felix.logging_setup import (
+    REQUEST_ID_HEADER,
+    configure_logging,
+    new_request_id,
+    reset_request_id,
+    set_request_id,
+)
 from felix.plugins import get_registry
 from felix.security.rate_limit import (
     build_rate_limit_config,
@@ -85,6 +92,9 @@ def create_app(
     """
     cfg = settings or get_settings()
     cfg.validate_runtime()
+    # FELIX_LOG_LEVEL was never applied to the logging module, and structlog was a
+    # dependency nothing imported.
+    configure_logging(cfg)
     plugin_list = list(plugins if plugins is not None else installed_plugins())
     tool_provider = tools if tools is not None else compose(cfg)
 
@@ -210,6 +220,23 @@ def create_app(
         return await call_next(request)
 
     @app.middleware("http")
+    async def request_id_middleware(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        # Outermost, so the id covers auth, rate limiting, and body limiting too — a
+        # request rejected by any of those is exactly the one you want to correlate.
+        incoming = request.headers.get(REQUEST_ID_HEADER, "").strip()
+        request_id = incoming[:64] or new_request_id()
+        token = set_request_id(request_id)
+        request.state.request_id = request_id
+        try:
+            response = await call_next(request)
+        finally:
+            reset_request_id(token)
+        response.headers[REQUEST_ID_HEADER] = request_id
+        return response
+
+    @app.middleware("http")
     async def body_limit_middleware(
         request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
@@ -231,8 +258,10 @@ def create_app(
         except _PayloadTooLarge:
             return JSONResponse({"error": "payload_too_large"}, status_code=413)
 
-    @app.get("/health", tags=["System"])
-    async def health() -> dict[str, Any]:
+    def _liveness() -> dict[str, Any]:
+        # Deliberately does no I/O. Liveness answers "is this process running and its
+        # event loop responsive"; a failure means restart me. Checking dependencies here
+        # would restart a healthy pod because a database was briefly unavailable.
         return {
             "status": "ok",
             "env": cfg.environment,
@@ -240,6 +269,32 @@ def create_app(
             "multi_region": False,
             "federation": None,
         }
+
+    @app.get("/health", tags=["System"])
+    async def health() -> dict[str, Any]:
+        """Liveness. Kept at this path because deploys and smoke tests point here."""
+        return _liveness()
+
+    @app.get("/live", tags=["System"])
+    async def live() -> dict[str, Any]:
+        """Liveness, named for what it is."""
+        return _liveness()
+
+    @app.get("/ready", tags=["System"])
+    async def ready(response: Response) -> dict[str, Any]:
+        """Readiness — can this process actually serve a request?
+
+        `/health` returned a static ok while the Helm chart wired **both** probes to it,
+        so a pod with a dead database reported Ready and took traffic. This one probes
+        the dependencies and returns 503 when any of them is down, which takes the pod
+        out of rotation without restarting it.
+        """
+        from felix.health import check_readiness
+
+        report = await check_readiness(cfg)
+        if not report.ready:
+            response.status_code = 503
+        return report.as_dict()
 
     @app.get("/metrics", tags=["System"])
     async def metrics() -> Response:

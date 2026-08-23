@@ -196,6 +196,7 @@ Queues, or Workflows compute in this stack.
 | A2A JSON-RPC | `POST /a2a` |
 | MCP | `POST /mcp` |
 | Agent card | `GET /.well-known/agent-card.json` |
+| Liveness / readiness | `GET /live` (also `/health`), `GET /ready` |
 
 Management surfaces: `/audit`, `/approvals`, `/plans`, `/jobs`, `/manifests`, `/eval`.
 
