@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Every chat request leaked an S3 client.** `build_object_store` was called inside
+  `build_tenant_agent` — once per request — and `S3ObjectStore` called `__aenter__` with
+  no matching `__aexit__`, no `close()`, and no shutdown hook, so an aiobotocore client
+  and its connection pool leaked each time until the process hit `EMFILE`. Object stores
+  are now cached per backend configuration and closed on shutdown.
+- `S3ObjectStore._get_client` had no lock, so two concurrent first-requests each created
+  a client and orphaned one with no reference left to close it.
+- `S3ObjectStore.get` swallowed any exception whose message merely contained `"404"` — a
+  request id or a byte count would do it. It now matches the error type and the response
+  status.
+- **`dispose_engine()` was `cache_clear()` plus a comment plus `pass`**, so connections
+  were never returned and lingered across Granian worker recycles. It now disposes every
+  engine the module created.
+- SQLAlchemy pools had no `pool_recycle` or `pool_timeout`, so PgBouncer / RDS Proxy /
+  Cloud SQL dropped idle connections the pool still believed were live and
+  `pool_pre_ping` paid a round trip to discover it. `create_engine_from_settings` also
+  had no pool sizing at all, giving two differently tuned pools against one database.
+- A failing object store silently stripped the system prompt: the bare `except` left
+  `store = None`, so `SYSTEM.md`, `AGENTS.md`, instruction files, and object-store skills
+  all vanished and the agent fell back to `f"You are {name}."`. It now logs an error.
+
 ### Security
 
 - **Failed authentication was never rate limited.** Starlette's `add_middleware` inserts

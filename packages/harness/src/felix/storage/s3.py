@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from felix.config import Settings
+
+
+logger = logging.getLogger("felix.storage.s3")
 
 
 class S3ObjectStore:
@@ -16,9 +21,17 @@ class S3ObjectStore:
         self._bucket = settings.s3_bucket
         self._region = settings.s3_region
         self._client = None
+        self._cm = None
+        # Two concurrent first-requests both saw `_client is None` and both created a
+        # client; one was then overwritten and orphaned, with no way to close it.
+        self._lock = asyncio.Lock()
 
     async def _get_client(self):
-        if self._client is None:
+        if self._client is not None:
+            return self._client
+        async with self._lock:
+            if self._client is not None:
+                return self._client
             try:
                 from aiobotocore.session import get_session
             except ImportError as exc:  # pragma: no cover
@@ -39,6 +52,16 @@ class S3ObjectStore:
             self._client = await self._cm.__aenter__()
         return self._client
 
+    async def close(self) -> None:
+        """Release the client. `__aenter__` was called and `__aexit__` never was."""
+        async with self._lock:
+            cm, self._cm, self._client = self._cm, None, None
+        if cm is not None:
+            try:
+                await cm.__aexit__(None, None, None)
+            except Exception:
+                logger.warning("s3 client close failed", exc_info=True)
+
     async def get(self, key: str) -> bytes | None:
         client = await self._get_client()
         try:
@@ -48,7 +71,12 @@ class S3ObjectStore:
         except client.exceptions.NoSuchKey:
             return None
         except Exception as exc:
-            if "NoSuchKey" in type(exc).__name__ or "404" in str(exc):
+            # Was also `or "404" in str(exc)`, which swallowed unrelated failures whose
+            # message merely contained "404" — a request id or a byte count would do it.
+            if "NoSuchKey" in type(exc).__name__ or "NoSuchBucket" in type(exc).__name__:
+                return None
+            status = getattr(getattr(exc, "response", None), "get", lambda *_: None)("ResponseMetadata", {})
+            if isinstance(status, dict) and status.get("HTTPStatusCode") == 404:
                 return None
             raise
 
