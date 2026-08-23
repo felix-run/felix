@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **`spec.limits` budgets are now enforced.** `max_wall_clock_seconds`,
+  `max_input_tokens`, and `max_output_tokens` were declared in the manifest schema,
+  range-bounded, and documented — and appeared nowhere else in the codebase.
+  `LimitState.started_at_ms` was never set or read. Worse, `any_limit()` counted those
+  fields toward `_has_boundary_control`, so a manifest satisfied the SOC 2 compile check
+  *"require non-empty policies, approvals, or limits"* with `limits:
+  {max_wall_clock_seconds: 600}` and got no runtime enforcement at all — the shipped
+  `manifests/governed.yaml` did exactly this. A validator that attests to a control which
+  does not exist is worse than no validator. All budgets are now checked before each tool
+  call and at the top of each agent turn.
+- Added `limits.max_cost_usd`, a per-run spend ceiling priced from the model catalog as
+  tokens accumulate.
+- **The default posture is bounded.** `apply_limits` was installed only when a manifest
+  declared a limit, so a manifest with none had no cap on tool calls, wall clock, tokens,
+  or spend. It is now always installed, and undeclared fields fall back to the documented
+  `ABSOLUTE_LIMITS` (500 tool calls, 3600s, 1M/100k tokens, $1000).
+- **The limits wrapper no longer fails open.** Its whole body sat inside
+  `if req is not None:`, so with no request context every check was skipped. A tool
+  invoked without a context is now denied rather than run unbudgeted.
+
 ### Fixed
 
 - **Durable fibers could run the same step twice.** `resume_due_fibers` selected every

@@ -21,6 +21,7 @@ ABSOLUTE_LIMITS = {
     "max_turns": 100,
     "max_input_tokens": 1_000_000,
     "max_output_tokens": 100_000,
+    "max_cost_usd": 1_000.0,
 }
 
 
@@ -377,6 +378,8 @@ class Limits(_Strict):
     max_peer_hops: int | None = Field(default=None, ge=1, le=ABSOLUTE_LIMITS["max_peer_hops"])
     max_input_tokens: int | None = Field(default=None, ge=1, le=ABSOLUTE_LIMITS["max_input_tokens"])
     max_output_tokens: int | None = Field(default=None, ge=1, le=ABSOLUTE_LIMITS["max_output_tokens"])
+    # Per-run spend ceiling, priced from the model catalog as tokens accumulate.
+    max_cost_usd: float | None = Field(default=None, gt=0, le=ABSOLUTE_LIMITS["max_cost_usd"])
     precount: bool = False
 
 
@@ -501,6 +504,7 @@ def any_limit(limits: Limits) -> bool:
             limits.max_peer_hops is not None,
             limits.max_input_tokens is not None,
             limits.max_output_tokens is not None,
+            limits.max_cost_usd is not None,
         ]
     )
 

@@ -117,9 +117,15 @@ async def test_mcp_deny_sets_is_error(none_settings: Settings, tmp_path) -> None
         deps=BuildDeps(tools=provider, settings=none_settings, tenant_id="default"),
         settings=none_settings,
     )
-    # Simulate MCP tools/call against the compiled tool list.
+    # Simulate MCP tools/call against the compiled tool list. A RequestContext is
+    # installed because that is how tools run in production — the limits wrapper now
+    # refuses to run an unbudgeted tool rather than silently doing nothing.
+    from felix.context import RequestContext, async_run_with_context
+
     by_name = {t.name: t for t in agent.tools}
-    out = await by_name["blocked"].executor.execute({}, None)
+    req_ctx = RequestContext(settings=none_settings, auth=AuthContext(), manifest_id="deny-mcp")
+    async with async_run_with_context(req_ctx):
+        out = await by_name["blocked"].executor.execute({}, None)
     from felix.tools.types import is_wrapper_deny, tool_output_content
 
     assert is_wrapper_deny(out)
