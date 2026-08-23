@@ -162,11 +162,13 @@ async def llm_judge_score(
         f'Reply with ONLY a JSON object: {{"score": 0.0, "reason": "..."}}'
     )
     try:
+        from felix.patterns.model import ModelChatOptions
         from felix.patterns.types import ChatMessage
 
         result = await model.chat(
             [ChatMessage(role="user", content=prompt)],
             [],
+            ModelChatOptions(isolate_cache=True),
         )
         text = (result.message.content or "").strip()
         start = text.find("{")

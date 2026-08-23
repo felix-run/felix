@@ -222,6 +222,11 @@ produces the turn's tool calls, usage and stop reason, so the text a client watc
 text that gets saved. A provider integration that implements only the text-oriented `stream()` still
 falls back to streaming for display and calling the model again for the authoritative turn.
 
+Side requests made during a turn — compaction summarising, memory extracting facts, inbound
+screening scoring, branch summarisation — opt out of the conversation's prompt cache. Each carries
+a completely different prefix, so sharing the thread's cache identity churns the cached prefix the
+next real turn would have hit, and writes a cache entry that is never read again.
+
 Model calls retry rate limits and transient upstream failures with backoff, honouring `Retry-After`
 up to a ceiling; a 429 that reports a spent quota or a billing problem is returned straight away,
 since that will not clear inside the request. `spec.model.fallbacks` still switches models once

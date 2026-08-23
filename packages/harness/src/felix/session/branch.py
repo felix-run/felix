@@ -93,12 +93,15 @@ async def summarize_abandoned_branch(
             prompt = STRUCTURED_SUMMARY_PROMPT
             if instructions:
                 prompt = f"{prompt}\n\nFocus: {instructions}"
+            from felix.patterns.model import ModelChatOptions
+
             result = await model.chat(
                 [
                     ChatMessage(role="system", content=prompt),
                     ChatMessage(role="user", content=text[:120_000]),
                 ],
                 [],
+                ModelChatOptions(isolate_cache=True),
             )
             summary_text = result.message.content
             if getattr(result, "usage", None):

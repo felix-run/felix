@@ -88,6 +88,8 @@ async def capture_from_turn(
     facts: list[str] = []
     if model is not None:
         try:
+            from felix.patterns.model import ModelChatOptions
+
             result = await model.chat(
                 [
                     ChatMessage(
@@ -101,6 +103,7 @@ async def capture_from_turn(
                     ChatMessage(role="user", content=blob[:12000]),
                 ],
                 [],
+                ModelChatOptions(isolate_cache=True),
             )
             for line in (result.message.content or "").splitlines():
                 line = line.strip().lstrip("-* ").strip()

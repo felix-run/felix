@@ -105,6 +105,8 @@ async def screen_for_injection(settings: Settings, text: str, model_id: str) -> 
         from felix.patterns.types import ChatMessage
 
         model = build_model(settings, ModelSpec(id=model_id))
+        from felix.patterns.model import ModelChatOptions
+
         result = await model.chat(
             [
                 ChatMessage(
@@ -117,6 +119,7 @@ async def screen_for_injection(settings: Settings, text: str, model_id: str) -> 
                 ChatMessage(role="user", content=text[:SCREEN_CHARS]),
             ],
             [],
+            ModelChatOptions(isolate_cache=True),
         )
         raw = (result.message.content or "").strip()
         for token in raw.replace(",", " ").split():

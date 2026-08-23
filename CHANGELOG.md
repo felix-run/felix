@@ -23,6 +23,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fans out across tool calls, model calls, session writes, and audit events, and nothing
   tied them together before.
 
+### Fixed
+
+- **One-off requests made during a turn shared the conversation's prompt cache.**
+  Compaction summarising, memory extracting facts, inbound screening scoring, and branch
+  summarisation each issue a model call in the middle of somebody's turn while carrying a
+  completely different prefix — and each inherited the thread's cache identity. On an
+  OpenAI-style endpoint `prompt_cache_key` defaults to `felix:<thread_id>`, so the side
+  request churned the prefix the conversation had cached and the next real turn missed; on
+  Anthropic the `cache_control` marker wrote a fresh cache entry, billed above base input,
+  for a prompt never read again. `ModelChatOptions.isolate_cache` opts a request out of
+  both, and every side request now sets it. Thinking is unaffected.
+
 ### Added
 
 - **Interrupted tool calls are closed out, so a crashed run can be resumed.** A run killed
