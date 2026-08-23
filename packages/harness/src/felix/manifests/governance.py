@@ -52,6 +52,26 @@ def _has_data_governance(manifest: Manifest) -> bool:
     return bool(g.judges)
 
 
+def assert_stdio_allowed(manifest: Manifest, settings: Any | None = None) -> None:
+    """Reject stdio MCP servers whose command the operator has not allowlisted.
+
+    Applied on manifest *write* as well as at compile, so a hostile manifest cannot be
+    stored and then executed by the next request that resolves it.
+    """
+    from felix.security.stdio_policy import StdioNotAllowedError, assert_stdio_command_allowed
+
+    errors: list[str] = []
+    for ref in manifest.spec.mcp or []:
+        if ref.transport != "stdio":
+            continue
+        try:
+            assert_stdio_command_allowed(ref.command, settings)
+        except StdioNotAllowedError as e:
+            errors.append(f"mcp_servers[{ref.name}]: {e}")
+    if errors:
+        raise GovernanceError("; ".join(errors))
+
+
 def validate_governance(manifest: Manifest, settings: Any | None = None) -> None:
     """Fail closed when ``spec.governance.frameworks`` require missing controls.
 
@@ -103,10 +123,14 @@ def validate_governance(manifest: Manifest, settings: Any | None = None) -> None
     if errors:
         raise GovernanceError("; ".join(errors))
 
+    # Not framework-gated: arbitrary subprocess execution is never acceptable.
+    assert_stdio_allowed(manifest, settings)
+
 
 __all__ = [
     "GovernanceError",
     "apply_transparency_notice",
+    "assert_stdio_allowed",
     "transparency_notice_text",
     "validate_governance",
 ]

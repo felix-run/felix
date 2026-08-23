@@ -2,11 +2,30 @@
 
 from __future__ import annotations
 
+import ipaddress
 from functools import lru_cache
 from typing import Any, Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _is_loopback_host(host: str) -> bool:
+    """True when binding ``host`` cannot be reached from off-host.
+
+    ``0.0.0.0`` / ``::`` bind every interface, and an empty host means the same to most
+    servers, so all three are treated as public.
+    """
+    h = (host or "").strip().strip("[]").lower()
+    if not h or h in {"0.0.0.0", "::", "*"}:
+        return False
+    if h in {"localhost", "localhost.localdomain"}:
+        return True
+    try:
+        return ipaddress.ip_address(h).is_loopback
+    except ValueError:
+        # A hostname we cannot classify without DNS — treat as public.
+        return False
 
 
 class Settings(BaseSettings):
@@ -19,7 +38,9 @@ class Settings(BaseSettings):
 
     # --- runtime ---
     environment: Literal["development", "staging", "production"] = "development"
-    host: str = "0.0.0.0"
+    # Loopback by default: an unauthenticated API must not be reachable off-host.
+    # Containers set FELIX_HOST=0.0.0.0 explicitly (see deploy/docker/Dockerfile).
+    host: str = "127.0.0.1"
     port: int = 8080
     log_level: str = "INFO"
     allow_insecure: bool = False  # required if auth_mode=none and host binds public
@@ -31,6 +52,9 @@ class Settings(BaseSettings):
     jwks_public: str = ""  # PEM or JWKS JSON for self-issued
     jwks_private: str = ""  # PEM for minting (CLI)
     oauth_cache_key: str = ""  # base64 32-byte AES key
+    # Comma-separated commands MCP stdio servers may spawn. Empty (default) disables
+    # stdio entirely — manifest-supplied argv would otherwise be arbitrary code execution.
+    mcp_stdio_allowed_commands: str = ""
 
     # --- data plane (cloud-agnostic; AWS + GCP first) ---
     database_url: str = "postgresql+psycopg://felix:felix@localhost:5432/felix"
@@ -107,10 +131,17 @@ class Settings(BaseSettings):
 
     def validate_runtime(self) -> None:
         """Fail fast on unsafe or incomplete configuration."""
-        if self.auth_mode == "none" and not self.allow_insecure:
-            if self.environment != "development":
+        if self.auth_mode == "none":
+            if not self.allow_insecure and self.environment != "development":
                 raise RuntimeError(
                     "FELIX_AUTH_MODE=none requires FELIX_ALLOW_INSECURE=true (development only)."
+                )
+            # allow_insecure is not a licence to serve an unauthenticated API to a
+            # network. A non-loopback bind is refused regardless of environment.
+            if not _is_loopback_host(self.host):
+                raise RuntimeError(
+                    f"FELIX_AUTH_MODE=none may only bind loopback; FELIX_HOST={self.host!r} "
+                    "is reachable off-host. Set FELIX_AUTH_MODE=api_key|jwt, or bind 127.0.0.1."
                 )
         if self.scale_out:
             if "sqlite" in self.database_url:

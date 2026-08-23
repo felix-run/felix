@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Fixed an unauthenticated remote code execution path.** `spec.mcp_servers` entries
+  with `transport: stdio` carry a manifest-supplied `command`, `args`, `cwd`, and `env`
+  that reached `create_subprocess_exec` **at compile time**, so resolving a manifest ran
+  the command — and the child inherited the API process environment (model API keys, the
+  Postgres URL, cloud credentials). Writing such a manifest needed only the tenant-level
+  `manifests:write` scope, and the shipped Compose defaults (`FELIX_AUTH_MODE=none` +
+  `FELIX_ALLOW_INSECURE=true` + a `0.0.0.0` publish) meant it needed no credentials at
+  all. stdio is now **disabled unless `FELIX_MCP_STDIO_ALLOWED_COMMANDS` names the exact
+  commands allowed**; the check runs on manifest write, at compile, and at spawn. The
+  child no longer inherits the parent environment — it gets `PATH`/`HOME`/`LANG`/`LC_ALL`/
+  `TZ` plus the keys the ref declares — and loader variables (`LD_PRELOAD`, `PYTHONPATH`,
+  `NODE_OPTIONS`, …) are rejected outright.
+- **`FELIX_AUTH_MODE=none` is now refused on any non-loopback bind**, in every
+  environment. `FELIX_ALLOW_INSECURE=true` relaxes the environment check only; it is no
+  longer a way to serve an unauthenticated API to a network.
+
+### Changed
+
+- **Secure-by-default local stack (breaking).** `FELIX_HOST` defaults to `127.0.0.1`
+  (containers still set `0.0.0.0` explicitly), Compose defaults to
+  `FELIX_AUTH_MODE=api_key` with `FELIX_ALLOW_INSECURE=false`, and the API port publishes
+  on `127.0.0.1` (override with `FELIX_BIND_ADDR`). `make up` now runs
+  `scripts/dev-key.sh`, which generates a local API key into `.env` on first run and
+  prints it, so the quickstart stays one command. Existing deployments that relied on
+  anonymous access must set an auth mode or bind loopback.
+- `felix doctor` reports the stdio allowlist and fails the loopback check when
+  `auth_mode=none` is paired with a public bind.
 - **`ApprovalRule.bind_principal` and `one_shot` were declared in the manifest schema
   and enforced nowhere.** `find_approved` matched only
   `(tenant, manifest, tool, call_signature, status)`, never filtered by principal, and

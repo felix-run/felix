@@ -222,6 +222,10 @@ jobs:
         env:
           POSTGRES_PASSWORD: ci-compose-check-not-a-secret
           MINIO_ROOT_PASSWORD: ci-compose-check-not-a-secret
+          # Compose requires an API key now that auth_mode defaults to api_key —
+          # the interpolation check has to supply one. `make up` generates a real
+          # key into .env; this value only has to be non-empty.
+          FELIX_AUTH_API_KEYS: '{"sk-ci-compose-check-not-a-secret":{"tenant_id":"default","sub":"ci","scopes":["admin"]}}'
       - name: Build lean image
         run: docker build -f deploy/docker/Dockerfile --build-arg FELIX_EXTRAS= -t felix:ci .
       # Scans the image we actually ship, OS packages included. Unfixed
