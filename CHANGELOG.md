@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Untrusted content no longer reaches the system/developer trust tier.** The wrapper
+  stack exists to keep tool output untrusted; three paths promoted it anyway.
+  *Compaction* fed a raw transcript — including tool output from MCP servers, web pages,
+  and files — to a summarizer with no fencing, then re-injected the model's reply as
+  `role="system"` **and persisted it**, so it replayed on every later turn and outranked
+  the user, after the original tool result had been dropped. The transcript is now fenced
+  and labelled as data, the summarizer is told never to adopt instructions found inside,
+  and the summary is emitted as user-role reference material.
+  *The skills catalog* interpolated `skill.description` — from a tenant-writable
+  `SKILL.md` in the object store — into the **system prompt** with no XML escaping, so a
+  description containing `</description></skill></available_skills>` appended arbitrary
+  text to the highest-trust surface. Now escaped.
+  *Memory* captured model-repeated tool text as a durable fact and injected it into the
+  next run's system prompt. Facts now carry provenance and render fenced as reference
+  material that cannot close its own fence.
+- **A safety judge with no model scored backwards.** `_heuristic_judge_score` ranked by
+  keyword overlap, so for a criterion like *"must not leak credentials or secrets"*,
+  output *containing* those words scored highest and **passed**, while benign output was
+  blocked. `JudgeRule.model` defaults to `""`, so any manifest declaring a safety judge
+  without a model got exactly that. Negative criteria now fail closed, and
+  `assert_absent:` / `assert_present:` express polarity explicitly.
+
 - **`spec.limits` budgets are now enforced.** `max_wall_clock_seconds`,
   `max_input_tokens`, and `max_output_tokens` were declared in the manifest schema,
   range-bounded, and documented — and appeared nowhere else in the codebase.
@@ -30,6 +52,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   invoked without a context is now denied rather than run unbudgeted.
 
 ### Fixed
+
+- Injection quarantine and PII redaction crashed on dict-shaped tool output.
+  `ToolOutput` includes `dict[str, Any]`, but both wrappers did `out.content = ...`,
+  which raises `AttributeError` — so both controls silently degraded into "the tool
+  crashed". Both now use the existing `_replace_content` helper, which already handled
+  every shape.
+- Procedural memory returned the top-k arbitrary rows when nothing matched the query
+  (`return (scored or ranked)[:top_k]`), injecting irrelevant, possibly stale procedures
+  as instructions on every turn.
 
 - **Durable fibers could run the same step twice.** `resume_due_fibers` selected every
   fiber in `('running','pending')` with no lock, no limit, and no claim, while a fiber

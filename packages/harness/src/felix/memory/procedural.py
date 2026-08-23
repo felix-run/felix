@@ -61,7 +61,9 @@ def rank_procedures(
 
     ranked = sorted(rows, key=score, reverse=True)
     scored = [r for r in ranked if score(r) > 0]
-    return (scored or ranked)[:top_k]
+    # No fallback to `ranked`: returning the top-k arbitrary rows when nothing matched
+    # injected irrelevant, possibly stale procedures as instructions on every turn.
+    return scored[:top_k]
 
 
 async def retrieve_procedures(
