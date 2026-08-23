@@ -138,6 +138,44 @@ jobs:
       - name: Pytest
         run: ./scripts/test.sh -q --cov --cov-report=term:skip-covered --cov-fail-under=60
 
+  # The in-memory stores are the CI test path, and nothing compared them against the
+  # Postgres ones they stand in for — so a green suite was evidence about the twin, not
+  # about production. This job runs the same contract against a real database.
+  conformance:
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17@sha256:cf134a767f474095eeba57e0117be8e568e011a63f33fbf252f14c9b760f8e6f
+        env:
+          POSTGRES_USER: felix
+          POSTGRES_PASSWORD: conformance
+          POSTGRES_DB: felix_conformance
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U felix"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - name: Set up Python
+        run: uv python install 3.14
+      - name: Install dependencies
+        run: uv sync --locked --dev
+      # REQUIRE_POSTGRES turns a missing database into a failure instead of a skip: a
+      # silently skipped arm is a coverage gap that looks exactly like a pass.
+      - name: Store conformance (memory + postgres)
+        env:
+          FELIX_CONFORMANCE_DATABASE_URL: postgresql+psycopg://felix:conformance@localhost:5432/felix_conformance
+          FELIX_CONFORMANCE_REQUIRE_POSTGRES: "1"
+        run: ./scripts/test.sh tests/conformance -q
+
   eval:
     needs: changes
     if: needs.changes.outputs.python == 'true'
