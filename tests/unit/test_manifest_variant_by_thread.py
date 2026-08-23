@@ -90,3 +90,30 @@ async def test_thread_suffix_cannot_escape_the_tenant(settings: Settings) -> Non
             res = await client.get("/manifests/quick", params={"thread_id": bad})
             assert res.status_code == 400, bad
             assert res.json()["detail"] == "invalid_thread_id"
+
+
+def test_bundled_loader_contains_the_name_within_its_directory(tmp_path) -> None:
+    """`load_bundled` builds a path from a URL path segment.
+
+    `assert_valid_manifest_name` bars separators, so nothing reachable escapes
+    today. The containment check makes that a property of the loader rather than
+    of a regex two modules away, and keeps the guarantee if either loosens.
+    """
+    from felix.manifests.loader import load_bundled
+
+    (tmp_path / "real.yaml").write_text(
+        "apiVersion: felix/v1\nkind: Agent\nmetadata:\n  name: real\n", encoding="utf-8"
+    )
+    outside = tmp_path.parent / "outside.yaml"
+    outside.write_text("apiVersion: felix/v1\nkind: Agent\nmetadata:\n  name: outside\n", encoding="utf-8")
+
+    assert load_bundled("real", bundled_dir=tmp_path).metadata.name == "real"
+
+    # Separators never get as far as the loader.
+    for escape in ("../outside", "/etc/passwd", "a/../../b"):
+        with pytest.raises(ValueError):
+            load_bundled(escape, bundled_dir=tmp_path)
+
+    # Dot-only names stay inside: an extension is always appended.
+    with pytest.raises(FileNotFoundError):
+        load_bundled("..", bundled_dir=tmp_path)
