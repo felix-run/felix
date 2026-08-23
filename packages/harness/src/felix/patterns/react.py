@@ -47,6 +47,20 @@ DEFAULT_RECURSION = 10
 _SEQUENTIAL_TRANSPORTS = frozenset({"client", "approval"})
 
 
+def _status_for_stop(stop: str) -> str:
+    """Session status for a terminal stop reason.
+
+    `max_tokens` means the answer is cut off mid-thought; `refusal` means a safety
+    classifier declined. Neither is a completed turn, and recording either as one hides
+    a partial or absent answer behind a successful-looking run.
+    """
+    if stop == "max_tokens":
+        return "truncated"
+    if stop == "refusal":
+        return "refused"
+    return "complete"
+
+
 def _clamp(value: int, ceiling: int) -> int:
     return min(max(value, 1), ceiling)
 
@@ -618,8 +632,26 @@ class _ReactAgent:
                 final = assistant
 
                 if not assistant.tool_calls:
+                    # The loop never inspected stop_reason, so a response truncated at
+                    # max_tokens or declined by a safety classifier was recorded as a
+                    # normal completion and handed back as if it were the answer.
+                    # getattr: a plugin-supplied ModelClient (or a test double) may not
+                    # populate stop_reason, and that must not break the run.
+                    stop_reason = getattr(result, "stop_reason", "end_turn")
+                    status = _status_for_stop(stop_reason)
+                    if status != "complete":
+                        logger.warning(
+                            "run ended on stop_reason=%s (manifest=%s thread=%s)",
+                            stop_reason,
+                            self.manifest_id,
+                            input.thread_id,
+                        )
+                        record_counter(
+                            "felix_run_stop_reason",
+                            {"manifest_id": self.manifest_id, "reason": stop_reason},
+                        )
                     await self._append_produced(
-                        input.thread_id, [assistant], usage=usage_block, status="complete"
+                        input.thread_id, [assistant], usage=usage_block, status=status
                     )
                     break
 
@@ -793,8 +825,26 @@ class _ReactAgent:
                 produced.append(assistant)
                 final = assistant
                 if not assistant.tool_calls:
+                    # The loop never inspected stop_reason, so a response truncated at
+                    # max_tokens or declined by a safety classifier was recorded as a
+                    # normal completion and handed back as if it were the answer.
+                    # getattr: a plugin-supplied ModelClient (or a test double) may not
+                    # populate stop_reason, and that must not break the run.
+                    stop_reason = getattr(result, "stop_reason", "end_turn")
+                    status = _status_for_stop(stop_reason)
+                    if status != "complete":
+                        logger.warning(
+                            "run ended on stop_reason=%s (manifest=%s thread=%s)",
+                            stop_reason,
+                            self.manifest_id,
+                            input.thread_id,
+                        )
+                        record_counter(
+                            "felix_run_stop_reason",
+                            {"manifest_id": self.manifest_id, "reason": stop_reason},
+                        )
                     await self._append_produced(
-                        input.thread_id, [assistant], usage=usage_block, status="complete"
+                        input.thread_id, [assistant], usage=usage_block, status=status
                     )
                     break
 

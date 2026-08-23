@@ -47,21 +47,47 @@ async def test_openai_cache_key_uses_thread_id() -> None:
     assert body["prompt_cache_key"] == "felix:tenant:abc"
 
 
-def test_anthropic_thinking_and_cache() -> None:
-    spec = ModelSpec(thinking_budget=5000, cache=True)
+def _thinking_body(model: str) -> dict:
     body: dict = {
-        "model": "claude",
+        "model": model,
         "system": "You are Felix.",
         "temperature": 0,
         "max_tokens": 1024,
         "tools": [{"name": "calculator", "input_schema": {}}],
     }
-    apply_anthropic_thinking_cache(body, spec)
-    assert body["thinking"]["budget_tokens"] == 5000
+    apply_anthropic_thinking_cache(body, ModelSpec(thinking_budget=5000, cache=True), model)
+    return body
+
+
+def test_anthropic_thinking_legacy_model_uses_budget_tokens() -> None:
+    """Pre-4.6 models still take a fixed thinking budget."""
+    body = _thinking_body("claude-sonnet-4-5")
+    assert body["thinking"] == {"type": "enabled", "budget_tokens": 5000}
     assert body["temperature"] == 1
     assert body["max_tokens"] > 5000
-    assert body["system"][0]["cache_control"]["type"] == "ephemeral"
-    assert body["tools"][-1]["cache_control"]["type"] == "ephemeral"
+
+
+def test_anthropic_thinking_current_model_uses_adaptive() -> None:
+    """`budget_tokens` and `temperature` are both removed on the current generation and
+    return HTTP 400, so emitting them broke thinking against every current model."""
+    body = _thinking_body("claude-opus-5")
+    assert body["thinking"] == {"type": "adaptive"}
+    assert "budget_tokens" not in body["thinking"]
+    assert "temperature" not in body, "sampling params are rejected on 4.6+"
+    assert body["output_config"]["effort"] == "medium"
+
+
+def test_anthropic_cache_control_is_applied_either_way() -> None:
+    for model in ("claude-sonnet-4-5", "claude-opus-5"):
+        body = _thinking_body(model)
+        assert body["system"][0]["cache_control"]["type"] == "ephemeral"
+        assert body["tools"][-1]["cache_control"]["type"] == "ephemeral"
+
+
+def test_max_tokens_is_clamped_to_the_model_ceiling() -> None:
+    body: dict = {"model": "claude-haiku-4-5", "max_tokens": 500_000}
+    apply_anthropic_thinking_cache(body, None, "claude-haiku-4-5")
+    assert body["max_tokens"] == 64_000
 
 
 def test_select_tools_keeps_used_and_ranks() -> None:

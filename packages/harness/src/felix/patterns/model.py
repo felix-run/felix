@@ -13,6 +13,7 @@ import httpx
 from felix.config import DEFAULT_MODEL_ROUTES, Settings, get_settings
 from felix.context import try_get_context
 from felix.observability.metrics import record_counter
+from felix.patterns.capabilities import capabilities_for, clamp_effort
 from felix.patterns.model_registry import (
     get_model_provider,
     list_model_providers,
@@ -23,7 +24,19 @@ from felix.tools.types import Tool
 
 logger = logging.getLogger("felix.patterns.model")
 
-StopReason = Literal["end_turn", "tool_use", "max_tokens", "stop_sequence", "unknown"]
+# `refusal` and `pause_turn` are real API outcomes. They were absent here, and the
+# providers' stop_reason was never read at all — it was synthesised from whether the
+# turn contained tool calls — so a truncated answer, a safety refusal, and a paused
+# server-tool turn all presented to the agent loop as a normal completion.
+StopReason = Literal[
+    "end_turn",
+    "tool_use",
+    "max_tokens",
+    "stop_sequence",
+    "pause_turn",
+    "refusal",
+    "unknown",
+]
 
 
 @dataclass(slots=True)
@@ -149,19 +162,69 @@ def apply_openai_thinking_cache(
         body["prompt_cache_key"] = key
 
 
-def apply_anthropic_thinking_cache(body: dict[str, Any], spec: Any) -> None:
-    """Attach extended thinking + ephemeral cache_control to an Anthropic request."""
+# Non-streaming requests must stay under the SDK/HTTP timeout, so this is a floor that
+# leaves room for a real answer rather than the previous 4096.
+_DEFAULT_MAX_TOKENS = 16_000
+
+
+def _effort_from_budget(budget: int) -> str:
+    """Map a legacy thinking budget onto an effort level."""
+    if budget < 4_096:
+        return "low"
+    if budget < 16_384:
+        return "medium"
+    if budget < 32_768:
+        return "high"
+    return "xhigh"
+
+
+def apply_anthropic_thinking_cache(body: dict[str, Any], spec: Any, model: str = "") -> None:
+    """Attach thinking + ephemeral cache_control in the shape this model accepts.
+
+    The previous version emitted one shape for every Claude model:
+    ``thinking: {"type": "enabled", "budget_tokens": N}`` plus ``temperature: 1``. Both
+    are **removed** on the current generation and return HTTP 400, so the manifest's
+    thinking levels hard-failed against Opus 5, Sonnet 5, Fable 5, and Opus 4.7/4.8.
+    """
+    caps = capabilities_for(model or str(body.get("model") or ""))
+
+    # Sampling params are rejected outright on 4.6+, so drop what the caller set rather
+    # than letting the request 400 on a parameter the model no longer accepts.
+    if not caps.sampling:
+        body.pop("temperature", None)
+        body.pop("top_p", None)
+        body.pop("top_k", None)
+
+    def _clamp_output() -> None:
+        # Never ask for more output than the model will grant. Applies regardless of
+        # whether a model spec was supplied.
+        requested = int(body.get("max_tokens") or _DEFAULT_MAX_TOKENS)
+        body["max_tokens"] = min(requested, caps.max_output_tokens)
+
     if spec is None:
+        _clamp_output()
         return
+
     budget = getattr(spec, "thinking_budget", None)
     if budget:
         n = int(budget)
-        body["thinking"] = {"type": "enabled", "budget_tokens": n}
-        # Anthropic requires temperature=1 when thinking is enabled.
-        body["temperature"] = 1
-        current = int(body.get("max_tokens") or 4096)
-        if current <= n:
-            body["max_tokens"] = n + 1024
+        if caps.adaptive_thinking:
+            # Depth is expressed as effort now; the budget is only a hint about how hard
+            # the operator wants the model to think.
+            body["thinking"] = {"type": "adaptive"}
+            if caps.effort:
+                body.setdefault("output_config", {})["effort"] = clamp_effort(_effort_from_budget(n), caps)
+            if caps.sampling:
+                body["temperature"] = 1
+        elif caps.budget_tokens:
+            body["thinking"] = {"type": "enabled", "budget_tokens": n}
+            # Pre-4.6 requires temperature=1 when thinking is enabled.
+            body["temperature"] = 1
+            current = int(body.get("max_tokens") or _DEFAULT_MAX_TOKENS)
+            if current <= n:
+                body["max_tokens"] = n + 1024
+
+    _clamp_output()
     if getattr(spec, "cache", False):
         system = body.get("system")
         if isinstance(system, str) and system:
@@ -171,6 +234,38 @@ def apply_anthropic_thinking_cache(body: dict[str, Any], spec: Any) -> None:
             last = dict(tools[-1])
             last["cache_control"] = {"type": "ephemeral"}
             tools[-1] = last
+
+
+_ANTHROPIC_STOP: dict[str, StopReason] = {
+    "end_turn": "end_turn",
+    "tool_use": "tool_use",
+    "max_tokens": "max_tokens",
+    "stop_sequence": "stop_sequence",
+    "pause_turn": "pause_turn",
+    "refusal": "refusal",
+}
+
+# OpenAI names the same outcomes differently.
+_OPENAI_STOP: dict[str, StopReason] = {
+    "stop": "end_turn",
+    "length": "max_tokens",
+    "tool_calls": "tool_use",
+    "function_call": "tool_use",
+    "content_filter": "refusal",
+}
+
+
+def _map_stop(raw: Any, table: dict[str, StopReason], *, had_tool_calls: bool) -> StopReason:
+    """Translate a provider stop reason, falling back to the old inference."""
+    key = str(raw or "").strip().lower()
+    mapped = table.get(key)
+    if mapped is not None:
+        return mapped
+    if key:
+        logger.debug("unrecognised stop_reason %r from provider", key)
+        return "unknown"
+    # Provider omitted it — preserve the previous behaviour rather than guess.
+    return "tool_use" if had_tool_calls else "end_turn"
 
 
 def _openai_usage(usage_raw: dict[str, Any]) -> TokenUsage:
@@ -414,7 +509,7 @@ class _HttpModelClient:
         msg = choice.get("message") or {}
         usage_raw = data.get("usage") or {}
         tool_calls = _parse_openai_tool_calls(msg.get("tool_calls"))
-        stop: StopReason = "tool_use" if tool_calls else "end_turn"
+        stop = _map_stop(choice.get("finish_reason"), _OPENAI_STOP, had_tool_calls=bool(tool_calls))
         return ModelChatResult(
             message=ChatMessage(
                 role="assistant",
@@ -466,7 +561,7 @@ class _HttpModelClient:
             "model": self.route.model,
             "messages": converted,
             "temperature": temperature,
-            "max_tokens": max_tokens or 4096,
+            "max_tokens": max_tokens or _DEFAULT_MAX_TOKENS,
         }
         if system:
             body["system"] = system
@@ -479,7 +574,7 @@ class _HttpModelClient:
                 }
                 for t in tools
             ]
-        apply_anthropic_thinking_cache(body, self.spec)
+        apply_anthropic_thinking_cache(body, self.spec, self.route.model)
         headers = {
             "x-api-key": self.api_key,
             "anthropic-version": "2023-06-01",
@@ -509,7 +604,7 @@ class _HttpModelClient:
                     )
                 )
         usage_raw = data.get("usage") or {}
-        stop: StopReason = "tool_use" if tool_calls else "end_turn"
+        stop = _map_stop(data.get("stop_reason"), _ANTHROPIC_STOP, had_tool_calls=bool(tool_calls))
         return ModelChatResult(
             message=ChatMessage(
                 role="assistant",
@@ -635,12 +730,12 @@ class _HttpModelClient:
             "model": self.route.model,
             "messages": converted,
             "temperature": temperature,
-            "max_tokens": max_tokens or 4096,
+            "max_tokens": max_tokens or _DEFAULT_MAX_TOKENS,
             "stream": True,
         }
         if system:
             body["system"] = system
-        apply_anthropic_thinking_cache(body, self.spec)
+        apply_anthropic_thinking_cache(body, self.spec, self.route.model)
         headers = {
             "x-api-key": self.api_key,
             "anthropic-version": "2023-06-01",

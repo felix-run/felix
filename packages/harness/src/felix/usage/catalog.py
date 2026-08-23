@@ -9,7 +9,12 @@ from felix.usage.pricing import _lookup_price
 
 # Approximate context windows for known model families.
 _CONTEXT_WINDOWS: dict[str, int] = {
-    "claude-sonnet": 200_000,
+    # The Claude 5 family is 1M, not 200K — /v1/models advertised the old number.
+    "claude-fable": 1_000_000,
+    "claude-mythos": 1_000_000,
+    "claude-opus": 1_000_000,
+    "claude-sonnet-4-5": 200_000,
+    "claude-sonnet": 1_000_000,
     "claude-haiku": 200_000,
     "claude": 200_000,
     "gpt-4.1": 1_047_576,
