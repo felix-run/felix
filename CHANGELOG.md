@@ -25,6 +25,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Embeddings ran on the event loop, stalling every concurrent request.**
+  `encode_texts` calls `SentenceTransformer.encode` synchronously, and all three
+  consumers reach it while a turn is being served: tool retrieval (up to four times
+  per loop step), procedural recall, and the `semantic:N` session strategy. With the
+  `embeddings` extra installed, one encode blocked the whole worker — every other
+  request on that process, not just the one that asked for it — and the first call for
+  a model also loaded it from disk inside that stall. The work now runs in a thread.
+  Tool retrieval keeps the cheap keyword path inline, since it is on the hot path and
+  `tools_retrieval` is off by default; the guard that decides is pinned to the code it
+  mirrors by a test that runs both. Also takes a lock around the model load, which the
+  move to a thread pool is what made reachable — two concurrent misses would otherwise
+  each construct the same multi-hundred-MB encoder.
+
 - **Recalled memory facts never reached the model on a threaded chat.**
   `_assemble_messages` built the message list with the per-run prelude, then handed
   the thread to the session strategy — which builds a fresh list from the session log
