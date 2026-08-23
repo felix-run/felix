@@ -9,6 +9,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Failed authentication was never rate limited.** Starlette's `add_middleware` inserts
+  at index 0, so the auth middleware — registered last — ran *first*, and a 401 returned
+  before the limiter was consulted. Credential guessing was completely unthrottled.
+  Middleware is now registered auth → rate limit → body limit, giving the runtime order
+  body limit → rate limit → auth.
+- **`/metrics` was public and rate-limit exempt.** Its counters carry tenant-supplied
+  manifest ids and remote MCP tool names as label values, so an anonymous scrape
+  disclosed every tenant's manifest and tool names. It now requires auth and is counted.
+- **Rate limiting was per-process and keyed per tenant.** `RedisRateLimiter` existed but
+  was never wired, so the effective ceiling was `limit x replicas`; and under
+  `auth_mode=none` every caller shared one `tenant:default` bucket, so a single client
+  could 429 the whole deployment. Limits are now settings-driven (`FELIX_RATE_LIMIT`,
+  `FELIX_RATE_LIMIT_WINDOW_SECONDS`), Redis-backed when one is reachable, and keyed per
+  client. `FELIX_TRUSTED_CLIENT_IP_HEADER` opts into a proxy header — off by default,
+  since the header is attacker-controlled unless a proxy you operate overwrites it.
+- **The body limit trusted `Content-Length`.** A chunked request carries no such header,
+  so its body was read unbounded. The stream is now capped as it is consumed.
+- **Compute ceilings.** The `calculator` allowed `9**9**9**9` (`ast.Pow` with no operand
+  bound); `search_files` compiled a model-supplied regex with no length or complexity
+  bound and ran it over every file. Exponentiation is now bounded, the query is capped,
+  lines are truncated before matching, patterns nesting a quantifier inside a quantified
+  group are refused, and the scan runs off the event loop under a deadline.
+
+### Fixed
+
+- `InMemoryRateLimiter._windows` was a `defaultdict` that never evicted, so per-IP keys
+  grew forever — a memory-exhaustion DoS in the component meant to prevent DoS.
+- `RedisRateLimiter` did `INCR` then `EXPIRE` non-atomically; a crash between them left a
+  key with no TTL, rate-limiting that principal permanently. Both now go in one pipeline.
+- 429 responses now carry `Retry-After`.
+
+### Security
+
 - **A JWT with no `exp` was accepted forever.** Only `iss` (and `aud` when configured)
   were marked essential, and joserfc validates expiry only when the claim is present.
   `exp` is now required.

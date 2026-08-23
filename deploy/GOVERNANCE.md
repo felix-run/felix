@@ -216,6 +216,26 @@ Approvals are matched on `(tenant, manifest, tool, sha256(args))` and stored in 
 `command_screening` rules with `decision: require_approval` go through the same flow and
 wait up to `command_screening.approval_ttl_seconds` (default 300).
 
+## Request limits
+
+Rate limiting runs **outside** authentication, so a failed credential is counted — it
+previously ran inside, and a 401 returned before the limiter was reached.
+
+```bash
+FELIX_RATE_LIMIT=120
+FELIX_RATE_LIMIT_WINDOW_SECONDS=60
+FELIX_TRUSTED_CLIENT_IP_HEADER=      # e.g. cf-connecting-ip, behind a proxy you operate
+```
+
+Keyed per client address. Redis-backed when `FELIX_REDIS_URL` is reachable; if it is not,
+limiting **degrades to per-process** with a logged error rather than failing requests or
+skipping the control. Leave `FELIX_TRUSTED_CLIENT_IP_HEADER` empty unless a proxy you
+operate overwrites that header — otherwise a client can present as unlimited distinct
+clients.
+
+`/metrics` requires authentication: its label values include tenant-supplied manifest ids
+and remote MCP tool names.
+
 ## JWT verification
 
 `FELIX_JWT_VERIFIERS` is `scheme:issuer[;aud=…][;tenant=claim|issuer|fixed:<tenant>]`,

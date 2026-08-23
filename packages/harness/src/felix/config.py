@@ -54,6 +54,15 @@ class Settings(BaseSettings):
     # Comma-separated tenants a JWT may claim. Empty = any claimed tenant is
     # accepted, which is only safe when the IdP is the sole writer of that claim.
     allowed_tenants: str = ""
+
+    # --- request limits ---
+    rate_limit: int = 120
+    rate_limit_window_seconds: int = 60
+    # Header carrying the real client IP behind a trusted proxy (e.g.
+    # "cf-connecting-ip", "x-forwarded-for"). EMPTY by default: the header is
+    # attacker-controlled unless a proxy you operate overwrites it, and trusting
+    # it blindly lets one client masquerade as unlimited distinct clients.
+    trusted_client_ip_header: str = ""
     oauth_cache_key: str = ""  # base64 32-byte AES key
     # Comma-separated commands MCP stdio servers may spawn. Empty (default) disables
     # stdio entirely — manifest-supplied argv would otherwise be arbitrary code execution.

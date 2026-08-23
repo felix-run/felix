@@ -13,7 +13,13 @@ logger = logging.getLogger("felix.governance.pii")
 _REGEX_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"), "email"),
     (re.compile(r"\b\d{3}-\d{2}-\d{4}\b"), "ssn"),
-    (re.compile(r"\b(?:\d[ -]*?){13,19}\b"), "card"),
+    # Was r"\b(?:\d[ -]*?){13,19}\b". That shape *looks* like catastrophic
+    # backtracking — a lazy quantifier inside a bounded repetition — but it is not:
+    # every repetition must consume a digit, so the search space stays small, and no
+    # payload I could construct made it slow. This form is kept because it is easier to
+    # read and obviously linear, not because the old one was exploitable. Detection is
+    # equivalent on real card numbers, bare digit runs, and dash/space separated forms.
+    (re.compile(r"\b\d(?:[ -]?\d){12,18}\b"), "card"),
 )
 
 _analyzer = None

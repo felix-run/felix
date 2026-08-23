@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import re
@@ -19,6 +20,13 @@ _MAX_WRITE_BYTES = 512_000
 _MAX_LIST_ENTRIES = 500
 _MAX_SEARCH_HITS = 50
 _MAX_SEARCH_FILE_BYTES = 256_000
+# The pattern is model-supplied and compiled, so it is attacker-controlled in the
+# prompt-injection sense. Python's `re` has no timeout, and a nested-quantifier
+# pattern like (a+)+$ is exponential in the length of the line it is matched
+# against — so bound the pattern, the line, and the wall-clock.
+_MAX_QUERY_CHARS = 512
+_MAX_SEARCH_LINE_CHARS = 4_000
+_SEARCH_BUDGET_S = 5.0
 
 
 class PathArgs(BaseModel):
@@ -51,7 +59,11 @@ class WriteFileArgs(BaseModel):
 class SearchFilesArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    query: str = Field(min_length=1, description="Literal or regex pattern to search for.")
+    query: str = Field(
+        min_length=1,
+        max_length=_MAX_QUERY_CHARS,
+        description="Literal or regex pattern to search for.",
+    )
     path: str = Field(default=".", description="Directory relative to the workspace root.")
     regex: bool = Field(default=False, description="Treat query as a regular expression.")
     max_hits: int = Field(default=20, ge=1, le=_MAX_SEARCH_HITS)
@@ -170,6 +182,53 @@ async def _write_file(args: WriteFileArgs) -> str:
     )
 
 
+# A quantified group that itself contains a quantifier — (a+)+, (a*)*, (\d+)* — is the
+# construction that makes backtracking exponential. Python's `re` has no timeout and a
+# worker thread cannot be killed, so the deadline below unblocks the *request* while the
+# thread keeps burning CPU; repeated attempts would exhaust the pool. Rejecting the shape
+# up front is the only part of this that actually stops the work.
+_NESTED_QUANTIFIER = re.compile(r"\((?:\?[:=!][^)]*|[^)])*[*+}][^)]*\)\s*[*+{]")
+
+
+def _reject_catastrophic(pattern: str) -> str | None:
+    """Reason the pattern is refused, or None when it is acceptable."""
+    if _NESTED_QUANTIFIER.search(pattern):
+        return (
+            "pattern nests a quantifier inside a quantified group (e.g. '(a+)+'), which "
+            "backtracks exponentially; rewrite it without the nesting"
+        )
+    return None
+
+
+def _scan_files(
+    files: list[Path],
+    args: SearchFilesArgs,
+    pattern: re.Pattern[str] | None,
+    root: Path,
+) -> list[dict[str, Any]]:
+    """Synchronous scan, run on a worker thread under a deadline."""
+    hits: list[dict[str, Any]] = []
+    for path in files:
+        if len(hits) >= args.max_hits:
+            break
+        try:
+            if path.stat().st_size > _MAX_SEARCH_FILE_BYTES:
+                continue
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        for i, line in enumerate(text.splitlines(), start=1):
+            # Truncate before matching: backtracking cost grows with the length of the
+            # subject, so an unbounded line is what makes a bad pattern expensive.
+            subject = line[:_MAX_SEARCH_LINE_CHARS]
+            matched = bool(pattern.search(subject)) if pattern else args.query in subject
+            if matched:
+                hits.append({"path": str(path.relative_to(root)), "line": i, "text": line[:400]})
+                if len(hits) >= args.max_hits:
+                    break
+    return hits
+
+
 async def _search_files(args: SearchFilesArgs) -> str:
     try:
         root = _workspace_root()
@@ -182,34 +241,28 @@ async def _search_files(args: SearchFilesArgs) -> str:
 
     pattern: re.Pattern[str] | None = None
     if args.regex:
+        refused = _reject_catastrophic(args.query)
+        if refused:
+            return f"error: {refused}"
         try:
             pattern = re.compile(args.query)
         except re.error as exc:
             return f"error: invalid regex: {exc}"
 
-    hits: list[dict[str, Any]] = []
-    for path in files:
-        if len(hits) >= args.max_hits:
-            break
-        try:
-            if path.stat().st_size > _MAX_SEARCH_FILE_BYTES:
-                continue
-            text = path.read_text(encoding="utf-8", errors="ignore")
-        except OSError:
-            continue
-        for i, line in enumerate(text.splitlines(), start=1):
-            matched = bool(pattern.search(line)) if pattern else args.query in line
-            if matched:
-                hits.append(
-                    {
-                        "path": str(path.relative_to(root)),
-                        "line": i,
-                        "text": line[:400],
-                    }
-                )
-                if len(hits) >= args.max_hits:
-                    break
-    return json.dumps({"query": args.query, "hits": hits})
+    def _scan() -> list[dict[str, Any]]:
+        return _scan_files(files, args, pattern, root)
+
+    try:
+        # Off the event loop and on a deadline. `re` cannot be interrupted, so the thread
+        # keeps burning CPU until it finishes — but the request returns and the API stays
+        # responsive, which is the difference between a slow tool and a stalled process.
+        hits = await asyncio.wait_for(asyncio.to_thread(_scan), _SEARCH_BUDGET_S)
+        return json.dumps({"query": args.query, "hits": hits})
+    except TimeoutError:
+        return (
+            f"error: search exceeded {_SEARCH_BUDGET_S:.0f}s — narrow the pattern "
+            "(a nested-quantifier regex can be exponential)"
+        )
 
 
 def register_workspace_tools(provider: InMemoryToolProvider) -> None:
