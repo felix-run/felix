@@ -243,6 +243,15 @@ class Fiber(Base):
     wake_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
     updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    # Claim: who is stepping this fiber and until when. A step that outlives its lease
+    # is reclaimable, so a crashed worker does not strand the fiber forever.
+    lease_owner: Mapped[str] = mapped_column(Text, server_default="", default="")
+    lease_until: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # Optimistic concurrency: _save_fiber is a read-modify-write, and a lost update
+    # can rewind `cursor` and replay a step that already ran.
+    version: Mapped[int] = mapped_column(BigInteger, server_default=text("0"), default=0)
+
+    __table_args__ = (Index("idx_fibers_due", "status", "wake_at", "lease_until"),)
 
 
 class UsageEvent(Base):

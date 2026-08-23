@@ -82,6 +82,26 @@ async def list_jobs(settings: Settings, tenant_id: str) -> list[dict[str, Any]]:
         return [_job_dict(r) for r in rows]
 
 
+async def list_tenants_with_jobs(settings: Settings) -> list[str]:
+    """Every tenant that has at least one job.
+
+    The cron sweep previously defaulted to ``tenant_id="default"`` and the worker never
+    passed one, so no other tenant's scheduled jobs ever fired.
+    """
+    if _use_memory(settings):
+        return sorted({tid for tid, _ in _memory_jobs})
+
+    from felix.db.session import rls_bypass
+
+    factory = get_session_factory(settings=settings)
+    # Cross-tenant maintenance, like retention: without a bypass this runs with no
+    # app.tenant_id GUC and RLS returns nothing.
+    with rls_bypass():
+        async with factory() as db:
+            rows = (await db.execute(select(Job.tenant_id).distinct())).scalars().all()
+            return sorted({str(r) for r in rows})
+
+
 async def get_job(settings: Settings, tenant_id: str, name: str) -> dict[str, Any] | None:
     if _use_memory(settings):
         row = _memory_jobs.get((tenant_id, name))
