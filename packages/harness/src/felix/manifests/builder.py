@@ -1034,7 +1034,9 @@ async def build_agent(
             try:
                 from felix.tools.sandboxes import tools_from_sandboxes
 
-                _append_unique_tools(resolved, tools_from_sandboxes(list(m.spec.sandboxes)))
+                _append_unique_tools(
+                    resolved, tools_from_sandboxes(list(m.spec.sandboxes), settings=deps.settings)
+                )
             except Exception:
                 logger.warning("sandbox tool binding failed", exc_info=True)
 

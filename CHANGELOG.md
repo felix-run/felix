@@ -7,7 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **The SSRF guard never resolved DNS.** Private, loopback, and link-local ranges were
+  checked *only when the hostname was already an IP literal*, so any name resolving to
+  `169.254.169.254`, `10.x`, or `127.0.0.1` passed — an attacker-controlled `A` record, a
+  `*.nip.io` style name, or DNS rebinding. That is the standard cloud-metadata SSRF path,
+  and it applied to MCP server URLs, A2A peers, container gateways, and model-supplied
+  browser URLs. The guard now resolves the hostname and rejects the request if *any*
+  returned address is blocked. Also closed: IPv4-mapped IPv6
+  (`::ffff:169.254.169.254`, whose `.is_link_local` is `False`), decimal-integer hosts
+  (`http://2130706433/`), carrier-grade NAT, reserved, multicast, and unspecified
+  addresses, plus `.svc` / `.local` / `kubernetes.default` / `metadata.google.internal`.
+  The old code also decided "is this an IP?" by string-matching its own exception
+  message, so rewording an error would have started admitting private addresses.
+- **Browser tools followed redirects past the check.** The URL was validated once and
+  handed to `page.goto()`, but Chromium follows 3xx hops, loads subresources, and runs
+  JS — and the URL is model-supplied, so a prompt-injected agent could pivot to the
+  metadata service and read the body back via `op: "content"`. A Playwright request
+  interceptor now re-validates every request the page makes. `path_prefix` still applies
+  to the top-level navigation only, since enforcing it on subresources would break any
+  real page.
+- **Sandbox containers are now confined.** They ran as root with every Linux capability,
+  a writable filesystem, and no PID or CPU limit — `network_disabled` and `mem_limit`
+  were the only controls. Now non-root with `cap_drop: ALL`, `no-new-privileges`, a
+  read-only root filesystem plus a `noexec` tmpfs, a PID limit, and a CPU quota. Images
+  are allowlisted via `FELIX_SANDBOX_ALLOWED_IMAGES` (default: the built-in python image
+  only), because `spec.sandboxes[].binding` is manifest-supplied and reaches `docker run`.
+
 ### Fixed
+
+- **The sandbox timeout never worked, and a container stalled the whole API.** The
+  synchronous docker SDK was called directly from a coroutine, so the `asyncio.wait_for`
+  around it could never fire — nothing yields — and the event loop blocked for the
+  container's lifetime, meaning a model emitting `while True: pass` froze every
+  concurrent request. The call now runs on a worker thread.
 
 - **A single 429 failed the whole run.** There was no retry anywhere in the model layer:
   `_is_provider_error` existed but was only consulted by `_FallbackClient` to advance to

@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, ConfigDict, Field
 
 from felix.manifests.schema import BrowserToolRef
+from felix.observability.metrics import record_counter
 from felix.security.ssrf import assert_safe_outbound_url
 from felix.tools.types import (
     Tool,
@@ -55,10 +56,37 @@ class _BrowserExecutor:
         self._allow_http = allow_http
         self._binding = binding or "chromium"
 
-    def _check_url(self, url: str) -> None:
+    def _check_egress(self, url: str) -> None:
+        """SSRF check for any request the page makes, including redirect hops."""
         assert_safe_outbound_url(url, allow_http=self._allow_http)
+
+    def _check_url(self, url: str) -> None:
+        """Checks for the top-level navigation the model asked for."""
+        self._check_egress(url)
         if self._path_prefix and not url.startswith(self._path_prefix):
             raise ValueError(f"url must start with {self._path_prefix!r}")
+
+    async def _install_egress_guard(self, page: Any) -> None:
+        """Re-validate every request the page makes.
+
+        The URL was checked once and then handed to `page.goto()`, but Chromium follows
+        3xx redirects, loads subresources, and runs JS — and the URL is model-supplied.
+        So a page that passed the check could 302 to the cloud metadata service and, with
+        `op: "content"`, hand the body back to the model. Every other outbound client in
+        the codebase sets `follow_redirects=False`; the browser was the one exception.
+        """
+
+        async def _guard(route: Any, request: Any) -> None:
+            try:
+                self._check_egress(request.url)
+            except ValueError as exc:
+                logger.warning("browser blocked egress to %s (%s)", request.url, exc)
+                record_counter("felix_browser_egress_blocked", {"reason": str(exc)[:40]})
+                await route.abort()
+                return
+            await route.continue_()
+
+        await page.route("**/*", _guard)
 
     async def execute(self, args: ToolInput, ctx: ToolInvocationCtx | None = None) -> ToolOutput:
         _ = ctx
@@ -81,6 +109,7 @@ class _BrowserExecutor:
                 browser = await launcher.launch(headless=True)
                 page = await browser.new_page()
                 try:
+                    await self._install_egress_guard(page)
                     await page.goto(url, timeout=timeout, wait_until="domcontentloaded")
                     return await self._extract(page, url)
                 finally:
