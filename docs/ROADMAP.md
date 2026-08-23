@@ -145,12 +145,12 @@ top of* durable state. Ordered by value; the first two need no migration.
       every current client. Closes **Wire-contract snapshot** above and
       *reconnect-to-snapshot* under Product.
 - [~] **Long-term memory** — schema and provenance in #46, hybrid recall and
-      the `Embedder` seam in #47. What remains: the `remember` / `recall` /
-      `forget` / `list_memories` tools, bound before the governance block so
-      recalled text passes through content screening, and the management routes
-      under new `memory:read` / `memory:write` scopes. `capture` is still
-      disabled in all eight bundled manifests, so nothing writes memory by
-      default — decide whether to turn it on anywhere before calling this done.
+      the `Embedder` seam in #47, the agent-facing tools in #49. What remains:
+      management routes under new `memory:read` / `memory:write` scopes, so an
+      operator can inspect and prune what an agent has stored. Also still open:
+      `capture` is disabled in all eight bundled manifests and
+      `memory.recall.tools` defaults off, so nothing writes or reads memory by
+      default — decide whether any shipped agent should turn them on.
 - [ ] **Tamper-evident audit chain** — `seq` + `prev_hash` + keyed-HMAC per row,
       per tenant, with `verify_chain` reporting the first break. Allocate the
       chain at write time inside the insert transaction, under a per-tenant

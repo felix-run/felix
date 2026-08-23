@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Agent-facing memory tools** — `remember` / `recall` / `forget` / `list_memories`,
+  behind `spec.memory.recall.tools` (off by default). They are bound *before* the
+  governance block, so recalled text passes through secret masking, policies, content
+  screening, limits, guardrails, judges and approvals like any other tool output. The
+  automatic fact prelude bypasses all of it, which matters because recalled text was
+  extracted by a model from earlier turns and those turns can contain whatever a tool
+  returned. A test asserts the wrapping behaviourally and fails if the binding ever
+  moves below the wrapper block.
+
 - **Memory recall is hybrid, and no longer just the newest rows.** Recall was
   `ORDER BY created_at` — the most recent facts, related to the question or not. It
   now runs three independent channels and fuses their *rankings* with Reciprocal Rank

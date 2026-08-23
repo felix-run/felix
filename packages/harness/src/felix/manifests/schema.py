@@ -253,11 +253,24 @@ class MemoryConsolidate(_Strict):
     max_facts: int = Field(default=200, ge=1, le=500)
 
 
+class MemoryRecall(_Strict):
+    """Agent-facing recall.
+
+    ``tools`` is the governed path: the memory tools are bound before the wrapper
+    stack, so recalled text passes through content screening. The automatic fact
+    prelude does not — prefer the tools when a manifest handles untrusted content.
+    """
+
+    tools: bool = False
+    limit: int = Field(default=5, ge=1, le=50)
+
+
 class MemorySpec(_Strict):
     checkpointer: Literal["agentcore", "sqlite", "do", "postgres", "none"] = "postgres"
     store: Literal["agentcore", "memory", "vectorize", "pgvector", "none"] = "pgvector"
     capture: MemoryCapture = Field(default_factory=MemoryCapture)
     consolidate: MemoryConsolidate = Field(default_factory=MemoryConsolidate)
+    recall: MemoryRecall = Field(default_factory=MemoryRecall)
 
 
 class SessionSpec(_Strict):
