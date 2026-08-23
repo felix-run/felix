@@ -191,6 +191,14 @@ def record_usage(result: ModelChatResult, *, manifest_id: str, model_id: str | N
         u = result.usage
         ctx.limit_state.tokens_input += u.input + u.cache_creation + u.cache_read
         ctx.limit_state.tokens_output += u.output
+        # Accumulate spend so `limits.max_cost_usd` has something to measure.
+        try:
+            from felix.usage.pricing import usage_with_cost
+
+            priced = usage_with_cost(u, model_id=model_id or "")
+            ctx.limit_state.cost_usd += float((priced.get("cost") or {}).get("total") or 0.0)
+        except Exception:
+            logger.debug("usage pricing unavailable", exc_info=True)
         tenant_id = getattr(ctx.auth, "tenant_id", None) or "default"
         settings = ctx.settings
     else:

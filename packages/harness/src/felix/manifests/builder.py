@@ -9,12 +9,12 @@ from typing import Any
 
 from felix.auth.context import AuthContext
 from felix.context import try_get_context
+from felix.limits import effective_limits
 from felix.manifests.loader import load_bundled, parse_manifest
 from felix.manifests.schema import (
     ApprovalRule,
     Manifest,
     Policy,
-    any_limit,
     guardrails_enabled,
     judges_enabled,
 )
@@ -398,30 +398,42 @@ def apply_limits(tools: list[Tool], limits: Any, manifest_id: str) -> list[Tool]
         inner = tool.executor
 
         async def execute(args: ToolInput, ctx: ToolInvocationCtx | None = None) -> ToolOutput:
+            from felix.limits import check_budgets, trip
+
             req = try_get_context()
-            if req is not None:
-                ls = req.limit_state
-                if ls.aborted:
-                    return deny_output("[limits] run aborted", "limits")
-                max_calls = getattr(limits, "max_tool_calls", None)
-                if max_calls is not None and ls.tool_calls >= max_calls:
-                    return deny_output(
-                        f"[limits] max_tool_calls ({max_calls}) exceeded",
-                        "limits",
-                    )
-                max_hops = getattr(limits, "max_peer_hops", None)
-                if (
-                    max_hops is not None
-                    and (tool.is_peer or tool.name.startswith("peer_"))
-                    and ls.peer_hops >= max_hops
-                ):
-                    return deny_output(
-                        f"[limits] max_peer_hops ({max_hops}) exceeded",
-                        "limits",
-                    )
-                ls.tool_calls += 1
-                if tool.is_peer or tool.name.startswith("peer_"):
-                    ls.peer_hops += 1
+            if req is None:
+                # Fail closed. A limits wrapper that silently does nothing when there is
+                # no request context is exactly the hole this phase exists to close.
+                return deny_output("[limits] no request context; refusing to run unbudgeted", "limits")
+
+            ls = req.limit_state
+            if ls.aborted:
+                return deny_output(f"[limits] run aborted: {ls.abort_reason or 'budget exceeded'}", "limits")
+
+            verdict = check_budgets(limits, ls)
+            if verdict.exceeded:
+                trip(ls, verdict.reason)
+                return deny_output(f"[limits] {verdict.reason}", "limits")
+
+            max_calls = getattr(limits, "max_tool_calls", None)
+            if max_calls is not None and ls.tool_calls >= max_calls:
+                return deny_output(
+                    f"[limits] max_tool_calls ({max_calls}) exceeded",
+                    "limits",
+                )
+            max_hops = getattr(limits, "max_peer_hops", None)
+            if (
+                max_hops is not None
+                and (tool.is_peer or tool.name.startswith("peer_"))
+                and ls.peer_hops >= max_hops
+            ):
+                return deny_output(
+                    f"[limits] max_peer_hops ({max_hops}) exceeded",
+                    "limits",
+                )
+            ls.tool_calls += 1
+            if tool.is_peer or tool.name.startswith("peer_"):
+                ls.peer_hops += 1
             return await inner.execute(args, ctx)
 
         return Tool(
@@ -1092,8 +1104,10 @@ async def build_agent(
             resolved = apply_command_screening(resolved, m.spec.command_screening, m.metadata.name)
         if m.spec.content_screening.enabled:
             resolved = apply_content_screening(resolved, m.spec.content_screening, m.metadata.name)
-        if any_limit(m.spec.limits):
-            resolved = apply_limits(resolved, m.spec.limits, m.metadata.name)
+        # Always installed. Previously gated on any_limit(), so a manifest that declared
+        # no limits got no tool-call cap, no wall clock, no token or spend ceiling —
+        # and the wrapper silently did nothing when there was no request context.
+        resolved = apply_limits(resolved, effective_limits(m.spec.limits), m.metadata.name)
         if guardrails_enabled(m.spec.guardrails):
             resolved = apply_guardrails(resolved, m.spec.guardrails, m.metadata.name)
         if judges_enabled(m.spec.guardrails):
@@ -1139,7 +1153,7 @@ async def build_agent(
                 "session_strategy": deps.session_strategy,
                 "session_spec": m.spec.session,
                 "execution": m.spec.execution,
-                "limits": m.spec.limits,
+                "limits": effective_limits(m.spec.limits),
                 "settings": deps.settings,
                 "tenant_id": tenant_id,
                 "memory_capture": m.spec.memory.capture,

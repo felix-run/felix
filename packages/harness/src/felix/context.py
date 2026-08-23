@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -26,11 +27,19 @@ class AuthContext:
 class LimitState:
     tool_calls: int = 0
     peer_hops: int = 0
-    started_at_ms: int = 0
+    # Wall-clock origin for `limits.max_wall_clock_seconds`. Defaults to the moment the
+    # state is constructed so a deadline is measurable even if nobody sets it explicitly.
+    started_at_ms: int = field(default_factory=lambda: int(time.time() * 1000))
     audit_count: int = 0
     tokens_input: int = 0
     tokens_output: int = 0
+    cost_usd: float = 0.0
     aborted: bool = False
+    # Why the run was aborted, surfaced to the model and the caller.
+    abort_reason: str = ""
+
+    def elapsed_ms(self, now: int | None = None) -> int:
+        return (now if now is not None else int(time.time() * 1000)) - self.started_at_ms
 
 
 @dataclass
