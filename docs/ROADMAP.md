@@ -5,7 +5,7 @@ concrete enough to pick up in a single session.
 
 **Repos:** `felix-run/felix` (harness) · `felix-run/web` (chat-ui + float + docs)
 **Live:** [api.felix.run](https://api.felix.run) · [chat.felix.run](https://chat.felix.run) · [float.felix.run](https://float.felix.run) · [docs.felix.run](https://docs.felix.run)
-**Last reviewed:** 2026-08-22 (post governance + inbound screening; DX / CI hardening)
+**Last reviewed:** 2026-08-23 (post harness audit wave, PRs #34–#41)
 
 ---
 
@@ -127,6 +127,53 @@ Files: `packages/harness/src/felix/sdk.py`,
       (`agentcore` / `do` / `sqlite`) and any other unused fields after
       enforce-or-drop decisions above.
 
+#### From the harness audit (Aug 2026)
+
+Deferred deliberately; each has a written reason, not just a lack of time.
+
+- [ ] **Governed coding toolset** — `read` / `write` / `edit` / `bash` / `grep`
+      / `find` behind a `FilesystemBackend` + `ShellBackend` protocol pair under
+      a new `felix/exec/`, every method returning a result rather than raising,
+      with a stable backend-independent error-code set. Would unify
+      workspace / sandbox / container / client-bridge execution behind one seam,
+      and wrapped in the governance stack it is a product a local coding agent
+      structurally cannot ship. **Large, and conditional**: only worth starting
+      if coding-agent use cases are actually on the roadmap, because a
+      half-built tool suite is worse than none. Design notes worth stealing when
+      it happens: multi-edit applied against original offsets, fuzzy matching
+      that rewrites only touched lines and copies the rest byte-for-byte,
+      read truncation that tells the model the exact `offset=` to resume from,
+      bounded rolling output capture that spills to a temp file and names it.
+- [ ] **Split-turn compaction** — when one turn alone exceeds
+      `keep_recent_tokens` the cut lands mid-turn and a single summary has to
+      cover both sides of it. Two summaries with different prompts and budgets
+      (history, then a turn-prefix) is the fix. Narrow: only bites on very long
+      single turns.
+- [ ] **Tools carry their own prompt copy** — a `prompt_line` and
+      `prompt_guidance` on `Tool`, assembled in `manifests/builder.py`, so the
+      system prompt is *derived* from the active tool set instead of
+      hand-maintained. Removes a drift class rather than fixing a live bug; a
+      tool with no `prompt_line` stays deliberately invisible to the model.
+- [ ] **Telemetry vocabulary** — OTel and Prometheus are wired but there is no
+      span/attribute vocabulary and no schema. Most of the value was the
+      conformance-suite pattern, which `tests/conformance/` already has.
+- [ ] **Scripted model provider** — a `scripted` provider in
+      `patterns/model_registry.py` to replace the ad-hoc doubles each test file
+      builds. Convenience: the doubles work, and this would not find bugs.
+- [ ] **Long-context price tiers** — `estimate_cost` supports request-wide
+      tiers but **no bundled entry sets them**, so any provider that bills long
+      context at a premium is still under-counted, and `limits.max_cost_usd`
+      fails closed on that number. Needs current rates per deployment via a
+      manifest price override. `gpt-4.1` likewise has no bundled rate and bills
+      at the default.
+- [ ] **`uv --exclude-newer`** — refuse dependency versions published in the
+      last day or two, the analogue of an npm `min-release-age`. Cheap; the rest
+      of the supply-chain posture is already covered.
+- [~] **`react.py` is 928 lines against a 600 budget** — the duplicated loop is
+      gone (that was the real defect); what remains is one sequential turn loop
+      plus session plumbing. Splitting further trades readability for a number.
+      Revisit only if it grows again.
+
 ### Product (`felix-run/web`)
 
 - [ ] **Session-control UX gaps** — export JSONL from UI, clearer
@@ -190,10 +237,59 @@ remainder, none of it blocking.
 - [!] **Merging web into `felix`** — keep repos split.
 - [!] **Third-party TUI / CBOR / npm package installer** — session/loop
       ideas only; composition is YAML + `felix.plugins` entry points.
+- [!] **Multi-cursor session views ("lanes")** — several named cursors over one
+      entry tree, each with its own leaf and queue, as a substitute for
+      multi-writer storage. Elegant, but `fork` / `rewind` plus Redis leases
+      already cover what Felix does; this would be a session-layer rewrite for a
+      problem not yet hit.
+- [~] **Snapshot-authoritative streaming** — every command result carries the
+      full post-command snapshot with a monotonic `revision`, and progress
+      deltas are explicitly advisory and never reduced into authoritative state.
+      A better contract than the current SSE union. Not worth doing on its own —
+      fold it into **wire-contract snapshot** under Repo / release hygiene when
+      that lands.
+- [~] **Shared vs exclusive session leases** — leases are binary today. Distinct
+      shared/exclusive modes with asymmetric detach-vs-dispose semantics are
+      worth remembering when reconnect-to-snapshot UX gets built.
 
 ---
 
 ## Shipped (recent)
+
+### Harness audit wave (Aug 2026)
+
+Cross-harness audit that set out to find portable packages and mostly found
+bugs — fifteen of them, clustered almost entirely in code that existed in two
+copies with nothing comparing them, or in code nothing exercised.
+
+- [x] Truncated turns executed their tool calls, past command screening —
+      arguments can be cut off mid-write and still parse (#34)
+- [x] Extended thinking was write-only: sent, never read back, never replayed,
+      so a thinking manifest lost its reasoning at the first tool call (#34)
+- [x] Flat pricing, generic 429 retry, and unguarded parallel writes (#34)
+- [x] Model metadata was three tables with three matching rules that disagreed
+      on `claude-opus-4-5`'s context window; one record now, and the dead
+      `context_window` field that let them drift is gone (#35)
+- [x] Compaction sized itself to a hardcoded 128K regardless of the model (#35)
+- [x] **Streaming ran the inference twice** — double billed, half metered
+      against fail-closed budgets, and the streamed text could differ from what
+      was saved (#36)
+- [x] Provider context-overflow was a hard failure instead of compact-and-retry,
+      including two providers that overflow without raising (#37)
+- [x] `invoke` and `stream_events` were two copies of one loop that had drifted:
+      streaming wrote **no** turn-level audit record, did not record an abort,
+      and drained follow-ups after a fatal tool error (#38)
+- [x] In-memory stores were never checked against the Postgres ones they stand
+      in for; one contract, both backends, and a CI job that fails rather than
+      skips when the database is missing (#39)
+- [x] A run killed mid-tool left a thread that could not be resumed at all, and
+      `Tool.replay_safe` now says whether a tool may be re-run; adding it
+      exposed that wrapper cloning silently dropped unknown fields (#40)
+- [x] Side requests — compaction, memory, screening, branch summaries — spent
+      the conversation's prompt cache (#41)
+
+PRs `#34` … `#41`. Remaining items are under **Next → Harness → From the
+harness audit**.
 
 ### DX / CI hardening wave (Aug 2026)
 
