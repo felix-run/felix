@@ -11,6 +11,7 @@ costs nothing at runtime and cannot be satisfied by mocking.
 from __future__ import annotations
 
 import ast
+import importlib.util
 import re
 from pathlib import Path
 
@@ -174,4 +175,26 @@ def test_env_example_documents_every_setting() -> None:
         "Every FELIX_ setting belongs in .env.example, commented out if it is not part "
         "of a normal deployment, so operators can discover it:\n  "
         + "\n  ".join(f"FELIX_{name.upper()}" for name in missing)
+    )
+
+
+# --------------------------------------------------------------------------
+# The editor-facing JSON Schema tracks the pydantic models it is generated from.
+# --------------------------------------------------------------------------
+def test_manifest_json_schema_is_current() -> None:
+    spec = importlib.util.spec_from_file_location(
+        "_gen_manifest_schema", ROOT / "scripts" / "gen-manifest-schema.py"
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    checked_in = ROOT / "schemas" / "manifest.schema.json"
+    assert checked_in.exists(), (
+        "schemas/manifest.schema.json is missing — the bundled manifests point their "
+        "yaml-language-server header at it. Run: make schema"
+    )
+    assert checked_in.read_text(encoding="utf-8") == module.render(), (
+        "schemas/manifest.schema.json is stale relative to felix.manifests.schema.Manifest.\n"
+        "It is generated, not hand-edited — run: make schema"
     )
