@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A single 429 failed the whole run.** There was no retry anywhere in the model layer:
+  `_is_provider_error` existed but was only consulted by `_FallbackClient` to advance to
+  the next *model*, and no bundled manifest configures `spec.model.fallbacks`. Requests
+  now retry rate limits and transient upstream failures (408/409/429/5xx) with
+  exponential backoff and jitter, honouring the provider's `Retry-After` when present —
+  seconds or HTTP-date. Three attempts total, so a blip is absorbed without hanging a
+  run; non-retryable statuses are not retried. Falls through to `_FallbackClient`
+  afterwards exactly as before.
+- **Prompt caching was invalidated on every turn.** Recalled memory facts were appended
+  to the system prompt, and Anthropic renders `tools → system → messages` with caching as
+  a prefix match — so a block that changes whenever memory captures a fact moved the
+  cached prefix constantly and `cache_read_input_tokens` would sit near zero. Facts are
+  now rendered as a per-run user-role prelude, which also keeps model-extracted text —
+  which can originate in tool output — out of the developer-tier instruction channel.
+
+
 - **Thinking levels were broken against every current Claude model.** The Anthropic
   request builder emitted one shape for all of them:
   `thinking: {"type": "enabled", "budget_tokens": N}` plus `temperature: 1`. Both are

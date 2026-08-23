@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import random
+import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol, runtime_checkable
@@ -268,6 +271,91 @@ def _map_stop(raw: Any, table: dict[str, StopReason], *, had_tool_calls: bool) -
     return "tool_use" if had_tool_calls else "end_turn"
 
 
+# Retried statuses: rate limiting and transient upstream failures. 4xx other than these
+# will not succeed on a retry, so retrying them just burns latency.
+_RETRY_STATUSES = frozenset({408, 409, 429, 500, 502, 503, 504})
+MODEL_MAX_RETRIES = 2  # three attempts total
+_BASE_BACKOFF_S = 0.5
+_MAX_BACKOFF_S = 20.0
+
+
+def _retry_after_seconds(resp: Any) -> float | None:
+    """Honour the provider's own Retry-After, in seconds or as an HTTP date."""
+    raw = ""
+    try:
+        raw = (resp.headers.get("retry-after") or "").strip()
+    except Exception:
+        return None
+    if not raw:
+        return None
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        pass
+    try:
+        from email.utils import parsedate_to_datetime
+
+        when = parsedate_to_datetime(raw)
+        if when is None:
+            return None
+        delta = when.timestamp() - time.time()
+        return max(0.0, delta)
+    except Exception:
+        return None
+
+
+def _backoff_delay(attempt: int, retry_after: float | None) -> float:
+    """Exponential backoff with jitter, never shorter than the provider asked for."""
+    if retry_after is not None:
+        return min(retry_after, _MAX_BACKOFF_S)
+    base = min(_BASE_BACKOFF_S * (2**attempt), _MAX_BACKOFF_S)
+    # Jitter spreads retries from concurrent runs; not a security decision.
+    return base + random.uniform(0, base / 2)
+
+
+async def _post_with_retry(
+    client: Any,
+    url: str,
+    *,
+    label: str,
+    json: dict[str, Any],
+    headers: dict[str, str],
+    max_retries: int = MODEL_MAX_RETRIES,
+) -> Any:
+    """POST, retrying rate limits and transient upstream failures.
+
+    There was no retry anywhere in this layer: `_is_provider_error` existed but was only
+    consulted by `_FallbackClient` to advance to the next *model*, and with no
+    `spec.fallbacks` configured — the default in every bundled manifest — a single 429
+    failed the whole run.
+    """
+    last: Exception | None = None
+    for attempt in range(max_retries + 1):
+        try:
+            resp = await client.post(url, json=json, headers=headers)
+        except httpx.HTTPError as exc:
+            last = exc
+            if attempt >= max_retries:
+                raise
+            await asyncio.sleep(_backoff_delay(attempt, None))
+            continue
+        if resp.status_code in _RETRY_STATUSES and attempt < max_retries:
+            delay = _backoff_delay(attempt, _retry_after_seconds(resp))
+            record_counter("felix_model_retry", {"provider": label, "status": str(resp.status_code)})
+            logger.warning(
+                "%s returned %s; retrying in %.1fs (attempt %d/%d)",
+                label,
+                resp.status_code,
+                delay,
+                attempt + 1,
+                max_retries,
+            )
+            await asyncio.sleep(delay)
+            continue
+        return resp
+    raise last if last is not None else RuntimeError("unreachable")
+
+
 def _openai_usage(usage_raw: dict[str, Any]) -> TokenUsage:
     # prompt_tokens already includes cached tokens.
     return TokenUsage(
@@ -499,8 +587,12 @@ class _HttpModelClient:
         apply_openai_thinking_cache(body, self.spec)
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
         async with httpx.AsyncClient(timeout=120.0) as client:
-            resp = await client.post(
-                f"{self.base_url.rstrip('/')}/chat/completions", json=body, headers=headers
+            resp = await _post_with_retry(
+                client,
+                f"{self.base_url.rstrip('/')}/chat/completions",
+                label="openai",
+                json=body,
+                headers=headers,
             )
             if resp.status_code >= 400:
                 raise ModelGatewayError("openai", resp.status_code, resp.text)
@@ -581,8 +673,10 @@ class _HttpModelClient:
             "Content-Type": "application/json",
         }
         async with httpx.AsyncClient(timeout=120.0) as client:
-            resp = await client.post(
+            resp = await _post_with_retry(
+                client,
                 f"{self.base_url.rstrip('/')}/v1/messages",
+                label="anthropic",
                 json=body,
                 headers=headers,
             )

@@ -1116,6 +1116,10 @@ async def build_agent(
                     f"{system_prompt}\n\n---\n\n{catalog_block}" if system_prompt else catalog_block
                 )
 
+        # Recalled facts, rendered as a per-run prelude rather than folded into the
+        # system prompt. Empty when memory is disabled or has nothing stored.
+        context_prelude = ""
+
         # Inject active long-term facts when memory capture/store is enabled.
         memory_capture = m.spec.memory.capture
         if (
@@ -1126,15 +1130,21 @@ async def build_agent(
             try:
                 from felix.memory.capture import active_facts_prompt
 
-                facts_block = await active_facts_prompt(
+                # Deliberately NOT appended to the system prompt. Two reasons:
+                #
+                # 1. Cache. Anthropic renders tools -> system -> messages and caching is a
+                #    prefix match, so anything that changes invalidates everything after
+                #    it. This block changes whenever memory capture writes a fact, which
+                #    is often, so folding it into `system` meant the cache breakpoint sat
+                #    on a prefix that moved every turn — cache_read_input_tokens near zero.
+                # 2. Trust. These facts are model-extracted from earlier turns and can
+                #    carry text that originated in tool output. They are reference
+                #    material, not developer-tier instructions.
+                context_prelude = await active_facts_prompt(
                     deps.settings,
                     tenant_id,
                     manifest_id=m.metadata.name,
                 )
-                if facts_block:
-                    system_prompt = (
-                        f"{system_prompt}\n\n---\n\n{facts_block}" if system_prompt else facts_block
-                    )
             except Exception:
                 logger.debug("active facts inject failed", exc_info=True)
 
@@ -1186,6 +1196,9 @@ async def build_agent(
                 "tools": resolved,
                 "sub_agents": sub_agents,
                 "system_prompt": final_prompt,
+                # Volatile, per-run reference material. Kept out of `system` so the
+                # cached prefix stays stable across turns.
+                "context_prelude": context_prelude,
                 "manifest_id": m.metadata.name,
                 "manifest_version": m.metadata.version,
                 "recursion_limit": m.spec.recursion_limit,

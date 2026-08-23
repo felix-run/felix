@@ -92,6 +92,7 @@ class _ReactAgent:
     settings: Any
     recursion_limit: int
     limits: Any = None
+    context_prelude: str = ""
     session_store: Any | None = None
     session_strategy: Any | None = None
     tenant_id: str = "default"
@@ -537,6 +538,19 @@ class _ReactAgent:
             return True
         return False
 
+    def _prelude_messages(self) -> list[ChatMessage]:
+        """Volatile per-run reference material, kept out of the cached system prefix.
+
+        Recalled memory facts used to be appended to the system prompt. Caching is a
+        prefix match over tools -> system -> messages, so a block that changes whenever
+        memory writes a fact invalidated the whole cached prefix every turn. Rendering it
+        as user-role material also keeps model-extracted text — which can originate in
+        tool output — out of the developer-tier instruction channel.
+        """
+        if not self.context_prelude:
+            return []
+        return [ChatMessage(role="user", content=self.context_prelude)]
+
     async def invoke(self, input: InvokeInput) -> InvokeOutput:
         if not getattr(input, "thinking_level", None) and input.thread_id:
             level = await self._load_thinking_level(input.thread_id)
@@ -551,6 +565,7 @@ class _ReactAgent:
 
         messages: list[ChatMessage] = [
             ChatMessage(role="system", content=self.system_prompt),
+            *self._prelude_messages(),
             *input.messages,
         ]
         if input.thread_id and self.session_store is not None and self.session_strategy is not None:
@@ -733,6 +748,7 @@ class _ReactAgent:
 
         messages: list[ChatMessage] = [
             ChatMessage(role="system", content=self.system_prompt),
+            *self._prelude_messages(),
             *input.messages,
         ]
         if input.thread_id and self.session_store is not None and self.session_strategy is not None:
@@ -979,6 +995,7 @@ def build_react_agent(ctx: PatternBuildContext) -> Agent:
         settings=ctx.get("settings"),
         recursion_limit=limit,
         limits=ctx.get("limits"),
+        context_prelude=str(ctx.get("context_prelude") or ""),
         session_store=ctx.get("session_store"),
         session_strategy=ctx.get("session_strategy"),
         tenant_id=str(ctx.get("tenant_id") or "default"),
