@@ -217,8 +217,10 @@ override) or by the built-in defaults:
 | `gpt-4.1` / `gpt-4.1-mini` | openai | same |
 | `llama-3-pro` / `llama-3-fast` | ollama | `llama3.3:70b` / `llama3.2` |
 
-Model calls retry rate limits and transient upstream failures with backoff, honouring `Retry-After`;
-`spec.model.fallbacks` still switches models once retries are exhausted. Recalled memory facts are
+Model calls retry rate limits and transient upstream failures with backoff, honouring `Retry-After`
+up to a ceiling; a 429 that reports a spent quota or a billing problem is returned straight away,
+since that will not clear inside the request. `spec.model.fallbacks` still switches models once
+retries are exhausted. Recalled memory facts are
 rendered as a per-run prelude rather than folded into the system prompt, so the cached prompt prefix
 stays stable across turns.
 
@@ -226,6 +228,12 @@ Request parameters are selected per model in `patterns/capabilities.py`: the cur
 generation takes adaptive thinking plus `output_config.effort`, while pre-4.6 models take a fixed
 `budget_tokens`. `spec.model.thinking_budget` works on both — it is translated to an effort level
 where budgets are no longer accepted.
+
+Extended thinking is stateful once tools are involved: the provider signs each thinking block, and
+a later turn replaying a tool call has to replay the signed reasoning that produced it. Thinking
+blocks are captured off the response, persisted on the session event, and replayed ahead of the
+`tool_use` blocks on the next request. A block whose signature was not captured is dropped rather
+than sent, because an unverifiable signature rejects the whole turn.
 
 ### Manifest capabilities
 

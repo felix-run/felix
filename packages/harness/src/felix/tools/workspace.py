@@ -155,6 +155,21 @@ async def _read_file(args: ReadFileArgs) -> str:
     )
 
 
+_write_locks: dict[str, asyncio.Lock] = {}
+
+
+def _write_lock(target: Path) -> asyncio.Lock:
+    """One lock per resolved path, so parallel tool calls cannot interleave on a file.
+
+    `spec.tool_execution: parallel` runs a batch with `asyncio.gather`, and two calls in
+    one batch can name the same file — directly, or by two paths that resolve to it
+    through a symlink. Appends would interleave mid-write and a write racing an append
+    would drop one of them. The key is the resolved path, so aliases share a lock; the
+    map is process-local, which is the same scope as the writes it is ordering.
+    """
+    return _write_locks.setdefault(str(target), asyncio.Lock())
+
+
 async def _write_file(args: WriteFileArgs) -> str:
     try:
         root = _workspace_root()
@@ -165,12 +180,13 @@ async def _write_file(args: WriteFileArgs) -> str:
     if len(payload) > _MAX_WRITE_BYTES:
         return f"error: content exceeds {_MAX_WRITE_BYTES} bytes"
     try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if args.append and target.exists():
-            with target.open("ab") as fh:
-                fh.write(payload)
-        else:
-            target.write_bytes(payload)
+        async with _write_lock(target):
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if args.append and target.exists():
+                with target.open("ab") as fh:
+                    fh.write(payload)
+            else:
+                target.write_bytes(payload)
     except OSError as exc:
         return f"error: {exc}"
     return json.dumps(

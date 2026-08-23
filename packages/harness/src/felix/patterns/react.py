@@ -61,6 +61,39 @@ def _status_for_stop(stop: str) -> str:
     return "complete"
 
 
+def _quarantine_truncated_tool_calls(assistant: ChatMessage) -> list[ChatMessage]:
+    """Fail every tool call on a response the model did not finish writing.
+
+    A turn that stops on `max_tokens` can still carry a syntactically complete `tool_use`
+    block whose arguments were cut off mid-write: the JSON parses, so the call validates,
+    and nothing downstream can tell it apart from a call the model finished. Executing it
+    runs a *different* action than the one the model intended — `{"path": "/srv/app/tmp"}`
+    truncated to `{"path": "/srv"}` is a valid call to the wrong target.
+
+    That also slips past governance rather than being caught by it: command screening
+    inspects the arguments it is handed, so a shortened path or a `rm -rf` that lost its
+    tail screens clean. The whole batch is failed rather than any part of it executed —
+    a tool call is only trustworthy if the message carrying it was finished.
+    """
+    quarantined: list[ChatMessage] = []
+    for call in assistant.tool_calls or []:
+        if not call.id:
+            call.id = f"call_{uuid.uuid4().hex[:12]}"
+        quarantined.append(
+            ChatMessage(
+                role="tool",
+                tool_call_id=call.id,
+                name=call.name,
+                content=(
+                    "[error/truncated] The model reached its output limit while writing "
+                    "this tool call, so the arguments may be incomplete and it was not "
+                    "executed. Retry with a shorter request or a higher max_tokens."
+                ),
+            )
+        )
+    return quarantined
+
+
 def _clamp(value: int, ceiling: int) -> int:
     return min(max(value, 1), ceiling)
 
@@ -414,6 +447,26 @@ class _ReactAgent:
         except Exception:
             logger.debug("session append failed", exc_info=True)
 
+    def _note_stop_reason(self, stop_reason: str, thread_id: str | None) -> str:
+        """Record a stop reason and return the session status it implies.
+
+        `getattr` at the call sites: a plugin-supplied ModelClient (or a test double) may
+        not populate `stop_reason`, and that must not break the run.
+        """
+        status = _status_for_stop(stop_reason)
+        if status != "complete":
+            logger.warning(
+                "run ended on stop_reason=%s (manifest=%s thread=%s)",
+                stop_reason,
+                self.manifest_id,
+                thread_id,
+            )
+            record_counter(
+                "felix_run_stop_reason",
+                {"manifest_id": self.manifest_id, "reason": stop_reason},
+            )
+        return status
+
     async def _run_tool_batch(
         self,
         calls: list[ToolCall],
@@ -646,27 +699,32 @@ class _ReactAgent:
                 produced.append(assistant)
                 final = assistant
 
-                if not assistant.tool_calls:
-                    # The loop never inspected stop_reason, so a response truncated at
-                    # max_tokens or declined by a safety classifier was recorded as a
-                    # normal completion and handed back as if it were the answer.
-                    # getattr: a plugin-supplied ModelClient (or a test double) may not
-                    # populate stop_reason, and that must not break the run.
-                    stop_reason = getattr(result, "stop_reason", "end_turn")
-                    status = _status_for_stop(stop_reason)
-                    if status != "complete":
-                        logger.warning(
-                            "run ended on stop_reason=%s (manifest=%s thread=%s)",
-                            stop_reason,
-                            self.manifest_id,
-                            input.thread_id,
-                        )
-                        record_counter(
-                            "felix_run_stop_reason",
-                            {"manifest_id": self.manifest_id, "reason": stop_reason},
-                        )
+                # The loop never inspected stop_reason, so a response truncated at
+                # max_tokens or declined by a safety classifier was recorded as a
+                # normal completion and handed back as if it were the answer.
+                stop_reason = getattr(result, "stop_reason", "end_turn")
+
+                if assistant.tool_calls and stop_reason == "max_tokens":
+                    # Tool calls on an unfinished message may carry arguments that were
+                    # cut off mid-write but still parse. Fail the batch, never run it.
+                    tool_msgs = _quarantine_truncated_tool_calls(assistant)
+                    for tool_msg in tool_msgs:
+                        messages.append(tool_msg)
+                        produced.append(tool_msg)
                     await self._append_produced(
-                        input.thread_id, [assistant], usage=usage_block, status=status
+                        input.thread_id,
+                        [assistant, *tool_msgs],
+                        usage=usage_block,
+                        status=self._note_stop_reason(stop_reason, input.thread_id),
+                    )
+                    break
+
+                if not assistant.tool_calls:
+                    await self._append_produced(
+                        input.thread_id,
+                        [assistant],
+                        usage=usage_block,
+                        status=self._note_stop_reason(stop_reason, input.thread_id),
                     )
                     break
 
@@ -840,27 +898,32 @@ class _ReactAgent:
                 messages.append(assistant)
                 produced.append(assistant)
                 final = assistant
-                if not assistant.tool_calls:
-                    # The loop never inspected stop_reason, so a response truncated at
-                    # max_tokens or declined by a safety classifier was recorded as a
-                    # normal completion and handed back as if it were the answer.
-                    # getattr: a plugin-supplied ModelClient (or a test double) may not
-                    # populate stop_reason, and that must not break the run.
-                    stop_reason = getattr(result, "stop_reason", "end_turn")
-                    status = _status_for_stop(stop_reason)
-                    if status != "complete":
-                        logger.warning(
-                            "run ended on stop_reason=%s (manifest=%s thread=%s)",
-                            stop_reason,
-                            self.manifest_id,
-                            input.thread_id,
-                        )
-                        record_counter(
-                            "felix_run_stop_reason",
-                            {"manifest_id": self.manifest_id, "reason": stop_reason},
-                        )
+                # The loop never inspected stop_reason, so a response truncated at
+                # max_tokens or declined by a safety classifier was recorded as a
+                # normal completion and handed back as if it were the answer.
+                stop_reason = getattr(result, "stop_reason", "end_turn")
+
+                if assistant.tool_calls and stop_reason == "max_tokens":
+                    # Tool calls on an unfinished message may carry arguments that were
+                    # cut off mid-write but still parse. Fail the batch, never run it.
+                    tool_msgs = _quarantine_truncated_tool_calls(assistant)
+                    for tool_msg in tool_msgs:
+                        messages.append(tool_msg)
+                        produced.append(tool_msg)
                     await self._append_produced(
-                        input.thread_id, [assistant], usage=usage_block, status=status
+                        input.thread_id,
+                        [assistant, *tool_msgs],
+                        usage=usage_block,
+                        status=self._note_stop_reason(stop_reason, input.thread_id),
+                    )
+                    break
+
+                if not assistant.tool_calls:
+                    await self._append_produced(
+                        input.thread_id,
+                        [assistant],
+                        usage=usage_block,
+                        status=self._note_stop_reason(stop_reason, input.thread_id),
                     )
                     break
 
