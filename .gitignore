@@ -55,3 +55,6 @@ uv.lock.bak
 # Local agent workspace mount
 workspace/*
 !workspace/README.md
+
+# Cursor: agent plans are scratch, keep them local
+.cursor/plans/

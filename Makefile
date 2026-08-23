@@ -1,4 +1,4 @@
-.PHONY: help install install-full install-warehouse lint fmt type test check dev up up-lite up-gcp up-full down cli seed migrate doctor docker-build
+.PHONY: help install install-full install-warehouse lint fmt type test check dev dev-key up up-lite up-gcp up-full down cli seed migrate doctor docker-build
 
 COMPOSE := docker compose -f deploy/docker/compose.yml --project-directory .
 COMPOSE_LITE := $(COMPOSE) -f deploy/docker/compose.lite.yml
@@ -58,19 +58,23 @@ check: lint type test
 dev:
 	@echo "Felix -> http://localhost:$${FELIX_PORT:-8080}"
 	@echo "Set ANTHROPIC_API_KEY / OPENAI_API_KEY, or point FELIX_OLLAMA_BASE_URL at Ollama."
-	FELIX_ALLOW_INSECURE=true FELIX_AUTH_MODE=none FELIX_OBJECT_STORE=$${FELIX_OBJECT_STORE:-fs} \
+	FELIX_ALLOW_INSECURE=true FELIX_AUTH_MODE=none FELIX_HOST=127.0.0.1 \
+		FELIX_OBJECT_STORE=$${FELIX_OBJECT_STORE:-fs} \
 		uv run felix-api
 
-up:
+dev-key:
+	@./scripts/dev-key.sh
+
+up: dev-key
 	$(COMPOSE) up --build
 
-up-lite:
+up-lite: dev-key
 	$(COMPOSE_LITE) up --build
 
-up-gcp:
+up-gcp: dev-key
 	FELIX_DOCKER_EXTRAS=$${FELIX_DOCKER_EXTRAS:-gcp} $(COMPOSE_GCP) up --build -d
 
-up-full:
+up-full: dev-key
 	FELIX_DOCKER_EXTRAS=$${FELIX_DOCKER_EXTRAS:-aws} FELIX_OBJECT_STORE=s3 \
 		$(COMPOSE) --profile full up --build
 

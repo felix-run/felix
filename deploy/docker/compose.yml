@@ -8,9 +8,14 @@ name: felix
 
 x-felix-env: &felix-env
   FELIX_ENVIRONMENT: ${FELIX_ENVIRONMENT:-development}
-  FELIX_ALLOW_INSECURE: ${FELIX_ALLOW_INSECURE:-true}
-  FELIX_AUTH_MODE: ${FELIX_AUTH_MODE:-none}
-  FELIX_AUTH_API_KEYS: ${FELIX_AUTH_API_KEYS:-}
+  FELIX_ALLOW_INSECURE: ${FELIX_ALLOW_INSECURE:-false}
+  # The container binds 0.0.0.0 and the port is published, so this must not default to
+  # `none` — that would expose PUT /manifests, and with it stdio MCP command execution.
+  # `make up` runs scripts/dev-key.sh, which writes a local key into .env on first run.
+  FELIX_AUTH_MODE: ${FELIX_AUTH_MODE:-api_key}
+  FELIX_AUTH_API_KEYS: ${FELIX_AUTH_API_KEYS:?run `make up` (or scripts/dev-key.sh) to generate a local API key}
+  # Commands MCP stdio servers may spawn. Empty = stdio disabled (the default).
+  FELIX_MCP_STDIO_ALLOWED_COMMANDS: ${FELIX_MCP_STDIO_ALLOWED_COMMANDS:-}
   FELIX_CONSUMER_SHARED_SECRET: ${FELIX_CONSUMER_SHARED_SECRET:-}
   FELIX_DATABASE_URL: postgresql+psycopg://felix:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (openssl rand -hex 32)}@postgres:5432/felix
   FELIX_REDIS_URL: redis://valkey:6379/0
@@ -39,7 +44,7 @@ services:
     image: felix:latest
     command: ["felix-api"]
     ports:
-      - "${FELIX_PORT:-8080}:8080"
+      - "${FELIX_BIND_ADDR:-127.0.0.1}:${FELIX_PORT:-8080}:8080"
     environment:
       <<: *felix-env
       # Default to filesystem store so lean images work without MinIO/aws extra.
