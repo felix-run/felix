@@ -256,6 +256,13 @@ Sessions and skills:
   — `compacting` sizes itself to the model's context window unless `spec.session.context_window_tokens` says otherwise, and compacts once more if the provider
   rejects a request for length anyway
 
+A tool declares whether it may be re-run after a crash. A run that dies mid-tool leaves a call
+with no result, and the harness cannot tell from the outside whether the effect happened, so the
+call is closed out with an `[error/interrupted]` result before the thread resumes — without which
+the provider rejects the whole transcript for an unanswered tool call. `replay_safe=True` tells the
+model the call is safe to repeat; the default is that it is not, because re-running a search costs
+latency while re-running a payment charges twice.
+
 Outbound integrations, all declared on the manifest:
 
 | Field | Binds to |
