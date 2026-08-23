@@ -204,6 +204,12 @@ step:
 | `max_input_tokens` / `max_output_tokens` | Accumulated tokens, including cache reads and writes. |
 | `max_cost_usd` | Accumulated spend, priced from the model catalog. |
 
+Budgets only bound what they can see. A streaming turn used to run the inference twice —
+once to stream for display, once to get the authoritative answer — while metering only
+the second, so `max_cost_usd`, `max_input_tokens` and `max_output_tokens` counted roughly
+half of what a streaming run actually spent and admitted about twice the intended budget.
+A streaming turn is now a single metered call.
+
 Because `max_cost_usd` fails closed, the price table behind it is a control input rather
 than reporting. Rates live on the model catalog (`felix/model_catalog.py`) alongside
 context window and request quirks, so a model is priced and described in one place.

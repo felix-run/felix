@@ -15,7 +15,7 @@ from felix.hooks import run_after_tool, run_before_tool, run_before_turn, run_fi
 from felix.manifests.schema import ABSOLUTE_LIMITS, ModelSpec
 from felix.observability.metrics import record_counter
 from felix.observability.tracing import with_span
-from felix.patterns.model import build_model, record_usage
+from felix.patterns.model import ModelChatResult, build_model, record_usage
 from felix.patterns.registry import PatternBuildContext, register_pattern
 from felix.patterns.types import (
     Agent,
@@ -862,26 +862,61 @@ class _ReactAgent:
                 if injected:
                     messages.extend(injected)
 
+                active_tools = self._active_tools(messages)
                 chunks: list[str] = []
-                async for delta in model.stream(messages, self._active_tools(messages)):
-                    if input.thread_id and await is_aborted(tenant_id, input.thread_id):
-                        break
-                    chunks.append(delta)
-                    yield Event(
-                        event="text_delta",
-                        data={"chunk": {"content": delta}, "delta": delta},
-                    )
-                    yield Event(
-                        event="session_progress",
-                        data={
-                            "progress": {
-                                "type": "assistant_delta",
-                                "kind": "text",
-                                "delta": delta,
-                            }
-                        },
-                    )
-                result = await model.chat(messages, self._active_tools(messages))
+                result: ModelChatResult | None = None
+                stream_turn = getattr(model, "stream_turn", None)
+
+                if stream_turn is not None:
+                    # One request for the whole turn. See `stream_turn` for why the
+                    # stream-then-chat pair it replaces was worse than it looked.
+                    async for item in stream_turn(messages, active_tools):
+                        if isinstance(item, ModelChatResult):
+                            result = item
+                            continue
+                        if input.thread_id and await is_aborted(tenant_id, input.thread_id):
+                            break
+                        if item.kind == "text":
+                            chunks.append(item.text)
+                            yield Event(
+                                event="text_delta",
+                                data={"chunk": {"content": item.text}, "delta": item.text},
+                            )
+                        yield Event(
+                            event="session_progress",
+                            data={
+                                "progress": {
+                                    "type": "assistant_delta",
+                                    "kind": item.kind,
+                                    "delta": item.text,
+                                }
+                            },
+                        )
+
+                if result is None:
+                    # A provider that only implements `stream()` cannot report tool calls
+                    # or usage from the streamed request, so the authoritative turn still
+                    # costs a second call. Plugin-supplied clients land here.
+                    async for delta in model.stream(messages, active_tools):
+                        if input.thread_id and await is_aborted(tenant_id, input.thread_id):
+                            break
+                        chunks.append(delta)
+                        yield Event(
+                            event="text_delta",
+                            data={"chunk": {"content": delta}, "delta": delta},
+                        )
+                        yield Event(
+                            event="session_progress",
+                            data={
+                                "progress": {
+                                    "type": "assistant_delta",
+                                    "kind": "text",
+                                    "delta": delta,
+                                }
+                            },
+                        )
+                    result = await model.chat(messages, active_tools)
+
                 record_usage(result, manifest_id=self.manifest_id, model_id=model.model_id)
                 usage_block = None
                 if result.usage:

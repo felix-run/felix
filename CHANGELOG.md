@@ -25,6 +25,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A streaming turn is one model call instead of two.** `stream_events` streamed a turn
+  for display and then called `chat()` for the real answer, so every streaming turn ran
+  the whole inference twice. The input was billed twice; only the second call was
+  metered, so `limits.max_cost_usd` and the token budgets counted roughly half of what a
+  streaming run spent and admitted about twice the intended budget; and the answer was
+  sampled twice, so the text a user watched arrive could differ from the text that was
+  saved. The streamed request also carried no tools, which is why the second call existed
+  at all. `stream_turn` now yields display deltas and finishes by yielding the
+  authoritative result — same message, tool calls, stop reason and usage. Providers that
+  implement only `stream()` keep the previous two-call behaviour.
+- **Streamed tool-call arguments are parsed and repaired.** Arguments arrive as JSON
+  fragments concatenated across events, and models routinely emit raw control characters
+  and invalid backslash escapes inside string literals. Both are repaired before parsing;
+  a fragment that is still unparseable yields empty arguments — rejected by schema
+  validation downstream — rather than raising and losing the turn.
 - **Model metadata is one record instead of three tables.** Context window, max output,
   price, accepted request parameters, thinking support, and modalities lived in
   `patterns/capabilities.py` (longest **prefix** wins), `usage/catalog.py` (**substring**,

@@ -7,6 +7,7 @@ import json
 import logging
 import random
 import time
+import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol, runtime_checkable
@@ -61,6 +62,18 @@ class ModelChatOptions:
     temperature: float | None = None
     max_tokens: int | None = None
     signal: Any | None = None
+
+
+@dataclass(slots=True)
+class StreamDelta:
+    """One incremental piece of an assistant turn.
+
+    Yielded by `stream_turn` for display. Tool-call arguments are accumulated rather than
+    surfaced, because a partial argument object is not something a caller can act on.
+    """
+
+    kind: Literal["text", "thinking"] = "text"
+    text: str = ""
 
 
 @dataclass(slots=True)
@@ -386,6 +399,62 @@ async def _post_with_retry(
     raise last if last is not None else RuntimeError("unreachable")
 
 
+def _parse_tool_arguments(raw: str) -> dict[str, Any]:
+    """Parse tool-call arguments accumulated from a stream, repairing what is repairable.
+
+    Arguments arrive as JSON fragments concatenated across many events. Models routinely
+    emit raw control characters inside string literals and invalid backslash escapes,
+    which are not legal JSON, so a strict parse throws away an otherwise complete call.
+    Repair those two, then try once more.
+
+    A fragment that is still unparseable yields `{}` rather than raising: the call is
+    surfaced to the loop, where a tool invoked with the wrong arguments is refused by
+    schema validation, which is a better failure than an exception that loses the turn.
+    Genuinely truncated calls are caught earlier, by the `max_tokens` quarantine.
+    """
+    text = (raw or "").strip()
+    if not text:
+        return {}
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        try:
+            parsed = json.loads(_repair_json(text))
+        except json.JSONDecodeError:
+            logger.warning("unparseable streamed tool arguments (%d chars)", len(text))
+            return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _repair_json(text: str) -> str:
+    """Escape raw control characters and doubtful backslashes inside JSON string literals."""
+    out: list[str] = []
+    in_string = False
+    escaped = False
+    for ch in text:
+        if escaped:
+            # A backslash that does not begin a legal escape is itself literal data.
+            out.append(ch if ch in '"\\/bfnrtu' else "\\" + ch)
+            escaped = False
+            continue
+        if ch == "\\" and in_string:
+            escaped = True
+            out.append(ch)
+            continue
+        if ch == '"':
+            in_string = not in_string
+            out.append(ch)
+            continue
+        if in_string and ch in "\n\r\t":
+            out.append({"\n": "\\n", "\r": "\\r", "\t": "\\t"}[ch])
+            continue
+        if in_string and ord(ch) < 0x20:
+            out.append(f"\\u{ord(ch):04x}")
+            continue
+        out.append(ch)
+    return "".join(out)
+
+
 def _openai_usage(usage_raw: dict[str, Any]) -> TokenUsage:
     # prompt_tokens already includes cached tokens.
     return TokenUsage(
@@ -629,13 +698,13 @@ class _HttpModelClient:
             return await self._chat_anthropic(messages, tools, temperature, max_tokens)
         return await self._chat_openai(messages, tools, temperature, max_tokens)
 
-    async def _chat_openai(
+    def _openai_body(
         self,
         messages: list[ChatMessage],
         tools: list[Tool],
         temperature: float,
         max_tokens: int | None,
-    ) -> ModelChatResult:
+    ) -> dict[str, Any]:
         body: dict[str, Any] = {
             "model": self.route.model,
             "messages": _messages_to_openai(messages),
@@ -646,6 +715,16 @@ class _HttpModelClient:
         if tools:
             body["tools"] = _tools_to_openai(tools)
         apply_openai_thinking_cache(body, self.spec)
+        return body
+
+    async def _chat_openai(
+        self,
+        messages: list[ChatMessage],
+        tools: list[Tool],
+        temperature: float,
+        max_tokens: int | None,
+    ) -> ModelChatResult:
+        body = self._openai_body(messages, tools, temperature, max_tokens)
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
         async with httpx.AsyncClient(timeout=120.0) as client:
             resp = await _post_with_retry(
@@ -673,13 +752,13 @@ class _HttpModelClient:
             usage=_openai_usage(usage_raw),
         )
 
-    async def _chat_anthropic(
+    def _anthropic_body(
         self,
         messages: list[ChatMessage],
         tools: list[Tool],
         temperature: float,
         max_tokens: int | None,
-    ) -> ModelChatResult:
+    ) -> dict[str, Any]:
         system = ""
         converted: list[dict[str, Any]] = []
         for m in messages:
@@ -731,6 +810,16 @@ class _HttpModelClient:
                 for t in tools
             ]
         apply_anthropic_thinking_cache(body, self.spec, self.route.model)
+        return body
+
+    async def _chat_anthropic(
+        self,
+        messages: list[ChatMessage],
+        tools: list[Tool],
+        temperature: float,
+        max_tokens: int | None,
+    ) -> ModelChatResult:
+        body = self._anthropic_body(messages, tools, temperature, max_tokens)
         headers = {
             "x-api-key": self.api_key,
             "anthropic-version": "2023-06-01",
@@ -780,6 +869,232 @@ class _HttpModelClient:
                 cache_creation=int(usage_raw.get("cache_creation_input_tokens") or 0),
                 cache_read=int(usage_raw.get("cache_read_input_tokens") or 0),
             ),
+        )
+
+    async def stream_turn(
+        self,
+        messages: list[ChatMessage],
+        tools: list[Tool],
+        opts: ModelChatOptions | None = None,
+    ) -> AsyncIterator[StreamDelta | ModelChatResult]:
+        """Stream one turn in a single request, ending with the authoritative result.
+
+        The agent loop used to stream a turn for display and then call `chat()` to get
+        the real answer — two full inferences for one turn. That billed the input twice,
+        metered only the second (so `limits.max_cost_usd` and the token budgets counted
+        roughly half of what a streaming run actually spent), and sampled the answer
+        twice, so the text a user watched arrive could differ from the text that was
+        saved. It also meant the streamed request carried no tools at all.
+
+        One request now yields display deltas and finishes by yielding the
+        `ModelChatResult` — same message, tool calls, stop reason and usage that `chat()`
+        would have returned. Callers distinguish the final item by type.
+        """
+        opts = opts or ModelChatOptions()
+        temperature = (
+            opts.temperature if opts.temperature is not None else getattr(self.spec, "temperature", 0)
+        )
+        max_tokens = opts.max_tokens or getattr(self.spec, "max_tokens", None)
+        if self.style == "anthropic":
+            async for item in self._stream_turn_anthropic(messages, tools, temperature, max_tokens):
+                yield item
+            return
+        async for item in self._stream_turn_openai(messages, tools, temperature, max_tokens):
+            yield item
+
+    async def _stream_turn_anthropic(
+        self,
+        messages: list[ChatMessage],
+        tools: list[Tool],
+        temperature: float,
+        max_tokens: int | None,
+    ) -> AsyncIterator[StreamDelta | ModelChatResult]:
+        body = self._anthropic_body(messages, tools, temperature, max_tokens)
+        body["stream"] = True
+        headers = {
+            "x-api-key": self.api_key,
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+        }
+
+        text_parts: list[str] = []
+        thinking_by_index: dict[int, dict[str, Any]] = {}
+        tools_by_index: dict[int, dict[str, Any]] = {}
+        usage = TokenUsage()
+        raw_stop: str | None = None
+
+        async with (
+            httpx.AsyncClient(timeout=120.0) as client,
+            client.stream(
+                "POST",
+                f"{self.base_url.rstrip('/')}/v1/messages",
+                json=body,
+                headers=headers,
+            ) as resp,
+        ):
+            if resp.status_code >= 400:
+                raw = await resp.aread()
+                raise ModelGatewayError("anthropic", resp.status_code, raw.decode("utf-8", errors="replace"))
+            async for line in resp.aiter_lines():
+                if not line.startswith("data:"):
+                    continue
+                payload = line[5:].strip()
+                if not payload or payload == "[DONE]":
+                    continue
+                try:
+                    data = json.loads(payload)
+                except json.JSONDecodeError:
+                    continue
+                kind = data.get("type")
+
+                if kind == "message_start":
+                    raw_usage = (data.get("message") or {}).get("usage") or {}
+                    usage.input = int(raw_usage.get("input_tokens") or 0)
+                    usage.cache_creation = int(raw_usage.get("cache_creation_input_tokens") or 0)
+                    usage.cache_read = int(raw_usage.get("cache_read_input_tokens") or 0)
+                elif kind == "content_block_start":
+                    index = int(data.get("index") or 0)
+                    block = data.get("content_block") or {}
+                    btype = block.get("type")
+                    if btype == "tool_use":
+                        tools_by_index[index] = {
+                            "id": str(block.get("id") or ""),
+                            "name": str(block.get("name") or ""),
+                            "json": "",
+                        }
+                    elif btype in ("thinking", "redacted_thinking"):
+                        thinking_by_index[index] = dict(block)
+                    elif btype == "text" and block.get("text"):
+                        text_parts.append(str(block["text"]))
+                        yield StreamDelta(kind="text", text=str(block["text"]))
+                elif kind == "content_block_delta":
+                    index = int(data.get("index") or 0)
+                    delta = data.get("delta") or {}
+                    dtype = delta.get("type")
+                    if dtype == "text_delta" and delta.get("text"):
+                        text_parts.append(str(delta["text"]))
+                        yield StreamDelta(kind="text", text=str(delta["text"]))
+                    elif dtype == "thinking_delta" and delta.get("thinking"):
+                        block = thinking_by_index.setdefault(index, {"type": "thinking", "thinking": ""})
+                        block["thinking"] = str(block.get("thinking") or "") + str(delta["thinking"])
+                        yield StreamDelta(kind="thinking", text=str(delta["thinking"]))
+                    elif dtype == "signature_delta" and delta.get("signature"):
+                        block = thinking_by_index.setdefault(index, {"type": "thinking", "thinking": ""})
+                        block["signature"] = str(block.get("signature") or "") + str(delta["signature"])
+                    elif dtype == "input_json_delta":
+                        entry = tools_by_index.setdefault(index, {"id": "", "name": "", "json": ""})
+                        entry["json"] = str(entry["json"]) + str(delta.get("partial_json") or "")
+                elif kind == "message_delta":
+                    raw_stop = (data.get("delta") or {}).get("stop_reason") or raw_stop
+                    out = (data.get("usage") or {}).get("output_tokens")
+                    if out is not None:
+                        usage.output = int(out)
+
+        tool_calls = [
+            ToolCall(
+                id=entry["id"] or f"call_{uuid.uuid4().hex[:12]}",
+                name=str(entry["name"]),
+                args=_parse_tool_arguments(entry["json"]),
+            )
+            for _, entry in sorted(tools_by_index.items())
+            if entry.get("name")
+        ]
+        thinking = [thinking_by_index[i] for i in sorted(thinking_by_index)]
+        yield ModelChatResult(
+            message=ChatMessage(
+                role="assistant",
+                content="".join(text_parts),
+                tool_calls=tool_calls or None,
+                thinking=thinking or None,
+            ),
+            stop_reason=_map_stop(raw_stop, _ANTHROPIC_STOP, had_tool_calls=bool(tool_calls)),
+            usage=usage,
+        )
+
+    async def _stream_turn_openai(
+        self,
+        messages: list[ChatMessage],
+        tools: list[Tool],
+        temperature: float,
+        max_tokens: int | None,
+    ) -> AsyncIterator[StreamDelta | ModelChatResult]:
+        body = self._openai_body(messages, tools, temperature, max_tokens)
+        body["stream"] = True
+        # Usage is omitted from a streamed response unless it is asked for, and without
+        # it a streaming turn would meter as zero tokens.
+        body["stream_options"] = {"include_usage": True}
+        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+
+        text_parts: list[str] = []
+        tools_by_index: dict[int, dict[str, Any]] = {}
+        usage = TokenUsage()
+        raw_stop: str | None = None
+
+        async with (
+            httpx.AsyncClient(timeout=120.0) as client,
+            client.stream(
+                "POST",
+                f"{self.base_url.rstrip('/')}/chat/completions",
+                json=body,
+                headers=headers,
+            ) as resp,
+        ):
+            if resp.status_code >= 400:
+                raw = await resp.aread()
+                raise ModelGatewayError("openai", resp.status_code, raw.decode("utf-8", errors="replace"))
+            async for line in resp.aiter_lines():
+                if not line:
+                    continue
+                if line.startswith("data:"):
+                    payload = line[5:].strip()
+                elif line.startswith("{"):
+                    payload = line.strip()
+                else:
+                    continue
+                if payload == "[DONE]":
+                    break
+                try:
+                    data = json.loads(payload)
+                except json.JSONDecodeError:
+                    continue
+
+                if data.get("usage"):
+                    usage = _openai_usage(data["usage"])
+                for choice in data.get("choices") or []:
+                    raw_stop = choice.get("finish_reason") or raw_stop
+                    delta = choice.get("delta") or {}
+                    content = delta.get("content")
+                    if content:
+                        text_parts.append(str(content))
+                        yield StreamDelta(kind="text", text=str(content))
+                    for raw_call in delta.get("tool_calls") or []:
+                        index = int(raw_call.get("index") or 0)
+                        entry = tools_by_index.setdefault(index, {"id": "", "name": "", "json": ""})
+                        if raw_call.get("id"):
+                            entry["id"] = str(raw_call["id"])
+                        fn = raw_call.get("function") or {}
+                        if fn.get("name"):
+                            entry["name"] = str(fn["name"])
+                        if fn.get("arguments"):
+                            entry["json"] = str(entry["json"]) + str(fn["arguments"])
+
+        tool_calls = [
+            ToolCall(
+                id=entry["id"] or f"call_{uuid.uuid4().hex[:12]}",
+                name=str(entry["name"]),
+                args=_parse_tool_arguments(entry["json"]),
+            )
+            for _, entry in sorted(tools_by_index.items())
+            if entry.get("name")
+        ]
+        yield ModelChatResult(
+            message=ChatMessage(
+                role="assistant",
+                content="".join(text_parts),
+                tool_calls=tool_calls or None,
+            ),
+            stop_reason=_map_stop(raw_stop, _OPENAI_STOP, had_tool_calls=bool(tool_calls)),
+            usage=usage,
         )
 
     async def stream(
@@ -978,6 +1293,47 @@ class _FallbackClient:
         assert last_err is not None
         raise last_err
 
+    async def stream_turn(
+        self,
+        messages: list[ChatMessage],
+        tools: list[Tool],
+        opts: ModelChatOptions | None = None,
+    ) -> AsyncIterator[StreamDelta | ModelChatResult]:
+        """Advance to the next model on a provider error, but only before anything shipped.
+
+        Once a delta has been yielded the caller has already rendered it, so switching
+        models mid-stream would splice two different answers together. After that point
+        the error propagates instead.
+        """
+        chain = [self.primary, *self.fallbacks]
+        last_err: Exception | None = None
+        for i, client in enumerate(chain):
+            emitted = False
+            turn = getattr(client, "stream_turn", None)
+            if turn is None:
+                continue
+            try:
+                async for item in turn(messages, tools, opts):
+                    emitted = True
+                    yield item
+                if i > 0:
+                    record_counter(
+                        "felix_model_switch",
+                        {
+                            "from": self.primary.model_id,
+                            "to": client.model_id,
+                            "reason": "provider_error",
+                        },
+                    )
+                return
+            except Exception as exc:
+                if emitted or not _is_provider_error(exc):
+                    raise
+                last_err = exc
+                continue
+        if last_err is not None:
+            raise last_err
+
     async def stream(
         self,
         messages: list[ChatMessage],
@@ -1042,6 +1398,25 @@ class _EscalationClient:
             },
         )
         return await self.escalate_to.chat(messages, tools, opts)
+
+    async def stream_turn(
+        self,
+        messages: list[ChatMessage],
+        tools: list[Tool],
+        opts: ModelChatOptions | None = None,
+    ) -> AsyncIterator[StreamDelta | ModelChatResult]:
+        """Escalation needs the finished reply to judge confidence, so it cannot stream.
+
+        The answer is settled first and then chunked for a smooth SSE render. That is one
+        model call, not two, so the metering and divergence problems do not apply — only
+        the time-to-first-token, which escalation trades away by design.
+        """
+        result = await self.chat(messages, tools, opts)
+        text = result.message.content or ""
+        step = 48
+        for i in range(0, len(text), step):
+            yield StreamDelta(kind="text", text=text[i : i + step])
+        yield result
 
     async def stream(
         self,
