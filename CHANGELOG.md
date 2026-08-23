@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Untrusted content no longer reaches the system/developer trust tier.** The wrapper
+  stack exists to keep tool output untrusted; three paths promoted it anyway.
+  *Compaction* fed a raw transcript — including tool output from MCP servers, web pages,
+  and files — to a summarizer with no fencing, then re-injected the model's reply as
+  `role="system"` **and persisted it**, so it replayed on every later turn and outranked
+  the user, after the original tool result had been dropped. The transcript is now fenced
+  and labelled as data, the summarizer is told never to adopt instructions found inside,
+  and the summary is emitted as user-role reference material.
+  *The skills catalog* interpolated `skill.description` — from a tenant-writable
+  `SKILL.md` in the object store — into the **system prompt** with no XML escaping, so a
+  description containing `</description></skill></available_skills>` appended arbitrary
+  text to the highest-trust surface. Now escaped.
+  *Memory* captured model-repeated tool text as a durable fact and injected it into the
+  next run's system prompt. Facts now carry provenance and render fenced as reference
+  material that cannot close its own fence.
+- **A safety judge with no model scored backwards.** `_heuristic_judge_score` ranked by
+  keyword overlap, so for a criterion like *"must not leak credentials or secrets"*,
+  output *containing* those words scored highest and **passed**, while benign output was
+  blocked. `JudgeRule.model` defaults to `""`, so any manifest declaring a safety judge
+  without a model got exactly that. Negative criteria now fail closed, and
+  `assert_absent:` / `assert_present:` express polarity explicitly.
 - **`auth.inbound.schemes` is now enforced against the caller.** It was only a
   compile-time check that *something* was set; it never constrained the request, so a
   manifest naming `[jwt]` accepted an `api_key` principal. The authenticated scheme is
@@ -20,22 +41,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   compile against the resolved route for the primary model and every `model.fallbacks`
   entry.
 
-### Changed
-
-- **`spec.a2a.publish` now controls agent-card discovery, and its default changed to
-  `true`.** The field was never read, so every agent was advertised regardless. Honouring
-  it with the previous `false` default would have 404'd `/.well-known/agent-card.json`
-  for every existing manifest, so the default now matches the behaviour deployments
-  already have and the field is an opt-*out*.
-- The agent card now emits `spec.skills` (it hardcoded `"skills": []`) and merges
-  `spec.a2a.capabilities` alongside the transport capabilities.
-- **`spec.observability.metrics` now allowlists counter names** for the manifest.
-  Previously the per-manifest list did nothing; counters outside the list are dropped
-  before the series is created, which also bounds Prometheus cardinality.
-- **`spec.anomaly` thresholds are read from the manifest.** `jobs/anomaly.py` used
-  hardcoded `MIN_VOLUME=10` / `BASELINE_FACTOR=3.0` and ignored the spec entirely, so
-  `enabled: false` did not disable anything. Findings now carry the thresholds that
-  produced them. `min_rate` remains unimplemented — see below.
 
 - **`spec.limits` budgets are now enforced.** `max_wall_clock_seconds`,
   `max_input_tokens`, and `max_output_tokens` were declared in the manifest schema,
@@ -57,7 +62,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `if req is not None:`, so with no request context every check was skipped. A tool
   invoked without a context is now denied rather than run unbudgeted.
 
+### Changed
+
+- **`spec.a2a.publish` now controls agent-card discovery, and its default changed to
+  `true`.** The field was never read, so every agent was advertised regardless. Honouring
+  it with the previous `false` default would have 404'd `/.well-known/agent-card.json`
+  for every existing manifest, so the default now matches the behaviour deployments
+  already have and the field is an opt-*out*.
+- The agent card now emits `spec.skills` (it hardcoded `"skills": []`) and merges
+  `spec.a2a.capabilities` alongside the transport capabilities.
+- **`spec.observability.metrics` now allowlists counter names** for the manifest.
+  Previously the per-manifest list did nothing; counters outside the list are dropped
+  before the series is created, which also bounds Prometheus cardinality.
+- **`spec.anomaly` thresholds are read from the manifest.** `jobs/anomaly.py` used
+  hardcoded `MIN_VOLUME=10` / `BASELINE_FACTOR=3.0` and ignored the spec entirely, so
+  `enabled: false` did not disable anything. Findings now carry the thresholds that
+  produced them. `min_rate` remains unimplemented — see below.
+
 ### Fixed
+
+- Injection quarantine and PII redaction crashed on dict-shaped tool output.
+  `ToolOutput` includes `dict[str, Any]`, but both wrappers did `out.content = ...`,
+  which raises `AttributeError` — so both controls silently degraded into "the tool
+  crashed". Both now use the existing `_replace_content` helper, which already handled
+  every shape.
+- Procedural memory returned the top-k arbitrary rows when nothing matched the query
+  (`return (scored or ranked)[:top_k]`), injecting irrelevant, possibly stale procedures
+  as instructions on every turn.
 
 - **Durable fibers could run the same step twice.** `resume_due_fibers` selected every
   fiber in `('running','pending')` with no lock, no limit, and no claim, while a fiber

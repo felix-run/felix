@@ -1,4 +1,4 @@
-.PHONY: help install install-full install-warehouse lint fmt type test check dev dev-key up up-lite up-gcp up-full down cli seed migrate doctor docker-build
+.PHONY: help schema install install-full install-warehouse lint fmt type test check dev dev-key up up-lite up-gcp up-full down cli seed migrate doctor docker-build
 
 COMPOSE := docker compose -f deploy/docker/compose.yml --project-directory .
 COMPOSE_LITE := $(COMPOSE) -f deploy/docker/compose.lite.yml
@@ -16,6 +16,7 @@ help:
 	@echo "  up-lite           + lite overlay (~2–4 GiB hosts)"
 	@echo "  up-gcp            + gcp+lite overlays (no DB/cache publish)"
 	@echo "  up-full           compose --profile full (MinIO; set FELIX_DOCKER_EXTRAS=aws)"
+	@echo "  schema            regenerate schemas/manifest.schema.json"
 	@echo "  down / cli / seed / migrate / doctor"
 	@echo "  Warehouse: FELIX_WAREHOUSE=duckdb + FELIX_DOCKER_EXTRAS=warehouse"
 
@@ -51,6 +52,11 @@ type:
 
 test:
 	./scripts/test.sh
+
+schema:
+	# schemas/manifest.schema.json backs the yaml-language-server header in
+	# manifests/*.yaml; test_invariants.py fails when it drifts from the models.
+	uv run python scripts/gen-manifest-schema.py
 
 check: lint type test
 	uv run ruff format --check .

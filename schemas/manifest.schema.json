@@ -1,0 +1,1853 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://felix.run/schemas/manifest.schema.json",
+  "$defs": {
+    "A2ACapability": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "input_schema_ref": {
+          "default": "",
+          "title": "Input Schema Ref",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "title": "A2ACapability",
+      "type": "object"
+    },
+    "A2APeerRef": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "url": {
+          "title": "Url",
+          "type": "string"
+        },
+        "auth": {
+          "default": "",
+          "title": "Auth",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "url"
+      ],
+      "title": "A2APeerRef",
+      "type": "object"
+    },
+    "A2APublishSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "publish": {
+          "default": true,
+          "title": "Publish",
+          "type": "boolean"
+        },
+        "capabilities": {
+          "items": {
+            "$ref": "#/$defs/A2ACapability"
+          },
+          "title": "Capabilities",
+          "type": "array"
+        }
+      },
+      "title": "A2APublishSpec",
+      "type": "object"
+    },
+    "AnomalySpec": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "default": true,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "min_volume": {
+          "default": 10,
+          "minimum": 1,
+          "title": "Min Volume",
+          "type": "integer"
+        },
+        "min_rate": {
+          "default": 0.2,
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Min Rate",
+          "type": "number"
+        },
+        "baseline_factor": {
+          "default": 3.0,
+          "minimum": 1,
+          "title": "Baseline Factor",
+          "type": "number"
+        }
+      },
+      "title": "AnomalySpec",
+      "type": "object"
+    },
+    "ApprovalRule": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "tools": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Tools",
+          "type": "array"
+        },
+        "ttl_seconds": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ttl Seconds"
+        },
+        "one_shot": {
+          "default": false,
+          "title": "One Shot",
+          "type": "boolean"
+        },
+        "bind_principal": {
+          "default": false,
+          "title": "Bind Principal",
+          "type": "boolean"
+        },
+        "allow_unattended": {
+          "default": false,
+          "title": "Allow Unattended",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "title": "ApprovalRule",
+      "type": "object"
+    },
+    "ArtifactsSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "default": false,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "threshold_chars": {
+          "default": 8000,
+          "minimum": 1,
+          "title": "Threshold Chars",
+          "type": "integer"
+        },
+        "preview_chars": {
+          "default": 200,
+          "minimum": 1,
+          "title": "Preview Chars",
+          "type": "integer"
+        },
+        "default_window_chars": {
+          "default": 4000,
+          "minimum": 1,
+          "title": "Default Window Chars",
+          "type": "integer"
+        },
+        "max_window_chars": {
+          "default": 16000,
+          "minimum": 1,
+          "title": "Max Window Chars",
+          "type": "integer"
+        }
+      },
+      "title": "ArtifactsSpec",
+      "type": "object"
+    },
+    "AuthRequirement": {
+      "additionalProperties": false,
+      "properties": {
+        "inbound": {
+          "$ref": "#/$defs/InboundAuth"
+        },
+        "outbound": {
+          "$ref": "#/$defs/OutboundAuth"
+        }
+      },
+      "title": "AuthRequirement",
+      "type": "object"
+    },
+    "BrowserToolRef": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "binding": {
+          "minLength": 1,
+          "title": "Binding",
+          "type": "string"
+        },
+        "op": {
+          "default": "content",
+          "enum": [
+            "content",
+            "links",
+            "snapshot",
+            "screenshot",
+            "pdf",
+            "json"
+          ],
+          "title": "Op",
+          "type": "string"
+        },
+        "timeout_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timeout Ms"
+        },
+        "path_prefix": {
+          "default": "",
+          "title": "Path Prefix",
+          "type": "string"
+        },
+        "args_schema": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Args Schema"
+        },
+        "fatal": {
+          "default": false,
+          "title": "Fatal",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "binding"
+      ],
+      "title": "BrowserToolRef",
+      "type": "object"
+    },
+    "ClientToolRef": {
+      "additionalProperties": false,
+      "description": "Tool executed by the connected client; the server waits for a result.",
+      "properties": {
+        "name": {
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "args_schema": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Args Schema"
+        },
+        "timeout_seconds": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "maximum": 3600,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timeout Seconds"
+        },
+        "fatal": {
+          "default": false,
+          "title": "Fatal",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "ClientToolRef",
+      "type": "object"
+    },
+    "CommandRule": {
+      "additionalProperties": false,
+      "properties": {
+        "pattern": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Pattern",
+          "type": "string"
+        },
+        "decision": {
+          "enum": [
+            "allow",
+            "deny",
+            "require_approval"
+          ],
+          "title": "Decision",
+          "type": "string"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        }
+      },
+      "required": [
+        "pattern",
+        "decision"
+      ],
+      "title": "CommandRule",
+      "type": "object"
+    },
+    "CommandScreening": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "default": false,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "include_defaults": {
+          "default": true,
+          "title": "Include Defaults",
+          "type": "boolean"
+        },
+        "rules": {
+          "items": {
+            "$ref": "#/$defs/CommandRule"
+          },
+          "title": "Rules",
+          "type": "array"
+        },
+        "target_tools": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Target Tools",
+          "type": "array"
+        },
+        "approval_ttl_seconds": {
+          "default": 300,
+          "exclusiveMinimum": 0,
+          "maximum": 86400,
+          "title": "Approval Ttl Seconds",
+          "type": "integer"
+        }
+      },
+      "title": "CommandScreening",
+      "type": "object"
+    },
+    "ConfidenceEscalation": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "default": false,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "escalate_to": {
+          "default": "",
+          "title": "Escalate To",
+          "type": "string"
+        },
+        "low_confidence_markers": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Low Confidence Markers",
+          "type": "array"
+        },
+        "min_response_chars": {
+          "default": 40,
+          "minimum": 0,
+          "title": "Min Response Chars",
+          "type": "integer"
+        }
+      },
+      "title": "ConfidenceEscalation",
+      "type": "object"
+    },
+    "ContainerRef": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "gateway_url": {
+          "title": "Gateway Url",
+          "type": "string"
+        },
+        "image": {
+          "minLength": 1,
+          "title": "Image",
+          "type": "string"
+        },
+        "container_tool_name": {
+          "default": "",
+          "title": "Container Tool Name",
+          "type": "string"
+        },
+        "timeout_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timeout Ms"
+        },
+        "auth": {
+          "default": "",
+          "title": "Auth",
+          "type": "string"
+        },
+        "args_schema": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Args Schema"
+        },
+        "fatal": {
+          "default": false,
+          "title": "Fatal",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "gateway_url",
+        "image"
+      ],
+      "title": "ContainerRef",
+      "type": "object"
+    },
+    "ContentScreening": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "default": false,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "model": {
+          "default": "",
+          "title": "Model",
+          "type": "string"
+        },
+        "tools": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Tools",
+          "type": "array"
+        },
+        "on_flag": {
+          "default": "quarantine",
+          "enum": [
+            "quarantine",
+            "block"
+          ],
+          "title": "On Flag",
+          "type": "string"
+        }
+      },
+      "title": "ContentScreening",
+      "type": "object"
+    },
+    "ExecutionSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "default": "transient",
+          "enum": [
+            "durable",
+            "transient"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "resume_token_ttl_seconds": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Resume Token Ttl Seconds"
+        },
+        "tools": {
+          "default": "sequential",
+          "enum": [
+            "parallel",
+            "sequential"
+          ],
+          "title": "Tools",
+          "type": "string"
+        }
+      },
+      "title": "ExecutionSpec",
+      "type": "object"
+    },
+    "GovernanceSpec": {
+      "additionalProperties": false,
+      "description": "Opt-in framework mapping \u2014 compile-time requirements, not a certification.",
+      "properties": {
+        "frameworks": {
+          "items": {
+            "enum": [
+              "soc2",
+              "eu_ai_act"
+            ],
+            "type": "string"
+          },
+          "title": "Frameworks",
+          "type": "array"
+        },
+        "risk_tier": {
+          "default": "limited",
+          "enum": [
+            "limited",
+            "high"
+          ],
+          "title": "Risk Tier",
+          "type": "string"
+        },
+        "transparency_notice": {
+          "default": false,
+          "title": "Transparency Notice",
+          "type": "boolean"
+        },
+        "forbid_plaintext_secrets": {
+          "default": false,
+          "title": "Forbid Plaintext Secrets",
+          "type": "boolean"
+        },
+        "pin_compile": {
+          "default": false,
+          "title": "Pin Compile",
+          "type": "boolean"
+        },
+        "retention_days": {
+          "anyOf": [
+            {
+              "maximum": 3650,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Retention Days"
+        }
+      },
+      "title": "GovernanceSpec",
+      "type": "object"
+    },
+    "Guardrails": {
+      "additionalProperties": false,
+      "properties": {
+        "providers": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Providers",
+          "type": "array"
+        },
+        "block_on_match": {
+          "default": false,
+          "title": "Block On Match",
+          "type": "boolean"
+        },
+        "targets": {
+          "items": {
+            "enum": [
+              "input",
+              "output",
+              "final_response"
+            ],
+            "type": "string"
+          },
+          "title": "Targets",
+          "type": "array"
+        },
+        "judges": {
+          "items": {
+            "$ref": "#/$defs/JudgeRule"
+          },
+          "title": "Judges",
+          "type": "array"
+        }
+      },
+      "title": "Guardrails",
+      "type": "object"
+    },
+    "InboundAuth": {
+      "additionalProperties": false,
+      "properties": {
+        "schemes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Schemes",
+          "type": "array"
+        },
+        "required_scopes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Required Scopes",
+          "type": "array"
+        },
+        "allow_anonymous": {
+          "default": false,
+          "title": "Allow Anonymous",
+          "type": "boolean"
+        }
+      },
+      "title": "InboundAuth",
+      "type": "object"
+    },
+    "JudgeRule": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "criteria": {
+          "minLength": 1,
+          "title": "Criteria",
+          "type": "string"
+        },
+        "threshold": {
+          "default": 0.7,
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Threshold",
+          "type": "number"
+        },
+        "model": {
+          "default": "",
+          "title": "Model",
+          "type": "string"
+        },
+        "target_tools": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Target Tools",
+          "type": "array"
+        },
+        "final_response": {
+          "default": false,
+          "title": "Final Response",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "criteria"
+      ],
+      "title": "JudgeRule",
+      "type": "object"
+    },
+    "Limits": {
+      "additionalProperties": false,
+      "properties": {
+        "max_tool_calls": {
+          "anyOf": [
+            {
+              "maximum": 500,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Tool Calls"
+        },
+        "max_wall_clock_seconds": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "maximum": 3600,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Wall Clock Seconds"
+        },
+        "max_peer_hops": {
+          "anyOf": [
+            {
+              "maximum": 5,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Peer Hops"
+        },
+        "max_input_tokens": {
+          "anyOf": [
+            {
+              "maximum": 1000000,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Input Tokens"
+        },
+        "max_output_tokens": {
+          "anyOf": [
+            {
+              "maximum": 100000,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Output Tokens"
+        },
+        "max_cost_usd": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "maximum": 1000.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Cost Usd"
+        },
+        "precount": {
+          "default": false,
+          "title": "Precount",
+          "type": "boolean"
+        }
+      },
+      "title": "Limits",
+      "type": "object"
+    },
+    "McpServerRef": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "url": {
+          "default": "",
+          "title": "Url",
+          "type": "string"
+        },
+        "command": {
+          "default": "",
+          "title": "Command",
+          "type": "string"
+        },
+        "args": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Args",
+          "type": "array"
+        },
+        "cwd": {
+          "default": "",
+          "title": "Cwd",
+          "type": "string"
+        },
+        "env": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Env",
+          "type": "object"
+        },
+        "auth": {
+          "default": "",
+          "title": "Auth",
+          "type": "string"
+        },
+        "transport": {
+          "default": "sse",
+          "enum": [
+            "http",
+            "sse",
+            "stdio"
+          ],
+          "title": "Transport",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "McpServerRef",
+      "type": "object"
+    },
+    "MemoryCapture": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "default": false,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "model": {
+          "default": "llama-3-fast",
+          "title": "Model",
+          "type": "string"
+        },
+        "max_facts": {
+          "default": 5,
+          "maximum": 20,
+          "minimum": 1,
+          "title": "Max Facts",
+          "type": "integer"
+        },
+        "min_chars": {
+          "default": 80,
+          "minimum": 0,
+          "title": "Min Chars",
+          "type": "integer"
+        }
+      },
+      "title": "MemoryCapture",
+      "type": "object"
+    },
+    "MemoryConsolidate": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "default": false,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "model": {
+          "default": "llama-3-fast",
+          "title": "Model",
+          "type": "string"
+        },
+        "after_facts": {
+          "default": 50,
+          "minimum": 10,
+          "title": "After Facts",
+          "type": "integer"
+        },
+        "max_facts": {
+          "default": 200,
+          "maximum": 500,
+          "minimum": 1,
+          "title": "Max Facts",
+          "type": "integer"
+        }
+      },
+      "title": "MemoryConsolidate",
+      "type": "object"
+    },
+    "MemorySpec": {
+      "additionalProperties": false,
+      "properties": {
+        "checkpointer": {
+          "default": "postgres",
+          "enum": [
+            "agentcore",
+            "sqlite",
+            "do",
+            "postgres",
+            "none"
+          ],
+          "title": "Checkpointer",
+          "type": "string"
+        },
+        "store": {
+          "default": "pgvector",
+          "enum": [
+            "agentcore",
+            "memory",
+            "vectorize",
+            "pgvector",
+            "none"
+          ],
+          "title": "Store",
+          "type": "string"
+        },
+        "capture": {
+          "$ref": "#/$defs/MemoryCapture"
+        },
+        "consolidate": {
+          "$ref": "#/$defs/MemoryConsolidate"
+        }
+      },
+      "title": "MemorySpec",
+      "type": "object"
+    },
+    "Metadata": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "version": {
+          "default": "1.0.0",
+          "title": "Version",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "tags": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Tags",
+          "type": "array"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "Metadata",
+      "type": "object"
+    },
+    "ModelSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Id"
+        },
+        "temperature": {
+          "default": 0.0,
+          "title": "Temperature",
+          "type": "number"
+        },
+        "max_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Tokens"
+        },
+        "region": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Region"
+        },
+        "cache": {
+          "default": false,
+          "title": "Cache",
+          "type": "boolean"
+        },
+        "thinking_budget": {
+          "anyOf": [
+            {
+              "maximum": 64000,
+              "minimum": 128,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Thinking Budget"
+        },
+        "thinking_level": {
+          "anyOf": [
+            {
+              "enum": [
+                "off",
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Thinking Level"
+        },
+        "fallbacks": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Fallbacks",
+          "type": "array"
+        },
+        "confidence_escalation": {
+          "$ref": "#/$defs/ConfidenceEscalation"
+        },
+        "price": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Price",
+          "type": "object"
+        }
+      },
+      "title": "ModelSpec",
+      "type": "object"
+    },
+    "ObservabilitySpec": {
+      "additionalProperties": false,
+      "properties": {
+        "trace": {
+          "default": true,
+          "title": "Trace",
+          "type": "boolean"
+        },
+        "metrics": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Metrics",
+          "type": "array"
+        }
+      },
+      "title": "ObservabilitySpec",
+      "type": "object"
+    },
+    "OutboundAuth": {
+      "additionalProperties": false,
+      "properties": {
+        "providers": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Providers",
+          "type": "array"
+        }
+      },
+      "title": "OutboundAuth",
+      "type": "object"
+    },
+    "PlanExecuteSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "planner_model": {
+          "default": "",
+          "title": "Planner Model",
+          "type": "string"
+        },
+        "executor_model": {
+          "default": "",
+          "title": "Executor Model",
+          "type": "string"
+        },
+        "max_subtasks": {
+          "default": 8,
+          "maximum": 20,
+          "minimum": 1,
+          "title": "Max Subtasks",
+          "type": "integer"
+        },
+        "replan_on_failure": {
+          "default": true,
+          "title": "Replan On Failure",
+          "type": "boolean"
+        },
+        "max_replans": {
+          "default": 2,
+          "maximum": 5,
+          "minimum": 0,
+          "title": "Max Replans",
+          "type": "integer"
+        },
+        "executor_recursion_limit": {
+          "default": 6,
+          "maximum": 20,
+          "minimum": 1,
+          "title": "Executor Recursion Limit",
+          "type": "integer"
+        },
+        "planner_few_shots": {
+          "default": 3,
+          "maximum": 10,
+          "minimum": 0,
+          "title": "Planner Few Shots",
+          "type": "integer"
+        }
+      },
+      "title": "PlanExecuteSpec",
+      "type": "object"
+    },
+    "Policy": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "required_scopes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Required Scopes",
+          "type": "array"
+        },
+        "tools": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Tools",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "title": "Policy",
+      "type": "object"
+    },
+    "ProceduralSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "default": false,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "top_k": {
+          "default": 3,
+          "minimum": 1,
+          "title": "Top K",
+          "type": "integer"
+        },
+        "embedding_model": {
+          "default": "bge-base-en-v1.5",
+          "title": "Embedding Model",
+          "type": "string"
+        }
+      },
+      "title": "ProceduralSpec",
+      "type": "object"
+    },
+    "PromptTemplateSpec": {
+      "additionalProperties": false,
+      "description": "Named user-message template expanded via ``$1`` / ``$@`` / ``${1:-default}``.",
+      "properties": {
+        "name": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "body": {
+          "default": "",
+          "title": "Body",
+          "type": "string"
+        },
+        "file": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "File"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "PromptTemplateSpec",
+      "type": "object"
+    },
+    "QueueRef": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "queue_binding": {
+          "minLength": 1,
+          "title": "Queue Binding",
+          "type": "string"
+        },
+        "deadline_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Deadline Ms"
+        },
+        "args_schema": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Args Schema"
+        },
+        "fatal": {
+          "default": false,
+          "title": "Fatal",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "queue_binding"
+      ],
+      "title": "QueueRef",
+      "type": "object"
+    },
+    "ReflectSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "verifier_model": {
+          "default": "",
+          "title": "Verifier Model",
+          "type": "string"
+        },
+        "threshold": {
+          "default": 0.7,
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Threshold",
+          "type": "number"
+        },
+        "max_iterations": {
+          "default": 2,
+          "maximum": 5,
+          "minimum": 1,
+          "title": "Max Iterations",
+          "type": "integer"
+        },
+        "criteria": {
+          "default": "",
+          "title": "Criteria",
+          "type": "string"
+        }
+      },
+      "title": "ReflectSpec",
+      "type": "object"
+    },
+    "SandboxRef": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "binding": {
+          "minLength": 1,
+          "title": "Binding",
+          "type": "string"
+        },
+        "sandbox_tool_name": {
+          "default": "",
+          "title": "Sandbox Tool Name",
+          "type": "string"
+        },
+        "timeout_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timeout Ms"
+        },
+        "path_prefix": {
+          "default": "",
+          "title": "Path Prefix",
+          "type": "string"
+        },
+        "args_schema": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Args Schema"
+        },
+        "fatal": {
+          "default": false,
+          "title": "Fatal",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "binding"
+      ],
+      "title": "SandboxRef",
+      "type": "object"
+    },
+    "SessionSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "strategy": {
+          "default": "full_replay",
+          "title": "Strategy",
+          "type": "string"
+        },
+        "compaction_enabled": {
+          "default": true,
+          "title": "Compaction Enabled",
+          "type": "boolean"
+        },
+        "reserve_tokens": {
+          "default": 16384,
+          "minimum": 0,
+          "title": "Reserve Tokens",
+          "type": "integer"
+        },
+        "keep_recent_tokens": {
+          "default": 20000,
+          "minimum": 0,
+          "title": "Keep Recent Tokens",
+          "type": "integer"
+        },
+        "context_window_tokens": {
+          "default": 128000,
+          "minimum": 1024,
+          "title": "Context Window Tokens",
+          "type": "integer"
+        },
+        "steering_mode": {
+          "default": "all",
+          "enum": [
+            "all",
+            "one-at-a-time"
+          ],
+          "title": "Steering Mode",
+          "type": "string"
+        },
+        "follow_up_mode": {
+          "default": "all",
+          "enum": [
+            "all",
+            "one-at-a-time"
+          ],
+          "title": "Follow Up Mode",
+          "type": "string"
+        },
+        "branch_summary": {
+          "default": true,
+          "title": "Branch Summary",
+          "type": "boolean"
+        },
+        "compact_after_turn": {
+          "default": false,
+          "title": "Compact After Turn",
+          "type": "boolean"
+        }
+      },
+      "title": "SessionSpec",
+      "type": "object"
+    },
+    "SkillRef": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Version"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "SkillRef",
+      "type": "object"
+    },
+    "Spec": {
+      "additionalProperties": false,
+      "properties": {
+        "pattern": {
+          "default": "react",
+          "title": "Pattern",
+          "type": "string"
+        },
+        "model": {
+          "$ref": "#/$defs/ModelSpec"
+        },
+        "system_prompt": {
+          "$ref": "#/$defs/SystemPrompt"
+        },
+        "prompts": {
+          "items": {
+            "$ref": "#/$defs/PromptTemplateSpec"
+          },
+          "title": "Prompts",
+          "type": "array"
+        },
+        "tools": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Tools",
+          "type": "array"
+        },
+        "skills": {
+          "items": {
+            "$ref": "#/$defs/SkillRef"
+          },
+          "title": "Skills",
+          "type": "array"
+        },
+        "mcp_servers": {
+          "items": {
+            "$ref": "#/$defs/McpServerRef"
+          },
+          "title": "Mcp Servers",
+          "type": "array"
+        },
+        "peers": {
+          "items": {
+            "$ref": "#/$defs/A2APeerRef"
+          },
+          "title": "Peers",
+          "type": "array"
+        },
+        "containers": {
+          "items": {
+            "$ref": "#/$defs/ContainerRef"
+          },
+          "title": "Containers",
+          "type": "array"
+        },
+        "queues": {
+          "items": {
+            "$ref": "#/$defs/QueueRef"
+          },
+          "title": "Queues",
+          "type": "array"
+        },
+        "sandboxes": {
+          "items": {
+            "$ref": "#/$defs/SandboxRef"
+          },
+          "title": "Sandboxes",
+          "type": "array"
+        },
+        "browser_tools": {
+          "items": {
+            "$ref": "#/$defs/BrowserToolRef"
+          },
+          "title": "Browser Tools",
+          "type": "array"
+        },
+        "client_tools": {
+          "items": {
+            "$ref": "#/$defs/ClientToolRef"
+          },
+          "title": "Client Tools",
+          "type": "array"
+        },
+        "sub_agents": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Sub Agents",
+          "type": "array"
+        },
+        "aggregator_prompt": {
+          "default": "",
+          "title": "Aggregator Prompt",
+          "type": "string"
+        },
+        "max_turns": {
+          "default": 4,
+          "maximum": 100,
+          "minimum": 1,
+          "title": "Max Turns",
+          "type": "integer"
+        },
+        "memory": {
+          "$ref": "#/$defs/MemorySpec"
+        },
+        "session": {
+          "$ref": "#/$defs/SessionSpec"
+        },
+        "auth": {
+          "$ref": "#/$defs/AuthRequirement"
+        },
+        "a2a": {
+          "$ref": "#/$defs/A2APublishSpec"
+        },
+        "observability": {
+          "$ref": "#/$defs/ObservabilitySpec"
+        },
+        "execution": {
+          "$ref": "#/$defs/ExecutionSpec"
+        },
+        "tools_retrieval": {
+          "$ref": "#/$defs/ToolsRetrievalSpec"
+        },
+        "artifacts": {
+          "$ref": "#/$defs/ArtifactsSpec"
+        },
+        "reflect": {
+          "$ref": "#/$defs/ReflectSpec"
+        },
+        "plan_execute": {
+          "$ref": "#/$defs/PlanExecuteSpec"
+        },
+        "procedural_memory": {
+          "$ref": "#/$defs/ProceduralSpec"
+        },
+        "policies": {
+          "items": {
+            "$ref": "#/$defs/Policy"
+          },
+          "title": "Policies",
+          "type": "array"
+        },
+        "limits": {
+          "$ref": "#/$defs/Limits"
+        },
+        "guardrails": {
+          "$ref": "#/$defs/Guardrails"
+        },
+        "content_screening": {
+          "$ref": "#/$defs/ContentScreening"
+        },
+        "command_screening": {
+          "$ref": "#/$defs/CommandScreening"
+        },
+        "anomaly": {
+          "$ref": "#/$defs/AnomalySpec"
+        },
+        "approvals": {
+          "items": {
+            "$ref": "#/$defs/ApprovalRule"
+          },
+          "title": "Approvals",
+          "type": "array"
+        },
+        "governance": {
+          "$ref": "#/$defs/GovernanceSpec"
+        },
+        "recursion_limit": {
+          "anyOf": [
+            {
+              "maximum": 50,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Recursion Limit"
+        }
+      },
+      "title": "Spec",
+      "type": "object"
+    },
+    "SystemPrompt": {
+      "additionalProperties": false,
+      "properties": {
+        "inline": {
+          "default": "",
+          "title": "Inline",
+          "type": "string"
+        },
+        "soul": {
+          "default": false,
+          "title": "Soul",
+          "type": "boolean"
+        },
+        "base": {
+          "default": "",
+          "title": "Base",
+          "type": "string"
+        },
+        "files": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Files",
+          "type": "array"
+        },
+        "system_md": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "System Md"
+        },
+        "append_system_md": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Append System Md"
+        }
+      },
+      "title": "SystemPrompt",
+      "type": "object"
+    },
+    "ToolsRetrievalSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "default": false,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "top_k": {
+          "default": 20,
+          "minimum": 1,
+          "title": "Top K",
+          "type": "integer"
+        },
+        "model": {
+          "default": "bge-base-en-v1.5",
+          "title": "Model",
+          "type": "string"
+        }
+      },
+      "title": "ToolsRetrievalSpec",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "apiVersion": {
+      "const": "felix/v1",
+      "default": "felix/v1",
+      "title": "Apiversion",
+      "type": "string"
+    },
+    "kind": {
+      "const": "Agent",
+      "default": "Agent",
+      "title": "Kind",
+      "type": "string"
+    },
+    "metadata": {
+      "$ref": "#/$defs/Metadata"
+    },
+    "spec": {
+      "$ref": "#/$defs/Spec"
+    }
+  },
+  "required": [
+    "metadata"
+  ],
+  "title": "Felix agent manifest (apiVersion: felix/v1, kind: Agent)",
+  "type": "object"
+}
