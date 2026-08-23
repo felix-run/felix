@@ -217,6 +217,11 @@ override) or by the built-in defaults:
 | `gpt-4.1` / `gpt-4.1-mini` | openai | same |
 | `llama-3-pro` / `llama-3-fast` | ollama | `llama3.3:70b` / `llama3.2` |
 
+A streaming turn is one model call. `POST /chat/stream` emits deltas from the same request that
+produces the turn's tool calls, usage and stop reason, so the text a client watches arrive is the
+text that gets saved. A provider integration that implements only the text-oriented `stream()` still
+falls back to streaming for display and calling the model again for the authoritative turn.
+
 Model calls retry rate limits and transient upstream failures with backoff, honouring `Retry-After`
 up to a ceiling; a 429 that reports a spent quota or a billing problem is returned straight away,
 since that will not clear inside the request. `spec.model.fallbacks` still switches models once
