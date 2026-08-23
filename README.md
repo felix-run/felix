@@ -3,22 +3,26 @@
 [![CI](https://github.com/felix-run/felix/actions/workflows/ci.yml/badge.svg)](https://github.com/felix-run/felix/actions/workflows/ci.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
-**Felix** is a self-hostable managed **agents harness**. You author agents as
-YAML manifests (`apiVersion: felix/v1`); Felix compiles them into governed
-agents with durable fibers, memory, skills, eval, approvals, and sandboxes —
-served over OpenAI, A2A, MCP, and SSE. Fork, rewind, and steer live runs.
-Deploy with Docker, Helm, AWS, or GCP on infrastructure you operate.
+**Felix** is a self-hostable **agents harness**. You author agents as YAML manifests
+(`apiVersion: felix/v1`); Felix compiles them into governed agents with durable fibers, memory,
+skills, eval, approvals, and sandboxes — served over REST/SSE, an OpenAI-compatible API, A2A, and
+MCP. Fork, rewind, and steer live runs. Deploy with Docker, Helm, AWS, or GCP on infrastructure you
+operate.
 
-Docs: [docs.felix.run](https://docs.felix.run) ·
-Web UI: [github.com/felix-run/web](https://github.com/felix-run/web) ·
-Roadmap: [docs/roadmap.md](docs/roadmap.md)
+📖 **[docs.felix.run](https://docs.felix.run)** — installation, concepts, manifest and API reference
+
+| | |
+|---|---|
+| Web UI | [github.com/felix-run/web](https://github.com/felix-run/web) |
+| Roadmap | [docs/ROADMAP.md](docs/ROADMAP.md) |
+| Changelog | [CHANGELOG.md](CHANGELOG.md) |
 
 ## What you get
 
 - **Manifests** — `felix/v1` YAML; bundled agents in `manifests/`
 - **Governance** — auth, approvals, audit, usage meters
-- **Durable execution** — fibers (Temporal optional), steer / follow-up
-- **Session control** — fork, rewind, compacting / windowed / semantic
+- **Durable execution** — fibers (Temporal optional), steer and follow-up
+- **Session control** — fork, rewind, compacting / windowed / semantic strategies
 - **Memory and skills** — durable facts, procedural memory, Agent Skills
 - **Surfaces** — REST/SSE, OpenAI-compatible `/v1`, A2A, MCP
 - **Eval** — datasets, fixtures, `--mock` CI path
@@ -28,27 +32,35 @@ Roadmap: [docs/roadmap.md](docs/roadmap.md)
 
 ```bash
 cp .env.example .env
-# set POSTGRES_PASSWORD (and MINIO_ROOT_PASSWORD only if using --profile full):
+# Set POSTGRES_PASSWORD (and MINIO_ROOT_PASSWORD only with --profile full):
 #   openssl rand -hex 32
 
 make install          # lean core + dev (small VMs / CI)
 make up               # api :8080, worker, pgvector, Valkey (fs object store)
-# make up-lite        # tighter memory caps for ~2–4 GiB hosts
-# make up-full        # + MinIO + aws extra (FELIX_DOCKER_EXTRAS=aws)
 make migrate
 curl -s http://localhost:8080/health | jq
 ```
 
-`make up` runs `scripts/dev-key.sh`, which writes a local API key into `.env` on first
-run and prints it. The stack is authenticated by default and publishes on `127.0.0.1`
-— set `FELIX_BIND_ADDR` to widen it, but only behind real auth. Export the key so the
-examples below work:
+Two alternatives to `make up`:
+
+```bash
+make up-lite          # tighter memory caps for ~2–4 GiB hosts
+make up-full          # adds MinIO and the aws extra (FELIX_DOCKER_EXTRAS=aws)
+```
+
+`make up` runs `scripts/dev-key.sh`, which writes a local API key into `.env` on first run and
+prints it. **The stack is authenticated by default** and publishes on `127.0.0.1` — set
+`FELIX_BIND_ADDR` to widen it, but only behind real auth.
+
+Export the key so the examples below work:
 
 ```bash
 export FELIX_KEY=$(grep -o 'sk-felix-local-[a-f0-9]*' .env | head -1)
 ```
 
-For cloud SDKs / embeddings / browser locally: `make install-full`.
+For cloud SDKs, embeddings, or browser tools locally, use `make install-full`.
+
+### Send a request
 
 Chat against the bundled `quick` manifest:
 
@@ -59,7 +71,7 @@ curl -s -X POST http://localhost:8080/chat \
   -d '{"manifest":"quick","messages":[{"role":"user","content":"What is 7 * 6?"}]}' | jq
 ```
 
-Or use the OpenAI-compatible surface (`model` = manifest name):
+Or use the OpenAI-compatible surface, where `model` is the manifest name:
 
 ```bash
 curl -s http://localhost:8080/v1/chat/completions \
@@ -68,61 +80,66 @@ curl -s http://localhost:8080/v1/chat/completions \
   -d '{"model":"quick","messages":[{"role":"user","content":"hi"}]}' | jq
 ```
 
-Local DX without Compose:
+### Local development without Compose
 
 ```bash
 make install
 make migrate
-make dev         # Granian on :8080 with FELIX_AUTH_MODE=none, FELIX_OBJECT_STORE=fs
-make cli         # httpx REPL client
-make check       # ruff + ty + pytest + format check (matches CI)
+make dev                      # Granian on :8080, FELIX_AUTH_MODE=none, FELIX_OBJECT_STORE=fs
+make cli                      # httpx REPL client
+make check                    # ruff + ty + pytest + format check (matches CI)
 ./scripts/test.sh -k <expr>   # one test; sets the in-memory stores the suite needs
 ```
 
-### Small VMs / lean Docker
+Run tests with `./scripts/test.sh`, never a bare `pytest` — the repo `.env` points at a real
+Postgres, so the suite would fail on connection errors that look like code bugs. See
+[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) for this and other recurring failure modes.
+
+## Deployment
+
+### Small VMs and lean images
 
 Default images and Compose stay **lean**:
 
 | Concern | Default | Full / cloud |
-|---------|---------|--------------|
-| Object store | `FELIX_OBJECT_STORE=fs` (local dir) | `s3` / `gcs` + `felix-harness[aws\|gcp]` |
+|---|---|---|
+| Object store | `FELIX_OBJECT_STORE=fs` (local dir) | `s3` or `gcs` + `felix-harness[aws]` / `felix-harness[gcp]` |
 | Image extras | none | `FELIX_DOCKER_EXTRAS=aws,gcp` |
 | Compose | api + worker + Postgres + Valkey | `--profile full` adds MinIO |
-| Memory | compose `mem_limit` caps | raise via `FELIX_*_MEM_LIMIT` |
+| Memory | Compose `mem_limit` caps | raise via `FELIX_*_MEM_LIMIT` |
 
 ```bash
 make up-lite   # deploy/docker/compose.lite.yml — ~2–4 GiB hosts
-make up-gcp    # GCE / public VM: no DB/cache host ports
+make up-gcp    # GCE / public VM: no DB or cache host ports
 ```
 
-Docker packaging lives under `deploy/docker/` (see that README). Always run Compose
-from the repo root (`make up` sets `--project-directory .`).
+Docker packaging lives under [`deploy/docker/`](deploy/docker/). Always run Compose from the repo
+root — `make up` sets `--project-directory .`.
 
-Heavy optional deps (Playwright, sentence-transformers, DuckDB, Presidio, Temporal)
-are **never** in the default image — install via extras only when needed.
+Heavy optional dependencies (Playwright, sentence-transformers, DuckDB, Presidio, Temporal) are
+**never** in the default image. Install them through extras only when needed.
 
-### Analytics warehouse (locked)
+### Analytics warehouse (optional)
 
-Postgres is the system of record. The warehouse is optional append-only spill
-for audit / eval analytics (worker flush after Postgres write).
+Postgres is the system of record. The warehouse is optional append-only spill for audit and eval
+analytics, flushed by the worker *after* the Postgres write.
 
-| Choice | When | Extra |
-|--------|------|-------|
-| `none` (lean default) | No analytics spill | — |
-| **`duckdb` (recommended)** | Small VMs, embedded file under `FELIX_DATA_DIR/warehouse` | `warehouse` |
-| `clickhouse` | High-volume audit / events scale-out | `warehouse-clickhouse` |
-| `doris` | Already operating Apache Doris / MySQL-protocol BI | `warehouse-doris` |
+| Choice | When to use it | Extra |
+|---|---|---|
+| `none` | Lean default; no analytics spill | — |
+| `duckdb` | **Recommended.** Small VMs; embedded file under `FELIX_DATA_DIR/warehouse` | `warehouse` |
+| `clickhouse` | High-volume audit and event scale-out | `warehouse-clickhouse` |
+| `doris` | Already operating Apache Doris or MySQL-protocol BI | `warehouse-doris` |
 
 ```bash
-uv sync --extra warehouse
-# or: make install-warehouse
-# FELIX_WAREHOUSE=duckdb
-# Docker: FELIX_DOCKER_EXTRAS=warehouse FELIX_WAREHOUSE=duckdb
+uv sync --extra warehouse     # or: make install-warehouse
+# Then set: FELIX_WAREHOUSE=duckdb
+# In Docker: FELIX_DOCKER_EXTRAS=warehouse FELIX_WAREHOUSE=duckdb
 ```
 
 ## Architecture
 
-```
+```text
 Client → Ingress (Caddy / Traefik / nginx / Cloudflare DNS+CDN)
            ├─ felix-api        (CPython 3.14, Granian, FastAPI)
            ├─ felix-worker     (Taskiq consumer)
@@ -131,33 +148,39 @@ Client → Ingress (Caddy / Traefik / nginx / Cloudflare DNS+CDN)
      Postgres+pgvector · Valkey · object store (fs | S3 | GCS)
 ```
 
-- **`apps/api`** — HTTP: `/chat`, `/v1`, `/a2a`, `/mcp`, management APIs, OpenAPI
-- **`apps/worker`** — background consumer: audit flush, scheduled jobs, memory consolidation, retention, anomaly, continuous eval, fiber resume
-- **`felix-scheduler`** — enqueues labeled Taskiq cron tasks (required alongside the worker)
-- **`packages/harness`** — manifests, patterns, tools, session, governance, auth, plugins
-- **`packages/cli`** — `felix migrate|eval|mint-jwt|bundle-manifests|validate-manifest|doctor|version|temporal-worker`
-- **`manifests/`** — bundled agents (`quick`, `deep`, `router`, `oss-only`, `hybrid-router`, `support`, `cowork`, `governed`)
+| Component | Responsibility |
+|---|---|
+| `apps/api` | HTTP: `/chat`, `/v1`, `/a2a`, `/mcp`, management APIs, OpenAPI |
+| `apps/worker` | Audit flush, scheduled jobs, memory consolidation, retention, anomaly scan, continuous eval, fiber resume |
+| `felix-scheduler` | Enqueues labeled Taskiq cron tasks — **required alongside the worker**, or nothing periodic fires |
+| `packages/harness` | Manifests, patterns, tools, session, governance, auth, plugins |
+| `packages/cli` | `felix migrate \| eval \| mint-jwt \| bundle-manifests \| validate-manifest \| doctor \| version \| temporal-worker` |
+| `manifests/` | Bundled agents: `quick`, `deep`, `router`, `oss-only`, `hybrid-router`, `support`, `cowork`, `governed` |
 
-Felix is **service- and cloud-agnostic**: the harness talks to Postgres, a
-cache, and an object store through Protocols — not a single vendor SDK.
-**AWS and GCP are first-class** (S3 / Secrets Manager / GCS / Secret Manager via
-optional extras `felix-harness[aws]` and `felix-harness[gcp]`). Small VMs can
-use `FELIX_OBJECT_STORE=fs` with zero cloud SDKs. Set
-`FELIX_OBJECT_STORE=s3|gcs|fs|memory` and `FELIX_SECRETS_BACKEND=env|file|aws|gcp`.
-Deploy notes: `deploy/aws/`, `deploy/gcp/`. Manifest secrets + opt-in SOC2 /
-EU AI Act mapping: [`deploy/GOVERNANCE.md`](deploy/GOVERNANCE.md). Helm: enable
-`persistence` when using
-`fs` so `/data` survives restarts. Production JWT/api_key deploys need
-`FELIX_CONSUMER_SHARED_SECRET` for `POST /internal/*`.
+### Vendor independence
 
-Felix runs on infrastructure **you** operate. Cloudflare DNS, CDN, TLS, and WAF
-in front of your origin are fine. There is **no** Cloudflare Workers / Durable
-Objects / Hyperdrive / R2-as-binding / Queues / Workflows compute in this stack.
+Felix is **service- and cloud-agnostic**: the harness talks to Postgres, a cache, and an object store
+through Protocols, not a single vendor SDK.
 
-## Protocols
+**AWS and GCP are first-class** — S3, Secrets Manager, GCS, and Secret Manager via the optional
+`felix-harness[aws]` and `felix-harness[gcp]` extras. Small VMs can use `FELIX_OBJECT_STORE=fs` with
+zero cloud SDKs.
+
+- Set `FELIX_OBJECT_STORE` to `s3`, `gcs`, `fs`, or `memory`
+- Set `FELIX_SECRETS_BACKEND` to `env`, `file`, `aws`, or `gcp`
+- Deploy notes: [`deploy/aws/`](deploy/aws/), [`deploy/gcp/`](deploy/gcp/)
+- Manifest secrets, plus opt-in SOC 2 and EU AI Act mapping: [`deploy/GOVERNANCE.md`](deploy/GOVERNANCE.md)
+- Helm: enable `persistence` when using `fs`, so `/data` survives restarts
+- Production JWT and api_key deploys need `FELIX_CONSUMER_SHARED_SECRET` for `POST /internal/*`
+
+Felix runs on infrastructure **you** operate. Cloudflare DNS, CDN, TLS, and WAF in front of your
+origin are fine. There is **no** Cloudflare Workers, Durable Objects, Hyperdrive, R2-as-binding,
+Queues, or Workflows compute in this stack.
+
+## API surfaces
 
 | Surface | Path |
-|---------|------|
+|---|---|
 | Direct REST / SSE | `POST /chat`, `POST /chat/stream` |
 | Durable run poll | `GET /chat/runs/{resume_token}` |
 | Steer / follow-up | `POST /chat/steer` |
@@ -174,12 +197,15 @@ Objects / Hyperdrive / R2-as-binding / Queues / Workflows compute in this stack.
 | MCP | `POST /mcp` |
 | Agent card | `GET /.well-known/agent-card.json` |
 
-Management: `/audit`, `/approvals`, `/plans`, `/jobs`, `/manifests`, `/eval`.
+Management surfaces: `/audit`, `/approvals`, `/plans`, `/jobs`, `/manifests`, `/eval`.
+
+Python client: `from felix.sdk import FelixClient` — `prompt`, `stream`, `steer`, `follow_up`,
+`fork`, `rewind`, `set_model`.
 
 ### Models
 
-Manifests reference **logical** model ids, mapped to wire ids by `FELIX_MODEL_ROUTES`
-(JSON override) or the built-in defaults:
+Manifests reference **logical** model ids, mapped to wire ids by `FELIX_MODEL_ROUTES` (a JSON
+override) or by the built-in defaults:
 
 | Logical id | Provider | Wire model |
 |---|---|---|
@@ -190,28 +216,65 @@ Manifests reference **logical** model ids, mapped to wire ids by `FELIX_MODEL_RO
 | `gpt-4.1` / `gpt-4.1-mini` | openai | same |
 | `llama-3-pro` / `llama-3-fast` | ollama | `llama3.3:70b` / `llama3.2` |
 
-Model calls retry rate limits and transient upstream failures with backoff, honouring
-`Retry-After`; `spec.model.fallbacks` still switches models after retries are exhausted.
-Recalled memory facts are rendered as a per-run prelude rather than folded into the
-system prompt, so the cached prompt prefix stays stable across turns.
+Model calls retry rate limits and transient upstream failures with backoff, honouring `Retry-After`;
+`spec.model.fallbacks` still switches models once retries are exhausted. Recalled memory facts are
+rendered as a per-run prelude rather than folded into the system prompt, so the cached prompt prefix
+stays stable across turns.
 
-Request parameters are selected per model (`patterns/capabilities.py`): the current
-Claude generation takes adaptive thinking plus `output_config.effort`, while pre-4.6
-models take a fixed `budget_tokens`. `spec.model.thinking_budget` works on both — it is
-translated to an effort level where budgets are no longer accepted.
+Request parameters are selected per model in `patterns/capabilities.py`: the current Claude
+generation takes adaptive thinking plus `output_config.effort`, while pre-4.6 models take a fixed
+`budget_tokens`. `spec.model.thinking_budget` works on both — it is translated to an effort level
+where budgets are no longer accepted.
 
-Python client: `from felix.sdk import FelixClient` (`prompt`, `stream`, `steer`, `follow_up`, `fork`, `rewind`, `set_model`).
+### Manifest capabilities
 
-Skills live under `skills/` (Agent Skills `SKILL.md`); declare them on a manifest with `spec.skills`. Session strategies include `compacting` (token-threshold) plus `windowed:N` / `semantic:N` / `full_replay`.
+Sessions and skills:
 
-Outbound integrations from the manifest: `spec.mcp_servers` (HTTP or stdio MCP client → `server__tool` tools; **stdio is disabled unless `FELIX_MCP_STDIO_ALLOWED_COMMANDS` names the exact commands allowed**, because manifest-supplied argv is arbitrary code execution), `spec.peers` (A2A `peer__name` tools), `spec.browser_tools` (Playwright extra), `spec.sandboxes` / `spec.containers`, and `spec.queues` (Redis list enqueue/dequeue). Large tool outputs can spill via `spec.artifacts`; durable facts via `spec.memory.capture`; how-tos via `spec.procedural_memory`. `spec.execution.mode: durable` enqueues a fiber (Temporal optional) and returns `202` with a `resume_token`. Tool retrieval / semantic sessions / procedural recall use embeddings when `felix-harness[embeddings]` is installed.
+- **Skills** live under `skills/` as Agent Skills `SKILL.md` files; declare them with `spec.skills`
+- **Session strategies**: `compacting` (token-threshold), `windowed:N`, `semantic:N`, `full_replay`
+
+Outbound integrations, all declared on the manifest:
+
+| Field | Binds to |
+|---|---|
+| `spec.mcp_servers` | HTTP or stdio MCP client → `server__tool` tools |
+| `spec.peers` | A2A peers → `peer__name` tools |
+| `spec.browser_tools` | Playwright (via the `browser` extra) |
+| `spec.sandboxes` / `spec.containers` | Isolated execution |
+| `spec.queues` | Redis list enqueue and dequeue |
+
+> [!WARNING]
+> **stdio MCP is disabled** unless `FELIX_MCP_STDIO_ALLOWED_COMMANDS` names the exact commands
+> allowed. Manifest-supplied argv is arbitrary code execution.
+
+Storage and execution:
+
+- Large tool outputs spill via `spec.artifacts`
+- Durable facts via `spec.memory.capture`; how-tos via `spec.procedural_memory`
+- `spec.execution.mode: durable` enqueues a fiber (Temporal optional) and returns `202` with a
+  `resume_token`
+- Tool retrieval, semantic sessions, and procedural recall use embeddings when
+  `felix-harness[embeddings]` is installed
+
+## Documentation
+
+User-facing documentation is published at **[docs.felix.run](https://docs.felix.run)** and authored
+in the separate [`felix-run/web`](https://github.com/felix-run/web) repo.
+
+Repository documentation for contributors lives in [`docs/`](docs/):
+
+| Document | Purpose |
+|---|---|
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | What to build next; status updated in place |
+| [`docs/RELEASING.md`](docs/RELEASING.md) | Version bump, changelog, tag, and what CI does |
+| [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) | Recurring failure modes and the actual fix |
 
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
-Security reports: [SECURITY.md](SECURITY.md).
+Report vulnerabilities through [SECURITY.md](SECURITY.md).
 
 ## License
 
-Apache License 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
-Contributions are accepted under the same license (Apache-2.0 §5).
+Apache License 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE). Contributions are accepted under
+the same license (Apache-2.0 §5).
