@@ -90,6 +90,10 @@ class Settings(BaseSettings):
     # --- misc ---
     default_manifest: str = "quick"
     hibernate_after_seconds: int = 300
+    # How often each emitting process drains its audit/usage buffers. The agent
+    # loop runs in the API, so the API must flush too — the worker cron alone only
+    # ever drained the worker's (always-empty) buffer. 0 disables the loop.
+    audit_flush_seconds: float = 5.0
     consumer_shared_secret: str = ""
     webhook_secret: str = ""
     policy_bundle_pubkey: str = ""
