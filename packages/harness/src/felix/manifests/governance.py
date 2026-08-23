@@ -72,6 +72,42 @@ def assert_stdio_allowed(manifest: Manifest, settings: Any | None = None) -> Non
         raise GovernanceError("; ".join(errors))
 
 
+def assert_outbound_providers_allowed(manifest: Manifest, settings: Any | None = None) -> None:
+    """Enforce ``spec.auth.outbound.providers``.
+
+    The field was declared and never read, so a manifest naming ``[anthropic]`` could
+    still route to OpenAI or a local Ollama. Checked at compile so a violation fails the
+    build with a clear message rather than at the first model call.
+    """
+    allowed = {
+        str(p).strip().lower() for p in (manifest.spec.auth.outbound.providers or []) if str(p).strip()
+    }
+    if not allowed:
+        return
+
+    from felix.config import get_settings
+    from felix.patterns.model import parse_model_routes
+
+    settings = settings or get_settings()
+    routes = parse_model_routes(settings)
+    spec = manifest.spec.model
+    wanted = [getattr(spec, "id", None) or settings.default_model_id]
+    wanted += list(getattr(spec, "fallbacks", None) or [])
+
+    errors: list[str] = []
+    for logical_id in wanted:
+        route = routes.get(str(logical_id))
+        if route is None:
+            continue  # unknown ids are reported by the model layer, not here
+        if route.provider.lower() not in allowed:
+            errors.append(
+                f"model {logical_id!r} routes to provider {route.provider!r}, "
+                f"not in auth.outbound.providers ({', '.join(sorted(allowed))})"
+            )
+    if errors:
+        raise GovernanceError("; ".join(errors))
+
+
 def validate_governance(manifest: Manifest, settings: Any | None = None) -> None:
     """Fail closed when ``spec.governance.frameworks`` require missing controls.
 
@@ -125,11 +161,14 @@ def validate_governance(manifest: Manifest, settings: Any | None = None) -> None
 
     # Not framework-gated: arbitrary subprocess execution is never acceptable.
     assert_stdio_allowed(manifest, settings)
+    # Nor is silently routing to a provider the manifest did not permit.
+    assert_outbound_providers_allowed(manifest, settings)
 
 
 __all__ = [
     "GovernanceError",
     "apply_transparency_notice",
+    "assert_outbound_providers_allowed",
     "assert_stdio_allowed",
     "transparency_notice_text",
     "validate_governance",

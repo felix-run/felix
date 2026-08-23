@@ -132,6 +132,7 @@ def payload_to_principal(payload: dict[str, Any], cfg: VerifierConfig) -> Princi
         tenant_id=_tenant_from_payload(payload, cfg),
         scopes=_scopes_from_payload(payload),
         issuer=str(payload.get("iss") or _issuer(cfg)),
+        scheme=cfg.scheme,
     )
 
 

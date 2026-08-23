@@ -11,7 +11,8 @@ router = APIRouter(tags=["System"])
 
 @router.get("/.well-known/agent-card.json")
 async def agent_card(request: Request) -> dict[str, Any]:
-    from felix.a2a.card import build_agent_card
+    from fastapi import HTTPException
+    from felix.a2a.card import build_agent_card, is_published
     from felix.manifests.loader import load_bundled
 
     settings = request.app.state.settings
@@ -19,6 +20,10 @@ async def agent_card(request: Request) -> dict[str, Any]:
         manifest = load_bundled(settings.default_manifest)
     except FileNotFoundError:
         return {"error": "default_manifest_missing", "name": settings.default_manifest}
+    # `spec.a2a.publish` was declared and never read, so an agent an operator had
+    # explicitly not published was advertised anyway.
+    if not is_published(manifest):
+        raise HTTPException(status_code=404, detail="not_published")
     base_url = str(request.base_url).rstrip("/")
     return build_agent_card(
         manifest,

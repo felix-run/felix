@@ -65,22 +65,22 @@ Files: `packages/harness/src/felix/sdk.py`,
 
 ### 2. Manifest fields that still do nothing
 
-- [ ] **`spec.a2a` → agent card** — `publish` and `capabilities` are unused.
+- [x] **`spec.a2a` → agent card** — `publish` and `capabilities` are unused.
       `GET /.well-known/agent-card.json` always advertises streaming + MCP and
       never lists manifest skills. Honor `publish` (404 or empty card when
       false), merge `spec.a2a.capabilities`, and emit `spec.skills`.
       File: `packages/harness/src/felix/a2a/card.py`.
-- [ ] **`spec.anomaly` → worker scan** — `AnomalySpec` (`enabled`,
+- [x] **`spec.anomaly` → worker scan** — `AnomalySpec` (`enabled`,
       `min_volume`, `min_rate`, `baseline_factor`) is ignored.
       `jobs/anomaly.py` uses hardcoded `MIN_VOLUME=10` / `BASELINE_FACTOR=3.0`.
       Load the tenant manifest (or per-manifest rows) and skip when
       `enabled: false`.
-- [ ] **`spec.auth.inbound.schemes`** — `allow_anonymous` and
+- [x] **`spec.auth.inbound.schemes`** — `allow_anonymous` and
       `required_scopes` are enforced. `schemes` is only a governance compile
       check. Enforce against the request principal, or drop the field.
-- [ ] **`spec.auth.outbound.providers`** — unused. Constrain which secret
+- [x] **`spec.auth.outbound.providers`** — unused. Constrain which secret
       backends / model providers a manifest may call, or remove it.
-- [ ] **`spec.observability.metrics`** — tracing is process-global; the
+- [x] **`spec.observability.metrics`** — tracing is process-global; the
       per-manifest name list does nothing. Allowlist `record_counter` names
       or delete the field.
 

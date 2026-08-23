@@ -113,6 +113,27 @@ isolation is application-level `tenant_id` by default; enable Postgres RLS
 with migration `0006_tenant_rls` and `FELIX_DATABASE_RLS=true`
 (sets `app.tenant_id` / `app.rls_bypass` GUCs per transaction).
 
+## Inbound and outbound constraints
+
+```yaml
+spec:
+  auth:
+    inbound:
+      allow_anonymous: false
+      schemes: [jwt, api_key]     # how the caller may authenticate
+      required_scopes: [chat:write]
+    outbound:
+      providers: [anthropic]      # model providers this agent may route to
+```
+
+`schemes` is enforced against the authenticated principal — `api_key`, or a JWT verifier
+scheme (`access`, `cognito`, `self`); `jwt` is an umbrella for all three. An empty list
+allows any scheme. Anonymous access is governed by `allow_anonymous`, not by this list.
+
+`providers` is checked at **compile**, against the resolved route for the primary model
+and every entry in `model.fallbacks`, so a violation fails the build rather than
+surfacing at the first model call.
+
 ## Run budgets
 
 `spec.limits` bounds a single run. Every field is enforced at two points — before each

@@ -32,6 +32,16 @@ async def resolve_tenant_manifest(
     )
 
 
+def _apply_metric_allowlist(manifest: Any) -> None:
+    """Carry `spec.observability.metrics` onto the active request context."""
+    from felix.context import try_get_context
+
+    names = list(getattr(manifest.spec.observability, "metrics", None) or [])
+    ctx = try_get_context()
+    if ctx is not None and names:
+        ctx.metric_names = frozenset(str(n) for n in names)
+
+
 async def prepare_tenant_invoke(
     settings: Settings,
     *,
@@ -41,6 +51,7 @@ async def prepare_tenant_invoke(
 ) -> None:
     """Enforce inbound auth + compile pin before building/invoking an agent."""
     enforce_inbound_auth(resolved.manifest, auth)
+    _apply_metric_allowlist(resolved.manifest)
     tenant_id = getattr(auth, "tenant_id", None) or "default"
     await ensure_thread_pin(
         settings=settings,

@@ -23,6 +23,19 @@ def _label_values(labels: MetricLabels, keys: tuple[str, ...]) -> list[str]:
     return [str(labels[k]) for k in keys]
 
 
+def _metric_allowed(name: str) -> bool:
+    try:
+        from felix.context import try_get_context
+
+        ctx = try_get_context()
+    except Exception:  # pragma: no cover - context module always importable
+        return True
+    if ctx is None:
+        return True
+    allow = getattr(ctx, "metric_names", None)
+    return True if not allow else name in allow
+
+
 def record_counter(
     name: str,
     labels: MetricLabels | None = None,
@@ -30,7 +43,14 @@ def record_counter(
     *,
     registry: CollectorRegistry = REGISTRY,
 ) -> None:
-    """Increment a Prometheus counter (creates it on first use)."""
+    """Increment a Prometheus counter (creates it on first use).
+
+    Honours ``spec.observability.metrics``: when a manifest names an allowlist, counters
+    outside it are dropped before the series is created — the field previously did
+    nothing, and unbounded counter names are also a Prometheus cardinality risk.
+    """
+    if not _metric_allowed(name):
+        return
     labels = labels or {}
     keys = _label_keys(labels)
     cache_key = f"{name}|{','.join(keys)}"

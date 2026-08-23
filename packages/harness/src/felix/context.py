@@ -21,6 +21,9 @@ class AuthContext:
     scopes: frozenset[str] = field(default_factory=frozenset)
     anonymous: bool = True
     raw_claims: dict[str, Any] = field(default_factory=dict)
+    # How the caller authenticated, carried from felix.auth.context.Principal so
+    # manifest `auth.inbound.schemes` can be enforced on the request path.
+    scheme: str = "anonymous"
 
 
 @dataclass
@@ -51,6 +54,9 @@ class RequestContext:
     thread_id: str | None = None
     unattended: bool = False
     extras: dict[str, Any] = field(default_factory=dict)
+    # `spec.observability.metrics`: when non-empty, only these counter names are
+    # recorded for this manifest. Empty means record everything (the default).
+    metric_names: frozenset[str] = field(default_factory=frozenset)
 
 
 _ctx: ContextVar[RequestContext | None] = ContextVar("felix_request_context", default=None)

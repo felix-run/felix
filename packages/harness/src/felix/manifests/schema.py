@@ -301,7 +301,11 @@ class A2ACapability(_Strict):
 
 
 class A2APublishSpec(_Strict):
-    publish: bool = False
+    # Defaults to True because that is the behaviour every deployment already has: the
+    # field was never read, so every agent was advertised. Honouring it with the old
+    # `False` default would 404 the agent card for every existing manifest. It is an
+    # opt-*out* for agents an operator does not want discoverable.
+    publish: bool = True
     capabilities: list[A2ACapability] = Field(default_factory=list)
 
 

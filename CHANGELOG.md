@@ -9,6 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **`auth.inbound.schemes` is now enforced against the caller.** It was only a
+  compile-time check that *something* was set; it never constrained the request, so a
+  manifest naming `[jwt]` accepted an `api_key` principal. The authenticated scheme is
+  now carried on the principal (`api_key`, or the JWT verifier scheme `access` /
+  `cognito` / `self`) and checked, with `jwt` acting as an umbrella for the verifier
+  schemes. An empty list still allows any scheme.
+- **`auth.outbound.providers` is now enforced.** It was declared and never read, so a
+  manifest naming `[anthropic]` could still route to OpenAI or a local Ollama. Checked at
+  compile against the resolved route for the primary model and every `model.fallbacks`
+  entry.
+
+### Changed
+
+- **`spec.a2a.publish` now controls agent-card discovery, and its default changed to
+  `true`.** The field was never read, so every agent was advertised regardless. Honouring
+  it with the previous `false` default would have 404'd `/.well-known/agent-card.json`
+  for every existing manifest, so the default now matches the behaviour deployments
+  already have and the field is an opt-*out*.
+- The agent card now emits `spec.skills` (it hardcoded `"skills": []`) and merges
+  `spec.a2a.capabilities` alongside the transport capabilities.
+- **`spec.observability.metrics` now allowlists counter names** for the manifest.
+  Previously the per-manifest list did nothing; counters outside the list are dropped
+  before the series is created, which also bounds Prometheus cardinality.
+- **`spec.anomaly` thresholds are read from the manifest.** `jobs/anomaly.py` used
+  hardcoded `MIN_VOLUME=10` / `BASELINE_FACTOR=3.0` and ignored the spec entirely, so
+  `enabled: false` did not disable anything. Findings now carry the thresholds that
+  produced them. `min_rate` remains unimplemented — see below.
+
 - **`spec.limits` budgets are now enforced.** `max_wall_clock_seconds`,
   `max_input_tokens`, and `max_output_tokens` were declared in the manifest schema,
   range-bounded, and documented — and appeared nowhere else in the codebase.
