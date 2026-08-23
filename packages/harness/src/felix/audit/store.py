@@ -8,13 +8,14 @@ from typing import Any
 
 from sqlalchemy import select
 
+from felix.buffers import DurableBuffer
 from felix.config import Settings
 from felix.db.models import AuditEvent
 from felix.db.session import _use_memory, get_session_factory
 
 now_ms = lambda: int(time.time() * 1000)
 
-_pending: list[dict[str, Any]] = []
+_pending = DurableBuffer("audit")
 _memory_events: list[dict[str, Any]] = []
 
 
@@ -123,12 +124,21 @@ async def list_events(
 
 async def flush_pending(settings: Settings) -> int:
     """Drain buffered audit events to Postgres, then optional warehouse spill."""
-    if not _pending:
+    batch = _pending.take()
+    if not batch:
         return 0
 
-    batch = list(_pending)
-    _pending.clear()
+    try:
+        await _write_batch(settings, batch)
+    except Exception:
+        # Never drop the compliance record because a commit failed — put it back and
+        # let the next flush retry.
+        _pending.requeue(batch)
+        raise
+    return len(batch)
 
+
+async def _write_batch(settings: Settings, batch: list[dict[str, Any]]) -> None:
     if _use_memory(settings):
         _memory_events.extend(batch)
     else:
@@ -173,7 +183,10 @@ async def flush_pending(settings: Settings) -> int:
         ]
         await export_audit_events(settings, spill)
 
-    return len(batch)
+
+__all__ = ["flush_pending", "list_events", "pending_buffer", "query", "record_event"]
 
 
-__all__ = ["flush_pending", "list_events", "query", "record_event"]
+def pending_buffer() -> DurableBuffer:
+    """The process-local audit buffer (diagnostics, metrics, tests)."""
+    return _pending

@@ -76,6 +76,7 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        from felix.flush import start_flush_task, stop_flush_task
         from felix.observability.tracing import setup_observability, shutdown_observability
         from felix.secrets import hydrate_secrets
 
@@ -86,8 +87,15 @@ def create_app(
         setup_observability(cfg)
         for hook in get_registry()._startup_hooks:
             await hook(app)
-        yield
-        shutdown_observability()
+        # The agent loop emits audit and usage events in *this* process; without a
+        # flusher here they are never written and the buffer grows unbounded.
+        flush_task = start_flush_task(cfg)
+        app.state.flush_task = flush_task
+        try:
+            yield
+        finally:
+            await stop_flush_task(flush_task, cfg)
+            shutdown_observability()
 
     app = FastAPI(
         title="Felix",

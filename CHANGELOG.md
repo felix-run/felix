@@ -37,6 +37,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `felix doctor` reports the stdio allowlist and fails the loopback check when
   `auth_mode=none` is paired with a public bind.
 
+### Fixed
+
+- **Audit and usage events emitted while serving traffic were never persisted.**
+  `emit_agent_audit` and `record_usage` are called from the agent loop, which runs in the
+  **API** process, but the only `flush_pending` callers were Taskiq cron tasks in the
+  **worker**. Wherever those are separate containers — Compose, Helm, the documented
+  deploy paths — the worker drained an always-empty buffer while the API's grew for the
+  life of the process. So `GET /audit` returned only worker-side events, metered usage
+  was lost, and the API leaked memory in proportion to tool calls. The API now runs its
+  own flush loop (`FELIX_AUDIT_FLUSH_SECONDS`, default 5s) and drains on shutdown.
+- **A failed flush no longer discards the batch.** Both stores drained the buffer
+  *before* writing, so one `commit()` failure lost those events permanently — for audit,
+  that is the compliance record. Batches are now re-queued in order and retried.
+- Buffers are bounded (10k events) and count what they drop, so an unreachable database
+  degrades visibly instead of exhausting the process silently.
+- `emit_agent_audit` logged nothing when recording failed (`except Exception: pass`); it
+  now warns.
+
 ### Added
 
 - Security scanning: CodeQL, a `pip-audit` CVE check over the locked
