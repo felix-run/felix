@@ -82,6 +82,41 @@ async def drop_everything(url: str) -> None:
 
 
 @pytest_asyncio.fixture
+async def memory_settings(request: pytest.FixtureRequest) -> AsyncIterator[Any]:
+    """`Settings` pointed at the backend named by the parametrization.
+
+    The memory store is reached through module-level functions that take `settings`
+    rather than through a store object, so its contract is parametrized on settings
+    rather than on an instance.
+    """
+    from felix.config import Settings
+    from felix.db.session import dispose_engine
+    from felix.memory import store as memory_store
+
+    backend = request.param
+    if backend == "memory":
+        memory_store._memory_rows.clear()
+        yield Settings(database_url="memory://conformance")
+        memory_store._memory_rows.clear()
+        return
+
+    url = postgres_url()
+    if not url:
+        if os.environ.get(REQUIRE_ENV):
+            pytest.fail(f"{REQUIRE_ENV} is set but {PG_URL_ENV} is not — the Postgres arm cannot run")
+        pytest.skip(f"{PG_URL_ENV} unset — the Postgres arm of the contract did not run")
+
+    await migrate_to_head(url)
+    try:
+        yield Settings(database_url=url)
+    finally:
+        # `get_engine` is lru_cached per URL, so the pooled connections outlive this
+        # fixture and would hold locks on the schema the teardown is about to drop.
+        await dispose_engine()
+        await drop_everything(url)
+
+
+@pytest_asyncio.fixture
 async def store(request: pytest.FixtureRequest) -> AsyncIterator[Any]:
     """A session store for the backend named by the parametrization."""
     backend = request.param

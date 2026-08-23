@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Long-term memory rows carry supersession and provenance.** `topic_key` makes a
+  newer value supersede an older one atomically; ids are content hashes scoped by
+  manifest, so storing a fact twice collapses instead of accumulating duplicates
+  recall would return twice; `status` distinguishes superseded from forgotten; and
+  `origin_seq` / `thread_id` are now actually populated — the turn-versioning columns
+  existed but nothing wrote or queried them, because `capture_from_turn` had no way
+  to pass an ordinal. The session log's own `seq` is the turn clock, so there is no
+  second counter to keep in step. Adds `as_of()`, which reconstructs what was
+  believed at a past turn including facts since superseded, plus `forget` and
+  `get_many`. Migration `0009_memory_recall`; recall itself is still to come.
+
 - **`GET /ready` and `GET /live`.** `/health` returned a static `{"status":"ok"}` while
   the Helm chart wired **both** the readiness and the liveness probe to it — so a pod
   with a dead database reported Ready and received traffic, and a genuine dependency
@@ -24,6 +35,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tied them together before.
 
 ### Fixed
+
+- **`memory_vectors` rejected every insert on Postgres.** `embedding vector(768)
+  NOT NULL` has existed since `0001_baseline`, added by raw SQL and so invisible
+  from `db/models.py`, and `put_memory` never supplied a vector. Every insert raised
+  NotNullViolation; the only caller wraps it in `except: logger.debug(...)`, so
+  long-term memory had never stored a row outside the in-memory twin and nothing
+  said so. The constraint is dropped — a memory without an embedding has to be
+  storable, since the design degrades to full-text when no embedder is configured.
 
 - **Embeddings ran on the event loop, stalling every concurrent request.**
   `encode_texts` calls `SentenceTransformer.encode` synchronously, and all three

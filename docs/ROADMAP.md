@@ -144,17 +144,13 @@ top of* durable state. Ordered by value; the first two need no migration.
       `event:` would move existing frames off `onmessage` and silently break
       every current client. Closes **Wire-contract snapshot** above and
       *reconnect-to-snapshot* under Product.
-- [ ] **Long-term memory is inert end to end** — all eight bundled manifests
-      declare `store: pgvector`; `put_memory` writes `embedding_json: None`
-      unconditionally, no vector column or index exists in any revision, recall
-      is `ORDER BY created_at`, there are no memory routes and no memory tools,
-      and `capture` is disabled everywhere. The public docs already state the
-      opposite (`manifest-reference.mdx:378`: "pgvector, HNSW"). Port hybrid
-      recall — full-text + topic-key + vector fused with RRF — behind an
-      `Embedder` protocol whose default is a no-op, so the lean install degrades
-      to full-text. Folds in provenance: `origin_seq`/`superseded_seq` exist and
-      nothing populates or queries them, and `consolidate_pools` writes a
-      millisecond timestamp into the ordinal column.
+- [~] **Long-term memory** — schema, supersession and provenance landed in #46;
+      hybrid recall is what remains. Port full-text + topic-key + vector fused
+      with RRF behind an `Embedder` protocol whose default is a no-op, so the
+      lean install degrades to full-text; then the `remember` / `recall` /
+      `forget` / `list_memories` tools and the management routes, neither of
+      which exists yet. `capture` is still disabled in all eight bundled
+      manifests, so nothing writes memory by default even now.
 - [ ] **Tamper-evident audit chain** — `seq` + `prev_hash` + keyed-HMAC per row,
       per tenant, with `verify_chain` reporting the first break. Allocate the
       chain at write time inside the insert transaction, under a per-tenant
@@ -327,6 +323,13 @@ Second pass against a sibling runtime, this time looking for features to port.
 Like the first, it mostly found bugs — in code that two sessions had each half
 fixed, and in a delivery path nothing asserted end to end.
 
+- [x] **`memory_vectors` rejected every insert on Postgres.** The column
+      `embedding vector(768) NOT NULL` has existed since `0001_baseline` — added
+      by raw SQL, so invisible from `db/models.py` — and `put_memory` never
+      supplied a vector. Every insert raised NotNullViolation, and the only
+      caller swallowed it into a debug log, so long-term memory had never stored
+      a row outside the in-memory twin. Found by the first Postgres conformance
+      test the store ever had (#46)
 - [x] **Migrations were never executed by CI.** The `conformance` job runs a real
       pgvector Postgres (#39), but built its schema with `Base.metadata.create_all`
       — so no revision ran, and the DDL that lives only in a migration was never

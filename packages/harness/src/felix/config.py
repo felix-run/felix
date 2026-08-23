@@ -129,6 +129,13 @@ class Settings(BaseSettings):
     warehouse_url: str = ""  # clickhouse http(s)://… or doris mysql://…
     warehouse_database: str = "felix"
 
+    # --- long-term memory ---
+    # The `memory_vectors.embedding` column is `vector(768)`, created by 0001_baseline
+    # and indexed by HNSW, so the dimension is fixed at deploy time and this only
+    # declares what it is. 768 is also `bge-base-en-v1.5`, the model the rest of the
+    # repo defaults to. Changing it is a re-embed of every row, not a config flip.
+    memory_embedding_dim: int = 768
+
     # --- misc ---
     default_manifest: str = "quick"
     hibernate_after_seconds: int = 300
