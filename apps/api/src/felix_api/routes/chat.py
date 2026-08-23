@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request
@@ -14,6 +15,8 @@ from felix.session.store import get_session_store
 from felix.session.tree import fork_thread, get_leaf, rewind_to
 from felix.steer import enqueue
 from pydantic import BaseModel, Field
+
+logger = logging.getLogger("felix_api.routes.chat")
 
 router = APIRouter(tags=["Threads"])
 
@@ -327,6 +330,7 @@ async def chat(body: ChatRequest, request: Request) -> Any:
                 )
             )
         except ModelGatewayError as exc:
+            logger.warning("model gateway error label=%s status=%s body=%s", exc.label, exc.status, exc.body)
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         except Exception as exc:
             http = _http_from_invoke_prep(exc)
@@ -968,6 +972,7 @@ async def chat_continue(body: ContinueRequest, request: Request) -> Any:
                 )
             )
         except ModelGatewayError as exc:
+            logger.warning("model gateway error label=%s status=%s body=%s", exc.label, exc.status, exc.body)
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         except Exception as exc:
             http = _http_from_invoke_prep(exc)

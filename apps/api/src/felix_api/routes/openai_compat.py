@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 import uuid
 from typing import Any, Literal
@@ -15,6 +16,8 @@ from felix.patterns.model import ModelGatewayError
 from felix.patterns.types import ChatMessage, InvokeInput
 from felix.runtime import build_tenant_agent, prepare_tenant_invoke, resolve_tenant_manifest
 from pydantic import BaseModel, Field
+
+logger = logging.getLogger("felix_api.routes.openai_compat")
 
 router = APIRouter(tags=["OpenAI"])
 
@@ -172,6 +175,7 @@ async def chat_completions(body: ChatCompletionsRequest, request: Request) -> An
             )
             result = await agent.invoke(invoke_input)
         except ModelGatewayError as exc:
+            logger.warning("model gateway error label=%s status=%s body=%s", exc.label, exc.status, exc.body)
             return JSONResponse(
                 {
                     "error": {

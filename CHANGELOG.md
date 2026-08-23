@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Upstream model-provider error bodies are no longer relayed to API clients.**
+  `ModelGatewayError` embedded `body[:200]` of the raw provider response in its message,
+  and both `/chat` and `/v1/chat/completions` return `str(exc)` to the caller — so
+  provider request ids, organization identifiers, quota and billing detail, and any
+  echoed request content reached whoever made the request. The body is now kept on
+  `.body` (bounded) for server-side logging only; the client sees
+  `"<provider> provider returned HTTP <status>"`. Found independently by this audit and
+  by CodeQL (`py/stack-trace-exposure`).
+
 - **Fixed an unauthenticated remote code execution path.** `spec.mcp_servers` entries
   with `transport: stdio` carry a manifest-supplied `command`, `args`, `cwd`, and `env`
   that reached `create_subprocess_exec` **at compile time**, so resolving a manifest ran
