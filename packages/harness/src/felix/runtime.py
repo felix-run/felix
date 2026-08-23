@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from felix.config import Settings
@@ -14,6 +15,8 @@ from felix.patterns.types import Agent
 from felix.session.store import get_session_store
 from felix.session.strategies import get_session_strategy
 from felix.tools.provider import ToolProvider
+
+logger = logging.getLogger("felix.runtime")
 
 
 async def resolve_tenant_manifest(
@@ -83,10 +86,19 @@ async def build_tenant_agent(
     store = object_store
     if store is None:
         try:
-            from felix.storage import build_object_store
+            from felix.storage import get_object_store
 
-            store = build_object_store(settings)
+            # Cached, not built per request: S3ObjectStore opens a client it never
+            # closed, so a fresh store per chat leaked one every time.
+            store = get_object_store(settings)
         except Exception:
+            # Silently swallowing this meant SYSTEM.md, AGENTS.md, instruction files and
+            # object-store skills all vanished and the agent fell back to
+            # f"You are {name}." — a misconfigured bucket quietly removed the prompt.
+            logger.error(
+                "object store unavailable; system prompt files and object-store skills will not be loaded",
+                exc_info=True,
+            )
             store = None
 
     deps = BuildDeps(

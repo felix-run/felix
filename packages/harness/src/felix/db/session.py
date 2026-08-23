@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
@@ -17,6 +18,8 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.orm import Session
 
 from felix.config import Settings, get_settings
+
+logger = logging.getLogger("felix.db.session")
 
 _rls_tenant: ContextVar[str | None] = ContextVar("felix_rls_tenant", default=None)
 _rls_bypass: ContextVar[bool] = ContextVar("felix_rls_bypass", default=False)
@@ -105,17 +108,31 @@ async def apply_tenant_rls(session: AsyncSession, settings: Settings, tenant_id:
     await session.execute(text("SELECT set_config('app.tenant_id', :t, true)"), {"t": tenant_id})
 
 
+# Engines created through get_engine, so dispose_engine can actually close them.
+_ENGINES: list[AsyncEngine] = []
+
+# Recycle before a pooler or cloud proxy drops an idle connection server-side. Without
+# it, PgBouncer / RDS Proxy / Cloud SQL close connections the pool still believes are
+# live, and pool_pre_ping pays a round trip to discover that on every checkout.
+POOL_RECYCLE_SECONDS = 1800
+POOL_TIMEOUT_SECONDS = 30
+
+
 @lru_cache
 def get_engine(database_url: str | None = None) -> AsyncEngine:
     _ensure_rls_listener()
     settings = get_settings()
     url = _normalize_url(database_url or settings.database_url)
-    return create_async_engine(
+    engine = create_async_engine(
         url,
         pool_pre_ping=True,
         pool_size=5,
         max_overflow=10,
+        pool_recycle=POOL_RECYCLE_SECONDS,
+        pool_timeout=POOL_TIMEOUT_SECONDS,
     )
+    _ENGINES.append(engine)
+    return engine
 
 
 def get_session_factory(
@@ -158,18 +175,36 @@ async def tenant_session(
 
 
 async def dispose_engine() -> None:
+    """Close every engine this module created.
+
+    This was `cache_clear()` plus a comment plus `pass` — so connections were never
+    returned, and they lingered across Granian worker recycles. Keeping a list of the
+    engines handed out is what makes disposal possible at all; `lru_cache` alone gives
+    no way to reach them.
+    """
     get_engine.cache_clear()
-    # Recreate briefly to dispose any cached engine reference is tricky with lru_cache;
-    # callers that hold an engine should call engine.dispose() directly.
-    pass
+    engines, _ENGINES[:] = list(_ENGINES), []
+    for engine in engines:
+        try:
+            await engine.dispose()
+        except Exception:
+            logger.warning("engine dispose failed", exc_info=True)
 
 
 def create_engine_from_settings(settings: Settings) -> AsyncEngine:
+    """A second engine, previously with no pool sizing at all — so two differently
+    tuned pools existed against the same database."""
     _ensure_rls_listener()
-    return create_async_engine(
+    engine = create_async_engine(
         _normalize_url(settings.database_url),
         pool_pre_ping=True,
+        pool_size=5,
+        max_overflow=10,
+        pool_recycle=POOL_RECYCLE_SECONDS,
+        pool_timeout=POOL_TIMEOUT_SECONDS,
     )
+    _ENGINES.append(engine)
+    return engine
 
 
 __all__ = [

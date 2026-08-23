@@ -136,6 +136,15 @@ def create_app(
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await jwks_task
             await stop_flush_task(flush_task, cfg)
+            # Release process-lifetime resources. The S3 client had no close() at all
+            # and dispose_engine() was a no-op, so both lingered across worker recycles.
+            from felix.db.session import dispose_engine
+            from felix.storage import close_object_stores
+
+            with contextlib.suppress(Exception):
+                await close_object_stores()
+            with contextlib.suppress(Exception):
+                await dispose_engine()
             shutdown_observability()
 
     app = FastAPI(
