@@ -168,6 +168,33 @@ def apply_policies(tools: list[Tool], policies: list[Policy], manifest_id: str) 
     return _wrap_tools(tools, wrap_one)
 
 
+# Argument names that carry something the host will execute. The screener read only
+# "command"/"cmd", so the built-in sandbox tool — whose args are (code, path, stdin) and
+# which runs ["python", "-c", code] — skipped every rule while *appearing* wrapped.
+_COMMAND_ARG_KEYS = ("command", "cmd", "code", "script", "stdin", "argv", "shell_command", "args")
+
+# For these transports the payload *is* the program, so every string argument is
+# execution-bearing regardless of what the remote tool decided to call it.
+_EXECUTION_TRANSPORTS = frozenset({"sandbox", "container"})
+
+
+def _screenable_command_text(args: ToolInput, transport: str) -> str:
+    """Concatenate the argument values command screening should inspect."""
+
+    def flatten(value: Any) -> list[str]:
+        if isinstance(value, str):
+            return [value]
+        if isinstance(value, (list, tuple)):
+            return [str(v) for v in value if isinstance(v, (str, int, float))]
+        return []
+
+    if transport in _EXECUTION_TRANSPORTS:
+        parts = [p for v in args.values() for p in flatten(v)]
+    else:
+        parts = [p for k in _COMMAND_ARG_KEYS if k in args for p in flatten(args[k])]
+    return "\n".join(p for p in parts if p)
+
+
 def apply_command_screening(tools: list[Tool], screening: Any, manifest_id: str) -> list[Tool]:
     if not getattr(screening, "enabled", False):
         return tools
@@ -194,7 +221,7 @@ def apply_command_screening(tools: list[Tool], screening: Any, manifest_id: str)
         inner = tool.executor
 
         async def execute(args: ToolInput, ctx: ToolInvocationCtx | None = None) -> ToolOutput:
-            cmd = str(args.get("command") or args.get("cmd") or "")
+            cmd = _screenable_command_text(args, tool.executor.transport)
             if cmd and compiled:
                 for rx, decision, reason in compiled:
                     if rx.search(cmd):
@@ -289,12 +316,27 @@ def apply_content_screening(tools: list[Tool], screening: Any, manifest_id: str)
             content = tool_output_content(out)
             lower = content.lower()
             flagged = any(m in lower for m in _INJECTION_MARKERS)
+            unavailable = False
             if not flagged and model_id:
                 from felix.config import get_settings
-                from felix.governance.inbound import _llm_injection_score
+                from felix.governance.inbound import screen_for_injection
 
-                score = await _llm_injection_score(get_settings(), content, model_id)
-                flagged = score is not None and score >= 0.8
+                result = await screen_for_injection(get_settings(), content, model_id)
+                # Unavailable is not clean: this is the path that screens MCP, A2A,
+                # browser and sandbox output, so failing open here is the whole ballgame.
+                unavailable = result.unavailable
+                flagged = result.flagged
+            if unavailable:
+                record_counter(
+                    "felix_content_screening",
+                    {"manifest_id": manifest_id, "tool": tool.name, "action": "unavailable"},
+                )
+                if on_flag == "block":
+                    return deny_output(
+                        "[screening unavailable] tool output could not be screened",
+                        "screening",  # type: ignore[arg-type]
+                    )
+                return _replace_content(out, "[quarantined] tool output could not be screened")
             if flagged:
                 record_counter(
                     "felix_content_screening",

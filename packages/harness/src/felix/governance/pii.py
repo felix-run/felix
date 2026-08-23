@@ -6,6 +6,8 @@ import logging
 import re
 from dataclasses import dataclass
 
+from felix.observability.metrics import record_counter
+
 logger = logging.getLogger("felix.governance.pii")
 
 _REGEX_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
@@ -39,30 +41,62 @@ def _spacy_model_ready() -> bool:
 
 
 def _try_load_presidio() -> bool:
+    """Load Presidio once, or report that the regex fallback is in force.
+
+    Two things were wrong here. The degradation was announced at ``logger.debug`` —
+    invisible at the INFO default — so an operator who configured
+    ``guardrails: {providers: [pii]}`` on the lean image (which ships neither Presidio
+    nor a spaCy model) silently got three regexes instead. And ``_presidio_checked`` was
+    a permanent latch, so one *transient* init failure pinned the process to the regex
+    path for its entire lifetime.
+    """
     global _analyzer, _anonymizer, _presidio_checked
     if _presidio_checked:
         return _analyzer is not None
-    _presidio_checked = True
     try:
         from presidio_analyzer import AnalyzerEngine
         from presidio_anonymizer import AnonymizerEngine
     except ImportError:
-        logger.debug("presidio extras not installed; using regex PII fallback")
+        # Deterministic: the package is absent and will not appear at runtime, so this
+        # result is safe to latch.
+        _presidio_checked = True
+        _warn_degraded("presidio extras not installed")
         return False
     # AnalyzerEngine downloads spaCy models by default — only enable when a
     # model is already present so CI / lean images stay on the regex path.
     if not _spacy_model_ready():
-        logger.debug("presidio present but no spaCy English model; regex fallback")
+        _presidio_checked = True
+        _warn_degraded("presidio present but no spaCy English model")
         return False
     try:
         _analyzer = AnalyzerEngine()
         _anonymizer = AnonymizerEngine()
+        _presidio_checked = True
         return True
     except Exception:
-        logger.debug("presidio engine init failed", exc_info=True)
+        # Do NOT latch: engine init can fail transiently (memory pressure, a partial
+        # model download). Latching here pins the process to regex for its lifetime.
+        logger.error("presidio engine init failed; will retry on next use", exc_info=True)
+        record_counter("felix_control_degraded", {"control": "pii", "reason": "init_failed"})
         _analyzer = None
         _anonymizer = None
         return False
+
+
+def _warn_degraded(reason: str) -> None:
+    """Announce the regex fallback once, loudly enough to be seen at INFO."""
+    logger.warning(
+        "PII guardrail degraded to the regex fallback (%s). Only email, US SSN, and "
+        "card-like digit runs are detected. Install felix-harness[pii] plus a spaCy "
+        "English model for full coverage.",
+        reason,
+    )
+    record_counter("felix_control_degraded", {"control": "pii", "reason": reason[:40]})
+
+
+def presidio_active() -> bool:
+    """Whether full PII analysis is in force (diagnostics, `felix doctor`)."""
+    return _analyzer is not None
 
 
 def _regex_redact(text: str) -> PiiResult:
