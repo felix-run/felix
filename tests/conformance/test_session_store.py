@@ -41,7 +41,8 @@ async def _append_all(session: Any, events: list[AppendableEvent]) -> None:
 async def test_events_come_back_in_the_order_they_went_in(store: Any) -> None:
     session = store.open("t-order")
     await _append_all(session, [_msg("one"), _msg("two"), _msg("three")])
-    assert [e.content for e in await session.get_events()] == ["one", "two", "three"]
+    events = await session.get_events()
+    assert [e.content for e in events] == ["one", "two", "three"]
 
 
 @parametrized
@@ -49,7 +50,8 @@ async def test_events_come_back_in_the_order_they_went_in(store: Any) -> None:
 async def test_seq_is_dense_and_monotonic_from_zero(store: Any) -> None:
     session = store.open("t-seq")
     await _append_all(session, [_msg(str(i)) for i in range(5)])
-    assert [e.seq for e in await session.get_events()] == [0, 1, 2, 3, 4]
+    events = await session.get_events()
+    assert [e.seq for e in events] == [0, 1, 2, 3, 4]
 
 
 @parametrized
@@ -69,7 +71,8 @@ async def test_an_empty_batch_is_a_no_op(store: Any) -> None:
     session = store.open("t-empty-batch")
     await session.append(_msg("only"))
     await session.append_batch([])
-    assert len(await session.get_events()) == 1
+    events = await session.get_events()
+    assert len(events) == 1
 
 
 @parametrized
@@ -78,15 +81,18 @@ async def test_threads_are_isolated_from_each_other(store: Any) -> None:
     a, b = store.open("t-a"), store.open("t-b")
     await a.append(_msg("belongs to a"))
     await b.append(_msg("belongs to b"))
-    assert [e.content for e in await a.get_events()] == ["belongs to a"]
-    assert [e.content for e in await b.get_events()] == ["belongs to b"]
+    a_events = await a.get_events()
+    b_events = await b.get_events()
+    assert [e.content for e in a_events] == ["belongs to a"]
+    assert [e.content for e in b_events] == ["belongs to b"]
 
 
 @parametrized
 @pytest.mark.asyncio
 async def test_reopening_a_thread_sees_what_was_written(store: Any) -> None:
     await store.open("t-reopen").append(_msg("persisted"))
-    assert [e.content for e in await store.open("t-reopen").get_events()] == ["persisted"]
+    events = await store.open("t-reopen").get_events()
+    assert [e.content for e in events] == ["persisted"]
 
 
 # --- what an event carries ------------------------------------------------------
@@ -225,7 +231,8 @@ async def test_limit_applies_after_from_seq(store: Any) -> None:
 @parametrized
 @pytest.mark.asyncio
 async def test_querying_an_unknown_thread_is_empty_not_an_error(store: Any) -> None:
-    assert await store.open("t-never-written").get_events() == []
+    events = await store.open("t-never-written").get_events()
+    assert events == []
 
 
 # --- head, reset, wake ----------------------------------------------------------
@@ -235,9 +242,11 @@ async def test_querying_an_unknown_thread_is_empty_not_an_error(store: Any) -> N
 @pytest.mark.asyncio
 async def test_head_counts_what_is_stored(store: Any) -> None:
     session = store.open("t-head")
-    assert (await session.head())["seq"] == 0
+    head = await session.head()
+    assert head["seq"] == 0
     await _append_all(session, [_msg("a"), _msg("b")])
-    assert (await session.head())["seq"] == 2
+    head = await session.head()
+    assert head["seq"] == 2
 
 
 @parametrized
@@ -246,8 +255,10 @@ async def test_reset_empties_the_thread(store: Any) -> None:
     session = store.open("t-reset")
     await _append_all(session, [_msg("a"), _msg("b")])
     await session.reset()
-    assert await session.get_events() == []
-    assert (await session.head())["seq"] == 0
+    events = await session.get_events()
+    head = await session.head()
+    assert events == []
+    assert head["seq"] == 0
 
 
 @parametrized
@@ -268,7 +279,8 @@ async def test_reset_does_not_touch_other_threads(store: Any) -> None:
     await keep.append(_msg("kept"))
     await drop.append(_msg("dropped"))
     await drop.reset()
-    assert [e.content for e in await keep.get_events()] == ["kept"]
+    events = await keep.get_events()
+    assert [e.content for e in events] == ["kept"]
 
 
 @parametrized
