@@ -225,6 +225,12 @@ step:
 | `max_input_tokens` / `max_output_tokens` | Accumulated tokens, including cache reads and writes. |
 | `max_cost_usd` | Accumulated spend, priced from the model catalog. |
 
+Side requests are metered but deliberately uncached. Compaction, memory capture, inbound
+screening and branch summarisation each issue a model call in the middle of a turn, and
+each carries a different prefix from the conversation around it — so they opt out of the
+prompt cache rather than displacing what the turn had cached. Their tokens still count
+against the run's budget.
+
 Budgets only bound what they can see. A streaming turn used to run the inference twice —
 once to stream for display, once to get the authoritative answer — while metering only
 the second, so `max_cost_usd`, `max_input_tokens` and `max_output_tokens` counted roughly

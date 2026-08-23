@@ -62,6 +62,14 @@ class ModelChatOptions:
     temperature: float | None = None
     max_tokens: int | None = None
     signal: Any | None = None
+    # Keep this request out of the conversation's prompt cache.
+    #
+    # A one-off request made during a run — summarising for compaction, scoring a judge —
+    # shares the thread's cache key by default and carries a completely different prefix.
+    # On an OpenAI-style endpoint that churns the conversation's cached prefix, so the
+    # next real turn misses; on Anthropic it writes a fresh cache entry, billed at a
+    # premium, for a prompt that will never be read again.
+    isolate_cache: bool = False
 
 
 @dataclass(slots=True)
@@ -154,6 +162,7 @@ def apply_openai_thinking_cache(
     spec: Any,
     *,
     cache_key: str | None = None,
+    isolate_cache: bool = False,
 ) -> None:
     """Attach thinking budget + prompt cache hints to an OpenAI-style request."""
     budget = getattr(spec, "thinking_budget", None) if spec is not None else None
@@ -162,6 +171,8 @@ def apply_openai_thinking_cache(
         body["reasoning_effort"] = reasoning_effort_from_budget(n)
         # LiteLLM / Anthropic-via-OpenAI also honor this block.
         body["thinking"] = {"type": "enabled", "budget_tokens": n}
+    if isolate_cache:
+        return
     if spec is not None and getattr(spec, "cache", False):
         key = cache_key
         if not key:
@@ -194,7 +205,9 @@ def _effort_from_budget(budget: int) -> str:
     return "xhigh"
 
 
-def apply_anthropic_thinking_cache(body: dict[str, Any], spec: Any, model: str = "") -> None:
+def apply_anthropic_thinking_cache(
+    body: dict[str, Any], spec: Any, model: str = "", *, isolate_cache: bool = False
+) -> None:
     """Attach thinking + ephemeral cache_control in the shape this model accepts.
 
     The previous version emitted one shape for every Claude model:
@@ -242,7 +255,7 @@ def apply_anthropic_thinking_cache(body: dict[str, Any], spec: Any, model: str =
                 body["max_tokens"] = n + 1024
 
     _clamp_output()
-    if getattr(spec, "cache", False):
+    if getattr(spec, "cache", False) and not isolate_cache:
         system = body.get("system")
         if isinstance(system, str) and system:
             body["system"] = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
@@ -695,8 +708,12 @@ class _HttpModelClient:
         max_tokens = opts.max_tokens or getattr(self.spec, "max_tokens", None)
 
         if self.style == "anthropic":
-            return await self._chat_anthropic(messages, tools, temperature, max_tokens)
-        return await self._chat_openai(messages, tools, temperature, max_tokens)
+            return await self._chat_anthropic(
+                messages, tools, temperature, max_tokens, isolate_cache=opts.isolate_cache
+            )
+        return await self._chat_openai(
+            messages, tools, temperature, max_tokens, isolate_cache=opts.isolate_cache
+        )
 
     def _openai_body(
         self,
@@ -704,6 +721,8 @@ class _HttpModelClient:
         tools: list[Tool],
         temperature: float,
         max_tokens: int | None,
+        *,
+        isolate_cache: bool = False,
     ) -> dict[str, Any]:
         body: dict[str, Any] = {
             "model": self.route.model,
@@ -714,7 +733,7 @@ class _HttpModelClient:
             body["max_tokens"] = max_tokens
         if tools:
             body["tools"] = _tools_to_openai(tools)
-        apply_openai_thinking_cache(body, self.spec)
+        apply_openai_thinking_cache(body, self.spec, isolate_cache=isolate_cache)
         return body
 
     async def _chat_openai(
@@ -723,8 +742,10 @@ class _HttpModelClient:
         tools: list[Tool],
         temperature: float,
         max_tokens: int | None,
+        *,
+        isolate_cache: bool = False,
     ) -> ModelChatResult:
-        body = self._openai_body(messages, tools, temperature, max_tokens)
+        body = self._openai_body(messages, tools, temperature, max_tokens, isolate_cache=isolate_cache)
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
         async with httpx.AsyncClient(timeout=120.0) as client:
             resp = await _post_with_retry(
@@ -758,6 +779,8 @@ class _HttpModelClient:
         tools: list[Tool],
         temperature: float,
         max_tokens: int | None,
+        *,
+        isolate_cache: bool = False,
     ) -> dict[str, Any]:
         system = ""
         converted: list[dict[str, Any]] = []
@@ -809,7 +832,7 @@ class _HttpModelClient:
                 }
                 for t in tools
             ]
-        apply_anthropic_thinking_cache(body, self.spec, self.route.model)
+        apply_anthropic_thinking_cache(body, self.spec, self.route.model, isolate_cache=isolate_cache)
         return body
 
     async def _chat_anthropic(
@@ -818,8 +841,10 @@ class _HttpModelClient:
         tools: list[Tool],
         temperature: float,
         max_tokens: int | None,
+        *,
+        isolate_cache: bool = False,
     ) -> ModelChatResult:
-        body = self._anthropic_body(messages, tools, temperature, max_tokens)
+        body = self._anthropic_body(messages, tools, temperature, max_tokens, isolate_cache=isolate_cache)
         headers = {
             "x-api-key": self.api_key,
             "anthropic-version": "2023-06-01",

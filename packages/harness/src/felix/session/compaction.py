@@ -446,6 +446,8 @@ class CompactingSessionStrategy:
                 prev = f"\nPrevious summary:\n{latest_summary.content}" if latest_summary else ""
                 focus = f"\nFocus: {instructions}" if instructions else ""
                 text = serialize_conversation(older)
+                from felix.patterns.model import ModelChatOptions
+
                 result = await model.chat(
                     [
                         ChatMessage(
@@ -455,6 +457,7 @@ class CompactingSessionStrategy:
                         ChatMessage(role="user", content=_fence_untrusted(text[:120_000])),
                     ],
                     [],
+                    ModelChatOptions(isolate_cache=True),
                 )
                 summary_text = result.message.content
                 if getattr(result, "usage", None):
