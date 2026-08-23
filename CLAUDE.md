@@ -58,6 +58,20 @@ uv run python scripts/gen-manifest-schema.py --check   # editor JSON Schema is c
 has a `memory://` path, the governance wrapper order is unchanged, and `schemas/manifest.schema.json`
 still matches the pydantic models. Change a rule deliberately and you update the test with it.
 
+Store conformance (`tests/conformance/`) runs one contract against every backend, because the
+invariant above only asserts an in-memory twin *exists* — not that it behaves like the Postgres
+store it stands in for. The in-memory arm runs everywhere; the Postgres arm needs a database:
+
+```bash
+FELIX_CONFORMANCE_DATABASE_URL=postgresql+psycopg://user:pass@localhost:5432/db \
+  ./scripts/test.sh tests/conformance -q
+```
+
+Without that variable the Postgres arm **skips**, which is right locally and wrong in CI — so the
+`conformance` job sets `FELIX_CONFORMANCE_REQUIRE_POSTGRES=1`, turning a missing database into a
+failure. A silently skipped arm looks exactly like a pass. Adding a backend to `BACKENDS` in
+`tests/conformance/test_session_store.py` makes it inherit every assertion in the contract.
+
 Eval smoke (no model calls): `uv run felix eval --dataset smoke --manifest quick --fixture fixtures/eval/smoke.json --mock`.
 
 ## Architecture

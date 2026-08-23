@@ -23,6 +23,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fans out across tool calls, model calls, session writes, and audit events, and nothing
   tied them together before.
 
+### Added
+
+- **Store conformance suite.** `memory://` is the CI test path, and
+  `tests/unit/test_invariants.py` asserted only that every Postgres-touching module *has*
+  an in-memory twin — not that the twin behaves like the store it stands in for. Every
+  green run was therefore evidence about the twin rather than about production.
+  `tests/conformance/` runs one contract against both backends: append ordering and seq
+  density, batch atomicity under concurrency, the full event round trip, query windows and
+  filters, head/reset/wake, and secret masking. A new `conformance` CI job runs it against
+  a real Postgres, and fails rather than skips when the database is missing, because a
+  silently skipped arm looks exactly like a pass. Both backends pass the contract today;
+  the point is that this is now checked rather than assumed.
+
 ### Fixed
 
 - **Streaming runs produced no audit record for the turn.** `invoke` and `stream_events`
