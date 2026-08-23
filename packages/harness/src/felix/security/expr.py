@@ -6,6 +6,30 @@ import ast
 import operator
 from typing import Any
 
+# 9**9**9**9 is a few keystrokes and pins a core for a very long time. Bound both the
+# exponent and the magnitude of the result rather than leaving it to RecursionError.
+MAX_POW_EXPONENT = 1024
+MAX_POW_RESULT_DIGITS = 4096
+
+
+def _bounded_pow(base: Any, exponent: Any) -> Any:
+    if abs(exponent) > MAX_POW_EXPONENT:
+        raise ValueError(f"exponent too large (max {MAX_POW_EXPONENT})")
+    if base != 0 and abs(exponent) * _digits(base) > MAX_POW_RESULT_DIGITS:
+        raise ValueError("result too large")
+    return operator.pow(base, exponent)
+
+
+def _digits(value: Any) -> float:
+    import math
+
+    try:
+        magnitude = abs(float(value))
+    except TypeError, ValueError, OverflowError:
+        return 1.0
+    return 1.0 if magnitude < 10 else math.log10(magnitude)
+
+
 _OPS: dict[type, Any] = {
     ast.Add: operator.add,
     ast.Sub: operator.sub,
@@ -13,7 +37,7 @@ _OPS: dict[type, Any] = {
     ast.Div: operator.truediv,
     ast.FloorDiv: operator.floordiv,
     ast.Mod: operator.mod,
-    ast.Pow: operator.pow,
+    ast.Pow: _bounded_pow,
     ast.USub: operator.neg,
     ast.UAdd: operator.pos,
 }

@@ -21,7 +21,10 @@ from felix.security.constant_time import constant_time_equal
 logger = logging.getLogger("felix.auth.middleware")
 
 # Unauthenticated access allowed even when auth_mode is jwt/api_key (probes + discovery).
-_PUBLIC_EXACT = frozenset({"/health", "/metrics", "/docs", "/openapi.json", "/redoc"})
+# /metrics is NOT public: its counters carry tenant-supplied manifest ids and remote
+# MCP tool names as label values, so an anonymous scrape discloses every tenant's
+# manifest and tool names.
+_PUBLIC_EXACT = frozenset({"/health", "/docs", "/openapi.json", "/redoc"})
 _PUBLIC_PREFIX = ("/.well-known/",)
 
 

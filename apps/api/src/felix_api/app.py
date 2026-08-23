@@ -15,8 +15,9 @@ from felix.auth.middleware import AuthMiddleware
 from felix.config import Settings, get_settings
 from felix.plugins import get_registry
 from felix.security.rate_limit import (
-    RateLimitConfig,
+    build_rate_limit_config,
     check_rate_limit,
+    client_key,
     should_skip_rate_limit,
 )
 from felix.tools.provider import ToolProvider
@@ -42,6 +43,27 @@ from felix_api.routes import (
 )
 
 CORE_BODY_LIMIT_BYTES = 1024 * 1024
+
+
+def _with_capped_body(request: Request, limit: int) -> Request:
+    """Return a request whose body stream raises once `limit` bytes have been read."""
+    original = request.receive
+    seen = 0
+
+    async def receive() -> Any:
+        nonlocal seen
+        message = await original()
+        if message.get("type") == "http.request":
+            seen += len(message.get("body") or b"")
+            if seen > limit:
+                raise _PayloadTooLarge()
+        return message
+
+    return Request(request.scope, receive)
+
+
+class _PayloadTooLarge(Exception):
+    """Raised from the receive channel when a streamed body exceeds the limit."""
 
 
 def create_app(
@@ -74,7 +96,9 @@ def create_app(
     rate_key_resolvers = [
         p.rate_limit_key for p in plugin_list if callable(getattr(p, "rate_limit_key", None))
     ]
-    rate_config = RateLimitConfig()
+    # Settings-driven, and Redis-backed when one is configured: the limiter was
+    # always in-process, so the effective ceiling was N_replicas x the limit.
+    rate_config = build_rate_limit_config(cfg)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -139,18 +163,19 @@ def create_app(
     app.state.tools = tool_provider
     app.state.plugins = plugin_list
 
-    @app.middleware("http")
-    async def body_limit_middleware(
-        request: Request, call_next: Callable[[Request], Awaitable[Response]]
-    ) -> Response:
-        cl = request.headers.get("content-length")
-        if cl is not None:
-            try:
-                if int(cl) > body_limit:
-                    return JSONResponse({"error": "payload_too_large"}, status_code=413)
-            except ValueError:
-                pass
-        return await call_next(request)
+    # Middleware order. Starlette's add_middleware inserts at index 0, and the decorator
+    # form uses it too — so the LAST one registered is the OUTERMOST. Auth was registered
+    # last and therefore ran first, which meant a 401 returned before the rate limiter
+    # was ever consulted: credential guessing was completely unthrottled.
+    #
+    # Registering auth -> rate limit -> body limit yields the runtime order
+    # body limit -> rate limit -> auth, so an oversized body is rejected before anything
+    # else, and every request (including one that will 401) is counted.
+    app.add_middleware(
+        AuthMiddleware,
+        settings=cfg,
+        self_authenticating_mounts=self_auth_mounts,
+    )
 
     @app.middleware("http")
     async def rate_limit_middleware(
@@ -165,22 +190,37 @@ def create_app(
             if key:
                 break
         if not key:
-            auth = getattr(request.state, "auth", None)
-            tenant = "default"
-            if auth is not None:
-                principal = getattr(auth, "principal", None)
-                tenant = getattr(principal, "tenant_id", None) or getattr(auth, "tenant_id", "default")
-            key = f"tenant:{tenant}"
+            key = client_key(request, cfg)
         allowed = await check_rate_limit(key, rate_config)
         if not allowed:
-            return JSONResponse({"error": "rate_limited"}, status_code=429)
+            return JSONResponse(
+                {"error": "rate_limited"},
+                status_code=429,
+                headers={"retry-after": str(rate_config.window_seconds)},
+            )
         return await call_next(request)
 
-    app.add_middleware(
-        AuthMiddleware,
-        settings=cfg,
-        self_authenticating_mounts=self_auth_mounts,
-    )
+    @app.middleware("http")
+    async def body_limit_middleware(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        cl = request.headers.get("content-length")
+        if cl is not None:
+            try:
+                if int(cl) > body_limit:
+                    return JSONResponse({"error": "payload_too_large"}, status_code=413)
+            except ValueError:
+                # A malformed Content-Length is not a reason to skip the limit; fall
+                # through to the streaming check below.
+                pass
+        # Content-Length alone is not a limit: a chunked request carries no such header,
+        # so the body was previously read unbounded. Wrap the stream and cut it off.
+        if request.headers.get("transfer-encoding", "").lower().find("chunked") >= 0 or cl is None:
+            request = _with_capped_body(request, body_limit)
+        try:
+            return await call_next(request)
+        except _PayloadTooLarge:
+            return JSONResponse({"error": "payload_too_large"}, status_code=413)
 
     @app.get("/health", tags=["System"])
     async def health() -> dict[str, Any]:

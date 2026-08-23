@@ -4,6 +4,15 @@
 # retagged upstream image cannot change what ships. Dependabot updates the
 # digests; refresh by hand with:
 #   docker buildx imagetools inspect <image>:<tag>   # take the top-level Digest
+#
+# Stock CPython — not free-threaded 3.14t, not PyPy/GraalPy. The request path is
+# I/O-bound (model calls, Postgres, Valkey, object store), so a faster interpreter
+# buys nothing, while granian, pydantic-core, asyncpg and the heavy extras
+# (Playwright, sentence-transformers, DuckDB, Presidio) are native extensions built
+# against the CPython ABI. Staying on it keeps every install a prebuilt cp314 wheel,
+# which UV_PYTHON_DOWNLOADS=never below depends on. Parallelism comes from Granian
+# worker processes (FELIX_WORKERS), not threads, so the GIL is not the constraint.
+#
 # Default image is LEAN (no aws/gcp/embeddings extras) for small VMs.
 # Build with extras: docker build --build-arg FELIX_EXTRAS="aws,gcp" .
 
