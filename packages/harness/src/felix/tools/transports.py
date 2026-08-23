@@ -6,6 +6,9 @@ executor is available behind ``felix-harness[sandbox]``. Core remains HTTP + loc
 
 from __future__ import annotations
 
+import asyncio
+from typing import Any
+
 from felix.security.ssrf import assert_safe_outbound_url
 from felix.tools.types import ToolInput, ToolInvocationCtx, ToolOutput
 
@@ -57,11 +60,19 @@ class SandboxExecutor:
         command: list[str] | None = None,
         network_disabled: bool = True,
         mem_limit: str = "256m",
+        user: str = "65534:65534",
+        read_only: bool = True,
+        pids_limit: int = 128,
+        nano_cpus: int = 1_000_000_000,
     ) -> None:
         self._image = image
         self._command = command or ["python", "-c", "import sys; print(sys.stdin.read())"]
         self._network_disabled = network_disabled
         self._mem_limit = mem_limit
+        self._user = user
+        self._read_only = read_only
+        self._pids_limit = pids_limit
+        self._nano_cpus = nano_cpus
 
     async def execute(self, args: ToolInput, ctx: ToolInvocationCtx | None = None) -> ToolOutput:
         import json
@@ -76,8 +87,9 @@ class SandboxExecutor:
 
         client = docker.from_env()
         payload = json.dumps(args)
-        try:
-            out = client.containers.run(
+
+        def _run() -> Any:
+            return client.containers.run(
                 self._image,
                 self._command,
                 input=payload.encode("utf-8"),
@@ -86,7 +98,26 @@ class SandboxExecutor:
                 remove=True,
                 stdout=True,
                 stderr=True,
+                # Confinement. Without these the sandbox was network-off and
+                # memory-capped and nothing else: it ran as root, could write anywhere in
+                # its filesystem, fork without limit, and keep every Linux capability.
+                user=self._user,
+                read_only=self._read_only,
+                pids_limit=self._pids_limit,
+                cap_drop=["ALL"],
+                security_opt=["no-new-privileges:true"],
+                nano_cpus=self._nano_cpus,
+                # A read-only rootfs still needs somewhere to write; keep it small,
+                # in-memory, and non-executable.
+                tmpfs={"/tmp": "rw,noexec,nosuid,size=64m"},
             )
+
+        try:
+            # docker-py is synchronous. Calling it directly from a coroutine meant the
+            # asyncio.wait_for timeout around this executor could never fire — nothing
+            # yields — and the whole API event loop stalled for the container's lifetime,
+            # so a model emitting `while True: pass` froze every concurrent request.
+            out = await asyncio.to_thread(_run)
         except Exception as exc:
             return f"sandbox_error: {exc}"
         if isinstance(out, bytes):
