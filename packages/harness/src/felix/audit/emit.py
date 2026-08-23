@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from felix.context import try_get_context
+
+logger = logging.getLogger("felix.audit.emit")
 
 
 def emit_agent_audit(
@@ -32,7 +35,8 @@ def emit_agent_audit(
         )
         ctx.limit_state.audit_count = int(getattr(ctx.limit_state, "audit_count", 0) or 0) + 1
     except Exception:
-        pass
+        # An audit event that cannot be recorded is a governance gap, not a detail.
+        logger.warning("audit emit failed for %s", event_type, exc_info=True)
 
 
 __all__ = ["emit_agent_audit"]
