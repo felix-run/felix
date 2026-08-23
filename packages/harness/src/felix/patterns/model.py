@@ -81,9 +81,20 @@ ModelClient = ModelProvider
 
 
 class ModelGatewayError(Exception):
+    """An upstream model provider returned an error response.
+
+    ``str(exc)`` is relayed to API clients verbatim by both `/chat` and
+    `/v1/chat/completions`, so the provider's response body is deliberately kept **out**
+    of the message: it can carry provider request ids, organization identifiers, quota
+    and billing detail, and echoed request content. The body is retained on ``.body``
+    for server-side logging only.
+    """
+
     def __init__(self, label: str, status: int, body: str) -> None:
-        super().__init__(f"{label}: {status} {body[:200]}")
+        super().__init__(f"{label} provider returned HTTP {status}")
         self.status = status
+        self.label = label
+        self.body = (body or "")[:2000]
         self.name = "ModelGatewayError"
 
 
