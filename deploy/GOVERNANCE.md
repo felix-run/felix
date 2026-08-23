@@ -180,6 +180,16 @@ Command screening inspects every execution-bearing argument, not just `command`/
 including `code`, `script`, `stdin`, and `argv`, and *every* string argument for
 `sandbox` / `container` transports, where the payload is the program.
 
+Screening can only judge the arguments it is handed, so a turn the model did not finish
+writing is refused before it reaches any wrapper. A response that stops on `max_tokens`
+can still carry a syntactically complete tool call whose arguments were cut off
+mid-write — `{"path": "/srv/app/tmp"}` truncated to `{"path": "/srv"}` is valid JSON
+naming a different target, and it screens clean because the shortened value is all there
+is to screen. Every tool call on such a message is failed with `[error/truncated]` and
+the run is recorded with status `truncated`; none of them execute, including calls that
+look complete, because the batch cannot be split into trustworthy and untrustworthy
+halves after the fact.
+
 ## Run budgets
 
 `spec.limits` bounds a single run. Every field is enforced at two points — before each
@@ -193,6 +203,14 @@ step:
 | `max_wall_clock_seconds` | Elapsed time since the run started. |
 | `max_input_tokens` / `max_output_tokens` | Accumulated tokens, including cache reads and writes. |
 | `max_cost_usd` | Accumulated spend, priced from the model catalog. |
+
+Because `max_cost_usd` fails closed, the price table behind it is a control input rather
+than reporting. Bundled prices are flat per model. A provider that bills long context at
+a higher rate across the *whole* request needs that expressed as pricing tiers on a
+manifest price override — `tiers: [{input_tokens_above: N, input: …, output: …}]`, where
+the highest matching threshold replaces the base rates entirely. No bundled entry sets
+tiers: the thresholds and rates move, and a stale number here both mis-charges the tenant
+and lets the budget cap admit more spend than it should.
 
 **Undeclared fields fall back to `ABSOLUTE_LIMITS`**, so a manifest that declares no
 limits is still bounded (500 tool calls, 3600s, 1M input tokens, 100k output tokens,

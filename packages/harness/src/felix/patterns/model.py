@@ -279,6 +279,31 @@ _BASE_BACKOFF_S = 0.5
 _MAX_BACKOFF_S = 20.0
 
 
+# A 429 has two very different causes. Transient overload clears on its own and is worth
+# a retry; a spent quota or a billing problem does not clear within a request, so retrying
+# only adds latency to a failure the caller is going to see anyway.
+_HARD_LIMIT_MARKERS = (
+    "insufficient_quota",
+    "insufficient quota",
+    "billing",
+    "payment",
+    "credit balance",
+    "exceeded your current quota",
+    "monthly usage limit",
+    "spending limit",
+    "account is not active",
+)
+
+
+def _is_exhausted_quota(resp: Any) -> bool:
+    """True when a rate-limit response reflects a spent budget rather than backpressure."""
+    try:
+        body = (resp.text or "").lower()
+    except Exception:
+        return False
+    return any(marker in body for marker in _HARD_LIMIT_MARKERS)
+
+
 def _retry_after_seconds(resp: Any) -> float | None:
     """Honour the provider's own Retry-After, in seconds or as an HTTP date."""
     raw = ""
@@ -340,6 +365,10 @@ async def _post_with_retry(
             await asyncio.sleep(_backoff_delay(attempt, None))
             continue
         if resp.status_code in _RETRY_STATUSES and attempt < max_retries:
+            if resp.status_code == 429 and _is_exhausted_quota(resp):
+                logger.warning("%s rate limit is a spent quota, not backpressure; not retrying", label)
+                record_counter("felix_model_retry_skipped", {"provider": label, "reason": "quota"})
+                return resp
             delay = _backoff_delay(attempt, _retry_after_seconds(resp))
             record_counter("felix_model_retry", {"provider": label, "status": str(resp.status_code)})
             logger.warning(
@@ -500,6 +529,37 @@ def _messages_to_openai(messages: list[ChatMessage]) -> list[dict[str, Any]]:
     return out
 
 
+def _anthropic_thinking_blocks(m: ChatMessage) -> list[dict[str, Any]]:
+    """Thinking blocks to replay for an assistant turn, in the order the model emitted them.
+
+    Extended thinking combined with tool use is stateful: the provider signs each thinking
+    block, and a later turn that replays the tool call must replay the signed reasoning
+    with it. Felix captured neither, so a thinking-enabled manifest lost its reasoning at
+    the first tool call and every following turn was answered without it.
+
+    A `thinking` block is only replayable with the signature that was issued for it, so an
+    unsigned one is dropped rather than sent — the provider rejects the whole turn on a
+    missing or unverifiable signature. `redacted_thinking` carries no readable text but
+    must still be echoed back, so it travels on its opaque `data` field alone.
+    """
+    blocks: list[dict[str, Any]] = []
+    for raw in m.thinking or []:
+        if not isinstance(raw, dict):
+            continue
+        kind = raw.get("type")
+        if kind == "thinking" and raw.get("signature"):
+            blocks.append(
+                {
+                    "type": "thinking",
+                    "thinking": str(raw.get("thinking") or ""),
+                    "signature": str(raw["signature"]),
+                }
+            )
+        elif kind == "redacted_thinking" and raw.get("data"):
+            blocks.append({"type": "redacted_thinking", "data": str(raw["data"])})
+    return blocks
+
+
 def _tool_json_schema(tool: Tool) -> dict[str, Any]:
     if tool.raw_input_schema is not None:
         return tool.raw_input_schema
@@ -640,7 +700,10 @@ class _HttpModelClient:
                 )
                 continue
             if m.role == "assistant" and m.tool_calls:
-                blocks: list[dict[str, Any]] = []
+                # Thinking blocks come first and verbatim: with extended thinking on, the
+                # provider rejects a turn that replays a tool call without the signed
+                # reasoning that produced it.
+                blocks: list[dict[str, Any]] = _anthropic_thinking_blocks(m)
                 if m.content:
                     blocks.append({"type": "text", "text": m.content})
                 for tc in m.tool_calls:
@@ -686,6 +749,7 @@ class _HttpModelClient:
         content_blocks = data.get("content") or []
         text_parts: list[str] = []
         tool_calls: list[ToolCall] = []
+        thinking_blocks: list[dict[str, Any]] = []
         for b in content_blocks:
             if b.get("type") == "text":
                 text_parts.append(str(b.get("text") or ""))
@@ -697,6 +761,8 @@ class _HttpModelClient:
                         args=dict(b.get("input") or {}),
                     )
                 )
+            elif b.get("type") in ("thinking", "redacted_thinking"):
+                thinking_blocks.append(dict(b))
         usage_raw = data.get("usage") or {}
         stop = _map_stop(data.get("stop_reason"), _ANTHROPIC_STOP, had_tool_calls=bool(tool_calls))
         return ModelChatResult(
@@ -704,6 +770,7 @@ class _HttpModelClient:
                 role="assistant",
                 content="".join(text_parts),
                 tool_calls=tool_calls or None,
+                thinking=thinking_blocks or None,
             ),
             stop_reason=stop,
             usage=TokenUsage(
@@ -811,7 +878,10 @@ class _HttpModelClient:
                 )
                 continue
             if m.role == "assistant" and m.tool_calls:
-                blocks: list[dict[str, Any]] = []
+                # Thinking blocks come first and verbatim: with extended thinking on, the
+                # provider rejects a turn that replays a tool call without the signed
+                # reasoning that produced it.
+                blocks: list[dict[str, Any]] = _anthropic_thinking_blocks(m)
                 if m.content:
                     blocks.append({"type": "text", "text": m.content})
                 for tc in m.tool_calls:

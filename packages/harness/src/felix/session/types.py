@@ -128,19 +128,21 @@ class SessionStrategy(Protocol):
 
 def chat_message_to_event(m: ChatMessage) -> AppendableEvent:
     kind: SessionEventKind = "tool_result" if m.role == "tool" else "message"
-    md: dict[str, Any] | None = None
+    md: dict[str, Any] = {}
     if m.attachments:
-        md = {
-            "attachments": [
-                {
-                    "url": a.url,
-                    "media_type": a.media_type,
-                    "filename": a.filename,
-                    "detail": a.detail,
-                }
-                for a in m.attachments
-            ]
-        }
+        md["attachments"] = [
+            {
+                "url": a.url,
+                "media_type": a.media_type,
+                "filename": a.filename,
+                "detail": a.detail,
+            }
+            for a in m.attachments
+        ]
+    if m.thinking:
+        # Signed reasoning has to survive the session round-trip or replay breaks as soon
+        # as history is rebuilt from events rather than held in memory for one request.
+        md["thinking"] = [dict(b) for b in m.thinking if isinstance(b, dict)]
     return AppendableEvent(
         kind=kind,
         role=m.role,
@@ -150,7 +152,7 @@ def chat_message_to_event(m: ChatMessage) -> AppendableEvent:
         tool_calls=(
             [{"id": tc.id, "name": tc.name, "args": tc.args} for tc in m.tool_calls] if m.tool_calls else None
         ),
-        metadata=md,
+        metadata=md or None,
     )
 
 
@@ -207,6 +209,12 @@ def event_to_chat_message(e: SessionEvent) -> ChatMessage:
             for a in raw_atts
             if isinstance(a, dict)
         ]
+    raw_thinking = (e.metadata or {}).get("thinking")
+    thinking = (
+        [b for b in raw_thinking if isinstance(b, dict)]
+        if isinstance(raw_thinking, list) and raw_thinking
+        else None
+    )
     return ChatMessage(
         role=e.role or "assistant",  # type: ignore[arg-type]
         content=e.content or "",
@@ -214,6 +222,7 @@ def event_to_chat_message(e: SessionEvent) -> ChatMessage:
         name=e.name,
         tool_calls=tool_calls,
         attachments=attachments,
+        thinking=thinking,
     )
 
 

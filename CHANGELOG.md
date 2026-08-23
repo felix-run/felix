@@ -25,6 +25,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A turn cut off at `max_tokens` executed the tool calls it was still writing.** The
+  ReAct loop only inspected `stop_reason` on the branch where the assistant produced no
+  tool calls, so a truncated `tool_use` went straight to execution. Truncated arguments
+  can still parse — `{"path": "/srv/app/tmp"}` shortened to `{"path": "/srv"}` is valid
+  JSON naming a different target — and command screening judges the arguments it is
+  handed, so the shortened value screened clean. Every tool call on an unfinished message
+  is now failed with `[error/truncated]` and the run is recorded as `truncated`; the
+  whole batch is refused, because it cannot be split into trustworthy and untrustworthy
+  halves after the fact. Applies to both `/chat` and `/chat/stream`.
+- **Extended thinking was write-only, so tool-using turns lost their reasoning.** Felix
+  sent `thinking` on the request but discarded it from the response, and the session log
+  dropped the field entirely. The provider signs each thinking block and requires it
+  replayed alongside the tool call it produced, so a thinking-enabled manifest lost its
+  reasoning at the first tool call and every later turn was answered without it. Thinking
+  blocks are now captured, persisted on the session event, and replayed ahead of the
+  `tool_use` blocks. Unsigned blocks are dropped rather than sent, since an unverifiable
+  signature rejects the whole turn.
+- **Long-context requests were under-priced.** Cost estimation had one flat rate per
+  model, but providers that bill long context do so across the *whole* request once total
+  input crosses a threshold. `max_cost_usd` is a fail-closed control reading that number,
+  so a budget cap admitted more spend than it should. Price entries now accept `tiers`,
+  where the highest matching threshold replaces the base rates. No bundled entry sets
+  tiers — thresholds and rates move, and a stale number here mis-charges tenants — so
+  they are supplied per deployment through a manifest price override.
+- **A spent quota was retried like transient overload.** Both return 429, but an
+  exhausted quota or a billing failure will not clear inside the request, so the full
+  backoff ladder was added to a failure the caller was going to see anyway.
+- **Parallel tool calls could interleave on one file.** `spec.tool_execution: parallel`
+  runs a batch under `asyncio.gather` and two calls could name the same file, directly or
+  through a symlink. Workspace writes now serialize on the resolved path.
+
 - **`FELIX_LOG_LEVEL` was never applied**, and `structlog` was a hard dependency that
   nothing imported. Logging is now configured at startup, with JSON output in production
   and readable text elsewhere.
