@@ -5,7 +5,7 @@ concrete enough to pick up in a single session.
 
 **Repos:** `felix-run/felix` (harness) · `felix-run/web` (chat-ui + float + docs)
 **Live:** [api.felix.run](https://api.felix.run) · [chat.felix.run](https://chat.felix.run) · [float.felix.run](https://float.felix.run) · [docs.felix.run](https://docs.felix.run)
-**Last reviewed:** 2026-08-23 (post cross-harness port audit, PRs #43–#44)
+**Last reviewed:** 2026-08-23 (post cross-harness port audit, PRs #43–#44; headless-first audit)
 
 ---
 
@@ -234,6 +234,47 @@ Deferred deliberately; each has a written reason, not just a lack of time.
       gone (that was the real defect); what remains is one sequential turn loop
       plus session plumbing. Splitting further trades readability for a number.
       Revisit only if it grows again.
+
+#### From the headless-first audit (Aug 2026)
+
+The property holds: no asset pipeline, no `StaticFiles` / template engine /
+`app.mount` anywhere in `apps/`, no UI service in Compose or the Helm chart, and
+every capability reachable over REST/SSE, `/v1`, A2A, or MCP. chat-ui consumes a
+generated `harness-openapi.json` and works *around* missing routes (skills, eval
+per-item, job run-now) rather than the harness growing them for it. What follows
+is the gap between that being true and it being **enforced or documented**.
+
+- [ ] **Headless invariant is prose only** — CLAUDE.md asserts it; nothing fails
+      when it stops being true. `tests/unit/test_invariants.py` already makes
+      the argument in its own docstring ("rules hold only while whoever is
+      editing has them in context"). An AST/file check over `apps/api` for
+      `StaticFiles`, `Jinja2Templates` and `app.mount`, plus a tracked-file
+      check for asset extensions, is ~20 lines in the existing idiom and costs
+      nothing at runtime. Cheapest item here; do it first.
+- [ ] **No-CORS contract undocumented** — the stack is body-limit → rate-limit →
+      auth with no CORS layer, so a browser on any other origin cannot call
+      Felix directly. Deliberate, but written down nowhere: `README.md`,
+      `deploy/README.md`, `deploy/GOVERNANCE.md` and `docs/` never mention CORS,
+      and the requirement survives only inside felix-web's `worker/index.ts`,
+      which proxies `/api/*` and injects the bearer token. A self-hoster
+      pointing a browser app at `:8080` hits an opaque wall. Short block in the
+      deploy docs, plus the reverse-proxy shape it implies.
+- [ ] **`POST /chat/ui` sub-protocol unspecified** — README:193 lists the route
+      but not the contract: the harness can emit a `ui_request` SSE side-event
+      and block on a waiter for `DEFAULT_TIMEOUT_SECONDS = 300`. Nothing in core
+      calls it today (`felix/ui/` has no call sites outside its own module and
+      the route), so no headless caller can stall on it *yet* — but a plugin
+      using `request_confirm` would make a non-answering client eat five minutes
+      per prompt. Document the frames, and move the timeout to a `FELIX_`
+      setting instead of a module constant.
+
+Not gaps, recorded so they are not "fixed" by mistake: the chat-ui-shaped
+accommodations in `eval.py:132` (alias route named for the client),
+`audit.py:34` (an `events` alias for the TS shape) and `approvals.py:24`
+(accepting `status`) are deliberate compat with a shipped client — removing them
+breaks felix-web. Whether `felix/ui/` is dead code or a plugin-seam affordance
+needs a real reachability check (entry points, registry, string lookup) before
+anyone deletes it.
 
 ### Product (`felix-run/web`)
 
