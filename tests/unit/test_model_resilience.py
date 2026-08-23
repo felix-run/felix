@@ -161,6 +161,83 @@ def test_system_prompt_is_identical_across_differing_preludes() -> None:
     assert a.system_prompt == b.system_prompt
 
 
+# --- the prelude has to survive assembly, not just be built ---------------------
+#
+# Every test above checks that the block is *constructed* correctly. None checked
+# that it reaches the model, and it did not: a session strategy builds a fresh list
+# from the session log and returns that, rather than extending the one it was handed,
+# so the prelude was discarded on every turn that had a thread.
+
+
+def _threaded_agent(prelude: str):
+    from felix.patterns.react import build_react_agent
+    from felix.session.store import InMemorySessionStore
+    from felix.session.strategies import get_session_strategy
+
+    return build_react_agent(
+        {
+            "tools": [],
+            "manifest_id": "m",
+            "system_prompt": "You are Felix.",
+            "context_prelude": prelude,
+            "recursion_limit": 3,
+            "session_store": InMemorySessionStore(),
+            "session_strategy": get_session_strategy("full_replay"),
+        }
+    )
+
+
+async def _assemble(agent, *, thread_id: str | None):
+    from felix.patterns.types import ChatMessage, InvokeInput
+
+    return await agent._assemble_messages(
+        InvokeInput(messages=[ChatMessage(role="user", content="hi")], thread_id=thread_id),
+        model=None,
+        tenant_id="default",
+    )
+
+
+@pytest.mark.asyncio
+async def test_prelude_survives_a_threaded_session_render() -> None:
+    """The regression: render replaces the list, so the prelude must be re-applied."""
+    messages = await _assemble(
+        _threaded_agent("<known_facts>- the sky is green</known_facts>"), thread_id="t1"
+    )
+    assert any("the sky is green" in (m.content or "") for m in messages), (
+        "recalled facts were dropped by the session render"
+    )
+
+
+@pytest.mark.asyncio
+async def test_prelude_reaches_the_model_without_a_thread_too() -> None:
+    messages = await _assemble(
+        _threaded_agent("<known_facts>- the sky is green</known_facts>"), thread_id=None
+    )
+    assert any("the sky is green" in (m.content or "") for m in messages)
+
+
+@pytest.mark.asyncio
+async def test_prelude_sits_after_the_system_prompt_not_at_the_tail() -> None:
+    """Framing, not the user's latest turn — and never inside the system block."""
+    messages = await _assemble(
+        _threaded_agent("<known_facts>- the sky is green</known_facts>"), thread_id="t1"
+    )
+    found = [i for i, m in enumerate(messages) if "the sky is green" in (m.content or "")]
+    assert found, "recalled facts were dropped by the session render"
+    idx = found[0]
+    assert messages[0].role == "system"
+    assert "the sky is green" not in (messages[0].content or "")
+    assert idx == 1, "prelude belongs directly after the system prompt"
+    assert messages[idx].role == "user"
+    assert messages[-1].content == "hi", "the user's own turn stays last"
+
+
+@pytest.mark.asyncio
+async def test_no_phantom_prelude_message_when_memory_is_empty() -> None:
+    messages = await _assemble(_threaded_agent(""), thread_id="t1")
+    assert [m.role for m in messages] == ["system", "user"]
+
+
 def test_backoff_does_not_block_the_loop() -> None:
     """Sanity: the retry sleep is awaited, not time.sleep()."""
     import inspect
