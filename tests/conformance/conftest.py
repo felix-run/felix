@@ -7,6 +7,7 @@ otherwise. A skip here is a real gap in coverage, not a pass, so it says so.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import AsyncIterator
 from typing import Any
@@ -20,6 +21,64 @@ REQUIRE_ENV = "FELIX_CONFORMANCE_REQUIRE_POSTGRES"
 
 def postgres_url() -> str | None:
     return os.environ.get(PG_URL_ENV) or None
+
+
+def _alembic_config(url: str):
+    """An Alembic config pointed at `url`, whatever the ambient settings say.
+
+    `migrations/env.py` reads `config.attributes["felix_url"]` before falling back to
+    `FELIX_DATABASE_URL` — which `scripts/test.sh` pins to `memory://`, so without the
+    override every migration here would target the in-memory URL and do nothing.
+    """
+    from pathlib import Path
+
+    from alembic.config import Config
+
+    root = Path(__file__).resolve().parents[2]
+    cfg = Config(str(root / "alembic.ini"))
+    cfg.attributes["felix_url"] = url
+    return cfg
+
+
+async def migrate_to_head(url: str) -> None:
+    """Build the schema the way production does — by applying every revision.
+
+    This suite used to call `Base.metadata.create_all`, which meant the revisions were
+    never executed by CI and the DDL that lives only in a migration was never present:
+    generated columns and non-btree indexes are deliberately kept out of the ORM
+    (`session_events.content_tsv` is reached via `text()`), so `create_all` cannot
+    produce them and anything depending on them was silently untested.
+
+    Alembic drives its own event loop, so it runs in a worker thread.
+    """
+    from alembic import command
+
+    await asyncio.to_thread(command.upgrade, _alembic_config(url), "head")
+
+
+async def downgrade_to_base(url: str) -> None:
+    from alembic import command
+
+    await asyncio.to_thread(command.downgrade, _alembic_config(url), "base")
+
+
+async def drop_everything(url: str) -> None:
+    """Teardown that cannot fail on a broken downgrade.
+
+    Deliberately not `downgrade base`: teardown should be boring. Whether the
+    downgrades actually reverse is asserted by `test_migrations.py`, where a failure
+    names itself instead of erroring every test in the suite.
+    """
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    engine = create_async_engine(url, future=True)
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("DROP SCHEMA public CASCADE"))
+            await conn.execute(text("CREATE SCHEMA public"))
+    finally:
+        await engine.dispose()
 
 
 @pytest_asyncio.fixture
@@ -41,17 +100,14 @@ async def store(request: pytest.FixtureRequest) -> AsyncIterator[Any]:
             pytest.fail(f"{REQUIRE_ENV} is set but {PG_URL_ENV} is not — the Postgres arm cannot run")
         pytest.skip(f"{PG_URL_ENV} unset — the Postgres arm of the contract did not run")
 
-    from felix.db.models import Base
     from felix.session.store import PostgresSessionStore
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+    await migrate_to_head(url)
     engine = create_async_engine(url, future=True)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
     factory = async_sessionmaker(engine, expire_on_commit=False)
     try:
         yield PostgresSessionStore(factory, tenant_id="conformance")
     finally:
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.drop_all)
+        await drop_everything(url)
         await engine.dispose()
