@@ -135,6 +135,13 @@ class Settings(BaseSettings):
     # declares what it is. 768 is also `bge-base-en-v1.5`, the model the rest of the
     # repo defaults to. Changing it is a re-embed of every row, not a config flip.
     memory_embedding_dim: int = 768
+    # Semantic recall is optional. The default costs nothing and needs nothing
+    # installed; recall runs its full-text and topic-key channels and skips the
+    # vector one. `sentence_transformers` needs felix-harness[embeddings]; `openai`
+    # and `ollama` speak an OpenAI-compatible /embeddings endpoint over httpx.
+    memory_embedder: Literal["none", "sentence_transformers", "openai", "ollama"] = "none"
+    memory_embedding_model: str = "bge-base-en-v1.5"
+    memory_recall_limit: int = 8
 
     # --- misc ---
     default_manifest: str = "quick"

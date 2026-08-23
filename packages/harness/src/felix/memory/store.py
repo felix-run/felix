@@ -18,6 +18,7 @@ in the same statement.
 from __future__ import annotations
 
 import hashlib
+import logging
 import time
 from typing import Any, cast
 
@@ -26,6 +27,8 @@ from sqlalchemy import func, select, update
 from felix.config import Settings
 from felix.db.models import MemoryVector
 from felix.db.session import _use_memory, get_session_factory
+
+logger = logging.getLogger("felix.memory")
 
 ACTIVE = "active"
 SUPERSEDED = "superseded"
@@ -153,6 +156,10 @@ async def put_memory(
         await supersede(settings, tenant_id, supersedes_id, origin_seq, superseded_by=mem_id)
 
     if _use_memory(settings):
+        # The twin keeps the vector inline; Postgres keeps it in a column the ORM
+        # cannot see. Either way recall must be able to reach it, or the vector
+        # channel is untestable on the path CI actually runs.
+        row["embedding"] = list(embedding) if embedding else None
         return _put_in_memory(row)
     await _put_in_postgres(settings, row, embedding=embedding)
     return row
@@ -217,7 +224,7 @@ async def _put_in_postgres(settings: Settings, row: dict[str, Any], *, embedding
         # `__table__` is declared as `FromClause` but is a `Table` at runtime, and
         # `pg_insert` wants the narrower type; cast rather than lie in an annotation.
         table = cast(Any, MemoryVector.__table__)
-        values = {k: v for k, v in row.items() if k not in {"last_used_at", "embedding_json"}}
+        values = {k: v for k, v in row.items() if k not in {"last_used_at", "embedding_json", "embedding"}}
         stmt = pg_insert(table).values(values)
         excluded = stmt.excluded
         stmt = stmt.on_conflict_do_update(
@@ -244,28 +251,54 @@ async def _put_in_postgres(settings: Settings, row: dict[str, Any], *, embedding
         await db.commit()
 
 
+_warned_embedding_dim = False
+
+
 async def _write_embedding(db: Any, tenant_id: str, mem_id: str, vector: list[float], *, model: str) -> None:
     """Set the pgvector column, which has no ORM representation.
 
-    Silently a no-op when the column is absent — migration 0009 skips it on a Postgres
-    without the extension, and full-text recall is expected to keep working there.
+    A vector whose length does not match the column is rejected loudly. Postgres would
+    reject it anyway, and the previous behaviour — swallow the error into a debug log —
+    is how this table came to look like it worked while storing nothing: a misconfigured
+    embedder would produce a memory store with no vectors and no indication why.
     """
+    global _warned_embedding_dim
     from sqlalchemy import text as sa_text
 
-    literal = "[" + ",".join(repr(float(v)) for v in vector) + "]"
-    try:
-        await db.execute(
-            sa_text(
-                "UPDATE memory_vectors SET embedding = CAST(:vec AS vector), "
-                "embedding_dim = :dim, embedding_model = :model "
-                "WHERE tenant_id = :tenant AND id = :id"
-            ),
-            {"vec": literal, "dim": len(vector), "model": model, "tenant": tenant_id, "id": mem_id},
-        )
-    except Exception:  # pragma: no cover - depends on the deployment's Postgres
-        import logging
+    expected = await _configured_dim(db)
+    if expected is not None and len(vector) != expected:
+        if not _warned_embedding_dim:
+            _warned_embedding_dim = True
+            logger.warning(
+                "embedding is %d-dimensional but memory_vectors.embedding is vector(%d); "
+                "vectors are not being stored and recall will run without them. Set "
+                "FELIX_MEMORY_EMBEDDING_MODEL to a model of the right size, or rebuild "
+                "the column.",
+                len(vector),
+                expected,
+            )
+        return
 
-        logging.getLogger("felix.memory").debug("embedding write skipped", exc_info=True)
+    literal = "[" + ",".join(repr(float(v)) for v in vector) + "]"
+    await db.execute(
+        sa_text(
+            "UPDATE memory_vectors SET embedding = CAST(:vec AS vector), "
+            "embedding_dim = :dim, embedding_model = :model "
+            "WHERE tenant_id = :tenant AND id = :id"
+        ),
+        {"vec": literal, "dim": len(vector), "model": model, "tenant": tenant_id, "id": mem_id},
+    )
+
+
+async def _configured_dim(db: Any) -> int | None:
+    """The dimension the vector column was built at, per `memory_vector_config`."""
+    from sqlalchemy import text as sa_text
+
+    try:
+        return await db.scalar(sa_text("SELECT dim FROM memory_vector_config WHERE id = 1"))
+    except Exception:
+        logger.debug("memory_vector_config unreadable", exc_info=True)
+        return None
 
 
 async def supersede(

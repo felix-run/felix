@@ -166,3 +166,111 @@ async def test_a_memory_without_an_embedding_can_be_stored(memory_settings: Any)
     stored = await memory_store.get_many(memory_settings, TENANT, [row["id"]])
     assert stored[row["id"]]["content"] == "A fact with no vector attached."
     assert stored[row["id"]]["embedding_dim"] is None
+
+
+# --- hybrid recall ----------------------------------------------------------------
+#
+# The channels are three SQL statements on Postgres and three Python loops in the
+# twin. Nothing but this compares them, and the SQL cannot run at all without the
+# generated columns migration 0009 creates.
+
+
+class _AxisEmbedder:
+    """Deterministic embeddings — no model, no network.
+
+    Sized to the real column (`vector(768)`, from 0001_baseline) with the signal in
+    the first two components and zeros elsewhere. A shorter vector is rejected, which
+    is the correct behaviour and not what this test is about.
+    """
+
+    enabled = True
+    dim = 768
+
+    async def embed(self, texts: Any) -> list[list[float]]:
+        out = []
+        for text in texts:
+            low = str(text).lower()
+            head = [1.0, 0.0] if ("automobile" in low or "car" in low) else [0.0, 1.0]
+            out.append(head + [0.0] * (self.dim - 2))
+        return out
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_recall_finds_by_content_not_recency(memory_settings: Any) -> None:
+    from felix.memory.recall import recall
+
+    await _put(memory_settings, "The deployment runbook lives in the ops repository.")
+    await _put(memory_settings, "Lunch was pleasant.")
+
+    hits = await recall(memory_settings, TENANT, "where is the runbook", manifest_id=MANIFEST)
+    assert hits
+    assert "runbook" in hits[0].content
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_topic_channel_finds_a_dotted_identifier(memory_settings: Any) -> None:
+    from felix.memory.recall import recall
+
+    await _put(memory_settings, "CET.", topic_key="user.timezone")
+    hits = await recall(memory_settings, TENANT, "what timezone", manifest_id=MANIFEST)
+    assert hits
+    assert hits[0].topic_key == "user.timezone"
+    assert "topic" in hits[0].channels
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_vector_channel_finds_a_paraphrase(memory_settings: Any) -> None:
+    """No token overlap at all, so only the vector channel can find this."""
+    from felix.memory.recall import recall
+
+    emb = _AxisEmbedder()
+    vectors = await emb.embed(["The automobile is red.", "The soup is cold."])
+    await _put(memory_settings, "The automobile is red.", embedding=vectors[0])
+    await _put(memory_settings, "The soup is cold.", embedding=vectors[1])
+
+    hits = await recall(memory_settings, TENANT, "my car", manifest_id=MANIFEST, embedder=emb)
+    assert hits
+    assert "automobile" in hits[0].content
+    assert "vector" in hits[0].channels
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_superseded_and_forgotten_are_not_recalled(memory_settings: Any) -> None:
+    from felix.memory.recall import recall
+
+    await _put(memory_settings, "Timezone is UTC.", topic_key="user.timezone", origin_seq=1)
+    await _put(memory_settings, "Timezone is CET.", topic_key="user.timezone", origin_seq=2)
+    gone = await _put(memory_settings, "Timezone trivia nobody wants.")
+    await memory_store.forget(memory_settings, TENANT, gone["id"])
+
+    hits = await recall(memory_settings, TENANT, "timezone", manifest_id=MANIFEST)
+    assert [h.content for h in hits] == ["Timezone is CET."]
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_recall_survives_a_query_full_of_punctuation(memory_settings: Any) -> None:
+    """User text goes straight into the query; it must not break the SQL."""
+    from felix.memory.recall import recall
+
+    await _put(memory_settings, "The runbook is in the ops repository.")
+    for hostile in ("runbook & | ! ( ) :*", "'; DROP TABLE memory_vectors; --", "???"):
+        await recall(memory_settings, TENANT, hostile, manifest_id=MANIFEST)
+
+    assert await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST)
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_a_stored_vector_round_trips(memory_settings: Any) -> None:
+    """`embedding_dim` records what was actually stored, on both backends."""
+    emb = _AxisEmbedder()
+    vector = (await emb.embed(["The automobile is red."]))[0]
+    row = await _put(memory_settings, "The automobile is red.", embedding=vector)
+
+    stored = await memory_store.get_many(memory_settings, TENANT, [row["id"]])
+    assert stored[row["id"]]["embedding_dim"] == emb.dim

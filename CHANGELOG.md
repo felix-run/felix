@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Memory recall is hybrid, and no longer just the newest rows.** Recall was
+  `ORDER BY created_at` — the most recent facts, related to the question or not. It
+  now runs three independent channels and fuses their *rankings* with Reciprocal Rank
+  Fusion: full text over `content_tsv`, topic key over `topic_tsv` (so "what timezone"
+  finds `user.timezone`, which shares no words with the stored value), and vector
+  similarity over the pgvector column (so a paraphrase with no shared tokens is found
+  at all). Fusing ranks rather than scores is what makes the channels combinable —
+  `ts_rank_cd` and cosine distance are not on comparable scales, so any weighted sum
+  of them would be meaningless.
+
+  Semantic recall is optional and off by default: `FELIX_MEMORY_EMBEDDER=none` needs
+  nothing installed, and recall simply skips its vector channel. `sentence_transformers`
+  uses the existing `embeddings` extra; `openai` and `ollama` speak an
+  OpenAI-compatible `/embeddings` endpoint over httpx, which is already a core
+  dependency. A failing embedder costs the vector channel, never the turn.
+
 - **Long-term memory rows carry supersession and provenance.** `topic_key` makes a
   newer value supersede an older one atomically; ids are content hashes scoped by
   manifest, so storing a fact twice collapses instead of accumulating duplicates

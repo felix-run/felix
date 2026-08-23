@@ -68,6 +68,34 @@ def _heuristic_facts(text: str, *, max_facts: int, min_chars: int) -> list[str]:
     return facts
 
 
+def _embedding_model(settings: Settings) -> str:
+    return str(getattr(settings, "memory_embedding_model", "") or "")
+
+
+async def _embed_facts(settings: Settings, facts: list[str]) -> list[list[float]] | None:
+    """Vectors for a batch of facts, or ``None`` when no embedder is configured.
+
+    One call for the whole batch rather than one per fact — an embedding endpoint
+    charges per request, and a local model pays its startup cost per call.
+
+    Never raises: a memory stored without a vector is still recallable by full text,
+    which is the whole reason the vector channel is optional.
+    """
+    if not facts:
+        return None
+    try:
+        from felix.memory.embedder import build_embedder
+
+        embedder = build_embedder(settings)
+        if not getattr(embedder, "enabled", False):
+            return None
+        vectors = await embedder.embed(facts)
+    except Exception:
+        logger.warning("memory embedding failed; storing facts without vectors")
+        return None
+    return vectors if vectors and len(vectors) == len(facts) else None
+
+
 async def capture_from_turn(
     settings: Settings,
     tenant_id: str,
@@ -129,8 +157,11 @@ async def capture_from_turn(
             min_chars=max(20, capture.min_chars // 2),
         )
 
+    chosen = facts[: capture.max_facts]
+    vectors = await _embed_facts(settings, chosen)
+
     stored: list[str] = []
-    for fact in facts[: capture.max_facts]:
+    for i, fact in enumerate(chosen):
         try:
             await memory_store.put_memory(
                 settings,
@@ -144,6 +175,8 @@ async def capture_from_turn(
                 # repeat text a hostile tool returned. Anything not stated by the user
                 # is reference material, never a developer-tier instruction.
                 metadata={"source": "assistant", "origin": "capture"},
+                embedding=vectors[i] if vectors else None,
+                embedding_model=_embedding_model(settings) if vectors else "",
             )
             stored.append(fact)
         except Exception:

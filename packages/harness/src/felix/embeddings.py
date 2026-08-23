@@ -85,6 +85,17 @@ def rank_indices_by_query(query: str, blobs: list[str], model: str) -> list[int]
     )
 
 
+async def encode_texts_async(texts: list[str], model: str = "bge-base-en-v1.5") -> list[list[float]] | None:
+    """:func:`encode_texts`, off the event loop.
+
+    Same contract, including ``None`` when the extra is missing, so callers keep their
+    degrade path.
+    """
+    if not texts:
+        return []
+    return await asyncio.to_thread(encode_texts, texts, model)
+
+
 async def rank_indices_by_query_async(query: str, blobs: list[str], model: str) -> list[int] | None:
     """:func:`rank_indices_by_query`, off the event loop.
 
@@ -99,6 +110,7 @@ async def rank_indices_by_query_async(query: str, blobs: list[str], model: str) 
 __all__ = [
     "cosine_similarity",
     "encode_texts",
+    "encode_texts_async",
     "rank_indices_by_query",
     "rank_indices_by_query_async",
 ]
