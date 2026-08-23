@@ -113,6 +113,26 @@ isolation is application-level `tenant_id` by default; enable Postgres RLS
 with migration `0006_tenant_rls` and `FELIX_DATABASE_RLS=true`
 (sets `app.tenant_id` / `app.rls_bypass` GUCs per transaction).
 
+## Run budgets
+
+`spec.limits` bounds a single run. Every field is enforced at two points — before each
+tool call and at the top of each agent turn — so a run can exceed a budget by at most one
+step:
+
+| Field | Bounds |
+|-------|--------|
+| `max_tool_calls` | Tool invocations in the run. |
+| `max_peer_hops` | A2A `peer__*` calls, to stop two peered instances ping-ponging. |
+| `max_wall_clock_seconds` | Elapsed time since the run started. |
+| `max_input_tokens` / `max_output_tokens` | Accumulated tokens, including cache reads and writes. |
+| `max_cost_usd` | Accumulated spend, priced from the model catalog. |
+
+**Undeclared fields fall back to `ABSOLUTE_LIMITS`**, so a manifest that declares no
+limits is still bounded (500 tool calls, 3600s, 1M input tokens, 100k output tokens,
+$1000). Declared values may only tighten those; the schema rejects anything larger.
+
+A tool invoked with no request context is **denied** rather than run unbudgeted.
+
 ## Approval semantics
 
 | Field | Behaviour |

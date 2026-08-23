@@ -77,6 +77,7 @@ class _ReactAgent:
     model_spec: Any
     settings: Any
     recursion_limit: int
+    limits: Any = None
     session_store: Any | None = None
     session_strategy: Any | None = None
     tenant_id: str = "default"
@@ -504,6 +505,24 @@ class _ReactAgent:
             messages.append(ChatMessage(role="system", content=block))
         return messages
 
+    def _over_budget(self) -> bool:
+        """True when a declared run budget is spent; trips the shared abort flag."""
+        from felix.context import try_get_context
+        from felix.limits import check_budgets, trip
+
+        req = try_get_context()
+        if req is None:
+            return False
+        ls = req.limit_state
+        if ls.aborted:
+            return True
+        verdict = check_budgets(self.limits, ls)
+        if verdict.exceeded:
+            trip(ls, verdict.reason)
+            logger.info("run over budget: %s", verdict.reason)
+            return True
+        return False
+
     async def invoke(self, input: InvokeInput) -> InvokeOutput:
         if not getattr(input, "thinking_level", None) and input.thread_id:
             level = await self._load_thinking_level(input.thread_id)
@@ -568,6 +587,11 @@ class _ReactAgent:
                     await self._append_produced(
                         input.thread_id, [final] if final.content else [], status="aborted"
                     )
+                    break
+
+                # Budgets are checked per turn as well as per tool call: a run with no
+                # tool calls could otherwise burn wall clock and tokens unbounded.
+                if self._over_budget():
                     break
 
                 messages = await self._maybe_compact_after_turn(
@@ -711,6 +735,11 @@ class _ReactAgent:
                     break
 
                 before_len = len(messages)
+                # Budgets are checked per turn as well as per tool call: a run with no
+                # tool calls could otherwise burn wall clock and tokens unbounded.
+                if self._over_budget():
+                    break
+
                 messages = await self._maybe_compact_after_turn(
                     messages, thread_id=input.thread_id, model=model
                 )
@@ -899,6 +928,7 @@ def build_react_agent(ctx: PatternBuildContext) -> Agent:
         model_spec=ctx.get("model_spec"),
         settings=ctx.get("settings"),
         recursion_limit=limit,
+        limits=ctx.get("limits"),
         session_store=ctx.get("session_store"),
         session_strategy=ctx.get("session_strategy"),
         tenant_id=str(ctx.get("tenant_id") or "default"),
