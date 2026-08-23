@@ -303,10 +303,9 @@ def apply_content_screening(tools: list[Tool], screening: Any, manifest_id: str)
                 if on_flag == "block":
                     return deny_output("[screening blocked] untrusted content", "screening")  # type: ignore[arg-type]
                 notice = "[quarantined] tool output flagged as potentially hostile"
-                if isinstance(out, str):
-                    return notice
-                out.content = notice
-                return out
+                # ToolOutput includes plain dict; `out.content = ...` raised
+                # AttributeError there, so quarantine silently became "tool crashed".
+                return _replace_content(out, notice)
             return out
 
         return Tool(
@@ -474,11 +473,7 @@ def apply_guardrails(tools: list[Tool], guardrails: Any, manifest_id: str) -> li
             result = redact_pii(content)
             if result.matched and block:
                 return deny_output("[guardrails] PII blocked", "guardrails")
-            content = result.text
-            if isinstance(out, str):
-                return content
-            out.content = content
-            return out
+            return _replace_content(out, result.text)
 
         return Tool(
             name=tool.name,
@@ -515,6 +510,30 @@ def _heuristic_judge_score(content: str, criteria: str) -> float:
             except ValueError:
                 n = 1
             return min(1.0, len(text) / n)
+    # Explicit assertions, so a criterion's *polarity* is stated rather than inferred.
+    for prefix in ("assert_absent:", "must_not_contain:"):
+        if c.startswith(prefix):
+            needles = [n.strip() for n in c.split(":", 1)[1].split(",") if n.strip()]
+            lower = text.lower()
+            return 0.0 if any(n in lower for n in needles) else 1.0
+    for prefix in ("assert_present:", "must_contain:"):
+        if c.startswith(prefix):
+            needles = [n.strip() for n in c.split(":", 1)[1].split(",") if n.strip()]
+            lower = text.lower()
+            return 1.0 if all(n in lower for n in needles) else 0.0
+
+    # Bag-of-words overlap cannot express a negative criterion: for
+    # "must not leak credentials or secrets" it scored output *containing* those words
+    # highest, so a safety judge passed exactly what it was meant to block. Refuse to
+    # guess — a judge with no model and no explicit assertion fails closed.
+    if _looks_negated(c):
+        logger.error(
+            "judge criteria %r is a negative assertion but has no model and no "
+            "assert_absent: prefix; failing closed",
+            criteria,
+        )
+        return 0.0
+
     tokens = [t for t in c.replace(",", " ").split() if len(t) > 2]
     if not tokens:
         return 1.0 if len(text) >= 3 else 0.0
@@ -522,6 +541,29 @@ def _heuristic_judge_score(content: str, criteria: str) -> float:
     words = set(lower.split())
     hit = sum(1 for t in tokens if t in words or t in lower)
     return hit / len(tokens)
+
+
+_NEGATION_MARKERS = (
+    "must not",
+    "should not",
+    "never",
+    "no ",
+    "without",
+    "avoid",
+    "free of",
+    "does not",
+    "doesn't",
+    "don't",
+    "cannot",
+    "refuse",
+    "prohibit",
+    "forbid",
+)
+
+
+def _looks_negated(criteria: str) -> bool:
+    """True when a criterion reads as "must NOT ..." — polarity a bag of words inverts."""
+    return any(m in criteria for m in _NEGATION_MARKERS)
 
 
 async def _judge_score(content: str, judge: Any, *, settings: Any | None = None) -> float:

@@ -51,6 +51,11 @@ def parse_skill_md(raw: str, *, fallback_name: str, path: str | None = None) -> 
     )
 
 
+def _xml_escape(value: str) -> str:
+    """Escape text interpolated into the skills catalog block."""
+    return str(value).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+
+
 def skill_catalog_xml(catalog: SkillCatalog) -> str:
     """Progressive-disclosure catalog block for the system prompt (agentskills.io style)."""
     public = catalog.list_public()
@@ -62,9 +67,13 @@ def skill_catalog_xml(catalog: SkillCatalog) -> str:
         "<available_skills>",
     ]
     for skill in public:
-        lines.append(
-            f'  <skill name="{skill.name}">\n    <description>{skill.description}</description>\n  </skill>'
-        )
+        # Escaped: name and description come from a SKILL.md in the tenant object store,
+        # and this block is appended to the *system prompt*. A description containing
+        # "</description></skill></available_skills>" would otherwise break out of the
+        # catalog and append attacker-chosen text to the highest-trust surface there is.
+        name = _xml_escape(skill.name)
+        description = _xml_escape(skill.description)
+        lines.append(f'  <skill name="{name}">\n    <description>{description}</description>\n  </skill>')
     lines.append("</available_skills>")
     return "\n".join(lines)
 
