@@ -552,17 +552,37 @@ class _ReactAgent:
             return []
         return [ChatMessage(role="user", content=self.context_prelude)]
 
+    def _with_prelude(self, messages: list[ChatMessage]) -> list[ChatMessage]:
+        """Insert the per-run prelude directly after the leading system prompt.
+
+        Applied *after* the session render, not before it. A strategy builds its own
+        list from the session log and returns that, so a prelude placed in the list
+        beforehand was discarded on every threaded turn — which is every turn that has
+        a thread — and reached the model only on threadless invokes.
+
+        Position within ``messages`` is cache-neutral: the ephemeral breakpoints sit on
+        the tool list and the system block, never on a message. So the prelude sits next
+        to the system prompt, where it reads as framing, rather than at the tail, where
+        it would read as the user's latest turn.
+        """
+        prelude = self._prelude_messages()
+        if not prelude:
+            return messages
+        head = 0
+        while head < len(messages) and messages[head].role == "system":
+            head += 1
+        return [*messages[:head], *prelude, *messages[head:]]
+
     async def _assemble_messages(self, input: InvokeInput, model: Any, tenant_id: str) -> list[ChatMessage]:
         """Build the message list a turn starts from.
 
-        System prompt and prelude, then the session's own rendering of history if there is
-        one, then a cross-model handoff note, the history filter hook, and any procedural
-        memory. A session that fails to render degrades to the incoming messages rather
-        than failing the run.
+        The session's own rendering of history if there is one, then the per-run prelude,
+        a cross-model handoff note, the history filter hook, and any procedural memory. A
+        session that fails to render degrades to the incoming messages rather than failing
+        the run.
         """
         messages: list[ChatMessage] = [
             ChatMessage(role="system", content=self.system_prompt),
-            *self._prelude_messages(),
             *input.messages,
         ]
         if input.thread_id and self.session_store is not None and self.session_strategy is not None:
@@ -575,6 +595,8 @@ class _ReactAgent:
                 )
             except Exception:
                 logger.debug("session render failed; using incoming messages", exc_info=True)
+
+        messages = self._with_prelude(messages)
 
         prev_model = self._last_model_id
         current_model = input.model_id or getattr(model, "model_id", None)

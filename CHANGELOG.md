@@ -25,6 +25,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Recalled memory facts never reached the model on a threaded chat.**
+  `_assemble_messages` built the message list with the per-run prelude, then handed
+  the thread to the session strategy — which builds a fresh list from the session log
+  and returns *that*, discarding the prelude. So `<known_facts>` reached the model
+  only on threadless invokes, which is not how anyone uses the API. The prelude is now
+  applied after the render, directly following the system prompt. Position inside
+  `messages` is cache-neutral (the ephemeral breakpoints sit on the tool list and the
+  system block, never on a message), so the property the prelude exists to protect is
+  unchanged. Every existing test checked that the block was *built* correctly; none
+  checked that it survived assembly, which is how this went unnoticed.
+
 - **One-off requests made during a turn shared the conversation's prompt cache.**
   Compaction summarising, memory extracting facts, inbound screening scoring, and branch
   summarisation each issue a model call in the middle of somebody's turn while carrying a
