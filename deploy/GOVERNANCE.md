@@ -134,6 +134,33 @@ allows any scheme. Anonymous access is governed by `allow_anonymous`, not by thi
 and every entry in `model.fallbacks`, so a violation fails the build rather than
 surfacing at the first model call.
 
+## Outbound egress
+
+Every manifest-supplied or model-supplied URL is checked before it is dialled. The guard
+**resolves the hostname** and rejects the request if *any* returned address is loopback,
+link-local (cloud metadata), private, carrier-grade NAT, reserved, multicast, or
+unspecified — including IPv4-mapped IPv6 forms and decimal-integer hosts. Internal names
+and suffixes (`.svc`, `.cluster.local`, `.internal`, `metadata.google.internal`,
+`kubernetes.default`, …) are refused outright.
+
+A DNS failure does **not** hard-fail the call: the connection will fail on its own, and
+refusing every lookup error makes the harness brittle offline.
+
+Browser tools additionally register a Playwright request interceptor, so redirect hops
+and subresources are re-checked — `page.goto()` follows both, and the URL is
+model-supplied. Every other outbound client sets `follow_redirects=False`.
+
+## Sandbox confinement
+
+`spec.sandboxes[].binding` names a container image and reaches `docker run`, so images
+are allowlisted: only `python:3.14-slim` unless `FELIX_SANDBOX_ALLOWED_IMAGES` names
+more. Containers run non-root with `cap_drop: ALL`, `no-new-privileges`, a read-only root
+filesystem plus a small `noexec` tmpfs, a PID limit, a CPU quota, a memory cap, and
+networking disabled.
+
+The Docker call runs on a worker thread, so the declared `timeout_ms` is enforceable and
+a runaway container cannot stall the API event loop.
+
 ## When a control cannot run
 
 Screening and PII degrade **loudly**, and "unavailable" is not treated as "clean":

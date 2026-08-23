@@ -55,6 +55,10 @@ class Settings(BaseSettings):
     # Comma-separated commands MCP stdio servers may spawn. Empty (default) disables
     # stdio entirely — manifest-supplied argv would otherwise be arbitrary code execution.
     mcp_stdio_allowed_commands: str = ""
+    # Container images sandbox tools may run (comma-separated). Empty (default)
+    # allows only the built-in python image — `spec.sandboxes[].binding` is
+    # manifest-supplied, so an unrestricted value is arbitrary image pull-and-run.
+    sandbox_allowed_images: str = ""
 
     # --- data plane (cloud-agnostic; AWS + GCP first) ---
     database_url: str = "postgresql+psycopg://felix:felix@localhost:5432/felix"

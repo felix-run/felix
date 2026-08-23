@@ -55,6 +55,15 @@ async def test_browser_content_and_guards(monkeypatch: pytest.MonkeyPatch) -> No
     import felix.tools.browser as browser_mod
 
     class _Page:
+        def __init__(self) -> None:
+            self.routes: list[tuple[str, Any]] = []
+
+        async def route(self, pattern: str, handler: Any) -> None:
+            # Real Playwright pages always have this; the egress guard registers here to
+            # re-validate redirects and subresources, which page.goto() otherwise follows
+            # straight past the initial SSRF check.
+            self.routes.append((pattern, handler))
+
         async def goto(self, url: str, **_kwargs: Any) -> None:
             self.url = url
 

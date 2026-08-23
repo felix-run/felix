@@ -130,10 +130,40 @@ class _ContainerExecutor:
             return f"container_error: {exc}"
 
 
-def tools_from_sandboxes(refs: list[SandboxRef]) -> list[Tool]:
+DEFAULT_SANDBOX_IMAGE = "python:3.14-slim"
+
+
+class SandboxImageNotAllowed(ValueError):
+    """A manifest asked for a container image the operator has not allowed."""
+
+
+def allowed_sandbox_images(settings: Any | None = None) -> frozenset[str]:
+    """Images sandbox tools may run. Always includes the built-in default."""
+    if settings is None:
+        from felix.config import get_settings
+
+        settings = get_settings()
+    raw = getattr(settings, "sandbox_allowed_images", "") or ""
+    extra = {part.strip() for part in raw.split(",") if part.strip()}
+    return frozenset({DEFAULT_SANDBOX_IMAGE, *extra})
+
+
+def assert_sandbox_image_allowed(image: str, settings: Any | None = None) -> None:
+    allowed = allowed_sandbox_images(settings)
+    if image not in allowed:
+        raise SandboxImageNotAllowed(
+            f"sandbox image {image!r} is not in FELIX_SANDBOX_ALLOWED_IMAGES "
+            f"(allowed: {', '.join(sorted(allowed))})"
+        )
+
+
+def tools_from_sandboxes(refs: list[SandboxRef], *, settings: Any | None = None) -> list[Tool]:
     out: list[Tool] = []
     for ref in refs:
-        image = ref.binding or "python:3.14-slim"
+        image = ref.binding or DEFAULT_SANDBOX_IMAGE
+        # `binding` is manifest-supplied and reaches `docker run`, so an unrestricted
+        # value is arbitrary image pull-and-run on the host holding the Docker socket.
+        assert_sandbox_image_allowed(image, settings)
         timeout_s = max(1.0, int(ref.timeout_ms or 30_000) / 1000)
         name = ref.sandbox_tool_name or ref.name
         out.append(
