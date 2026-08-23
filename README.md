@@ -176,6 +176,25 @@ Objects / Hyperdrive / R2-as-binding / Queues / Workflows compute in this stack.
 
 Management: `/audit`, `/approvals`, `/plans`, `/jobs`, `/manifests`, `/eval`.
 
+### Models
+
+Manifests reference **logical** model ids, mapped to wire ids by `FELIX_MODEL_ROUTES`
+(JSON override) or the built-in defaults:
+
+| Logical id | Provider | Wire model |
+|---|---|---|
+| `claude-opus` | anthropic | `claude-opus-5` |
+| `claude-sonnet` (default) | anthropic | `claude-sonnet-5` |
+| `claude-haiku` | anthropic | `claude-haiku-4-5` |
+| `claude-fable` | anthropic | `claude-fable-5` |
+| `gpt-4.1` / `gpt-4.1-mini` | openai | same |
+| `llama-3-pro` / `llama-3-fast` | ollama | `llama3.3:70b` / `llama3.2` |
+
+Request parameters are selected per model (`patterns/capabilities.py`): the current
+Claude generation takes adaptive thinking plus `output_config.effort`, while pre-4.6
+models take a fixed `budget_tokens`. `spec.model.thinking_budget` works on both — it is
+translated to an effort level where budgets are no longer accepted.
+
 Python client: `from felix.sdk import FelixClient` (`prompt`, `stream`, `steer`, `follow_up`, `fork`, `rewind`, `set_model`).
 
 Skills live under `skills/` (Agent Skills `SKILL.md`); declare them on a manifest with `spec.skills`. Session strategies include `compacting` (token-threshold) plus `windowed:N` / `semantic:N` / `full_replay`.

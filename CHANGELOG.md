@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Thinking levels were broken against every current Claude model.** The Anthropic
+  request builder emitted one shape for all of them:
+  `thinking: {"type": "enabled", "budget_tokens": N}` plus `temperature: 1`. Both are
+  **removed** on the current generation and return HTTP 400 — `budget_tokens` on Fable 5,
+  Opus 5, Opus 4.8/4.7 and Sonnet 5, and sampling parameters across the whole 4.6+
+  family. Request parameters are now chosen from a per-model capability table
+  (`patterns/capabilities.py`): adaptive thinking plus `output_config.effort` where
+  supported, the legacy budget where it is still accepted, and sampling parameters
+  dropped where they are rejected. `max_tokens` is clamped to each model's real ceiling,
+  and the non-streaming default rises from 4096 to 16000.
+- **`stop_reason` was never read.** Both providers' responses were ignored and the value
+  synthesised as `"tool_use" if tool_calls else "end_turn"`, so a reply truncated at
+  `max_tokens`, a safety `refusal`, and a `pause_turn` all presented to the agent loop as
+  a normal completion — a cut-off answer was indistinguishable from a finished one. The
+  real reason is now read from both providers (with OpenAI's `finish_reason` translated),
+  `StopReason` gains `refusal` and `pause_turn`, and the loop records such runs as
+  `truncated` / `refused` with a warning and a `felix_run_stop_reason` metric.
+- **Model ids, prices, and context windows were two generations stale.** Routes pointed
+  at `claude-sonnet-4-5` and a date-suffixed `claude-haiku-4-5-20251001`; Haiku was
+  priced at $0.80/$4.00 (actual: $1.00/$5.00), under-reporting the cost of every run; and
+  `/v1/models` advertised a 200K context for models that have 1M. Routes now cover
+  `claude-opus` / `claude-sonnet` / `claude-haiku` / `claude-fable`, with the previous
+  logical ids retained so existing manifests keep resolving. Price lookup now takes the
+  longest match, so `claude-opus-5` is no longer shadowed by a shorter key.
+
 ### Security
 
 - **Four security controls no longer disable themselves silently.** Each degraded on a

@@ -82,7 +82,9 @@ class Settings(BaseSettings):
     cloud_provider: Literal["local", "aws", "gcp", "azure", "other"] = "local"
 
     # --- models ---
-    default_model_id: str = "claude-sonnet-4"
+    # Sonnet tier by default, matching the prior posture. `claude-opus` and
+    # `claude-fable` are available routes; changing this changes every run's cost.
+    default_model_id: str = "claude-sonnet"
     anthropic_api_key: str = ""
     openai_api_key: str = ""
     ollama_base_url: str = "http://localhost:11434"
@@ -165,8 +167,15 @@ def get_settings() -> Settings:
 
 # Logical model routes — Workers AI dropped; Ollama / LiteLLM fill the OSS slot.
 DEFAULT_MODEL_ROUTES: dict[str, dict[str, str]] = {
-    "claude-sonnet-4": {"provider": "anthropic", "model": "claude-sonnet-4-5"},
-    "claude-haiku-4": {"provider": "anthropic", "model": "claude-haiku-4-5-20251001"},
+    # Current generation. Wire ids are complete as written — no date suffixes.
+    "claude-opus": {"provider": "anthropic", "model": "claude-opus-5"},
+    "claude-sonnet": {"provider": "anthropic", "model": "claude-sonnet-5"},
+    "claude-haiku": {"provider": "anthropic", "model": "claude-haiku-4-5"},
+    "claude-fable": {"provider": "anthropic", "model": "claude-fable-5"},
+    # Legacy logical ids kept so existing manifests keep resolving, now pointing at the
+    # current model in the same tier rather than a two-generation-old snapshot.
+    "claude-sonnet-4": {"provider": "anthropic", "model": "claude-sonnet-5"},
+    "claude-haiku-4": {"provider": "anthropic", "model": "claude-haiku-4-5"},
     "gpt-4.1": {"provider": "openai", "model": "gpt-4.1"},
     "gpt-4.1-mini": {"provider": "openai", "model": "gpt-4.1-mini"},
     "llama-3-pro": {"provider": "ollama", "model": "llama3.3:70b"},

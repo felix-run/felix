@@ -5,10 +5,16 @@ from __future__ import annotations
 from typing import Any
 
 # USD per 1M tokens — approximate public list prices; override via manifest meta.
+# Longest matching key wins, so "claude-opus-5" is not shadowed by "claude-opus".
+# Cache reads are 0.1x input and cache writes 1.25x input across the Claude family.
 DEFAULT_PRICES: dict[str, dict[str, float]] = {
     "default": {"input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75},
+    "claude-fable": {"input": 10.0, "output": 50.0, "cache_read": 1.0, "cache_write": 12.5},
+    "claude-mythos": {"input": 10.0, "output": 50.0, "cache_read": 1.0, "cache_write": 12.5},
+    "claude-opus": {"input": 5.0, "output": 25.0, "cache_read": 0.5, "cache_write": 6.25},
     "claude-sonnet": {"input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75},
-    "claude-haiku": {"input": 0.8, "output": 4.0, "cache_read": 0.08, "cache_write": 1.0},
+    # Haiku 4.5 is $1.00 / $5.00; the previous 0.8 / 4.0 under-reported every run.
+    "claude-haiku": {"input": 1.0, "output": 5.0, "cache_read": 0.1, "cache_write": 1.25},
     "gpt-4o": {"input": 2.5, "output": 10.0, "cache_read": 1.25, "cache_write": 2.5},
     "gpt-4o-mini": {"input": 0.15, "output": 0.6, "cache_read": 0.075, "cache_write": 0.15},
 }
@@ -16,10 +22,13 @@ DEFAULT_PRICES: dict[str, dict[str, float]] = {
 
 def _lookup_price(model_id: str) -> dict[str, float]:
     mid = (model_id or "").lower()
+    # Longest match, not first match: dict order previously decided whether
+    # "claude-opus-5" matched "claude-opus" or something shorter.
+    best: tuple[int, dict[str, float]] | None = None
     for key, price in DEFAULT_PRICES.items():
-        if key != "default" and key in mid:
-            return price
-    return DEFAULT_PRICES["default"]
+        if key != "default" and key in mid and (best is None or len(key) > best[0]):
+            best = (len(key), price)
+    return best[1] if best else DEFAULT_PRICES["default"]
 
 
 def estimate_cost(

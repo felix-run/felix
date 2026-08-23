@@ -14,7 +14,7 @@ spec:
   pattern: router
 
   model:
-    id: claude-haiku-4
+    id: claude-haiku
     temperature: 0
 
   system_prompt:
