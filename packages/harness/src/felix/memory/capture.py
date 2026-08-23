@@ -77,8 +77,16 @@ async def capture_from_turn(
     assistant_text: str,
     capture: MemoryCapture,
     model: Any | None = None,
+    origin_seq: int | None = None,
+    thread_id: str = "",
 ) -> list[str]:
-    """Extract and persist facts from a completed turn. Returns stored contents."""
+    """Extract and persist facts from a completed turn. Returns stored contents.
+
+    ``origin_seq`` is the thread's turn ordinal, shared by every fact this turn
+    writes so that an as-of reconstruction sees them appear together. It was never
+    passed before, which left `origin_seq` null on every fact the system stored and
+    made the turn-versioning columns inert.
+    """
     if not capture.enabled:
         return []
     blob = f"User: {user_text}\nAssistant: {assistant_text}".strip()
@@ -130,6 +138,8 @@ async def capture_from_turn(
                 content=fact,
                 kind="fact",
                 manifest_id=manifest_id,
+                origin_seq=origin_seq,
+                thread_id=thread_id,
                 # Provenance: these are extracted from the assistant turn, which can
                 # repeat text a hostile tool returned. Anything not stated by the user
                 # is reference material, never a developer-tier instruction.

@@ -482,6 +482,24 @@ class _ReactAgent:
             )
         return status
 
+    async def _turn_seq(self, thread_id: str | None) -> int | None:
+        """This turn's ordinal on its thread, for stamping memory provenance.
+
+        The session log's own `seq` is the turn clock — it is already monotonic per
+        thread and allocated under an advisory lock — so there is no second counter to
+        keep in step. Read once per turn so every fact the turn writes shares an
+        ordinal; without that, an as-of reconstruction would see them appear
+        one at a time.
+        """
+        if not thread_id or self.session_store is None:
+            return None
+        try:
+            head = await self.session_store.open(thread_id).head()
+            return int(head.get("seq") or 0)
+        except Exception:
+            logger.debug("turn seq lookup failed; storing memory without provenance", exc_info=True)
+            return None
+
     async def _maybe_capture_memory(self, input: InvokeInput, final: ChatMessage, model: Any) -> None:
         capture = self.memory_capture
         if capture is None or not getattr(capture, "enabled", False):
@@ -500,6 +518,8 @@ class _ReactAgent:
                 assistant_text=final.content or "",
                 capture=capture,
                 model=model,
+                origin_seq=await self._turn_seq(input.thread_id),
+                thread_id=input.thread_id or "",
             )
         except Exception:
             logger.debug("memory capture failed", exc_info=True)

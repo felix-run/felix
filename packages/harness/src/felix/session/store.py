@@ -209,8 +209,27 @@ class _PostgresSession:
             ]
 
     async def head(self) -> dict[str, int]:
-        events = await self.get_events()
-        return {"seq": len(events)}
+        """The next sequence number this thread would allocate.
+
+        `max(seq) + 1` rather than a count: identical while `seq` is dense, which it
+        is because `append_batch` allocates from the max and nothing deletes an
+        individual event — but O(1) instead of loading and parsing every event, which
+        matters now that memory capture reads this once per turn.
+        """
+        if not self.id:
+            return {"seq": 0}
+        from sqlalchemy import func, select
+
+        from felix.db.models import SessionEventRow
+
+        async with self.session_factory() as db:
+            head = await db.scalar(
+                select(func.coalesce(func.max(SessionEventRow.seq), -1)).where(
+                    SessionEventRow.tenant_id == self.tenant_id,
+                    SessionEventRow.thread_id == self.id,
+                )
+            )
+        return {"seq": int(head) + 1}
 
     async def reset(self) -> None:
         if not self.id:

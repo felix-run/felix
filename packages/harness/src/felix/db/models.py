@@ -193,9 +193,30 @@ class MemoryVector(Base):
         "metadata", JSONB, server_default=text("'{}'::jsonb"), default=dict
     )
     created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    updated_at: Mapped[int] = mapped_column(BigInteger, server_default=text("0"), default=0)
+    last_used_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    thread_id: Mapped[str] = mapped_column(Text, server_default="", default="")
+    # Supersession has two axes and they must never disagree. `status` is current
+    # state and is the only one that can express "forgotten", which has no turn
+    # endpoint; `superseded_seq` closes the row's validity interval in turn time,
+    # which is what makes an as-of query possible. Every write that closes a memory
+    # sets both in one statement.
+    topic_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(Text, server_default="active", default="active")
+    superseded_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+    importance: Mapped[float] = mapped_column(Float, server_default=text("0.5"), default=0.5)
     origin_seq: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     superseded_seq: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    embedding_dim: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    embedding_model: Mapped[str] = mapped_column(Text, server_default="", default="")
+    # Deprecated: never populated, and superseded by the pgvector `embedding` column.
+    # Dropped once the backfill in the follow-up has run everywhere.
     embedding_json: Mapped[list[float] | None] = mapped_column(JSONB, nullable=True)
+    # `embedding vector(N)`, `content_tsv` and `topic_tsv` are deliberately absent.
+    # They are created by migration 0009 and reached through `text()`, the same way
+    # `session_events.content_tsv` is: a generated column has no writable ORM
+    # representation, and pinning `vector(N)` here would hardcode a deploy-time
+    # dimension into Python.
 
 
 class SessionEventRow(Base):
