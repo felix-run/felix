@@ -134,6 +134,25 @@ allows any scheme. Anonymous access is governed by `allow_anonymous`, not by thi
 and every entry in `model.fallbacks`, so a violation fails the build rather than
 surfacing at the first model call.
 
+## When a control cannot run
+
+Screening and PII degrade **loudly**, and "unavailable" is not treated as "clean":
+
+| Control | Unavailable behaviour |
+|---------|----------------------|
+| `content_screening.model` (LLM screener) | Honours `on_flag`: `block` denies with 503 / `[screening unavailable]`; otherwise the turn or tool output is quarantined. Emits `felix_control_unavailable{control="content_screening"}`. |
+| `guardrails.providers: [pii]` | Falls back to three regexes (email, US SSN, card-like digits) with a `WARNING` and `felix_control_degraded{control="pii"}`. A *transient* engine failure is retried rather than latched for the process lifetime. |
+
+The lean image ships neither Presidio nor a spaCy model, so `providers: [pii]` there is
+the regex fallback — check the startup warning before relying on it.
+
+`guardrails.providers` is a closed set (`pii`), so a typo is a manifest validation error
+rather than a silently absent wrapper.
+
+Command screening inspects every execution-bearing argument, not just `command`/`cmd` —
+including `code`, `script`, `stdin`, and `argv`, and *every* string argument for
+`sandbox` / `container` transports, where the payload is the program.
+
 ## Run budgets
 
 `spec.limits` bounds a single run. Every field is enforced at two points — before each

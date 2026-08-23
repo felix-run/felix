@@ -398,7 +398,12 @@ class JudgeRule(_Strict):
 
 
 class Guardrails(_Strict):
-    providers: list[str] = Field(default_factory=list)
+    # A Literal, like `targets` beside it. As free text a typo — "PII",
+    # "pii-redaction" — meant no wrapper was applied at all, while
+    # guardrails_enabled() still returned True, so compile validation passed and
+    # nothing warned. The model-provider list on OutboundAuth stays open by
+    # contrast, because that registry is extensible.
+    providers: list[Literal["pii"]] = Field(default_factory=list)
     block_on_match: bool = False
     targets: list[Literal["input", "output", "final_response"]] = Field(
         default_factory=lambda: ["input", "output"]

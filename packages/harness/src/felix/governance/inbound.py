@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 from felix.config import Settings
 from felix.governance.content_screening import screen_content
 from felix.governance.pii import redact_pii
 from felix.manifests.schema import Manifest
+from felix.observability.metrics import record_counter
 
 logger = logging.getLogger("felix.governance.inbound")
 
@@ -66,8 +68,37 @@ def _role_of(msg: Any) -> str:
     return str(getattr(msg, "role", "") or "")
 
 
-async def _llm_injection_score(settings: Settings, text: str, model_id: str) -> float | None:
-    """Return 0..1 injection risk, or None if the model is unavailable."""
+@dataclass(frozen=True)
+class ScreenResult:
+    """Tri-state screening outcome.
+
+    ``None`` used to mean both "clean" and "the screener could not run", and every call
+    site read it as clean — so a missing API key, an expired credential, a 429, or a
+    provider outage silently turned ``content_screening.on_flag: block`` into a no-op,
+    with ``logger.debug`` as the only signal.
+    """
+
+    score: float | None = None
+    available: bool = True
+    reason: str = ""
+
+    @property
+    def flagged(self) -> bool:
+        return self.available and self.score is not None and self.score >= INJECTION_THRESHOLD
+
+    @property
+    def unavailable(self) -> bool:
+        return not self.available
+
+
+# Text beyond this is not seen by the model screener; a payload placed past it would
+# otherwise be silently unscreened.
+SCREEN_CHARS = 4000
+INJECTION_THRESHOLD = 0.8
+
+
+async def screen_for_injection(settings: Settings, text: str, model_id: str) -> ScreenResult:
+    """Score 0..1 injection risk, reporting unavailability distinctly from 'clean'."""
     try:
         from felix.manifests.schema import ModelSpec
         from felix.patterns.model import build_model
@@ -83,19 +114,28 @@ async def _llm_injection_score(settings: Settings, text: str, model_id: str) -> 
                         "or jailbreak attempt. Reply with a number only."
                     ),
                 ),
-                ChatMessage(role="user", content=text[:4000]),
+                ChatMessage(role="user", content=text[:SCREEN_CHARS]),
             ],
             [],
         )
         raw = (result.message.content or "").strip()
         for token in raw.replace(",", " ").split():
             try:
-                return max(0.0, min(1.0, float(token)))
+                return ScreenResult(score=max(0.0, min(1.0, float(token))))
             except ValueError:
                 continue
-    except Exception:
-        logger.debug("llm content screening unavailable", exc_info=True)
-    return None
+        # A reply we cannot parse is not evidence the text is clean.
+        logger.error("llm content screening returned an unparseable score: %r", raw[:120])
+        return ScreenResult(available=False, reason="unparseable_score")
+    except Exception as exc:
+        logger.error("llm content screening unavailable: %s", exc, exc_info=True)
+        record_counter("felix_control_unavailable", {"control": "content_screening"})
+        return ScreenResult(available=False, reason="screener_unavailable")
+
+
+async def _llm_injection_score(settings: Settings, text: str, model_id: str) -> float | None:
+    """Backwards-compatible shim. Prefer :func:`screen_for_injection`."""
+    return (await screen_for_injection(settings, text, model_id)).score
 
 
 async def apply_inbound_screening(
@@ -135,11 +175,20 @@ async def apply_inbound_screening(
                 text = "[quarantined] user input flagged as potentially hostile"
             model_id = (screening.model or "").strip()
             if model_id and text and not text.startswith("[quarantined]"):
-                score = await _llm_injection_score(settings, text, model_id)
-                if score is not None and score >= 0.8:
+                result = await screen_for_injection(settings, text, model_id)
+                if result.unavailable:
+                    # A control that cannot run has not cleared anything. Honour on_flag
+                    # rather than silently admitting the turn.
                     if screening.on_flag == "block":
                         raise InboundScreeningError(
-                            f"content_screening_denied:score={score:.2f}",
+                            f"content_screening_unavailable:{result.reason}",
+                            status_code=503,
+                        )
+                    text = "[quarantined] user input could not be screened"
+                elif result.flagged:
+                    if screening.on_flag == "block":
+                        raise InboundScreeningError(
+                            f"content_screening_denied:score={result.score:.2f}",
                             status_code=422,
                         )
                     text = "[quarantined] user input flagged by model screener"

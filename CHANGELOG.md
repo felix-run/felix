@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Four security controls no longer disable themselves silently.** Each degraded on a
+  transient failure with `logger.debug` as the only signal — invisible at the `INFO`
+  default — and no metric.
+  *The LLM injection screener* returned `None` for both "clean" and "could not run", and
+  both call sites read it as clean, so a missing key, an expired credential, a 429, or a
+  provider outage turned `content_screening.on_flag: block` into a no-op — **including
+  on the tool-output path that screens MCP, A2A, browser, and sandbox content**. It is
+  now tri-state and honours `on_flag` when unavailable. An unparseable score is also
+  treated as unavailable rather than clean.
+  *The PII guardrail's* `_presidio_checked` was a permanent latch, so one transient
+  engine-init failure pinned the process to three regexes for its entire lifetime. Only
+  deterministic outcomes (package absent, no spaCy model) latch now; a transient failure
+  retries. The fallback is announced at `WARNING` with a `felix_control_degraded` metric.
+  *`guardrails.providers`* was unvalidated free text, so a typo (`"PII"`,
+  `"pii-redaction"`) meant **no wrapper was applied at all** while `guardrails_enabled()`
+  still returned `True`, so compile validation passed and nothing warned. It is now a
+  closed set, like `targets` beside it.
+  *Command screening* read only `args["command"]`/`["cmd"]`, so the built-in sandbox tool
+  — whose arguments are `(code, path, stdin)` and which runs `["python", "-c", code]` —
+  **skipped every rule while appearing wrapped**. It now inspects every
+  execution-bearing argument, and every string argument for `sandbox`/`container`
+  transports, where the payload is the program.
+
 - **Untrusted content no longer reaches the system/developer trust tier.** The wrapper
   stack exists to keep tool output untrusted; three paths promoted it anyway.
   *Compaction* fed a raw transcript — including tool output from MCP servers, web pages,
