@@ -15,8 +15,8 @@ import httpx
 
 from felix.config import DEFAULT_MODEL_ROUTES, Settings, get_settings
 from felix.context import try_get_context
+from felix.model_catalog import clamp_effort, entry_for
 from felix.observability.metrics import record_counter
-from felix.patterns.capabilities import capabilities_for, clamp_effort
 from felix.patterns.model_registry import (
     get_model_provider,
     list_model_providers,
@@ -189,7 +189,8 @@ def apply_anthropic_thinking_cache(body: dict[str, Any], spec: Any, model: str =
     are **removed** on the current generation and return HTTP 400, so the manifest's
     thinking levels hard-failed against Opus 5, Sonnet 5, Fable 5, and Opus 4.7/4.8.
     """
-    caps = capabilities_for(model or str(body.get("model") or ""))
+    entry = entry_for(model or str(body.get("model") or ""))
+    caps = entry.quirks
 
     # Sampling params are rejected outright on 4.6+, so drop what the caller set rather
     # than letting the request 400 on a parameter the model no longer accepts.
@@ -202,7 +203,7 @@ def apply_anthropic_thinking_cache(body: dict[str, Any], spec: Any, model: str =
         # Never ask for more output than the model will grant. Applies regardless of
         # whether a model spec was supplied.
         requested = int(body.get("max_tokens") or _DEFAULT_MAX_TOKENS)
-        body["max_tokens"] = min(requested, caps.max_output_tokens)
+        body["max_tokens"] = min(requested, entry.max_output_tokens)
 
     if spec is None:
         _clamp_output()

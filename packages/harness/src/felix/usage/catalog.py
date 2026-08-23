@@ -4,44 +4,31 @@ from __future__ import annotations
 
 from typing import Any
 
+from felix.model_catalog import entry_for
 from felix.session.thinking import THINKING_LEVELS
 from felix.usage.pricing import _lookup_price
 
-# Approximate context windows for known model families.
-_CONTEXT_WINDOWS: dict[str, int] = {
-    # The Claude 5 family is 1M, not 200K — /v1/models advertised the old number.
-    "claude-fable": 1_000_000,
-    "claude-mythos": 1_000_000,
-    "claude-opus": 1_000_000,
-    "claude-sonnet-4-5": 200_000,
-    "claude-sonnet": 1_000_000,
-    "claude-haiku": 200_000,
-    "claude": 200_000,
-    "gpt-4.1": 1_047_576,
-    "gpt-4o": 128_000,
-    "gpt-4": 128_000,
-    "llama": 128_000,
-    "default": 128_000,
-}
-
 
 def context_window_for(model_id: str | None, *, override: int | None = None) -> int:
+    """Context window for a model id, from the catalog unless the manifest overrides it."""
     if override is not None and override > 0:
         return int(override)
-    mid = (model_id or "").lower()
-    for key, window in _CONTEXT_WINDOWS.items():
-        if key != "default" and key in mid:
-            return window
-    return _CONTEXT_WINDOWS["default"]
+    return entry_for(model_id).context_window
 
 
 def supported_thinking_levels(model_id: str | None = None) -> list[str]:
-    """Return thinking levels; empty when the model family does not support them."""
-    mid = (model_id or "").lower()
-    # Conservative: advertise for frontier chat models that accept thinking budgets.
-    if any(k in mid for k in ("claude", "gpt-4", "o1", "o3", "o4")):
-        return list(THINKING_LEVELS)
-    return ["off"]
+    """Thinking levels the model accepts; `["off"]` when it supports none.
+
+    The catalog records only *whether* a model thinks; the level vocabulary lives here
+    because `felix.session.thinking` cannot be imported from the catalog without cycling
+    back through the pattern layer.
+    """
+    return list(THINKING_LEVELS) if entry_for(model_id).supports_thinking else ["off"]
+
+
+def modalities_for(model_id: str | None = None) -> list[str]:
+    """Input modalities the model accepts."""
+    return list(entry_for(model_id).input_modalities)
 
 
 def model_catalog_entry(
@@ -68,7 +55,7 @@ def model_catalog_entry(
                 "cacheReadPerMillion": float(prices.get("cache_read") or 0),
                 "cacheWritePerMillion": float(prices.get("cache_write") or prices.get("input") or 0),
             },
-            "modalities": modalities or ["text"],
+            "modalities": modalities or modalities_for(model_id),
             "supportedThinkingLevels": supported_thinking_levels(model_id),
         },
     }
@@ -106,6 +93,7 @@ def catalog_from_manifest(name: str, manifest: Any | None = None) -> dict[str, A
 __all__ = [
     "catalog_from_manifest",
     "context_window_for",
+    "modalities_for",
     "model_catalog_entry",
     "supported_thinking_levels",
 ]
