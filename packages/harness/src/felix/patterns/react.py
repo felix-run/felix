@@ -36,7 +36,7 @@ from felix.steer import (
     is_aborted,
     release_run_queue,
 )
-from felix.tools.retrieval import select_tools_from_ctx
+from felix.tools.retrieval import select_tools_from_ctx_async
 from felix.tools.types import Tool
 
 logger = logging.getLogger("felix.patterns.react")
@@ -188,8 +188,14 @@ class _ReactAgent:
             tool_execution=self.tool_execution,
         )
 
-    def _active_tools(self, messages: list[ChatMessage]) -> list[Tool]:
-        return select_tools_from_ctx(self.tools, messages, self.tools_retrieval)
+    async def _active_tools(self, messages: list[ChatMessage]) -> list[Tool]:
+        """The tools this step exposes, narrowed by `spec.tools_retrieval`.
+
+        Async because selection encodes the query and every candidate description
+        once a retrieval model is configured, and that must not run on the event
+        loop. With retrieval off — the default — it stays inline.
+        """
+        return await select_tools_from_ctx_async(self.tools, messages, self.tools_retrieval)
 
     def _resolve_model(self, input: InvokeInput) -> Any:
         settings = self.settings or get_settings()
@@ -727,7 +733,7 @@ class _ReactAgent:
                 if injected:
                     messages.extend(injected)
 
-                active_tools = self._active_tools(messages)
+                active_tools = await self._active_tools(messages)
                 chunks: list[str] = []
                 result: ModelChatResult | None = None
 
@@ -760,7 +766,7 @@ class _ReactAgent:
                         if rebuilt is None:
                             raise
                         messages = rebuilt
-                        active_tools = self._active_tools(messages)
+                        active_tools = await self._active_tools(messages)
                         continue
                     if (
                         attempt == 0
@@ -773,7 +779,7 @@ class _ReactAgent:
                         )
                         if rebuilt is not None:
                             messages = rebuilt
-                            active_tools = self._active_tools(messages)
+                            active_tools = await self._active_tools(messages)
                             result = None
                             continue
                     break
@@ -907,7 +913,7 @@ class _ReactAgent:
                         yield Event(event="follow_up", data={"content": follow.text})
                     await self._append_produced(input.thread_id, [follow_chat])
                     messages.append(follow_chat)
-                    result = await model.chat(messages, self._active_tools(messages))
+                    result = await model.chat(messages, await self._active_tools(messages))
                     record_usage(result, manifest_id=self.manifest_id, model_id=model.model_id)
                     assistant = result.message
                     messages.append(assistant)

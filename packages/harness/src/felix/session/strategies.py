@@ -226,10 +226,10 @@ class SemanticSessionStrategy:
         used_embeddings = False
         ranked: list[SessionEvent]
         try:
-            from felix.embeddings import rank_indices_by_query
+            from felix.embeddings import rank_indices_by_query_async
 
             blobs = [e.content or "" for e in unpinned]
-            order = rank_indices_by_query(query_text, blobs, "bge-base-en-v1.5")
+            order = await rank_indices_by_query_async(query_text, blobs, "bge-base-en-v1.5")
             if order is not None:
                 ranked = [unpinned[i] for i in order][: self.top_n]
                 used_embeddings = True

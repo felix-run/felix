@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from typing import Any
@@ -87,7 +88,16 @@ async def retrieve_procedures(
     except Exception:
         logger.debug("procedural list_active failed", exc_info=True)
         return ""
-    picked = rank_procedures(rows, query, spec.top_k, embedding_model=spec.embedding_model)
+    # Ranking is keyword overlap until an embedding model is configured, at which point
+    # it encodes the query and every candidate — CPU-bound, and the first call for a
+    # model loads it from disk. `retrieve_procedures` is awaited while a turn is being
+    # served, so that work goes to a thread rather than stalling the whole worker.
+    # Unconditionally, unlike tool retrieval: this runs once per turn rather than four
+    # times per loop step, so the hop is free and there is no branch here to drift from
+    # the condition inside `rank_procedures`.
+    picked = await asyncio.to_thread(
+        rank_procedures, rows, query, spec.top_k, embedding_model=spec.embedding_model
+    )
     if not picked:
         return ""
     lines = [f"- {r['content']}" for r in picked if r.get("content")]

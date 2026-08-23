@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 from typing import Any
 
@@ -100,19 +101,60 @@ def select_tools(
     return selected
 
 
+def _coerce_spec(spec: Any | None) -> ToolsRetrievalSpec | None:
+    if spec is None or isinstance(spec, ToolsRetrievalSpec):
+        return spec
+    return ToolsRetrievalSpec(
+        enabled=bool(getattr(spec, "enabled", False)),
+        top_k=int(getattr(spec, "top_k", 20) or 20),
+        model=str(getattr(spec, "model", "") or "bge-base-en-v1.5"),
+    )
+
+
+def will_embed(tools: list[Tool], spec: Any | None) -> bool:
+    """Whether :func:`select_tools` will reach the encoder for this call.
+
+    Mirrors the early returns in ``select_tools`` and the ``if model`` branch inside
+    it. Kept next to them on purpose, and pinned by a test that runs both against the
+    same inputs — a predicate that drifts from the code it guards is worse than no
+    predicate, because it silently puts a blocking encode back on the event loop.
+    """
+    spec = _coerce_spec(spec)
+    if spec is None or not spec.enabled:
+        return False
+    if len(tools) <= spec.top_k:
+        return False
+    return bool(str(getattr(spec, "model", "") or ""))
+
+
 def select_tools_from_ctx(
     tools: list[Tool],
     messages: list[ChatMessage],
     spec: Any | None,
 ) -> list[Tool]:
+    spec = _coerce_spec(spec)
     if spec is None:
         return tools
-    if not isinstance(spec, ToolsRetrievalSpec):
-        enabled = bool(getattr(spec, "enabled", False))
-        top_k = int(getattr(spec, "top_k", 20) or 20)
-        model = str(getattr(spec, "model", "") or "bge-base-en-v1.5")
-        spec = ToolsRetrievalSpec(enabled=enabled, top_k=top_k, model=model)
     return select_tools(tools, messages, spec)
+
+
+async def select_tools_from_ctx_async(
+    tools: list[Tool],
+    messages: list[ChatMessage],
+    spec: Any | None,
+) -> list[Tool]:
+    """:func:`select_tools_from_ctx`, off the event loop when it will embed.
+
+    Ranking is keyword overlap — cheap, and worth doing inline — until a model is
+    configured, at which point it encodes the query and every candidate description.
+    That is CPU-bound, and the first call for a model also loads it from disk. This
+    runs up to four times per loop step, so the cheap path deliberately does not pay
+    for an executor hop; `tools_retrieval` is off by default and that is the path
+    almost every deployment takes.
+    """
+    if not will_embed(tools, spec):
+        return select_tools_from_ctx(tools, messages, spec)
+    return await asyncio.to_thread(select_tools_from_ctx, tools, messages, spec)
 
 
 __all__ = [
@@ -120,5 +162,7 @@ __all__ = [
     "score_tool",
     "select_tools",
     "select_tools_from_ctx",
+    "select_tools_from_ctx_async",
     "used_tool_names",
+    "will_embed",
 ]
