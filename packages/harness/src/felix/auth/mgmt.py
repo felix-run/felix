@@ -7,9 +7,13 @@ A ``*:write`` scope also satisfies the matching ``*:read``.
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import HTTPException, Request
 
 from felix.auth.context import ANONYMOUS, AuthContext
+
+logger = logging.getLogger("felix.auth.mgmt")
 
 
 def auth_from_request(request: Request) -> AuthContext:
@@ -35,10 +39,16 @@ def require_mgmt_scopes(request: Request, *scopes: str) -> None:
     """Raise HTTP 403 when management scopes are missing under jwt/api_key auth."""
     if not scopes:
         return
-    settings = getattr(getattr(request, "app", None), "state", None)
-    cfg = getattr(settings, "settings", None) if settings is not None else None
-    mode = getattr(cfg, "auth_mode", "none") if cfg is not None else "none"
-    if mode == "none":
+    state = getattr(getattr(request, "app", None), "state", None)
+    cfg = getattr(state, "settings", None) if state is not None else None
+    if cfg is None:
+        # Three chained getattr defaults used to land on "none" here, i.e. skip every
+        # scope check. create_app sets app.state.settings eagerly, so a missing one means
+        # a sub-app or plugin router mounted these routes without it — which must not
+        # silently disable management authorization.
+        logger.error("management scope check has no settings on app.state; denying")
+        raise HTTPException(status_code=500, detail="auth_misconfigured")
+    if getattr(cfg, "auth_mode", "none") == "none":
         return
     auth = auth_from_request(request)
     have = _scopes_of(auth)

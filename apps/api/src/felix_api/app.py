@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Any
@@ -91,9 +93,24 @@ def create_app(
         # flusher here they are never written and the buffer grows unbounded.
         flush_task = start_flush_task(cfg)
         app.state.flush_task = flush_task
+
+        # Remote JWKS: verify_jwt is synchronous and on the request path, so it reads a
+        # cache. Without this the `access` and `cognito` schemes have no key source at
+        # all and every token from them fails closed.
+        jwks_task = None
+        if cfg.auth_mode == "jwt":
+            from felix.auth.jwt import refresh_all_jwks, run_jwks_refresh_loop
+
+            await refresh_all_jwks(cfg)
+            jwks_task = asyncio.create_task(run_jwks_refresh_loop(cfg, interval_s=600.0))
+        app.state.jwks_task = jwks_task
         try:
             yield
         finally:
+            if jwks_task is not None:
+                jwks_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await jwks_task
             await stop_flush_task(flush_task, cfg)
             shutdown_observability()
 
