@@ -13,6 +13,9 @@ class Principal:
     tenant_id: str
     scopes: frozenset[str] = field(default_factory=frozenset)
     issuer: str = ""
+    # How the caller authenticated: "api_key", a JWT verifier scheme ("access",
+    # "cognito", "self"), or "anonymous". Enforced by manifest `auth.inbound.schemes`.
+    scheme: str = "anonymous"
 
 
 OutboundTokenFn = Callable[[dict[str, str | None]], Awaitable[str]]
@@ -31,7 +34,9 @@ async def _empty_outbound(_target: dict[str, str | None]) -> str:
 
 
 ANONYMOUS = AuthContext(
-    principal=Principal(subject="", tenant_id="default", scopes=frozenset(), issuer="anonymous"),
+    principal=Principal(
+        subject="", tenant_id="default", scopes=frozenset(), issuer="anonymous", scheme="anonymous"
+    ),
     outbound_token=_empty_outbound,
     anonymous=True,
 )

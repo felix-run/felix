@@ -50,12 +50,13 @@ Structural gates (fast, no infrastructure):
 ./scripts/test.sh tests/unit/test_invariants.py   # repo invariants, enforced
 uv sync --locked --no-dev && uv run --no-sync python scripts/lean-import-check.py
 python3 scripts/validate-toolkit.py               # .claude/ hooks, settings, skills
+uv run python scripts/gen-manifest-schema.py --check   # editor JSON Schema is current
 ```
 
 `tests/unit/test_invariants.py` turns the rules below into failures: `.env.example` covers every
 `Settings` field, no optional dependency is imported at module scope, every Postgres-touching module
-has a `memory://` path, and the governance wrapper order is unchanged. Change a rule deliberately and
-you update the test with it.
+has a `memory://` path, the governance wrapper order is unchanged, and `schemas/manifest.schema.json`
+still matches the pydantic models. Change a rule deliberately and you update the test with it.
 
 Eval smoke (no model calls): `uv run felix eval --dataset smoke --manifest quick --fixture fixtures/eval/smoke.json --mock`.
 
@@ -90,8 +91,9 @@ bundled YAML), enforces inbound auth and the compile pin, then compiles:
    plain-dict `PatternBuildContext`.
 
 Adding a manifest field means: `manifests/schema.py` → an `apply_*` wrapper or binder in
-`builder.py` → a case in `tests/unit/`. Adding a pattern means `register_pattern(...)` at
-import time — nothing in core enumerates patterns.
+`builder.py` → a case in `tests/unit/` → `make schema` (regenerates the generated, checked-in
+`schemas/manifest.schema.json` that the `# yaml-language-server` header in every manifest points at).
+Adding a pattern means `register_pattern(...)` at import time — nothing in core enumerates patterns.
 
 ### Protocols, not vendors
 

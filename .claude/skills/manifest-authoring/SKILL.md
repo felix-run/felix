@@ -11,6 +11,10 @@ A manifest is compiled into a governed `Agent` by `packages/harness/src/felix/ma
 at request time. **A field in `manifests/schema.py` does nothing until `builder.py` reads it** —
 that is the cause of most "the field is there but the behavior isn't" reports.
 
+The `$schema` header below resolves to `schemas/manifest.schema.json`, which is **generated** from
+those pydantic models — run `make schema` after any `manifests/schema.py` change, or
+`tests/unit/test_invariants.py` fails and editors validate against a stale schema.
+
 ## Skeleton
 
 ```yaml

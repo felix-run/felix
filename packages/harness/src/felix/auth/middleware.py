@@ -95,6 +95,7 @@ async def authenticate_request(
                 tenant_id=str(matched.get("tenant_id") or "default"),
                 scopes=scopes,
                 issuer="api_key",
+                scheme="api_key",
             ),
             outbound_token=ANONYMOUS.outbound_token,
             anonymous=False,
@@ -166,6 +167,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             scopes=auth.principal.scopes,
             anonymous=auth.anonymous,
             raw_claims=auth.raw_claims,
+            scheme=getattr(auth.principal, "scheme", "anonymous"),
         )
         req_ctx = RequestContext(
             settings=settings,
@@ -207,6 +209,7 @@ def auth_middleware(
             scopes=auth.principal.scopes,
             anonymous=auth.anonymous,
             raw_claims=auth.raw_claims,
+            scheme=getattr(auth.principal, "scheme", "anonymous"),
         )
         req_ctx = RequestContext(
             settings=cfg,
