@@ -204,10 +204,25 @@ def apply_command_screening(tools: list[Tool], screening: Any, manifest_id: str)
                                 "command",  # type: ignore[arg-type]
                             )
                         if decision == "require_approval":
-                            return deny_output(
-                                f"[command requires approval] {reason}",
-                                "approvals",
+                            record_counter(
+                                "felix_approval_required",
+                                {"manifest_id": manifest_id, "tool": tool.name, "rule": "command"},
                             )
+                            ok, args, note = await _await_approval(
+                                manifest_id=manifest_id,
+                                tool_name=tool.name,
+                                rule_id=f"command:{reason}",
+                                args=args,
+                                ctx=ctx,
+                                ttl_seconds=int(getattr(screening, "approval_ttl_seconds", 300) or 300),
+                                reason=reason,
+                            )
+                            if not ok:
+                                return deny_output(
+                                    f"[command approval {note or 'denied'}] {reason}",
+                                    "approvals",
+                                )
+                            break
                         break
             return await inner.execute(args, ctx)
 
@@ -306,6 +321,77 @@ def apply_content_screening(tools: list[Tool], screening: Any, manifest_id: str)
         )
 
     return _wrap_tools(tools, wrap_one)
+
+
+async def _await_approval(
+    *,
+    manifest_id: str,
+    tool_name: str,
+    rule_id: str,
+    args: ToolInput,
+    ctx: ToolInvocationCtx | None,
+    ttl_seconds: int | None,
+    reason: str = "",
+) -> tuple[bool, ToolInput, str]:
+    """Create a pending approval, notify listeners, and block on the decision.
+
+    Returns ``(approved, args, note)`` — ``args`` may be replaced by the approver's
+    edits. Fails closed: no request context, no approvals store, or a store error all
+    yield ``approved=False``.
+    """
+    import hashlib
+    import json
+
+    from felix.approvals.interrupt import wait_for_decision
+    from felix.side_events import emit as emit_side_event
+
+    req = try_get_context()
+    if req is None:
+        return False, args, "no request context"
+
+    try:
+        from felix.approvals import store as approvals_store
+
+        sig = hashlib.sha256(json.dumps(args, sort_keys=True, default=str).encode()).hexdigest()[:32]
+        pending_row = await approvals_store.create_pending(
+            req.settings,
+            req.auth.tenant_id,
+            manifest_id=manifest_id,
+            tool_name=tool_name,
+            call_signature=sig,
+            args=dict(args),
+            principal_subj=req.auth.principal_sub,
+            rule_id=rule_id,
+            ttl_seconds=ttl_seconds,
+        )
+    except Exception:
+        logger.debug("approvals store create_pending failed", exc_info=True)
+        return False, args, "approvals unavailable"
+
+    approval_id = str(pending_row.get("id") or "")
+    thread_id = (ctx.thread_id if ctx else None) or req.thread_id
+    await emit_side_event(
+        thread_id,
+        "approval_required",
+        {
+            "approval_id": approval_id,
+            "tool_name": tool_name,
+            "args": dict(args),
+            "rule_id": rule_id,
+            "reason": reason,
+            "thread_id": thread_id,
+            "tool_call_id": ctx.tool_call_id if ctx else None,
+        },
+    )
+    decision = await wait_for_decision(
+        approval_id,
+        timeout=float(ttl_seconds) if ttl_seconds else None,
+    )
+    if decision.decision != "approved":
+        return False, args, decision.note or "denied"
+    if decision.edited_args:
+        args = dict(decision.edited_args)
+    return True, args, ""
 
 
 def apply_limits(tools: list[Tool], limits: Any, manifest_id: str) -> list[Tool]:
@@ -580,7 +666,17 @@ def apply_approvals(tools: list[Tool], rules: list[ApprovalRule], manifest_id: s
                         manifest_id=manifest_id,
                         tool_name=tool.name,
                         call_signature=sig,
+                        # bind_principal: A's approval must not authorize B's call.
+                        principal_subj=(req.auth.principal_sub or "") if rule.bind_principal else None,
+                        # one_shot: a spent grant must not authorize a replay.
+                        unconsumed_only=bool(rule.one_shot),
                     )
+                    if approved:
+                        if rule.one_shot and not await approvals_store.consume_approval(
+                            req.settings, req.auth.tenant_id, str(approved.get("id") or "")
+                        ):
+                            # Lost the race to another call spending the same grant.
+                            approved = None
                     if approved:
                         granted = True
                         if approved.get("edited_args"):

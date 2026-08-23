@@ -420,6 +420,9 @@ class CommandScreening(_Strict):
     include_defaults: bool = True
     rules: list[CommandRule] = Field(default_factory=list)
     target_tools: list[str] = Field(default_factory=list)
+    # How long a `require_approval` rule waits for a human before failing closed.
+    # Finite by default so a run cannot block forever on an approver who never comes.
+    approval_ttl_seconds: int = Field(default=300, gt=0, le=86_400)
 
 
 class ContentScreening(_Strict):
