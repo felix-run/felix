@@ -205,7 +205,9 @@ step:
 | `max_cost_usd` | Accumulated spend, priced from the model catalog. |
 
 Because `max_cost_usd` fails closed, the price table behind it is a control input rather
-than reporting. Bundled prices are flat per model. A provider that bills long context at
+than reporting. Rates live on the model catalog (`felix/model_catalog.py`) alongside
+context window and request quirks, so a model is priced and described in one place.
+Bundled prices are flat per model. A provider that bills long context at
 a higher rate across the *whole* request needs that expressed as pricing tiers on a
 manifest price override — `tiers: [{input_tokens_above: N, input: …, output: …}]`, where
 the highest matching threshold replaces the base rates entirely. No bundled entry sets

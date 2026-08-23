@@ -10,7 +10,7 @@ safety refusal both presented as a normal completion.
 from __future__ import annotations
 
 import pytest
-from felix.patterns.capabilities import capabilities_for, clamp_effort
+from felix.model_catalog import clamp_effort, entry_for
 from felix.patterns.model import (
     _ANTHROPIC_STOP,
     _OPENAI_STOP,
@@ -27,43 +27,43 @@ from felix.patterns.react import _status_for_stop
     ["claude-opus-5", "claude-sonnet-5", "claude-fable-5", "claude-opus-4-8", "claude-opus-4-7"],
 )
 def test_current_models_reject_budget_tokens_and_sampling(model: str) -> None:
-    caps = capabilities_for(model)
-    assert caps.adaptive_thinking is True
-    assert caps.budget_tokens is False, "sending budget_tokens here is a 400"
-    assert caps.sampling is False, "sending temperature here is a 400"
+    caps = entry_for(model)
+    assert caps.quirks.adaptive_thinking is True
+    assert caps.quirks.budget_tokens is False, "sending budget_tokens here is a 400"
+    assert caps.quirks.sampling is False, "sending temperature here is a 400"
 
 
 @pytest.mark.parametrize("model", ["claude-sonnet-4-5", "claude-haiku-4-5"])
 def test_legacy_models_keep_budget_tokens(model: str) -> None:
-    caps = capabilities_for(model)
-    assert caps.adaptive_thinking is False
-    assert caps.budget_tokens is True
-    assert caps.sampling is True
+    caps = entry_for(model)
+    assert caps.quirks.adaptive_thinking is False
+    assert caps.quirks.budget_tokens is True
+    assert caps.quirks.sampling is True
 
 
 def test_46_family_takes_adaptive_but_still_allows_sampling() -> None:
-    caps = capabilities_for("claude-opus-4-6")
-    assert caps.adaptive_thinking is True
-    assert caps.sampling is True
-    assert caps.effort_xhigh is False, "xhigh arrived after 4.6"
+    caps = entry_for("claude-opus-4-6")
+    assert caps.quirks.adaptive_thinking is True
+    assert caps.quirks.sampling is True
+    assert caps.quirks.effort_xhigh is False, "xhigh arrived after 4.6"
 
 
 def test_dated_snapshot_resolves_to_its_family() -> None:
-    assert capabilities_for("claude-haiku-4-5-20251001").budget_tokens is True
+    assert entry_for("claude-haiku-4-5-20251001").quirks.budget_tokens is True
 
 
 def test_unknown_claude_id_assumes_current_generation() -> None:
     """Omitting an optional parameter is not an error; sending a removed one is a 400,
     so guessing 'modern' is the safe direction."""
-    caps = capabilities_for("claude-something-unreleased")
-    assert caps.budget_tokens is False
-    assert caps.sampling is False
+    caps = entry_for("claude-something-unreleased")
+    assert caps.quirks.budget_tokens is False
+    assert caps.quirks.sampling is False
 
 
 def test_effort_is_clamped_to_what_the_model_accepts() -> None:
-    assert clamp_effort("xhigh", capabilities_for("claude-opus-5")) == "xhigh"
-    assert clamp_effort("xhigh", capabilities_for("claude-opus-4-6")) == "high"
-    assert clamp_effort("nonsense", capabilities_for("claude-opus-5")) == "high"
+    assert clamp_effort("xhigh", entry_for("claude-opus-5").quirks) == "xhigh"
+    assert clamp_effort("xhigh", entry_for("claude-opus-4-6").quirks) == "high"
+    assert clamp_effort("nonsense", entry_for("claude-opus-5").quirks) == "high"
 
 
 # --- the emitted request body ---------------------------------------------------

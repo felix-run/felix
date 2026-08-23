@@ -65,6 +65,29 @@ async def prepare_tenant_invoke(
     )
 
 
+def _context_window_for_manifest(manifest: Any, strategy_spec: Any) -> int:
+    """Tokens of context to compact against.
+
+    `spec.session.context_window_tokens` carries a schema default of 128000, and pydantic
+    fills it in whether or not the operator wrote it. Reading it unconditionally meant a
+    manifest on a 1M-context model compacted at 128K minus reserve — summarising away
+    seven eighths of the window it had paid for, and paying a summarisation call to do
+    it. An explicitly declared value still wins; otherwise the model's own window is used.
+    """
+    declared = getattr(strategy_spec, "context_window_tokens", None)
+    was_set = "context_window_tokens" in getattr(strategy_spec, "model_fields_set", set())
+    if was_set and declared:
+        return int(declared)
+
+    model_spec = getattr(getattr(manifest, "spec", None), "model", None)
+    model_id = str(getattr(model_spec, "id", "") or "")
+    if model_id:
+        from felix.model_catalog import entry_for
+
+        return entry_for(model_id).context_window
+    return int(declared or 128000)
+
+
 async def build_tenant_agent(
     settings: Settings,
     *,
@@ -80,7 +103,7 @@ async def build_tenant_agent(
     strategy_name = getattr(strategy_spec, "strategy", "full_replay") if strategy_spec else "full_replay"
     reserve = int(getattr(strategy_spec, "reserve_tokens", 16384) or 16384)
     keep_recent = int(getattr(strategy_spec, "keep_recent_tokens", 20000) or 20000)
-    context_window = int(getattr(strategy_spec, "context_window_tokens", 128000) or 128000)
+    context_window = _context_window_for_manifest(manifest, strategy_spec)
     compaction_enabled = bool(getattr(strategy_spec, "compaction_enabled", True))
 
     store = object_store

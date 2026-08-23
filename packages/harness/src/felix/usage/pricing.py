@@ -1,43 +1,29 @@
-"""Model price table for per-message cost estimation."""
+"""Model price table for per-message cost estimation.
+
+Rates live on the model catalog alongside context window and request quirks, so a model
+is described in one place. `DEFAULT_PRICES` is kept as a view over it for callers and
+tests that read the table directly.
+"""
 
 from __future__ import annotations
 
 from typing import Any
 
-# USD per 1M tokens — approximate public list prices; override via manifest meta.
-# Longest matching key wins, so "claude-opus-5" is not shadowed by "claude-opus".
-# Cache reads are 0.1x input and cache writes 1.25x input across the Claude family.
-#
-# A price entry may also carry "tiers": a list of
-# ``{"input_tokens_above": N, "input": …, "output": …, "cache_read": …, "cache_write": …}``
-# rows. Several providers bill long-context requests at a higher rate across the *whole*
-# request once total input passes a threshold, rather than only on the tokens above it —
-# so the highest matching tier replaces the base rates entirely. No bundled entry sets
-# tiers: the thresholds and rates move, and a wrong number here silently mis-charges a
-# tenant and mis-enforces `limits.max_cost_usd`. Fill them from the provider's current
-# price sheet, per deployment, via a manifest price override.
-DEFAULT_PRICES: dict[str, dict[str, Any]] = {
-    "default": {"input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75},
-    "claude-fable": {"input": 10.0, "output": 50.0, "cache_read": 1.0, "cache_write": 12.5},
-    "claude-mythos": {"input": 10.0, "output": 50.0, "cache_read": 1.0, "cache_write": 12.5},
-    "claude-opus": {"input": 5.0, "output": 25.0, "cache_read": 0.5, "cache_write": 6.25},
-    "claude-sonnet": {"input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75},
-    # Haiku 4.5 is $1.00 / $5.00; the previous 0.8 / 4.0 under-reported every run.
-    "claude-haiku": {"input": 1.0, "output": 5.0, "cache_read": 0.1, "cache_write": 1.25},
-    "gpt-4o": {"input": 2.5, "output": 10.0, "cache_read": 1.25, "cache_write": 2.5},
-    "gpt-4o-mini": {"input": 0.15, "output": 0.6, "cache_read": 0.075, "cache_write": 0.15},
-}
+from felix.model_catalog import all_entries, entry_for
+
+
+def _prices_view() -> dict[str, dict[str, Any]]:
+    view = {key: entry.pricing.as_dict() for key, entry in all_entries().items()}
+    view["default"] = entry_for("").pricing.as_dict()
+    return view
+
+
+DEFAULT_PRICES: dict[str, dict[str, Any]] = _prices_view()
 
 
 def _lookup_price(model_id: str) -> dict[str, Any]:
-    mid = (model_id or "").lower()
-    # Longest match, not first match: dict order previously decided whether
-    # "claude-opus-5" matched "claude-opus" or something shorter.
-    best: tuple[int, dict[str, Any]] | None = None
-    for key, price in DEFAULT_PRICES.items():
-        if key != "default" and key in mid and (best is None or len(key) > best[0]):
-            best = (len(key), price)
-    return best[1] if best else DEFAULT_PRICES["default"]
+    """Rates for a model id, resolved through the catalog's single matching rule."""
+    return entry_for(model_id).pricing.as_dict()
 
 
 def _apply_tier(price: dict[str, Any], total_input_tokens: int) -> dict[str, Any]:

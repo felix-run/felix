@@ -3,6 +3,7 @@
 from felix.usage.catalog import (
     catalog_from_manifest,
     context_window_for,
+    modalities_for,
     model_catalog_entry,
     supported_thinking_levels,
 )
@@ -14,6 +15,7 @@ __all__ = [
     "context_window_for",
     "estimate_cost",
     "flush_pending",
+    "modalities_for",
     "model_catalog_entry",
     "query",
     "record_tokens",

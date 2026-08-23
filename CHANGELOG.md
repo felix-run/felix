@@ -23,8 +23,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fans out across tool calls, model calls, session writes, and audit events, and nothing
   tied them together before.
 
+### Changed
+
+- **Model metadata is one record instead of three tables.** Context window, max output,
+  price, accepted request parameters, thinking support, and modalities lived in
+  `patterns/capabilities.py` (longest **prefix** wins), `usage/catalog.py` (**substring**,
+  and **first key in dict order** wins) and `usage/pricing.py` (substring, longest wins).
+  Three rules for one question, and they disagreed: the request builder treated
+  `claude-opus-4-5` as 200K while `/v1/models` published 1M for it, because `claude-opus`
+  matched as a substring first. `felix/model_catalog.py` now holds one entry per family
+  and one lookup; the rest are views over it. `patterns/capabilities.py` is removed —
+  its `context_window` field was dead, which is how the two numbers drifted unnoticed.
+
 ### Fixed
 
+- **Compaction ignored the model's real context window.**
+  `spec.session.context_window_tokens` has a schema default of 128000 that pydantic fills
+  in whether or not the operator wrote it, so a manifest on a 1M-context model compacted
+  at 128K minus reserve — summarising away seven eighths of the window it was paying for,
+  and spending a summarisation call to do it. An undeclared window now follows the model;
+  an explicitly declared one still wins, including when it equals the default.
 - **A turn cut off at `max_tokens` executed the tool calls it was still writing.** The
   ReAct loop only inspected `stop_reason` on the branch where the assistant produced no
   tool calls, so a truncated `tool_use` went straight to execution. Truncated arguments

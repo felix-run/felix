@@ -224,10 +224,17 @@ retries are exhausted. Recalled memory facts are
 rendered as a per-run prelude rather than folded into the system prompt, so the cached prompt prefix
 stays stable across turns.
 
-Request parameters are selected per model in `patterns/capabilities.py`: the current Claude
-generation takes adaptive thinking plus `output_config.effort`, while pre-4.6 models take a fixed
-`budget_tokens`. `spec.model.thinking_budget` works on both — it is translated to an effort level
-where budgets are no longer accepted.
+Everything Felix knows about a model — context window, max output, price, accepted request
+parameters, thinking support, modalities — lives in one record per family in `felix/model_catalog.py`,
+resolved by the longest key appearing in the model id. Request shaping, `/v1/models`, and cost
+estimation are all views over it. The current Claude generation takes adaptive thinking plus
+`output_config.effort`, while pre-4.6 models take a fixed `budget_tokens`; `spec.model.thinking_budget`
+works on both — it is translated to an effort level where budgets are no longer accepted.
+
+An id with no exact entry defaults in two directions on purpose: the **request shape** assumes the
+current generation, because sending a parameter a model has removed is a hard 400 while omitting an
+optional one is not, and the **context window** stays conservative, because over-advertising a window
+invites a request the model will reject.
 
 Extended thinking is stateful once tools are involved: the provider signs each thinking block, and
 a later turn replaying a tool call has to replay the signed reasoning that produced it. Thinking
@@ -241,6 +248,7 @@ Sessions and skills:
 
 - **Skills** live under `skills/` as Agent Skills `SKILL.md` files; declare them with `spec.skills`
 - **Session strategies**: `compacting` (token-threshold), `windowed:N`, `semantic:N`, `full_replay`
+  — `compacting` sizes itself to the model's context window unless `spec.session.context_window_tokens` says otherwise
 
 Outbound integrations, all declared on the manifest:
 
