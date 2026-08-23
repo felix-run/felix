@@ -179,3 +179,51 @@ async def test_api_lifespan_flushes_audit_without_a_worker() -> None:
 
     # and shutdown drains anything still buffered
     assert len(audit_store._pending) == 0
+
+
+# --- a dead flush loop must be loud, not silent --------------------------------
+
+
+@pytest.mark.asyncio
+async def test_crashed_flush_task_is_reported(caplog: pytest.LogCaptureFixture) -> None:
+    """The done-callback used to discard the exception, so a dead loop was invisible.
+
+    If this task dies the process silently stops writing audit and usage events, which
+    is exactly the failure mode this whole change exists to prevent.
+    """
+    import logging
+
+    from felix.flush import _report_flush_task_exit
+
+    async def _boom() -> None:
+        raise RuntimeError("loop died")
+
+    task = asyncio.create_task(_boom())
+    with pytest.raises(RuntimeError):
+        await task
+
+    with caplog.at_level(logging.ERROR, logger="felix.flush"):
+        _report_flush_task_exit(task)
+    assert "no longer being written" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_cancelled_flush_task_is_not_reported_as_a_crash(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    from felix.flush import _report_flush_task_exit
+
+    async def _sleep() -> None:
+        await asyncio.sleep(60)
+
+    task = asyncio.create_task(_sleep())
+    await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    with caplog.at_level(logging.ERROR, logger="felix.flush"):
+        _report_flush_task_exit(task)
+    assert caplog.text == ""

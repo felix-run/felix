@@ -12,7 +12,6 @@ Every process that emits events must therefore also flush them.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 from typing import Any
 
@@ -53,14 +52,31 @@ async def run_flush_loop(settings: Any, *, interval_s: float) -> None:
             logger.warning("flush loop iteration failed", exc_info=True)
 
 
+def _report_flush_task_exit(task: asyncio.Task[None]) -> None:
+    """Surface a crashed flush loop.
+
+    Retrieving the exception also stops asyncio's "Task exception was never retrieved"
+    warning at interpreter shutdown, but the point is the log line: if this loop dies,
+    the process stops writing audit and usage events and nothing else would say so.
+    """
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.error("flush loop exited unexpectedly; events are no longer being written", exc_info=exc)
+
+
 def start_flush_task(settings: Any) -> asyncio.Task[None] | None:
-    """Start the background flush loop, or ``None`` when disabled."""
+    """Start the background flush loop, or ``None`` when disabled.
+
+    The caller must hold the returned task (the API keeps it on ``app.state``); asyncio
+    only holds a weak reference, so a dropped task can be garbage collected mid-flight.
+    """
     interval = float(getattr(settings, "audit_flush_seconds", 0) or 0)
     if interval <= 0:
         return None
     task = asyncio.create_task(run_flush_loop(settings, interval_s=interval))
-    # Keep a reference on the task itself so it is not garbage collected mid-flight.
-    task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
+    task.add_done_callback(_report_flush_task_exit)
     return task
 
 
@@ -68,8 +84,12 @@ async def stop_flush_task(task: asyncio.Task[None] | None, settings: Any) -> Non
     """Cancel the loop and drain what is left, so shutdown does not lose events."""
     if task is not None:
         task.cancel()
-        with contextlib.suppress(asyncio.CancelledError, Exception):
+        try:
             await task
+        except asyncio.CancelledError:
+            logger.debug("flush loop cancelled during shutdown")
+        except Exception:
+            logger.warning("flush loop raised during shutdown", exc_info=True)
     await flush_all(settings)
 
 
