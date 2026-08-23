@@ -187,16 +187,54 @@ async def _write_file(args: WriteFileArgs) -> str:
 # worker thread cannot be killed, so the deadline below unblocks the *request* while the
 # thread keeps burning CPU; repeated attempts would exhaust the pool. Rejecting the shape
 # up front is the only part of this that actually stops the work.
-_NESTED_QUANTIFIER = re.compile(r"\((?:\?[:=!][^)]*|[^)])*[*+}][^)]*\)\s*[*+{]")
+#
+# Detected by a linear scan, not a regex. The first version of this check *was* a regex
+# with an ambiguous alternation, i.e. exactly the bug it exists to catch — CodeQL caught
+# it. A scanner has no backtracking and is more precise about escapes and classes.
+_QUANTIFIERS = frozenset("*+{")
 
 
 def _reject_catastrophic(pattern: str) -> str | None:
     """Reason the pattern is refused, or None when it is acceptable."""
-    if _NESTED_QUANTIFIER.search(pattern):
-        return (
-            "pattern nests a quantifier inside a quantified group (e.g. '(a+)+'), which "
-            "backtracks exponentially; rewrite it without the nesting"
-        )
+    # Stack entry: whether a quantifier has been seen at that group depth.
+    stack: list[bool] = []
+    i, n = 0, len(pattern)
+    while i < n:
+        ch = pattern[i]
+        if ch == "\\":
+            i += 2  # escaped char is a literal, quantifier or not
+            continue
+        if ch == "[":
+            # Inside a character class, * + { and ) are literals.
+            i += 1
+            if i < n and pattern[i] == "^":
+                i += 1
+            if i < n and pattern[i] == "]":
+                i += 1  # a leading ] is literal
+            while i < n and pattern[i] != "]":
+                i += 2 if pattern[i] == "\\" else 1
+            i += 1
+            continue
+        if ch == "(":
+            stack.append(False)
+            i += 1
+            continue
+        if ch == ")":
+            had_quantifier = stack.pop() if stack else False
+            # A group that contained a quantifier makes its *parent* quantifier-bearing
+            # too, so ((a+))+ is caught and not just (a+)+.
+            if had_quantifier and stack:
+                stack[-1] = True
+            i += 1
+            if had_quantifier and i < n and pattern[i] in _QUANTIFIERS:
+                return (
+                    "pattern nests a quantifier inside a quantified group (e.g. '(a+)+'), "
+                    "which backtracks exponentially; rewrite it without the nesting"
+                )
+            continue
+        if ch in _QUANTIFIERS and stack:
+            stack[-1] = True
+        i += 1
     return None
 
 

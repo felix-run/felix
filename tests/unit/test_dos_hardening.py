@@ -139,11 +139,44 @@ def test_nested_quantifier_patterns_are_refused() -> None:
         assert _reject_catastrophic(evil), evil
 
 
+def test_nesting_is_detected_through_intermediate_groups() -> None:
+    """`((a+))+` is just as exponential as `(a+)+`."""
+    from felix.tools.workspace import _reject_catastrophic
+
+    for evil in [r"((a+))+", r"(?:(a+))+", r"(a{2,3})+"]:
+        assert _reject_catastrophic(evil), evil
+
+
 def test_ordinary_patterns_are_allowed() -> None:
     from felix.tools.workspace import _reject_catastrophic
 
-    for ok in [r"foo.*bar", "TODO", r"^\s*def ", r"(abc)+", r"a{2,3}"]:
-        assert _reject_catastrophic(ok) is None, ok
+    ok = [
+        r"foo.*bar",
+        "TODO",
+        r"^\s*def ",
+        r"(abc)+",  # quantified group, no inner quantifier
+        r"a{2,3}",
+        r"[*+]+",  # quantifier chars inside a class are literals
+        r"\(a+\)+",  # escaped parens are not groups
+        r"(?:ab)+",
+        r"(a)(b)+",  # sibling groups, not nested
+        r"(a+)b",  # quantifier inside an unquantified group
+    ]
+    for pattern in ok:
+        assert _reject_catastrophic(pattern) is None, pattern
+
+
+def test_the_detector_is_itself_linear() -> None:
+    """The first version of this check was a regex with an ambiguous alternation — i.e.
+    exactly the bug it exists to catch. CodeQL flagged it; it is now a scan."""
+    import time
+
+    from felix.tools.workspace import _reject_catastrophic
+
+    payload = "(" + "?!" * 5000
+    start = time.monotonic()
+    _reject_catastrophic(payload)
+    assert time.monotonic() - start < 0.5
 
 
 def test_calculator_exponent_is_bounded() -> None:
