@@ -33,7 +33,7 @@ at `src/content/` (not `src/content/docs/`), loaded by a glob loader with Starli
 | New CLI command or flag | README quick-start, `CONTRIBUTING.md` if it is part of the dev loop |
 | New surface/protocol | README protocol table |
 | Architecture or workflow change | `CLAUDE.md` |
-| User-visible behavior | `CHANGELOG.md` (Unreleased), `docs/roadmap.md` status |
+| User-visible behavior | `CHANGELOG.md` (Unreleased), `docs/ROADMAP.md` status |
 
 ## Voice
 

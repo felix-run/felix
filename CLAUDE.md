@@ -141,7 +141,7 @@ cron labels). `felix-scheduler` must run alongside `felix-worker` or nothing fir
   documents why each rule is off — read it before "fixing" an E731 or SIM102.
 - Postgres is the system of record; the warehouse (`FELIX_WAREHOUSE`) is optional
   append-only spill written after the Postgres write.
-- `docs/roadmap.md` tracks in-flight work and is expected to be updated in place.
+- `docs/ROADMAP.md` tracks in-flight work and is expected to be updated in place.
 
 ## Claude Code toolkit
 

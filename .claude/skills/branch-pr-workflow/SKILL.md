@@ -62,5 +62,5 @@ Commit or push **only when the user asks**.
 - New `FELIX_` setting → `.env.example`, README, `compose*.yml`, Helm values
 - New governance control → `deploy/GOVERNANCE.md`, `manifests/governed.yaml`
 - Model change → an Alembic revision under `migrations/versions/`
-- User-visible behavior → `CHANGELOG.md` (Unreleased) and a `docs/roadmap.md` status flip
+- User-visible behavior → `CHANGELOG.md` (Unreleased) and a `docs/ROADMAP.md` status flip
 - Documented surface → the public MDX pages (docs-sync skill)

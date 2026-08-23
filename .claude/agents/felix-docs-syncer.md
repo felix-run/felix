@@ -13,7 +13,7 @@ than missing docs, because they are believed.
 
 **In this repo** (always yours to edit):
 `README.md`, `CLAUDE.md`, `CONTRIBUTING.md`, `.env.example`, `deploy/GOVERNANCE.md`,
-`deploy/docker/README.md`, `deploy/helm/README.md`, `CHANGELOG.md`, `docs/roadmap.md`.
+`deploy/docker/README.md`, `deploy/helm/README.md`, `CHANGELOG.md`, `docs/ROADMAP.md`.
 
 **Public docs** live in the separate **felix-web** repo, Starlight MDX under
 `apps/docs/src/content/` (override the checkout path with `FELIX_DOCS_ROOT`; default

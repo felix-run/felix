@@ -15,7 +15,7 @@ CLI flags, scope names, and defaults get copied from source, never from memory.
 
 **This repo:** `README.md`, `CLAUDE.md`, `CONTRIBUTING.md`, `.env.example`,
 `deploy/GOVERNANCE.md`, `deploy/docker/README.md`, `deploy/helm/README.md`, `CHANGELOG.md`,
-`docs/roadmap.md`.
+`docs/ROADMAP.md`.
 
 **Public site:** the **felix-web** repo — Starlight MDX under `apps/docs/src/content/`
 (`guide/` = operators and integrators, `internals/` = mechanism). Default checkout
