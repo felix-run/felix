@@ -253,7 +253,8 @@ Sessions and skills:
 
 - **Skills** live under `skills/` as Agent Skills `SKILL.md` files; declare them with `spec.skills`
 - **Session strategies**: `compacting` (token-threshold), `windowed:N`, `semantic:N`, `full_replay`
-  — `compacting` sizes itself to the model's context window unless `spec.session.context_window_tokens` says otherwise
+  — `compacting` sizes itself to the model's context window unless `spec.session.context_window_tokens` says otherwise, and compacts once more if the provider
+  rejects a request for length anyway
 
 Outbound integrations, all declared on the manifest:
 
