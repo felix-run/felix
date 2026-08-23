@@ -52,6 +52,7 @@ def register_builtin_tools(provider: InMemoryToolProvider) -> None:
         "calculator",
         lambda: define_tool(
             name="calculator",
+            replay_safe=True,
             description=("Evaluate a basic arithmetic expression (supports + - * / and parentheses)."),
             args=CalculatorArgs,
             handler=_calculator_handler,
@@ -62,6 +63,7 @@ def register_builtin_tools(provider: InMemoryToolProvider) -> None:
         "list_skills",
         lambda: define_tool(
             name="list_skills",
+            replay_safe=True,
             description="List available skills for this agent.",
             handler=_list_skills_stub,
         ),

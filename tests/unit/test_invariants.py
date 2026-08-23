@@ -198,3 +198,38 @@ def test_manifest_json_schema_is_current() -> None:
         "schemas/manifest.schema.json is stale relative to felix.manifests.schema.Manifest.\n"
         "It is generated, not hand-edited — run: make schema"
     )
+
+
+def test_wrapping_a_tool_preserves_every_field() -> None:
+    """Governance wrappers clone each tool, so a dropped field silently resets to default.
+
+    Every tool passes through `_clone_tool` on its way through the wrapper stack. A
+    field-by-field rebuild that forgot one would reset it on every wrapped tool in the
+    process, and a default is what a field means when nobody has thought about it —
+    `replay_safe` was added and very nearly lost that way. Asserting the round trip here
+    means the next field added cannot be dropped quietly.
+    """
+    import dataclasses
+
+    from felix.manifests.builder import _clone_tool
+    from felix.tools.types import Tool, define_tool
+
+    async def _handler(args: dict, ctx: object | None = None) -> str:
+        return "ok"
+
+    original = define_tool(
+        name="probe",
+        description="d",
+        handler=_handler,
+        source="unit-test",
+        fatal=True,
+        replay_safe=True,
+    )
+    clone = _clone_tool(original, original.executor)
+
+    carried = [f.name for f in dataclasses.fields(Tool) if f.name != "executor"]
+    assert carried, "Tool has no fields to carry"
+    for name in carried:
+        assert getattr(clone, name) == getattr(original, name), (
+            f"_clone_tool dropped Tool.{name}; wrapped tools would silently use its default"
+        )

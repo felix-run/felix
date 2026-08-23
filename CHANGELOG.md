@@ -25,6 +25,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Interrupted tool calls are closed out, so a crashed run can be resumed.** A run killed
+  mid-tool leaves an assistant turn holding a call with no result, and the provider rejects
+  any transcript containing an unanswered tool call — so the one situation `/chat/continue`
+  exists for was the one it could not handle. Each outstanding call now gets an
+  `[error/interrupted]` result before the thread resumes.
+- **`Tool.replay_safe` declares whether a tool may be re-run after a crash.** Whether the
+  effect happened is not knowable after the fact; re-running a search costs latency, while
+  re-running a payment charges twice. Defaults to `False`, so a tool that has not considered
+  the question is never presented to the model as repeatable. Read-only built-ins declare
+  it `True`.
+
+
+- **Governance wrappers rebuilt each tool field by field**, so a field they did not know
+  about was silently reset to its default on every wrapped tool — and every tool passes
+  through the wrapper stack. `replay_safe` was very nearly lost this way on the same commit
+  that added it. Cloning is now structural, and an invariant test asserts the round trip so
+  the next field cannot be dropped quietly.
+
 - **Store conformance suite.** `memory://` is the CI test path, and
   `tests/unit/test_invariants.py` asserted only that every Postgres-touching module *has*
   an in-memory twin — not that the twin behaves like the store it stands in for. Every

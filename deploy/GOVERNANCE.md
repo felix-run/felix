@@ -190,6 +190,27 @@ the run is recorded with status `truncated`; none of them execute, including cal
 look complete, because the batch cannot be split into trustworthy and untrustworthy
 halves after the fact.
 
+## Resuming an interrupted run
+
+A run killed mid-tool leaves an assistant turn holding a tool call with no result. Whether
+the effect happened is not knowable afterwards, so on resume each unanswered call is closed
+out with an `[error/interrupted]` result rather than being re-issued. What the model is told
+depends on how the tool was declared:
+
+| `Tool.replay_safe` | Told to the model |
+|---|---|
+| `True` | The call did not finish and is safe to make again. |
+| `False` (default) | The call did not finish; it may already have taken effect, so do not assume either way and do not repeat it unchecked. |
+
+The default is `False`, so a tool that has never considered the question is never presented
+as repeatable. Read-only built-ins (`list_dir`, `read_file`, `search_files`, `calculator`,
+`list_skills`) declare `replay_safe=True`; skill activation, writes and every outbound
+integration do not.
+
+Closing the call out is also what makes the thread resumable at all: the provider rejects a
+transcript containing a tool call with no answer, so before this an interrupted run could
+not be continued.
+
 ## Run budgets
 
 `spec.limits` bounds a single run. Every field is enforced at two points — before each

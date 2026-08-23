@@ -92,6 +92,49 @@ def _quarantine_truncated_tool_calls(assistant: ChatMessage) -> list[ChatMessage
     return quarantined
 
 
+def _interrupted_tool_results(messages: list[ChatMessage], tool_map: dict[str, Tool]) -> list[ChatMessage]:
+    """Close out tool calls that a previous run started and never finished.
+
+    A run that dies mid-tool -- the process is killed, the fiber is reclaimed, the client
+    disconnects -- leaves an assistant turn holding a tool call with no result. The
+    provider requires every tool call in the history to be answered, so resuming that
+    thread sends a transcript it rejects outright: the one situation `/chat/continue`
+    exists for was the one it could not do.
+
+    Each unanswered call gets a result saying it was interrupted. Whether the effect
+    actually happened is not knowable from here, so the message says which way the tool
+    was declared: `replay_safe` tools are safe for the model to call again, and anything
+    else -- the default -- is explicitly not, because re-running a search costs latency
+    while re-running a payment charges twice.
+    """
+    answered: set[str] = {m.tool_call_id for m in messages if m.role == "tool" and m.tool_call_id}
+    results: list[ChatMessage] = []
+    for message in messages:
+        if message.role != "assistant" or not message.tool_calls:
+            continue
+        for call in message.tool_calls:
+            if not call.id or call.id in answered:
+                continue
+            answered.add(call.id)
+            tool = tool_map.get(call.name)
+            retryable = bool(tool is not None and tool.replay_safe)
+            advice = (
+                "It is safe to call again."
+                if retryable
+                else "Do not assume it succeeded or failed, and do not call it again "
+                "without checking; it may have already taken effect."
+            )
+            results.append(
+                ChatMessage(
+                    role="tool",
+                    tool_call_id=call.id,
+                    name=call.name,
+                    content=f"[error/interrupted] This call did not finish. {advice}",
+                )
+            )
+    return results
+
+
 def _clamp(value: int, ceiling: int) -> int:
     return min(max(value, 1), ceiling)
 
@@ -595,6 +638,21 @@ class _ReactAgent:
                 yield Event(event="session_progress", data={"phase": "turn"})
 
         messages = await self._assemble_messages(input, model, tenant_id)
+
+        interrupted = _interrupted_tool_results(messages, self._tool_map)
+        if interrupted:
+            logger.info(
+                "closing %d interrupted tool call(s) before resuming (manifest=%s thread=%s)",
+                len(interrupted),
+                self.manifest_id,
+                input.thread_id,
+            )
+            record_counter(
+                "felix_interrupted_tool_calls",
+                {"manifest_id": self.manifest_id},
+            )
+            messages.extend(interrupted)
+            await self._append_produced(input.thread_id, interrupted)
 
         produced: list[ChatMessage] = list(input.messages)
         await self._append_produced(input.thread_id, [m for m in input.messages if m.role == "user"])

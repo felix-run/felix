@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from felix.auth.context import AuthContext
@@ -113,17 +113,15 @@ def _replace_content(out: ToolOutput, content: str) -> ToolOutput:
 
 
 def _clone_tool(tool: Tool, executor: Any) -> Tool:
-    return Tool(
-        name=tool.name,
-        description=tool.description,
-        args_schema=tool.args_schema,
-        executor=executor,
-        raw_input_schema=tool.raw_input_schema,
-        is_peer=tool.is_peer,
-        peer=tool.peer,
-        source=tool.source,
-        fatal=tool.fatal,
-    )
+    """Copy a tool with a new executor, carrying every other field forward.
+
+    `dataclasses.replace` rather than a field-by-field rebuild on purpose: every tool
+    passes through this on its way through the governance stack, so a field that the
+    rebuild forgot would be silently reset to its default on every wrapped tool — and the
+    default is what a field means when nobody has thought about it. `replay_safe` was
+    added and very nearly lost exactly that way.
+    """
+    return replace(tool, executor=executor)
 
 
 def apply_policies(tools: list[Tool], policies: list[Policy], manifest_id: str) -> list[Tool]:

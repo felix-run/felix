@@ -52,6 +52,13 @@ class Tool:
     peer: bool = False
     source: str | None = None
     fatal: bool = False
+    # Whether this tool may be re-executed when a run resumes after a crash.
+    #
+    # A run that dies mid-tool leaves a call with no result, and the harness cannot tell
+    # from the outside whether the effect happened. Re-running a search costs a little
+    # latency; re-running a payment charges twice. Defaults to False so a tool that has
+    # not considered the question is never replayed.
+    replay_safe: bool = False
 
     def __post_init__(self) -> None:
         if self.peer and not self.is_peer:
@@ -106,6 +113,7 @@ def define_tool(
     source: str | None = None,
     fatal: bool = False,
     transport: str = "local",
+    replay_safe: bool = False,
     validate: Callable[[ToolInput], ToolInput | Mapping[str, Any]] | None = None,
 ) -> Tool:
     from felix.tools.errors import tool_error_output
@@ -148,6 +156,7 @@ def define_tool(
         peer=peer or is_peer,
         source=source,
         fatal=fatal,
+        replay_safe=replay_safe,
         executor=local_executor(_execute, transport=transport),
     )
 
@@ -164,6 +173,7 @@ def define_tool_with_executor(
     peer: bool = False,
     source: str | None = None,
     fatal: bool = False,
+    replay_safe: bool = False,
 ) -> Tool:
     schema = args_schema if args_schema is not None else args
     return Tool(
@@ -175,6 +185,7 @@ def define_tool_with_executor(
         peer=peer or is_peer,
         source=source,
         fatal=fatal,
+        replay_safe=replay_safe,
         executor=executor,
     )
 
