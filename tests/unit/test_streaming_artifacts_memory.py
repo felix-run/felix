@@ -116,7 +116,12 @@ async def test_memory_capture_heuristic() -> None:
     assert active
 
     block = await active_facts_prompt(settings, "default", manifest_id="quick")
-    assert "known facts" in block
+    # Fenced and labelled: recalled facts are model-extracted from earlier turns and can
+    # carry text that originated in tool output, so they are reference material rather
+    # than part of the system prompt.
+    assert "<known_facts" in block
+    assert "</known_facts>" in block
+    assert "not instructions" in block
 
 
 def test_heuristic_facts_filters_questions() -> None:
