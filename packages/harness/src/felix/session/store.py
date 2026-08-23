@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -17,6 +18,8 @@ from felix.session.types import (
     WakeState,
     analyze_wake,
 )
+
+logger = logging.getLogger("felix.session.store")
 
 
 @dataclass
@@ -87,6 +90,29 @@ class InMemorySessionStore:
         return self._sessions[thread_id]
 
 
+async def _lock_thread(db: Any, tenant_id: str, thread_id: str) -> None:
+    """Take a transaction-scoped advisory lock for one thread's event log.
+
+    No-ops on backends without advisory locks (SQLite in local experiments); Postgres is
+    the supported system of record and the only place concurrent appends occur.
+    """
+    from sqlalchemy import text as sql_text
+
+    bind = getattr(db, "bind", None)
+    dialect = getattr(getattr(bind, "dialect", None), "name", "") or ""
+    if dialect and dialect != "postgresql":
+        return
+    try:
+        await db.execute(
+            sql_text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
+            {"k": f"felix:session:{tenant_id}:{thread_id}"},
+        )
+    except Exception:
+        # Never fail an append because the lock could not be taken; the unique PK still
+        # protects correctness, this only avoids the conflict.
+        logger.debug("advisory lock unavailable for thread=%s", thread_id, exc_info=True)
+
+
 @dataclass
 class _PostgresSession:
     id: str
@@ -105,6 +131,13 @@ class _PostgresSession:
         from felix.secrets import redact_json, redact_text
 
         async with self.session_factory() as db:
+            # Serialize appends for this thread. The PK is (tenant_id, thread_id, seq),
+            # and computing seq as max(seq)+1 is a read-modify-write: an SSE stream,
+            # /chat/steer, /chat/tool_result, and /chat/sessions/custom all append to the
+            # same thread by design, so two concurrent appends computed the same head and
+            # one died with an unhandled IntegrityError — a 500 with the events lost.
+            # The advisory lock is transaction-scoped and released on commit.
+            await _lock_thread(db, self.tenant_id, self.id)
             head = await db.scalar(
                 select(func.coalesce(func.max(SessionEventRow.seq), -1)).where(
                     SessionEventRow.tenant_id == self.tenant_id,

@@ -19,6 +19,12 @@ now_ms = lambda: int(time.time() * 1000)
 
 _memory_fibers: dict[tuple[str, str], dict[str, Any]] = {}
 
+# How long a claim is held. Longer than any realistic single step, short enough that a
+# worker killed mid-step frees the fiber within a few scheduler ticks.
+FIBER_LEASE_MS = 5 * 60 * 1000
+# Bound the sweep: an unbounded SELECT loads a whole backlog into memory every minute.
+FIBER_BATCH = 50
+
 
 def _fiber_dict(row: Fiber | dict[str, Any]) -> dict[str, Any]:
     if isinstance(row, dict):
@@ -28,6 +34,9 @@ def _fiber_dict(row: Fiber | dict[str, Any]) -> dict[str, Any]:
         "id": row.id,
         "kind": row.kind,
         "status": row.status,
+        "lease_owner": row.lease_owner,
+        "lease_until": row.lease_until,
+        "version": row.version,
         "state_json": row.state_json,
         "wake_at": row.wake_at,
         "created_at": row.created_at,
@@ -77,19 +86,57 @@ async def _save_fiber(settings: Settings, row: dict[str, Any]) -> None:
     state = row.get("state_json") or {}
     safe = redact_json(state)
     row["state_json"] = safe if isinstance(safe, dict) else {}
+    # The claim covers the duration of one step, not the life of the fiber. Every
+    # _save_fiber call ends a step transition, so release it here: a still-runnable
+    # fiber must be claimable again on the next tick, and a sleeping one when it wakes.
+    row["lease_owner"] = ""
+    row["lease_until"] = None
+
     if _use_memory(settings):
+        stored = _memory_fibers.get((row["tenant_id"], row["id"]))
+        if stored is not None and int(stored.get("version") or 0) != int(row.get("version") or 0):
+            logger.warning("fiber version conflict id=%s; discarding stale write", row.get("id"))
+            return
+        row["version"] = int(row.get("version") or 0) + 1
         _memory_fibers[(row["tenant_id"], row["id"])] = row
         return
-    factory = get_session_factory(settings=settings)
-    async with factory() as db:
-        fiber = await db.get(Fiber, (row["tenant_id"], row["id"]))
-        if fiber is None:
-            return
-        fiber.status = row["status"]
-        fiber.state_json = row.get("state_json") or {}
-        fiber.wake_at = row.get("wake_at")
-        fiber.updated_at = row["updated_at"]
-        await db.commit()
+
+    from sqlalchemy import update
+
+    from felix.db.session import rls_bypass
+
+    expected = int(row.get("version") or 0)
+    with rls_bypass():
+        factory = get_session_factory(settings=settings)
+        async with factory() as db:
+            # Compare-and-set on version: this is a read-modify-write, and a lost update
+            # can rewind `cursor` and replay a step that already ran.
+            result = await db.execute(
+                update(Fiber)
+                .where(
+                    Fiber.tenant_id == row["tenant_id"],
+                    Fiber.id == row["id"],
+                    Fiber.version == expected,
+                )
+                .values(
+                    status=row["status"],
+                    state_json=row.get("state_json") or {},
+                    wake_at=row.get("wake_at"),
+                    updated_at=row["updated_at"],
+                    lease_owner=row.get("lease_owner", ""),
+                    lease_until=row.get("lease_until"),
+                    version=expected + 1,
+                )
+            )
+            await db.commit()
+            if not getattr(result, "rowcount", 0):
+                logger.warning(
+                    "fiber version conflict id=%s expected=%s; discarding stale write",
+                    row.get("id"),
+                    expected,
+                )
+                return
+    row["version"] = expected + 1
 
 
 async def _run_fiber_step(settings: Settings, row: dict[str, Any]) -> dict[str, Any]:
@@ -231,51 +278,115 @@ async def _run_fiber_step(settings: Settings, row: dict[str, Any]) -> dict[str, 
     return row
 
 
-async def resume_due_fibers(settings: Settings) -> int:
-    """Wake due sleeping fibers and advance runnable ones. Returns steps run."""
-    ts = now_ms()
-    due: list[dict[str, Any]] = []
+async def _claim_due_memory(settings: Settings, ts: int) -> list[dict[str, Any]]:
+    claimed: list[dict[str, Any]] = []
+    for row in _memory_fibers.values():
+        if (row.get("state_json") or {}).get("backend") == "temporal":
+            continue
+        lease_until = row.get("lease_until")
+        if lease_until is not None and lease_until > ts:
+            continue  # someone else holds the claim
+        due_sleep = row["status"] == "sleeping" and row.get("wake_at") is not None and row["wake_at"] <= ts
+        if not (due_sleep or row["status"] in {"running", "pending"}):
+            continue
+        row["status"] = "running"
+        row["wake_at"] = None
+        row["lease_owner"] = str(getattr(settings, "replica_id", "local") or "local")
+        row["lease_until"] = ts + FIBER_LEASE_MS
+        claimed.append(dict(row))
+        if len(claimed) >= FIBER_BATCH:
+            break
+    return claimed
 
-    if _use_memory(settings):
-        for row in _memory_fibers.values():
-            if (row.get("state_json") or {}).get("backend") == "temporal":
-                continue
-            due_sleep = (
-                row["status"] == "sleeping" and row.get("wake_at") is not None and row["wake_at"] <= ts
-            )
-            if due_sleep:
-                row["status"] = "running"
-                row["wake_at"] = None
-                due.append(dict(row))
-            elif row["status"] in {"running", "pending"}:
-                due.append(dict(row))
-    else:
-        factory = get_session_factory(settings=settings)
+
+async def _claim_due_postgres(settings: Settings, ts: int) -> list[dict[str, Any]]:
+    """Claim a bounded batch of due fibers, skipping rows another worker holds.
+
+    ``FOR UPDATE SKIP LOCKED`` plus a lease column is what stops the same step running
+    twice: the row lock serializes concurrent claimers within the transaction, and the
+    lease keeps the fiber claimed for the duration of the step, which outlives it.
+    """
+    from felix.db.session import rls_bypass
+
+    owner = str(getattr(settings, "replica_id", "local") or "local")
+    factory = get_session_factory(settings=settings)
+    # The sweep is cross-tenant maintenance, like retention: without a bypass this runs
+    # with no app.tenant_id GUC and RLS silently returns nothing, stalling durability.
+    with rls_bypass():
         async with factory() as db:
-            sleeping = (
-                await db.scalars(
-                    select(Fiber).where(
-                        Fiber.status == "sleeping",
-                        Fiber.wake_at.is_not(None),
-                        Fiber.wake_at <= ts,
-                    )
+            stmt = (
+                select(Fiber)
+                .where(
+                    Fiber.status.in_(("running", "pending", "sleeping")),
+                    # sleeping fibers are only due once their timer fires
+                    (Fiber.status != "sleeping") | (Fiber.wake_at.is_not(None) & (Fiber.wake_at <= ts)),
+                    # unclaimed, or the previous claim expired (crashed worker)
+                    Fiber.lease_until.is_(None) | (Fiber.lease_until <= ts),
                 )
-            ).all()
-            for row in sleeping:
+                .order_by(Fiber.updated_at)
+                .limit(FIBER_BATCH)
+                .with_for_update(skip_locked=True)
+            )
+            rows = (await db.scalars(stmt)).all()
+            claimed: list[dict[str, Any]] = []
+            for row in rows:
                 if (row.state_json or {}).get("backend") == "temporal":
                     continue
                 row.status = "running"
                 row.wake_at = None
+                row.lease_owner = owner
+                row.lease_until = ts + FIBER_LEASE_MS
                 row.updated_at = ts
-            runnable = (await db.scalars(select(Fiber).where(Fiber.status.in_(("running", "pending"))))).all()
+                row.version = int(row.version or 0) + 1
+                claimed.append(_fiber_dict(row))
             await db.commit()
-            due = [_fiber_dict(r) for r in runnable if (r.state_json or {}).get("backend") != "temporal"]
+            return claimed
+
+
+async def resume_due_fibers(settings: Settings) -> int:
+    """Claim and advance due fibers. Returns steps run.
+
+    Each fiber is claimed before it is stepped, so a step still running when the next
+    scheduler tick fires is not picked up again.
+    """
+    ts = now_ms()
+    if _use_memory(settings):
+        due = await _claim_due_memory(settings, ts)
+    else:
+        due = await _claim_due_postgres(settings, ts)
 
     ran = 0
     for row in due:
-        await _run_fiber_step(settings, row)
+        try:
+            await _run_fiber_step(settings, row)
+        except Exception:
+            logger.warning("fiber step failed id=%s", row.get("id"), exc_info=True)
+            await _release_fiber(settings, row)
         ran += 1
     return ran
+
+
+async def _release_fiber(settings: Settings, row: dict[str, Any]) -> None:
+    """Drop the claim so a failed step is retried rather than stranded until expiry."""
+    if _use_memory(settings):
+        stored = _memory_fibers.get((row["tenant_id"], row["id"]))
+        if stored is not None:
+            stored["lease_owner"] = ""
+            stored["lease_until"] = None
+        return
+    from sqlalchemy import update
+
+    from felix.db.session import rls_bypass
+
+    with rls_bypass():
+        factory = get_session_factory(settings=settings)
+        async with factory() as db:
+            await db.execute(
+                update(Fiber)
+                .where(Fiber.tenant_id == row["tenant_id"], Fiber.id == row["id"])
+                .values(lease_owner="", lease_until=None)
+            )
+            await db.commit()
 
 
 async def get_fiber(settings: Settings, tenant_id: str, fiber_id: str) -> dict[str, Any] | None:

@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Durable fibers could run the same step twice.** `resume_due_fibers` selected every
+  fiber in `('running','pending')` with no lock, no limit, and no claim, while a fiber
+  stayed `running` for the duration of its step. The scheduler fires every minute, so a
+  step still running at the next tick was picked up and invoked again — concurrently, on
+  a single node, and guaranteed with two workers. Since the `invoke` op runs a full agent
+  with tools, that meant duplicated side effects and duplicated model spend. Fibers are
+  now claimed with `FOR UPDATE SKIP LOCKED` plus a lease (`0008_fiber_leases`), the sweep
+  is bounded, an expired lease is reclaimed so a crashed worker cannot strand a fiber,
+  and `_save_fiber` uses a version compare-and-set so a lost update cannot rewind
+  `cursor` and replay a completed step.
+- **Concurrent appends to one thread could 500 and lose events.** `append_batch` computed
+  `seq` as `max(seq)+1` against a `(tenant_id, thread_id, seq)` primary key, so two
+  concurrent appends — an SSE stream plus `/chat/steer`, `/chat/tool_result`, or
+  `/chat/sessions/custom`, all of which target the same thread by design — computed the
+  same head and one died with an unhandled `IntegrityError`. Appends now take a
+  transaction-scoped advisory lock per thread.
+- **Scheduled jobs never fired for any tenant except `default`.** `run_due_jobs` takes
+  `tenant_id: str = "default"` and the worker cron called it with no argument. Added
+  `run_due_jobs_all_tenants`, which sweeps every tenant that has jobs and isolates
+  per-tenant failures. Jobs are also claimed *before* being invoked (the minute-cron
+  previously re-fired the same job on every tick until the first run completed), and the
+  write-back no longer forces `enabled=True` from a stale read, which silently
+  re-enabled jobs an operator had just disabled.
+- The fiber sweep and the job sweep both run under `rls_bypass()`; as cross-tenant
+  maintenance they previously ran with no `app.tenant_id` GUC, so enabling
+  `FELIX_DATABASE_RLS` would have silently returned nothing and stalled them.
+
 ### Security
 
 - **Upstream model-provider error bodies are no longer relayed to API clients.**

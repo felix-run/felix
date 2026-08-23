@@ -96,9 +96,11 @@ async def flush_usage() -> None:
 @broker.task(schedule=[{"cron": "* * * * *"}])
 async def run_scheduled_jobs() -> None:
     """Fire due cron jobs (enabled rows only)."""
-    from felix.jobs.scheduler import run_due_jobs
+    from felix.jobs.scheduler import run_due_jobs_all_tenants
 
-    await run_due_jobs(_settings)
+    fired = await run_due_jobs_all_tenants(_settings)
+    if fired:
+        logger.info("jobs_fired count=%s", fired)
 
 
 @broker.task(schedule=[{"cron": "*/15 * * * *"}])

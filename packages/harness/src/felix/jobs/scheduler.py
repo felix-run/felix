@@ -101,6 +101,22 @@ async def run_due_jobs(settings: Settings, *, tenant_id: str = "default") -> int
         next_run = job.get("next_run_at")
         if next_run is not None and next_run > ts:
             continue
+        # Claim the job *before* invoking it. touch_run used to run only after the
+        # invocation finished, so the every-minute cron re-fired the same job on every
+        # tick until the first run completed.
+        try:
+            await jobs_store.touch_run(
+                settings,
+                tenant_id,
+                job["name"],
+                last_run_at=ts,
+                next_run_at=next_run_at_ms(str(job.get("schedule") or ""), ts),
+                last_status="running",
+            )
+        except Exception:
+            logger.warning("job_claim_failed name=%s", job.get("name"), exc_info=True)
+            continue
+
         try:
             result: dict[str, Any] = {"status": "ok"}
             if job.get("manifest_id"):
@@ -121,15 +137,8 @@ async def run_due_jobs(settings: Settings, *, tenant_id: str = "default") -> int
                 error=str(result.get("error") or ""),
                 result=result,
             )
-            await jobs_store.put_job(
-                settings,
-                tenant_id,
-                job["name"],
-                schedule=job.get("schedule", ""),
-                manifest_id=job.get("manifest_id", ""),
-                payload=job.get("payload") or {},
-                enabled=True,
-            )
+            # Do not write `enabled=True` back from a stale read — that silently
+            # re-enabled a job an operator had just disabled.
             await jobs_store.touch_run(
                 settings,
                 tenant_id,
@@ -154,4 +163,20 @@ async def run_due_jobs(settings: Settings, *, tenant_id: str = "default") -> int
     return fired
 
 
-__all__ = ["next_run_at_ms", "run_due_jobs"]
+async def run_due_jobs_all_tenants(settings: Settings) -> int:
+    """Run due jobs for every tenant that has any. Returns total fired.
+
+    ``run_due_jobs`` defaults to ``tenant_id="default"`` and the worker cron never passed
+    one, so no other tenant's scheduled jobs ever fired.
+    """
+    total = 0
+    for tenant_id in await jobs_store.list_tenants_with_jobs(settings):
+        try:
+            total += await run_due_jobs(settings, tenant_id=tenant_id)
+        except Exception:
+            # One tenant's bad job must not stop every other tenant's schedule.
+            logger.exception("job_sweep_failed tenant=%s", tenant_id)
+    return total
+
+
+__all__ = ["next_run_at_ms", "run_due_jobs", "run_due_jobs_all_tenants"]
