@@ -51,6 +51,9 @@ class Settings(BaseSettings):
     jwt_verifiers: str = ""  # comma-separated scheme:issuer (access|cognito|self)
     jwks_public: str = ""  # PEM or JWKS JSON for self-issued
     jwks_private: str = ""  # PEM for minting (CLI)
+    # Comma-separated tenants a JWT may claim. Empty = any claimed tenant is
+    # accepted, which is only safe when the IdP is the sole writer of that claim.
+    allowed_tenants: str = ""
     oauth_cache_key: str = ""  # base64 32-byte AES key
     # Comma-separated commands MCP stdio servers may spawn. Empty (default) disables
     # stdio entirely — manifest-supplied argv would otherwise be arbitrary code execution.

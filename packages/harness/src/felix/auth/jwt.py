@@ -66,6 +66,14 @@ def parse_verifiers(jwt_verifiers: str) -> list[VerifierConfig]:
                 fixed_tenant = tenant_spec.removeprefix("fixed:")
             elif tenant_spec in {"claim", "issuer"}:
                 tenant_mode = tenant_spec  # type: ignore[assignment]
+            else:
+                # Silently falling through left tenant_mode="claim", so a typo in the
+                # verifier spec quietly downgraded a pinned tenant to a token claim.
+                logger.error(
+                    "unrecognised tenant spec %r in FELIX_JWT_VERIFIERS; expected "
+                    "'claim', 'issuer', or 'fixed:<tenant>'",
+                    tenant_spec,
+                )
         bits = part.split(":")
         if len(bits) < 2:
             continue
@@ -102,18 +110,51 @@ def _issuer(cfg: VerifierConfig) -> str:
     return cfg.issuer
 
 
-def _tenant_from_payload(payload: dict[str, Any], cfg: VerifierConfig) -> str:
+class TenantResolutionError(ValueError):
+    """The token does not identify a tenant this deployment will accept."""
+
+
+def allowed_tenants(settings: Settings | None = None) -> frozenset[str]:
+    if settings is None:
+        from felix.config import get_settings
+
+        settings = get_settings()
+    raw = getattr(settings, "allowed_tenants", "") or ""
+    return frozenset(part.strip() for part in raw.split(",") if part.strip())
+
+
+def _tenant_from_payload(
+    payload: dict[str, Any], cfg: VerifierConfig, settings: Settings | None = None
+) -> str:
     if cfg.tenant_mode == "fixed" and cfg.fixed_tenant:
         return cfg.fixed_tenant
     if cfg.tenant_mode == "issuer":
         host = _issuer(cfg).removeprefix("https://").removeprefix("http://").split("/")[0]
         return host.split(".")[0] or "default"
+
+    claimed = ""
     for key in ("tenant_id", "custom:tenant_id", "tid"):
         val = payload.get(key)
         if isinstance(val, str) and val:
-            return val
-    host = _issuer(cfg).removeprefix("https://").removeprefix("http://").split("/")[0]
-    return host.split(".")[0] or "default"
+            claimed = val
+            break
+
+    if not claimed:
+        # Previously this fell back to the issuer host's first DNS label, so every user
+        # whose token carried no tenant claim silently landed in the *same* tenant —
+        # which is a cross-tenant data path, not a default.
+        raise TenantResolutionError(
+            f"token from {_issuer(cfg)} has no tenant claim and the verifier uses "
+            "tenant_mode=claim; set tenant_mode=fixed:<tenant> or issue the claim"
+        )
+
+    allowed = allowed_tenants(settings)
+    if allowed and claimed not in allowed:
+        # tenant_id is the isolation boundary and it arrives in a token claim. On Cognito
+        # `custom:*` attributes are frequently user-writable, so an allowlist is the only
+        # server-side check available without a tenant registry.
+        raise TenantResolutionError(f"tenant {claimed!r} is not in FELIX_ALLOWED_TENANTS")
+    return claimed
 
 
 def _scopes_from_payload(payload: dict[str, Any]) -> frozenset[str]:
@@ -125,46 +166,118 @@ def _scopes_from_payload(payload: dict[str, Any]) -> frozenset[str]:
     return frozenset()
 
 
-def payload_to_principal(payload: dict[str, Any], cfg: VerifierConfig) -> Principal:
+def payload_to_principal(
+    payload: dict[str, Any], cfg: VerifierConfig, settings: Settings | None = None
+) -> Principal:
     sub = str(payload.get("sub") or payload.get("email") or "")
     return Principal(
         subject=sub,
-        tenant_id=_tenant_from_payload(payload, cfg),
+        tenant_id=_tenant_from_payload(payload, cfg, settings),
         scopes=_scopes_from_payload(payload),
         issuer=str(payload.get("iss") or _issuer(cfg)),
         scheme=cfg.scheme,
     )
 
 
-_remote_jwks: dict[str, Any] = {}
+# url -> (key_set, fetched_at_ms)
+_remote_jwks: dict[str, tuple[Any, int]] = {}
+
+# How long a fetched key set is reused before refetching. Short enough to pick up a
+# rotation within an hour, long enough that verification is not an HTTP call per request.
+JWKS_TTL_MS = 15 * 60 * 1000
+JWKS_FETCH_TIMEOUT_S = 5.0
+
+# Schemes whose keys live at the issuer, not in local configuration.
+_REMOTE_SCHEMES = frozenset({"access", "cognito"})
 
 
-def _load_key_set(jwks_public: str, url: str) -> Any:
-    if jwks_public and url.endswith("/.well-known/jwks.json"):
+def _import_local_key_set(jwks_public: str) -> Any:
+    """Parse FELIX_JWKS_PUBLIC as either a JWKS document or a PEM public key."""
+    if not jwks_public.strip():
+        return None
+    try:
+        if jwks_public.strip().startswith("{"):
+            return jwk.KeySet.import_key_set(json.loads(jwks_public))
+        return jwk.import_key(jwks_public.strip(), "RSA")
+    except Exception:
+        logger.error("FELIX_JWKS_PUBLIC could not be imported", exc_info=True)
+        return None
+
+
+async def refresh_jwks(url: str, *, timeout_s: float = JWKS_FETCH_TIMEOUT_S) -> Any:
+    """Fetch and cache an issuer's key set.
+
+    Remote JWKS was never fetched — the function carried a literal
+    "Lazy remote fetch via httpx would go here" comment — so the `access` and `cognito`
+    schemes had no working key source at all. Worse, the fallback returned
+    FELIX_JWKS_PUBLIC regardless of the URL, so the *local self-signing key* was used to
+    verify tokens that claimed to come from Cloudflare Access or Cognito. That was safe
+    only because the issuer claim still had to match.
+    """
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout_s, follow_redirects=False) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            key_set = jwk.KeySet.import_key_set(resp.json())
+    except Exception:
+        logger.error("JWKS fetch failed for %s", url, exc_info=True)
+        return None
+    _remote_jwks[url] = (key_set, int(time.time() * 1000))
+    logger.info("JWKS refreshed for %s", url)
+    return key_set
+
+
+def cached_jwks(url: str) -> Any:
+    """A cached key set if it is still fresh, else None."""
+    entry = _remote_jwks.get(url)
+    if entry is None:
+        return None
+    key_set, fetched_at = entry
+    if int(time.time() * 1000) - fetched_at > JWKS_TTL_MS:
+        return None
+    return key_set
+
+
+def _load_key_set(jwks_public: str, url: str, scheme: str = "self") -> Any:
+    """Key set for one verifier.
+
+    Local configuration is used **only** for the `self` scheme. A remote issuer's tokens
+    are verified against that issuer's published keys or not at all.
+    """
+    if scheme in _REMOTE_SCHEMES:
+        return cached_jwks(url)
+    return _import_local_key_set(jwks_public)
+
+
+async def refresh_all_jwks(settings: Settings) -> int:
+    """Fetch every configured remote issuer's key set. Returns how many succeeded."""
+    ok = 0
+    for cfg in parse_verifiers(settings.jwt_verifiers):
+        if cfg.scheme not in _REMOTE_SCHEMES:
+            continue
+        if await refresh_jwks(_jwks_url(cfg)) is not None:
+            ok += 1
+    return ok
+
+
+async def run_jwks_refresh_loop(settings: Settings, *, interval_s: float) -> None:
+    """Keep remote key sets fresh so verification never has to fetch inline.
+
+    `verify_jwt` is synchronous and on the request path, so it reads a cache rather than
+    making an HTTP call; something has to fill that cache.
+    """
+    import asyncio
+
+    while True:
         try:
-            data = json.loads(jwks_public)
-            return jwk.KeySet.import_key_set(data)
+            await asyncio.sleep(interval_s)
+            await refresh_all_jwks(settings)
+        except asyncio.CancelledError:
+            raise
         except Exception:
-            logger.debug("JWKS_PUBLIC parse failed; falling through", exc_info=True)
-    # Lazy remote fetch via httpx would go here; for self/local we use JWKS_PUBLIC.
-    # Without a key set, verification fails closed.
-    cached = _remote_jwks.get(url)
-    if cached is not None:
-        return cached
-    if jwks_public:
-        try:
-            data = json.loads(jwks_public) if jwks_public.strip().startswith("{") else None
-            if data:
-                ks = jwk.KeySet.import_key_set(data)
-                _remote_jwks[url] = ks
-                return ks
-            # PEM public key
-            key = jwk.import_key(jwks_public, "RSA")
-            _remote_jwks[url] = key
-            return key
-        except Exception:
-            logger.debug("failed to import JWKS_PUBLIC", exc_info=True)
-    return None
+            logger.warning("jwks refresh iteration failed", exc_info=True)
 
 
 def verify_jwt(
@@ -172,32 +285,52 @@ def verify_jwt(
     configs: list[VerifierConfig],
     *,
     jwks_public: str = "",
+    settings: Settings | None = None,
 ) -> VerifyResult:
     if not configs:
         return VerifyFail(reason="no_verifier_matched")
     saw_expired = False
     for cfg in configs:
-        key_set = _load_key_set(jwks_public, _jwks_url(cfg))
-        if key_set is None and cfg.scheme != "self":
-            continue
+        key_set = _load_key_set(jwks_public, _jwks_url(cfg), cfg.scheme)
         if key_set is None:
+            if cfg.scheme in _REMOTE_SCHEMES:
+                logger.warning("no cached JWKS for %s; call refresh_jwks() at startup", _jwks_url(cfg))
             continue
-        try:
-            claims_requests = JWTClaimsRegistry(
-                iss={"essential": True, "value": _issuer(cfg)},
+
+        # A shared issuer (Cloudflare Access, a Cognito user pool) signs tokens for every
+        # application under it. Without an audience check, a token minted for any other
+        # app at the same issuer is accepted here.
+        if cfg.scheme in _REMOTE_SCHEMES and not cfg.audience:
+            logger.error(
+                "verifier %s:%s has no audience; refusing to accept tokens from a shared issuer without one",
+                cfg.scheme,
+                cfg.issuer,
             )
+            continue
+
+        try:
+            # `exp` is essential. joserfc validates it only when present, so a token
+            # minted without an expiry was previously accepted forever.
+            registry_claims: dict[str, Any] = {
+                "iss": {"essential": True, "value": _issuer(cfg)},
+                "exp": {"essential": True},
+            }
             if cfg.audience:
-                claims_requests = JWTClaimsRegistry(
-                    iss={"essential": True, "value": _issuer(cfg)},
-                    aud={"essential": True, "value": cfg.audience},
-                )
+                registry_claims["aud"] = {"essential": True, "value": cfg.audience}
+            claims_requests = JWTClaimsRegistry(**registry_claims)
             token_obj = jwt.decode(token, key_set, algorithms=list(ALLOWED_ALGORITHMS))
             claims_requests.validate(token_obj.claims)
-            principal = payload_to_principal(dict(token_obj.claims), cfg)
+            try:
+                principal = payload_to_principal(dict(token_obj.claims), cfg, settings)
+            except TenantResolutionError as exc:
+                logger.warning("tenant resolution refused a valid token: %s", exc)
+                return VerifyFail(reason="tenant_not_allowed")
             return VerifyOk(principal=principal, payload=dict(token_obj.claims))
         except JoseError as exc:
             msg = str(exc).lower()
-            if "expired" in msg or "exp" in msg:
+            # Was `"expired" in msg or "exp" in msg`, and "exp" is a substring of
+            # "unexpected" — so signature failures were reported as expiry.
+            if "expired" in msg or "exp_claim" in msg or msg.strip().startswith("exp"):
                 saw_expired = True
                 continue
             # claim mismatch → try next verifier

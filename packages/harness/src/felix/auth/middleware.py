@@ -117,7 +117,7 @@ async def authenticate_request(
             status_code=401,
             headers={"www-authenticate": 'Bearer error="invalid_token"'},
         )
-    result = verify_jwt(token, configs, jwks_public=settings.jwks_public)
+    result = verify_jwt(token, configs, jwks_public=settings.jwks_public, settings=settings)
     if not result.ok:
         return JSONResponse(
             {"error": "unauthorized", "reason": result.reason},

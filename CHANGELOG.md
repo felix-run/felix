@@ -9,6 +9,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **A JWT with no `exp` was accepted forever.** Only `iss` (and `aud` when configured)
+  were marked essential, and joserfc validates expiry only when the claim is present.
+  `exp` is now required.
+- **Shared issuers were accepted without an audience check.** A verifier configured as
+  `access:example.cloudflareaccess.com` accepted tokens minted for *any* application
+  under that issuer. `access` and `cognito` verifiers now require `;aud=`.
+- **Remote JWKS was never fetched, and the fallback used the local signing key.**
+  `_load_key_set` carried a literal "Lazy remote fetch via httpx would go here" comment,
+  so the `access` and `cognito` schemes had no key source — and its fallback returned
+  `FELIX_JWKS_PUBLIC` regardless of URL, meaning the local self-signing key would verify
+  tokens claiming to come from Cloudflare Access or Cognito (safe only because `iss`
+  still had to match). Key sets are now fetched from the issuer and cached with a 15
+  minute TTL, refreshed by the API on a timer; `FELIX_JWKS_PUBLIC` is used for the
+  `self` scheme only.
+- **The tenant came from an unvalidated claim, and a missing claim collapsed users
+  together.** `tenant_id` is the isolation boundary; in the default `claim` mode it is
+  whatever the token says, and on Cognito `custom:*` attributes are frequently
+  user-writable. Added `FELIX_ALLOWED_TENANTS`. A token with no tenant claim is now
+  rejected rather than falling back to the issuer host's first DNS label, which silently
+  placed every such user in the same tenant.
+- **`require_mgmt_scopes` failed open when `app.state.settings` was absent.** Three
+  chained `getattr` defaults landed on `"none"`, skipping every scope check. It now
+  denies. `create_app` always sets that state, so this only fires for a sub-app or
+  plugin router mounted without it.
+- A malformed `;tenant=` spec silently left `tenant_mode="claim"`, quietly downgrading a
+  pinned tenant to a token claim. It now logs an error.
+
+### Fixed
+
+- Expiry detection matched `"exp" in msg`, and `"exp"` is a substring of `"unexpected"` —
+  so signature failures were reported to callers as token expiry.
+
+### Security
+
 - **The SSRF guard never resolved DNS.** Private, loopback, and link-local ranges were
   checked *only when the hostname was already an IP literal*, so any name resolving to
   `169.254.169.254`, `10.x`, or `127.0.0.1` passed — an attacker-controlled `A` record, a

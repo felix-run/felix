@@ -216,6 +216,37 @@ Approvals are matched on `(tenant, manifest, tool, sha256(args))` and stored in 
 `command_screening` rules with `decision: require_approval` go through the same flow and
 wait up to `command_screening.approval_ttl_seconds` (default 300).
 
+## JWT verification
+
+`FELIX_JWT_VERIFIERS` is `scheme:issuer[;aud=…][;tenant=claim|issuer|fixed:<tenant>]`,
+comma-separated. What is enforced:
+
+- **`exp` is required.** joserfc validates expiry only when the claim is present, so a
+  token minted without one was previously accepted forever.
+- **`aud` is required for shared issuers** (`access`, `cognito`). Those issuers sign for
+  every application under them, so without an audience check a token minted for a
+  different app at the same issuer is accepted. A verifier for those schemes with no
+  `;aud=` is refused.
+- **Remote keys come from the issuer.** `access` and `cognito` key sets are fetched and
+  cached (15 min TTL), refreshed by the API on a timer. `FELIX_JWKS_PUBLIC` is used for
+  the `self` scheme only — it must never verify a token that claims a remote issuer.
+- **Algorithms are asymmetric-only**; there is no HS256 or `none` path.
+
+## Tenant resolution
+
+`tenant_id` is the isolation boundary and, in the default `claim` mode, it arrives in a
+token claim. Constrain it:
+
+```bash
+FELIX_ALLOWED_TENANTS=acme,globex     # empty = accept any claimed tenant
+```
+
+Prefer `;tenant=fixed:<tenant>` for a single-tenant deployment. On Cognito, `custom:*`
+attributes are frequently user-writable, so a claim alone is not an authorization
+decision. A token with **no** tenant claim in `claim` mode is now rejected — it
+previously fell back to the issuer host's first DNS label, silently putting every such
+user in the same tenant.
+
 ## Management API scopes
 
 When `FELIX_AUTH_MODE` is `jwt` or `api_key`, management routes require scopes
