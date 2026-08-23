@@ -152,11 +152,14 @@ cron labels). `felix-scheduler` must run alongside `felix-worker` or nothing fir
   `pytest`, which would hit the `.env` Postgres.
 - **Skills load on demand** for the deep procedures: `felix-dev-loop`, `manifest-authoring`,
   `governance-pipeline`, `api-surface`, `postgres-migrations`, `plugin-seam`, `security-review`,
-  `docs-sync`, `deploy-runbook`, `python-conventions`, `branch-pr-workflow`.
+  `docs-sync`, `deploy-runbook`, `python-conventions`, `branch-pr-workflow`, `code-quality`,
+  `dead-code-audit`, `test-quality`.
 - **Subagents** for delegated work: `felix-engineer`, `felix-postgres`, `felix-devops`,
   `felix-code-reviewer`, `felix-security-reviewer`, `felix-manifest-architect`,
-  `felix-test-engineer`, `felix-dx-maintainer`, `felix-docs-syncer`.
+  `felix-test-engineer`, `felix-dx-maintainer`, `felix-docs-syncer`, `felix-quality-reviewer`,
+  `felix-test-quality-reviewer`.
 - **Hooks** format edited Python with ruff, validate changed manifests, name the companion file or
-  docs page a change requires, and gate the end of a turn when documented surfaces drifted.
+  docs page a change requires, report a `.py` whose complexity got worse than at `HEAD`, and gate
+  the end of a turn when documented surfaces drifted.
 - Public docs live in the separate **felix-web** repo (`apps/docs/src/content/`, Starlight MDX);
   set `FELIX_DOCS_ROOT` if your checkout is not at `~/Projects/felix-web/apps/docs`.
