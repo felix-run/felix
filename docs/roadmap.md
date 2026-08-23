@@ -5,7 +5,7 @@ concrete enough to pick up in a single session.
 
 **Repos:** `felix-run/felix` (harness) · `felix-run/web` (chat-ui + float + docs)
 **Live:** [api.felix.run](https://api.felix.run) · [chat.felix.run](https://chat.felix.run) · [float.felix.run](https://float.felix.run) · [docs.felix.run](https://docs.felix.run)
-**Last reviewed:** 2026-08-22 (post governance + inbound screening)
+**Last reviewed:** 2026-08-22 (post governance + inbound screening; DX / CI hardening)
 
 ---
 
@@ -100,8 +100,10 @@ Files: `packages/harness/src/felix/sdk.py`,
 ### 4. Release hygiene
 
 - [ ] **Tag from Unreleased** — fold worker fix, Redis leases, session
-      control, full governance wave, inbound screening into `v0.1.1` or
-      `v0.2.0` (`CHANGELOG.md`). Update Unreleased notes before tagging.
+      control, full governance wave, inbound screening, and the DX / CI
+      hardening wave into `v0.1.1` or `v0.2.0` (`CHANGELOG.md`). Update
+      Unreleased notes before tagging. Release *automation* (GHCR publish,
+      SBOM, signing) is deferred — see **Repo / release hygiene** under Next.
 
 ---
 
@@ -137,6 +139,32 @@ Files: `packages/harness/src/felix/sdk.py`,
 - [ ] **Prune leftover TS-harness skills/copy** in docs sync sources after
       the getting-started rewrite.
 
+### Repo / release hygiene
+
+Deferred from the DX audit (2026-08-22). Phases 1–3 shipped; this is the
+remainder, none of it blocking.
+
+- [ ] **Required status checks + `CODEOWNERS`** — CI now runs 14 jobs, but
+      nothing blocks a merge on them, so the human review gate is convention
+      rather than mechanism. Repo-settings change plus a `CODEOWNERS` file;
+      make the `changes` job report success so doc-only PRs stay mergeable.
+- [ ] **Tag-driven release** — build, push to GHCR, attach an SBOM, sign with
+      cosign via OIDC, then point `deploy/` at the published image instead of a
+      locally built `felix:latest`. CI already builds and scans the image; it
+      just throws it away.
+- [ ] **Single-source the version** — `0.1.0` currently lives in four
+      `pyproject.toml` files, the root, and the Helm `appVersion`. Releasing
+      means editing six files correctly from memory.
+- [ ] **Wire-contract snapshot** — snapshot `/openapi.json` and the SSE
+      event-name set. `felix-run/web` mirrors `StreamEvent` by hand and its
+      union has an open arm, so an added or renamed frame silently does
+      nothing on both sides.
+- [ ] **Postgres 18** — `pgvector/pgvector:0.8.6-pg18-trixie` exists. Own
+      branch with a rollback plan: compatibility pass over the six revisions,
+      FTS index, and RLS, plus a dump/restore path for existing deployments.
+- [ ] **`.cursor/plans/` decision** — tracked but ungitignored. Keep as
+      versioned planning notes or ignore; either is fine, drifting is not.
+
 ### Deploy
 
 - [ ] **GKE dogfood** — Helm + ESO → one known-good install note under
@@ -166,6 +194,39 @@ Files: `packages/harness/src/felix/sdk.py`,
 ---
 
 ## Shipped (recent)
+
+### DX / CI hardening wave (Aug 2026)
+
+Three-phase remediation of a developer-experience and supply-chain audit.
+CI went from 6 jobs that skipped on doc-only PRs to 14 that run.
+
+- [x] `pre-commit` was never installable — the ruff repo entry lacked its URL
+      scheme, so `install-hooks` failed for every contributor. Fixed, plus a CI
+      job so it cannot rot again (#8)
+- [x] `make check` failed on any machine with a `.env` (pytest inherited
+      `FELIX_DATABASE_URL`; `make type` checked `tests/` while CI does not).
+      `scripts/test.sh` is now the single test entry point for make and CI (#8)
+- [x] Docker and CI use `uv sync --locked`, not `--frozen` with a fallback —
+      a stale lock fails the build instead of silently shipping a different
+      resolution (#8)
+- [x] Actions at current majors and pinned by commit SHA; every base and
+      service image pinned by digest; Dependabot's docker entry fixed (it
+      pointed at `/`, where there is no Dockerfile) and grouped weekly (#9)
+- [x] Repo invariants are tests, not prose: `.env.example` covers every
+      setting, no optional dependency imported at module scope, every
+      Postgres-touching module has a `memory://` path, and the governance
+      wrapper order is fixed (`tests/unit/test_invariants.py`) (#10)
+- [x] `lean` CI job imports all 156 modules with no extras installed;
+      `toolkit` job validates `.claude/` hooks, settings, and skill
+      frontmatter — both previously outside the CI path filter (#10)
+- [x] Security scanning: CodeQL, `pip-audit` over the locked set with extras,
+      gitleaks over full history, Trivy on the built image (#11)
+- [x] Runtime image hardened — dropped `pip` (its vendored `msgpack` and
+      `setuptools` carried HIGH CVEs that are not Felix dependencies) and
+      applied pending OS updates. Scans clean; +15 MB (#11)
+- [x] Coverage measured and gated at 60% (#11)
+
+PRs `#8` … `#11`. Toolkit itself landed in `#6`.
 
 ### Governance / secrets wave (Aug 2026)
 
