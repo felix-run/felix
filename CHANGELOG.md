@@ -23,6 +23,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fans out across tool calls, model calls, session writes, and audit events, and nothing
   tied them together before.
 
+### Added
+
+- **Compaction recovers from a context overflow.** The trigger is a token estimate —
+  characters over four, anchored on the last reported usage — so it runs slightly behind
+  the truth, and a manifest can declare a window larger than the model really has. When
+  the estimate was optimistic the provider rejected the request and the run failed, even
+  though the rejection was the most accurate signal yet that the conversation needed
+  compacting. An overflow now forces a compaction pass and retries once; a second failure
+  propagates. Throttling is deliberately excluded — it mentions tokens and limits too,
+  and compacting over backpressure discards history to fix a problem a retry solves.
+- **Two providers overflow without saying so, and are now caught.** One accepts the
+  request and reports more input tokens than the window holds; another truncates the
+  input and returns a length-stop having produced no output at all. Neither raises, so
+  both were previously recorded as ordinary turns. In the streaming path recovery only
+  happens before any delta has shipped, since a client that has already rendered text
+  cannot un-render it.
+
 ### Changed
 
 - **A streaming turn is one model call instead of two.** `stream_events` streamed a turn

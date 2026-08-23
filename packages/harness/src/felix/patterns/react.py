@@ -15,7 +15,8 @@ from felix.hooks import run_after_tool, run_before_tool, run_before_turn, run_fi
 from felix.manifests.schema import ABSOLUTE_LIMITS, ModelSpec
 from felix.observability.metrics import record_counter
 from felix.observability.tracing import with_span
-from felix.patterns.model import ModelChatResult, build_model, record_usage
+from felix.patterns.model import ModelChatResult, ModelGatewayError, build_model, record_usage
+from felix.patterns.overflow import is_context_overflow, is_silent_overflow
 from felix.patterns.registry import PatternBuildContext, register_pattern
 from felix.patterns.types import (
     Agent,
@@ -447,6 +448,121 @@ class _ReactAgent:
         except Exception:
             logger.debug("session append failed", exc_info=True)
 
+    async def _stream_one_turn(
+        self,
+        model: Any,
+        messages: list[ChatMessage],
+        active_tools: list[Tool],
+        thread_id: str | None,
+        tenant_id: str,
+    ) -> AsyncIterator[Event | ModelChatResult]:
+        """Run one streamed turn, yielding display events and then the result.
+
+        Extracted so the caller can retry the whole turn after compacting, which it can
+        only do while nothing has been emitted.
+        """
+        stream_turn = getattr(model, "stream_turn", None)
+        if stream_turn is not None:
+            # One request for the whole turn. See `stream_turn` for why the
+            # stream-then-chat pair it replaces was worse than it looked.
+            async for item in stream_turn(messages, active_tools):
+                if isinstance(item, ModelChatResult):
+                    yield item
+                    continue
+                if thread_id and await is_aborted(tenant_id, thread_id):
+                    return
+                if item.kind == "text":
+                    yield Event(
+                        event="text_delta",
+                        data={"chunk": {"content": item.text}, "delta": item.text},
+                    )
+                yield Event(
+                    event="session_progress",
+                    data={
+                        "progress": {
+                            "type": "assistant_delta",
+                            "kind": item.kind,
+                            "delta": item.text,
+                        }
+                    },
+                )
+            return
+
+        # A provider that only implements `stream()` cannot report tool calls or usage
+        # from the streamed request, so the authoritative turn still costs a second call.
+        # Plugin-supplied clients land here.
+        async for delta in model.stream(messages, active_tools):
+            if thread_id and await is_aborted(tenant_id, thread_id):
+                return
+            yield Event(event="text_delta", data={"chunk": {"content": delta}, "delta": delta})
+            yield Event(
+                event="session_progress",
+                data={"progress": {"type": "assistant_delta", "kind": "text", "delta": delta}},
+            )
+
+    async def _recover_from_overflow(
+        self,
+        thread_id: str | None,
+        model: Any,
+        *,
+        reason: str,
+    ) -> list[ChatMessage] | None:
+        """Force a compaction pass and re-render, or return None if that is not possible.
+
+        Called when the provider says the request did not fit. Compaction is normally
+        driven by a token estimate, and the estimate can be behind the truth or the
+        configured window can be larger than the model really has — in which case the
+        rejection is the first accurate signal that the conversation is too long.
+        """
+        if not thread_id or self.session_store is None or self.session_strategy is None:
+            return None
+        compact_now = getattr(self.session_strategy, "compact_now", None)
+        render = getattr(self.session_strategy, "render", None)
+        if not callable(compact_now) or not callable(render):
+            return None
+        try:
+            session = self.session_store.open(thread_id)
+            await compact_now(session, model=model, system_prompt=self.system_prompt, reason=reason)
+            rebuilt = await render(
+                session,
+                [],
+                {
+                    "system_prompt": self.system_prompt,
+                    "model": model,
+                    "force_compact": True,
+                    "compact_reason": reason,
+                },
+            )
+        except Exception:
+            logger.warning("compaction after context overflow failed", exc_info=True)
+            return None
+        if not rebuilt:
+            return None
+        record_counter(
+            "felix_context_overflow_recovered",
+            {"manifest_id": self.manifest_id, "reason": reason},
+        )
+        return list(rebuilt)
+
+    def _overflowed(self, result: ModelChatResult, model: Any) -> bool:
+        """True when a turn that did not raise nonetheless did not fit."""
+        usage = getattr(result, "usage", None)
+        if usage is None:
+            return False
+        window = 0
+        try:
+            from felix.model_catalog import entry_for
+
+            window = entry_for(getattr(model, "model_id", "") or "").context_window
+        except Exception:
+            window = 0
+        return is_silent_overflow(
+            stop_reason=getattr(result, "stop_reason", None),
+            tokens_input=int(getattr(usage, "input", 0) or 0),
+            tokens_output=int(getattr(usage, "output", 0) or 0),
+            context_window=window,
+        )
+
     def _note_stop_reason(self, stop_reason: str, thread_id: str | None) -> str:
         """Record a stop reason and return the session status it implies.
 
@@ -687,7 +803,33 @@ class _ReactAgent:
                 if injected:
                     messages.extend(injected)
 
-                result = await model.chat(messages, self._active_tools(messages))
+                try:
+                    result = await model.chat(messages, self._active_tools(messages))
+                except ModelGatewayError as exc:
+                    # A rejection for length is the first accurate signal that the
+                    # estimate was optimistic. Compact and try once; anything else, or a
+                    # second failure, propagates.
+                    rebuilt = (
+                        await self._recover_from_overflow(input.thread_id, model, reason="overflow")
+                        if is_context_overflow(exc)
+                        else None
+                    )
+                    if rebuilt is None:
+                        raise
+                    messages = rebuilt
+                    result = await model.chat(messages, self._active_tools(messages))
+                else:
+                    if self._overflowed(result, model):
+                        # Some providers accept an overflowing request and say nothing:
+                        # they report more input than the window holds, or stop on the
+                        # output limit having produced nothing at all.
+                        rebuilt = await self._recover_from_overflow(
+                            input.thread_id, model, reason="overflow_silent"
+                        )
+                        if rebuilt is not None:
+                            messages = rebuilt
+                            result = await model.chat(messages, self._active_tools(messages))
+
                 record_usage(result, manifest_id=self.manifest_id, model_id=model.model_id)
                 usage_block = None
                 if result.usage:
@@ -865,56 +1007,50 @@ class _ReactAgent:
                 active_tools = self._active_tools(messages)
                 chunks: list[str] = []
                 result: ModelChatResult | None = None
-                stream_turn = getattr(model, "stream_turn", None)
 
-                if stream_turn is not None:
-                    # One request for the whole turn. See `stream_turn` for why the
-                    # stream-then-chat pair it replaces was worse than it looked.
-                    async for item in stream_turn(messages, active_tools):
-                        if isinstance(item, ModelChatResult):
-                            result = item
-                            continue
-                        if input.thread_id and await is_aborted(tenant_id, input.thread_id):
-                            break
-                        if item.kind == "text":
-                            chunks.append(item.text)
-                            yield Event(
-                                event="text_delta",
-                                data={"chunk": {"content": item.text}, "delta": item.text},
-                            )
-                        yield Event(
-                            event="session_progress",
-                            data={
-                                "progress": {
-                                    "type": "assistant_delta",
-                                    "kind": item.kind,
-                                    "delta": item.text,
-                                }
-                            },
+                # Retry once, and only while nothing has shipped: a client that has
+                # already rendered deltas cannot un-render them, so a mid-stream
+                # compaction would splice two different answers together.
+                for attempt in (0, 1):
+                    chunks = []
+                    emitted = False
+                    try:
+                        async for item in self._stream_one_turn(
+                            model, messages, active_tools, input.thread_id, tenant_id
+                        ):
+                            if isinstance(item, ModelChatResult):
+                                result = item
+                                continue
+                            emitted = True
+                            if item.event == "text_delta":
+                                chunks.append(str(item.data.get("delta") or ""))
+                            yield item
+                    except ModelGatewayError as exc:
+                        if attempt or emitted or not is_context_overflow(exc):
+                            raise
+                        rebuilt = await self._recover_from_overflow(input.thread_id, model, reason="overflow")
+                        if rebuilt is None:
+                            raise
+                        messages = rebuilt
+                        active_tools = self._active_tools(messages)
+                        continue
+                    if (
+                        attempt == 0
+                        and not emitted
+                        and result is not None
+                        and self._overflowed(result, model)
+                    ):
+                        rebuilt = await self._recover_from_overflow(
+                            input.thread_id, model, reason="overflow_silent"
                         )
+                        if rebuilt is not None:
+                            messages = rebuilt
+                            active_tools = self._active_tools(messages)
+                            result = None
+                            continue
+                    break
 
                 if result is None:
-                    # A provider that only implements `stream()` cannot report tool calls
-                    # or usage from the streamed request, so the authoritative turn still
-                    # costs a second call. Plugin-supplied clients land here.
-                    async for delta in model.stream(messages, active_tools):
-                        if input.thread_id and await is_aborted(tenant_id, input.thread_id):
-                            break
-                        chunks.append(delta)
-                        yield Event(
-                            event="text_delta",
-                            data={"chunk": {"content": delta}, "delta": delta},
-                        )
-                        yield Event(
-                            event="session_progress",
-                            data={
-                                "progress": {
-                                    "type": "assistant_delta",
-                                    "kind": "text",
-                                    "delta": delta,
-                                }
-                            },
-                        )
                     result = await model.chat(messages, active_tools)
 
                 record_usage(result, manifest_id=self.manifest_id, model_id=model.model_id)
