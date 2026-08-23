@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **`ApprovalRule.bind_principal` and `one_shot` were declared in the manifest schema
+  and enforced nowhere.** `find_approved` matched only
+  `(tenant, manifest, tool, call_signature, status)`, never filtered by principal, and
+  never consumed the grant. So principal A's approval auto-approved principal B's
+  byte-identical call in the same tenant, and a single approval authorized unlimited
+  replays until it expired. Both flags are now enforced: `bind_principal` adds a
+  `principal_subj` predicate, and `one_shot` adds a `consumed_at` predicate plus a
+  conditional-UPDATE consume, so two concurrent identical calls cannot both spend one
+  grant. Migration `0007_approval_consumed_at`.
+- **Command screening's `require_approval` never created an approval.** It returned a
+  deny string naming a rule, so the bundled default for `sudo` told the model to go ask
+  a human who was never asked, and no operator ever saw a request. It now creates a
+  pending approval, emits `approval_required`, and blocks on the decision — via the same
+  path `spec.approvals` uses. `command_screening.approval_ttl_seconds` (default 300s)
+  bounds the wait so a run cannot block forever on an approver who never comes.
+
 ### Added
 
 - Security scanning: CodeQL, a `pip-audit` CVE check over the locked
