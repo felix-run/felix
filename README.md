@@ -39,12 +39,22 @@ make migrate
 curl -s http://localhost:8080/health | jq
 ```
 
+`make up` runs `scripts/dev-key.sh`, which writes a local API key into `.env` on first
+run and prints it. The stack is authenticated by default and publishes on `127.0.0.1`
+— set `FELIX_BIND_ADDR` to widen it, but only behind real auth. Export the key so the
+examples below work:
+
+```bash
+export FELIX_KEY=$(grep -o 'sk-felix-local-[a-f0-9]*' .env | head -1)
+```
+
 For cloud SDKs / embeddings / browser locally: `make install-full`.
 
-Chat against the bundled `quick` manifest (anonymous allowed):
+Chat against the bundled `quick` manifest:
 
 ```bash
 curl -s -X POST http://localhost:8080/chat \
+  -H "authorization: Bearer $FELIX_KEY" \
   -H 'content-type: application/json' \
   -d '{"manifest":"quick","messages":[{"role":"user","content":"What is 7 * 6?"}]}' | jq
 ```
@@ -53,6 +63,7 @@ Or use the OpenAI-compatible surface (`model` = manifest name):
 
 ```bash
 curl -s http://localhost:8080/v1/chat/completions \
+  -H "authorization: Bearer $FELIX_KEY" \
   -H 'content-type: application/json' \
   -d '{"model":"quick","messages":[{"role":"user","content":"hi"}]}' | jq
 ```
@@ -169,7 +180,7 @@ Python client: `from felix.sdk import FelixClient` (`prompt`, `stream`, `steer`,
 
 Skills live under `skills/` (Agent Skills `SKILL.md`); declare them on a manifest with `spec.skills`. Session strategies include `compacting` (token-threshold) plus `windowed:N` / `semantic:N` / `full_replay`.
 
-Outbound integrations from the manifest: `spec.mcp_servers` (HTTP or stdio MCP client → `server__tool` tools), `spec.peers` (A2A `peer__name` tools), `spec.browser_tools` (Playwright extra), `spec.sandboxes` / `spec.containers`, and `spec.queues` (Redis list enqueue/dequeue). Large tool outputs can spill via `spec.artifacts`; durable facts via `spec.memory.capture`; how-tos via `spec.procedural_memory`. `spec.execution.mode: durable` enqueues a fiber (Temporal optional) and returns `202` with a `resume_token`. Tool retrieval / semantic sessions / procedural recall use embeddings when `felix-harness[embeddings]` is installed.
+Outbound integrations from the manifest: `spec.mcp_servers` (HTTP or stdio MCP client → `server__tool` tools; **stdio is disabled unless `FELIX_MCP_STDIO_ALLOWED_COMMANDS` names the exact commands allowed**, because manifest-supplied argv is arbitrary code execution), `spec.peers` (A2A `peer__name` tools), `spec.browser_tools` (Playwright extra), `spec.sandboxes` / `spec.containers`, and `spec.queues` (Redis list enqueue/dequeue). Large tool outputs can spill via `spec.artifacts`; durable facts via `spec.memory.capture`; how-tos via `spec.procedural_memory`. `spec.execution.mode: durable` enqueues a fiber (Temporal optional) and returns `202` with a `resume_token`. Tool retrieval / semantic sessions / procedural recall use embeddings when `felix-harness[embeddings]` is installed.
 
 ## Contributing
 

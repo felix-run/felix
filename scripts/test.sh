@@ -14,6 +14,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 export FELIX_ALLOW_INSECURE=true
 export FELIX_AUTH_MODE=none
+# auth_mode=none is only permitted on a loopback bind; the repo .env sets 0.0.0.0.
+export FELIX_HOST=127.0.0.1
 export FELIX_DATABASE_URL=memory://ci
 export FELIX_OBJECT_STORE=memory
 exec uv run pytest "${@:--q}"

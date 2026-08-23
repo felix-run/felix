@@ -199,11 +199,25 @@ def doctor_cmd() -> None:
     rprint("[bold]Felix doctor[/bold]")
     check("auth_mode", settings.auth_mode in {"none", "api_key", "jwt"}, settings.auth_mode)
     if settings.auth_mode == "none":
+        from felix.config import _is_loopback_host
+
         check(
             "allow_insecure (required for auth_mode=none outside loopback)",
             settings.allow_insecure or settings.environment == "development",
             f"allow_insecure={settings.allow_insecure}",
         )
+        check(
+            "auth_mode=none binds loopback only",
+            _is_loopback_host(settings.host),
+            f"host={settings.host}",
+        )
+    from felix.security.stdio_policy import allowed_commands, describe_allowlist
+
+    # Not a failure either way — stdio off is the safe default; on is a deliberate choice.
+    rprint(
+        f"  [green]ok[/green]  mcp stdio — {describe_allowlist(settings)}"
+        + ("" if allowed_commands(settings) else " (safe default)")
+    )
     if settings.auth_mode == "jwt":
         check("jwks_public configured", bool(settings.jwks_public.strip()))
         check("jwt_verifiers configured", bool(settings.jwt_verifiers.strip()))
