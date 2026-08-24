@@ -19,6 +19,7 @@ from felix.session.types import GetEventsOpts
 from felix.steer import enqueue
 from pydantic import BaseModel, Field
 
+from felix_api.errors import client_safe_message
 from felix_api.routes._sse import (
     DONE,
     HEARTBEAT,
@@ -452,7 +453,7 @@ async def chat_stream_resume(request: Request, thread_id: str) -> StreamingRespo
             raise
         except Exception as exc:
             logger.exception("chat resume failed thread=%s", loggable(thread, limit=80))
-            yield error_frame(str(exc))
+            yield error_frame(client_safe_message(exc))
         yield DONE
 
     return sse_response(resume_gen())
@@ -560,7 +561,7 @@ async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
             # Without this the body simply stopped under an already-sent 200 OK, with no
             # error event and no [DONE] — the client could not tell success from failure.
             logger.exception("chat stream failed thread=%s", loggable(thread, limit=80))
-            yield error_frame(str(exc))
+            yield error_frame(client_safe_message(exc))
         yield DONE
 
     return sse_response(event_gen())

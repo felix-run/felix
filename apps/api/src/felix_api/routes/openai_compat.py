@@ -11,7 +11,10 @@ from typing import Any, Literal
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from felix.context import AuthContext, RequestContext, async_run_with_context, try_get_context
+from felix.logging_setup import loggable
+from felix.manifests.inbound_auth import InboundAuthError
 from felix.manifests.loader import list_bundled
+from felix.manifests.pin import ManifestDriftError
 from felix.patterns.model import ModelGatewayError
 from felix.patterns.types import ChatMessage, InvokeInput
 from felix.runtime import build_tenant_agent, prepare_tenant_invoke, resolve_tenant_manifest
@@ -84,38 +87,39 @@ async def chat_completions(body: ChatCompletionsRequest, request: Request) -> An
     try:
         resolved = await resolve_tenant_manifest(settings, auth.tenant_id, body.model, thread_id=thread)
         await prepare_tenant_invoke(settings, resolved=resolved, auth=auth, thread_id=thread)
-    except Exception as exc:
-        from felix.manifests.inbound_auth import InboundAuthError
-        from felix.manifests.pin import ManifestDriftError
-
-        if isinstance(exc, InboundAuthError):
-            return JSONResponse(
-                {"error": {"message": exc.detail, "type": "auth_error", "code": exc.detail}},
-                status_code=exc.status_code,
-            )
-        if isinstance(exc, ManifestDriftError):
-            return JSONResponse(
-                {"error": {"message": str(exc), "type": "manifest_drift", "code": "conflict"}},
-                status_code=409,
-            )
-        raise
+    # Two `except` clauses rather than one broad catch narrowed by `isinstance`. The
+    # old shape caught everything and re-raised what it did not recognise, which meant
+    # every exception in the request -- including ones with driver internals in their
+    # message -- passed through a scope that formats messages for clients. Naming the
+    # types keeps that reach as small as the intent always was.
+    except InboundAuthError as exc:
+        return JSONResponse(
+            {"error": {"message": exc.detail, "type": "auth_error", "code": exc.detail}},
+            status_code=exc.status_code,
+        )
+    except ManifestDriftError as exc:
+        return JSONResponse(
+            {"error": {"message": str(exc), "type": "manifest_drift", "code": "conflict"}},
+            status_code=409,
+        )
 
     messages = [
         ChatMessage.model_validate({"role": m.role, "content": m.content or ""}) for m in body.messages
     ]
+    # Imported here rather than at module scope to keep the governance package off the
+    # import path of a lean install, but *before* the try so the handler can name the
+    # type it means. The old shape caught everything, tested with `isinstance`, and
+    # re-raised the rest -- which put every exception in this call through a scope whose
+    # job is formatting messages for clients.
+    from felix.governance.inbound import InboundScreeningError, apply_inbound_screening
+
     try:
-        from felix.governance.inbound import apply_inbound_screening
-
         messages = await apply_inbound_screening(resolved.manifest, messages, settings)
-    except Exception as exc:
-        from felix.governance.inbound import InboundScreeningError as _ISE
-
-        if isinstance(exc, _ISE):
-            return JSONResponse(
-                {"error": {"message": exc.detail, "type": "content_filter", "code": exc.detail}},
-                status_code=exc.status_code,
-            )
-        raise
+    except InboundScreeningError as exc:
+        return JSONResponse(
+            {"error": {"message": exc.detail, "type": "content_filter", "code": exc.detail}},
+            status_code=exc.status_code,
+        )
     req_ctx = RequestContext(
         settings=settings,
         auth=auth,
@@ -175,7 +179,14 @@ async def chat_completions(body: ChatCompletionsRequest, request: Request) -> An
             )
             result = await agent.invoke(invoke_input)
         except ModelGatewayError as exc:
-            logger.warning("model gateway error label=%s status=%s body=%s", exc.label, exc.status, exc.body)
+            # `body` is an upstream response: untrusted and multi-line. Same
+            # treatment as the two copies of this line in chat.py.
+            logger.warning(
+                "model gateway error label=%s status=%s body=%s",
+                loggable(exc.label, limit=80),
+                exc.status,
+                loggable(exc.body),
+            )
             return JSONResponse(
                 {
                     "error": {
