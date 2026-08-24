@@ -22,14 +22,15 @@ from felix.auth.mgmt import (
     require_mgmt_scopes,
     tenant_id_from_request,
 )
+
+# Bounded because the content is model-written text later injected into prompts. The
+# numbers come from the store, which applies them to every writer; this route rejects
+# rather than truncating, because a caller who sent too much should be told. Two
+# behaviours, one pair of numbers.
+from felix.memory.store import MAX_CONTENT_CHARS, MAX_TOPIC_KEY_CHARS
 from pydantic import BaseModel, ConfigDict, Field
 
 router = APIRouter(tags=["Memory"])
-
-# Bounded because the content is model-written text that is later injected into
-# prompts. A memory long enough to carry a whole instruction set is not a memory.
-MAX_CONTENT_CHARS = 4000
-MAX_TOPIC_KEY_CHARS = 200
 
 
 class MemoryWriteRequest(BaseModel):
@@ -164,7 +165,12 @@ async def forget_memory(request: Request, memory_id: str) -> dict[str, Any]:
     from felix.memory import store as memory_store
 
     require_mgmt_scopes(request, SCOPE_MEMORY_WRITE)
-    ok = await memory_store.forget(request.app.state.settings, tenant_id_from_request(request), memory_id)
+    ok = await memory_store.forget(
+        request.app.state.settings,
+        tenant_id_from_request(request),
+        memory_id,
+        source="management_api",
+    )
     if not ok:
         raise HTTPException(status_code=404, detail="unknown_memory")
     return {"id": memory_id, "status": "forgotten"}

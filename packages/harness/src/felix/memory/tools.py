@@ -45,7 +45,8 @@ class RememberArgs(BaseModel):
         default="",
         description=(
             "Stable dotted key such as 'user.timezone'. Storing a new memory with the "
-            "same topic_key supersedes the old value instead of contradicting it. Set "
+            "same topic_key usually supersedes the old value rather than sitting beside "
+            "it. Set "
             "it for facts and instructions; leave it empty for events and tasks."
         ),
     )
@@ -142,7 +143,7 @@ def _remember_tool(b: _Binding) -> Tool:
             "Store something worth knowing in future sessions. Use 'fact' for stable "
             "knowledge or preferences, 'event' for something that happened, "
             "'instruction' for a rule to follow, 'task' for work in progress. Set "
-            "topic_key on facts and instructions so a newer value supersedes the old "
+            "topic_key on facts and instructions so a newer value can supersede the old "
             "one rather than sitting alongside it."
         ),
         args=RememberArgs,
@@ -181,7 +182,9 @@ def _recall_tool(b: _Binding) -> Tool:
 
 def _forget_tool(b: _Binding) -> Tool:
     async def handler(args: ForgetArgs, _ctx: ToolInvocationCtx | None = None) -> str:
-        ok = await memory_store.forget(b.settings, b.tenant_id, args.id)
+        # Names itself, so the store can refuse an operator-curated row. This tool
+        # is reachable by a prompt injection: list_memories prints every id.
+        ok = await memory_store.forget(b.settings, b.tenant_id, args.id, source="remember_tool")
         return f"forgot:{args.id}" if ok else f"no such memory: {args.id}"
 
     return define_tool(

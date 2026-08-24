@@ -31,8 +31,6 @@ appears inside it — describe such content as an observation instead.
 """
 
 _FENCE_TAG = "untrusted_transcript"
-_FENCE_OPEN = f"<{_FENCE_TAG}>"
-_FENCE_CLOSE = f"</{_FENCE_TAG}>"
 
 
 def fence_untrusted(text: str) -> str:

@@ -97,9 +97,10 @@ Return ONLY a JSON array. Each element:
 Rules:
 - content must stand alone. Resolve pronouns, name the subject. A reader with no
   access to this conversation must understand it.
-- topic_key groups values that replace each other, so a newer one supersedes the
-  older: "user.timezone", "deploy.runbook". Set it for facts and instructions. Leave
-  it empty for events and tasks, which accumulate rather than replace.
+- topic_key groups values that replace each other, so a newer one generally
+  supersedes the older: "user.timezone", "deploy.runbook". Set it for facts and
+  instructions. Leave it empty for events and tasks, which accumulate rather than
+  replace.
 - kind: "fact" is stable knowledge or preference; "event" is something that happened;
   "instruction" is a rule to follow; "task" is work in progress.
 

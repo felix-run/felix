@@ -25,9 +25,11 @@ BREAK = "​"
 @lru_cache(maxsize=64)
 def _pattern(tags: tuple[str, ...]) -> re.Pattern[str]:
     names = "|".join(re.escape(t) for t in tags)
-    # Tolerates whitespace after `<` and around the slash, any case, and any
-    # attributes — `\b` stops `<known_factsimile>` from matching.
-    return re.compile(rf"<\s*(/?)\s*({names})\b", re.IGNORECASE)
+    # Tolerates whitespace after `<`, around and between slashes, any case, and any
+    # attributes — `\b` stops `<known_factsimile>` from matching. `[\s/]*` rather than
+    # `(/?)`: a single optional slash left `<//known_facts>` and `</ /known_facts>`
+    # reaching the tag name untouched.
+    return re.compile(rf"<(?P<lead>[\s/]*)({names})\b", re.IGNORECASE)
 
 
 def neutralize_tags(text: str, *tags: str) -> str:
@@ -39,17 +41,20 @@ def neutralize_tags(text: str, *tags: str) -> str:
     """
     if not tags:
         return text or ""
-    return _pattern(tuple(tags)).sub(lambda m: f"<{BREAK}{m.group(1)}{m.group(2)}", text or "")
+    return _pattern(tuple(tags)).sub(lambda m: f"<{BREAK}{m.group('lead')}{m.group(2)}", text or "")
 
 
-def fence(text: str, tag: str, *also: str) -> str:
+def fence(text: str, tag: str, *also: str, note: str = "") -> str:
     """Wrap `text` in `<tag>`, neutralising `tag` and `also` inside it.
 
     The block renders its own escaping, so a surface cannot emit a marker it forgot to
     defend — which is how both previous versions of this shipped a forgeable region.
+    That only holds if every emitting site comes through here, so `note` exists to
+    cover the labelled blocks too rather than leaving them to hand-roll the wrap.
     """
     body = neutralize_tags(text or "", tag, *also)
-    return f"<{tag}>\n{body}\n</{tag}>"
+    attrs = f' note="{note}"' if note else ""
+    return f"<{tag}{attrs}>\n{body}\n</{tag}>"
 
 
 __all__ = ["BREAK", "fence", "neutralize_tags"]

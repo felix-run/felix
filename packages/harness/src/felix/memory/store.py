@@ -118,7 +118,13 @@ async def put_memory(
     embedding: list[float] | None = None,
     embedding_model: str = "",
 ) -> dict[str, Any]:
-    """Store a memory, superseding any active row that shares its ``topic_key``.
+    """Store a memory, superseding active rows that share its ``topic_key``.
+
+    Supersession is conditional on the writer: a row is retired only by a writer of
+    equal or greater standing (``_TRUST_RANK``). A lower-ranked write is stored
+    *alongside* the row it cannot displace, so a topic can briefly carry two active
+    values — a visible contradiction rather than a silent deletion, which is the
+    better failure but is not the invariant the older docstrings promised.
 
     Idempotent by content: re-storing the same text under the same manifest reactivates
     the existing row and keeps its original provenance, rather than adding a second
@@ -188,7 +194,15 @@ async def put_memory(
 MAX_CONTENT_CHARS = 4000
 MAX_TOPIC_KEY_CHARS = 200
 
-_TRUST_RANK = {"management_api": 3, "remember_tool": 2, "remember_procedure": 2, "assistant": 1}
+# Two ranks, not four. `remember_tool` and `remember_procedure` sat above capture on
+# the reasoning that a tool write traverses the governance stack -- but all three are
+# the agent acting on a transcript it does not control, and `remember` is the one a
+# prompt injection can invoke *directly* with attacker-chosen content and topic_key.
+# Ranking it above capture would have let injection win every supersession race
+# against auto-captured memory. The line that means something is operator versus
+# agent, so that is the line this draws.
+_OPERATOR_SOURCES = ("management_api",)
+_TRUST_RANK = {"management_api": 2}
 _DEFAULT_TRUST = 1
 
 
@@ -205,10 +219,19 @@ def _trust_of_column(metadata_col: Any) -> Any:
     return case(*whens, else_=_DEFAULT_TRUST)
 
 
+def _rank(source: str) -> int:
+    return _TRUST_RANK.get(str(source or ""), _DEFAULT_TRUST)
+
+
+def trust_of(row: dict[str, Any]) -> int:
+    """The writer rank recorded on a stored row. Public: recall ranks by it too."""
+    return _trust(row)
+
+
 def _trust(row: dict[str, Any]) -> int:
     metadata = row.get("metadata") or row.get("metadata_json") or {}
     source = metadata.get("source") if isinstance(metadata, dict) else None
-    return _TRUST_RANK.get(str(source or ""), _DEFAULT_TRUST)
+    return _rank(str(source or ""))
 
 
 def _may_displace(incoming: dict[str, Any], existing: dict[str, Any]) -> bool:
@@ -244,10 +267,22 @@ def _put_in_memory(row: dict[str, Any]) -> dict[str, Any]:
         if existing.get("origin_seq") is not None:
             row["origin_seq"] = existing["origin_seq"]
         if not _may_displace(row, existing):
-            # Re-remembering the same text from a lower-trust writer reactivates the
-            # row without demoting what it is or where it came from.
-            row["kind"] = existing.get("kind", row["kind"])
+            # Everything that decides what this row *is* and whether it is seen. The
+            # first version of this guard covered only kind and metadata, which was
+            # worse than no guard: a low-trust rewrite of a curated row kept the
+            # curated `kind: instruction` and `source: management_api` while taking
+            # the attacker's content, topic_key and importance -- handing the payload
+            # the standing it could not otherwise earn.
+            # Everything that decides what this row *is* and whether it is seen --
+            # `status` above all, because forgetting is an out-of-band operator
+            # decision and re-storing the same normalised text is something an
+            # injected turn can cause with no tool at all. A writer of equal rank
+            # still reactivates, which is how an operator undoes their own forget.
+            for field in ("kind", "topic_key", "importance", "status", "superseded_by", "superseded_seq"):
+                if field in existing:
+                    row[field] = existing[field]
             row["metadata"] = existing.get("metadata_json") or existing.get("metadata") or row["metadata"]
+
     _memory_rows[(tenant_id, mem_id)] = {**row, "metadata_json": row["metadata"]}
     return row
 
@@ -305,12 +340,29 @@ async def _put_in_postgres(settings: Settings, row: dict[str, Any], *, embedding
                     (_trust_of_column(table.c["metadata"]) > _trust(row), table.c["metadata"]),
                     else_=excluded["metadata"],
                 ),
-                "topic_key": excluded["topic_key"],
-                "importance": excluded["importance"],
+                "topic_key": case(
+                    (_trust_of_column(table.c["metadata"]) > _trust(row), table.c.topic_key),
+                    else_=excluded["topic_key"],
+                ),
+                "importance": case(
+                    (_trust_of_column(table.c["metadata"]) > _trust(row), table.c.importance),
+                    else_=excluded["importance"],
+                ),
                 "thread_id": excluded["thread_id"],
-                "status": ACTIVE,
-                "superseded_by": None,
-                "superseded_seq": None,
+                # A forgotten row is never resurrected by a write, at any rank, and a
+                # refused writer does not reactivate a superseded one either.
+                "status": case(
+                    (_trust_of_column(table.c["metadata"]) > _trust(row), table.c.status),
+                    else_=ACTIVE,
+                ),
+                "superseded_by": case(
+                    (_trust_of_column(table.c["metadata"]) > _trust(row), table.c.superseded_by),
+                    else_=None,
+                ),
+                "superseded_seq": case(
+                    (_trust_of_column(table.c["metadata"]) > _trust(row), table.c.superseded_seq),
+                    else_=None,
+                ),
                 "updated_at": excluded["updated_at"],
                 # Re-remembering reactivates a row; it does not rewrite its history,
                 # so the first write's provenance wins and a later one only fills a gap.
@@ -406,17 +458,26 @@ async def supersede(
         await db.commit()
 
 
-async def forget(settings: Settings, tenant_id: str, memory_id: str) -> bool:
+async def forget(settings: Settings, tenant_id: str, memory_id: str, *, source: str = "") -> bool:
     """Hide a memory from recall without deleting it.
 
     `forgotten` has no turn-time endpoint on purpose: it is an out-of-band decision by
     an operator, not something a turn did, so it must not appear as a supersession in
     an as-of reconstruction.
+
+    `source` is the caller's writer identity, and it is checked. This is the third way
+    a row can leave recall -- supersession and upsert are the other two -- and it was
+    the one with no trust predicate on it, so the `forget` tool reached by a prompt
+    injection could retire an operator-curated memory that the same injection could
+    not have overwritten. A caller that does not name itself is treated as the agent.
     """
     ts = now_ms()
     if _use_memory(settings):
         row = _memory_rows.get((tenant_id, memory_id))
         if row is None:
+            return False
+        if not _may_displace({"metadata": {"source": source}}, row):
+            logger.warning("refusing to forget a more-trusted memory id=%s", memory_id)
             return False
         row["status"] = FORGOTTEN
         row["updated_at"] = ts
@@ -425,7 +486,12 @@ async def forget(settings: Settings, tenant_id: str, memory_id: str) -> bool:
     async with factory() as db:
         result = await db.execute(
             update(MemoryVector)
-            .where(MemoryVector.tenant_id == tenant_id, MemoryVector.id == memory_id)
+            .where(
+                MemoryVector.tenant_id == tenant_id,
+                MemoryVector.id == memory_id,
+                # Same predicate as the in-memory arm; see the docstring.
+                _trust_of_column(MemoryVector.metadata_json) <= _rank(source),
+            )
             .values(status=FORGOTTEN, updated_at=ts)
         )
         await db.commit()
