@@ -16,6 +16,7 @@ for, and four pure-ASGI layers measured indistinguishable from zero.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 
 from fastapi.responses import JSONResponse
@@ -29,6 +30,8 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 # A plugin-supplied key function: returns a rate-limit bucket for a request, or
 # None to let the next resolver (ultimately the client address) decide.
 RateLimitKeyResolver = Callable[[Request], str | None]
+
+logger = logging.getLogger("felix_api.middleware")
 
 
 class RequestIdMiddleware:
@@ -91,7 +94,16 @@ class RateLimitMiddleware:
         request = Request(scope)  # headers and client only; never reads the body
         key: str | None = None
         for resolver in self.key_resolvers:
-            key = resolver(request)
+            # Plugin-supplied, so a raise here is somebody else's bug arriving on the
+            # request path. Falling through to the client-address key keeps the limit
+            # in force; propagating would 500 every request instead. The factory
+            # deleted alongside this one had the same guard, and losing it would have
+            # made a plugin bug indistinguishable from an outage.
+            try:
+                key = resolver(request)
+            except Exception:
+                logger.warning("rate-limit key resolver failed; falling back", exc_info=True)
+                continue
             if key:
                 break
         if not key:
