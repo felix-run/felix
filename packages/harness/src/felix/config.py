@@ -143,6 +143,16 @@ class Settings(BaseSettings):
     memory_embedding_model: str = "bge-base-en-v1.5"
     memory_recall_limit: int = 8
 
+    # --- SSE reconnect ---
+    # How long `GET /chat/stream/{thread_id}` holds an idle connection before closing
+    # it. The client reconnects with its `Last-Event-ID` and loses nothing, so this
+    # trades a reconnect for not pinning a worker to a silent thread forever.
+    # Bounded, not merely defaulted: a negative poll makes `asyncio.sleep` return
+    # immediately and the idle counter run backwards, so the loop would query the
+    # session log as fast as Postgres answers and never close the connection.
+    stream_resume_idle_seconds: float = Field(default=300.0, gt=0)
+    stream_resume_poll_seconds: float = Field(default=1.0, ge=0.1, le=60.0)
+
     # --- misc ---
     default_manifest: str = "quick"
     hibernate_after_seconds: int = 300

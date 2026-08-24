@@ -135,15 +135,19 @@ a **non-goal** here — all of it exists to serialise writes to owner-local SQLi
 which shared Postgres makes unnecessary. What is portable is what it built *on
 top of* durable state. Ordered by value; the first two need no migration.
 
-- [ ] **SSE stream resume** — frames are `data: {json}` with no `id:`, so there
-      is no `Last-Event-ID` to resume from, and `side_events.py` is a
-      module-global single-consumer `asyncio.Queue`: an approval emitted on
-      replica B is invisible to the SSE consumer on replica A, which then blocks
-      on the (Redis-backed) waiter until timeout. A Redis Stream per thread with
-      an in-process ring as the `memory://` twin. Add `id:` only — adding
-      `event:` would move existing frames off `onmessage` and silently break
-      every current client. Closes **Wire-contract snapshot** above and
-      *reconnect-to-snapshot* under Product.
+- [x] **SSE reconnect-to-snapshot** — shipped in #54. The original entry here was
+      wrong on three counts, all verified before building: the turn runs *inside*
+      the SSE generator, so turn and stream are always the same process and there
+      is no cross-replica `side_events` gap on the streaming path; tearing the run
+      down on disconnect is deliberate, with a comment saying so ("let the
+      cancellation propagate so the run is torn down instead of continuing to burn
+      model tokens"); and `event: error` was already emitted at `chat.py:467`, so
+      "never add an `event:` line" was false when written. What shipped is the
+      honest slice: `id:` cursors plus `GET /chat/stream/{thread_id}` to recover
+      the thread. Still open, and now separable — **detached turns** would reverse
+      that teardown decision on cost grounds and needs its own argument, and
+      **durable runs still stream nothing** (approvals are pollable via
+      `/approvals`, but nothing watches a background run).
 - [~] **Long-term memory** — schema and provenance in #46, hybrid recall and
       the `Embedder` seam in #47, the agent-facing tools in #49, the management
       routes in #50, and turned on in `governed` and `cowork` in #51 — which is

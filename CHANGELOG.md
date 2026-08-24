@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Reconnect to a chat stream after it drops.** `GET /chat/stream/{thread_id}`
+  replays what a client missed and then tails the thread; frames on both streams now
+  carry an `id:` a client hands back as `Last-Event-ID`. A cold reconnect opens with a
+  `snapshot` frame, a warm one replays only the events after the cursor. The cursor is
+  the session log's own sequence rather than a per-connection counter — a counter
+  restarts at 1 on every reconnect and so means nothing to the next connection. Only
+  structural frames carry an `id:`; deltas arrive per token and stamping them would
+  cost a query each, and SSE leaves `lastEventId` untouched on frames without one.
+
+  This does **not** change what happens to the run: a disconnect still tears it down,
+  deliberately, so a hung-up client stops burning tokens. What a reconnect recovers is
+  the thread as it stands, not the abandoned turn. Tailing polls the shared session
+  log, so it works whichever replica served the original turn and needs no Redis.
+
 - **Memory is on in `governed` and `cowork`.** Everything above shipped inert:
   `capture` was disabled in all eight bundled manifests and `recall.tools` defaulted
   off, so no agent wrote or read a memory while the published docs described the
