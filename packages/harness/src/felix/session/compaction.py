@@ -33,8 +33,12 @@ _FENCE_OPEN = "<untrusted_transcript>"
 _FENCE_CLOSE = "</untrusted_transcript>"
 
 
-def _fence_untrusted(text: str) -> str:
-    """Wrap a transcript so the summarizer can tell data from instruction.
+def fence_untrusted(text: str) -> str:
+    """Wrap a transcript so a model can tell data from instruction.
+
+    Public because memory extraction needs the same fence: it reads the same
+    transcripts, and what it extracts is later injected into prompts, so an unfenced
+    extractor is a direct injection-to-persistence-to-injection path.
 
     The closing token is neutralized inside the payload so the content cannot close the
     fence early and continue as if it were the harness speaking.
@@ -454,7 +458,7 @@ class CompactingSessionStrategy:
                             role="system",
                             content=STRUCTURED_SUMMARY_PROMPT + _UNTRUSTED_NOTICE + prev + focus,
                         ),
-                        ChatMessage(role="user", content=_fence_untrusted(text[:120_000])),
+                        ChatMessage(role="user", content=fence_untrusted(text[:120_000])),
                     ],
                     [],
                     ModelChatOptions(isolate_cache=True),
@@ -560,5 +564,6 @@ __all__ = [
     "estimate_messages_tokens",
     "estimate_tokens",
     "extract_file_ops_from_events",
+    "fence_untrusted",
     "serialize_conversation",
 ]

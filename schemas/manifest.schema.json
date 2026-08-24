@@ -924,6 +924,11 @@
           "minimum": 0,
           "title": "Min Chars",
           "type": "integer"
+        },
+        "verify": {
+          "default": false,
+          "title": "Verify",
+          "type": "boolean"
         }
       },
       "title": "MemoryCapture",
