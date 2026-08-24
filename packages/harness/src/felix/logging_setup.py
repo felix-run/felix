@@ -106,11 +106,45 @@ def _json_formatter() -> logging.Formatter:
     return _Json()
 
 
+# Control characters, escaped rather than dropped. `\t`, `\n` and `\r` get their
+# familiar spellings; everything else in the C0 range plus DEL becomes `\xNN`.
+_LOG_ESCAPES: dict[int, str] = {c: f"\\x{c:02x}" for c in range(0x20)} | {
+    0x09: "\\t",
+    0x0A: "\\n",
+    0x0D: "\\r",
+    0x7F: "\\x7f",
+}
+
+
+def loggable(value: object, *, limit: int = 200) -> str:
+    """Untrusted text, made safe to interpolate into a log line.
+
+    A newline in a logged value forges a log entry. That is worth more than it sounds
+    where the forged line can be a *refusal* or an error: an attacker who can write
+    "auth failed for tenant X" into the log makes the trail argue for something that
+    never happened, and the trail is what an incident is reconstructed from.
+
+    Control characters are escaped rather than removed, so the value stays readable and
+    a deliberate injection attempt is visible as `\\n` in the output instead of silently
+    vanishing. Truncation is marked for the same reason -- a log line that was cut
+    should not look like one that was short.
+
+    `limit` is generous by default because the usual callers are gateway response
+    bodies, where the content is the reason for logging at all. Pass something small
+    for an identifier, where anything long is already not an identifier.
+    """
+    escaped = str(value).translate(_LOG_ESCAPES)
+    if len(escaped) <= limit:
+        return escaped or "<empty>"
+    return escaped[:limit] + f"…(+{len(escaped) - limit})"
+
+
 __all__ = [
     "REQUEST_ID_HEADER",
     "RequestIdFilter",
     "configure_logging",
     "get_request_id",
+    "loggable",
     "new_request_id",
     "reset_request_id",
     "set_request_id",
