@@ -686,10 +686,17 @@ async def test_a_verifier_that_rewrites_instead_of_choosing_keeps_the_set() -> N
 @pytest.mark.asyncio
 async def test_a_case_only_difference_still_selects() -> None:
     """dedupe_key does normalise case and whitespace, so this must not take the
-    broken-verifier path above."""
+    broken-verifier path above.
+
+    Two proposals, one echoed. With a single proposal the two paths converge on the
+    same answer — normalisation working selects it, and normalisation failing returns
+    the whole unverified set, which *is* that one item — so the test could not tell
+    them apart. Here the correct path returns one and the fallback returns two.
+    """
     fact = "The runbook lives in the ops repository"
+    other = "Deploys happen on Tuesdays"
     model = _ScriptedModel(
-        _payload({"content": fact}),
+        _payload({"content": fact}, {"content": other}),
         _payload({"content": "  the RUNBOOK lives in the   ops repository "}),
     )
     out = await extract_memories(model, "excerpt", max_facts=3, verify=True)
