@@ -6,6 +6,8 @@ several cover a body cap that silently did nothing for as long as it existed.
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 from felix.auth.middleware import AuthMiddleware
 from felix.config import Settings
@@ -203,19 +205,27 @@ async def test_request_id_is_present_on_a_rejected_request() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_raising_key_resolver_does_not_take_down_the_request() -> None:
+async def test_a_raising_key_resolver_does_not_take_down_the_request(caplog) -> None:
     """A plugin's rate_limit_key runs on every request, so a bug in one must degrade
-    to the client-address key rather than 500 the whole surface. The now-deleted
-    rate_limit_middleware factory had this guard; losing it with the factory would
-    have made a plugin bug indistinguishable from an outage."""
+    to the client-address key rather than 500 the whole surface.
+
+    Also pins the log latch: a resolver that raises does so on every request, and an
+    unlatched traceback there becomes the dominant line in the log.
+    """
 
     class _BadPlugin:
         def rate_limit_key(self, request):
             raise RuntimeError("plugin resolver is broken")
 
+    caplog.set_level(logging.WARNING, logger="felix_api.middleware")
     app = create_app(settings=_settings("badresolver"), plugins=[_BadPlugin()])
     async with _client(app) as client:
         # Not /health: it is in the rate-limiter's skip list, so the resolver would
         # never run and the test would pass with or without the guard.
-        response = await client.get("/live")
-    assert response.status_code == 200
+        first = await client.get("/live")
+        rest = [await client.get("/live") for _ in range(4)]
+    assert first.status_code == 200
+    assert [r.status_code for r in rest] == [200, 200, 200, 200]
+    assert len(caplog.records) == 1, (
+        f"expected one warning for a resolver that fails every request, got {len(caplog.records)}"
+    )

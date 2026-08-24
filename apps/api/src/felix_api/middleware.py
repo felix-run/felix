@@ -85,6 +85,7 @@ class RateLimitMiddleware:
         self.config = config
         self.settings = settings
         self.key_resolvers: list[RateLimitKeyResolver] = list(key_resolvers or [])
+        self._warned_resolvers: set[str] = set()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http" or should_skip_rate_limit(scope["path"]):
@@ -95,14 +96,31 @@ class RateLimitMiddleware:
         key: str | None = None
         for resolver in self.key_resolvers:
             # Plugin-supplied, so a raise here is somebody else's bug arriving on the
-            # request path. Falling through to the client-address key keeps the limit
-            # in force; propagating would 500 every request instead. The factory
-            # deleted alongside this one had the same guard, and losing it would have
-            # made a plugin bug indistinguishable from an outage.
+            # request path. Falling through to the next resolver — and ultimately to
+            # the client-address key — keeps the limit in force; propagating would 500
+            # every request instead. `felix.security.rate_limit.rate_limit_middleware`,
+            # deleted earlier on this branch, carried the same `except Exception:
+            # continue`; the `@app.middleware("http")` form in app.py did not.
+            #
+            # `continue` rather than `break`: with several plugins installed, one
+            # broken resolver must not silence the rest and downgrade the whole
+            # surface to the address bucket.
             try:
                 key = resolver(request)
             except Exception:
-                logger.warning("rate-limit key resolver failed; falling back", exc_info=True)
+                # Once per resolver, not once per request. A resolver that raises on a
+                # missing header raises on *every* request, which is the case this
+                # guard exists for — an unlatched traceback there becomes the dominant
+                # line in the log and buries the signal. Same shape as
+                # `ResilientRateLimiter._degraded`.
+                name = getattr(resolver, "__qualname__", repr(resolver))
+                if name not in self._warned_resolvers:
+                    self._warned_resolvers.add(name)
+                    logger.warning(
+                        "rate-limit key resolver %s failed; falling back (logged once)",
+                        name,
+                        exc_info=True,
+                    )
                 continue
             if key:
                 break
