@@ -401,30 +401,39 @@ async def test_the_gate_and_the_store_agree_on_a_blank_topic_key(raw: str) -> No
     )
 
 
-def test_an_id_cannot_carry_a_newline_into_a_refusal_log() -> None:
-    """CodeQL flags these lines as log injection, and the taint path is real: the
-    `memory_id` argument to `forget` and `supersede` is whatever the model passed.
+def test_a_logged_value_cannot_carry_a_newline() -> None:
+    """One helper, shared by the memory store and the chat routes.
 
-    It is not currently exploitable — the value is used as a dict key first, and the
-    only producer of row ids is `memory_id()`, a content hash, so a tainted id matches
-    no row and returns before the log. But that safety lives three functions away from
-    the log line, and this branch has now been bitten several times by a property that
-    holds only because two distant pieces of code agree. `_loggable` makes it local.
+    CodeQL flagged both: the `memory_id` argument to `forget`/`supersede`, and `thread`
+    in the chat SSE handlers. The two are not equally reachable — a tainted memory id is
+    used as a dict key first and matches no row, whereas `thread_id` is
+    `Field(min_length=1)` with no charset constraint and reaches the log directly — but
+    they are the same defect and now have the same answer.
 
-    Newlines are the mechanism, so that is what is asserted; the rest is defence in
-    depth. These lines record *refusals*, so forging them makes the audit trail argue
-    that a retirement was declined when none was attempted.
+    Escaped rather than stripped, so an injection attempt shows up as a literal `\\n`
+    in the log instead of silently vanishing. Truncation is marked for the same reason:
+    a line that was cut should not read as one that was short.
     """
-    from felix.memory.store import _loggable
+    from felix.logging_setup import loggable
 
-    forged = "abc123\nWARNING:felix.memory.store:refusing to forget a more-trusted memory id=x"
-    assert "\n" not in _loggable(forged)
-    assert "\r" not in _loggable("abc\r\nWARNING: forged")
-    # Lossless for every id that can actually reach it.
-    assert _loggable("a3f9c1d2e4b5") == "a3f9c1d2e4b5"
-    # Bounded, so a long argument cannot flood a line, and visibly truncated.
-    assert len(_loggable("x" * 500)) == 65
-    assert _loggable("").endswith("<unprintable>")
+    forged = "abc\nERROR:felix_api:auth bypassed for tenant acme"
+    out = loggable(forged)
+    assert "\n" not in out and "\r" not in out
+    assert out.startswith("abc\\n"), out
+    # The forged text survives, visibly quoted rather than obeyed.
+    assert "auth bypassed" in out
+
+    assert "\r" not in loggable("abc\r\nWARNING: forged")
+    assert loggable("\x00\x1b[2J") == "\\x00\\x1b[2J", "terminal escapes are neutralised too"
+
+    # Lossless for anything that is actually an identifier.
+    assert loggable("t-1234", limit=80) == "t-1234"
+    assert loggable("a3f9c1d2e4b5", limit=80) == "a3f9c1d2e4b5"
+
+    # Bounded and honest about it, so a long argument cannot flood a line.
+    long = loggable("x" * 250)
+    assert long.endswith("…(+50)") and len(long) == 206
+    assert loggable("") == "<empty>"
 
 
 @pytest.mark.asyncio
@@ -441,3 +450,27 @@ async def test_a_refusal_for_an_unknown_id_says_nothing_at_all(
     with caplog.at_level(logging.WARNING, logger="felix.memory.store"):
         assert await memory_store.forget(settings, "forge", "not-a-real-id\nWARNING: x", source="a") is False
     assert [r.getMessage() for r in caplog.records] == []
+
+
+@pytest.mark.asyncio
+async def test_a_thread_id_cannot_forge_a_chat_log_line(caplog: pytest.LogCaptureFixture) -> None:
+    """`thread_id` is the reachable half of the log-injection pair.
+
+    It arrives as `Field(min_length=1)` with no charset constraint and reaches the log
+    without being looked up first, so unlike a memory id there is nothing filtering it
+    on the way. `_stream_cursor` is the smallest of the three sites and the only one
+    whose failure path can be driven directly.
+    """
+    import logging
+
+    from felix_api.routes.chat import _stream_cursor
+
+    forged = "t-1\nERROR:felix_api.routes.chat:tenant acme authenticated as admin"
+    with caplog.at_level(logging.DEBUG, logger="felix_api.routes.chat"):
+        # No settings object, so the lookup raises and the except path does the logging.
+        assert await _stream_cursor(None, "acme", forged) is None
+
+    messages = [r.getMessage() for r in caplog.records]
+    assert len(messages) == 1, f"one failure became {len(messages)} log entries: {messages}"
+    assert "\n" not in messages[0], f"a newline reached the log: {messages[0]!r}"
+    assert "authenticated as admin" in messages[0], "the attempt should still be visible"

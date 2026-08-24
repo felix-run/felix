@@ -29,6 +29,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from felix.config import Settings
 from felix.db.models import MemoryVector
 from felix.db.session import _use_memory, get_session_factory
+from felix.logging_setup import loggable
 
 logger = logging.getLogger("felix.memory")
 
@@ -243,23 +244,6 @@ def _trust_of_column(metadata_col: Any) -> Any:
     source = metadata_col.op("->>")("source")
     whens = [(source == name, rank) for name, rank in _TRUST_RANK.items()]
     return case(*whens, else_=_DEFAULT_TRUST)
-
-
-def _loggable(value: object) -> str:
-    """A caller-supplied identifier, made safe to put in a log line.
-
-    `memory_id` on the retirement routes comes straight from a tool call, so the model
-    chooses it -- and a newline in it forges a log entry. That matters more here than
-    the usual because these particular lines record refusals: an attacker who can write
-    "refusing to forget ..." into the log can make a retirement that never happened look
-    like one that was declined, which is the opposite of what the audit trail is for.
-
-    Legitimate ids are hex content hashes, so this is lossless for every real value and
-    only ever truncates something that was already not an id.
-    """
-    text = str(value)
-    kept = "".join(ch for ch in text if ch.isalnum() or ch in "._:-")
-    return (kept[:64] or "<unprintable>") + ("…" if len(kept) > 64 else "")
 
 
 def _rank(source: str) -> int:
@@ -580,7 +564,9 @@ async def supersede(
             # it to a state `_may_reactivate` used to wave through, laundering the
             # forget.
             if _rank(source) < max(_trust(row), _retirer_rank(row)):
-                logger.warning("refusing to supersede a more-trusted memory id=%s", _loggable(memory_id))
+                logger.warning(
+                    "refusing to supersede a more-trusted memory id=%s", loggable(memory_id, limit=80)
+                )
                 return
             row["status"] = SUPERSEDED
             _stamp_retirer(row, source)
@@ -629,7 +615,7 @@ async def forget(settings: Settings, tenant_id: str, memory_id: str, *, source: 
         if row is None:
             return False
         if _rank(source) < _trust(row):
-            logger.warning("refusing to forget a more-trusted memory id=%s", _loggable(memory_id))
+            logger.warning("refusing to forget a more-trusted memory id=%s", loggable(memory_id, limit=80))
             return False
         row["status"] = FORGOTTEN
         metadata = dict(row.get("metadata") or {})
@@ -645,7 +631,9 @@ async def forget(settings: Settings, tenant_id: str, memory_id: str, *, source: 
             # twins answer differently for the same call, and `_forget_tool` turns
             # that into two different strings back to the model. False is the honest
             # answer on both: the call changed nothing.
-            logger.warning("refusing to downgrade the forgetter of memory id=%s", _loggable(memory_id))
+            logger.warning(
+                "refusing to downgrade the forgetter of memory id=%s", loggable(memory_id, limit=80)
+            )
             return False
         metadata[RETIRED_BY_KEY] = source
         row["metadata"] = metadata

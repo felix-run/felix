@@ -9,6 +9,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from felix.context import AuthContext, RequestContext, async_run_with_context, try_get_context
+from felix.logging_setup import loggable
 from felix.patterns.model import ModelGatewayError
 from felix.patterns.types import ChatMessage, InvokeInput
 from felix.runtime import build_tenant_agent, prepare_tenant_invoke, resolve_tenant_manifest
@@ -334,7 +335,16 @@ async def chat(body: ChatRequest, request: Request) -> Any:
                 )
             )
         except ModelGatewayError as exc:
-            logger.warning("model gateway error label=%s status=%s body=%s", exc.label, exc.status, exc.body)
+            # `body` is an upstream response: neither trusted nor single-line.
+            # CodeQL does not flag it -- its taint source is the network rather than
+            # the request -- but a gateway body is shaped by prompt content, which
+            # makes it as forgeable as anything the client sends directly.
+            logger.warning(
+                "model gateway error label=%s status=%s body=%s",
+                loggable(exc.label, limit=80),
+                exc.status,
+                loggable(exc.body),
+            )
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         except Exception as exc:
             http = _http_from_invoke_prep(exc)
@@ -441,7 +451,7 @@ async def chat_stream_resume(request: Request, thread_id: str) -> StreamingRespo
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            logger.exception("chat resume failed thread=%s", thread)
+            logger.exception("chat resume failed thread=%s", loggable(thread, limit=80))
             yield error_frame(str(exc))
         yield DONE
 
@@ -549,7 +559,7 @@ async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
         except Exception as exc:
             # Without this the body simply stopped under an already-sent 200 OK, with no
             # error event and no [DONE] — the client could not tell success from failure.
-            logger.exception("chat stream failed thread=%s", thread)
+            logger.exception("chat stream failed thread=%s", loggable(thread, limit=80))
             yield error_frame(str(exc))
         yield DONE
 
@@ -766,7 +776,7 @@ async def _stream_cursor(settings: Any, tenant_id: str, thread: str | None) -> i
         head = await get_session_store(settings, tenant_id=tenant_id).open(thread).head()
         return int(head.get("seq") or 0)
     except Exception:
-        logger.debug("stream cursor unavailable for %s", thread, exc_info=True)
+        logger.debug("stream cursor unavailable for %s", loggable(thread, limit=80), exc_info=True)
         return None
 
 
@@ -1110,7 +1120,16 @@ async def chat_continue(body: ContinueRequest, request: Request) -> Any:
                 )
             )
         except ModelGatewayError as exc:
-            logger.warning("model gateway error label=%s status=%s body=%s", exc.label, exc.status, exc.body)
+            # `body` is an upstream response: neither trusted nor single-line.
+            # CodeQL does not flag it -- its taint source is the network rather than
+            # the request -- but a gateway body is shaped by prompt content, which
+            # makes it as forgeable as anything the client sends directly.
+            logger.warning(
+                "model gateway error label=%s status=%s body=%s",
+                loggable(exc.label, limit=80),
+                exc.status,
+                loggable(exc.body),
+            )
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         except Exception as exc:
             http = _http_from_invoke_prep(exc)
