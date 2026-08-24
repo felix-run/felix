@@ -34,10 +34,11 @@ async def test_calculator_rejects_unsafe_expr() -> None:
 
 @pytest.mark.asyncio
 async def test_react_pattern_registered() -> None:
-    try:
-        import felix.patterns.react  # noqa: F401
-        from felix.patterns.registry import get_pattern
-    except ImportError as exc:
-        pytest.skip(f"react pattern not ready: {exc}")
+    # `react` is the default pattern and imports nothing optional, so an ImportError
+    # here means the registry is broken -- which is the thing this test exists to
+    # notice, not to skip.
+    import felix.patterns.react  # noqa: F401
+    from felix.patterns.registry import get_pattern
+
     pattern = get_pattern("react")
     assert pattern is not None

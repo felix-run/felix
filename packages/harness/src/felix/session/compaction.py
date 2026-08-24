@@ -331,8 +331,7 @@ class CompactingSessionStrategy:
                 hist_tokens = estimate_messages_tokens(out) + estimate_messages_tokens(incoming)
                 if hist_tokens <= max(0, self.context_window_tokens - self.reserve_tokens):
                     return out
-                # Over budget with retainedTail: fall through to re-walk branch.
-                pass
+                # Over budget with retainedTail: fall through to the re-walk below.
 
         raw = [e for e in branch if include_in_llm_context(e) and e.seq > covered]
         if first_kept_id and retained_tail is None:

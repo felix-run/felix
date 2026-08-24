@@ -19,10 +19,10 @@ async def test_health() -> None:
         auth_mode="none",
         environment="development",
     )
-    try:
-        app = create_app(settings=settings, plugins=[])
-    except Exception as exc:
-        pytest.skip(f"create_app requires harness modules: {exc}")
+    # No try/except. `create_app` has no optional dependency behind it on this path,
+    # so the guard could only ever convert "the app does not start" into a skip -- and
+    # a skipped health check reads exactly like a passing one.
+    app = create_app(settings=settings, plugins=[])
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
