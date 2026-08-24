@@ -959,6 +959,26 @@
       "title": "MemoryConsolidate",
       "type": "object"
     },
+    "MemoryRecall": {
+      "additionalProperties": false,
+      "description": "Agent-facing recall.\n\n``tools`` is the governed path: the memory tools are bound before the wrapper\nstack, so recalled text passes through content screening. The automatic fact\nprelude does not \u2014 prefer the tools when a manifest handles untrusted content.",
+      "properties": {
+        "tools": {
+          "default": false,
+          "title": "Tools",
+          "type": "boolean"
+        },
+        "limit": {
+          "default": 5,
+          "maximum": 50,
+          "minimum": 1,
+          "title": "Limit",
+          "type": "integer"
+        }
+      },
+      "title": "MemoryRecall",
+      "type": "object"
+    },
     "MemorySpec": {
       "additionalProperties": false,
       "properties": {
@@ -991,6 +1011,9 @@
         },
         "consolidate": {
           "$ref": "#/$defs/MemoryConsolidate"
+        },
+        "recall": {
+          "$ref": "#/$defs/MemoryRecall"
         }
       },
       "title": "MemorySpec",

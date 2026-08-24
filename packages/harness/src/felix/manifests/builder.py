@@ -1078,6 +1078,25 @@ async def build_agent(
             except Exception:
                 logger.warning("procedural memory tool binding failed", exc_info=True)
 
+        # Memory tools. Bound here, before the governance block below, so a recalled
+        # memory passes through content screening like any other tool output — the
+        # automatic fact prelude bypasses the stack entirely.
+        if m.spec.memory.recall.tools and m.spec.memory.store != "none" and deps.settings is not None:
+            try:
+                from felix.memory.tools import make_memory_tools
+
+                _append_unique_tools(
+                    resolved,
+                    make_memory_tools(
+                        settings=deps.settings,
+                        tenant_id=tenant_id,
+                        manifest_id=m.metadata.name,
+                        default_limit=m.spec.memory.recall.limit,
+                    ),
+                )
+            except Exception:
+                logger.warning("memory tool binding failed", exc_info=True)
+
         # Wire Agent Skills (progressive disclosure + bound skill tools).
         from felix.skills import (
             SKILL_TOOL_NAMES,
