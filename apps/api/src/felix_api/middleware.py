@@ -16,18 +16,19 @@ for, and four pure-ASGI layers measured indistinguishable from zero.
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Callable
 
 from fastapi.responses import JSONResponse
+from felix.config import Settings
 from felix.logging_setup import REQUEST_ID_HEADER, new_request_id, reset_request_id, set_request_id
 from felix.security.rate_limit import RateLimitConfig, check_rate_limit, client_key, should_skip_rate_limit
 from starlette.datastructures import Headers
 from starlette.requests import ClientDisconnect, Request
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-
-async def _send_response(response: JSONResponse, scope: Scope, receive: Receive, send: Send) -> None:
-    await response(scope, receive, send)
+# A plugin-supplied key function: returns a rate-limit bucket for a request, or
+# None to let the next resolver (ultimately the client address) decide.
+RateLimitKeyResolver = Callable[[Request], str | None]
 
 
 class RequestIdMiddleware:
@@ -74,13 +75,13 @@ class RateLimitMiddleware:
         app: ASGIApp,
         *,
         config: RateLimitConfig,
-        settings: Any,
-        key_resolvers: list[Any] | None = None,
+        settings: Settings,
+        key_resolvers: list[RateLimitKeyResolver] | None = None,
     ) -> None:
         self.app = app
         self.config = config
         self.settings = settings
-        self.key_resolvers = list(key_resolvers or [])
+        self.key_resolvers: list[RateLimitKeyResolver] = list(key_resolvers or [])
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http" or should_skip_rate_limit(scope["path"]):
@@ -102,7 +103,7 @@ class RateLimitMiddleware:
                 status_code=429,
                 headers={"retry-after": str(self.config.window_seconds)},
             )
-            await _send_response(response, scope, receive, send)
+            await response(scope, receive, send)
             return
         await self.app(scope, receive, send)
 
@@ -133,7 +134,7 @@ class BodyLimitMiddleware:
         if declared is not None:
             try:
                 if int(declared) > self.limit:
-                    await _send_response(_too_large(), scope, receive, send)
+                    await _too_large()(scope, receive, send)
                     return
             except ValueError:
                 # A malformed Content-Length is not a reason to skip the limit; fall
@@ -142,7 +143,7 @@ class BodyLimitMiddleware:
 
         seen = 0
         exceeded = False
-        started = False
+        response_forwarded = False
 
         async def capped_receive() -> Message:
             nonlocal seen, exceeded
@@ -158,8 +159,8 @@ class BodyLimitMiddleware:
             return message
 
         async def watched_send(message: Message) -> None:
-            nonlocal started
-            if exceeded and not started:
+            nonlocal response_forwarded
+            if exceeded and not response_forwarded:
                 # Swallow it. Cutting the body off makes the route fail on its own
                 # terms — FastAPI turns the resulting ClientDisconnect into a 400
                 # "error parsing the body" — and that answer is both wrong and
@@ -168,7 +169,7 @@ class BodyLimitMiddleware:
                 # nothing to replace, so it passes through untouched.
                 return
             if message["type"] == "http.response.start":
-                started = True
+                response_forwarded = True
             await send(message)
 
         try:
@@ -177,8 +178,9 @@ class BodyLimitMiddleware:
             # Expected when the route was reading the body we just cut off.
             if not exceeded:
                 raise
-        if exceeded and not started:
-            await _send_response(_too_large(), scope, receive, send)
+        if exceeded and not response_forwarded:
+            # The raw `send`, deliberately: `watched_send` would swallow this too.
+            await _too_large()(scope, receive, send)
 
 
 def _too_large() -> JSONResponse:

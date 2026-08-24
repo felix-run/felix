@@ -67,24 +67,26 @@ async def with_heartbeat(stream: Any, interval: float = SSE_HEARTBEAT_SECONDS) -
     almost never.
     """
     queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=HEARTBEAT_QUEUE_MAXSIZE)
-    done = object()
-    failure: list[BaseException] = []
+    # Not named `done`: `task.done()` is a different question forty lines below.
+    END = object()
+    failure: BaseException | None = None
 
     async def pump() -> None:
+        nonlocal failure
         try:
             async for item in stream:
                 await queue.put(item)
         except asyncio.CancelledError:
             raise
         except BaseException as exc:
-            failure.append(exc)
+            failure = exc
         finally:
             # Blocking, not put_nowait: the last real event may have filled the queue,
             # and dropping the sentinel there would leave the consumer emitting
             # heartbeats forever instead of ending the stream. If the consumer has
             # stopped draining this waits, but in that case the consumer's `finally`
             # is already cancelling this task.
-            await queue.put(done)
+            await queue.put(END)
 
     task = asyncio.ensure_future(pump())
     try:
@@ -97,12 +99,12 @@ async def with_heartbeat(stream: Any, interval: float = SSE_HEARTBEAT_SECONDS) -
                     continue
             else:
                 item = queue.get_nowait()
-            if item is done:
+            if item is END:
                 # An upstream failure must reach the caller: chat.py answers it with an
                 # `event: error` frame, and swallowing it here would end the stream
                 # under a 200 with no way to tell success from failure.
-                if failure:
-                    raise failure[0]
+                if failure is not None:
+                    raise failure
                 return
             yield item
     finally:
@@ -111,6 +113,8 @@ async def with_heartbeat(stream: Any, interval: float = SSE_HEARTBEAT_SECONDS) -
         # for a connection nobody is reading.
         if not task.done():
             task.cancel()
+            # Both, not one: CancelledError is a BaseException in 3.14, so
+            # suppressing Exception alone would let it escape.
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
 
@@ -153,6 +157,7 @@ def sse_response(generator: AsyncIterator[str]) -> StreamingResponse:
 __all__ = [
     "DONE",
     "HEARTBEAT",
+    "HEARTBEAT_QUEUE_MAXSIZE",
     "KEEP_ALIVE",
     "PER_TOKEN_EVENTS",
     "SSE_HEARTBEAT_SECONDS",

@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from typing import Any
 
 from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
+from starlette.responses import JSONResponse
 
 from felix.auth.context import ANONYMOUS, AuthContext, Principal, require_scope
 from felix.auth.jwt import parse_verifiers, verify_jwt
@@ -195,48 +195,8 @@ def require_authenticated(auth: AuthContext) -> None:
         raise PermissionError("authentication required")
 
 
-def auth_middleware(
-    *,
-    settings: Settings | None = None,
-    self_authenticating_mounts: Sequence[str] = (),
-) -> Callable:
-    """FastAPI ``app.middleware('http')`` compatible auth wrapper."""
-
-    mounts = tuple(self_authenticating_mounts)
-
-    async def middleware(request: Request, call_next: Callable) -> Response:
-        cfg = settings or get_settings()
-        auth_or_resp = await authenticate_request(
-            request,
-            cfg,
-            self_authenticating_mounts=mounts,
-        )
-        if isinstance(auth_or_resp, JSONResponse):
-            return auth_or_resp
-        auth = auth_or_resp
-        request.state.auth = auth
-        ctx_auth = CtxAuth(
-            principal_sub=auth.principal.subject or "anonymous",
-            tenant_id=auth.principal.tenant_id,
-            scopes=auth.principal.scopes,
-            anonymous=auth.anonymous,
-            raw_claims=auth.raw_claims,
-            scheme=getattr(auth.principal, "scheme", "anonymous"),
-        )
-        req_ctx = RequestContext(
-            settings=cfg,
-            auth=ctx_auth,
-            limit_state=LimitState(),
-        )
-        async with async_run_with_context(req_ctx):
-            return await call_next(request)
-
-    return middleware
-
-
 __all__ = [
     "AuthMiddleware",
-    "auth_middleware",
     "authenticate_request",
     "require_authenticated",
     "require_scope",

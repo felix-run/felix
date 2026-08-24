@@ -188,48 +188,6 @@ def client_key(request: Any, settings: Any) -> str:
     return f"ip:{host or 'unknown'}"
 
 
-def rate_limit_middleware(
-    *,
-    key_resolvers: list[Any] | None = None,
-    config: RateLimitConfig | None = None,
-) -> Any:
-    """FastAPI http middleware — soft rate limit by tenant/IP."""
-    from starlette.requests import Request
-    from starlette.responses import JSONResponse
-
-    cfg = config or RateLimitConfig()
-    resolvers = list(key_resolvers or [])
-
-    async def middleware(request: Request, call_next):  # type: ignore[no-untyped-def]
-        path = request.url.path
-        if should_skip_rate_limit(path):
-            return await call_next(request)
-        key = "anon"
-        for resolver in resolvers:
-            try:
-                resolved = resolver(request)
-                if resolved:
-                    key = str(resolved)
-                    break
-            except Exception:
-                continue
-        if key == "anon":
-            from felix.context import try_get_context
-
-            ctx = try_get_context()
-            if ctx is not None:
-                key = ctx.auth.tenant_id
-            else:
-                client = request.client.host if request.client else "unknown"
-                key = f"ip:{client}"
-        allowed = await check_rate_limit(key, cfg)
-        if not allowed:
-            return JSONResponse({"error": "rate_limited"}, status_code=429)
-        return await call_next(request)
-
-    return middleware
-
-
 __all__ = [
     "InMemoryRateLimiter",
     "RateLimitConfig",
@@ -239,6 +197,5 @@ __all__ = [
     "build_rate_limit_config",
     "check_rate_limit",
     "client_key",
-    "rate_limit_middleware",
     "should_skip_rate_limit",
 ]
