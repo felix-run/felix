@@ -287,3 +287,57 @@ def test_no_base_http_middleware_anywhere_in_the_source() -> None:
         + "\n  ".join(offenders)
         + "\nWrite pure-ASGI middleware instead — see felix_api.middleware."
     )
+
+
+def test_every_memory_retirement_route_is_accounted_for() -> None:
+    """A memory leaves recall by having its `status` written. Each such route needs a
+    trust predicate, and each one was found by a separate review round rather than by
+    looking — which is what this replaces.
+
+    The allowlist is the point: a new route fails this test until someone writes down
+    which of the two it is. Pointwise enforcement is what made eight rounds necessary;
+    an enumeration nobody maintains would make a ninth.
+    """
+    import ast
+    from pathlib import Path
+
+    # function name -> why it is safe to write `status` there
+    ACCOUNTED = {
+        "_put_in_memory": "guarded: _may_displace / _may_reactivate, then _preserve",
+        "_put_in_postgres": "guarded: _refused_in_sql on every preserved column",
+        "forget": "guarded: _rank(source) vs _trust(row), stamp only rises",
+        "supersede": "guarded: _rank(source) vs _trust(row)",
+        "consolidate_pools": (
+            "unguarded, and reachable only for rows predating content-hash ids: it "
+            "dedupes on exact (tenant, manifest, content), and identical content now "
+            "yields an identical id, so two such rows cannot coexist to be merged."
+        ),
+    }
+
+    src = Path(__file__).resolve().parents[2] / "packages/harness/src/felix/memory/store.py"
+    tree = ast.parse(src.read_text(encoding="utf-8"))
+
+    def writes_status(node: ast.AST) -> bool:
+        for child in ast.walk(node):
+            if isinstance(child, ast.Assign):
+                for t in child.targets:
+                    if isinstance(t, ast.Subscript) and isinstance(t.slice, ast.Constant):
+                        if t.slice.value == "status":
+                            return True
+                    if isinstance(t, ast.Attribute) and t.attr == "status":
+                        return True
+            if isinstance(child, ast.keyword) and child.arg == "status":
+                return True
+        return False
+
+    found = {
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and writes_status(node)
+    }
+    unaccounted = sorted(found - set(ACCOUNTED))
+    assert unaccounted == [], (
+        f"memory retirement routes with no recorded trust reasoning: {unaccounted}. "
+        "Add the predicate, or record in ACCOUNTED why the route cannot be reached "
+        "by an untrusted writer."
+    )

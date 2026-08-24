@@ -265,6 +265,42 @@ def _trust(row: dict[str, Any]) -> int:
     return _rank(str(source or ""))
 
 
+# Everything a refused write may not change: what the row *is*, and whether it is
+# seen. Every field found missing from this set was found by a separate review round
+# -- `kind`, then `topic_key` and `importance`, then `metadata`, then `status`.
+_PRESERVED_ON_REFUSAL = (
+    "kind",
+    "topic_key",
+    "importance",
+    "status",
+    "superseded_by",
+    "superseded_seq",
+)
+
+
+def _preserve(row: dict[str, Any], existing: dict[str, Any]) -> None:
+    """Keep the existing row's identity and visibility; take only its new content."""
+    for field in _PRESERVED_ON_REFUSAL:
+        if field in existing:
+            row[field] = existing[field]
+    row["metadata"] = existing.get("metadata_json") or existing.get("metadata") or row["metadata"]
+
+
+def _may_reactivate(incoming: dict[str, Any], existing: dict[str, Any]) -> bool:
+    """Whether `incoming` may bring a forgotten row back.
+
+    Gated on who *forgot* it rather than who wrote it: re-storing the same normalised
+    text is something an injected turn causes with no tool at all, so an operator
+    cleaning up an agent-written row -- nearly every row, and exactly the population
+    the memory route exists to clean up -- must not be undone by the agent that wrote
+    it. The operator can still undo their own forget, and the agent its own.
+    """
+    if existing.get("status") != FORGOTTEN:
+        return True
+    incoming_rank = _rank(str((incoming.get("metadata") or {}).get("source") or ""))
+    return incoming_rank >= _forgetter_rank(existing)
+
+
 def _may_displace(incoming: dict[str, Any], existing: dict[str, Any]) -> bool:
     """Whether `incoming` may retire or rewrite `existing`.
 
@@ -297,31 +333,32 @@ def _put_in_memory(row: dict[str, Any]) -> dict[str, Any]:
         row["created_at"] = existing.get("created_at", row["created_at"])
         if existing.get("origin_seq") is not None:
             row["origin_seq"] = existing["origin_seq"]
-        if not _may_displace(row, existing):
-            # Everything that decides what this row *is* and whether it is seen. The
-            # first version of this guard covered only kind and metadata, which was
-            # worse than no guard: a low-trust rewrite of a curated row kept the
-            # curated `kind: instruction` and `source: management_api` while taking
-            # the attacker's content, topic_key and importance -- handing the payload
-            # the standing it could not otherwise earn.
-            for field in ("kind", "topic_key", "importance", "status", "superseded_by", "superseded_seq"):
-                if field in existing:
-                    row[field] = existing[field]
-            row["metadata"] = existing.get("metadata_json") or existing.get("metadata") or row["metadata"]
-
-    if existing is not None and existing.get("status") == FORGOTTEN:
-        # Gated on who *forgot* it, not who wrote it. Re-storing the same normalised
-        # text is something an injected turn causes with no tool at all, so an
-        # operator cleaning up an agent-written row -- nearly every row, and exactly
-        # the population the memory route exists to clean up -- must not be undone by
-        # the agent that wrote it. The operator can still undo their own forget.
-        incoming = _rank(str((row.get("metadata") or {}).get("source") or ""))
-        if incoming < _forgetter_rank(existing):
-            row["status"] = FORGOTTEN
-            row["metadata"] = existing.get("metadata_json") or existing.get("metadata") or row["metadata"]
+        # Two independent reasons a write may be refused, and one definition of what
+        # "refused" means. They were separate blocks preserving different field sets,
+        # which let an agent rewrite the kind, topic_key and importance of a row the
+        # operator had forgotten: it could not resurrect the row, but it could *set up*
+        # what came back if the operator ever restored it -- including a topic_key,
+        # which retires whatever else holds that key.
+        if not _may_displace(row, existing) or not _may_reactivate(row, existing):
+            _preserve(row, existing)
 
     _memory_rows[(tenant_id, mem_id)] = {**row, "metadata_json": row["metadata"]}
     return row
+
+
+def _refused_in_sql(table: Any, row: dict[str, Any]) -> Any:
+    """The SQL twin of `not _may_displace(...) or not _may_reactivate(...)`.
+
+    One expression, used by every preserved column, because the columns disagreeing
+    about what "refused" means is precisely the bug this replaced: `status` grew a
+    forgotten branch and `metadata` did not, so a refused write kept the row hidden
+    while erasing the stamp that kept it hidden.
+    """
+    outranked = _trust_of_column(table.c["metadata"]) > _trust(row)
+    cannot_reactivate = (table.c.status == FORGOTTEN) & (
+        _forgetter_rank_of_column(table.c["metadata"]) > _trust(row)
+    )
+    return outranked | cannot_reactivate
 
 
 async def _put_in_postgres(settings: Settings, row: dict[str, Any], *, embedding: list[float] | None) -> None:
@@ -363,65 +400,22 @@ async def _put_in_postgres(settings: Settings, row: dict[str, Any], *, embedding
         values = {k: v for k, v in row.items() if k not in {"last_used_at", "embedding_json", "embedding"}}
         stmt = pg_insert(table).values(values)
         excluded = stmt.excluded
+        refused = _refused_in_sql(table, row)
         stmt = stmt.on_conflict_do_update(
             index_elements=["tenant_id", "id"],
             set_={
-                # A lower-trust writer re-remembering the same text reactivates the
-                # row without demoting what it is or where it came from.
-                "kind": case(
-                    (_trust_of_column(table.c["metadata"]) > _trust(row), table.c.kind),
-                    else_=excluded["kind"],
-                ),
+                # Every column that decides what the row is or whether it is seen
+                # takes the *same* refusal predicate. They branched differently once
+                # and the divergence was live in production for one arm only.
+                "kind": case((refused, table.c.kind), else_=excluded["kind"]),
                 "content": excluded["content"],
-                # Two branches, matching `status` below. With only the writer-rank
-                # branch, a refused write kept `status = forgotten` but took the
-                # incoming metadata -- erasing `forgotten_by`. The next identical
-                # write then found no stamp, fell back to the writer rank, and
-                # resurrected the row. Two ordinary turns, no tool call. And it was
-                # Postgres-only: the in-memory arm restores metadata explicitly, so
-                # CI ran the correct arm while production ran the broken one.
-                "metadata": case(
-                    (_trust_of_column(table.c["metadata"]) > _trust(row), table.c["metadata"]),
-                    (
-                        (table.c.status == FORGOTTEN)
-                        & (_forgetter_rank_of_column(table.c["metadata"]) > _trust(row)),
-                        table.c["metadata"],
-                    ),
-                    else_=excluded["metadata"],
-                ),
-                "topic_key": case(
-                    (_trust_of_column(table.c["metadata"]) > _trust(row), table.c.topic_key),
-                    else_=excluded["topic_key"],
-                ),
-                "importance": case(
-                    (_trust_of_column(table.c["metadata"]) > _trust(row), table.c.importance),
-                    else_=excluded["importance"],
-                ),
+                "metadata": case((refused, table.c["metadata"]), else_=excluded["metadata"]),
+                "topic_key": case((refused, table.c.topic_key), else_=excluded["topic_key"]),
+                "importance": case((refused, table.c.importance), else_=excluded["importance"]),
                 "thread_id": excluded["thread_id"],
-                # A forgotten row is never resurrected by a write, at any rank, and a
-                # refused writer does not reactivate a superseded one either.
-                # Gated on who forgot it, not who wrote it -- see put_memory's
-                # in-memory arm for why those differ and why it matters.
-                "status": case(
-                    (_trust_of_column(table.c["metadata"]) > _trust(row), table.c.status),
-                    (
-                        (table.c.status == FORGOTTEN)
-                        & (_forgetter_rank_of_column(table.c["metadata"]) > _trust(row)),
-                        FORGOTTEN,
-                    ),
-                    else_=ACTIVE,
-                ),
-                # `else_=null()`, not `else_=None`: SQLAlchemy reads None as "omit the
-                # ELSE", which happens to give NULL from an unmatched CASE today and
-                # would quietly change meaning the moment a branch is added.
-                "superseded_by": case(
-                    (_trust_of_column(table.c["metadata"]) > _trust(row), table.c.superseded_by),
-                    else_=null(),
-                ),
-                "superseded_seq": case(
-                    (_trust_of_column(table.c["metadata"]) > _trust(row), table.c.superseded_seq),
-                    else_=null(),
-                ),
+                "status": case((refused, table.c.status), else_=ACTIVE),
+                "superseded_by": case((refused, table.c.superseded_by), else_=null()),
+                "superseded_seq": case((refused, table.c.superseded_seq), else_=null()),
                 "updated_at": excluded["updated_at"],
                 # Re-remembering reactivates a row; it does not rewrite its history,
                 # so the first write's provenance wins and a later one only fills a gap.
@@ -491,12 +485,23 @@ async def supersede(
     at_seq: int | None,
     *,
     superseded_by: str | None = None,
+    source: str = "",
 ) -> None:
-    """Close a memory's validity interval at ``at_seq``, on both axes."""
+    """Close a memory's validity interval at ``at_seq``, on both axes.
+
+    `source` is the caller's writer identity and is checked, like `forget`. This is
+    the third route by which a row leaves recall and it had no predicate at all --
+    currently unreferenced in the tree, but exported, so it is a way in that would not
+    have shown up in a grep for callers. A caller that does not name itself is treated
+    as the agent.
+    """
     ts = now_ms()
     if _use_memory(settings):
         row = _memory_rows.get((tenant_id, memory_id))
         if row is not None:
+            if _rank(source) < _trust(row):
+                logger.warning("refusing to supersede a more-trusted memory id=%s", memory_id)
+                return
             row["status"] = SUPERSEDED
             row["superseded_seq"] = at_seq
             row["superseded_by"] = superseded_by
@@ -506,7 +511,12 @@ async def supersede(
     async with factory() as db:
         await db.execute(
             update(MemoryVector)
-            .where(MemoryVector.tenant_id == tenant_id, MemoryVector.id == memory_id)
+            .where(
+                MemoryVector.tenant_id == tenant_id,
+                MemoryVector.id == memory_id,
+                # Same predicate as the in-memory arm; see the docstring.
+                _trust_of_column(MemoryVector.metadata_json) <= _rank(source),
+            )
             .values(
                 status=SUPERSEDED,
                 superseded_seq=at_seq,
@@ -546,8 +556,15 @@ async def forget(settings: Settings, tenant_id: str, memory_id: str, *, source: 
         # the operator who forgot it, re-arming its own resurrection. The approval
         # prompt says "Confirm retiring a stored memory", which is not what that call
         # does when the row is already retired.
-        if _rank(source) >= _forgetter_rank(row):
-            metadata[FORGOTTEN_BY_KEY] = source
+        if _rank(source) < _forgetter_rank(row):
+            # The Postgres arm expresses this test in the WHERE, so the statement
+            # matches nothing and rowcount is 0. Returning True here would make the
+            # twins answer differently for the same call, and `_forget_tool` turns
+            # that into two different strings back to the model. False is the honest
+            # answer on both: the call changed nothing.
+            logger.warning("refusing to downgrade the forgetter of memory id=%s", memory_id)
+            return False
+        metadata[FORGOTTEN_BY_KEY] = source
         row["metadata"] = metadata
         row["metadata_json"] = metadata
         row["updated_at"] = ts
