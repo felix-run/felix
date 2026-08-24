@@ -139,10 +139,14 @@ class AuthMiddleware:
 
     Was a `BaseHTTPMiddleware`, which cost ~143us per request and handed every
     response chunk across a memory object stream — measurably the largest single
-    overhead on the SSE path. It also scoped the context wrongly: under
-    `BaseHTTPMiddleware`, `call_next` returns as soon as the response *starts*, so
-    `async_run_with_context` exited while an SSE body was still streaming. Here the
-    `async with` wraps the whole ASGI call, so the context covers the body too.
+    overhead on the SSE path.
+
+    The `async with` wraps the whole ASGI call, so the context covers the response
+    body and not just the handler. Under `BaseHTTPMiddleware` that happened to hold
+    too, despite `call_next` returning as soon as the response *started*: it runs the
+    downstream app in a child task, and `start_soon` gives that task a copy of the
+    context, so resetting the token here never reached it. Relying on that was
+    accidental. Here it is structural, which is what the test guards.
     """
 
     def __init__(

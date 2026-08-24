@@ -106,3 +106,37 @@ async def test_busy_stream_emits_no_heartbeats() -> None:
     """A stream delivering events faster than the interval should never look idle."""
     got = await _drain(_counter(200), interval=5.0)
     assert HEARTBEAT not in got
+
+
+@pytest.mark.asyncio
+async def test_the_queue_bound_actually_applies_backpressure() -> None:
+    """The bound is the design claim, so it needs pinning on its own.
+
+    Setting HEARTBEAT_QUEUE_MAXSIZE to 0 — an unbounded queue, no backpressure at
+    all — passes every other test in this file, because the full-queue test is
+    parameterised by the very constant it is meant to exercise. An unbounded queue
+    turns a slow SSE consumer into unbounded memory growth in the API process, so
+    "the pump blocks and the agent loop feels it" has to be asserted directly.
+    """
+    assert HEARTBEAT_QUEUE_MAXSIZE >= 8, "a tiny bound would make the other tests vacuous"
+
+    produced = 0
+
+    async def counted():
+        nonlocal produced
+        for i in range(HEARTBEAT_QUEUE_MAXSIZE * 4):
+            produced += 1
+            yield i
+
+    agen = with_heartbeat(counted())
+    await agen.__anext__()  # start the pump, then stop draining
+    for _ in range(50):
+        await asyncio.sleep(0)
+
+    # One consumed, `maxsize` parked in the queue, and the pump blocked on the next
+    # put. Anything materially above that means the bound is not holding.
+    assert produced <= HEARTBEAT_QUEUE_MAXSIZE + 2, (
+        f"pump produced {produced} events with a stalled consumer and a "
+        f"{HEARTBEAT_QUEUE_MAXSIZE}-slot queue — backpressure is not applying"
+    )
+    await agen.aclose()
