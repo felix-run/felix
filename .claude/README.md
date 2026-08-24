@@ -9,7 +9,7 @@ separate **felix-web** repo.
 ├── settings.json     hook registration, permission allow/ask/deny, status line
 ├── agents/           11 subagents (delegated, isolated context)
 ├── skills/           14 Agent Skills (agentskills.io format, loaded on demand)
-├── hooks/            14 lifecycle hooks (deterministic enforcement)
+├── hooks/            15 lifecycle hooks (deterministic enforcement)
 ├── rules/            always-loaded invariants
 └── logs/             subagent audit trail (gitignored)
 ```
@@ -67,6 +67,7 @@ skill or subagent.
 | `SessionStart(compact)` | `compact-reminder.sh` | Re-injects the invariants most likely lost in a summary |
 | `PreToolUse(Edit\|Write)` | `protect-files.sh` | **Blocks** edits to `.env`, `secrets/`, `uv.lock`, generated dirs, and published migrations |
 | `PreToolUse(Bash)` | `pytest-env-guard.sh` | **Blocks** a bare `pytest` that would hit the `.env` Postgres, and points at `./scripts/test.sh` |
+| `PreToolUse(Bash)` | `pr-quality-gate.sh` | **Blocks** `gh pr create` until the quality reviewers have run on this commit |
 | `PreToolUse(Bash)` | `git-guard.sh` | **Blocks** force-push, `--no-verify`, `reset --hard`; warns when committing on `main` |
 | `PostToolUse(Edit\|Write)` | `ruff-format.sh` | Formats + autofixes the edited `.py`, reports what ruff could not fix |
 | `PostToolUse(Edit\|Write)` | `manifest-validate.sh` | Runs `felix validate-manifest` on a changed manifest |

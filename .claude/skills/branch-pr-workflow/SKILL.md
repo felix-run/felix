@@ -45,7 +45,20 @@ Commit or push **only when the user asks**.
    Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
    ```
 
-6. **Open the PR**
+6. **Run the quality reviewers.** When the PR changes Python under `apps/`, `packages/`, or
+   `tests/`, delegate to **felix-quality-reviewer** on `git diff origin/main...HEAD`, and to
+   **felix-test-quality-reviewer** as well when `tests/` changed. Act on the compounding findings or
+   say why each one stands, then record the review so the gate passes:
+
+   ```bash
+   mkdir -p .claude/logs/quality-review && touch .claude/logs/quality-review/$(git rev-parse HEAD)
+   ```
+
+   `pr-quality-gate.sh` blocks `gh pr create` until that marker exists for the exact commit, so a
+   new or amended commit asks for a fresh review. "Reviewed, nothing compounding" is a normal
+   result — the reviewers are not graded on finding something.
+
+7. **Open the PR**
 
    ```bash
    git push -u origin <branch>
