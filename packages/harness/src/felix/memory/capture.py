@@ -9,7 +9,8 @@ from typing import Any
 from felix.config import Settings
 from felix.manifests.schema import MemoryCapture
 from felix.memory import store as memory_store
-from felix.patterns.types import ChatMessage
+from felix.memory.extraction import ExtractedMemory, extract_memories, looks_like_assistant_meta
+from felix.session.compaction import fence_untrusted
 
 logger = logging.getLogger("felix.memory.capture")
 
@@ -121,56 +122,48 @@ async def capture_from_turn(
     if len(blob) < capture.min_chars:
         return []
 
-    facts: list[str] = []
+    proposed: list[ExtractedMemory] | None = None
     if model is not None:
-        try:
-            from felix.patterns.model import ModelChatOptions
-
-            result = await model.chat(
-                [
-                    ChatMessage(
-                        role="system",
-                        content=(
-                            "Extract up to "
-                            f"{capture.max_facts} durable facts from the dialogue. "
-                            "Return one fact per line. No numbering. Skip ephemeral chatter."
-                        ),
-                    ),
-                    ChatMessage(role="user", content=blob[:12000]),
-                ],
-                [],
-                ModelChatOptions(isolate_cache=True),
-            )
-            for line in (result.message.content or "").splitlines():
-                line = line.strip().lstrip("-* ").strip()
-                if len(line) >= max(20, capture.min_chars // 2):
-                    facts.append(line)
-                if len(facts) >= capture.max_facts:
-                    break
-        except Exception:
-            logger.debug("memory capture model call failed; using heuristic", exc_info=True)
-
-    if not facts:
-        facts = _heuristic_facts(
-            assistant_text or user_text,
+        proposed = await extract_memories(
+            model,
+            fence_untrusted(blob[:12000]),
             max_facts=capture.max_facts,
-            min_chars=max(20, capture.min_chars // 2),
+            verify=capture.verify,
         )
 
-    chosen = facts[: capture.max_facts]
-    vectors = await _embed_facts(settings, chosen)
+    if proposed is None:
+        # No model, or the extraction could not be read. An empty *list* is a
+        # different answer -- the model ran and said nothing here is worth keeping --
+        # and falling back on that would let a regex overrule the judgement the model
+        # was asked for. That is what `if not proposed` did.
+        proposed = [
+            ExtractedMemory(content=line)
+            for line in _heuristic_facts(
+                assistant_text or user_text,
+                max_facts=capture.max_facts,
+                min_chars=max(20, capture.min_chars // 2),
+            )
+            if not looks_like_assistant_meta(line)
+        ]
+
+    chosen = proposed[: capture.max_facts]
+    vectors = await _embed_facts(settings, [m.content for m in chosen])
 
     stored: list[str] = []
-    for i, fact in enumerate(chosen):
+    for i, memory in enumerate(chosen):
         try:
             await memory_store.put_memory(
                 settings,
                 tenant_id,
-                content=fact,
-                kind="fact",
+                content=memory.content,
+                kind=memory.kind,
                 manifest_id=manifest_id,
                 origin_seq=origin_seq,
                 thread_id=thread_id,
+                # The point of asking for a topic key: a later value for the same key
+                # replaces this one instead of sitting beside it contradicting it.
+                topic_key=memory.topic_key or None,
+                importance=memory.importance,
                 # Provenance: these are extracted from the assistant turn, which can
                 # repeat text a hostile tool returned. Anything not stated by the user
                 # is reference material, never a developer-tier instruction.
@@ -178,7 +171,7 @@ async def capture_from_turn(
                 embedding=vectors[i] if vectors else None,
                 embedding_model=_embedding_model(settings) if vectors else "",
             )
-            stored.append(fact)
+            stored.append(memory.content)
         except Exception:
             logger.debug("put_memory failed", exc_info=True)
     return stored

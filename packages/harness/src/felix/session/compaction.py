@@ -33,13 +33,26 @@ _FENCE_OPEN = "<untrusted_transcript>"
 _FENCE_CLOSE = "</untrusted_transcript>"
 
 
-def _fence_untrusted(text: str) -> str:
-    """Wrap a transcript so the summarizer can tell data from instruction.
+def fence_untrusted(text: str) -> str:
+    """Wrap a transcript so a model can tell data from instruction.
 
-    The closing token is neutralized inside the payload so the content cannot close the
-    fence early and continue as if it were the harness speaking.
+    Public because memory extraction needs the same fence: it reads the same
+    transcripts, and what it extracts is later injected into prompts, so an unfenced
+    extractor is a direct injection-to-persistence-to-injection path.
+
+    Both tokens are neutralized inside the payload. The closing one so the content
+    cannot close the fence early and continue as if it were the harness speaking; the
+    opening one because leaving it meant a payload could close the fence, speak in its
+    own voice, and then *reopen* one, so everything after it read as a fresh fenced
+    region and the forgery was invisible in the assembled prompt. Only the close was
+    handled, which `_neutralize` in `felix/memory/capture.py` already got right for
+    `<known_facts>`.
     """
-    body = (text or "").replace(_FENCE_CLOSE, "<\u200bunstrusted_transcript_end>")
+    body = (
+        (text or "")
+        .replace(_FENCE_CLOSE, "<\u200buntrusted_transcript_end>")
+        .replace(_FENCE_OPEN, "<\u200buntrusted_transcript_start>")
+    )
     return f"{_FENCE_OPEN}\n{body}\n{_FENCE_CLOSE}"
 
 
@@ -454,7 +467,7 @@ class CompactingSessionStrategy:
                             role="system",
                             content=STRUCTURED_SUMMARY_PROMPT + _UNTRUSTED_NOTICE + prev + focus,
                         ),
-                        ChatMessage(role="user", content=_fence_untrusted(text[:120_000])),
+                        ChatMessage(role="user", content=fence_untrusted(text[:120_000])),
                     ],
                     [],
                     ModelChatOptions(isolate_cache=True),
@@ -560,5 +573,6 @@ __all__ = [
     "estimate_messages_tokens",
     "estimate_tokens",
     "extract_file_ops_from_events",
+    "fence_untrusted",
     "serialize_conversation",
 ]

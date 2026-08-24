@@ -249,6 +249,9 @@ class MemoryCapture(_Strict):
     model: str = "claude-haiku"
     max_facts: int = Field(default=5, ge=1, le=20)
     min_chars: int = Field(default=80, ge=0)
+    # A second pass that keeps only what the excerpt supports. Off by default because
+    # it doubles the extraction calls; worth it where stored memory is acted on.
+    verify: bool = False
 
 
 class MemoryConsolidate(_Strict):
