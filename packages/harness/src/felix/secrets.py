@@ -9,6 +9,8 @@ import re
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
+from felix.logging_setup import loggable
+
 logger = logging.getLogger("felix.secrets")
 
 # Values resolved via hydrate_secrets — used for output masking.
@@ -56,15 +58,22 @@ class FileSecrets:
 
     async def get(self, name: str) -> str | None:
         # Reject path traversal; only basename-like relative keys under root.
+        #
+        # The name is logged through `loggable` because on this path it is, by
+        # construction, a value someone chose and the loader refused -- so a newline in
+        # it would forge a log entry, and the entry it would forge sits right beside
+        # genuine "rejected" records. The name itself is safe to log and worth logging:
+        # it is the key, never the secret, and a rejected lookup is only actionable if
+        # you can see what was asked for.
         raw = Path(name)
         if raw.is_absolute() or ".." in raw.parts:
-            logger.warning("file_secrets_reject path=%s", name)
+            logger.warning("file_secrets_reject path=%s", loggable(name, limit=120))
             return None
         path = (self._root / raw).resolve()
         try:
             path.relative_to(self._root)
         except ValueError:
-            logger.warning("file_secrets_reject path=%s", name)
+            logger.warning("file_secrets_reject path=%s", loggable(name, limit=120))
             return None
         if path.is_file():
             return path.read_text(encoding="utf-8").rstrip("\n")
@@ -154,7 +163,7 @@ async def hydrate_secrets(settings: object) -> list[str]:
             try:
                 val = await provider.get(name)
             except Exception:
-                logger.debug("secret_lookup_failed name=%s", name, exc_info=True)
+                logger.debug("secret_lookup_failed name=%s", loggable(name, limit=120), exc_info=True)
                 continue
             if val:
                 setattr(settings, attr, val)
@@ -167,7 +176,7 @@ async def hydrate_secrets(settings: object) -> list[str]:
         try:
             val = await provider.get(name)
         except Exception:
-            logger.debug("secret_lookup_failed name=%s", name, exc_info=True)
+            logger.debug("secret_lookup_failed name=%s", loggable(name, limit=120), exc_info=True)
             continue
         if val and len(val) >= 8:
             found.append(val)
