@@ -17,6 +17,15 @@ case "$cmd" in *"gh pr create"*) ;; *) exit 0 ;; esac
 root="${CLAUDE_PROJECT_DIR:-.}"
 command -v git >/dev/null 2>&1 || exit 0
 
+# The rest of this file assumes `-C` decides which repo is being asked about. It does
+# not while GIT_DIR or GIT_WORK_TREE are exported -- those win over -C, so an ambient
+# GIT_DIR made every query below answer about that repo from anywhere. The visible
+# symptom is a PR in an unrelated checkout blocked for unreviewed Python here.
+# No `command` builtin in here: /usr/bin/command exists on macOS and not on most
+# Linux, so `env ... command git` would break the hook for everyone else. `env` execs
+# the git binary directly, so this does not recurse into the function.
+git() { env -u GIT_DIR -u GIT_WORK_TREE git "$@"; }
+
 # Which directory will the command actually run in? Not necessarily the one this hook
 # was invoked from: a leading `cd` is how a PR gets opened in a sibling checkout from a
 # session rooted here. Resolving it from the hook's own cwd made the guard below a
@@ -32,6 +41,12 @@ workdir=$(printf '%s' "$INPUT" | jq -r '.cwd // empty')
 # control fire or not depending on whether a path mentioned in a PR description
 # happened to exist locally. A gate that intermittently disables itself on prose is
 # harder to notice than one that is plainly broken.
+# More than one `cd` in the chain means the first one is not where bash lands:
+# `cd <sibling> && cd <project> && …` opened a PR here having pointed the gate at the
+# sibling. Deliberately conservative -- falling back to the payload cwd gates, so this
+# can only ever cause a block, never a skip.
+ncd=$(printf '%s' "$cmd" | head -n 1 | grep -o '\(^\|[;&|][[:space:]]*\)cd[[:space:]]' | wc -l | tr -d ' ')
+[ "${ncd:-0}" -gt 1 ] && cmd=""
 target=$(printf '%s' "$cmd" | head -n 1 | sed -n 's/^[[:space:]]*cd[[:space:]]\{1,\}\([^;&|]*\).*/\1/p')
 if [ -n "$target" ]; then
   target=${target%"${target##*[![:space:]]}"}   # trailing whitespace

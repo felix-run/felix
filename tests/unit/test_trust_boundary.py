@@ -352,7 +352,19 @@ async def test_when_args_separates_presence_from_truthiness(value: object, shoul
 
 
 # Every `topic_key` shape a model can emit, and whether it is a key at all.
-_KEY_SHAPES = ["", "   ", "\t\n", "ops.policy", " ops.policy ", "0"]
+_KEY_SHAPES = [
+    "",
+    "   ",
+    "\t\n",
+    "ops.policy",
+    " ops.policy ",
+    "0",
+    # Longer than MAX_TOPIC_KEY_CHARS and blank only after truncation. Without this the
+    # table could not see a cut-then-strip store disagreeing with a strip-then-test
+    # gate, which is precisely the bug that shipped once here.
+    " " * 250 + "a",
+    "a" * 199 + " b",
+]
 
 
 @pytest.mark.parametrize("raw", _KEY_SHAPES, ids=lambda v: repr(v))

@@ -16,6 +16,7 @@ Exit 2 is "blocked" in the PreToolUse protocol; exit 0 is "allowed".
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -54,7 +55,7 @@ def _repo(root: Path, changed: str) -> Path:
     return root
 
 
-def _run(command: str, *, project: Path, cwd: Path) -> int:
+def _run(command: str, *, project: Path, cwd: Path, env: dict[str, str] | None = None) -> int:
     payload = json.dumps({"tool_input": {"command": command}, "cwd": str(cwd)})
     return subprocess.run(
         ["bash", str(HOOK)],
@@ -62,7 +63,11 @@ def _run(command: str, *, project: Path, cwd: Path) -> int:
         capture_output=True,
         text=True,
         cwd=str(cwd),
-        env={"PATH": __import__("os").environ["PATH"], "CLAUDE_PROJECT_DIR": str(project)},
+        env={
+            "PATH": os.environ["PATH"],
+            "CLAUDE_PROJECT_DIR": str(project),
+            **(env or {}),
+        },
     ).returncode
 
 
@@ -197,3 +202,44 @@ def test_a_worktree_is_gated_on_its_own_head(tmp_path: Path) -> None:
 
     (markers / _git(tree, "rev-parse", "HEAD")).touch()
     assert _run(CREATE, project=project, cwd=tree) == 0
+
+
+# --- where the hook and bash still parted company ------------------------------------
+
+
+@pytest.mark.parametrize("first", ["sibling", "plain"])
+def test_a_second_cd_is_not_a_way_back_in_ungated(tmp_path: Path, first: str) -> None:
+    """`cd <elsewhere> && cd <project> && …` — the hook took the first `cd` and stopped;
+    bash kept going and opened the PR here. More than one `cd` now falls back to the
+    payload cwd, which gates. Conservative by construction: the fallback can only ever
+    cause a block, never a skip."""
+    project = _repo(tmp_path / "project", "packages/harness/src/felix/x.py")
+    sibling = _repo(tmp_path / "sibling", "docs/page.mdx")
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    start = sibling if first == "sibling" else plain
+    assert _run(f"cd {start} && cd {project} && {CREATE}", project=project, cwd=project) == 2
+
+
+def test_an_ambient_git_dir_does_not_follow_the_gate_into_another_repo(tmp_path: Path) -> None:
+    """`-C` does not override an exported GIT_DIR — the env var wins.
+
+    The whole file assumes `-C` decides which repo is being asked about, so an ambient
+    GIT_DIR made every query answer about that repo from anywhere: a PR in an unrelated
+    checkout, blocked for unreviewed Python here.
+    """
+    project = _repo(tmp_path / "project", "packages/harness/src/felix/x.py")
+    unrelated = _repo(tmp_path / "unrelated", "docs/page.mdx")
+    assert _run(CREATE, project=project, cwd=unrelated, env={"GIT_DIR": str(project / ".git")}) == 0
+
+
+def test_an_ambient_git_work_tree_does_not_open_a_way_out(tmp_path: Path) -> None:
+    """The same hazard in the fail-open direction: a PR in this project must still gate
+    however the environment is pointed."""
+    project = _repo(tmp_path / "project", "packages/harness/src/felix/x.py")
+    sibling = _repo(tmp_path / "sibling", "docs/page.mdx")
+    for var in ("GIT_DIR", "GIT_WORK_TREE"):
+        value = str(sibling / ".git") if var == "GIT_DIR" else str(sibling)
+        assert _run(CREATE, project=project, cwd=project, env={var: value}) == 2, (
+            f"{var} pointed the gate out of the project"
+        )
