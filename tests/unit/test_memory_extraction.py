@@ -61,9 +61,11 @@ class _ScriptedModel:
     def __init__(self, *replies: str) -> None:
         self._replies = list(replies)
         self.prompts: list[str] = []
+        self.opts: list[object] = []
 
     async def chat(self, messages, tools, opts=None):
         self.prompts.append("\n".join(m.content or "" for m in messages))
+        self.opts.append(opts)
         if not self._replies:
             raise AssertionError("model called more times than the script provides")
         reply = self._replies.pop(0)
@@ -104,8 +106,9 @@ def test_parsing_never_raises_on_junk() -> None:
     """A malformed reply costs memories, never the turn."""
     for junk in ("", "no json here", "[", "[{", '{"content": "not a list"}'):
         assert parse_memories(junk) is None, junk
-    # A balanced array of non-objects parses; the items are skipped individually.
-    assert parse_memories("[1, 2, 3]") == []
+    # An array whose every item is unusable is unreadable, not empty — that is the
+    # distinction the verify pass depends on.
+    assert parse_memories("[1, 2, 3]") is None
 
 
 def test_a_bad_item_does_not_discard_the_good_ones() -> None:
@@ -515,7 +518,9 @@ async def test_unreadable_extraction_falls_back_to_the_heuristic() -> None:
         capture=MemoryCapture(enabled=True, max_facts=3, min_chars=5),
         model=_ScriptedModel("I'm afraid I can't help with that"),
     )
-    assert stored, "an unreadable extraction must fall back, not store nothing"
+    assert stored == ["The deploy runbook lives in the ops repository at docs/deploy.md."], (
+        "the heuristic fallback must store the fact, not merely store something"
+    )
 
 
 @pytest.mark.asyncio
@@ -573,12 +578,88 @@ def test_third_person_instructions_are_not_mistaken_for_pleasantries() -> None:
         assert not looks_like_assistant_meta(text), text
 
 
-def test_the_sentence_that_started_this_is_still_caught() -> None:
-    """Anchoring the pleasantries must not lose the original failure."""
-    assert looks_like_assistant_meta(APOLOGY)
+def test_a_pleasantry_with_no_first_person_token_is_still_caught() -> None:
+    """The half of the pattern that the first-person markers do not cover.
+
+    The previous version of this asserted `looks_like_assistant_meta(APOLOGY)` — a
+    byte-identical copy of an assertion in `test_assistant_meta_is_recognised`, and
+    green with the pleasantry alternatives deleted entirely, because APOLOGY also
+    contains "I'll ". These sentences carry no first-person token at all.
+    """
+    for text in (
+        "Happy to help with the next deploy.",
+        "Let me know if you would like more detail.",
+        "Feel free to ask me anything else.",
+        "If you need me to look that up, say the word.",
+    ):
+        assert looks_like_assistant_meta(text), text
+
+
+def test_the_pattern_is_deliberately_conservative() -> None:
+    """A documented false negative, kept on purpose.
+
+    Every alternative requires its own object — "if you need *me*", "happy to *help*".
+    That leaves phrasings like this one uncaught. The asymmetry is intentional: a
+    false positive silently drops a durable memory and nothing logs it, while a false
+    negative stores one junk sentence that the prompt already argues against and that
+    a `topic_key` will eventually supersede. If this list grows, it should grow
+    towards phrases with no plausible third-person reading.
+    """
+    assert not looks_like_assistant_meta("If you need anything else, just ask.")
 
 
 def test_a_trailing_comma_reaches_the_json_decoder() -> None:
     """The JSONDecodeError arm was unreachable: every junk case either failed the
     balance scan first or parsed cleanly."""
     assert parse_memories('[{"content": "x",}]') is None
+
+
+def test_a_leading_conditional_instruction_survives() -> None:
+    """The commoner runbook phrasing, and the one an anchored pattern got wrong.
+
+    Anchoring the pleasantries to the start of the string fixed
+    "Escalate to on-call if you need a rollback" and broke this shape instead, so the
+    class was never actually covered — only the half that happened to pass.
+    """
+    for text in (
+        "If you need a rollback, page the on-call engineer.",
+        "If you need to restore the database, run scripts/restore.sh.",
+        "Feel free to skip the smoke test on docs-only PRs.",
+    ):
+        assert not looks_like_assistant_meta(text), text
+
+
+def test_a_pleasantry_after_the_first_sentence_is_caught() -> None:
+    """`^` without re.MULTILINE only matches the start of the whole string, so a
+    pleasantry in the second sentence or on the second line went unnoticed."""
+    for text in (
+        "Got it. Let me know if you would like more detail.",
+        "Understood.\nFeel free to ask me anything else.",
+    ):
+        assert looks_like_assistant_meta(text), text
+
+
+@pytest.mark.asyncio
+async def test_an_unusable_verdict_keeps_the_unverified_set() -> None:
+    """A verdict that parses but carries no usable item is a broken verifier.
+
+    Deciding "unreadable" at the array level only meant `["the runbook lives in ops"]`
+    — an ordinary shape for a small model asked to return a subset — read as
+    "rejected everything", and `verify: true` silently stored nothing with no log.
+    """
+    for verdict in ('["The runbook lives in the ops repository."]', '[{"memory": "x", "ok": true}]'):
+        model = _ScriptedModel(_payload({"content": "The runbook lives in the ops repository."}), verdict)
+        out = await extract_memories(model, "excerpt", max_facts=3, verify=True)
+        assert [m.content for m in out] == ["The runbook lives in the ops repository."], verdict
+
+
+@pytest.mark.asyncio
+async def test_extraction_does_not_spend_the_conversation_prompt_cache() -> None:
+    """A side request in the middle of somebody's turn carries a different prefix.
+
+    `isolate_cache=True` survived the whole suite when flipped, so the comment
+    explaining why it matters was the only thing holding it.
+    """
+    model = _ScriptedModel(_payload({"content": "A durable fact about the world."}))
+    await extract_memories(model, "excerpt", max_facts=3)
+    assert model.opts[0].isolate_cache is True

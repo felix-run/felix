@@ -183,6 +183,16 @@ def parse_memories(text: str) -> list[ExtractedMemory] | None:
         if memory.kind not in _KINDS:
             memory.kind = "fact"
         out.append(memory)
+
+    if data and not out:
+        # The array parsed but every item was unusable — bare strings rather than
+        # objects, or a renamed key. That is a broken response, not an empty answer,
+        # and the difference decides whether the verify pass keeps or discards the
+        # unverified set. Deciding "unreadable" at the array level only meant a
+        # verifier answering `["the runbook lives in ops"]` — an ordinary shape for a
+        # small model asked to "return the subset" — read as "rejected everything"
+        # and silently stored nothing.
+        return None
     return out
 
 
@@ -216,19 +226,17 @@ async def _ask(model: Any, system: str, user: str, *, max_tokens: int = 2048) ->
     return result.message.content or ""
 
 
-# Two patterns, because the alternatives behave differently. The first-person
-# markers are assistant-voice wherever they appear. The pleasantries are not: "happy
-# to", "feel free", "let me know" and "if you need" occur mid-sentence in ordinary
-# operational facts — "Escalate to on-call if you need a rollback" is exactly the
-# kind of durable instruction this feature exists to capture, and an unanchored
-# pattern silently ate it. Anchored to the start, they still catch the sentence that
-# motivated all of this ("If you need me to reference this information later…").
-_META_VOICE = re.compile(
-    r"\b(i'?ll |i am |i'?m |i can|i have|i don'?t|my memory|as an ai)",
-    re.IGNORECASE,
-)
-_META_OPENER = re.compile(
-    r"^\s*(let me know|happy to|feel free|if you need)",
+# Every alternative carries its own first-person subject, so none of them needs
+# anchoring. Two earlier shapes were both wrong. A bare `if you need` matched
+# "Escalate to on-call if you need a rollback" — a durable instruction, silently
+# dropped. Anchoring it to `^` fixed that phrasing and broke the commoner one, "If
+# you need a rollback, page the on-call engineer", while `^` without re.MULTILINE
+# also stopped matching a pleasantry in the second sentence. Requiring the object
+# ("if you need *me*", "happy to *help*") separates the assistant talking about
+# itself from an instruction that merely contains the same words, at any position.
+_META = re.compile(
+    r"\b(i'?ll |i am |i'?m |i can|i have|i don'?t|my memory|as an ai|"
+    r"if you need me|happy to help|let me know if you|feel free to ask me)",
     re.IGNORECASE,
 )
 
@@ -241,8 +249,7 @@ def looks_like_assistant_meta(text: str) -> bool:
     explicit exclusion. This is the exact failure that made capture store an apology
     as a durable fact, and a prompt alone had already failed to prevent it.
     """
-    text = text or ""
-    return bool(_META_VOICE.search(text) or _META_OPENER.search(text))
+    return bool(_META.search(text or ""))
 
 
 async def extract_memories(
