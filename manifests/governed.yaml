@@ -51,6 +51,19 @@ spec:
   memory:
     checkpointer: postgres
     store: pgvector
+    capture:
+      # Extraction runs once per turn on `model` — a small, mechanical job that must
+      # not be billed to the turn's model. Conservative caps: memory that grows fast
+      # is memory that goes stale fast.
+      enabled: true
+      model: claude-haiku
+      max_facts: 3
+      min_chars: 200
+    recall:
+      # Governed recall. The tools are bound above the wrapper stack, so a recalled
+      # memory passes through content screening; the automatic fact prelude does not.
+      tools: true
+      limit: 5
 
   auth:
     inbound:

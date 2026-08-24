@@ -908,7 +908,7 @@
           "type": "boolean"
         },
         "model": {
-          "default": "llama-3-fast",
+          "default": "claude-haiku",
           "title": "Model",
           "type": "string"
         },

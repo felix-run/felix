@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Memory is on in `governed` and `cowork`.** Everything above shipped inert:
+  `capture` was disabled in all eight bundled manifests and `recall.tools` defaulted
+  off, so no agent wrote or read a memory while the published docs described the
+  feature as working. Both manifests now capture durable facts (3 per turn, 200-char
+  floor) and expose the governed recall tools. Verified end to end against a real
+  model and a real pgvector Postgres: the agent chose sensible topic keys
+  (`ops.deploy_runbook_location`), both facts from one turn shared an ordinal, and
+  recall found them through the full-text and topic channels.
+
+### Fixed
+
+- **`spec.memory.capture.model` was declared and never read**, so fact extraction ran
+  on the turn's model — a small mechanical job billed to a frontier model on every
+  turn, doubling the cost of having memory at all. Now honoured, falling back to the
+  turn's model when the configured one cannot be built. Its default also moved from
+  `llama-3-fast` to `claude-haiku`: the old default routes to Ollama, which a
+  deployment with only an Anthropic key does not run, so capture would have failed
+  every turn and said so only in a log.
+- **Memories written through the `remember` tool carried no provenance.** The agent
+  is compiled before the request's thread is known, so the bind-time `thread_id` was
+  always empty and `origin_seq` never set — leaving half the store looking like
+  genesis to an as-of query. Both are now resolved from the request context at call
+  time. Found by running the feature, not by a test.
+
 - **Memory management API** — `GET /memory`, `GET /memory/search` (the same hybrid
   ranking the agent sees, with the contributing channels reported so a surprising
   result is explainable), `GET /memory/as-of/{turn_seq}`, `POST /memory` and
