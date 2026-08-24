@@ -9,6 +9,8 @@ from typing import Any
 from felix.config import Settings
 from felix.manifests.schema import MemoryCapture
 from felix.memory import store as memory_store
+from felix.memory.extraction import ExtractedMemory, extract_memories, looks_like_assistant_meta
+from felix.session.compaction import fence_untrusted
 
 logger = logging.getLogger("felix.memory.capture")
 
@@ -120,11 +122,8 @@ async def capture_from_turn(
     if len(blob) < capture.min_chars:
         return []
 
-    proposed: list[Any] = []
+    proposed: list[ExtractedMemory] | None = None
     if model is not None:
-        from felix.memory.extraction import extract_memories
-        from felix.session.compaction import fence_untrusted
-
         proposed = await extract_memories(
             model,
             fence_untrusted(blob[:12000]),
@@ -132,11 +131,11 @@ async def capture_from_turn(
             verify=capture.verify,
         )
 
-    if not proposed:
-        # No model, or it returned nothing usable. The heuristic has no judgement, so
-        # it gets the same exclusion applied bluntly.
-        from felix.memory.extraction import ExtractedMemory, looks_like_assistant_meta
-
+    if proposed is None:
+        # No model, or the extraction could not be read. An empty *list* is a
+        # different answer -- the model ran and said nothing here is worth keeping --
+        # and falling back on that would let a regex overrule the judgement the model
+        # was asked for. That is what `if not proposed` did.
         proposed = [
             ExtractedMemory(content=line)
             for line in _heuristic_facts(

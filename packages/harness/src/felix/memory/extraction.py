@@ -34,7 +34,7 @@ import logging
 import re
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, field_validator
 
 logger = logging.getLogger("felix.memory.extraction")
 
@@ -53,7 +53,23 @@ class ExtractedMemory(BaseModel):
     content: str
     kind: str = "fact"
     topic_key: str = ""
-    importance: float = Field(default=0.5, ge=0.0, le=1.0)
+    importance: float = 0.5
+
+    @field_validator("importance", mode="before")
+    @classmethod
+    def _clamp_importance(cls, value: Any) -> float:
+        """Clamp rather than reject.
+
+        This was `Field(ge=0.0, le=1.0)`, so a model answering `8` or `"high"` to a
+        request for 0.0-1.0 raised inside `model_validate`, the caller's bare `except`
+        swallowed it, and an otherwise good memory vanished because its *score* was
+        badly formatted. That contradicts the `extra="ignore"` reasoning directly
+        above: one malformed field must not discard the memory.
+        """
+        try:
+            return min(1.0, max(0.0, float(value)))
+        except TypeError, ValueError:
+            return 0.5
 
 
 EXTRACT_SYSTEM = """You extract durable memories from a conversation so an assistant \
@@ -128,16 +144,31 @@ def _extract_json_array(text: str) -> str | None:
 
 
 def parse_memories(text: str) -> list[ExtractedMemory]:
-    """Best-effort parse. Never raises; skips whatever it cannot read."""
+    """Best-effort parse. Never raises; skips whatever it cannot read.
+
+    Returns `[]` for both "no memories" and "unreadable"; callers that need to tell
+    those apart use `parse_memories_or_none`.
+    """
+    return parse_memories_or_none(text) or []
+
+
+def parse_memories_or_none(text: str) -> list[ExtractedMemory] | None:
+    """Parse, distinguishing an empty answer from an unreadable one.
+
+    `None` means nothing parseable was found; `[]` means the model returned a
+    well-formed empty array. Collapsing the two is not survivable for the verify
+    pass, where "the verifier rejected everything" and "the verifier is broken" call
+    for opposite actions.
+    """
     raw = _extract_json_array(text)
     if raw is None:
-        return []
+        return None
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
-        return []
+        return None
     if not isinstance(data, list):
-        return []
+        return None
 
     out: list[ExtractedMemory] = []
     for item in data:
@@ -185,40 +216,6 @@ async def _ask(model: Any, system: str, user: str, *, max_tokens: int = 2048) ->
     return result.message.content or ""
 
 
-async def extract_memories(
-    model: Any,
-    excerpt: str,
-    *,
-    max_facts: int = 3,
-    verify: bool = False,
-) -> list[ExtractedMemory]:
-    """Propose memories from a conversation excerpt.
-
-    Returns `[]` rather than raising on any failure — a turn must not fail because
-    memory extraction did.
-    """
-    try:
-        proposed = parse_memories(await _ask(model, EXTRACT_SYSTEM, excerpt))
-    except Exception:
-        logger.debug("memory extraction call failed", exc_info=True)
-        return []
-
-    proposed = merge(proposed)[:max_facts]
-    if not proposed or not verify:
-        return proposed
-
-    try:
-        payload = json.dumps([m.model_dump() for m in proposed])
-        checked = parse_memories(
-            await _ask(model, VERIFY_SYSTEM, f"Excerpt:\n{excerpt}\n\nProposed:\n{payload}")
-        )
-    except Exception:
-        logger.debug("memory verification failed; keeping the unverified set", exc_info=True)
-        return proposed
-    # An unparseable verification is not evidence that everything was wrong.
-    return checked or proposed
-
-
 _META = re.compile(
     r"\b(i'?ll |i am |i'?m |i can|i have|i don'?t|my memory|as an ai|let me know|"
     r"happy to|feel free|if you need)",
@@ -229,11 +226,72 @@ _META = re.compile(
 def looks_like_assistant_meta(text: str) -> bool:
     """Whether a sentence is the assistant talking about itself rather than the world.
 
-    A backstop for the heuristic path, which has no model to apply judgement — and a
-    cheap second line of defence for the model path, since this is the exact failure
-    that made capture store an apology as a durable fact.
+    Applied to both paths: the heuristic one, which has no model to apply judgement,
+    and the model one, where it is the second line of defence behind EXTRACT_SYSTEM's
+    explicit exclusion. This is the exact failure that made capture store an apology
+    as a durable fact, and a prompt alone had already failed to prevent it.
     """
     return bool(_META.search(text or ""))
+
+
+async def extract_memories(
+    model: Any,
+    excerpt: str,
+    *,
+    max_facts: int,
+    verify: bool = False,
+) -> list[ExtractedMemory] | None:
+    """Propose memories from a conversation excerpt.
+
+    `None` means the extraction did not run or could not be read — the caller should
+    fall back. `[]` means it ran and the answer was "nothing here worth keeping",
+    which is a result, not a failure, and must not be overridden.
+
+    Never raises: a turn must not fail because memory extraction did.
+    """
+    try:
+        parsed = parse_memories_or_none(await _ask(model, EXTRACT_SYSTEM, excerpt))
+    except Exception:
+        logger.debug("memory extraction call failed", exc_info=True)
+        return None
+    if parsed is None:
+        return None
+
+    # The prompt forbids assistant-meta, and a model ignoring it is the exact failure
+    # this module was written for -- storing "I'll have it available" as a durable
+    # fact. A prompt alone was already tried. The cost is that a memory quoting the
+    # user in the first person ("I have a peanut allergy") is dropped rather than
+    # rewritten; EXTRACT_SYSTEM asks for third-person facts about the world, so that
+    # shape is itself a sign the model went off-instruction.
+    parsed = [m for m in parsed if not looks_like_assistant_meta(m.content)]
+
+    proposed = merge(parsed)[:max_facts]
+    if not proposed or not verify:
+        return proposed
+
+    try:
+        payload = json.dumps([m.model_dump() for m in proposed])
+        checked = parse_memories_or_none(
+            await _ask(model, VERIFY_SYSTEM, f"Excerpt:\n{excerpt}\n\nProposed:\n{payload}")
+        )
+    except Exception:
+        logger.debug("memory verification failed; keeping the unverified set", exc_info=True)
+        return proposed
+
+    if checked is None:
+        # Unreadable. Not evidence that everything was wrong, so the unverified set
+        # stands -- a broken verifier must not silently empty the store. A well-formed
+        # empty array is a different answer and is honoured below: previously both
+        # arrived here as `[]` and `checked or proposed` kept the rejected facts,
+        # so the pass failed open in exactly the case it exists for.
+        return proposed
+
+    # A filter, never a source. `checked` is whatever the second call parsed, and the
+    # excerpt it read is untrusted transcript -- so without this intersection a turn
+    # that steers the verifier writes attacker-chosen rows, at attacker-chosen
+    # importance, while the operator believes they enabled a filter.
+    keys = {dedupe_key(m.content) for m in proposed}
+    return [m for m in checked if dedupe_key(m.content) in keys]
 
 
 __all__ = [

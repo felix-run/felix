@@ -40,10 +40,19 @@ def fence_untrusted(text: str) -> str:
     transcripts, and what it extracts is later injected into prompts, so an unfenced
     extractor is a direct injection-to-persistence-to-injection path.
 
-    The closing token is neutralized inside the payload so the content cannot close the
-    fence early and continue as if it were the harness speaking.
+    Both tokens are neutralized inside the payload. The closing one so the content
+    cannot close the fence early and continue as if it were the harness speaking; the
+    opening one because leaving it meant a payload could close the fence, speak in its
+    own voice, and then *reopen* one, so everything after it read as a fresh fenced
+    region and the forgery was invisible in the assembled prompt. Only the close was
+    handled, which `_neutralize` in `felix/memory/capture.py` already got right for
+    `<known_facts>`.
     """
-    body = (text or "").replace(_FENCE_CLOSE, "<\u200bunstrusted_transcript_end>")
+    body = (
+        (text or "")
+        .replace(_FENCE_CLOSE, "<\u200buntrusted_transcript_end>")
+        .replace(_FENCE_OPEN, "<\u200buntrusted_transcript_start>")
+    )
     return f"{_FENCE_OPEN}\n{body}\n{_FENCE_CLOSE}"
 
 
