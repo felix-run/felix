@@ -663,3 +663,34 @@ async def test_extraction_does_not_spend_the_conversation_prompt_cache() -> None
     model = _ScriptedModel(_payload({"content": "A durable fact about the world."}))
     await extract_memories(model, "excerpt", max_facts=3)
     assert model.opts[0].isolate_cache is True
+
+
+@pytest.mark.asyncio
+async def test_a_verifier_that_rewrites_instead_of_choosing_keeps_the_set() -> None:
+    """The last silent-empty path in a pass that promises only to remove things.
+
+    `dedupe_key` normalises case and whitespace but not punctuation, so a verifier
+    that echoes an item back with a trailing full stop — or reworded — selected
+    nothing and emptied the turn with no log. `[]` is still a genuine rejection.
+    """
+    fact = "The runbook lives in the ops repository"
+    for verdict in (
+        _payload({"content": fact + "."}),
+        _payload({"content": "Runbook is in the ops repo"}),
+    ):
+        model = _ScriptedModel(_payload({"content": fact}), verdict)
+        out = await extract_memories(model, "excerpt", max_facts=3, verify=True)
+        assert [m.content for m in out] == [fact], verdict
+
+
+@pytest.mark.asyncio
+async def test_a_case_only_difference_still_selects() -> None:
+    """dedupe_key does normalise case and whitespace, so this must not take the
+    broken-verifier path above."""
+    fact = "The runbook lives in the ops repository"
+    model = _ScriptedModel(
+        _payload({"content": fact}),
+        _payload({"content": "  the RUNBOOK lives in the   ops repository "}),
+    )
+    out = await extract_memories(model, "excerpt", max_facts=3, verify=True)
+    assert [m.content for m in out] == [fact]

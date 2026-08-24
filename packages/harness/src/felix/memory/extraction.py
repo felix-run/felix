@@ -311,7 +311,15 @@ async def extract_memories(
     # verifier could delete a stored fact the extraction pass never touched, under a
     # flag advertised as keeping only what the excerpt supports.
     kept = {dedupe_key(m.content) for m in checked}
-    return [m for m in proposed if dedupe_key(m.content) in kept]
+    selected = [m for m in proposed if dedupe_key(m.content) in kept]
+    if checked and not selected:
+        # A non-empty verdict that selected nothing means the verifier rewrote rather
+        # than chose — `dedupe_key` normalises case and whitespace but not punctuation,
+        # so echoing an item back with a trailing full stop matches nothing. That is a
+        # broken verifier, not a rejection, and treating it as one emptied the turn
+        # silently. `[]` remains a genuine rejection and is still honoured above.
+        return proposed
+    return selected
 
 
 __all__ = [
