@@ -1,0 +1,113 @@
+name: Quality review
+
+# Runs the felix-quality-reviewer and felix-test-quality-reviewer subagents
+# (.claude/agents/) against the PR diff and posts findings as inline comments.
+#
+# Advisory: this workflow never fails the build. Quality findings are ranked by
+# carrying cost, not correctness — blocking a merge on them would train people to
+# ignore them. Correctness and security stay with CI and human review.
+#
+# Requires an ANTHROPIC_API_KEY repository secret. Without it the job exits early
+# with a notice instead of failing, so the workflow is safe to merge before the
+# secret exists. To authenticate with a Claude subscription instead, swap the
+# input for `claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}`.
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+
+concurrency:
+  group: quality-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      python: ${{ steps.filter.outputs.python }}
+      tests: ${{ steps.filter.outputs.tests }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        with:
+          filters: |
+            python:
+              - 'apps/**'
+              - 'packages/**'
+              - 'tests/**'
+            tests:
+              - 'tests/**'
+
+  review:
+    needs: changes
+    # Skip when no Python changed, on drafts, and on fork PRs — GitHub withholds
+    # secrets from fork runs on public repositories, so the job could only fail.
+    if: >-
+      needs.changes.outputs.python == 'true' &&
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: read
+      id-token: write
+    steps:
+      - name: Check for the API key
+        id: key
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::ANTHROPIC_API_KEY is not set — skipping the quality review."
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # fetch-depth: 0 so the reviewers can read `git diff origin/main...HEAD`
+      # and the surrounding history, not just the tip commit.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.key.outputs.present == 'true'
+        with:
+          fetch-depth: 0
+
+      - uses: anthropics/claude-code-action@c81e3bc69d1b18badbb63ba39581218f02421678 # v1
+        if: steps.key.outputs.present == 'true'
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            Review PR #${{ github.event.pull_request.number }} in ${{ github.repository }}.
+
+            Delegate the review — do not do it yourself:
+
+            1. Use the `felix-quality-reviewer` subagent on the production code in
+               `git diff origin/main...HEAD`. Its rubric and output format are defined in
+               `.claude/agents/felix-quality-reviewer.md`; follow them exactly.
+            2. ${{ needs.changes.outputs.tests == 'true'
+                   && 'Tests changed in this PR, so also use the `felix-test-quality-reviewer` subagent on the changed files under `tests/`.'
+                   || 'No tests changed in this PR, so skip felix-test-quality-reviewer.' }}
+
+            Then post the surviving findings as inline comments on the PR, one per finding,
+            each at the `file:line` the agent named.
+
+            Rules:
+            - Report only **compounding** and **contained** findings. Drop cosmetic ones —
+              this is automated commentary on someone else's PR, so the bar is higher than
+              in an interactive review.
+            - Post nothing at all if there are no such findings. Silence is the correct
+              output for clean code; do not post a summary saying you found nothing.
+            - Never comment on correctness or security. CI and human review own those, and
+              duplicate commentary is what makes bots ignorable.
+            - Never comment on a lint rule this repo disables on purpose. The `ignore` list
+              in `pyproject.toml` documents each one, and
+              `.claude/skills/code-quality/references/felix-hotspots.md` records why.
+          claude_args: >-
+            --max-turns 30
+            --allowedTools "Read,Grep,Glob,Bash,Agent,mcp__github_inline_comment__create_inline_comment"
