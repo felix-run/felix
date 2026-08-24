@@ -912,5 +912,12 @@ async def test_volume_alone_cannot_evict_a_curated_memory() -> None:
             manifest_id=MANIFEST,
             metadata={"source": "assistant"},
         )
+    # Distinct, increasing timestamps. `now_ms` has millisecond resolution, so writes
+    # in one test land in the same millisecond and a stable sort keeps insertion order
+    # — under which the curated row survives a recency-only window by accident and the
+    # test proves nothing. The Postgres arm would not be so kind.
+    for i, row in enumerate(memory_store._memory_rows.values()):
+        row["created_at"] = 1000.0 + i
+
     prompt = await _prelude(settings)
     assert "Require approval before any production write." in prompt
