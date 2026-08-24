@@ -22,7 +22,7 @@ import logging
 import time
 from typing import Any, cast
 
-from sqlalchemy import func, select, update
+from sqlalchemy import case, func, select, update
 
 from felix.config import Settings
 from felix.db.models import MemoryVector
@@ -127,6 +127,11 @@ async def put_memory(
     Wide by design — a memory is a wide record, and every field past ``content`` is
     keyword-only with a default, so callers name what they mean.
     """
+    # Truncated, not rejected: this is on the turn path, and a capture that raises
+    # would fail the user's turn over a memory. The id is derived from the bounded
+    # text so re-storing the same over-long content stays idempotent.
+    content = (content or "")[:MAX_CONTENT_CHARS]
+    topic_key = (topic_key or "")[:MAX_TOPIC_KEY_CHARS] or None
     mem_id = memory_id(manifest_id, content)
     ts = now_ms()
     row: dict[str, Any] = {
@@ -165,6 +170,56 @@ async def put_memory(
     return row
 
 
+# Writers, most trusted first. `management_api` is an authenticated operator holding
+# `memory:write`; the rest are the agent acting on its own, and `assistant` in
+# particular is auto-capture from a turn that may repeat hostile tool output.
+#
+# The ranking exists because supersession and upsert both used to ignore it. A
+# `topic_key` is chosen by the extractor from the transcript, so an injected payload
+# could name the key of an operator-curated memory and silently retire it -- an
+# attacker who cannot write a memory could still delete the one protecting you. The
+# content-hash id gave the same result by a second route: re-remembering the exact
+# text of a curated row rewrote its `kind` and provenance to the new writer's.
+# Bounded at the store rather than at one route. The management API already capped
+# content at 4000 chars, on the reasoning that "a memory long enough to carry a whole
+# instruction set is not a memory" -- but the capture path wrote straight past it, and
+# capture is the writer whose content is model-authored from an untrusted turn. The
+# bound belongs where every writer passes.
+MAX_CONTENT_CHARS = 4000
+MAX_TOPIC_KEY_CHARS = 200
+
+_TRUST_RANK = {"management_api": 3, "remember_tool": 2, "remember_procedure": 2, "assistant": 1}
+_DEFAULT_TRUST = 1
+
+
+def _trust_of_column(metadata_col: Any) -> Any:
+    """`_trust` as a SQL expression over the stored metadata JSON.
+
+    One ranking, two dialects. Kept beside `_TRUST_RANK` so a writer added to one is
+    not missed in the other — the in-memory twin and Postgres disagreeing about who
+    may displace whom is the kind of difference CI would never show, because the
+    memory:// arm is the arm CI runs.
+    """
+    source = metadata_col.op("->>")("source")
+    whens = [(source == name, rank) for name, rank in _TRUST_RANK.items()]
+    return case(*whens, else_=_DEFAULT_TRUST)
+
+
+def _trust(row: dict[str, Any]) -> int:
+    metadata = row.get("metadata") or row.get("metadata_json") or {}
+    source = metadata.get("source") if isinstance(metadata, dict) else None
+    return _TRUST_RANK.get(str(source or ""), _DEFAULT_TRUST)
+
+
+def _may_displace(incoming: dict[str, Any], existing: dict[str, Any]) -> bool:
+    """Whether `incoming` may retire or rewrite `existing`.
+
+    Equal rank is allowed: two captures on one topic are the ordinary case, and the
+    newer value is meant to win. Only a *lower*-ranked writer is refused.
+    """
+    return _trust(incoming) >= _trust(existing)
+
+
 def _put_in_memory(row: dict[str, Any]) -> dict[str, Any]:
     tenant_id, mem_id = row["tenant_id"], row["id"]
     if row["topic_key"]:
@@ -175,6 +230,7 @@ def _put_in_memory(row: dict[str, Any]) -> dict[str, Any]:
                 and other.get("manifest_id") == row["manifest_id"]
                 and other.get("topic_key") == row["topic_key"]
                 and _is_active(other)
+                and _may_displace(row, other)
             ):
                 other["status"] = SUPERSEDED
                 other["superseded_by"] = mem_id
@@ -187,6 +243,11 @@ def _put_in_memory(row: dict[str, Any]) -> dict[str, Any]:
         row["created_at"] = existing.get("created_at", row["created_at"])
         if existing.get("origin_seq") is not None:
             row["origin_seq"] = existing["origin_seq"]
+        if not _may_displace(row, existing):
+            # Re-remembering the same text from a lower-trust writer reactivates the
+            # row without demoting what it is or where it came from.
+            row["kind"] = existing.get("kind", row["kind"])
+            row["metadata"] = existing.get("metadata_json") or existing.get("metadata") or row["metadata"]
     _memory_rows[(tenant_id, mem_id)] = {**row, "metadata_json": row["metadata"]}
     return row
 
@@ -208,6 +269,9 @@ async def _put_in_postgres(settings: Settings, row: dict[str, Any], *, embedding
                     MemoryVector.topic_key == row["topic_key"],
                     MemoryVector.status == ACTIVE,
                     MemoryVector.id != mem_id,
+                    # Same rule as the in-memory arm: an automatic writer may not
+                    # retire a curated row by naming its topic_key.
+                    _trust_of_column(MemoryVector.metadata_json) <= _trust(row),
                 )
                 .values(
                     status=SUPERSEDED,
@@ -230,9 +294,17 @@ async def _put_in_postgres(settings: Settings, row: dict[str, Any], *, embedding
         stmt = stmt.on_conflict_do_update(
             index_elements=["tenant_id", "id"],
             set_={
-                "kind": excluded["kind"],
+                # A lower-trust writer re-remembering the same text reactivates the
+                # row without demoting what it is or where it came from.
+                "kind": case(
+                    (_trust_of_column(table.c["metadata"]) > _trust(row), table.c.kind),
+                    else_=excluded["kind"],
+                ),
                 "content": excluded["content"],
-                "metadata": excluded["metadata"],
+                "metadata": case(
+                    (_trust_of_column(table.c["metadata"]) > _trust(row), table.c["metadata"]),
+                    else_=excluded["metadata"],
+                ),
                 "topic_key": excluded["topic_key"],
                 "importance": excluded["importance"],
                 "thread_id": excluded["thread_id"],
