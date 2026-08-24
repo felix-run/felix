@@ -694,3 +694,53 @@ async def test_a_case_only_difference_still_selects() -> None:
     )
     out = await extract_memories(model, "excerpt", max_facts=3, verify=True)
     assert [m.content for m in out] == [fact]
+
+
+@pytest.mark.asyncio
+async def test_capture_disabled_stores_nothing() -> None:
+    """`enabled` is the switch that stops persisting user content.
+
+    Its two siblings on the same model now have connection tests — `verify` and
+    `max_facts` — so the file reads as though the whole model is covered. It was not:
+    deleting the gate passed the entire suite.
+    """
+    settings = _settings()
+    stored = await capture_from_turn(
+        settings,
+        TENANT,
+        manifest_id=MANIFEST,
+        user_text="where is the runbook",
+        assistant_text="The deploy runbook lives in the ops repository at docs/deploy.md.",
+        capture=MemoryCapture(enabled=False, max_facts=3, min_chars=5),
+        model=_ScriptedModel(_payload({"content": "The runbook lives in the ops repository."})),
+    )
+    assert stored == []
+    assert await memory_store.list_active(settings, TENANT, manifest_id=MANIFEST) == []
+
+
+@pytest.mark.asyncio
+async def test_a_turn_below_min_chars_is_not_captured() -> None:
+    """The other untested gate on the same model. Both sides, so an inverted
+    comparison is caught as well as a deleted one."""
+    settings = _settings()
+    short = await capture_from_turn(
+        settings,
+        TENANT,
+        manifest_id=MANIFEST,
+        user_text="hi",
+        assistant_text="ok",
+        capture=MemoryCapture(enabled=True, max_facts=3, min_chars=500),
+        model=_ScriptedModel(_payload({"content": "Should never be reached."})),
+    )
+    assert short == [], "a turn shorter than min_chars must not reach the model"
+
+    long = await capture_from_turn(
+        settings,
+        TENANT,
+        manifest_id=MANIFEST,
+        user_text="where is the runbook",
+        assistant_text="The deploy runbook lives in the ops repository at docs/deploy.md.",
+        capture=MemoryCapture(enabled=True, max_facts=3, min_chars=5),
+        model=_ScriptedModel(_payload({"content": "The runbook lives in the ops repository."})),
+    )
+    assert long == ["The runbook lives in the ops repository."]
