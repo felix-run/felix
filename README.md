@@ -198,6 +198,8 @@ Queues, or Workflows compute in this stack.
 | Agent card | `GET /.well-known/agent-card.json` |
 | Liveness / readiness | `GET /live` (also `/health`), `GET /ready` |
 
+A dropped stream is recoverable: every SSE frame carries an `id:`, and `GET /chat/stream/{thread_id}` replays what was missed (or opens with a `snapshot` frame) and then tails the thread. The run itself is still torn down on disconnect, so what you get back is the thread, not the abandoned turn.
+
 Management surfaces: `/audit`, `/approvals`, `/plans`, `/jobs`, `/manifests`, `/eval`, `/usage`, `/memory`. `/memory` lists, searches (the same hybrid ranking the agent sees), time-travels (`/memory/as-of/{turn_seq}`), writes and forgets long-term memories — an agent that remembers across sessions otherwise accumulates a store nobody can inspect.
 
 Python client: `from felix.sdk import FelixClient` — `prompt`, `stream`, `steer`, `follow_up`,

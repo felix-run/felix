@@ -14,6 +14,7 @@ from felix.patterns.types import ChatMessage, InvokeInput
 from felix.runtime import build_tenant_agent, prepare_tenant_invoke, resolve_tenant_manifest
 from felix.session.store import get_session_store
 from felix.session.tree import fork_thread, get_leaf, rewind_to
+from felix.session.types import GetEventsOpts
 from felix.steer import enqueue
 from pydantic import BaseModel, Field
 
@@ -378,6 +379,90 @@ async def chat_run(resume_token: str, request: Request) -> dict[str, Any]:
     return row
 
 
+@router.get("/stream/{thread_id}")
+async def chat_stream_resume(request: Request, thread_id: str) -> StreamingResponse:
+    """Reattach to a thread after a dropped connection or a page refresh.
+
+    A client that loses `POST /chat/stream` mid-turn previously had nothing to come
+    back to: no `id:` on the frames, no route to reconnect to, and the run itself torn
+    down on disconnect — deliberately, so a hung-up client does not keep burning
+    tokens. This does not change that. The old run is still gone; what a client gets
+    back is the thread as it now stands, and then anything that lands afterwards.
+
+    Cold reconnect (no `Last-Event-ID`) opens with a `snapshot` frame carrying the
+    transcript. A warm one replays only the session events after that cursor. Both
+    then tail the session log, which is shared state, so this works regardless of
+    which replica served the original turn.
+    """
+    settings = request.app.state.settings
+    auth = _auth_from_request(request)
+    thread = effective_thread_id(auth.tenant_id, thread_id)
+    if thread is None:
+        raise HTTPException(status_code=400, detail="invalid_thread_id")
+
+    header = request.headers.get("last-event-id") or request.query_params.get("last_event_id")
+    try:
+        after = int(header) if header not in (None, "") else None
+    except ValueError:
+        after = None
+
+    poll = float(getattr(settings, "stream_resume_poll_seconds", 1.0) or 1.0)
+    idle_limit = float(getattr(settings, "stream_resume_idle_seconds", 300.0) or 300.0)
+
+    async def resume_gen():
+        import json
+
+        cursor = after
+        try:
+            if cursor is None:
+                snapshot = await _build_thread_snapshot(
+                    settings=settings, tenant_id=auth.tenant_id, thread=thread
+                )
+                cursor = int((await _stream_cursor(settings, auth.tenant_id, thread)) or 0)
+                # The snapshot carries every event so far, so the cursor it hands back
+                # is the next sequence the client should expect — not the last one it
+                # has. Every `id:` on this stream means the same thing, which is what
+                # lets a client hand it straight back as `Last-Event-ID`.
+                yield (
+                    f"id: {cursor}\n"
+                    f"data: {json.dumps({'event': 'snapshot', 'data': snapshot}, default=str)}\n\n"
+                )
+
+            store = get_session_store(settings, tenant_id=auth.tenant_id)
+            idle = 0.0
+            while True:
+                events = await store.open(thread).get_events(GetEventsOpts(from_seq=cursor))
+                fresh = [e for e in events if e.seq >= (cursor or 0)]
+                for event in fresh:
+                    cursor = event.seq + 1
+                    payload = {
+                        "event": "session_event",
+                        "data": {
+                            "seq": event.seq,
+                            "kind": event.kind,
+                            "role": event.role,
+                            "content": event.content,
+                            "name": event.name,
+                        },
+                    }
+                    yield f"id: {cursor}\ndata: {json.dumps(payload, default=str)}\n\n"
+                idle = 0.0 if fresh else idle + poll
+                if idle >= idle_limit:
+                    # Close rather than hold an idle connection open forever; the
+                    # client reconnects with its `Last-Event-ID` and loses nothing.
+                    break
+                yield ": keep-alive\n\n"
+                await asyncio.sleep(poll)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.exception("chat resume failed thread=%s", thread)
+            yield ("data: " + json.dumps({"event": "error", "data": {"message": str(exc)[:200]}}) + "\n\n")
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(resume_gen(), media_type="text/event-stream")
+
+
 @router.post("/stream")
 async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
     settings = request.app.state.settings
@@ -454,7 +539,19 @@ async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
                         yield ": keep-alive\n\n"
                         continue
                     payload = event.model_dump() if hasattr(event, "model_dump") else event
-                    yield f"data: {json.dumps(payload, default=str)}\n\n"
+                    # `id:` is the session log's own cursor, so it still means
+                    # something to the *next* connection — a per-connection counter
+                    # would not. Only structural frames carry one: they are the points
+                    # a reconnect can resume from, and they are rare, where deltas
+                    # arrive per token and would cost a query each. Frames without an
+                    # `id:` leave `lastEventId` untouched, which is exactly the
+                    # semantics wanted here.
+                    prefix = ""
+                    if thread and str(payload.get("event") or "") in _RESUME_POINTS:
+                        cursor = await _stream_cursor(settings, auth.tenant_id, thread)
+                        if cursor is not None:
+                            prefix = f"id: {cursor}\n"
+                    yield f"{prefix}data: {json.dumps(payload, default=str)}\n\n"
         except asyncio.CancelledError:
             # The client hung up. Nothing to send; let the cancellation propagate so the
             # run is torn down instead of continuing to burn model tokens.
@@ -677,6 +774,35 @@ async def chat_history_delete(thread_id: str, request: Request) -> dict[str, str
     store = get_session_store(settings, tenant_id=auth.tenant_id)
     await store.open(thread).reset()
     return {"status": "deleted", "thread_id": thread}
+
+
+# Frames after which a reconnect can meaningfully pick up. Deliberately excludes
+# `text_delta` and `session_progress`: those arrive per token and carry no durable
+# boundary, so stamping them would cost a query each and tell a client nothing new.
+# Tailing polls the session log rather than subscribing to a bus: the log is shared
+# state, so a reconnect works whichever replica served the original turn, and it
+# needs no Redis. This is a recovery surface, not the hot path — `POST /chat/stream`
+# still streams inline — so a second of latency here buys a lot of simplicity.
+_RESUME_POINTS = frozenset(
+    {"tool_start", "tool_end", "tool_execution_update", "on_chain_end", "done", "aborted"}
+)
+
+
+async def _stream_cursor(settings: Any, tenant_id: str, thread: str | None) -> int | None:
+    """The next session sequence this thread will write.
+
+    A cursor, not a last-seen id: a client hands it back as `Last-Event-ID` and gets
+    everything from there on. Using the session log rather than a per-connection
+    counter is what makes it mean anything to the *next* connection.
+    """
+    if not thread:
+        return None
+    try:
+        head = await get_session_store(settings, tenant_id=tenant_id).open(thread).head()
+        return int(head.get("seq") or 0)
+    except Exception:
+        logger.debug("stream cursor unavailable for %s", thread, exc_info=True)
+        return None
 
 
 async def _build_thread_snapshot(
