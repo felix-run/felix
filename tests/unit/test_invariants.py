@@ -327,6 +327,10 @@ def test_every_memory_store_function_is_classified() -> None:
     NOT_RETIREMENT = {
         "now_ms",
         "memory_id",
+        # Formats an id for a log line. Reads nothing, writes nothing, and deliberately
+        # cannot reach a store: it exists so the no-newline property lives next to the
+        # log call rather than depending on ids being hashes three functions away.
+        "_loggable",
         "_row_dict",
         "_is_active",
         "current_turn_seq",

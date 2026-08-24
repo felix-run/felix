@@ -367,7 +367,7 @@ _KEY_SHAPES = [
 ]
 
 
-@pytest.mark.parametrize("raw", _KEY_SHAPES, ids=lambda v: repr(v))
+@pytest.mark.parametrize("raw", _KEY_SHAPES, ids=repr)
 @pytest.mark.asyncio
 async def test_the_gate_and_the_store_agree_on_a_blank_topic_key(raw: str) -> None:
     """A comment claimed these agreed. They did not, and nothing ran both.
@@ -399,3 +399,45 @@ async def test_the_gate_and_the_store_agree_on_a_blank_topic_key(raw: str) -> No
         f"{raw!r}: the approval gate says key={gate_sees_a_key} and the store says "
         f"key={store_sees_a_key} — an ungated call would run the topic sweep"
     )
+
+
+def test_an_id_cannot_carry_a_newline_into_a_refusal_log() -> None:
+    """CodeQL flags these lines as log injection, and the taint path is real: the
+    `memory_id` argument to `forget` and `supersede` is whatever the model passed.
+
+    It is not currently exploitable — the value is used as a dict key first, and the
+    only producer of row ids is `memory_id()`, a content hash, so a tainted id matches
+    no row and returns before the log. But that safety lives three functions away from
+    the log line, and this branch has now been bitten several times by a property that
+    holds only because two distant pieces of code agree. `_loggable` makes it local.
+
+    Newlines are the mechanism, so that is what is asserted; the rest is defence in
+    depth. These lines record *refusals*, so forging them makes the audit trail argue
+    that a retirement was declined when none was attempted.
+    """
+    from felix.memory.store import _loggable
+
+    forged = "abc123\nWARNING:felix.memory.store:refusing to forget a more-trusted memory id=x"
+    assert "\n" not in _loggable(forged)
+    assert "\r" not in _loggable("abc\r\nWARNING: forged")
+    # Lossless for every id that can actually reach it.
+    assert _loggable("a3f9c1d2e4b5") == "a3f9c1d2e4b5"
+    # Bounded, so a long argument cannot flood a line, and visibly truncated.
+    assert len(_loggable("x" * 500)) == 65
+    assert _loggable("").endswith("<unprintable>")
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_for_an_unknown_id_says_nothing_at_all(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The reachability half of the claim above, pinned so it stays true."""
+    import logging
+
+    from felix.config import Settings
+    from felix.memory import store as memory_store
+
+    settings = Settings(database_url="memory://forge")
+    with caplog.at_level(logging.WARNING, logger="felix.memory.store"):
+        assert await memory_store.forget(settings, "forge", "not-a-real-id\nWARNING: x", source="a") is False
+    assert [r.getMessage() for r in caplog.records] == []
