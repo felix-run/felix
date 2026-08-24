@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Callable, Sequence
 from typing import Any
 
-from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
@@ -135,8 +134,16 @@ async def authenticate_request(
     )
 
 
-class AuthMiddleware(BaseHTTPMiddleware):
-    """Starlette middleware installing RequestContext for each request."""
+class AuthMiddleware:
+    """Pure-ASGI middleware installing RequestContext for each request.
+
+    Was a `BaseHTTPMiddleware`, which cost ~143us per request and handed every
+    response chunk across a memory object stream — measurably the largest single
+    overhead on the SSE path. It also scoped the context wrongly: under
+    `BaseHTTPMiddleware`, `call_next` returns as soon as the response *starts*, so
+    `async_run_with_context` exited while an SSE body was still streaming. Here the
+    `async with` wraps the whole ASGI call, so the context covers the body too.
+    """
 
     def __init__(
         self,
@@ -145,25 +152,27 @@ class AuthMiddleware(BaseHTTPMiddleware):
         settings: Settings | None = None,
         self_authenticating_mounts: Sequence[str] = (),
     ) -> None:
-        super().__init__(app)
+        self.app = app
         self.settings = settings
         self.self_authenticating_mounts = tuple(self_authenticating_mounts)
 
-    async def dispatch(
-        self,
-        request: Request,
-        call_next: Callable[[Request], Awaitable[Response]],
-    ) -> Response:
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
         settings = self.settings or get_settings()
+        request = Request(scope, receive)
         auth_or_resp = await authenticate_request(
             request,
             settings,
             self_authenticating_mounts=self.self_authenticating_mounts,
         )
         if isinstance(auth_or_resp, JSONResponse):
-            return auth_or_resp
+            await auth_or_resp(scope, receive, send)
+            return
         auth = auth_or_resp
-        request.state.auth = auth
+        scope.setdefault("state", {})["auth"] = auth
         ctx_auth = CtxAuth(
             principal_sub=auth.principal.subject or "anonymous",
             tenant_id=auth.principal.tenant_id,
@@ -178,7 +187,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             limit_state=LimitState(),
         )
         async with async_run_with_context(req_ctx):
-            return await call_next(request)
+            await self.app(scope, receive, send)
 
 
 def require_authenticated(auth: AuthContext) -> None:
