@@ -11,20 +11,41 @@ case "$cmd" in *"gh pr create"*) ;; *) exit 0 ;; esac
 
 root="${CLAUDE_PROJECT_DIR:-.}"
 command -v git >/dev/null 2>&1 || exit 0
+
+# Which directory will the command actually run in? Not necessarily the one this hook
+# was invoked from: a leading `cd` is how a PR gets opened in a sibling checkout from a
+# session rooted here. Resolving it from the hook's own cwd made the guard below a
+# no-op -- `here` could never differ from `root` -- so a docs PR in another repo was
+# judged against this project's Python, and, worse, would have passed the moment this
+# project's HEAD had a marker. A gate that reads as satisfied when nothing was reviewed
+# is the failure worth spending these lines on.
+workdir=$(printf '%s' "$INPUT" | jq -r '.cwd // empty')
+[ -n "$workdir" ] || workdir=$(pwd -P)
+target=$(printf '%s' "$cmd" | sed -n 's/^[[:space:]]*cd[[:space:]]\{1,\}\([^;&|]*\).*/\1/p')
+if [ -n "$target" ]; then
+  target=${target%"${target##*[![:space:]]}"}   # trailing whitespace
+  target=${target#\"}; target=${target%\"}      # one layer of quoting, peeled by hand:
+  target=${target#\'}; target=${target%\'}      # never eval attacker-shaped command text
+  case "$target" in "~") target="$HOME" ;; "~/"*) target="$HOME/${target#\~/}" ;; esac
+  case "$target" in /*) ;; *) target="$workdir/$target" ;; esac
+  [ -d "$target" ] && workdir=$target
+fi
+
 # Only gate this repo: `gh pr create` in another checkout (or a worktree of another
 # project) must not be judged against this project's state.
-here=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+here=$(git -C "$workdir" rev-parse --show-toplevel 2>/dev/null) || exit 0
+here=$(cd "$here" 2>/dev/null && pwd -P) || exit 0
 [ "$here" = "$(cd "$root" 2>/dev/null && pwd -P)" ] || exit 0
 
-sha=$(git rev-parse HEAD 2>/dev/null) || exit 0
+sha=$(git -C "$here" rev-parse HEAD 2>/dev/null) || exit 0
 marker="$root/.claude/logs/quality-review/$sha"
 [ -f "$marker" ] && exit 0
 
 base=origin/main
-git rev-parse --verify --quiet "$base" >/dev/null 2>&1 || exit 0
+git -C "$here" rev-parse --verify --quiet "$base" >/dev/null 2>&1 || exit 0
 
 # Nothing reviewable? Then nothing to gate — docs- and config-only PRs pass straight through.
-changed=$(git diff --name-only "$base"...HEAD 2>/dev/null | grep -E '^(apps|packages|tests)/.*\.py$')
+changed=$(git -C "$here" diff --name-only "$base"...HEAD 2>/dev/null | grep -E '^(apps|packages|tests)/.*\.py$')
 [ -z "$changed" ] && exit 0
 
 tests_changed=$(printf '%s\n' "$changed" | grep -c '^tests/')
