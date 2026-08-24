@@ -138,6 +138,9 @@ async def put_memory(
     # Truncated, not rejected: this is on the turn path, and a capture that raises
     # would fail the user's turn over a memory. The id is derived from the bounded
     # text so re-storing the same over-long content stays idempotent.
+    # Stripped rather than trusted. No writer sets it today, but the invariant should
+    # not depend on two `case` expressions staying in step with each other.
+    metadata = {k: v for k, v in (metadata or {}).items() if k != FORGOTTEN_BY_KEY}
     content = (content or "")[:MAX_CONTENT_CHARS]
     topic_key = (topic_key or "")[:MAX_TOPIC_KEY_CHARS] or None
     mem_id = memory_id(manifest_id, content)
@@ -370,8 +373,20 @@ async def _put_in_postgres(settings: Settings, row: dict[str, Any], *, embedding
                     else_=excluded["kind"],
                 ),
                 "content": excluded["content"],
+                # Two branches, matching `status` below. With only the writer-rank
+                # branch, a refused write kept `status = forgotten` but took the
+                # incoming metadata -- erasing `forgotten_by`. The next identical
+                # write then found no stamp, fell back to the writer rank, and
+                # resurrected the row. Two ordinary turns, no tool call. And it was
+                # Postgres-only: the in-memory arm restores metadata explicitly, so
+                # CI ran the correct arm while production ran the broken one.
                 "metadata": case(
                     (_trust_of_column(table.c["metadata"]) > _trust(row), table.c["metadata"]),
+                    (
+                        (table.c.status == FORGOTTEN)
+                        & (_forgetter_rank_of_column(table.c["metadata"]) > _trust(row)),
+                        table.c["metadata"],
+                    ),
                     else_=excluded["metadata"],
                 ),
                 "topic_key": case(
@@ -525,7 +540,14 @@ async def forget(settings: Settings, tenant_id: str, memory_id: str, *, source: 
             return False
         row["status"] = FORGOTTEN
         metadata = dict(row.get("metadata") or {})
-        metadata[FORGOTTEN_BY_KEY] = source
+        # Monotone. Assigning unconditionally let an agent forget an already-forgotten
+        # row -- permitted, because the entry check compares against the *writer's*
+        # rank, which is 1 for nearly every row -- and thereby downgrade the stamp from
+        # the operator who forgot it, re-arming its own resurrection. The approval
+        # prompt says "Confirm retiring a stored memory", which is not what that call
+        # does when the row is already retired.
+        if _rank(source) >= _forgetter_rank(row):
+            metadata[FORGOTTEN_BY_KEY] = source
         row["metadata"] = metadata
         row["metadata_json"] = metadata
         row["updated_at"] = ts
@@ -537,8 +559,10 @@ async def forget(settings: Settings, tenant_id: str, memory_id: str, *, source: 
             .where(
                 MemoryVector.tenant_id == tenant_id,
                 MemoryVector.id == memory_id,
-                # Same predicate as the in-memory arm; see the docstring.
+                # Same predicates as the in-memory arm; see the docstring. The
+                # second makes a refused downgrade a no-op rather than a rewrite.
                 _trust_of_column(MemoryVector.metadata_json) <= _rank(source),
+                _forgetter_rank_of_column(MemoryVector.metadata_json) <= _rank(source),
             )
             .values(
                 status=FORGOTTEN,

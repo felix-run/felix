@@ -98,10 +98,17 @@ def escape_markup(text: str) -> str:
     An enumeration has to be right about every marker in a prompt assembled from four
     modules; escaping `<` has to be right once.
 
+    Whitespace is collapsed for the same reason one layer down. Both surfaces render
+    a newline-delimited list under a plain-text label, and the procedures block has no
+    closing marker at all — so a stored newline breaks the list structure and lets
+    content open a region of its own without using a single angle bracket. A memory is
+    one self-contained sentence by design, so collapsing costs nothing.
+
     Content stays legible — a model reads `&lt;x&gt;` as the text it is — and stays
     inert, which is the same trade `skills/loader.py:_xml_escape` already makes.
     """
-    return (text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").strip()
+    escaped = (text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return " ".join(escaped.split())
 
 
 def _heuristic_facts(text: str, *, max_facts: int, min_chars: int) -> list[str]:
