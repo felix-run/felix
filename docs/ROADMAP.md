@@ -146,11 +146,13 @@ top of* durable state. Ordered by value; the first two need no migration.
       *reconnect-to-snapshot* under Product.
 - [~] **Long-term memory** — schema and provenance in #46, hybrid recall and
       the `Embedder` seam in #47, the agent-facing tools in #49, the management
-      routes in #50. The machinery is complete; what remains is a decision, not
-      code. `memory.capture` is disabled in all eight bundled manifests and
-      `memory.recall.tools` defaults off, so nothing writes or reads memory by
-      default — decide whether `governed.yaml` or `cowork.yaml` should turn them
-      on, or the docs keep describing a feature no shipped agent uses.
+      routes in #50, and turned on in `governed` and `cowork` in #51 — which is
+      also what caught `capture.model` being inert and tool writes carrying no
+      provenance. Remaining, and only worth doing on evidence: semantic recall
+      is still off by default (`FELIX_MEMORY_EMBEDDER=none`), so nothing
+      exercises the vector channel outside tests; and extraction quality is
+      whatever one prompt returns — a live run happily stored an assistant's
+      apology as a durable fact.
 - [ ] **Tamper-evident audit chain** — `seq` + `prev_hash` + keyed-HMAC per row,
       per tenant, with `verify_chain` reporting the first break. Allocate the
       chain at write time inside the insert transaction, under a per-tenant

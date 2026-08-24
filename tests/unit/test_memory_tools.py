@@ -180,3 +180,68 @@ async def test_bound_tools_pass_through_the_governance_stack() -> None:
             f"{name} was not wrapped by the governance stack — is it still bound "
             f"before the wrapper block in builder.py? got source={source!r}"
         )
+
+
+def test_bundled_manifests_that_enable_capture_use_the_cheap_tier() -> None:
+    """Extraction runs every turn; billing it to the turn's model doubles the cost.
+
+    Also guards the provider: `llama-3-fast` needs Ollama, which a default Anthropic
+    deployment does not run, so a manifest defaulting there would fail capture on
+    every turn and report it only in a log.
+    """
+    from pathlib import Path
+
+    from felix.manifests.loader import load_manifest_file
+
+    root = Path(__file__).resolve().parents[2] / "manifests"
+    enabled = []
+    for path in sorted(root.glob("*.yaml")):
+        manifest = load_manifest_file(str(path))
+        capture = manifest.spec.memory.capture
+        if not capture.enabled:
+            continue
+        enabled.append(path.name)
+        assert capture.model.startswith("claude-haiku") or capture.model.startswith("gpt-4.1-mini"), (
+            f"{path.name} extracts memory on {capture.model!r}; use a cheap-tier model"
+        )
+    assert enabled, "no bundled manifest enables memory capture — the feature ships inert"
+
+
+@pytest.mark.asyncio
+async def test_remember_stamps_provenance_from_the_request_context() -> None:
+    """Tool writes must carry provenance too, or `as_of` sees half the store as genesis.
+
+    The agent is compiled before the request's thread is known, so a bind-time
+    `thread_id` is always empty. A live run against a real model confirmed it: the two
+    memories the agent wrote through `remember` landed with a null `origin_seq` and an
+    empty `thread_id`, while the automatically captured one did not.
+    """
+    from felix.context import AuthContext, RequestContext, async_run_with_context
+    from felix.session.store import get_session_store
+    from felix.session.types import AppendableEvent
+
+    settings = _settings()
+    session = get_session_store(settings).open("th-live")
+    for text in ("one", "two"):
+        await session.append(AppendableEvent(kind="message", role="user", content=text))
+
+    ctx = RequestContext(
+        settings=settings,
+        auth=AuthContext(tenant_id=TENANT),
+        manifest_id=MANIFEST,
+        thread_id="th-live",
+    )
+    async with async_run_with_context(ctx):
+        await _run("remember", content="Learned during a real request.")
+
+    rows = await memory_store.list_active(settings, TENANT, manifest_id=MANIFEST)
+    assert rows[0]["thread_id"] == "th-live"
+    assert rows[0]["origin_seq"] == 2
+
+
+@pytest.mark.asyncio
+async def test_remember_without_a_request_context_still_stores() -> None:
+    """No context is not an error — it is a memory with no provenance."""
+    await _run("remember", content="Stored outside any request.")
+    rows = await memory_store.list_active(_settings(), TENANT, manifest_id=MANIFEST)
+    assert rows[0]["origin_seq"] is None

@@ -257,3 +257,50 @@ async def test_react_reads_the_turn_ordinal_from_the_session_log() -> None:
 
     assert await agent._turn_seq("thread-seq") == 3
     assert await agent._turn_seq(None) is None
+
+
+@pytest.mark.asyncio
+async def test_extraction_uses_the_configured_capture_model() -> None:
+    """`capture.model` exists so extraction is not billed to the turn's model.
+
+    It was declared and never read, so every captured fact silently ran a second call
+    on whatever model the turn used — doubling the cost of having memory at all.
+    """
+    from felix.manifests.schema import MemoryCapture
+    from felix.patterns.react import build_react_agent
+
+    agent = build_react_agent(
+        {
+            "tools": [],
+            "manifest_id": MANIFEST,
+            "system_prompt": "sp",
+            "recursion_limit": 3,
+            "settings": Settings(database_url="memory://cap"),
+            "memory_capture": MemoryCapture(enabled=True, model="claude-haiku"),
+        }
+    )
+
+    turn_model = object()
+    chosen = agent._capture_model(turn_model)
+    assert chosen is not turn_model, "extraction fell back to the turn model"
+    assert getattr(chosen, "model_id", "") == "claude-haiku"
+
+
+@pytest.mark.asyncio
+async def test_capture_falls_back_when_its_model_cannot_be_built() -> None:
+    """A bad capture model must cost accuracy of billing, not the turn."""
+    from felix.manifests.schema import MemoryCapture
+    from felix.patterns.react import build_react_agent
+
+    agent = build_react_agent(
+        {
+            "tools": [],
+            "manifest_id": MANIFEST,
+            "system_prompt": "sp",
+            "recursion_limit": 3,
+            "settings": Settings(database_url="memory://cap"),
+            "memory_capture": MemoryCapture(enabled=True, model="no-such-model"),
+        }
+    )
+    turn_model = object()
+    assert agent._capture_model(turn_model) is turn_model
