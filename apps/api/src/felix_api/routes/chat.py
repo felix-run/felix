@@ -42,14 +42,16 @@ def _http_from_invoke_prep(exc: Exception) -> HTTPException | None:
     from felix.manifests.inbound_auth import InboundAuthError
     from felix.manifests.pin import ManifestDriftError
 
-    if isinstance(exc, InboundAuthError):
-        return HTTPException(status_code=exc.status_code, detail=exc.detail)
-    if isinstance(exc, InboundScreeningError):
-        return HTTPException(status_code=exc.status_code, detail=exc.detail)
+    # This decides the status code; `client_safe_message` decides the wording. They
+    # were the same decision here and in three other shapes across two modules, which
+    # is how a message that was safe in one place got copied to one where it was not.
+    if isinstance(exc, InboundAuthError | InboundScreeningError):
+        return HTTPException(status_code=exc.status_code, detail=client_safe_message(exc))
     if isinstance(exc, ManifestDriftError):
-        return HTTPException(status_code=409, detail=str(exc))
+        return HTTPException(status_code=409, detail=client_safe_message(exc))
     if isinstance(exc, ValueError) and str(exc).startswith("secret not found"):
-        return HTTPException(status_code=503, detail=str(exc))
+        # Ours, and written to tell an operator which secret is missing.
+        return HTTPException(status_code=503, detail=client_safe_message(exc, authored_for_clients=True))
     return None
 
 
@@ -248,7 +250,10 @@ async def _apply_template(
             tenant_id=tenant_id,
         )
     except LookupError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        # Names the template the caller asked for, which the caller supplied.
+        raise HTTPException(
+            status_code=404, detail=client_safe_message(exc, authored_for_clients=True)
+        ) from exc
     return [*messages, ChatMessage(role="user", content=text)]
 
 
@@ -346,7 +351,7 @@ async def chat(body: ChatRequest, request: Request) -> Any:
                 exc.status,
                 loggable(exc.body),
             )
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
+            raise HTTPException(status_code=502, detail=client_safe_message(exc)) from exc
         except Exception as exc:
             http = _http_from_invoke_prep(exc)
             if http is not None:
@@ -1131,7 +1136,7 @@ async def chat_continue(body: ContinueRequest, request: Request) -> Any:
                 exc.status,
                 loggable(exc.body),
             )
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
+            raise HTTPException(status_code=502, detail=client_safe_message(exc)) from exc
         except Exception as exc:
             http = _http_from_invoke_prep(exc)
             if http is not None:
@@ -1161,7 +1166,10 @@ async def chat_thinking(body: ThinkingRequest, request: Request) -> dict[str, An
     try:
         level = parse_thinking_level(body.thinking_level)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        # `unknown_thinking_level:<value>` -- the caller's own input, echoed back.
+        raise HTTPException(
+            status_code=400, detail=client_safe_message(exc, authored_for_clients=True)
+        ) from exc
     await update_thread_meta(
         settings=settings,
         tenant_id=auth.tenant_id,

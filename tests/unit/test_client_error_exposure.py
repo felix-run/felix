@@ -73,33 +73,37 @@ def test_the_message_carries_the_request_id_so_a_report_can_be_traced() -> None:
 # --- the shape, not just the instances ----------------------------------------------
 
 
-def _bare_except_bodies(tree: ast.AST) -> list[ast.ExceptHandler]:
-    """`except Exception:` / bare `except:` handlers — the ones with unbounded reach."""
-    out = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.ExceptHandler):
-            continue
-        t = node.type
-        if t is None or (isinstance(t, ast.Name) and t.id in {"Exception", "BaseException"}):
-            out.append(node)
-    return out
+def _handlers(tree: ast.AST) -> list[ast.ExceptHandler]:
+    """*Every* handler, not only the broad ones.
+
+    The first version of this rule looked at `except Exception` alone, on the theory
+    that a narrow handler knows what it caught. CodeQL disagreed on the very next run:
+    narrowing `except Exception` + `isinstance` into two typed clauses moved the alert
+    rather than clearing it, because `str(exc)` on a domain error is still `str()` on an
+    exception. The content there is curated and fine — but "fine" was a judgement made
+    once per call site, and the point of a funnel is that it is made in one place.
+    """
+    return [n for n in ast.walk(tree) if isinstance(n, ast.ExceptHandler)]
 
 
 # The calls that put text into an HTTP response. Anything else a handler does with the
 # exception -- logging it, testing its type, re-raising -- keeps it server-side.
 RESPONSE_SINKS = {"error_frame", "JSONResponse", "HTTPException"}
 
+# `.detail` is a field these errors carry *for* display, so naming it is not a leak.
+# It stays permitted so the rule tests routing, not vocabulary.
+PERMITTED_ATTRS = {"detail", "status_code"}
+
 
 @pytest.mark.parametrize("module", ["chat.py", "openai_compat.py"], ids=lambda p: p)
-def test_no_broad_handler_relays_an_exception_into_a_response(module: str) -> None:
-    """A broad handler may log the exception. It may not put it in the body.
+def test_a_caught_exception_reaches_a_response_only_through_the_funnel(module: str) -> None:
+    """A handler may log an exception freely. Putting one in a response goes one way.
 
-    Stated structurally because the instances keep moving: this is the fourth site of
-    this shape found in two days, and each was found by a scanner rather than by the
-    edit that introduced it.
+    Stated structurally because the instances keep moving: five sites of this shape in
+    two days, every one found by a scanner rather than by the edit that introduced it.
     """
     tree = ast.parse((ROUTES / module).read_text())
-    for handler in _bare_except_bodies(tree):
+    for handler in _handlers(tree):
         bound = handler.name
         if not bound:
             continue
@@ -109,12 +113,57 @@ def test_no_broad_handler_relays_an_exception_into_a_response(module: str) -> No
             name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
             if name not in RESPONSE_SINKS:
                 continue
-            for inner in ast.walk(node):
-                if isinstance(inner, ast.Call) and getattr(inner.func, "id", "") == "client_safe_message":
-                    break
-            else:
-                if any(isinstance(x, ast.Name) and x.id == bound for x in ast.walk(node)):
-                    raise AssertionError(
-                        f"{module}:{node.lineno} puts the caught exception `{bound}` into "
-                        f"`{name}` — route it through `client_safe_message` instead."
-                    )
+            for ref in _bare_exception_refs(node, bound):
+                raise AssertionError(
+                    f"{module}:{ref} puts the caught exception `{bound}` into `{name}` "
+                    f"without `client_safe_message` — every client-facing message goes "
+                    f"through the funnel, including the ones that are currently safe."
+                )
+
+
+def _bare_exception_refs(call: ast.Call, bound: str) -> list[int]:
+    """Lines where `bound` is used other than via the funnel or a display attribute."""
+    out: list[int] = []
+    for node in ast.walk(call):
+        if not (isinstance(node, ast.Name) and node.id == bound):
+            continue
+        parent = _parent_of(call, node)
+        if isinstance(parent, ast.Attribute) and parent.attr in PERMITTED_ATTRS:
+            continue
+        if isinstance(parent, ast.Call) and getattr(parent.func, "id", "") == "client_safe_message":
+            continue
+        out.append(node.lineno)
+    return out
+
+
+def _parent_of(root: ast.AST, target: ast.AST) -> ast.AST | None:
+    for node in ast.walk(root):
+        for child in ast.iter_child_nodes(node):
+            if child is target:
+                return node
+    return None
+
+
+def test_the_relay_opt_in_is_findable_and_justified() -> None:
+    """`authored_for_clients=True` is a bypass, so it has to stay small and explained.
+
+    The rule above is only as good as the exceptions to it. Each use sits directly
+    below a comment saying whose words the message is, because the reviewer question
+    that matters is not "is this string safe" but "who decided it was".
+    """
+    import re
+
+    uses: list[tuple[str, int, str]] = []
+    for module in ("chat.py", "openai_compat.py"):
+        lines = (ROUTES / module).read_text().splitlines()
+        for i, line in enumerate(lines):
+            if "authored_for_clients=True" in line:
+                preceding = "\n".join(lines[max(0, i - 4) : i])
+                uses.append((module, i + 1, preceding))
+
+    assert uses, "the opt-in is unused — delete it rather than leaving a bypass lying around"
+    assert len(uses) <= 5, f"the opt-in has grown to {len(uses)} uses; it should stay exceptional"
+    for module, line, preceding in uses:
+        assert re.search(r"#\s*\S", preceding), (
+            f"{module}:{line} opts out of the funnel with no comment saying why the message is safe to relay"
+        )

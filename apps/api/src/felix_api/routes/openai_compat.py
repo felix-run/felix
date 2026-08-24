@@ -20,6 +20,8 @@ from felix.patterns.types import ChatMessage, InvokeInput
 from felix.runtime import build_tenant_agent, prepare_tenant_invoke, resolve_tenant_manifest
 from pydantic import BaseModel, Field
 
+from felix_api.errors import client_safe_message
+
 logger = logging.getLogger("felix_api.routes.openai_compat")
 
 router = APIRouter(tags=["OpenAI"])
@@ -94,12 +96,12 @@ async def chat_completions(body: ChatCompletionsRequest, request: Request) -> An
     # types keeps that reach as small as the intent always was.
     except InboundAuthError as exc:
         return JSONResponse(
-            {"error": {"message": exc.detail, "type": "auth_error", "code": exc.detail}},
+            {"error": {"message": client_safe_message(exc), "type": "auth_error", "code": exc.detail}},
             status_code=exc.status_code,
         )
     except ManifestDriftError as exc:
         return JSONResponse(
-            {"error": {"message": str(exc), "type": "manifest_drift", "code": "conflict"}},
+            {"error": {"message": client_safe_message(exc), "type": "manifest_drift", "code": "conflict"}},
             status_code=409,
         )
 
@@ -117,7 +119,7 @@ async def chat_completions(body: ChatCompletionsRequest, request: Request) -> An
         messages = await apply_inbound_screening(resolved.manifest, messages, settings)
     except InboundScreeningError as exc:
         return JSONResponse(
-            {"error": {"message": exc.detail, "type": "content_filter", "code": exc.detail}},
+            {"error": {"message": client_safe_message(exc), "type": "content_filter", "code": exc.detail}},
             status_code=exc.status_code,
         )
     req_ctx = RequestContext(
@@ -190,7 +192,7 @@ async def chat_completions(body: ChatCompletionsRequest, request: Request) -> An
             return JSONResponse(
                 {
                     "error": {
-                        "message": str(exc),
+                        "message": client_safe_message(exc),
                         "type": "model_gateway_error",
                         "code": "model_unavailable",
                     }

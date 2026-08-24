@@ -30,17 +30,37 @@ def _relayable() -> tuple[type[BaseException], ...]:
     from felix.manifests.pin import ManifestDriftError
     from felix.patterns.model import ModelGatewayError
 
-    return (ModelGatewayError, ManifestDriftError, InboundAuthError)
+    types: tuple[type[BaseException], ...] = (ModelGatewayError, ManifestDriftError, InboundAuthError)
+    try:
+        # Optional package on a lean install, so its absence must not turn a content
+        # filter's explanation into "internal error" -- that message is the entire
+        # point of the response, and losing it silently is worse than the alert this
+        # funnel was built to answer.
+        from felix.governance.inbound import InboundScreeningError
+    except ImportError:  # pragma: no cover - exercised only on a lean install
+        return types
+    return (*types, InboundScreeningError)
 
 
-def client_safe_message(exc: BaseException) -> str:
+def client_safe_message(exc: BaseException, *, authored_for_clients: bool = False) -> str:
     """The message to put in a response body for `exc`.
 
     Curated for the types that opted in; otherwise a fixed string plus the request id,
     so the report and the traceback can be joined up without the traceback travelling.
+
+    `authored_for_clients` is for the handful of sites that raise a *builtin* exception
+    type whose message they wrote for a client to read -- `unknown_thinking_level:high`
+    echoes back what the caller sent. The type cannot carry that fact, so the call site
+    asserts it. It is deliberately verbose and greppable: every relay in the codebase
+    should be findable in one search, and a reviewer should be able to ask "who decided
+    this string was safe" and get an answer from the line itself.
     """
-    if isinstance(exc, _relayable()):
-        return str(exc)
+    if authored_for_clients or isinstance(exc, _relayable()):
+        # `.detail` where the type provides one: it is the field those errors carry
+        # *for* display, and preferring it keeps every caller on one line of code
+        # rather than each deciding which attribute is the client-facing one.
+        detail = getattr(exc, "detail", None)
+        return str(detail) if isinstance(detail, str) and detail else str(exc)
     request_id = get_request_id()
     if request_id and request_id != "-":
         return f"internal error (request {request_id})"
