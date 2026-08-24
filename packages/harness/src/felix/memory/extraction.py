@@ -52,7 +52,8 @@ class ExtractedMemory(BaseModel):
 
     content: str
     kind: str = "fact"
-    # What the model *claims*, never what is trusted. `ground_source` decides.
+    # What the model *claims*, never what is trusted. felix.memory.provenance
+    # settles it against the user's actual words.
     source: str = "assistant"
     topic_key: str = ""
     importance: float = 0.5
@@ -245,98 +246,6 @@ async def _ask(model: Any, system: str, user: str, *, max_tokens: int = 2048) ->
 # also stopped matching a pleasantry in the second sentence. Requiring the object
 # ("if you need *me*", "happy to *help*") separates the assistant talking about
 # itself from an instruction that merely contains the same words, at any position.
-USER_SOURCE = "user"
-ASSISTANT_SOURCE = "assistant"
-
-# Words carried by almost any sentence. Counting them toward grounding would let a
-# memory built entirely from assistant text pass on "the", "a", "is".
-_STOPWORDS = frozenset(
-    [
-        "a",
-        "an",
-        "and",
-        "are",
-        "as",
-        "at",
-        "be",
-        "by",
-        "for",
-        "from",
-        "has",
-        "have",
-        "in",
-        "is",
-        "it",
-        "its",
-        "of",
-        "on",
-        "or",
-        "that",
-        "the",
-        "to",
-        "was",
-        "were",
-        "will",
-        "with",
-        "you",
-        "your",
-        "i",
-        "me",
-        "my",
-        "we",
-        "our",
-        "they",
-        "their",
-        "this",
-        "these",
-        "those",
-        "not",
-        "no",
-        "do",
-        "does",
-        "did",
-        "can",
-        "could",
-        "should",
-        "would",
-    ]
-)
-
-# How much of a memory's substance must appear in the user's own words before its
-# claim of user provenance is honoured. Not 1.0: extraction resolves pronouns and
-# names subjects, so a faithful memory is a paraphrase rather than a quotation.
-_GROUNDING_THRESHOLD = 0.6
-
-
-def _content_words(text: str) -> set[str]:
-    return {w for w in _WORD_RE.findall((text or "").lower()) if w not in _STOPWORDS}
-
-
-_WORD_RE = re.compile(r"[a-z0-9']+")
-
-
-def ground_source(memory: ExtractedMemory, *, user_text: str) -> str:
-    """Decide a memory's provenance from the text, not from the model's claim.
-
-    The model is asked which region a memory came from, and a prompt-injected tool
-    result could make it answer "user" — which is the whole attack this tier exists
-    to resist, since a user-sourced instruction is honoured rather than merely read.
-    So the claim is treated as a request, and granted only when the memory's
-    substance actually appears in what the person typed.
-
-    Failing the check downgrades to assistant provenance rather than dropping the
-    memory: a misattributed instruction becomes reference material, which is the
-    behaviour that existed before this tier and is safe.
-    """
-    if memory.source != USER_SOURCE:
-        return ASSISTANT_SOURCE
-    words = _content_words(memory.content)
-    if not words:
-        return ASSISTANT_SOURCE
-    overlap = len(words & _content_words(user_text)) / len(words)
-    return USER_SOURCE if overlap >= _GROUNDING_THRESHOLD else ASSISTANT_SOURCE
-
-
 _META = re.compile(
     r"\b(i'?ll |i am |i'?m |i can|i have|i don'?t|my memory|as an ai|"
     r"if you need me|happy to help|let me know if you|feel free to ask me)",

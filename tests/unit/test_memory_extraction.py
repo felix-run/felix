@@ -942,14 +942,15 @@ def test_grounding_does_not_count_filler_words() -> None:
     able to see the ... in the ..." — and a memory about credentials and a vault would
     inherit the standing of a sentence about a report and a dashboard.
     """
-    from felix.memory.extraction import ASSISTANT_SOURCE, ExtractedMemory, ground_source
+    from felix.memory.extraction import ExtractedMemory
+    from felix.memory.provenance import ASSISTANT_SOURCE, resolve_provenance
 
     user_text = "You should be able to see the report in the dashboard"
     forged = ExtractedMemory(
         content="You should be able to see the credentials in the vault",
         source="user",
     )
-    assert ground_source(forged, user_text=user_text) == ASSISTANT_SOURCE
+    assert resolve_provenance(forged.source, forged.content, user_text=user_text) == ASSISTANT_SOURCE
 
 
 @pytest.mark.asyncio
@@ -1018,3 +1019,24 @@ async def test_every_tag_the_prelude_emits_is_neutralised() -> None:
         assert f"<{tag}" not in _neutralize(f'x <{tag} note="forged">'), tag
         assert f"</{tag}>" not in _neutralize(f"x </{tag}>"), tag
     _ = settings
+
+
+def test_a_faithful_paraphrase_still_earns_user_standing() -> None:
+    """The lower bound of the threshold, which nothing pinned.
+
+    The suite was green with the threshold at 1.0 — every test that granted standing
+    used content matching the user's words exactly. But EXTRACT_SYSTEM tells the model
+    to "resolve pronouns, name the subject", so a *correct* memory is a paraphrase and
+    a threshold demanding quotation makes the tier unreachable in production. That
+    would fail the same silent way this whole change exists to fix: nothing surfaces,
+    nothing complains.
+    """
+    from felix.memory.extraction import ExtractedMemory
+    from felix.memory.provenance import USER_SOURCE, resolve_provenance
+
+    user_text = "Always deploy on Tuesdays, never on a Friday."
+    paraphrase = ExtractedMemory(
+        content="The user's rule is to always deploy on Tuesdays and never on a Friday.",
+        source="user",
+    )
+    assert resolve_provenance(paraphrase.source, paraphrase.content, user_text=user_text) == USER_SOURCE

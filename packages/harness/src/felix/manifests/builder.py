@@ -1156,9 +1156,12 @@ async def build_agent(
                 #    it. This block changes whenever memory capture writes a fact, which
                 #    is often, so folding it into `system` meant the cache breakpoint sat
                 #    on a prefix that moved every turn — cache_read_input_tokens near zero.
-                # 2. Trust. These facts are model-extracted from earlier turns and can
-                #    carry text that originated in tool output. They are reference
-                #    material, not developer-tier instructions.
+                # 2. Trust. Most of this is model-extracted from earlier turns and can
+                #    carry text that originated in tool output, so it is fenced as
+                #    reference material. The prelude may also carry a second, narrower
+                #    block of rules the user themselves stated, which *is* meant to be
+                #    followed — see felix.memory.provenance for what earns a memory
+                #    that standing.
                 context_prelude = await active_facts_prompt(
                     deps.settings,
                     tenant_id,
