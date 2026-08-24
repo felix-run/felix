@@ -134,3 +134,66 @@ def test_a_cd_to_somewhere_that_is_not_a_repo_does_not_gate(tmp_path: Path) -> N
 def test_an_unrelated_command_is_never_touched(tmp_path: Path) -> None:
     project = _repo(tmp_path / "project", "packages/harness/src/felix/x.py")
     assert _run("git status", project=project, cwd=project) == 0
+
+
+# --- the ways the redirect goes wrong -----------------------------------------------
+#
+# The first fix pointed the gate at the repo a leading `cd` names. These are the shapes
+# where "a leading `cd`" turned out not to mean what the code did. Both of the first two
+# are things a session writes without trying; neither needs an adversary.
+
+
+def test_a_cd_in_the_pr_body_does_not_redirect_the_gate(tmp_path: Path) -> None:
+    """The one that would have bitten silently.
+
+    `^` in sed anchors per *line*, so a `cd` anywhere in a multi-line command redirected
+    the gate — and a reproduction step in a PR body is exactly that. The control then
+    fires or does not depending on whether a path named in your prose happens to exist
+    on the machine, which is worse than being plainly broken.
+    """
+    project = _repo(tmp_path / "project", "packages/harness/src/felix/x.py")
+    elsewhere = _repo(tmp_path / "sibling", "docs/page.mdx")
+    command = f'''gh pr create --body "$(cat <<'EOF'
+To reproduce:
+cd {elsewhere}
+make check
+EOF
+)"'''
+    assert _run(command, project=project, cwd=project) == 2
+
+
+def test_the_hook_does_not_resolve_a_path_the_shell_would_not_enter(tmp_path: Path) -> None:
+    """`cd "'/path'"` — bash fails that cd and stays put; the hook peeled both quote
+    layers and followed it. The bypass is the disagreement, not the quoting."""
+    project = _repo(tmp_path / "project", "packages/harness/src/felix/x.py")
+    sibling = _repo(tmp_path / "sibling", "docs/page.mdx")
+    assert _run(f"""cd "'{sibling}'" ; {CREATE}""", project=project, cwd=project) == 2
+
+
+def test_a_worktree_of_this_project_is_still_gated(tmp_path: Path) -> None:
+    """Identity by toplevel skipped every worktree, which is a normal way to work here —
+    a fail-open on a legitimate workflow rather than an exotic one."""
+    project = _repo(tmp_path / "project", "packages/harness/src/felix/x.py")
+    tree = tmp_path / "wt"
+    _git(project, "worktree", "add", "-q", str(tree), "HEAD")
+    assert _run(CREATE, project=project, cwd=tree) == 2
+    assert _run(f"cd {tree}; {CREATE}", project=project, cwd=project) == 2
+
+
+def test_a_worktree_is_gated_on_its_own_head(tmp_path: Path) -> None:
+    """The marker is shared but keyed by sha, so a reviewed worktree passes on its own
+    commit and does not borrow the main checkout's."""
+    project = _repo(tmp_path / "project", "packages/harness/src/felix/x.py")
+    tree = tmp_path / "wt"
+    _git(project, "worktree", "add", "-q", str(tree), "HEAD")
+    (tree / "packages" / "harness" / "src" / "felix" / "y.py").write_text("y = 2\n")
+    _git(tree, "add", "-A")
+    _git(tree, "commit", "-qm", "worktree change")
+
+    markers = project / ".claude" / "logs" / "quality-review"
+    markers.mkdir(parents=True)
+    (markers / _git(project, "rev-parse", "HEAD")).touch()
+    assert _run(CREATE, project=project, cwd=tree) == 2, "worktree borrowed the main sha's marker"
+
+    (markers / _git(tree, "rev-parse", "HEAD")).touch()
+    assert _run(CREATE, project=project, cwd=tree) == 0

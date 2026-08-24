@@ -3,6 +3,11 @@
 # on this exact commit. Blocks `gh pr create` once per HEAD sha; a marker written after
 # the review satisfies it. Subagents only exist inside a Claude Code session, so this
 # is the only place the review can be enforced locally.
+# Deliberately not covered: `gh pr create -R owner/repo` targets a repo by flag rather
+# than by cwd and so is never gated. This is a guardrail against the session taking a
+# shortcut, not a control against an adversary running bash -- anything that can pass
+# `-R` can equally touch the marker file, which the message below spells out. Closing
+# it would buy nothing and would break the legitimate cross-repo case.
 INPUT=$(cat)
 command -v jq >/dev/null 2>&1 || exit 0
 cmd=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty')
@@ -21,11 +26,23 @@ command -v git >/dev/null 2>&1 || exit 0
 # is the failure worth spending these lines on.
 workdir=$(printf '%s' "$INPUT" | jq -r '.cwd // empty')
 [ -n "$workdir" ] || workdir=$(pwd -P)
-target=$(printf '%s' "$cmd" | sed -n 's/^[[:space:]]*cd[[:space:]]\{1,\}\([^;&|]*\).*/\1/p')
+# First line only. `^` in sed anchors per line, so before this the gate was
+# redirected by a `cd` ANYWHERE in the command -- including one inside a PR body
+# heredoc, where "cd /tmp/repro" is ordinary reproduction prose. That made the
+# control fire or not depending on whether a path mentioned in a PR description
+# happened to exist locally. A gate that intermittently disables itself on prose is
+# harder to notice than one that is plainly broken.
+target=$(printf '%s' "$cmd" | head -n 1 | sed -n 's/^[[:space:]]*cd[[:space:]]\{1,\}\([^;&|]*\).*/\1/p')
 if [ -n "$target" ]; then
   target=${target%"${target##*[![:space:]]}"}   # trailing whitespace
-  target=${target#\"}; target=${target%\"}      # one layer of quoting, peeled by hand:
-  target=${target#\'}; target=${target%\'}      # never eval attacker-shaped command text
+  # One matched pair, peeled by hand -- a hook must never eval command text. Peeling
+  # both pairs unconditionally resolved `cd "'/path'"` to /path, which is not where
+  # bash goes: bash fails that cd and stays put. The hook and the shell disagreeing
+  # about which directory a command runs in is the bypass, not the quoting itself.
+  case "$target" in
+    \"*\") target=${target#\"}; target=${target%\"} ;;
+    \'*\') target=${target#\'}; target=${target%\'} ;;
+  esac
   case "$target" in "~") target="$HOME" ;; "~/"*) target="$HOME/${target#\~/}" ;; esac
   case "$target" in /*) ;; *) target="$workdir/$target" ;; esac
   [ -d "$target" ] && workdir=$target
@@ -33,19 +50,27 @@ fi
 
 # Only gate this repo: `gh pr create` in another checkout (or a worktree of another
 # project) must not be judged against this project's state.
-here=$(git -C "$workdir" rev-parse --show-toplevel 2>/dev/null) || exit 0
-here=$(cd "$here" 2>/dev/null && pwd -P) || exit 0
+#
+# Identity comes from the common git dir, not the toplevel: a linked worktree of this
+# project reports its own toplevel, so `--show-toplevel` never matched `root` and every
+# worktree skipped the gate. Worktrees are a normal way to work here, so that was a
+# fail-open on a legitimate workflow. The common dir is shared with the main checkout,
+# which is exactly the "same project" question being asked.
+common=$(git -C "$workdir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || exit 0
+here=$(cd "$(dirname "$common")" 2>/dev/null && pwd -P) || exit 0
 [ "$here" = "$(cd "$root" 2>/dev/null && pwd -P)" ] || exit 0
 
-sha=$(git -C "$here" rev-parse HEAD 2>/dev/null) || exit 0
+# HEAD and the diff come from `$workdir`, which is the worktree actually being shipped;
+# only the marker is shared, keyed by that worktree's sha.
+sha=$(git -C "$workdir" rev-parse HEAD 2>/dev/null) || exit 0
 marker="$root/.claude/logs/quality-review/$sha"
 [ -f "$marker" ] && exit 0
 
 base=origin/main
-git -C "$here" rev-parse --verify --quiet "$base" >/dev/null 2>&1 || exit 0
+git -C "$workdir" rev-parse --verify --quiet "$base" >/dev/null 2>&1 || exit 0
 
 # Nothing reviewable? Then nothing to gate — docs- and config-only PRs pass straight through.
-changed=$(git -C "$here" diff --name-only "$base"...HEAD 2>/dev/null | grep -E '^(apps|packages|tests)/.*\.py$')
+changed=$(git -C "$workdir" diff --name-only "$base"...HEAD 2>/dev/null | grep -E '^(apps|packages|tests)/.*\.py$')
 [ -z "$changed" ] && exit 0
 
 tests_changed=$(printf '%s\n' "$changed" | grep -c '^tests/')

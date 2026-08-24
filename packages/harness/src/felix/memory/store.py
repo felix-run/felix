@@ -149,8 +149,9 @@ async def put_memory(
     # only reach rows written through the same ungated path, never a curated one -- but
     # it is two components disagreeing about emptiness, which is the exact shape of the
     # last several bugs here. Stripping also stops near-duplicate keys that differ only
-    # by whitespace from being separately storable.
-    topic_key = (topic_key or "").strip()[:MAX_TOPIC_KEY_CHARS] or None
+    # by whitespace from being separately storable. Truncate first, then strip: the
+    # other order leaves an over-long key ending in whitespace after the cut.
+    topic_key = (topic_key or "")[:MAX_TOPIC_KEY_CHARS].strip() or None
     mem_id = memory_id(manifest_id, content)
     ts = now_ms()
     row: dict[str, Any] = {
