@@ -147,8 +147,11 @@ class Settings(BaseSettings):
     # How long `GET /chat/stream/{thread_id}` holds an idle connection before closing
     # it. The client reconnects with its `Last-Event-ID` and loses nothing, so this
     # trades a reconnect for not pinning a worker to a silent thread forever.
-    stream_resume_idle_seconds: float = 300.0
-    stream_resume_poll_seconds: float = 1.0
+    # Bounded, not merely defaulted: a negative poll makes `asyncio.sleep` return
+    # immediately and the idle counter run backwards, so the loop would query the
+    # session log as fast as Postgres answers and never close the connection.
+    stream_resume_idle_seconds: float = Field(default=300.0, gt=0)
+    stream_resume_poll_seconds: float = Field(default=1.0, ge=0.1, le=60.0)
 
     # --- misc ---
     default_manifest: str = "quick"

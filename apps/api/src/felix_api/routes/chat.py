@@ -18,34 +18,19 @@ from felix.session.types import GetEventsOpts
 from felix.steer import enqueue
 from pydantic import BaseModel, Field
 
+from felix_api.routes._sse import (
+    DONE,
+    HEARTBEAT,
+    KEEP_ALIVE,
+    error_frame,
+    frame,
+    is_resume_point,
+    sse_response,
+    with_heartbeat,
+)
 from felix_api.threads import effective_thread_id
 
 logger = logging.getLogger("felix_api.routes.chat")
-
-# Emitted by _with_heartbeat when the upstream stream has been quiet.
-_HEARTBEAT = object()
-SSE_HEARTBEAT_SECONDS = 15.0
-
-
-async def _with_heartbeat(stream: Any, interval: float = SSE_HEARTBEAT_SECONDS) -> Any:
-    """Yield upstream events, injecting a heartbeat sentinel during quiet periods.
-
-    A long tool call emits nothing, and proxy idle timeouts are commonly 60s, so a
-    perfectly healthy run was being disconnected mid-flight.
-    """
-    iterator = stream.__aiter__()
-    while True:
-        nxt = asyncio.ensure_future(iterator.__anext__())
-        while True:
-            done, _ = await asyncio.wait({nxt}, timeout=interval)
-            if done:
-                break
-            yield _HEARTBEAT
-        try:
-            yield nxt.result()
-        except StopAsyncIteration:
-            return
-
 
 router = APIRouter(tags=["Threads"])
 
@@ -457,10 +442,10 @@ async def chat_stream_resume(request: Request, thread_id: str) -> StreamingRespo
             raise
         except Exception as exc:
             logger.exception("chat resume failed thread=%s", thread)
-            yield ("data: " + json.dumps({"event": "error", "data": {"message": str(exc)[:200]}}) + "\n\n")
-        yield "data: [DONE]\n\n"
+            yield error_frame(str(exc))
+        yield DONE
 
-    return StreamingResponse(resume_gen(), media_type="text/event-stream")
+    return sse_response(resume_gen())
 
 
 @router.post("/stream")
@@ -514,7 +499,6 @@ async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
     )
 
     async def event_gen():
-        import json
 
         try:
             async with async_run_with_context(req_ctx):
@@ -532,11 +516,12 @@ async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
                         tenant_id=auth.tenant_id,
                     )
                 )
-                async for event in _with_heartbeat(stream):
-                    if event is _HEARTBEAT:
+                cursor: int | None = None
+                async for event in with_heartbeat(stream):
+                    if event is HEARTBEAT:
                         # A comment frame keeps proxies and load balancers from closing
                         # an idle connection during a long tool call; clients ignore it.
-                        yield ": keep-alive\n\n"
+                        yield KEEP_ALIVE
                         continue
                     payload = event.model_dump() if hasattr(event, "model_dump") else event
                     # `id:` is the session log's own cursor, so it still means
@@ -546,12 +531,17 @@ async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
                     # arrive per token and would cost a query each. Frames without an
                     # `id:` leave `lastEventId` untouched, which is exactly the
                     # semantics wanted here.
-                    prefix = ""
-                    if thread and str(payload.get("event") or "") in _RESUME_POINTS:
-                        cursor = await _stream_cursor(settings, auth.tenant_id, thread)
-                        if cursor is not None:
-                            prefix = f"id: {cursor}\n"
-                    yield f"{prefix}data: {json.dumps(payload, default=str)}\n\n"
+                    if thread and is_resume_point(str(payload.get("event") or "")):
+                        # Re-read rather than trust the cached value: a structural
+                        # frame is where an append may just have happened. Consecutive
+                        # structural frames with nothing appended between them return
+                        # the same number, which is correct and costs one small query.
+                        fresh = await _stream_cursor(settings, auth.tenant_id, thread)
+                        if fresh is not None:
+                            cursor = fresh
+                        yield frame(payload, cursor=cursor)
+                    else:
+                        yield frame(payload)
         except asyncio.CancelledError:
             # The client hung up. Nothing to send; let the cancellation propagate so the
             # run is torn down instead of continuing to burn model tokens.
@@ -560,23 +550,10 @@ async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
             # Without this the body simply stopped under an already-sent 200 OK, with no
             # error event and no [DONE] — the client could not tell success from failure.
             logger.exception("chat stream failed thread=%s", thread)
-            yield (
-                "event: error\n"
-                f"data: {json.dumps({'error': {'message': str(exc)[:200], 'type': 'stream_error'}})}\n\n"
-            )
-        yield "data: [DONE]\n\n"
+            yield error_frame(str(exc))
+        yield DONE
 
-    return StreamingResponse(
-        event_gen(),
-        media_type="text/event-stream",
-        headers={
-            "cache-control": "no-cache",
-            "connection": "keep-alive",
-            # nginx buffers proxied responses by default, which defeats streaming
-            # entirely — the client gets everything at once when the run finishes.
-            "x-accel-buffering": "no",
-        },
-    )
+    return sse_response(event_gen())
 
 
 @router.post("/steer")
@@ -774,18 +751,6 @@ async def chat_history_delete(thread_id: str, request: Request) -> dict[str, str
     store = get_session_store(settings, tenant_id=auth.tenant_id)
     await store.open(thread).reset()
     return {"status": "deleted", "thread_id": thread}
-
-
-# Frames after which a reconnect can meaningfully pick up. Deliberately excludes
-# `text_delta` and `session_progress`: those arrive per token and carry no durable
-# boundary, so stamping them would cost a query each and tell a client nothing new.
-# Tailing polls the session log rather than subscribing to a bus: the log is shared
-# state, so a reconnect works whichever replica served the original turn, and it
-# needs no Redis. This is a recovery surface, not the hot path — `POST /chat/stream`
-# still streams inline — so a second of latency here buys a lot of simplicity.
-_RESUME_POINTS = frozenset(
-    {"tool_start", "tool_end", "tool_execution_update", "on_chain_end", "done", "aborted"}
-)
 
 
 async def _stream_cursor(settings: Any, tenant_id: str, thread: str | None) -> int | None:

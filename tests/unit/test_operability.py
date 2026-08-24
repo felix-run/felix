@@ -185,37 +185,37 @@ async def test_request_id_is_echoed_and_honoured() -> None:
 async def test_heartbeat_is_emitted_during_a_quiet_stream() -> None:
     """A long tool call emits nothing and proxy idle timeouts are commonly 60s, so a
     healthy run was being disconnected mid-flight."""
-    from felix_api.routes.chat import _HEARTBEAT, _with_heartbeat
+    from felix_api.routes._sse import HEARTBEAT, with_heartbeat
 
     async def _slow():
         await asyncio.sleep(0.25)
         yield "first"
 
-    seen = [item async for item in _with_heartbeat(_slow(), interval=0.05)]
-    assert _HEARTBEAT in seen
+    seen = [item async for item in with_heartbeat(_slow(), interval=0.05)]
+    assert HEARTBEAT in seen
     assert seen[-1] == "first"
 
 
 @pytest.mark.asyncio
 async def test_heartbeat_passes_events_through_unchanged() -> None:
-    from felix_api.routes.chat import _HEARTBEAT, _with_heartbeat
+    from felix_api.routes._sse import HEARTBEAT, with_heartbeat
 
     async def _fast():
         for i in range(3):
             yield i
 
-    seen = [item async for item in _with_heartbeat(_fast(), interval=5.0)]
+    seen = [item async for item in with_heartbeat(_fast(), interval=5.0)]
     assert seen == [0, 1, 2]
-    assert _HEARTBEAT not in seen
+    assert HEARTBEAT not in seen
 
 
 @pytest.mark.asyncio
 async def test_heartbeat_propagates_upstream_errors() -> None:
-    from felix_api.routes.chat import _with_heartbeat
+    from felix_api.routes._sse import with_heartbeat
 
     async def _boom():
         yield "one"
         raise RuntimeError("upstream died")
 
     with pytest.raises(RuntimeError, match="upstream died"):
-        _ = [item async for item in _with_heartbeat(_boom(), interval=5.0)]
+        _ = [item async for item in with_heartbeat(_boom(), interval=5.0)]
