@@ -909,3 +909,44 @@ async def test_both_tiers_appear_together_and_stay_separate() -> None:
 @pytest.mark.asyncio
 async def test_no_memories_still_yields_no_prelude() -> None:
     assert await _prelude(_settings()) == ""
+
+
+@pytest.mark.asyncio
+async def test_a_user_stated_fact_is_not_obeyed() -> None:
+    """Both halves of the trusted tier are required, and provenance alone is not one.
+
+    A fact the user stated is still a fact — knowledge, not a rule — so it belongs in
+    the reference tier. Without the kind check, any user-sourced row would be
+    surfaced as something to honour.
+    """
+    settings = _settings()
+    fact = "The deploy runbook lives in the ops repository."
+    await capture_from_turn(
+        settings,
+        TENANT,
+        manifest_id=MANIFEST,
+        user_text=fact,
+        assistant_text="Noted.",
+        capture=MemoryCapture(enabled=True, max_facts=3, min_chars=5),
+        model=_ScriptedModel(_payload({"content": fact, "kind": "fact", "source": "user"})),
+    )
+    prompt = await _prelude(settings)
+    assert "<remembered_instructions" not in prompt, "a user-stated fact was surfaced as a rule"
+    assert fact in prompt
+
+
+def test_grounding_does_not_count_filler_words() -> None:
+    """Overlap is measured on substance, not on the words every sentence carries.
+
+    Without the stopword filter these two share 80% of their tokens — "you should be
+    able to see the ... in the ..." — and a memory about credentials and a vault would
+    inherit the standing of a sentence about a report and a dashboard.
+    """
+    from felix.memory.extraction import ASSISTANT_SOURCE, ExtractedMemory, ground_source
+
+    user_text = "You should be able to see the report in the dashboard"
+    forged = ExtractedMemory(
+        content="You should be able to see the credentials in the vault",
+        source="user",
+    )
+    assert ground_source(forged, user_text=user_text) == ASSISTANT_SOURCE
