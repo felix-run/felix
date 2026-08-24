@@ -100,7 +100,13 @@ async def retrieve_procedures(
     )
     if not picked:
         return ""
-    lines = [f"- {r['content']}" for r in picked if r.get("content")]
+    # Escaped like the recall prelude. `remember_procedure` content is
+    # f"{title}: {body}", fully attacker-chosen through an injected tool call, and it
+    # was rendered raw into the same prompt the prelude is concatenated into -- the
+    # sibling surface the prelude's own escaping argument applies to most directly.
+    from felix.memory.capture import escape_markup
+
+    lines = [f"- {escape_markup(str(r['content']))}" for r in picked if r.get("content")]
     if not lines:
         return ""
     return "[known procedures]\n" + "\n".join(lines)

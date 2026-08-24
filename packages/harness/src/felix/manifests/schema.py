@@ -440,6 +440,20 @@ class ApprovalRule(_Strict):
     one_shot: bool = False
     bind_principal: bool = False
     allow_unattended: bool = False
+    # Argument names that must all be supplied for the rule to apply -- present, not
+    # null, and non-empty if `str`, `list`, `dict`, `tuple` or `set`. `0` and `False`
+    # count as supplied; see `builder.py:_arg_present` for why that is load-bearing.
+    #
+    # Not validated against the gated tool's schema, so a misspelled name yields a rule
+    # that never fires and still passes `validate-manifest` and the attestation checks.
+    # Empty means the rule gates every call, which is the original behaviour.
+    #
+    # Exists because a tool can be harmless in one shape and a privileged operation in
+    # another: `remember` is ordinary capture until it carries a `topic_key`, at which
+    # point it retires whatever else holds that key. Gating the whole tool would put an
+    # approval in front of every memory write; gating none of it left a retirement
+    # route open beside one that was gated for exactly that reason.
+    when_args: list[str] = Field(default_factory=list)
 
 
 class CommandRule(_Strict):

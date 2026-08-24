@@ -87,6 +87,31 @@ spec:
       tools: [activate_skill]
       ttl_seconds: 600
       allow_unattended: false
+    # `list_memories` prints every row id and `forget` retires one, so an injected
+    # turn could enumerate and retire the store within one tool budget. Recoverable
+    # -- rows are hidden, not deleted -- but silent, and nothing distinguishes a
+    # sweep from ordinary use.
+    - id: memory-forget
+      description: Confirm retiring a stored memory
+      tools: [forget]
+      ttl_seconds: 600
+      allow_unattended: false
+    # The other retirement route. `remember` with a topic_key retires whatever else
+    # holds that key, and `recall` prints every stored topic_key -- so an injected turn
+    # could harvest the keys and retire the rows behind them without ever touching
+    # `forget`. Gated only when the key is present, so ordinary `remember` calls are
+    # unaffected.
+    #
+    # This closes the tool route, not the sweep. `capture_from_turn` reaches the same
+    # supersession post-turn without a tool call, so it passes through no wrapper here
+    # -- harder to aim, since it needs the extractor steered onto the victim's key, but
+    # ungated. Closing that half is a store-level rule, not a manifest one.
+    - id: memory-retopic
+      description: Confirm replacing the current value of a remembered topic
+      tools: [remember]
+      when_args: [topic_key]
+      ttl_seconds: 600
+      allow_unattended: false
 
   content_screening:
     enabled: true

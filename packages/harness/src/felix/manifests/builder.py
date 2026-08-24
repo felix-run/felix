@@ -723,6 +723,41 @@ def wrap_final_response_judges(agent: Agent, guardrails: Any, manifest_id: str) 
     return _FinalJudgeAgent(agent)  # type: ignore[return-value]
 
 
+def _arg_present(args: ToolInput, name: str) -> bool:
+    """Whether `name` was meaningfully supplied.
+
+    Three separate questions -- is the key there, is it null, is it empty -- and the
+    obvious `str(args.get(name) or "").strip()` answers all three with truthiness after
+    string coercion. That reads `0`, `0.0` and `False` as absent, so the *same* logical
+    value gates or does not gate depending on whether the model emitted it as a JSON
+    number or a JSON string. Models are inconsistent about that, and the resulting
+    coin-flip resolves toward *no approval* -- the wrong direction for a control.
+
+    Emptiness still counts as absence for `str`, `list`, `dict`, `tuple` and `set`,
+    where an empty value genuinely means "not supplied". `put_memory` strips and then
+    maps a blank `topic_key` to `None` for the same reason, so the gate and the store
+    agree on what a blank key means -- an agreement that has to be maintained on both
+    sides, and did not hold until the store learned to strip.
+
+    Everything else is present, including `0`, `0.0` and `False`. That fallthrough is
+    deliberate: an unrecognised type is a supplied value, and a control should fail
+    toward gating. It also means this function never invokes a user-defined `__bool__`
+    -- `in` hashes a string key, `is None` is identity, `isinstance` touches no dunder,
+    and `bool()` is only ever called on builtins. A generic `bool(value)` would have
+    propagated a `ValueError` out of a governance wrapper for anything array-shaped.
+    """
+    if name not in (args or {}):
+        return False
+    value = args[name]
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, list | dict | tuple | set):
+        return bool(value)
+    return True
+
+
 def apply_approvals(tools: list[Tool], rules: list[ApprovalRule], manifest_id: str) -> list[Tool]:
     gated: dict[str, ApprovalRule] = {}
     for r in rules:
@@ -743,6 +778,13 @@ def apply_approvals(tools: list[Tool], rules: list[ApprovalRule], manifest_id: s
 
             from felix.approvals.interrupt import wait_for_decision
             from felix.side_events import emit as emit_side_event
+
+            # A rule with `when_args` gates only the calls that carry those arguments.
+            # The tool is otherwise untouched -- same executor, no approval, no side
+            # event -- so a conditional rule costs nothing on the calls it does not
+            # cover.
+            if rule.when_args and not all(_arg_present(args, name) for name in rule.when_args):
+                return await inner.execute(args, ctx)
 
             req = try_get_context()
             granted = bool((req.extras if req else {}).get(f"approval:{tool.name}"))
@@ -1156,9 +1198,11 @@ async def build_agent(
                 #    it. This block changes whenever memory capture writes a fact, which
                 #    is often, so folding it into `system` meant the cache breakpoint sat
                 #    on a prefix that moved every turn — cache_read_input_tokens near zero.
-                # 2. Trust. These facts are model-extracted from earlier turns and can
-                #    carry text that originated in tool output. They are reference
-                #    material, not developer-tier instructions.
+                # 2. Trust. This is model-extracted from earlier turns and can carry
+                #    text that originated in tool output. All of it is fenced as
+                #    reference material, and none of it is meant to be followed — an
+                #    attempt to give user-stated rules an obeyable tier was withdrawn
+                #    because the provenance behind it could not be established.
                 context_prelude = await active_facts_prompt(
                     deps.settings,
                     tenant_id,
