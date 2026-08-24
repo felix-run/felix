@@ -9,8 +9,14 @@ against this project's Python — and would have passed the moment this project'
 had a marker. A gate that reads as satisfied when nothing was reviewed is worse than no
 gate, and no amount of syntax checking would have said so.
 
-So the hook gets asserted on behaviour: real temp repos, real stdin, exit codes only.
-Exit 2 is "blocked" in the PreToolUse protocol; exit 0 is "allowed".
+So the hook gets asserted on behaviour: real temp repos, real stdin, and the decision
+the hook returns.
+
+The gate is advisory — it emits `additionalContext` and exits 0 rather than blocking.
+The hard stop cost more than it bought: every amended commit re-armed it mid-flow. That
+makes "warned" and "silent" two different outcomes at the same exit code, so the tests
+assert the decision rather than the code, and a gate that silently stopped noticing
+would fail here exactly as a blocking one would.
 """
 
 from __future__ import annotations
@@ -55,9 +61,14 @@ def _repo(root: Path, changed: str) -> Path:
     return root
 
 
-def _run(command: str, *, project: Path, cwd: Path, env: dict[str, str] | None = None) -> int:
+# What the hook decided, rather than how it exited.
+FLAGGED = "flagged"  # the review note was emitted
+QUIET = "quiet"  # the hook had nothing to say
+
+
+def _run(command: str, *, project: Path, cwd: Path, env: dict[str, str] | None = None) -> str:
     payload = json.dumps({"tool_input": {"command": command}, "cwd": str(cwd)})
-    return subprocess.run(
+    done = subprocess.run(
         ["bash", str(HOOK)],
         input=payload,
         capture_output=True,
@@ -68,12 +79,14 @@ def _run(command: str, *, project: Path, cwd: Path, env: dict[str, str] | None =
             "CLAUDE_PROJECT_DIR": str(project),
             **(env or {}),
         },
-    ).returncode
+    )
+    assert done.returncode == 0, f"an advisory hook must never block: {done.stderr}"
+    return FLAGGED if "quality-reviewer" in done.stdout else QUIET
 
 
 def test_it_blocks_an_unreviewed_python_change(tmp_path: Path) -> None:
     project = _repo(tmp_path / "project", "packages/harness/src/felix/x.py")
-    assert _run(CREATE, project=project, cwd=project) == 2
+    assert _run(CREATE, project=project, cwd=project) == FLAGGED
 
 
 def test_a_marker_for_this_exact_sha_satisfies_it(tmp_path: Path) -> None:
@@ -81,7 +94,7 @@ def test_a_marker_for_this_exact_sha_satisfies_it(tmp_path: Path) -> None:
     markers = project / ".claude" / "logs" / "quality-review"
     markers.mkdir(parents=True)
     (markers / _git(project, "rev-parse", "HEAD")).touch()
-    assert _run(CREATE, project=project, cwd=project) == 0
+    assert _run(CREATE, project=project, cwd=project) == QUIET
 
 
 def test_a_marker_for_a_different_sha_does_not(tmp_path: Path) -> None:
@@ -90,12 +103,12 @@ def test_a_marker_for_a_different_sha_does_not(tmp_path: Path) -> None:
     markers = project / ".claude" / "logs" / "quality-review"
     markers.mkdir(parents=True)
     (markers / ("0" * 40)).touch()
-    assert _run(CREATE, project=project, cwd=project) == 2
+    assert _run(CREATE, project=project, cwd=project) == FLAGGED
 
 
 def test_a_docs_only_change_passes_straight_through(tmp_path: Path) -> None:
     project = _repo(tmp_path / "project", "docs/README.md")
-    assert _run(CREATE, project=project, cwd=project) == 0
+    assert _run(CREATE, project=project, cwd=project) == QUIET
 
 
 # --- the bug ------------------------------------------------------------------------
@@ -110,7 +123,7 @@ def test_a_pr_in_a_sibling_checkout_is_not_judged_by_this_project(tmp_path: Path
     """
     project = _repo(tmp_path / "project", "packages/harness/src/felix/x.py")
     sibling = _repo(tmp_path / "sibling", "docs/page.mdx")
-    assert _run(f"cd {sibling}; {CREATE}", project=project, cwd=project) == 0
+    assert _run(f"cd {sibling}; {CREATE}", project=project, cwd=project) == QUIET
 
 
 @pytest.mark.parametrize(
@@ -120,25 +133,25 @@ def test_a_pr_in_a_sibling_checkout_is_not_judged_by_this_project(tmp_path: Path
 def test_the_cd_is_recognised_in_the_forms_a_command_actually_takes(tmp_path: Path, form: str) -> None:
     project = _repo(tmp_path / "project", "packages/harness/src/felix/x.py")
     sibling = _repo(tmp_path / "sibling", "docs/page.mdx")
-    assert _run(form.format(p=sibling, c=CREATE), project=project, cwd=project) == 0
+    assert _run(form.format(p=sibling, c=CREATE), project=project, cwd=project) == QUIET
 
 
 def test_a_cd_into_this_project_still_gates(tmp_path: Path) -> None:
     """The `cd` must not become an escape hatch — naming this repo re-enters the gate."""
     project = _repo(tmp_path / "project", "packages/harness/src/felix/x.py")
-    assert _run(f"cd {project}; {CREATE}", project=project, cwd=project) == 2
+    assert _run(f"cd {project}; {CREATE}", project=project, cwd=project) == FLAGGED
 
 
 def test_a_cd_to_somewhere_that_is_not_a_repo_does_not_gate(tmp_path: Path) -> None:
     project = _repo(tmp_path / "project", "packages/harness/src/felix/x.py")
     elsewhere = tmp_path / "plain"
     elsewhere.mkdir()
-    assert _run(f"cd {elsewhere}; {CREATE}", project=project, cwd=project) == 0
+    assert _run(f"cd {elsewhere}; {CREATE}", project=project, cwd=project) == QUIET
 
 
 def test_an_unrelated_command_is_never_touched(tmp_path: Path) -> None:
     project = _repo(tmp_path / "project", "packages/harness/src/felix/x.py")
-    assert _run("git status", project=project, cwd=project) == 0
+    assert _run("git status", project=project, cwd=project) == QUIET
 
 
 # --- the ways the redirect goes wrong -----------------------------------------------
@@ -164,7 +177,7 @@ cd {elsewhere}
 make check
 EOF
 )"'''
-    assert _run(command, project=project, cwd=project) == 2
+    assert _run(command, project=project, cwd=project) == FLAGGED
 
 
 def test_the_hook_does_not_resolve_a_path_the_shell_would_not_enter(tmp_path: Path) -> None:
@@ -172,7 +185,7 @@ def test_the_hook_does_not_resolve_a_path_the_shell_would_not_enter(tmp_path: Pa
     layers and followed it. The bypass is the disagreement, not the quoting."""
     project = _repo(tmp_path / "project", "packages/harness/src/felix/x.py")
     sibling = _repo(tmp_path / "sibling", "docs/page.mdx")
-    assert _run(f"""cd "'{sibling}'" ; {CREATE}""", project=project, cwd=project) == 2
+    assert _run(f"""cd "'{sibling}'" ; {CREATE}""", project=project, cwd=project) == FLAGGED
 
 
 def test_a_worktree_of_this_project_is_still_gated(tmp_path: Path) -> None:
@@ -181,8 +194,8 @@ def test_a_worktree_of_this_project_is_still_gated(tmp_path: Path) -> None:
     project = _repo(tmp_path / "project", "packages/harness/src/felix/x.py")
     tree = tmp_path / "wt"
     _git(project, "worktree", "add", "-q", str(tree), "HEAD")
-    assert _run(CREATE, project=project, cwd=tree) == 2
-    assert _run(f"cd {tree}; {CREATE}", project=project, cwd=project) == 2
+    assert _run(CREATE, project=project, cwd=tree) == FLAGGED
+    assert _run(f"cd {tree}; {CREATE}", project=project, cwd=project) == FLAGGED
 
 
 def test_a_worktree_is_gated_on_its_own_head(tmp_path: Path) -> None:
@@ -198,10 +211,10 @@ def test_a_worktree_is_gated_on_its_own_head(tmp_path: Path) -> None:
     markers = project / ".claude" / "logs" / "quality-review"
     markers.mkdir(parents=True)
     (markers / _git(project, "rev-parse", "HEAD")).touch()
-    assert _run(CREATE, project=project, cwd=tree) == 2, "worktree borrowed the main sha's marker"
+    assert _run(CREATE, project=project, cwd=tree) == FLAGGED, "worktree borrowed the main sha's marker"
 
     (markers / _git(tree, "rev-parse", "HEAD")).touch()
-    assert _run(CREATE, project=project, cwd=tree) == 0
+    assert _run(CREATE, project=project, cwd=tree) == QUIET
 
 
 # --- where the hook and bash still parted company ------------------------------------
@@ -216,7 +229,7 @@ def test_a_second_cd_is_not_a_way_back_in_ungated(tmp_path: Path, first: str) ->
     plain = tmp_path / "plain"
     plain.mkdir()
     start = sibling if first == "sibling" else plain
-    assert _run(f"cd {start} && cd {project} && {CREATE}", project=project, cwd=project) == 2
+    assert _run(f"cd {start} && cd {project} && {CREATE}", project=project, cwd=project) == FLAGGED
 
 
 def test_navigating_into_a_subdirectory_still_gates(tmp_path: Path) -> None:
@@ -231,13 +244,13 @@ def test_navigating_into_a_subdirectory_still_gates(tmp_path: Path) -> None:
     project = _repo(tmp_path / "project", "packages/harness/src/felix/x.py")
     sibling = _repo(tmp_path / "sibling", "docs/page.mdx")
     sub = project / "packages"
-    assert _run(f"cd {project} && cd {sub} && {CREATE}", project=project, cwd=sibling) == 2
+    assert _run(f"cd {project} && cd {sub} && {CREATE}", project=project, cwd=sibling) == FLAGGED
 
 
 def test_a_relative_chain_is_followed_the_way_bash_follows_it(tmp_path: Path) -> None:
     """Each `cd` resolves against where the previous one landed, not against the start."""
     project = _repo(tmp_path / "project", "packages/harness/src/felix/x.py")
-    assert _run(f"cd {project} && cd packages && {CREATE}", project=project, cwd=tmp_path) == 2
+    assert _run(f"cd {project} && cd packages && {CREATE}", project=project, cwd=tmp_path) == FLAGGED
 
 
 def test_the_last_cd_wins_when_it_leads_out(tmp_path: Path) -> None:
@@ -245,7 +258,7 @@ def test_the_last_cd_wins_when_it_leads_out(tmp_path: Path) -> None:
     an over-block in the other direction."""
     project = _repo(tmp_path / "project", "packages/harness/src/felix/x.py")
     sibling = _repo(tmp_path / "sibling", "docs/page.mdx")
-    assert _run(f"cd {project} && cd {sibling} && {CREATE}", project=project, cwd=project) == 0
+    assert _run(f"cd {project} && cd {sibling} && {CREATE}", project=project, cwd=project) == QUIET
 
 
 def test_an_ambient_git_dir_does_not_follow_the_gate_into_another_repo(tmp_path: Path) -> None:
@@ -257,7 +270,7 @@ def test_an_ambient_git_dir_does_not_follow_the_gate_into_another_repo(tmp_path:
     """
     project = _repo(tmp_path / "project", "packages/harness/src/felix/x.py")
     unrelated = _repo(tmp_path / "unrelated", "docs/page.mdx")
-    assert _run(CREATE, project=project, cwd=unrelated, env={"GIT_DIR": str(project / ".git")}) == 0
+    assert _run(CREATE, project=project, cwd=unrelated, env={"GIT_DIR": str(project / ".git")}) == QUIET
 
 
 def test_an_ambient_git_work_tree_does_not_open_a_way_out(tmp_path: Path) -> None:
@@ -267,6 +280,6 @@ def test_an_ambient_git_work_tree_does_not_open_a_way_out(tmp_path: Path) -> Non
     sibling = _repo(tmp_path / "sibling", "docs/page.mdx")
     for var in ("GIT_DIR", "GIT_WORK_TREE"):
         value = str(sibling / ".git") if var == "GIT_DIR" else str(sibling)
-        assert _run(CREATE, project=project, cwd=project, env={var: value}) == 2, (
+        assert _run(CREATE, project=project, cwd=project, env={var: value}) == FLAGGED, (
             f"{var} pointed the gate out of the project"
         )

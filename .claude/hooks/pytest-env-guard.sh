@@ -1,22 +1,31 @@
 #!/bin/bash
-# PreToolUse(Bash): a bare pytest run reads .env and points at a real Postgres,
-# so DB-touching tests fail with a connection error that looks like a code bug.
-# Force the supported in-memory path instead.
+# PreToolUse(Bash): a bare test run reads .env and points at a real Postgres, so
+# DB-touching tests fail with a connection error that looks like a code bug. Force the
+# supported in-memory path instead.
+#
+# The trigger is the segment's verb, not the presence of the word -- see lib/command.sh.
+# Matching the whole string blocked `grep -rn …`, `git commit -m 'run … via the
+# script'`, and this file being read at all, because its own name contains the word.
 INPUT=$(cat)
+command -v jq >/dev/null 2>&1 || exit 0
 CMD=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty')
 [ -z "$CMD" ] && exit 0
 
-case "$CMD" in
-  *pytest*) ;;
-  *) exit 0 ;;
-esac
+# shellcheck source=lib/command.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib/command.sh"
 
-# Entry points that set the in-memory env themselves — let them run.
-# scripts/test.sh is canonical; make test and make check delegate to it.
-case "$CMD" in
-  *FELIX_DATABASE_URL=*|*scripts/test.sh*|*"make test"*|*"make check"*) exit 0 ;;
-esac
 [ -n "$FELIX_DATABASE_URL" ] && exit 0
+
+bare=0
+while IFS= read -r seg; do
+  [ "$(hook_segment_verb "$seg")" = "pytest" ] || continue
+  # Entry points that set the in-memory env themselves — let them run.
+  case "$seg" in *FELIX_DATABASE_URL=*) continue ;; esac
+  bare=1
+done <<EOF
+$(hook_segments <<<"$CMD")
+EOF
+[ "$bare" = 0 ] && exit 0
 
 cat >&2 <<'TXT'
 Blocked: this pytest run would inherit FELIX_DATABASE_URL from .env and fail against a real Postgres

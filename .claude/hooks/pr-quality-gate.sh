@@ -12,7 +12,23 @@ INPUT=$(cat)
 command -v jq >/dev/null 2>&1 || exit 0
 cmd=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty')
 [ -z "$cmd" ] && exit 0
-case "$cmd" in *"gh pr create"*) ;; *) exit 0 ;; esac
+
+# shellcheck source=lib/command.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib/command.sh"
+
+# The trigger looks at what will run, not at what the string contains. Matching the
+# whole command blocked `echo "to open one, run gh pr create"` and any heredoc whose body
+# mentioned it -- a PR description quoting the command, or a script with it in a
+# comment. Prose about a command is not the command.
+opening=0
+while IFS= read -r seg; do
+  case "$(hook_segment_verb "$seg")" in gh) ;; *) continue ;; esac
+  case " $seg " in *" pr "*) ;; *) continue ;; esac
+  case " $seg " in *" create "*) opening=1 ;; esac
+done <<SEGMENTS
+$(hook_segments <<<"$cmd")
+SEGMENTS
+[ "$opening" = 1 ] || exit 0
 
 root="${CLAUDE_PROJECT_DIR:-.}"
 command -v git >/dev/null 2>&1 || exit 0
@@ -103,20 +119,23 @@ n=$(printf '%s\n' "$changed" | wc -l | tr -d ' ')
 second="felix-test-quality-reviewer is not needed — no tests changed."
 [ "$tests_changed" -gt 0 ] && second="Tests changed too, so also delegate to felix-test-quality-reviewer on the changed files under tests/."
 
-cat >&2 <<EOF
-Blocked: $n Python file(s) changed against $base, but the quality reviewers have not run on this
-commit ($(printf '%s' "$sha" | cut -c1-8)).
-
-Do this first, then re-run the same gh pr create:
+# Advisory, not a block. This started as `exit 2` and the hard stop cost more than it
+# bought: every amended commit re-armed it mid-flow, and the reviewers it demands are
+# worth running on judgement rather than because the turn will not proceed otherwise.
+# The note still says exactly what is missing, so choosing to skip it is a decision
+# rather than an oversight -- which is what a guardrail against a shortcut should be.
+# The destructive-git and wrong-test-env guards still block, because those prevent
+# damage rather than encourage diligence.
+jq -cn --arg ctx "$(cat <<EOF
+$n Python file(s) changed against $base, and the quality reviewers have not run on this commit ($(printf '%s' "$sha" | cut -c1-8)). Worth doing before this PR is reviewed by anyone else:
 
   1. Delegate to felix-quality-reviewer on: git diff $base...HEAD
   2. $second
   3. Act on the compounding findings, or say why each one stands.
-  4. Record it so this gate passes:
+  4. Record it so this note stops appearing:
        mkdir -p .claude/logs/quality-review && touch .claude/logs/quality-review/\$(git rev-parse HEAD)
 
-The marker is keyed to the commit sha, so amending or adding a commit asks for a fresh review —
-that is deliberate; a review of code that is no longer what you are shipping is worse than none.
-Nothing here is graded on finding something: "reviewed, nothing compounding" is a normal result.
+The marker is keyed to the commit sha, so amending or adding a commit asks for a fresh review — deliberate, since a review of code you are no longer shipping is worse than none. Nothing here is graded on finding something: "reviewed, nothing compounding" is a normal result.
 EOF
-exit 2
+)" '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:$ctx}}'
+exit 0
