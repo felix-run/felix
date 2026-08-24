@@ -349,3 +349,41 @@ async def test_when_args_separates_presence_from_truthiness(value: object, shoul
         f"{value!r} {'reached' if reached else 'did not reach'} the handler; "
         f"expected the rule to {'gate' if should_gate else 'ignore'} it"
     )
+
+
+# Every `topic_key` shape a model can emit, and whether it is a key at all.
+_KEY_SHAPES = ["", "   ", "\t\n", "ops.policy", " ops.policy ", "0"]
+
+
+@pytest.mark.parametrize("raw", _KEY_SHAPES, ids=lambda v: repr(v))
+@pytest.mark.asyncio
+async def test_the_gate_and_the_store_agree_on_a_blank_topic_key(raw: str) -> None:
+    """A comment claimed these agreed. They did not, and nothing ran both.
+
+    `when_args` stripped and the store did not, so `topic_key="   "` was ungated *and*
+    a real key — an ungated call that ran the topic sweep. Bounded, since the sweep
+    matches byte-identically and no curated row is keyed on whitespace, but it is two
+    components disagreeing about what "empty" means, which is the shape of nearly every
+    bug this subsystem has produced.
+
+    So the assertion is the agreement itself rather than either side's behaviour. Any
+    future change that strips on one side only fails here.
+    """
+    from felix.config import Settings
+    from felix.manifests.builder import _arg_present
+    from felix.memory import store as memory_store
+
+    gate_sees_a_key = _arg_present({"topic_key": raw}, "topic_key")
+    row = await memory_store.put_memory(
+        Settings(database_url="memory://agree"),
+        "agree",
+        content=f"a fact about {raw!r}",
+        manifest_id="m",
+        topic_key=raw,
+        metadata={"source": "assistant"},
+    )
+    store_sees_a_key = row["topic_key"] is not None
+    assert gate_sees_a_key == store_sees_a_key, (
+        f"{raw!r}: the approval gate says key={gate_sees_a_key} and the store says "
+        f"key={store_sees_a_key} — an ungated call would run the topic sweep"
+    )

@@ -99,7 +99,8 @@ spec:
     # The other retirement route. `remember` with a topic_key retires whatever else
     # holds that key, and `recall` prints every stored topic_key -- so an injected turn
     # could harvest the keys and retire the rows behind them without ever touching
-    # `forget`. Gated only when the key is present, so ordinary capture is unaffected.
+    # `forget`. Gated only when the key is present, so ordinary `remember` calls are
+    # unaffected.
     #
     # This closes the tool route, not the sweep. `capture_from_turn` reaches the same
     # supersession post-turn without a tool call, so it passes through no wrapper here

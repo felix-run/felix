@@ -142,7 +142,15 @@ async def put_memory(
     # not depend on two `case` expressions staying in step with each other.
     metadata = {k: v for k, v in (metadata or {}).items() if k != RETIRED_BY_KEY}
     content = (content or "")[:MAX_CONTENT_CHARS]
-    topic_key = (topic_key or "")[:MAX_TOPIC_KEY_CHARS] or None
+    # Stripped, so a blank key cannot exist. Without this the approval gate and the
+    # store disagreed about what "empty" means: `when_args` treats "   " as absent and
+    # lets the call through ungated, while this line kept it as a real key and ran the
+    # topic sweep under it. Bounded -- the sweep matches byte-identically, so it could
+    # only reach rows written through the same ungated path, never a curated one -- but
+    # it is two components disagreeing about emptiness, which is the exact shape of the
+    # last several bugs here. Stripping also stops near-duplicate keys that differ only
+    # by whitespace from being separately storable.
+    topic_key = (topic_key or "").strip()[:MAX_TOPIC_KEY_CHARS] or None
     mem_id = memory_id(manifest_id, content)
     ts = now_ms()
     row: dict[str, Any] = {

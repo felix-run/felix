@@ -733,9 +733,18 @@ def _arg_present(args: ToolInput, name: str) -> bool:
     number or a JSON string. Models are inconsistent about that, and the resulting
     coin-flip resolves toward *no approval* -- the wrong direction for a control.
 
-    Emptiness still counts as absence for strings and collections, where an empty value
-    genuinely means "not supplied": `put_memory` itself does `(topic_key or "")[:MAX]
-    or None`, so the gate and the store agree on what a blank key means.
+    Emptiness still counts as absence for `str`, `list`, `dict`, `tuple` and `set`,
+    where an empty value genuinely means "not supplied". `put_memory` strips and then
+    maps a blank `topic_key` to `None` for the same reason, so the gate and the store
+    agree on what a blank key means -- an agreement that has to be maintained on both
+    sides, and did not hold until the store learned to strip.
+
+    Everything else is present, including `0`, `0.0` and `False`. That fallthrough is
+    deliberate: an unrecognised type is a supplied value, and a control should fail
+    toward gating. It also means this function never invokes a user-defined `__bool__`
+    -- `in` hashes a string key, `is None` is identity, `isinstance` touches no dunder,
+    and `bool()` is only ever called on builtins. A generic `bool(value)` would have
+    propagated a `ValueError` out of a governance wrapper for anything array-shaped.
     """
     if name not in (args or {}):
         return False

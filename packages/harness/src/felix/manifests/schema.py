@@ -441,8 +441,11 @@ class ApprovalRule(_Strict):
     bind_principal: bool = False
     allow_unattended: bool = False
     # Argument names that must all be supplied for the rule to apply -- present, not
-    # null, and for strings and collections non-empty. `0` and `False` count as
-    # supplied; see `builder.py:_arg_present` for why that distinction is load-bearing.
+    # null, and non-empty if `str`, `list`, `dict`, `tuple` or `set`. `0` and `False`
+    # count as supplied; see `builder.py:_arg_present` for why that is load-bearing.
+    #
+    # Not validated against the gated tool's schema, so a misspelled name yields a rule
+    # that never fires and still passes `validate-manifest` and the attestation checks.
     # Empty means the rule gates every call, which is the original behaviour.
     #
     # Exists because a tool can be harmless in one shape and a privileged operation in
