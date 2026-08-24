@@ -140,7 +140,7 @@ async def put_memory(
     # text so re-storing the same over-long content stays idempotent.
     # Stripped rather than trusted. No writer sets it today, but the invariant should
     # not depend on two `case` expressions staying in step with each other.
-    metadata = {k: v for k, v in (metadata or {}).items() if k != FORGOTTEN_BY_KEY}
+    metadata = {k: v for k, v in (metadata or {}).items() if k != RETIRED_BY_KEY}
     content = (content or "")[:MAX_CONTENT_CHARS]
     topic_key = (topic_key or "")[:MAX_TOPIC_KEY_CHARS] or None
     mem_id = memory_id(manifest_id, content)
@@ -169,7 +169,17 @@ async def put_memory(
 
     if supersedes_id:
         # The ordinal a supersession closes at is this turn's, not the old row's.
-        await supersede(settings, tenant_id, supersedes_id, origin_seq, superseded_by=mem_id)
+        await supersede(
+            settings,
+            tenant_id,
+            supersedes_id,
+            origin_seq,
+            superseded_by=mem_id,
+            # Named, or this always ran at agent rank -- so the guard added to
+            # `supersede` turned an operator write carrying `supersedes_id` into a
+            # silent no-op that still reported success.
+            source=str((metadata or {}).get("source") or ""),
+        )
 
     if _use_memory(settings):
         # The twin keeps the vector inline; Postgres keeps it in a column the ORM
@@ -232,7 +242,11 @@ def _rank(source: str) -> int:
 # the writer's rank meant an operator deleting an agent-written row -- which is nearly
 # every row, and exactly the population the memory route exists to clean up -- left a
 # rank-1 row that any rank-1 writer reactivated by re-storing the same text.
-FORGOTTEN_BY_KEY = "forgotten_by"
+# One key rather than one per route. `forget` stamped it and supersession did not, so
+# an operator correcting a stale memory the *documented preferred way* -- remember the
+# new value under the same topic_key -- produced a retirement nothing recorded, and an
+# injected turn restating the stale sentence brought it back.
+RETIRED_BY_KEY = "retired_by"
 
 
 def trust_of(row: dict[str, Any]) -> int:
@@ -240,22 +254,32 @@ def trust_of(row: dict[str, Any]) -> int:
     return _trust(row)
 
 
-def _forgetter_rank_of_column(metadata_col: Any) -> Any:
-    """`_forgetter_rank` as SQL. Falls back to the writer rank when nothing forgot it."""
-    forgetter = metadata_col.op("->>")(FORGOTTEN_BY_KEY)
-    whens = [(forgetter == name, rank) for name, rank in _TRUST_RANK.items()]
+def _retirer_rank_of_column(metadata_col: Any) -> Any:
+    """`_retirer_rank` as SQL. Falls back to the writer rank when nothing forgot it."""
+    retirer = metadata_col.op("->>")(RETIRED_BY_KEY)
+    whens = [(retirer == name, rank) for name, rank in _TRUST_RANK.items()]
     return case(
-        (forgetter.is_(None), _trust_of_column(metadata_col)),
+        # `""` too, not only NULL: Python tests truthiness here and SQL tested
+        # IS NULL, so an empty stamp fell back on one arm and did not on the other.
+        ((retirer.is_(None)) | (retirer == ""), _trust_of_column(metadata_col)),
         *whens,
         else_=_DEFAULT_TRUST,
     )
 
 
-def _forgetter_rank(row: dict[str, Any]) -> int:
+def _stamp_retirer(row: dict[str, Any], source: str) -> None:
+    """Record who retired a row. Callers must have passed the rank check first."""
+    metadata = dict(row.get("metadata") or {})
+    metadata[RETIRED_BY_KEY] = source
+    row["metadata"] = metadata
+    row["metadata_json"] = metadata
+
+
+def _retirer_rank(row: dict[str, Any]) -> int:
     """The rank of whoever forgot this row, or the writer's if nobody has."""
     metadata = row.get("metadata") or row.get("metadata_json") or {}
-    if isinstance(metadata, dict) and metadata.get(FORGOTTEN_BY_KEY):
-        return _rank(str(metadata[FORGOTTEN_BY_KEY]))
+    if isinstance(metadata, dict) and metadata.get(RETIRED_BY_KEY):
+        return _rank(str(metadata[RETIRED_BY_KEY]))
     return _trust(row)
 
 
@@ -295,10 +319,15 @@ def _may_reactivate(incoming: dict[str, Any], existing: dict[str, Any]) -> bool:
     the memory route exists to clean up -- must not be undone by the agent that wrote
     it. The operator can still undo their own forget, and the agent its own.
     """
-    if existing.get("status") != FORGOTTEN:
+    if (existing.get("status") or ACTIVE) == ACTIVE:
         return True
-    incoming_rank = _rank(str((incoming.get("metadata") or {}).get("source") or ""))
-    return incoming_rank >= _forgetter_rank(existing)
+    # SUPERSEDED counts, not just FORGOTTEN. It is the state the *documented*
+    # correction path produces -- "prefer remembering the new value under the same
+    # topic_key" -- so leaving it unprotected made the recommended remedy the
+    # non-durable one, undone by any turn that restates the stale sentence.
+    # `_trust(incoming)` rather than an open-coded copy of it, so a change to the
+    # ranking cannot reach the SQL arm and miss this one.
+    return _trust(incoming) >= _retirer_rank(existing)
 
 
 def _may_displace(incoming: dict[str, Any], existing: dict[str, Any]) -> bool:
@@ -323,6 +352,7 @@ def _put_in_memory(row: dict[str, Any]) -> dict[str, Any]:
                 and _may_displace(row, other)
             ):
                 other["status"] = SUPERSEDED
+                _stamp_retirer(other, str((row.get("metadata") or {}).get("source") or ""))
                 other["superseded_by"] = mem_id
                 other["superseded_seq"] = row["origin_seq"]
                 other["updated_at"] = row["updated_at"]
@@ -356,7 +386,7 @@ def _refused_in_sql(table: Any, row: dict[str, Any]) -> Any:
     """
     outranked = _trust_of_column(table.c["metadata"]) > _trust(row)
     cannot_reactivate = (table.c.status == FORGOTTEN) & (
-        _forgetter_rank_of_column(table.c["metadata"]) > _trust(row)
+        _retirer_rank_of_column(table.c["metadata"]) > _trust(row)
     )
     return outranked | cannot_reactivate
 
@@ -499,10 +529,15 @@ async def supersede(
     if _use_memory(settings):
         row = _memory_rows.get((tenant_id, memory_id))
         if row is not None:
-            if _rank(source) < _trust(row):
+            # The higher of the two. Testing only the writer let an agent supersede a
+            # row the operator had forgotten -- which does not resurrect it, but moves
+            # it to a state `_may_reactivate` used to wave through, laundering the
+            # forget.
+            if _rank(source) < max(_trust(row), _retirer_rank(row)):
                 logger.warning("refusing to supersede a more-trusted memory id=%s", memory_id)
                 return
             row["status"] = SUPERSEDED
+            _stamp_retirer(row, source)
             row["superseded_seq"] = at_seq
             row["superseded_by"] = superseded_by
             row["updated_at"] = ts
@@ -514,11 +549,13 @@ async def supersede(
             .where(
                 MemoryVector.tenant_id == tenant_id,
                 MemoryVector.id == memory_id,
-                # Same predicate as the in-memory arm; see the docstring.
+                # Same predicates as the in-memory arm; see the docstring.
                 _trust_of_column(MemoryVector.metadata_json) <= _rank(source),
+                _retirer_rank_of_column(MemoryVector.metadata_json) <= _rank(source),
             )
             .values(
                 status=SUPERSEDED,
+                metadata_json=MemoryVector.metadata_json.op("||")(sa_cast({RETIRED_BY_KEY: source}, JSONB)),
                 superseded_seq=at_seq,
                 superseded_by=superseded_by,
                 updated_at=ts,
@@ -556,7 +593,7 @@ async def forget(settings: Settings, tenant_id: str, memory_id: str, *, source: 
         # the operator who forgot it, re-arming its own resurrection. The approval
         # prompt says "Confirm retiring a stored memory", which is not what that call
         # does when the row is already retired.
-        if _rank(source) < _forgetter_rank(row):
+        if _rank(source) < _retirer_rank(row):
             # The Postgres arm expresses this test in the WHERE, so the statement
             # matches nothing and rowcount is 0. Returning True here would make the
             # twins answer differently for the same call, and `_forget_tool` turns
@@ -564,7 +601,7 @@ async def forget(settings: Settings, tenant_id: str, memory_id: str, *, source: 
             # answer on both: the call changed nothing.
             logger.warning("refusing to downgrade the forgetter of memory id=%s", memory_id)
             return False
-        metadata[FORGOTTEN_BY_KEY] = source
+        metadata[RETIRED_BY_KEY] = source
         row["metadata"] = metadata
         row["metadata_json"] = metadata
         row["updated_at"] = ts
@@ -579,13 +616,13 @@ async def forget(settings: Settings, tenant_id: str, memory_id: str, *, source: 
                 # Same predicates as the in-memory arm; see the docstring. The
                 # second makes a refused downgrade a no-op rather than a rewrite.
                 _trust_of_column(MemoryVector.metadata_json) <= _rank(source),
-                _forgetter_rank_of_column(MemoryVector.metadata_json) <= _rank(source),
+                _retirer_rank_of_column(MemoryVector.metadata_json) <= _rank(source),
             )
             .values(
                 status=FORGOTTEN,
                 updated_at=ts,
                 # jsonb || jsonb merges, so this preserves `source` and any other keys.
-                metadata_json=MemoryVector.metadata_json.op("||")(sa_cast({FORGOTTEN_BY_KEY: source}, JSONB)),
+                metadata_json=MemoryVector.metadata_json.op("||")(sa_cast({RETIRED_BY_KEY: source}, JSONB)),
             )
         )
         await db.commit()

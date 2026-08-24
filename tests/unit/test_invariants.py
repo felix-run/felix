@@ -317,27 +317,51 @@ def test_every_memory_retirement_route_is_accounted_for() -> None:
     src = Path(__file__).resolve().parents[2] / "packages/harness/src/felix/memory/store.py"
     tree = ast.parse(src.read_text(encoding="utf-8"))
 
-    def writes_status(node: ast.AST) -> bool:
+    # Both axes. The module docstring is explicit that `status` and `superseded_seq`
+    # must never disagree, and `as_of` filters on `superseded_seq` alone -- so a route
+    # writing only that one hides a row from every as-of reconstruction.
+    VISIBILITY = {"status", "superseded_seq"}
+
+    def writes_visibility(node: ast.AST) -> bool:
         for child in ast.walk(node):
             if isinstance(child, ast.Assign):
                 for t in child.targets:
                     if isinstance(t, ast.Subscript) and isinstance(t.slice, ast.Constant):
-                        if t.slice.value == "status":
+                        if t.slice.value in VISIBILITY:
                             return True
-                    if isinstance(t, ast.Attribute) and t.attr == "status":
+                    if isinstance(t, ast.Attribute) and t.attr in VISIBILITY:
                         return True
-            if isinstance(child, ast.keyword) and child.arg == "status":
+            if isinstance(child, ast.keyword) and child.arg in VISIBILITY:
                 return True
+            # `set_={...}` mappings too, but only those -- a bare dict naming
+            # "status" is usually a read projection like `_row_dict`. Without this,
+            # `_put_in_postgres` entered the set only by way of an incidental
+            # `.values(status=...)` in a sibling statement, so refactoring that
+            # sibling would have dropped the arm that carried the production-only
+            # bug, silently, with the test still green.
+            if isinstance(child, ast.keyword) and child.arg == "set_":
+                for key in getattr(child.value, "keys", []):
+                    if isinstance(key, ast.Constant) and key.value in VISIBILITY:
+                        return True
         return False
 
     found = {
         node.name
         for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and writes_status(node)
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and writes_visibility(node)
     }
     unaccounted = sorted(found - set(ACCOUNTED))
     assert unaccounted == [], (
         f"memory retirement routes with no recorded trust reasoning: {unaccounted}. "
         "Add the predicate, or record in ACCOUNTED why the route cannot be reached "
         "by an untrusted writer."
+    )
+
+    # A floor, so a route *leaving* the set fails as loudly as one entering it. A
+    # detector that can silently stop seeing a route has the same defect as the
+    # pointwise guards it replaced -- it infers safety from an absent signal.
+    missing = sorted({"_put_in_memory", "_put_in_postgres", "forget", "supersede"} - found)
+    assert missing == [], (
+        f"routes that should write visibility are no longer detected: {missing}. "
+        "Either they stopped writing it, or the detector stopped seeing them."
     )

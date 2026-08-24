@@ -4,7 +4,7 @@ Eight review rounds on this subsystem found the same class of bug eight times: a
 mutation route that one arm guards and the other does not, or a field one guard
 preserves and another forgets. The worst of them was live in production and invisible
 to CI — the Postgres upsert preserved `status` on a refused write but took the
-incoming `metadata`, erasing the `forgotten_by` stamp, so the *second* identical write
+incoming `metadata`, erasing the `retired_by` stamp, so the *second* identical write
 resurrected a row the operator had deleted. The `memory://` arm never had it. Every
 per-case test written to that point passed on both arms.
 
@@ -139,8 +139,9 @@ async def test_a_refused_write_preserves_the_whole_row(
     """Not just `status`. Each round of review found another field a guard forgot —
     `kind`, then `topic_key` and `importance`, then `metadata` itself. The set of
     fields a refused write may not touch is the point, so it is asserted as a set."""
-    if forgetter is None:
-        pytest.skip("nothing is refused when the row was never forgotten")
+    # No skip for `forgetter is None`. A refused write against a *live* curated row
+    # needs no forget at all and is the cheapest version of this attack, and skipping
+    # it left only two of the six pairs asserting anything.
     mem_id = await _seed(memory_settings, writer, forgetter)
     before = (await memory_store.get_many(memory_settings, TENANT, [mem_id]))[mem_id]
 
@@ -156,13 +157,15 @@ async def test_a_refused_write_preserves_the_whole_row(
     )
     after = (await memory_store.get_many(memory_settings, TENANT, [mem_id]))[mem_id]
 
-    if EXPECTED[(writer, forgetter, AGENT)] != FORGOTTEN:
-        pytest.skip("this combination permits the write")
+    refused = writer == OPERATOR or EXPECTED[(writer, forgetter, AGENT)] == FORGOTTEN
+    if not refused:
+        return
     for field in ("status", "kind", "topic_key", "importance"):
         assert after.get(field) == before.get(field), f"refused write changed {field}"
-    assert (after.get("metadata") or {}).get("forgotten_by") == forgetter, (
-        "refused write erased the stamp naming who forgot the row"
-    )
+    if forgetter is not None:
+        assert (after.get("metadata") or {}).get("retired_by") == forgetter, (
+            "refused write erased the stamp naming who retired the row"
+        )
 
 
 @parametrized
@@ -204,3 +207,98 @@ async def test_a_refused_forget_reports_refusal_on_both_arms(memory_settings: An
     )
     assert await memory_store.forget(memory_settings, TENANT, row["id"], source=OPERATOR) is True
     assert await memory_store.forget(memory_settings, TENANT, row["id"], source=TOOL) is False
+
+
+# --- the other retirement route ------------------------------------------------------
+#
+# `EXPECTED` above covers `forget`. Supersession is the route the tool descriptions
+# actually recommend — "to correct a fact, prefer remembering the new value under the
+# same topic_key" — and it had no retirement stamp at all, so the recommended remedy
+# was the non-durable one. These assert the same rule holds for it.
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_a_correction_by_topic_key_is_not_undone_by_an_injected_turn(
+    memory_settings: Any,
+) -> None:
+    """The documented correction path, and the attack is a sentence.
+
+    Operator corrects a stale memory by writing the new value under the same
+    `topic_key`. Supersession recorded nothing about who decided that, so
+    `_may_displace` compared against the stale row's original *writer* — rank 1 for a
+    captured row — and any turn restating the stale sentence brought it back.
+    """
+    stale = "The runbook lives in the old repo."
+    await memory_store.put_memory(
+        memory_settings,
+        TENANT,
+        content=stale,
+        manifest_id=MANIFEST,
+        topic_key="deploy.runbook",
+        metadata={"source": AGENT},
+    )
+    await memory_store.put_memory(
+        memory_settings,
+        TENANT,
+        content="The runbook lives in the ops repo.",
+        manifest_id=MANIFEST,
+        topic_key="deploy.runbook",
+        metadata={"source": OPERATOR},
+    )
+    # No tool call: capture writes whatever the turn restated.
+    await memory_store.put_memory(
+        memory_settings, TENANT, content=stale, manifest_id=MANIFEST, metadata={"source": AGENT}
+    )
+    active = [
+        r["content"] for r in await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST)
+    ]
+    assert active == ["The runbook lives in the ops repo."], f"stale value returned: {active}"
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_an_agent_correction_is_still_reversible(memory_settings: Any) -> None:
+    """Equal rank still supersedes and still un-supersedes — the rule protects the
+    operator's decision, not every decision."""
+    first = "The user's timezone is UTC."
+    await memory_store.put_memory(
+        memory_settings,
+        TENANT,
+        content=first,
+        manifest_id=MANIFEST,
+        topic_key="user.timezone",
+        metadata={"source": AGENT},
+    )
+    await memory_store.put_memory(
+        memory_settings,
+        TENANT,
+        content="The user's timezone is CET.",
+        manifest_id=MANIFEST,
+        topic_key="user.timezone",
+        metadata={"source": AGENT},
+    )
+    await memory_store.put_memory(
+        memory_settings, TENANT, content=first, manifest_id=MANIFEST, metadata={"source": AGENT}
+    )
+    active = {
+        r["content"] for r in await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST)
+    }
+    assert first in active, "an agent could not revisit its own correction"
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_supersede_cannot_launder_an_operator_forget(memory_settings: Any) -> None:
+    """`supersede` tested the row's *writer*, so an agent could move a row the
+    operator had forgotten into a state that used to permit reactivation."""
+    text = "Never disclose the vendor list."
+    row = await memory_store.put_memory(
+        memory_settings, TENANT, content=text, manifest_id=MANIFEST, metadata={"source": AGENT}
+    )
+    await memory_store.forget(memory_settings, TENANT, row["id"], source=OPERATOR)
+    await memory_store.supersede(memory_settings, TENANT, row["id"], 1, source=TOOL)
+    await memory_store.put_memory(
+        memory_settings, TENANT, content=text, manifest_id=MANIFEST, metadata={"source": AGENT}
+    )
+    assert await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST) == []
