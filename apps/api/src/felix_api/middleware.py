@@ -111,8 +111,13 @@ class RateLimitMiddleware:
                 # Once per resolver, not once per request. A resolver that raises on a
                 # missing header raises on *every* request, which is the case this
                 # guard exists for — an unlatched traceback there becomes the dominant
-                # line in the log and buries the signal. Same shape as
-                # `ResilientRateLimiter._degraded`.
+                # line in the log and buries the signal.
+                #
+                # One-way, unlike `ResilientRateLimiter._degraded`, which un-latches
+                # on success and says so. A resolver that fails transiently and
+                # recovers stays silent here. That is the right trade for the failure
+                # this guards — deterministic, every request — and the wrong one if
+                # you ever need to see intermittent resolver failures.
                 name = getattr(resolver, "__qualname__", repr(resolver))
                 if name not in self._warned_resolvers:
                     self._warned_resolvers.add(name)

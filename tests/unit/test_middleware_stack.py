@@ -226,6 +226,10 @@ async def test_a_raising_key_resolver_does_not_take_down_the_request(caplog) -> 
         rest = [await client.get("/live") for _ in range(4)]
     assert first.status_code == 200
     assert [r.status_code for r in rest] == [200, 200, 200, 200]
-    assert len(caplog.records) == 1, (
-        f"expected one warning for a resolver that fails every request, got {len(caplog.records)}"
+    # Filtered by logger name: caplog captures every record at WARNING, so an
+    # unrelated warning during create_app would fail this with a message pointing at
+    # the latch rather than at whatever actually warned.
+    warnings = [r for r in caplog.records if r.name == "felix_api.middleware"]
+    assert len(warnings) == 1, (
+        f"expected one warning for a resolver that fails every request, got {len(warnings)}"
     )
