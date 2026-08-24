@@ -289,79 +289,91 @@ def test_no_base_http_middleware_anywhere_in_the_source() -> None:
     )
 
 
-def test_every_memory_retirement_route_is_accounted_for() -> None:
-    """A memory leaves recall by having its `status` written. Each such route needs a
-    trust predicate, and each one was found by a separate review round rather than by
-    looking — which is what this replaces.
+def test_every_memory_store_function_is_classified() -> None:
+    """Every top-level function in the memory store is either a retirement route with
+    a stated predicate, or explicitly not one.
 
-    The allowlist is the point: a new route fails this test until someone writes down
-    which of the two it is. Pointwise enforcement is what made eight rounds necessary;
-    an enumeration nobody maintains would make a ninth.
+    The previous shape asked "did the detector see this idiom", which has a silent-miss
+    mode: a route written as `.values(**payload)` or `set_=mapping_var` enters neither
+    the found set nor the unaccounted set, and passes with no entry at all. That is the
+    same defect as the pointwise guards it replaced — inferring safety from an absent
+    signal — one level up.
+
+    This asks "did someone classify this function", which no idiom can dodge. The cost
+    is one line per new helper. That is the price of the guarantee.
     """
     import ast
     from pathlib import Path
 
-    # function name -> why it is safe to write `status` there
-    ACCOUNTED = {
+    # Routes that can take a memory out of recall, and the predicate that guards each.
+    RETIREMENT = {
         "_put_in_memory": "guarded: _may_displace / _may_reactivate, then _preserve",
         "_put_in_postgres": "guarded: _refused_in_sql on every preserved column",
-        "forget": "guarded: _rank(source) vs _trust(row), stamp only rises",
-        "supersede": "guarded: _rank(source) vs _trust(row)",
+        "forget": "guarded: _rank(source) vs _trust(row), _retirer_rank stamp only rises",
+        "supersede": "guarded: _rank(source) vs max(_trust, _retirer_rank), stamps retirer",
+        "put_memory": "delegates to the two _put_in_* arms; names its writer when superseding",
         "consolidate_pools": (
-            "unguarded, and reachable only for rows predating content-hash ids: it "
-            "dedupes on exact (tenant, manifest, content), and identical content now "
-            "yields an identical id, so two such rows cannot coexist to be merged."
+            "unguarded, and unreachable: it dedupes on exact (tenant, manifest, content), "
+            "and identical content now yields an identical id, so two such rows cannot "
+            "coexist to be merged. Precondition for any future writer: ids stay content-derived."
         ),
+    }
+    # Everything else: reads, projections, ranking helpers, embedding plumbing. Listed
+    # explicitly rather than inferred, which is the whole point -- a new function is
+    # unclassified until someone says which it is.
+    NOT_RETIREMENT = {
+        "now_ms",
+        "memory_id",
+        "_row_dict",
+        "_is_active",
+        "current_turn_seq",
+        "_trust_of_column",
+        "_rank",
+        "trust_of",
+        "_retirer_rank_of_column",
+        "_stamp_retirer",
+        "_retirer_rank",
+        "_trust",
+        "_preserve",
+        "_may_reactivate",
+        "_may_displace",
+        "_refused_in_sql",
+        "_write_embedding",
+        "_configured_dim",
+        "get_many",
+        "list_active",
+        "as_of",
     }
 
     src = Path(__file__).resolve().parents[2] / "packages/harness/src/felix/memory/store.py"
-    tree = ast.parse(src.read_text(encoding="utf-8"))
+    module_src = src.read_text(encoding="utf-8")
+    tree = ast.parse(module_src)
 
-    # Both axes. The module docstring is explicit that `status` and `superseded_seq`
-    # must never disagree, and `as_of` filters on `superseded_seq` alone -- so a route
-    # writing only that one hides a row from every as-of reconstruction.
-    VISIBILITY = {"status", "superseded_seq"}
+    # A reason naming a symbol that no longer exists is a reason nobody re-read. This
+    # allowlist went stale inside one commit -- `supersede`'s entry still described a
+    # predicate the code had stopped using.
+    for name, reason in RETIREMENT.items():
+        for symbol in (
+            "_may_displace",
+            "_may_reactivate",
+            "_refused_in_sql",
+            "_preserve",
+            "_retirer_rank",
+            "_rank",
+            "_trust",
+        ):
+            if symbol in reason:
+                assert symbol in module_src, (
+                    f"RETIREMENT[{name!r}] cites {symbol}, which no longer exists in the module"
+                )
 
-    def writes_visibility(node: ast.AST) -> bool:
-        for child in ast.walk(node):
-            if isinstance(child, ast.Assign):
-                for t in child.targets:
-                    if isinstance(t, ast.Subscript) and isinstance(t.slice, ast.Constant):
-                        if t.slice.value in VISIBILITY:
-                            return True
-                    if isinstance(t, ast.Attribute) and t.attr in VISIBILITY:
-                        return True
-            if isinstance(child, ast.keyword) and child.arg in VISIBILITY:
-                return True
-            # `set_={...}` mappings too, but only those -- a bare dict naming
-            # "status" is usually a read projection like `_row_dict`. Without this,
-            # `_put_in_postgres` entered the set only by way of an incidental
-            # `.values(status=...)` in a sibling statement, so refactoring that
-            # sibling would have dropped the arm that carried the production-only
-            # bug, silently, with the test still green.
-            if isinstance(child, ast.keyword) and child.arg == "set_":
-                for key in getattr(child.value, "keys", []):
-                    if isinstance(key, ast.Constant) and key.value in VISIBILITY:
-                        return True
-        return False
-
-    found = {
-        node.name
-        for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and writes_visibility(node)
-    }
-    unaccounted = sorted(found - set(ACCOUNTED))
-    assert unaccounted == [], (
-        f"memory retirement routes with no recorded trust reasoning: {unaccounted}. "
-        "Add the predicate, or record in ACCOUNTED why the route cannot be reached "
-        "by an untrusted writer."
+    defined = {node.name for node in tree.body if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)}
+    classified = set(RETIREMENT) | NOT_RETIREMENT
+    unclassified = sorted(defined - classified)
+    assert unclassified == [], (
+        f"unclassified functions in the memory store: {unclassified}. Add each to "
+        "RETIREMENT with the predicate that guards it, or to NOT_RETIREMENT."
     )
-
-    # A floor, so a route *leaving* the set fails as loudly as one entering it. A
-    # detector that can silently stop seeing a route has the same defect as the
-    # pointwise guards it replaced -- it infers safety from an absent signal.
-    missing = sorted({"_put_in_memory", "_put_in_postgres", "forget", "supersede"} - found)
-    assert missing == [], (
-        f"routes that should write visibility are no longer detected: {missing}. "
-        "Either they stopped writing it, or the detector stopped seeing them."
-    )
+    # And the reverse, so a classification cannot outlive the function it describes.
+    stale = sorted(classified - defined)
+    assert stale == [], f"classifications for functions that no longer exist: {stale}"

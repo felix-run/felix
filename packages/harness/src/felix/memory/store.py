@@ -276,7 +276,7 @@ def _stamp_retirer(row: dict[str, Any], source: str) -> None:
 
 
 def _retirer_rank(row: dict[str, Any]) -> int:
-    """The rank of whoever forgot this row, or the writer's if nobody has."""
+    """The rank of whoever retired this row, or the writer's if nobody has."""
     metadata = row.get("metadata") or row.get("metadata_json") or {}
     if isinstance(metadata, dict) and metadata.get(RETIRED_BY_KEY):
         return _rank(str(metadata[RETIRED_BY_KEY]))
@@ -385,7 +385,14 @@ def _refused_in_sql(table: Any, row: dict[str, Any]) -> Any:
     while erasing the stamp that kept it hidden.
     """
     outranked = _trust_of_column(table.c["metadata"]) > _trust(row)
-    cannot_reactivate = (table.c.status == FORGOTTEN) & (
+    # `!= ACTIVE`, mirroring `_may_reactivate`, not `== FORGOTTEN`. Renaming the helper
+    # without re-scoping it left SUPERSEDED unprotected on this arm only -- and
+    # SUPERSEDED is the state the documented correction path produces.
+    #
+    # `coalesce` rather than a bare `!=` so a NULL status fails closed the same way
+    # `(existing.get("status") or ACTIVE)` does on the Python side, instead of going
+    # NULL -> false by accident.
+    cannot_reactivate = (func.coalesce(table.c.status, ACTIVE) != ACTIVE) & (
         _retirer_rank_of_column(table.c["metadata"]) > _trust(row)
     )
     return outranked | cannot_reactivate
@@ -414,6 +421,16 @@ async def _put_in_postgres(settings: Settings, row: dict[str, Any], *, embedding
                 )
                 .values(
                     status=SUPERSEDED,
+                    # Mirrors `_stamp_retirer` on the other arm. Without it
+                    # `_retirer_rank` falls back to the retired row's own writer --
+                    # rank 1 for a captured row -- and the next agent write brings it
+                    # back, undoing an operator's correction.
+                    metadata_json=MemoryVector.metadata_json.op("||")(
+                        sa_cast(
+                            {RETIRED_BY_KEY: str((row.get("metadata") or {}).get("source") or "")},
+                            JSONB,
+                        )
+                    ),
                     superseded_by=mem_id,
                     superseded_seq=row["origin_seq"],
                     updated_at=row["updated_at"],
