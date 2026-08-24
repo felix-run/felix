@@ -10,7 +10,7 @@ output.
 
 That matters because recalled text is not trusted input. It was extracted by a model
 from earlier turns, and those turns can contain whatever a tool returned. The prelude
-compensates with `_neutralize` and a fence; the tool path gets the real thing.
+compensates by escaping markup outright; the tool path gets the real thing.
 
 The descriptions do real work too: they are where the model learns that `topic_key` is
 how a newer value supersedes an older one, which is the difference between memory that

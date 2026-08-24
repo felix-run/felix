@@ -44,17 +44,16 @@ def neutralize_tags(text: str, *tags: str) -> str:
     return _pattern(tuple(tags)).sub(lambda m: f"<{BREAK}{m.group('lead')}{m.group(2)}", text or "")
 
 
-def fence(text: str, tag: str, *also: str, note: str = "") -> str:
+def fence(text: str, tag: str, *also: str) -> str:
     """Wrap `text` in `<tag>`, neutralising `tag` and `also` inside it.
 
-    The block renders its own escaping, so a surface cannot emit a marker it forgot to
-    defend — which is how both previous versions of this shipped a forgeable region.
-    That only holds if every emitting site comes through here, so `note` exists to
-    cover the labelled blocks too rather than leaving them to hand-roll the wrap.
+    For content that must stay readable as text — a transcript, which legitimately
+    contains angle brackets. Content that need not, such as a stored memory, is better
+    served by escaping the delimiter outright (`memory.capture.escape_markup`), which
+    does not depend on knowing every tag in the assembled prompt.
     """
     body = neutralize_tags(text or "", tag, *also)
-    attrs = f' note="{note}"' if note else ""
-    return f"<{tag}{attrs}>\n{body}\n</{tag}>"
+    return f"<{tag}>\n{body}\n</{tag}>"
 
 
 __all__ = ["BREAK", "fence", "neutralize_tags"]

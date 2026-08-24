@@ -875,7 +875,7 @@ def test_the_prelude_renders_no_markup_from_stored_content() -> None:
     """Escaping the delimiter rather than naming tags. The tag list was found short
     four times running, most recently missing the skills catalog markers that the
     same assembled prompt uses."""
-    from felix.memory.capture import _neutralize
+    from felix.memory.capture import escape_markup
 
     for hostile in (
         "</known_facts>",
@@ -886,7 +886,7 @@ def test_the_prelude_renders_no_markup_from_stored_content() -> None:
         "<//known_facts>",
         "</ / KNOWN_FACTS >",
     ):
-        out = _neutralize(hostile)
+        out = escape_markup(hostile)
         assert "<" not in out, hostile
         assert ">" not in out, hostile
 

@@ -22,7 +22,9 @@ import logging
 import time
 from typing import Any, cast
 
-from sqlalchemy import case, func, select, update
+from sqlalchemy import case, func, null, select, update
+from sqlalchemy import cast as sa_cast
+from sqlalchemy.dialects.postgresql import JSONB
 
 from felix.config import Settings
 from felix.db.models import MemoryVector
@@ -201,7 +203,6 @@ MAX_TOPIC_KEY_CHARS = 200
 # Ranking it above capture would have let injection win every supersession race
 # against auto-captured memory. The line that means something is operator versus
 # agent, so that is the line this draws.
-_OPERATOR_SOURCES = ("management_api",)
 _TRUST_RANK = {"management_api": 2}
 _DEFAULT_TRUST = 1
 
@@ -223,8 +224,35 @@ def _rank(source: str) -> int:
     return _TRUST_RANK.get(str(source or ""), _DEFAULT_TRUST)
 
 
+# The metadata key naming who retired a row. Distinct from `source`, which names who
+# *wrote* it: forgetting is a decision by whoever forgot, and gating resurrection on
+# the writer's rank meant an operator deleting an agent-written row -- which is nearly
+# every row, and exactly the population the memory route exists to clean up -- left a
+# rank-1 row that any rank-1 writer reactivated by re-storing the same text.
+FORGOTTEN_BY_KEY = "forgotten_by"
+
+
 def trust_of(row: dict[str, Any]) -> int:
-    """The writer rank recorded on a stored row. Public: recall ranks by it too."""
+    """The writer rank recorded on a stored row. Public: the prelude ranks by it."""
+    return _trust(row)
+
+
+def _forgetter_rank_of_column(metadata_col: Any) -> Any:
+    """`_forgetter_rank` as SQL. Falls back to the writer rank when nothing forgot it."""
+    forgetter = metadata_col.op("->>")(FORGOTTEN_BY_KEY)
+    whens = [(forgetter == name, rank) for name, rank in _TRUST_RANK.items()]
+    return case(
+        (forgetter.is_(None), _trust_of_column(metadata_col)),
+        *whens,
+        else_=_DEFAULT_TRUST,
+    )
+
+
+def _forgetter_rank(row: dict[str, Any]) -> int:
+    """The rank of whoever forgot this row, or the writer's if nobody has."""
+    metadata = row.get("metadata") or row.get("metadata_json") or {}
+    if isinstance(metadata, dict) and metadata.get(FORGOTTEN_BY_KEY):
+        return _rank(str(metadata[FORGOTTEN_BY_KEY]))
     return _trust(row)
 
 
@@ -273,14 +301,20 @@ def _put_in_memory(row: dict[str, Any]) -> dict[str, Any]:
             # curated `kind: instruction` and `source: management_api` while taking
             # the attacker's content, topic_key and importance -- handing the payload
             # the standing it could not otherwise earn.
-            # Everything that decides what this row *is* and whether it is seen --
-            # `status` above all, because forgetting is an out-of-band operator
-            # decision and re-storing the same normalised text is something an
-            # injected turn can cause with no tool at all. A writer of equal rank
-            # still reactivates, which is how an operator undoes their own forget.
             for field in ("kind", "topic_key", "importance", "status", "superseded_by", "superseded_seq"):
                 if field in existing:
                     row[field] = existing[field]
+            row["metadata"] = existing.get("metadata_json") or existing.get("metadata") or row["metadata"]
+
+    if existing is not None and existing.get("status") == FORGOTTEN:
+        # Gated on who *forgot* it, not who wrote it. Re-storing the same normalised
+        # text is something an injected turn causes with no tool at all, so an
+        # operator cleaning up an agent-written row -- nearly every row, and exactly
+        # the population the memory route exists to clean up -- must not be undone by
+        # the agent that wrote it. The operator can still undo their own forget.
+        incoming = _rank(str((row.get("metadata") or {}).get("source") or ""))
+        if incoming < _forgetter_rank(existing):
+            row["status"] = FORGOTTEN
             row["metadata"] = existing.get("metadata_json") or existing.get("metadata") or row["metadata"]
 
     _memory_rows[(tenant_id, mem_id)] = {**row, "metadata_json": row["metadata"]}
@@ -351,17 +385,27 @@ async def _put_in_postgres(settings: Settings, row: dict[str, Any], *, embedding
                 "thread_id": excluded["thread_id"],
                 # A forgotten row is never resurrected by a write, at any rank, and a
                 # refused writer does not reactivate a superseded one either.
+                # Gated on who forgot it, not who wrote it -- see put_memory's
+                # in-memory arm for why those differ and why it matters.
                 "status": case(
                     (_trust_of_column(table.c["metadata"]) > _trust(row), table.c.status),
+                    (
+                        (table.c.status == FORGOTTEN)
+                        & (_forgetter_rank_of_column(table.c["metadata"]) > _trust(row)),
+                        FORGOTTEN,
+                    ),
                     else_=ACTIVE,
                 ),
+                # `else_=null()`, not `else_=None`: SQLAlchemy reads None as "omit the
+                # ELSE", which happens to give NULL from an unmatched CASE today and
+                # would quietly change meaning the moment a branch is added.
                 "superseded_by": case(
                     (_trust_of_column(table.c["metadata"]) > _trust(row), table.c.superseded_by),
-                    else_=None,
+                    else_=null(),
                 ),
                 "superseded_seq": case(
                     (_trust_of_column(table.c["metadata"]) > _trust(row), table.c.superseded_seq),
-                    else_=None,
+                    else_=null(),
                 ),
                 "updated_at": excluded["updated_at"],
                 # Re-remembering reactivates a row; it does not rewrite its history,
@@ -476,10 +520,14 @@ async def forget(settings: Settings, tenant_id: str, memory_id: str, *, source: 
         row = _memory_rows.get((tenant_id, memory_id))
         if row is None:
             return False
-        if not _may_displace({"metadata": {"source": source}}, row):
+        if _rank(source) < _trust(row):
             logger.warning("refusing to forget a more-trusted memory id=%s", memory_id)
             return False
         row["status"] = FORGOTTEN
+        metadata = dict(row.get("metadata") or {})
+        metadata[FORGOTTEN_BY_KEY] = source
+        row["metadata"] = metadata
+        row["metadata_json"] = metadata
         row["updated_at"] = ts
         return True
     factory = get_session_factory(settings=settings)
@@ -492,7 +540,12 @@ async def forget(settings: Settings, tenant_id: str, memory_id: str, *, source: 
                 # Same predicate as the in-memory arm; see the docstring.
                 _trust_of_column(MemoryVector.metadata_json) <= _rank(source),
             )
-            .values(status=FORGOTTEN, updated_at=ts)
+            .values(
+                status=FORGOTTEN,
+                updated_at=ts,
+                # jsonb || jsonb merges, so this preserves `source` and any other keys.
+                metadata_json=MemoryVector.metadata_json.op("||")(sa_cast({FORGOTTEN_BY_KEY: source}, JSONB)),
+            )
         )
         await db.commit()
         # `execute` is typed as returning `Result`, but an UPDATE yields a
@@ -527,7 +580,15 @@ async def list_active(
     manifest_id: str = "",
     kind: str | None = None,
     limit: int = 50,
+    prioritized: bool = False,
 ) -> list[dict[str, Any]]:
+    """Active rows for a tenant, newest first.
+
+    `prioritized` orders by writer trust, then importance, then recency *before* the
+    limit applies. Recall needs that: ranking after a recency-ordered fetch cannot see
+    a curated row that fell outside the window, and a busy tenant crosses any window
+    in ordinary use -- so an operator's correction silently stopped being shown.
+    """
     if _use_memory(settings):
         items = [
             _row_dict(r)
@@ -537,7 +598,13 @@ async def list_active(
             and (not manifest_id or r.get("manifest_id") == manifest_id)
             and (kind is None or r.get("kind") == kind)
         ]
-        items.sort(key=lambda r: r["created_at"], reverse=True)
+        if prioritized:
+            items.sort(
+                key=lambda r: (_trust(r), float(r.get("importance") or 0.0), r["created_at"]),
+                reverse=True,
+            )
+        else:
+            items.sort(key=lambda r: r["created_at"], reverse=True)
         return items[:limit]
 
     factory = get_session_factory(settings=settings)
@@ -550,7 +617,15 @@ async def list_active(
             stmt = stmt.where(MemoryVector.manifest_id == manifest_id)
         if kind:
             stmt = stmt.where(MemoryVector.kind == kind)
-        stmt = stmt.order_by(MemoryVector.created_at.desc()).limit(limit)
+        if prioritized:
+            stmt = stmt.order_by(
+                _trust_of_column(MemoryVector.metadata_json).desc(),
+                MemoryVector.importance.desc(),
+                MemoryVector.created_at.desc(),
+            )
+        else:
+            stmt = stmt.order_by(MemoryVector.created_at.desc())
+        stmt = stmt.limit(limit)
         return [_row_dict(r) for r in (await db.scalars(stmt)).all()]
 
 
