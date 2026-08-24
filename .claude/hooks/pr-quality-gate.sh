@@ -41,14 +41,22 @@ workdir=$(printf '%s' "$INPUT" | jq -r '.cwd // empty')
 # control fire or not depending on whether a path mentioned in a PR description
 # happened to exist locally. A gate that intermittently disables itself on prose is
 # harder to notice than one that is plainly broken.
-# More than one `cd` in the chain means the first one is not where bash lands:
-# `cd <sibling> && cd <project> && …` opened a PR here having pointed the gate at the
-# sibling. Deliberately conservative -- falling back to the payload cwd gates, so this
-# can only ever cause a block, never a skip.
-ncd=$(printf '%s' "$cmd" | head -n 1 | grep -o '\(^\|[;&|][[:space:]]*\)cd[[:space:]]' | wc -l | tr -d ' ')
-[ "${ncd:-0}" -gt 1 ] && cmd=""
-target=$(printf '%s' "$cmd" | head -n 1 | sed -n 's/^[[:space:]]*cd[[:space:]]\{1,\}\([^;&|]*\).*/\1/p')
-if [ -n "$target" ]; then
+# Follow every `cd` on the first line in order, keeping the last one that exists --
+# which is what bash does for a `&&` or `;` chain. Relative chains fall out for free,
+# since `workdir` advances as it goes.
+#
+# Two earlier attempts were wrong in opposite directions. Taking the first `cd` and
+# stopping let `cd <sibling> && cd <project> && …` open a PR here with the gate pointed
+# at the sibling. Refusing to resolve when there was more than one `cd` was worse: it
+# was described as conservative, and it is not. `cd <project> && cd <project>/sub` is
+# ordinary navigation, and blanking the target there falls back to the payload cwd --
+# which skips the gate entirely whenever the session cwd is outside the project, as it
+# is in any session with additional working directories. A guard that turns a working
+# block into a skip on a common shape is not conservative; it is a fail-open with a
+# reassuring comment on it.
+first=$(printf '%s' "$cmd" | head -n 1)
+while IFS= read -r target; do
+  [ -n "$target" ] || continue
   target=${target%"${target##*[![:space:]]}"}   # trailing whitespace
   # One matched pair, peeled by hand -- a hook must never eval command text. Peeling
   # both pairs unconditionally resolved `cd "'/path'"` to /path, which is not where
@@ -61,7 +69,9 @@ if [ -n "$target" ]; then
   case "$target" in "~") target="$HOME" ;; "~/"*) target="$HOME/${target#\~/}" ;; esac
   case "$target" in /*) ;; *) target="$workdir/$target" ;; esac
   [ -d "$target" ] && workdir=$target
-fi
+done <<TARGETS
+$(printf '%s' "$first" | tr ';&|' '\n\n\n' | sed -n 's/^[[:space:]]*cd[[:space:]]\{1,\}\(.*\)$/\1/p')
+TARGETS
 
 # Only gate this repo: `gh pr create` in another checkout (or a worktree of another
 # project) must not be judged against this project's state.

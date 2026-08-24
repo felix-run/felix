@@ -209,16 +209,43 @@ def test_a_worktree_is_gated_on_its_own_head(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("first", ["sibling", "plain"])
 def test_a_second_cd_is_not_a_way_back_in_ungated(tmp_path: Path, first: str) -> None:
-    """`cd <elsewhere> && cd <project> && …` — the hook took the first `cd` and stopped;
-    bash kept going and opened the PR here. More than one `cd` now falls back to the
-    payload cwd, which gates. Conservative by construction: the fallback can only ever
-    cause a block, never a skip."""
+    """`cd <elsewhere> && cd <project> && …` — the hook took the first `cd` and stopped
+    while bash kept going, so the PR opened here with the gate pointed elsewhere."""
     project = _repo(tmp_path / "project", "packages/harness/src/felix/x.py")
     sibling = _repo(tmp_path / "sibling", "docs/page.mdx")
     plain = tmp_path / "plain"
     plain.mkdir()
     start = sibling if first == "sibling" else plain
     assert _run(f"cd {start} && cd {project} && {CREATE}", project=project, cwd=project) == 2
+
+
+def test_navigating_into_a_subdirectory_still_gates(tmp_path: Path) -> None:
+    """The shape that broke the first attempt at fixing the one above.
+
+    `cd <project> && cd <project>/sub` is ordinary navigation, not an evasion. Refusing
+    to resolve whenever there was more than one `cd` was described as conservative and
+    was not: it fell back to the payload cwd, which skips the gate outright whenever the
+    session cwd is outside the project — as it is in any session configured with
+    additional working directories. The cwd here is deliberately the sibling.
+    """
+    project = _repo(tmp_path / "project", "packages/harness/src/felix/x.py")
+    sibling = _repo(tmp_path / "sibling", "docs/page.mdx")
+    sub = project / "packages"
+    assert _run(f"cd {project} && cd {sub} && {CREATE}", project=project, cwd=sibling) == 2
+
+
+def test_a_relative_chain_is_followed_the_way_bash_follows_it(tmp_path: Path) -> None:
+    """Each `cd` resolves against where the previous one landed, not against the start."""
+    project = _repo(tmp_path / "project", "packages/harness/src/felix/x.py")
+    assert _run(f"cd {project} && cd packages && {CREATE}", project=project, cwd=tmp_path) == 2
+
+
+def test_the_last_cd_wins_when_it_leads_out(tmp_path: Path) -> None:
+    """The converse: ending up outside the project must skip, or the fix would just be
+    an over-block in the other direction."""
+    project = _repo(tmp_path / "project", "packages/harness/src/felix/x.py")
+    sibling = _repo(tmp_path / "sibling", "docs/page.mdx")
+    assert _run(f"cd {project} && cd {sibling} && {CREATE}", project=project, cwd=project) == 0
 
 
 def test_an_ambient_git_dir_does_not_follow_the_gate_into_another_repo(tmp_path: Path) -> None:
