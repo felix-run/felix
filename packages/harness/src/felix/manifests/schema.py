@@ -241,7 +241,12 @@ class ClientToolRef(_Strict):
 
 class MemoryCapture(_Strict):
     enabled: bool = False
-    model: str = "llama-3-fast"
+    # Extraction runs once per completed turn, so it wants the cheap tier — that is
+    # what this field is for. It defaulted to `llama-3-fast`, which routes to Ollama:
+    # harmless while the field was never read, but now that extraction honours it, a
+    # deployment with only an Anthropic key would have had capture fail on every turn
+    # and say so only in a log.
+    model: str = "claude-haiku"
     max_facts: int = Field(default=5, ge=1, le=20)
     min_chars: int = Field(default=80, ge=0)
 

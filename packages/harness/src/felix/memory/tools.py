@@ -73,6 +73,31 @@ class ListMemoriesArgs(BaseModel):
     limit: int = Field(default=20, ge=1, le=100)
 
 
+async def _provenance(settings: Settings) -> tuple[str, int | None]:
+    """The thread and turn ordinal this tool call belongs to.
+
+    Resolved at call time, not when the tool is bound: the agent is compiled before
+    the request's thread is known, so a bind-time value is always empty. Without this
+    a memory the agent writes through `remember` carries no provenance at all, while
+    one captured automatically does — and `as_of` would then misreport, because half
+    the writes look like genesis.
+    """
+    from felix.context import try_get_context
+
+    req = try_get_context()
+    thread_id = getattr(req, "thread_id", None) if req is not None else None
+    if not thread_id:
+        return "", None
+    try:
+        from felix.session.store import get_session_store
+
+        head = await get_session_store(settings).open(thread_id).head()
+        return thread_id, int(head.get("seq") or 0)
+    except Exception:
+        logger.debug("turn ordinal unavailable for %s", thread_id, exc_info=True)
+        return thread_id, None
+
+
 def _render(hits: list[Any]) -> str:
     if not hits:
         return "(no relevant memories)"
@@ -96,6 +121,7 @@ class _Binding:
 
 def _remember_tool(b: _Binding) -> Tool:
     async def handler(args: RememberArgs, _ctx: ToolInvocationCtx | None = None) -> str:
+        thread_id, origin_seq = await _provenance(b.settings)
         row = await memory_store.put_memory(
             b.settings,
             b.tenant_id,
@@ -104,7 +130,8 @@ def _remember_tool(b: _Binding) -> Tool:
             manifest_id=b.manifest_id,
             topic_key=args.topic_key or None,
             importance=args.importance,
-            thread_id=b.thread_id,
+            thread_id=thread_id or b.thread_id,
+            origin_seq=origin_seq,
             metadata={"source": "remember_tool"},
         )
         return f"remembered:{row['id']}"

@@ -500,6 +500,29 @@ class _ReactAgent:
             logger.debug("turn seq lookup failed; storing memory without provenance", exc_info=True)
             return None
 
+    def _capture_model(self, turn_model: Any) -> Any:
+        """The model fact extraction runs on.
+
+        `spec.memory.capture.model` exists precisely so extraction does not run on the
+        turn's model — it is a small, mechanical summarisation job on every turn, and
+        billing it to a frontier model doubles the cost of having memory at all. The
+        field was declared and never read, so extraction silently used the turn model.
+
+        Falls back to the turn's model when the configured one cannot be built, since
+        a memory captured on an expensive model still beats no memory.
+        """
+        capture = self.memory_capture
+        wanted = str(getattr(capture, "model", "") or "")
+        if not wanted or self.settings is None:
+            return turn_model
+        try:
+            from felix.patterns.model import build_one_model
+
+            return build_one_model(self.settings, self.model_spec, wanted)
+        except Exception:
+            logger.debug("capture model %r unavailable; using the turn model", wanted, exc_info=True)
+            return turn_model
+
     async def _maybe_capture_memory(self, input: InvokeInput, final: ChatMessage, model: Any) -> None:
         capture = self.memory_capture
         if capture is None or not getattr(capture, "enabled", False):
@@ -517,7 +540,7 @@ class _ReactAgent:
                 user_text=user_text,
                 assistant_text=final.content or "",
                 capture=capture,
-                model=model,
+                model=self._capture_model(model),
                 origin_seq=await self._turn_seq(input.thread_id),
                 thread_id=input.thread_id or "",
             )
