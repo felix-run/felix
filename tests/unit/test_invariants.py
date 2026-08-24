@@ -233,3 +233,57 @@ def test_wrapping_a_tool_preserves_every_field() -> None:
         assert getattr(clone, name) == getattr(original, name), (
             f"_clone_tool dropped Tool.{name}; wrapped tools would silently use its default"
         )
+
+
+def test_no_base_http_middleware_anywhere_in_the_source() -> None:
+    """BaseHTTPMiddleware is banned in this repo, at the source level.
+
+    `tests/unit/test_middleware_stack.py` asserts the stack `create_app()` builds
+    holds none, but that only sees what core wires. A plugin router, a mounted
+    sub-app, or an unused factory is invisible to it — and two such factories did
+    survive the conversion, each an out-of-date copy of a policy that had been
+    rewritten, reachable by anyone who grepped for the old name.
+
+    The cost is measured, not stylistic: ~143us per request per layer, and ~76us per
+    streamed token, on an SSE-first harness. Pure-ASGI middleware costs nothing
+    measurable. See `felix_api.middleware` for the shape to copy.
+
+    Matched through the AST, not by grep: this file and the modules it polices all
+    *describe* BaseHTTPMiddleware in prose, and a text search cannot tell a warning
+    about it from a use of it.
+    """
+    import ast
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    offenders: list[str] = []
+
+    for base in ("apps", "packages"):
+        for path in (root / base).rglob("*.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            rel = path.relative_to(root)
+            for node in ast.walk(tree):
+                name = None
+                if isinstance(node, ast.Name):
+                    name = node.id
+                elif isinstance(node, ast.Attribute):
+                    name = node.attr
+                elif isinstance(node, ast.alias):
+                    name = node.name.rsplit(".", 1)[-1]
+                if name == "BaseHTTPMiddleware":
+                    offenders.append(f"{rel}:{getattr(node, 'lineno', '?')}: BaseHTTPMiddleware")
+                    continue
+                # `@app.middleware("http")` — the decorator form, which builds one.
+                if (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "middleware"
+                    and any(isinstance(a, ast.Constant) and a.value == "http" for a in node.args)
+                ):
+                    offenders.append(f'{rel}:{node.lineno}: @....middleware("http")')
+
+    assert offenders == [], (
+        "BaseHTTPMiddleware / @app.middleware('http') found in source:\n  "
+        + "\n  ".join(offenders)
+        + "\nWrite pure-ASGI middleware instead — see felix_api.middleware."
+    )

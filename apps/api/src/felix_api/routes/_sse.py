@@ -19,6 +19,7 @@ Framing rules that hold across every stream here:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from collections.abc import AsyncIterator
 from typing import Any
@@ -45,24 +46,84 @@ def is_resume_point(event_name: str) -> bool:
     return bool(event_name) and event_name not in PER_TOKEN_EVENTS
 
 
+# How far the upstream run may lead the client. Bounded, so backpressure still exists:
+# once the queue is full the pump blocks and the agent loop feels it, exactly as it did
+# when the consumer awaited each event directly.
+HEARTBEAT_QUEUE_MAXSIZE = 64
+
+
 async def with_heartbeat(stream: Any, interval: float = SSE_HEARTBEAT_SECONDS) -> Any:
     """Yield upstream events, injecting a heartbeat sentinel during quiet periods.
 
     A long tool call emits nothing, and proxy idle timeouts are commonly 60s, so a
     perfectly healthy run was being disconnected mid-flight.
+
+    A pump task feeds a bounded queue rather than the consumer awaiting each event
+    under a timeout. The timeout is what costs: arming a timer, registering a done
+    callback and tearing both down again ran on *every* event, measured at ~46us
+    against ~0.14us for raw iteration — a tax paid per token, per open stream, to
+    detect a silence that by definition is not happening while tokens arrive. Here the
+    timer is armed only when the queue is actually empty, which on a busy stream is
+    almost never.
     """
-    iterator = stream.__aiter__()
-    while True:
-        nxt = asyncio.ensure_future(iterator.__anext__())
-        while True:
-            done, _ = await asyncio.wait({nxt}, timeout=interval)
-            if done:
-                break
-            yield HEARTBEAT
+    queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=HEARTBEAT_QUEUE_MAXSIZE)
+    # Not named `done`: `task.done()` is a different question forty lines below.
+    END = object()
+    failure: BaseException | None = None
+
+    async def pump() -> None:
+        nonlocal failure
         try:
-            yield nxt.result()
-        except StopAsyncIteration:
-            return
+            async for item in stream:
+                await queue.put(item)
+        except asyncio.CancelledError:
+            raise
+        except BaseException as exc:
+            failure = exc
+        finally:
+            # Non-blocking on purpose. A blocking put deadlocks: if the queue is full
+            # because the consumer stopped draining, the consumer's `finally` cancels
+            # this task, cancellation lands on `queue.put(item)` above, and then this
+            # line blocks forever on the same full queue. Dropping the sentinel is
+            # safe because it is only a fast path — the loop below also treats a
+            # finished pump as end-of-stream, which is what makes it reliable.
+            with contextlib.suppress(asyncio.QueueFull):
+                queue.put_nowait(END)
+
+    task = asyncio.ensure_future(pump())
+    try:
+        while True:
+            if not queue.empty():
+                item = queue.get_nowait()
+            elif task.done():
+                # Drained everything and the pump has finished. This is the arm that
+                # makes a dropped sentinel harmless; without it a full queue at
+                # stream end left the consumer emitting heartbeats forever.
+                break
+            else:
+                try:
+                    item = await asyncio.wait_for(queue.get(), interval)
+                except TimeoutError:
+                    yield HEARTBEAT
+                    continue
+            if item is END:
+                break
+            yield item
+        # An upstream failure must reach the caller: chat.py answers it with an
+        # `event: error` frame, and swallowing it here would end the stream under a
+        # 200 with no way to tell success from failure.
+        if failure is not None:
+            raise failure
+    finally:
+        # Covers the ordinary end of the stream, a consumer break, and client
+        # disconnect. Leaving the pump running would keep the agent run burning tokens
+        # for a connection nobody is reading.
+        if not task.done():
+            task.cancel()
+            # Both, not one: CancelledError is a BaseException in 3.14, so
+            # suppressing Exception alone would let it escape.
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
 
 
 def frame(payload: Any, *, cursor: int | None = None) -> str:
@@ -103,6 +164,7 @@ def sse_response(generator: AsyncIterator[str]) -> StreamingResponse:
 __all__ = [
     "DONE",
     "HEARTBEAT",
+    "HEARTBEAT_QUEUE_MAXSIZE",
     "KEEP_ALIVE",
     "PER_TOKEN_EVENTS",
     "SSE_HEARTBEAT_SECONDS",
