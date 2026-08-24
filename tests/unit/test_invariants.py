@@ -311,7 +311,10 @@ def test_every_memory_store_function_is_classified() -> None:
         "_put_in_postgres": "guarded: _refused_in_sql on every preserved column",
         "forget": "guarded: _rank(source) vs _trust(row), _retirer_rank stamp only rises",
         "supersede": "guarded: _rank(source) vs max(_trust, _retirer_rank), stamps retirer",
-        "put_memory": "delegates to the two _put_in_* arms; names its writer when superseding",
+        "put_memory": (
+            "delegates to _put_in_memory / _put_in_postgres, which apply _may_displace "
+            "and _refused_in_sql; names its writer when it calls supersede"
+        ),
         "consolidate_pools": (
             "unguarded, and unreachable: it dedupes on exact (tenant, manifest, content), "
             "and identical content now yields an identical id, so two such rows cannot "
@@ -349,20 +352,33 @@ def test_every_memory_store_function_is_classified() -> None:
     module_src = src.read_text(encoding="utf-8")
     tree = ast.parse(module_src)
 
-    # A reason naming a symbol that no longer exists is a reason nobody re-read. This
-    # allowlist went stale inside one commit -- `supersede`'s entry still described a
-    # predicate the code had stopped using.
+    # This verifies that a reason cites something real. It does **not** verify that the
+    # reason is accurate: `supersede`'s entry went stale inside one commit because the
+    # predicate changed from `_trust(row)` to `max(_trust(row), _retirer_rank(row))`,
+    # and both symbols still existed, so a check like this would have passed. Judging
+    # whether a stated predicate still describes the code -- and whether a reachability
+    # argument still holds -- is a review obligation this test cannot discharge.
+    #
+    # What it does buy: a reason cannot cite a symbol that has been deleted or renamed,
+    # and every entry must cite something, so an entry cannot quietly become prose.
+    TRACKED = (
+        "_may_displace",
+        "_may_reactivate",
+        "_refused_in_sql",
+        "_preserve",
+        "_retirer_rank",
+        "_rank",
+        "_trust",
+        "content-derived",
+    )
     for name, reason in RETIREMENT.items():
-        for symbol in (
-            "_may_displace",
-            "_may_reactivate",
-            "_refused_in_sql",
-            "_preserve",
-            "_retirer_rank",
-            "_rank",
-            "_trust",
-        ):
-            if symbol in reason:
+        cited = [sym for sym in TRACKED if sym in reason]
+        assert cited, (
+            f"RETIREMENT[{name!r}] cites no tracked symbol, so nothing anchors its reason "
+            "to the code. Name the predicate, or the precondition it depends on."
+        )
+        for symbol in cited:
+            if symbol.startswith("_"):
                 assert symbol in module_src, (
                     f"RETIREMENT[{name!r}] cites {symbol}, which no longer exists in the module"
                 )
@@ -377,3 +393,42 @@ def test_every_memory_store_function_is_classified() -> None:
     # And the reverse, so a classification cannot outlive the function it describes.
     stale = sorted(classified - defined)
     assert stale == [], f"classifications for functions that no longer exist: {stale}"
+
+    # The classification above answers "did someone label this function" and never
+    # rechecks the label; the detector below answers "does this function write
+    # visibility" and can miss a function the walk does not reach. Neither is
+    # sufficient alone -- classification misses a mislabelled function, detection
+    # misses an unreached one -- so both run and each covers the other's blind spot.
+    # Same lesson as trusting one store arm.
+    VISIBILITY = {"status", "superseded_seq"}
+
+    def writes_visibility(node: ast.AST) -> bool:
+        for child in ast.walk(node):
+            if isinstance(child, ast.Assign):
+                for target in child.targets:
+                    if isinstance(target, ast.Subscript) and isinstance(target.slice, ast.Constant):
+                        if target.slice.value in VISIBILITY:
+                            return True
+                    if isinstance(target, ast.Attribute) and target.attr in VISIBILITY:
+                        return True
+            if isinstance(child, ast.keyword):
+                if child.arg in VISIBILITY:
+                    return True
+                if child.arg == "set_":
+                    for key in getattr(child.value, "keys", []):
+                        if isinstance(key, ast.Constant) and key.value in VISIBILITY:
+                            return True
+        return False
+
+    # `ast.walk`, not `tree.body`: a method on a class is invisible to the latter, and
+    # an additive class is the likelier change -- a wholesale refactor would already
+    # trip the `stale` assertion above.
+    detected = {
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and writes_visibility(node)
+    }
+    mislabelled = sorted(detected & NOT_RETIREMENT)
+    assert mislabelled == [], f"classified as not-retirement but writes visibility: {mislabelled}"
+    undeclared = sorted(detected - set(RETIREMENT))
+    assert undeclared == [], f"writes visibility with no retirement classification: {undeclared}"

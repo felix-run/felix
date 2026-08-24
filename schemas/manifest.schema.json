@@ -147,6 +147,13 @@
           "default": false,
           "title": "Allow Unattended",
           "type": "boolean"
+        },
+        "when_args": {
+          "items": {
+            "type": "string"
+          },
+          "title": "When Args",
+          "type": "array"
         }
       },
       "required": [

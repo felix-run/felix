@@ -96,6 +96,16 @@ spec:
       tools: [forget]
       ttl_seconds: 600
       allow_unattended: false
+    # The other retirement route. `remember` with a topic_key retires whatever else
+    # holds that key, and `recall` prints every stored topic_key -- so an injected turn
+    # could harvest the keys and retire the rows behind them without ever touching
+    # `forget`. Gated only when the key is present, so ordinary capture is unaffected.
+    - id: memory-retopic
+      description: Confirm replacing the current value of a remembered topic
+      tools: [remember]
+      when_args: [topic_key]
+      ttl_seconds: 600
+      allow_unattended: false
 
   content_screening:
     enabled: true

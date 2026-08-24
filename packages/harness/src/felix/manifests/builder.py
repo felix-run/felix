@@ -744,6 +744,15 @@ def apply_approvals(tools: list[Tool], rules: list[ApprovalRule], manifest_id: s
             from felix.approvals.interrupt import wait_for_decision
             from felix.side_events import emit as emit_side_event
 
+            # A rule with `when_args` gates only the calls that carry those arguments.
+            # The tool is otherwise untouched -- same executor, no approval, no side
+            # event -- so a conditional rule costs nothing on the calls it does not
+            # cover.
+            if rule.when_args and not all(
+                str((args or {}).get(name) or "").strip() for name in rule.when_args
+            ):
+                return await inner.execute(args, ctx)
+
             req = try_get_context()
             granted = bool((req.extras if req else {}).get(f"approval:{tool.name}"))
             pending_row: dict[str, object] | None = None
