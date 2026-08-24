@@ -293,3 +293,59 @@ async def test_an_approval_rule_can_gate_on_an_argument() -> None:
     out = await gated.executor.execute({"content": "a fact", "topic_key": "user.tz"})
     assert len(calls) == 2, "a topic_key write reached the handler without approval"
     assert out != "stored"
+
+
+# (argument value, whether the rule should gate the call)
+#
+# The two rows that matter are `0` and `False`. The obvious implementation coerces to
+# string and tests truthiness, which reads both as absent — so the same logical value
+# gates or does not gate depending on whether the model emitted it as a JSON number or
+# a JSON string, and the coin-flip resolves toward *no approval*.
+_ARG_SHAPES = [
+    (_UNSET := object(), False),
+    (None, False),
+    ("", False),
+    ("   ", False),
+    ("deploy.runbook", True),
+    ("0", True),
+    (0, True),
+    (0.0, True),
+    (False, True),
+    (1, True),
+    (True, True),
+    ([], False),
+    ([0], True),
+    ({}, False),
+    ({"a": 1}, True),
+]
+
+
+@pytest.mark.parametrize(("value", "should_gate"), _ARG_SHAPES, ids=lambda v: repr(v)[:24])
+@pytest.mark.asyncio
+async def test_when_args_separates_presence_from_truthiness(value: object, should_gate: bool) -> None:
+    """A gate must fail toward gating, and `0` is a supplied value.
+
+    Emptiness still reads as absence for strings and collections, where an empty value
+    genuinely means "not supplied" — and where `put_memory` agrees, since it maps a
+    blank `topic_key` to `None`.
+    """
+    from felix.manifests.builder import apply_approvals
+    from felix.manifests.schema import ApprovalRule
+    from felix.tools.types import define_tool
+
+    reached = False
+
+    async def handler(args: dict, ctx: object | None = None) -> str:
+        nonlocal reached
+        reached = True
+        return "ran"
+
+    tool = define_tool(name="t", description="d", handler=handler, source="test")
+    gated = apply_approvals([tool], [ApprovalRule(id="r", tools=["t"], when_args=["k"])], "m")[0]
+
+    args: dict = {} if value is _UNSET else {"k": value}
+    await gated.executor.execute(args)
+    assert reached is not should_gate, (
+        f"{value!r} {'reached' if reached else 'did not reach'} the handler; "
+        f"expected the rule to {'gate' if should_gate else 'ignore'} it"
+    )

@@ -723,6 +723,32 @@ def wrap_final_response_judges(agent: Agent, guardrails: Any, manifest_id: str) 
     return _FinalJudgeAgent(agent)  # type: ignore[return-value]
 
 
+def _arg_present(args: ToolInput, name: str) -> bool:
+    """Whether `name` was meaningfully supplied.
+
+    Three separate questions -- is the key there, is it null, is it empty -- and the
+    obvious `str(args.get(name) or "").strip()` answers all three with truthiness after
+    string coercion. That reads `0`, `0.0` and `False` as absent, so the *same* logical
+    value gates or does not gate depending on whether the model emitted it as a JSON
+    number or a JSON string. Models are inconsistent about that, and the resulting
+    coin-flip resolves toward *no approval* -- the wrong direction for a control.
+
+    Emptiness still counts as absence for strings and collections, where an empty value
+    genuinely means "not supplied": `put_memory` itself does `(topic_key or "")[:MAX]
+    or None`, so the gate and the store agree on what a blank key means.
+    """
+    if name not in (args or {}):
+        return False
+    value = args[name]
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, list | dict | tuple | set):
+        return bool(value)
+    return True
+
+
 def apply_approvals(tools: list[Tool], rules: list[ApprovalRule], manifest_id: str) -> list[Tool]:
     gated: dict[str, ApprovalRule] = {}
     for r in rules:
@@ -748,9 +774,7 @@ def apply_approvals(tools: list[Tool], rules: list[ApprovalRule], manifest_id: s
             # The tool is otherwise untouched -- same executor, no approval, no side
             # event -- so a conditional rule costs nothing on the calls it does not
             # cover.
-            if rule.when_args and not all(
-                str((args or {}).get(name) or "").strip() for name in rule.when_args
-            ):
+            if rule.when_args and not all(_arg_present(args, name) for name in rule.when_args):
                 return await inner.execute(args, ctx)
 
             req = try_get_context()

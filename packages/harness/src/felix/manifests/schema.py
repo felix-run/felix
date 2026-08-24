@@ -440,7 +440,9 @@ class ApprovalRule(_Strict):
     one_shot: bool = False
     bind_principal: bool = False
     allow_unattended: bool = False
-    # Argument names that must all be present and non-empty for the rule to apply.
+    # Argument names that must all be supplied for the rule to apply -- present, not
+    # null, and for strings and collections non-empty. `0` and `False` count as
+    # supplied; see `builder.py:_arg_present` for why that distinction is load-bearing.
     # Empty means the rule gates every call, which is the original behaviour.
     #
     # Exists because a tool can be harmless in one shape and a privileged operation in
