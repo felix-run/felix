@@ -78,6 +78,12 @@ skill or subagent.
 | `SubagentStop` | `subagent-log.sh` | Appends a delegation audit line to `.claude/logs/` |
 | statusLine | `statusline.sh` | branch · dirty count · model · local API health |
 
+The two quality reviewers also run on pull requests, via
+`.github/workflows/quality-review.yml` — it delegates to `felix-quality-reviewer` (and
+`felix-test-quality-reviewer` when `tests/` changed) and posts surviving findings as inline PR
+comments. It is advisory and never fails the build, skips draft and fork PRs, and exits with a
+notice when the `ANTHROPIC_API_KEY` secret is absent.
+
 CI validates this directory on every change (the `toolkit` job runs
 `scripts/validate-toolkit.py`): hook scripts parse and are executable, `settings.json` references
 only scripts that exist, subagent frontmatter is well-formed, and skill frontmatter stays inside the
