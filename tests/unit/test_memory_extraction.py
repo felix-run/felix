@@ -102,8 +102,10 @@ def test_an_escaped_quote_does_not_end_the_string_early() -> None:
 
 def test_parsing_never_raises_on_junk() -> None:
     """A malformed reply costs memories, never the turn."""
-    for junk in ("", "no json here", "[", "[{", '{"content": "not a list"}', "[1, 2, 3]"):
-        assert parse_memories(junk) == []
+    for junk in ("", "no json here", "[", "[{", '{"content": "not a list"}'):
+        assert parse_memories(junk) is None, junk
+    # A balanced array of non-objects parses; the items are skipped individually.
+    assert parse_memories("[1, 2, 3]") == []
 
 
 def test_a_bad_item_does_not_discard_the_good_ones() -> None:
@@ -236,7 +238,15 @@ async def test_the_excerpt_reaches_the_model_fenced() -> None:
         model=model,
     )
     prompt = model.prompts[0]
-    assert "<untrusted_transcript>" in prompt
+    # Assert the *neutralised* forms. Counting raw tokens passed even with the fence
+    # removed entirely: the payload below carries one of each on its own, so a bare
+    # unwrapped blob satisfied every count.
+    # `prompt` is every message joined, so the fence sits inside it rather than at the
+    # start; the excerpt is the last message, so the close token does land at the end.
+    assert "<untrusted_transcript>\n" in prompt, "excerpt was not wrapped"
+    assert prompt.endswith("</untrusted_transcript>"), "excerpt was not wrapped"
+    assert "\u200buntrusted_transcript_end>" in prompt, "payload's close token survived"
+    assert "\u200buntrusted_transcript_start>" in prompt, "payload's open token survived"
     assert prompt.count("</untrusted_transcript>") == 1, "payload closed the fence early"
     assert prompt.count("<untrusted_transcript>") == 1, "payload opened a fence of its own"
 
@@ -313,8 +323,12 @@ async def test_a_well_formed_empty_verdict_drops_everything() -> None:
     verifier that correctly rejected every proposal had its answer discarded, and
     `verify: true` stored exactly the junk it was enabled to remove.
     """
-    model = _ScriptedModel(_payload({"content": APOLOGY_FACT}), "[]")
+    model = _ScriptedModel(_payload({"content": "The runbook lives in the ops repository."}), "[]")
     out = await extract_memories(model, "excerpt", max_facts=3, verify=True)
+    # Without this the test passes for the wrong reason: a proposal that trips the
+    # meta filter empties the set before verification runs at all, and the second
+    # scripted reply is never consumed.
+    assert len(model.prompts) == 2, "the verify pass must actually have run"
     assert out == []
 
 
@@ -410,14 +424,18 @@ async def test_extraction_dedupes_its_own_output() -> None:
     assert [m.content for m in out] == ["The sky is blue.", "Grass is green."]
 
 
-def test_an_out_of_range_importance_clamps_rather_than_discarding() -> None:
+def test_a_badly_formatted_importance_keeps_the_memory() -> None:
     """`ge=0.0, le=1.0` raised inside model_validate, the caller's bare `except`
     swallowed it, and a good memory vanished because its *score* was badly formatted —
-    contradicting the `extra="ignore"` reasoning on the same class."""
-    for raw, expected in (("1.5", 1.0), ("-3", 0.0), ('"high"', 0.5)):
+    contradicting the `extra="ignore"` reasoning on the same class.
+
+    What the score becomes is
+    `test_an_out_of_range_importance_is_not_clamped_to_the_extreme`; this pins only
+    that the memory survives at all.
+    """
+    for raw in ("1.5", "-3", '"high"', "null"):
         parsed = parse_memories('[{"content": "A real fact about the world.", "importance": ' + raw + "}]")
         assert [m.content for m in parsed] == ["A real fact about the world."], raw
-        assert parsed[0].importance == expected, raw
 
 
 def test_model_extracted_meta_is_dropped_but_real_facts_survive() -> None:
@@ -467,3 +485,100 @@ async def test_an_empty_extraction_is_not_overridden_by_the_heuristic() -> None:
     )
     assert stored == []
     assert await memory_store.list_active(settings, TENANT, manifest_id=MANIFEST) == []
+
+
+# --- contracts the fixes above depend on -------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_unreadable_extraction_is_distinguishable_from_an_empty_one() -> None:
+    """`None` means "could not read", `[]` means "read, nothing to keep".
+
+    Only the exception arm of this contract was covered, so `if parsed is None:`
+    never executed under test and could be deleted with the suite still green.
+    """
+    assert await extract_memories(_ScriptedModel("I could not do that"), "e", max_facts=3) is None
+    assert await extract_memories(_ScriptedModel("[]"), "e", max_facts=3) == []
+
+
+@pytest.mark.asyncio
+async def test_unreadable_extraction_falls_back_to_the_heuristic() -> None:
+    """The other half: the fallback was only ever reached with model=None, so nothing
+    proved an unreadable *model* reply also reaches it."""
+    settings = _settings()
+    stored = await capture_from_turn(
+        settings,
+        TENANT,
+        manifest_id=MANIFEST,
+        user_text="where is the runbook",
+        assistant_text="The deploy runbook lives in the ops repository at docs/deploy.md.",
+        capture=MemoryCapture(enabled=True, max_facts=3, min_chars=5),
+        model=_ScriptedModel("I'm afraid I can't help with that"),
+    )
+    assert stored, "an unreadable extraction must fall back, not store nothing"
+
+
+@pytest.mark.asyncio
+async def test_verification_cannot_retarget_a_topic_key() -> None:
+    """Content was constrained; the fields that matter were not.
+
+    The intersection returned rows from the *verifier*, so `topic_key`, `kind` and
+    `importance` still came from a call that reads untrusted transcript. `put_memory`
+    supersedes any active row sharing a topic_key, so a steered verifier could delete
+    a stored fact the extraction pass never touched — under a flag whose whole promise
+    is that it only removes things.
+    """
+    model = _ScriptedModel(
+        _payload({"content": "The migration ran on Tuesday.", "topic_key": ""}),
+        _payload(
+            {
+                "content": "The migration ran on Tuesday.",
+                "topic_key": "user.timezone",
+                "importance": 1.0,
+            }
+        ),
+    )
+    out = await extract_memories(model, "excerpt", max_facts=3, verify=True)
+    assert [m.content for m in out] == ["The migration ran on Tuesday."]
+    assert out[0].topic_key == "", "verifier retargeted the topic key"
+    assert out[0].importance == 0.5, "verifier rewrote the importance"
+
+
+def test_an_out_of_range_importance_is_not_clamped_to_the_extreme() -> None:
+    """`8` is a model reading the scale as 1-10, not a near-miss of 1.0.
+
+    Clamping promoted it to the most important memory in the store, since recall
+    ranks on (0.5 + importance). NaN clamped to 0.0, the opposite end from the
+    documented default.
+    """
+    for raw in ("8", "-3", "1e9"):
+        parsed = parse_memories('[{"content": "A real fact.", "importance": ' + raw + "}]")
+        assert parsed[0].importance == 0.5, raw
+    nan = parse_memories('[{"content": "A real fact.", "importance": NaN}]')
+    assert nan[0].importance == 0.5, "NaN must reach the default, not an extreme"
+    # In-range values still pass through untouched.
+    assert parse_memories('[{"content": "x", "importance": 0.7}]')[0].importance == 0.7
+
+
+def test_third_person_instructions_are_not_mistaken_for_pleasantries() -> None:
+    """`happy to` / `feel free` / `let me know` / `if you need` have no first-person
+    subject, so unanchored they ate ordinary operational facts — including the
+    `instruction` memories this feature exists to capture."""
+    for text in (
+        "Escalate to the on-call engineer if you need a rollback.",
+        "Contributors should feel free to open an issue before a PR.",
+        "The team is happy to onboard new hires on Mondays.",
+        "The customer will let me know once the contract is signed.",
+    ):
+        assert not looks_like_assistant_meta(text), text
+
+
+def test_the_sentence_that_started_this_is_still_caught() -> None:
+    """Anchoring the pleasantries must not lose the original failure."""
+    assert looks_like_assistant_meta(APOLOGY)
+
+
+def test_a_trailing_comma_reaches_the_json_decoder() -> None:
+    """The JSONDecodeError arm was unreachable: every junk case either failed the
+    balance scan first or parsed cleanly."""
+    assert parse_memories('[{"content": "x",}]') is None

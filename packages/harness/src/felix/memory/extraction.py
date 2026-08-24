@@ -57,19 +57,27 @@ class ExtractedMemory(BaseModel):
 
     @field_validator("importance", mode="before")
     @classmethod
-    def _clamp_importance(cls, value: Any) -> float:
-        """Clamp rather than reject.
+    def _default_bad_importance(cls, value: Any) -> float:
+        """Fall back to the default rather than rejecting the memory or clamping.
 
         This was `Field(ge=0.0, le=1.0)`, so a model answering `8` or `"high"` to a
         request for 0.0-1.0 raised inside `model_validate`, the caller's bare `except`
         swallowed it, and an otherwise good memory vanished because its *score* was
         badly formatted. That contradicts the `extra="ignore"` reasoning directly
         above: one malformed field must not discard the memory.
+
+        Not clamped, either. `8` is a model that read the scale as 1-10, and clamping
+        sends it to 1.0 — promoting a formatting error to the most important memory in
+        the store, since recall ranks on (0.5 + importance). NaN is not ordered, so it
+        fails the range check and lands here too rather than clamping to 0.0.
         """
         try:
-            return min(1.0, max(0.0, float(value)))
+            parsed = float(value)
         except TypeError, ValueError:
             return 0.5
+        if not 0.0 <= parsed <= 1.0:
+            return 0.5
+        return parsed
 
 
 EXTRACT_SYSTEM = """You extract durable memories from a conversation so an assistant \
@@ -143,22 +151,14 @@ def _extract_json_array(text: str) -> str | None:
     return None
 
 
-def parse_memories(text: str) -> list[ExtractedMemory]:
-    """Best-effort parse. Never raises; skips whatever it cannot read.
-
-    Returns `[]` for both "no memories" and "unreadable"; callers that need to tell
-    those apart use `parse_memories_or_none`.
-    """
-    return parse_memories_or_none(text) or []
-
-
-def parse_memories_or_none(text: str) -> list[ExtractedMemory] | None:
-    """Parse, distinguishing an empty answer from an unreadable one.
+def parse_memories(text: str) -> list[ExtractedMemory] | None:
+    """Parse, distinguishing an empty answer from an unreadable one. Never raises.
 
     `None` means nothing parseable was found; `[]` means the model returned a
     well-formed empty array. Collapsing the two is not survivable for the verify
     pass, where "the verifier rejected everything" and "the verifier is broken" call
-    for opposite actions.
+    for opposite actions — and a lossy `parse_memories` sitting beside the honest one
+    under the shorter, more inviting name is how that bug comes back.
     """
     raw = _extract_json_array(text)
     if raw is None:
@@ -216,9 +216,19 @@ async def _ask(model: Any, system: str, user: str, *, max_tokens: int = 2048) ->
     return result.message.content or ""
 
 
-_META = re.compile(
-    r"\b(i'?ll |i am |i'?m |i can|i have|i don'?t|my memory|as an ai|let me know|"
-    r"happy to|feel free|if you need)",
+# Two patterns, because the alternatives behave differently. The first-person
+# markers are assistant-voice wherever they appear. The pleasantries are not: "happy
+# to", "feel free", "let me know" and "if you need" occur mid-sentence in ordinary
+# operational facts — "Escalate to on-call if you need a rollback" is exactly the
+# kind of durable instruction this feature exists to capture, and an unanchored
+# pattern silently ate it. Anchored to the start, they still catch the sentence that
+# motivated all of this ("If you need me to reference this information later…").
+_META_VOICE = re.compile(
+    r"\b(i'?ll |i am |i'?m |i can|i have|i don'?t|my memory|as an ai)",
+    re.IGNORECASE,
+)
+_META_OPENER = re.compile(
+    r"^\s*(let me know|happy to|feel free|if you need)",
     re.IGNORECASE,
 )
 
@@ -231,7 +241,8 @@ def looks_like_assistant_meta(text: str) -> bool:
     explicit exclusion. This is the exact failure that made capture store an apology
     as a durable fact, and a prompt alone had already failed to prevent it.
     """
-    return bool(_META.search(text or ""))
+    text = text or ""
+    return bool(_META_VOICE.search(text) or _META_OPENER.search(text))
 
 
 async def extract_memories(
@@ -250,7 +261,7 @@ async def extract_memories(
     Never raises: a turn must not fail because memory extraction did.
     """
     try:
-        parsed = parse_memories_or_none(await _ask(model, EXTRACT_SYSTEM, excerpt))
+        parsed = parse_memories(await _ask(model, EXTRACT_SYSTEM, excerpt))
     except Exception:
         logger.debug("memory extraction call failed", exc_info=True)
         return None
@@ -271,7 +282,7 @@ async def extract_memories(
 
     try:
         payload = json.dumps([m.model_dump() for m in proposed])
-        checked = parse_memories_or_none(
+        checked = parse_memories(
             await _ask(model, VERIFY_SYSTEM, f"Excerpt:\n{excerpt}\n\nProposed:\n{payload}")
         )
     except Exception:
@@ -286,12 +297,14 @@ async def extract_memories(
         # so the pass failed open in exactly the case it exists for.
         return proposed
 
-    # A filter, never a source. `checked` is whatever the second call parsed, and the
-    # excerpt it read is untrusted transcript -- so without this intersection a turn
-    # that steers the verifier writes attacker-chosen rows, at attacker-chosen
-    # importance, while the operator believes they enabled a filter.
-    keys = {dedupe_key(m.content) for m in proposed}
-    return [m for m in checked if dedupe_key(m.content) in keys]
+    # The verdict *selects* proposals; it never supplies one. Returning rows from
+    # `checked` constrained only their content -- `kind`, `importance` and above all
+    # `topic_key` still came from the second call, which reads untrusted transcript.
+    # `put_memory` supersedes any active row sharing a topic_key, so a steered
+    # verifier could delete a stored fact the extraction pass never touched, under a
+    # flag advertised as keeping only what the excerpt supports.
+    kept = {dedupe_key(m.content) for m in checked}
+    return [m for m in proposed if dedupe_key(m.content) in kept]
 
 
 __all__ = [
