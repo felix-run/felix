@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Memory management API** — `GET /memory`, `GET /memory/search` (the same hybrid
+  ranking the agent sees, with the contributing channels reported so a surprising
+  result is explainable), `GET /memory/as-of/{turn_seq}`, `POST /memory` and
+  `DELETE /memory/{id}`, under new `memory:read` / `memory:write` scopes. An agent
+  that remembers across sessions otherwise accumulates a store nobody can inspect —
+  and when it starts answering from a fact that is stale, wrong, or was extracted
+  from a hostile tool result, finding and removing that fact needed a database
+  console. The time-travel surface is read-only: rewinding memory is a data-loss
+  primitive on a shared table, and session rewind is deliberately non-destructive.
+
 - **Agent-facing memory tools** — `remember` / `recall` / `forget` / `list_memories`,
   behind `spec.memory.recall.tools` (off by default). They are bound *before* the
   governance block, so recalled text passes through secret masking, policies, content

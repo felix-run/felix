@@ -335,6 +335,7 @@ implies the matching `*:read`.
 | `plans:read` / `plans:write` | `/plans` |
 | `eval:read` / `eval:write` | `/eval` |
 | `usage:read` | `/usage` |
+| `memory:read` / `memory:write` | `/memory` — inspect, search, correct and prune what an agent has remembered |
 
 ```bash
 felix mint-jwt --sub ops --tenant default \

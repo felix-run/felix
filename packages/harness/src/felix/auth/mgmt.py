@@ -92,6 +92,8 @@ SCOPE_PLANS_WRITE = "plans:write"
 SCOPE_EVAL_READ = "eval:read"
 SCOPE_EVAL_WRITE = "eval:write"
 SCOPE_USAGE_READ = "usage:read"
+SCOPE_MEMORY_READ = "memory:read"
+SCOPE_MEMORY_WRITE = "memory:write"
 
 __all__ = [
     "SCOPE_APPROVALS_READ",
@@ -103,6 +105,8 @@ __all__ = [
     "SCOPE_JOBS_WRITE",
     "SCOPE_MANIFESTS_READ",
     "SCOPE_MANIFESTS_WRITE",
+    "SCOPE_MEMORY_READ",
+    "SCOPE_MEMORY_WRITE",
     "SCOPE_PLANS_READ",
     "SCOPE_PLANS_WRITE",
     "SCOPE_USAGE_READ",

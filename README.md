@@ -198,7 +198,7 @@ Queues, or Workflows compute in this stack.
 | Agent card | `GET /.well-known/agent-card.json` |
 | Liveness / readiness | `GET /live` (also `/health`), `GET /ready` |
 
-Management surfaces: `/audit`, `/approvals`, `/plans`, `/jobs`, `/manifests`, `/eval`.
+Management surfaces: `/audit`, `/approvals`, `/plans`, `/jobs`, `/manifests`, `/eval`, `/usage`, `/memory`. `/memory` lists, searches (the same hybrid ranking the agent sees), time-travels (`/memory/as-of/{turn_seq}`), writes and forgets long-term memories — an agent that remembers across sessions otherwise accumulates a store nobody can inspect.
 
 Python client: `from felix.sdk import FelixClient` — `prompt`, `stream`, `steer`, `follow_up`,
 `fork`, `rewind`, `set_model`.
