@@ -37,7 +37,7 @@ Same principle for models: use the eval fixture path (`--mock`) rather than asse
 |---|---|---|
 | `asyncio_mode` | `auto` | `async def test_…` needs no decorator |
 | `testpaths` | `tests` | 47 files in `tests/unit/`, 3 in `tests/integration/`, plus `tests/test_smoke.py` |
-| `timeout` / `timeout_method` | `120` / `thread` | A backstop, not a budget — the whole suite runs in roughly 12s |
+| `timeout` / `timeout_method` | `120` / `thread` | A per-test backstop, not a budget. The whole suite runs in roughly 50s, so the margin is on the slowest single test, not the total |
 | `addopts` | none | Coverage is deliberately not on by default so a single-test run stays fast |
 | `per-file-ignores` | `tests/** = E501, RUF012, RUF034` | Long literals and mutable class attrs are fine in tests |
 

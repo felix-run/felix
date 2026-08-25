@@ -10,7 +10,7 @@ allowed-tools: Bash(uv:*) Bash(make:*) Bash(./scripts/test.sh:*) Read Grep Glob
 ## Run tests (read this before your first pytest)
 
 ```bash
-./scripts/test.sh                                   # whole suite, ~12s
+./scripts/test.sh                                   # whole suite, ~50s
 ./scripts/test.sh tests/unit/test_react_loop.py -q  # one file
 ./scripts/test.sh -k "compact or fork" -x           # one theme
 make test                                           # same script
