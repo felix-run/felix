@@ -173,6 +173,12 @@ zero cloud SDKs.
 - Helm: enable `persistence` when using `fs`, so `/data` survives restarts
 - Production JWT and api_key deploys need `FELIX_CONSUMER_SHARED_SECRET` for `POST /internal/*`
 
+**Sizing.** Each worker process carries its own connection pool, so raise the two together:
+`FELIX_WORKERS` (1) and `FELIX_DB_POOL_SIZE` (10) + `FELIX_DB_MAX_OVERFLOW` (20) — past that
+ceiling requests queue for `FELIX_DB_POOL_TIMEOUT_SECONDS` and then fail. Set
+`FELIX_DB_POOL_PRE_PING=false` against a direct Postgres; it costs a round trip per checkout and
+only earns it behind PgBouncer, RDS Proxy, or Cloud SQL.
+
 Felix runs on infrastructure **you** operate. Cloudflare DNS, CDN, TLS, and WAF in front of your
 origin are fine. There is **no** Cloudflare Workers, Durable Objects, Hyperdrive, R2-as-binding,
 Queues, or Workflows compute in this stack.
