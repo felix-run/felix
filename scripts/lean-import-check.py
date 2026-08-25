@@ -20,6 +20,14 @@ import sys
 
 PACKAGES = ("felix", "felix_api", "felix_cli", "felix_worker")
 
+# Modules that legitimately import an optional dependency at module scope, and are
+# therefore expected to fail here. See EXTRA_ONLY_MODULES in tests/unit/test_invariants.py:
+# `@workflow.run` rejects a class declared inside a function, so the Temporal
+# definitions cannot be built lazily the way every other optional binding is. The
+# invariant test asserts nothing imports them eagerly, which is what keeps a lean
+# install working despite this skip.
+EXTRA_ONLY = {"felix.durability._temporal_workflow"}
+
 
 def main() -> int:
     failures: list[str] = []
@@ -33,6 +41,8 @@ def main() -> int:
             continue
         imported += 1
         for module in pkgutil.walk_packages(package.__path__, prefix=f"{name}."):
+            if module.name in EXTRA_ONLY:
+                continue
             imported += 1
             try:
                 importlib.import_module(module.name)

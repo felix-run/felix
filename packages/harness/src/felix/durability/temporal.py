@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
 from typing import Any
 
 from felix.config import Settings
@@ -57,46 +56,23 @@ async def run_worker(settings: Settings) -> None:
     await worker.run()
 
 
-_cached_defs: tuple[Any, Any] | None = None
-
-
 def _defs() -> tuple[Any, Any]:
-    global _cached_defs
-    if _cached_defs is not None:
-        return _cached_defs
-    from temporalio import activity, workflow
+    """The workflow class and activity, imported rather than built.
 
-    @activity.defn(name="felix_fiber_step")
-    async def fiber_step(row: dict[str, Any]) -> dict[str, Any]:
-        from felix.config import get_settings
-        from felix.durability.fibers import advance_fiber
+    They used to be declared inside this function. `@workflow.run` rejects a class
+    declared in a function body -- the worker re-imports it by name inside the sandbox
+    -- so every call raised `ValueError`, and both entry points below were dead:
+    `start_fiber_workflow` failed into its caller's `except Exception`, which logged a
+    warning and let the Postgres fiber scheduler run the chat, and `felix
+    temporal-worker` failed outright.
 
-        return await advance_fiber(get_settings(), row)
+    No cache here any more: a module import is already cached by `sys.modules`, and the
+    hand-rolled one only existed to avoid rebuilding classes that should never have
+    been built per call.
+    """
+    from felix.durability._temporal_workflow import DurableFiberWorkflow, fiber_step
 
-    @workflow.defn(name="felix_durable_fiber")
-    class DurableFiberWorkflow:
-        @workflow.run
-        async def run(self, row: dict[str, Any]) -> dict[str, Any]:
-            current = dict(row)
-            while True:
-                current = await workflow.execute_activity(
-                    "felix_fiber_step",
-                    current,
-                    start_to_close_timeout=timedelta(minutes=15),
-                )
-                status = str(current.get("status") or "")
-                if status in {"completed", "failed", "expired"}:
-                    return current
-                if status == "sleeping":
-                    wake = int(current.get("wake_at") or 0)
-                    now_ms = int(workflow.now().timestamp() * 1000)
-                    delay_ms = max(1, wake - now_ms) if wake else 1
-                    await workflow.sleep(timedelta(milliseconds=delay_ms))
-                    current["status"] = "running"
-                    current["wake_at"] = None
-
-    _cached_defs = (DurableFiberWorkflow, fiber_step)
-    return _cached_defs
+    return (DurableFiberWorkflow, fiber_step)
 
 
 __all__ = ["TASK_QUEUE", "run_worker", "start_fiber_workflow"]

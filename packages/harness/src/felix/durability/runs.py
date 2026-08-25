@@ -83,6 +83,15 @@ async def start_durable_chat(
             fiber["state_json"] = state
             await save_fiber(settings, fiber)
         except Exception:
+            # Record the fallback, not just log it. `backend` was set inside the `try`,
+            # so a failed start left the row indistinguishable from a run that never
+            # asked for Temporal -- and the feature was broken for long enough that
+            # nobody could tell from a fiber row which one they were looking at.
+            state = dict(fiber.get("state_json") or state)
+            state["backend"] = "fibers"
+            state["backend_fallback"] = "temporal_start_failed"
+            fiber["state_json"] = state
+            await save_fiber(settings, fiber)
             logger.warning(
                 "temporal start failed; fiber scheduler will run this chat",
                 exc_info=True,

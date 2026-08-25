@@ -52,6 +52,54 @@ def _python_files(base: Path) -> list[Path]:
 
 
 # --------------------------------------------------------------------------
+# Modules that may import an optional dependency at module scope, because the
+# dependency requires it and nothing reaches them without the extra installed.
+#
+# One entry, and it earns it: `@workflow.run` rejects a class declared inside a
+# function -- the Temporal worker re-imports the class by name inside its sandbox --
+# so the definitions cannot be built lazily the way every other optional binding is.
+#
+# The carve-out is enforced rather than trusted. `test_an_extra_only_module_is_never
+# _imported_eagerly` below asserts nothing pulls these in at module scope, which is
+# the property that makes a module-scope `import temporalio` harmless here.
+EXTRA_ONLY_MODULES = {"packages/harness/src/felix/durability/_temporal_workflow.py"}
+
+
+def test_every_extra_only_module_exists() -> None:
+    """So the list cannot outlive the file it excuses."""
+    missing = sorted(rel for rel in EXTRA_ONLY_MODULES if not (ROOT / rel).is_file())
+    assert missing == [], f"EXTRA_ONLY_MODULES names files that no longer exist: {missing}"
+
+
+def test_an_extra_only_module_is_never_imported_eagerly() -> None:
+    """The whole basis of the exception.
+
+    A module-scope `import temporalio` is harmless only while nothing imports the
+    module that does it at *its* module scope. The moment something does, a lean
+    install breaks at import time — which is exactly what the rule below exists to
+    prevent, so the exception has to carry its own guard.
+    """
+    targets = {Path(rel).stem for rel in EXTRA_ONLY_MODULES}
+    offenders: list[str] = []
+    for root in SOURCE_ROOTS:
+        for path in _python_files(root):
+            if str(path.relative_to(ROOT)) in EXTRA_ONLY_MODULES:
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
+            for node in tree.body:  # module scope only
+                mod = ""
+                if isinstance(node, ast.ImportFrom) and node.module:
+                    mod = node.module
+                elif isinstance(node, ast.Import):
+                    mod = ",".join(a.name for a in node.names)
+                if any(t in mod.split(".") or t in mod.split(",") for t in targets):
+                    offenders.append(f"{path.relative_to(ROOT)}:{node.lineno} imports {mod}")
+    assert offenders == [], (
+        "An extra-only module must be imported inside the function that needs it, or a "
+        "lean install fails at import:\n  " + "\n  ".join(offenders)
+    )
+
+
 # Lean by default: optional dependencies are imported inside the function that
 # needs them, never at module scope.
 # --------------------------------------------------------------------------
@@ -59,6 +107,8 @@ def test_no_optional_dependency_imported_at_module_scope() -> None:
     offenders: list[str] = []
     for root in SOURCE_ROOTS:
         for path in _python_files(root):
+            if str(path.relative_to(ROOT)) in EXTRA_ONLY_MODULES:
+                continue
             tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
             for node in tree.body:  # module scope only — nested imports are the point
                 names: list[str] = []
