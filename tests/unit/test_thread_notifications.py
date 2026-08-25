@@ -77,6 +77,44 @@ async def test_without_redis_nothing_claims_to_be_notified(monkeypatch: pytest.M
 
 
 @pytest.mark.asyncio
+async def test_a_failed_connection_is_retried_rather_than_latched(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Redis blip must not degrade a worker to polling for the life of the process.
+
+    The first version latched a boolean, so one failed connect meant that worker never
+    tried again — and the poll underneath kept everything correct, which is exactly why
+    nobody would have noticed the wake had stopped working.
+    """
+    import time
+
+    from felix import config as config_mod
+
+    attempts: list[float] = []
+
+    def _unreachable() -> Settings:
+        attempts.append(time.monotonic())
+        # Port 1 is reserved and refuses immediately, so this fails fast rather than
+        # spending the connect timeout.
+        return Settings(database_url="memory://notify", redis_url="redis://127.0.0.1:1/0")
+
+    monkeypatch.setattr(config_mod, "get_settings", _unreachable)
+    monkeypatch.setattr(notify, "_RETRY_AFTER_SECONDS", 60.0)
+
+    assert await notify._get_redis() is None
+    assert len(attempts) == 1, "the first call should try"
+    assert notify._redis_failed_until > time.monotonic(), "no cooldown was recorded"
+
+    assert await notify._get_redis() is None
+    assert len(attempts) == 1, "a call inside the cooldown should not retry"
+
+    notify._redis_failed_until = time.monotonic() - 1  # cooldown elapsed
+    assert await notify._get_redis() is None
+    assert len(attempts) == 2, "a call after the cooldown should retry"
+    assert notify._redis_failed_until > time.monotonic(), "the retry did not re-arm"
+
+
+@pytest.mark.asyncio
 async def test_only_the_named_thread_is_woken() -> None:
     other = asyncio.create_task(notify.wait_for_events("t", "other", timeout=0.3))
     await asyncio.sleep(0)

@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -39,9 +40,17 @@ _PREFIX = "felix:thread:"
 # for a single-replica deployment.
 _waiters: dict[str, set[asyncio.Event]] = {}
 
+# How long to stay on the polling path after a failed connection attempt.
+#
+# Not a permanent latch: a Redis blip would otherwise degrade a worker to polling for
+# the life of the process, and the whole point of this module is that the poll is the
+# safety net rather than the mechanism. Long enough that a hard-down Redis costs one
+# attempt per interval rather than one per wait.
+_RETRY_AFTER_SECONDS = 30.0
+
 _redis: Any | None = None
 _redis_loop: int | None = None
-_redis_failed = False
+_redis_failed_until: float = 0.0
 _pubsub: Any | None = None
 _pump: asyncio.Task[None] | None = None
 _subscribed: dict[str, int] = {}
@@ -66,11 +75,11 @@ class Wake:
 
 
 async def _get_redis() -> Any | None:
-    global _redis, _redis_loop, _redis_failed
+    global _redis, _redis_loop, _redis_failed_until
     loop_id = id(asyncio.get_running_loop())
     if _redis is not None and _redis_loop != loop_id:
         await _teardown()
-    if _redis_failed:
+    if time.monotonic() < _redis_failed_until:
         return None
     if _redis is not None:
         return _redis
@@ -79,7 +88,9 @@ async def _get_redis() -> Any | None:
 
         url = (getattr(get_settings(), "redis_url", "") or "").strip()
         if not url:
-            _redis_failed = True
+            # Configuration, not a blip: nothing to retry, so back off for a long time
+            # rather than re-reading settings on every wait.
+            _redis_failed_until = time.monotonic() + 3600.0
             return None
         import redis.asyncio as redis
 
@@ -89,12 +100,12 @@ async def _get_redis() -> Any | None:
         return _redis
     except Exception:
         logger.debug("thread notifications unavailable; polling only", exc_info=True)
-        _redis_failed = True
+        _redis_failed_until = time.monotonic() + _RETRY_AFTER_SECONDS
         return None
 
 
 async def _teardown() -> None:
-    global _redis, _redis_loop, _redis_failed, _pubsub, _pump
+    global _redis, _redis_loop, _redis_failed_until, _pubsub, _pump
     if _pump is not None:
         _pump.cancel()
         with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -104,7 +115,7 @@ async def _teardown() -> None:
             with contextlib.suppress(Exception):
                 await obj.aclose()
     _redis = _redis_loop = _pubsub = _pump = None
-    _redis_failed = False
+    _redis_failed_until = 0.0
     _subscribed.clear()
 
 
