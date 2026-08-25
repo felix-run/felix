@@ -1,0 +1,95 @@
+# PgBouncer in transaction mode, in front of Postgres.
+#
+# Why: the connection ceiling is `FELIX_WORKERS x (POOL_SIZE + MAX_OVERFLOW)` per API
+# process, and four workers on the defaults is 120 connections against a stock Postgres
+# `max_connections` of 100. Each Postgres backend also costs memory, so raising
+# `max_connections` trades one wall for another. A transaction-mode pooler multiplexes
+# many cheap client connections onto few server ones.
+#
+# What changes for Felix: the app's own pool becomes a pool of *client* connections to
+# PgBouncer, which are cheap, while `DEFAULT_POOL_SIZE` below is the real server-side
+# limit. Raise the former freely; size the latter against your database.
+#
+#   docker compose -f deploy/docker/compose.yml \
+#                  -f deploy/docker/compose.pgbouncer.yml --project-directory . up
+#
+# Run migrations against Postgres directly rather than through the pooler. Nothing here
+# breaks under transaction pooling, but a migration is a one-off admin action and there
+# is no reason to route it through a multiplexer sized for request traffic.
+
+x-pooled-db: &pooled-db
+  # Same credentials, one hop further out. PgBouncer listens on 5432 in this image.
+  FELIX_DATABASE_URL: postgresql+psycopg://felix:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@pgbouncer:5432/felix
+  # This image is PgBouncer >= 1.21 and MAX_PREPARED_STATEMENTS below is non-zero, so it
+  # tracks prepared statements itself and psycopg3 can keep preparing them.
+  #
+  # Set this false instead if you point Felix at a pooler that does not: psycopg3
+  # auto-prepares after five executions, and under transaction pooling the sixth lands
+  # on a different server connection where that statement was never created. RDS Proxy
+  # is the case that forces it — it pins the session when it sees a prepared statement,
+  # which defeats the multiplexing you deployed it for.
+  FELIX_DB_PREPARED_STATEMENTS: "true"
+  # Client-side connections to PgBouncer are cheap, so this no longer has to be small.
+  FELIX_DB_POOL_SIZE: ${FELIX_DB_POOL_SIZE:-20}
+  FELIX_DB_MAX_OVERFLOW: ${FELIX_DB_MAX_OVERFLOW:-40}
+  # Pre-ping earns its per-checkout round trip here: a pooler is exactly the thing that
+  # closes a connection the app still believes is live.
+  FELIX_DB_POOL_PRE_PING: "true"
+
+services:
+  pgbouncer:
+    image: edoburu/pgbouncer:1.25.2
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: felix
+      DB_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      DB_NAME: felix
+      POOL_MODE: transaction
+      AUTH_TYPE: scram-sha-256
+      # Client connections PgBouncer will accept — this is the number that gets to be
+      # large, and the point of the exercise.
+      MAX_CLIENT_CONN: ${PGBOUNCER_MAX_CLIENT_CONN:-500}
+      # Server connections it will actually open. Size against Postgres, not against
+      # the app: this is what `max_connections` has to accommodate.
+      DEFAULT_POOL_SIZE: ${PGBOUNCER_POOL_SIZE:-25}
+      # Non-zero so PgBouncer tracks prepared statements across server connections.
+      # Zero here means FELIX_DB_PREPARED_STATEMENTS must be false.
+      MAX_PREPARED_STATEMENTS: ${PGBOUNCER_MAX_PREPARED_STATEMENTS:-200}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      # `-U felix` matters: PgBouncer's admin console only answers to a configured user,
+      # and a healthcheck that passes for the wrong reason is worse than none.
+      test: ["CMD-SHELL", "PGPASSWORD=$$DB_PASSWORD psql -h 127.0.0.1 -p 5432 -U felix -d felix -c 'select 1' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    mem_limit: ${FELIX_PGBOUNCER_MEM_LIMIT:-64m}
+    restart: unless-stopped
+
+  api:
+    environment: *pooled-db
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+
+  worker:
+    environment: *pooled-db
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+
+  scheduler:
+    environment: *pooled-db
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
