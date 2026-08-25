@@ -143,18 +143,25 @@ async def test_the_loop_actually_waits_the_backed_off_delay(
     1 Hz cadence and still look correct in every unit test of `_next_poll_delay`. So
     this records what the loop actually sleeps for.
     """
+    from felix.session.notify import Wake
     from felix_api.app import create_app
     from felix_api.routes import chat as chat_mod
     from httpx import ASGITransport, AsyncClient
 
     slept: list[float] = []
-    real_sleep = chat_mod.asyncio.sleep
 
-    async def _record(seconds: float) -> None:
-        slept.append(seconds)
-        await real_sleep(0)  # yield without spending the wall clock
+    async def _record(_tenant: str, _thread: str, *, timeout: float):
+        """Stand in for the wait, recording what the loop asked to wait *for*.
 
-    monkeypatch.setattr(chat_mod.asyncio, "sleep", _record)
+        The loop used to `asyncio.sleep(delay)`; it now waits on a thread notification
+        with the same delay as its timeout. Instrumenting the wait rather than the
+        sleep is the difference between measuring the backoff and measuring nothing --
+        this test hung for 120 seconds when the mechanism changed underneath it.
+        """
+        slept.append(timeout)
+        return Wake(woken=False, by_notification=False)
+
+    monkeypatch.setattr(chat_mod, "wait_for_events", _record)
 
     settings = Settings(
         allow_insecure=True,

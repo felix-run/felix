@@ -54,6 +54,7 @@ class _MemorySession:
                     metadata=redact_json(ev.metadata) if ev.metadata else ev.metadata,
                 )
             )
+        await _announce(self.id)
         return allocated
 
     async def get_events(self, opts: GetEventsOpts | None = None) -> list[SessionEvent]:
@@ -92,6 +93,24 @@ class InMemorySessionStore:
         if thread_id not in self._sessions:
             self._sessions[thread_id] = _MemorySession(id=thread_id)
         return self._sessions[thread_id]
+
+
+async def _announce(thread_id: str, *, tenant_id: str = "default") -> None:
+    """Tell any waiting reader this thread moved. Best effort by construction.
+
+    Called from the store rather than a route, so it covers every writer -- the agent
+    loop, steering, tool results, the management API -- instead of only the ones a
+    particular endpoint knows about. A notification failure must never fail an append
+    that already succeeded, which is why nothing here propagates.
+    """
+    if not thread_id:
+        return
+    try:
+        from felix.session.notify import notify_appended
+
+        await notify_appended(tenant_id, thread_id)
+    except Exception:  # pragma: no cover - notify_appended swallows its own
+        logger.debug("thread notification failed", exc_info=True)
 
 
 async def _lock_thread(db: Any, tenant_id: str, thread_id: str) -> None:
@@ -172,8 +191,11 @@ class _PostgresSession:
                     )
                 )
             await db.commit()
-            # After the commit, so a rolled-back append reports nothing allocated.
-            return allocated
+        # Outside the transaction. A reader woken before the commit lands would query,
+        # find nothing, and wait again on a notification already spent.
+        await _announce(self.id, tenant_id=self.tenant_id)
+        # After the commit, so a rolled-back append reports nothing allocated.
+        return allocated
 
     async def get_events(self, opts: GetEventsOpts | None = None) -> list[SessionEvent]:
         if not self.id:
