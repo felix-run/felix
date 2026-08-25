@@ -282,6 +282,45 @@ breaks felix-web. Whether `felix/ui/` is dead code or a plugin-seam affordance
 needs a real reachability check (entry points, registry, string lookup) before
 anyone deletes it.
 
+#### From the memory-trust + scanner wave (Aug 2026)
+
+Left open deliberately after the wave that landed #57–#64. The first two are
+decisions about behaviour rather than fixes someone can just apply; the third
+is prose that should follow whichever way the first one goes.
+
+- [ ] **Who may retire a memory by naming its `topic_key`** — `put_memory`
+      supersedes any active row sharing a `topic_key`, so writing a new value
+      under an existing key retires whatever held it. `remember` is gated on
+      `topic_key` in `governed.yaml`, which closes the route a model can aim
+      deliberately (`recall` prints every stored key, so they are
+      enumerable). `capture_from_turn` reaches the same supersession
+      post-turn without a tool call, so it passes through no governance
+      wrapper at all — harder to aim, since it needs the extractor steered
+      onto the victim's key, but ungated and free against `max_tool_calls`.
+      The durable fix is store-level: require rank above `_DEFAULT_TRUST` for
+      a *cross-row* sweep, so rank-1 writers store alongside rather than
+      retire. That is a real ergonomic change (agents could no longer correct
+      their own captured facts by re-keying), which is why it is a decision
+      and not a patch.
+- [ ] **`deploy/GOVERNANCE.md`: which layer owns retirement** — whichever way
+      the above lands, the memory trust model needs writing down: `retired_by`
+      versus `source`, why resurrection is gated on who retired rather than
+      who wrote, and which of the manifest, the store and the approval wrapper
+      is authoritative. The rules are enforced in
+      `tests/conformance/test_memory_trust_matrix.py`; the prose does not
+      exist yet.
+- [ ] **Warn when `when_args` names nothing** — `ApprovalRule.when_args` is
+      not validated against the gated tool's schema, so `when_args:
+      [topickey]` yields a rule that never fires. It still passes
+      `validate-manifest`, and still satisfies the `eu_ai_act` and SOC 2
+      boundary checks, because both test that approvals exist rather than
+      that they cover anything. Not a regression — `tools: [typo]` was
+      already vacuous the same way — but `when_args` makes the mistake much
+      easier to make and invisible once made. A `logger.warning` at bind time
+      is the fix; `RememberArgs` is a pydantic model with `extra="forbid"`,
+      so the check is cheap, and tools carrying a raw JSON schema are
+      checkable too. Decide whether it warns or refuses.
+
 ### Product (`felix-run/web`)
 
 - [ ] **Session-control UX gaps** — export JSONL from UI, clearer
