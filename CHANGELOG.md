@@ -9,6 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A migrated database no longer returns nothing to a deployment that has not
+  opted into RLS.** `0006_tenant_rls` applies `ENABLE` *and* `FORCE ROW LEVEL
+  SECURITY` unconditionally, while its header described the migration as
+  optional — "enable with `FELIX_DATABASE_RLS=true`" — which is the runtime half.
+  With that flag false (the default) the `after_begin` listener set no GUC at
+  all, so the policy's `tenant_id = current_setting('app.tenant_id', true)`
+  evaluated to `NULL`, and every one of the 16 tenant tables returned zero rows.
+  Silently: no error, just empty results. Only a superuser or `BYPASSRLS` role
+  escaped it — which is what the bundled compose stack uses, and why this never
+  appeared in local development while being a total outage on managed Postgres,
+  where you are not superuser. The listener now declares `app.rls_bypass`
+  explicitly when RLS is off, which is what `database_rls=false` means; tenant
+  scoping in the query layer is unchanged and remains the primary isolation.
+  `FELIX_DATABASE_RLS` is now a genuine runtime toggle — flip it and restart, no
+  migration needed. The migration stays unconditional on purpose: one that
+  produced a different schema depending on the environment it ran in would not be
+  reproducible, and there would be no way to enable RLS later without re-running
+  DDL.
+
+- **An RLS transaction that cannot name its tenant says so.** With
+  `FELIX_DATABASE_RLS=true`, a transaction whose tenant did not resolve also set
+  no GUC and saw nothing. Filtering is the correct answer there — a bypass would
+  be a hole — but it was indistinguishable from an empty table. It now logs at
+  WARNING naming `rls_bypass()` and `rls_tenant()`.
+
+- **`felix doctor` reports RLS coherence.** The schema half and the runtime half
+  can disagree in either direction and neither shows up in a request: policies
+  without the flag means the app bypasses them, the flag without policies means
+  nothing enforces it, and policies plus the flag plus a superuser connection
+  means the policies are skipped anyway.
+
 - **Streamed `parallel` and `plan_execute` runs are metered.** `_yield_model_stream`
   drove the model through `model.stream()`, which yields text and nothing else, and
   never called `record_usage` — the sole feed for `limit_state.tokens_input`,

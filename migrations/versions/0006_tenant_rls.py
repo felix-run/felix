@@ -1,8 +1,26 @@
-"""Optional tenant RLS policies (enable with FELIX_DATABASE_RLS=true).
+"""Tenant RLS policies on every table carrying a tenant_id.
 
 Revision ID: 0006_tenant_rls
 Revises: 0005_session_fts
 Create Date: 2026-08-22
+
+This applies ENABLE *and* FORCE ROW LEVEL SECURITY unconditionally. It is not
+gated on ``FELIX_DATABASE_RLS`` and must not be: a migration that produces a
+different schema depending on the environment it ran in is not reproducible, and
+there would then be no way to turn RLS on later without re-running DDL.
+
+``FELIX_DATABASE_RLS`` is the *runtime* half. When it is true the application
+sets ``app.tenant_id`` per transaction and the policy enforces isolation; when it
+is false the application sets ``app.rls_bypass`` instead, which is what keeps a
+migrated database usable by a deployment that has not opted in. The header of
+this file used to say "optional ... enable with FELIX_DATABASE_RLS=true", which
+described the setting while appearing to describe the migration -- and the
+application did not set either GUC when the flag was off, so on any role RLS
+actually applies to, every one of these tables returned zero rows.
+
+Note FORCE: the policy binds the table owner too. Only a superuser or a
+BYPASSRLS role escapes it, which is why a deployment on managed Postgres behaves
+differently from the bundled compose stack.
 """
 
 from __future__ import annotations

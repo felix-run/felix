@@ -270,9 +270,55 @@ def doctor_cmd() -> None:
                 from sqlalchemy import text
 
                 engine = get_engine(settings.database_url)
+                rls_on = False
+                exempt = False
                 async with engine.connect() as conn:
                     await conn.execute(text("SELECT 1"))
+                    # Is the policy live, and does this role escape it?
+                    rls_on = bool(
+                        await conn.scalar(
+                            text(
+                                "SELECT bool_or(relrowsecurity) FROM pg_class "
+                                "WHERE relname = 'session_events'"
+                            )
+                        )
+                    )
+                    exempt = bool(
+                        await conn.scalar(
+                            text("SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user")
+                        )
+                    )
                 check("database", True, "reachable")
+
+                # RLS coherence. The schema half (migration 0006) and the runtime
+                # half (FELIX_DATABASE_RLS) can disagree, and both directions are
+                # silent in a running system: policies without the flag means the
+                # app bypasses them, so nothing is enforced; the flag without
+                # policies means nothing is enforcing it either.
+                if settings.database_rls and not rls_on:
+                    check(
+                        "tenant RLS",
+                        False,
+                        "FELIX_DATABASE_RLS=true but no policies — run `felix migrate head`",
+                    )
+                elif rls_on and not settings.database_rls:
+                    # Not a failure: the supported opt-out. The query layer still
+                    # scopes every read and write. Said plainly rather than left
+                    # to be discovered.
+                    rprint(
+                        "  [green]ok[/green]  tenant RLS — policies present, "
+                        "FELIX_DATABASE_RLS=false so the app bypasses them "
+                        "(query-layer scoping still applies)"
+                    )
+                elif rls_on and settings.database_rls:
+                    check(
+                        "tenant RLS",
+                        not exempt,
+                        "enforced"
+                        if not exempt
+                        else "policies active but this role is superuser/BYPASSRLS, "
+                        "which skips them entirely",
+                    )
             except Exception as exc:
                 check("database", False, str(exc)[:120])
 
