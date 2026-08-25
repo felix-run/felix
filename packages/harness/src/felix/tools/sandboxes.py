@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from typing import Any
 
 import httpx
@@ -19,8 +18,6 @@ from felix.tools.types import (
     ToolOutput,
     define_tool_with_executor,
 )
-
-logger = logging.getLogger("felix.tools.sandboxes")
 
 
 class SandboxArgs(BaseModel):

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
@@ -24,8 +23,6 @@ from felix.patterns.types import (
     ToolCall,
 )
 from felix.tools.types import Tool, define_tool
-
-logger = logging.getLogger("felix.patterns")
 
 # Ensure react is registered — providers registered below after _model_for.
 
