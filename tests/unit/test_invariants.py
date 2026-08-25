@@ -548,3 +548,75 @@ def test_optional_extras_are_gated_through_the_helper() -> None:
         "use tests/optional_deps.py:require_optional(module, extra) instead of "
         f"pytest.importorskip so CI can require the extra: {offenders}"
     )
+
+
+# The governance wrappers whose config comes straight from the manifest schema.
+GOVERNANCE_WRAPPERS = {
+    "apply_command_screening",
+    "apply_content_screening",
+    "apply_limits",
+    "apply_guardrails",
+    "apply_judges",
+    "wrap_final_response_judges",
+}
+
+
+def test_governance_wrappers_read_their_config_as_typed_attributes() -> None:
+    """No `getattr(config, "field", default)` in the wrappers that enforce the manifest.
+
+    `CommandScreening`, `ContentScreening`, `Limits` and `Guardrails` are strict pydantic
+    models, but the wrappers took them as `Any` and read every field through a `getattr`
+    default. That wrote each default twice — once in the schema, once at the read site,
+    free to disagree — and made a renamed field fail *open*: `getattr(screening,
+    "enabled", False)` on a model that no longer has `enabled` disables screening
+    silently. The `Guardrails.providers` comment records the same shape shipping once
+    already, as a typo that meant no wrapper was applied while `guardrails_enabled()`
+    still returned True.
+
+    Reading the fields as attributes is what lets `ty` see this layer at all.
+    """
+    builder = HARNESS / "manifests" / "builder.py"
+    tree = ast.parse(builder.read_text(encoding="utf-8"), str(builder))
+
+    offenders: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+        if node.name not in GOVERNANCE_WRAPPERS:
+            continue
+        params = {a.arg for a in node.args.args}
+        for call in ast.walk(node):
+            if (
+                isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Name)
+                and call.func.id == "getattr"
+                and len(call.args) >= 2
+                and isinstance(call.args[0], ast.Name)
+                and call.args[0].id in params
+            ):
+                offenders.append(f"{node.name}:{call.lineno} getattr({call.args[0].id}, ...)")
+
+    assert offenders == [], (
+        f"governance config must be read as typed attributes, not getattr defaults: {offenders}"
+    )
+
+
+def test_governance_wrappers_declare_their_config_type() -> None:
+    """`Any` here is what let the getattr defaults hide. Keep the annotations concrete."""
+    builder = HARNESS / "manifests" / "builder.py"
+    tree = ast.parse(builder.read_text(encoding="utf-8"), str(builder))
+
+    untyped: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+        if node.name not in GOVERNANCE_WRAPPERS:
+            continue
+        for arg in node.args.args:
+            if arg.arg in {"self", "tools", "agent", "manifest_id"}:
+                continue
+            rendered = ast.unparse(arg.annotation) if arg.annotation else "<none>"
+            if "Any" in rendered or rendered == "<none>":
+                untyped.append(f"{node.name}({arg.arg}: {rendered})")
+
+    assert untyped == [], f"governance wrapper config parameters must not be Any: {untyped}"
