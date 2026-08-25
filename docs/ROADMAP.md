@@ -5,7 +5,7 @@ concrete enough to pick up in a single session.
 
 **Repos:** `felix-run/felix` (harness) · `felix-run/web` (chat-ui + float + docs)
 **Live:** [api.felix.run](https://api.felix.run) · [chat.felix.run](https://chat.felix.run) · [float.felix.run](https://float.felix.run) · [docs.felix.run](https://docs.felix.run)
-**Last reviewed:** 2026-08-23 (post cross-harness port audit, PRs #43–#44; headless-first audit)
+**Last reviewed:** 2026-08-24 (v0.2.0 tagged; ASGI latency audit, memory-trust wave, durable loop closed, PRs #55 and #57–#80)
 
 ---
 
@@ -26,12 +26,15 @@ something from **Next**.
 
 ## Suggested pick-up order
 
-1. **Durable client poll** (`FelixClient.prompt` + `/chat/stream` behavior).
-2. **Cowork completion smoke** on GCE (soft poll in `smoke.yml`).
-3. **`spec.a2a` agent card** → then **`spec.anomaly`** wiring.
-4. **`inbound.schemes`** enforce-or-drop; same for **`outbound.providers`**.
-5. Docs getting-started (Python) + governed demo policy decision.
-6. Tag `v0.1.1` / `v0.2.0` from Unreleased (`CHANGELOG.md`).
+1. **Cowork completion smoke** on GCE — the last piece of the durable loop, and the
+   only one that needs a dogfood run on live infrastructure first.
+2. Docs getting-started (Python) + governed demo policy decision.
+3. Pick from **Next → Harness**: the memory-trust decisions, the ASGI audit's last
+   two items, or single-sourcing the version.
+
+Items 3–6 of the previous order are done: `spec.a2a`, `spec.anomaly`,
+`inbound.schemes` and `outbound.providers` are all enforced, the durable client
+poll landed in #76 and #78, and `v0.2.0` is tagged.
 
 When in doubt: **dogfood float → fix what breaks → write it down here.**
 
@@ -45,13 +48,15 @@ When in doubt: **dogfood float → fix what breaks → write it down here.**
 `resume_token`. Poll is `GET /chat/runs/{resume_token}`. The rest of the
 surface still pretends every chat is synchronous.
 
-- [ ] **`FelixClient.prompt`** — on HTTP 202, poll `GET /chat/runs/{resume_token}`
-      until `completed` / `failed` / `expired` (honor `expires_at`). Emit
-      progress events to subscribers. Add `wait_s` so callers can return the
-      202 payload without waiting.
-- [ ] **`POST /chat/stream`** — same durable enqueue as `/chat`, then either
-      SSE-poll the run (status + final) or return 202 and document that
-      streaming stays inline-only. Do not silently ignore `mode: durable`.
+- [x] **`FelixClient.prompt`** — polls `GET /chat/runs/{resume_token}` to a
+      terminal status, honours `expires_at`, emits progress, and takes `wait_s`.
+      Exhausting the budget returns `status: "waiting"` rather than a failure: the
+      run is still going and the token still resolves, so reporting `failed` would
+      make a caller retry work already in flight (#78)
+- [x] **`POST /chat/stream`** — streams the run rather than returning 202, so a
+      disconnect tears down the poll instead of the run. It had not mentioned
+      `mode: durable` at all, so a manifest asking for durable execution got it on
+      `/chat` and was silently ignored here (#76)
 - [ ] **Cowork completion on GCE** — idle BRPOP / scheduler fixes shipped
       (`9f79a18`); local durable poll reached `completed`. Prod smoke still
       only asserts cowork `202` accept. Dogfood one Background run on float →
@@ -99,11 +104,14 @@ Files: `packages/harness/src/felix/sdk.py`,
 
 ### 4. Release hygiene
 
-- [ ] **Tag from Unreleased** — fold worker fix, Redis leases, session
-      control, full governance wave, inbound screening, and the DX / CI
-      hardening wave into `v0.1.1` or `v0.2.0` (`CHANGELOG.md`). Update
-      Unreleased notes before tagging. Release *automation* (GHCR publish,
-      SBOM, signing) is deferred — see **Repo / release hygiene** under Next.
+- [x] **Tagged `v0.2.0`** — nine version sites plus the Helm chart, changelog
+      closed out, GitHub release cut from its section, public docs synced first.
+      Two things the procedure got wrong and that `docs/RELEASING.md` should
+      absorb: its step-2 eval smoke fails on any machine whose `.env` points at a
+      real Postgres (needs `FELIX_DATABASE_URL=memory://`), and step 6 earned its
+      place by catching a caution box claiming `/chat/stream` ignores
+      `mode: durable`. Release *automation* (GHCR publish, SBOM, signing) is still
+      deferred — see **Repo / release hygiene** under Next.
 
 ---
 
