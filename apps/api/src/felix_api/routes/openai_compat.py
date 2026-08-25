@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -67,15 +68,24 @@ async def list_models(request: Request) -> dict[str, Any]:
     settings = request.app.state.settings
     auth = _auth(request)
     names = list_bundled()
-    data: list[dict[str, Any]] = []
-    for name in names:
-        manifest = None
-        try:
-            resolved = await resolve_tenant_manifest(settings, auth.tenant_id, name, thread_id=None)
-            manifest = resolved.manifest
-        except Exception:
-            manifest = None
-        data.append(catalog_from_manifest(name, manifest))
+    # Warm, the resolver cache hides this. Cold -- the first request after a deploy,
+    # which is exactly when a client is probing -- it was one round trip per manifest,
+    # in series.
+    #
+    # `return_exceptions=True` keeps the per-manifest fallback: a manifest that fails to
+    # resolve is still listed, with whatever metadata `catalog_from_manifest` can derive
+    # from its name alone. Without it, one bad manifest would empty the whole catalogue.
+    resolved = await asyncio.gather(
+        *(resolve_tenant_manifest(settings, auth.tenant_id, name, thread_id=None) for name in names),
+        return_exceptions=True,
+    )
+    data: list[dict[str, Any]] = [
+        catalog_from_manifest(
+            name,
+            None if isinstance(item, BaseException) else getattr(item, "manifest", None),
+        )
+        for name, item in zip(names, resolved, strict=True)
+    ]
     return {"object": "list", "data": data}
 
 
