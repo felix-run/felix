@@ -408,6 +408,7 @@ async def chat_stream_resume(request: Request, thread_id: str) -> StreamingRespo
         after = None
 
     poll = float(getattr(settings, "stream_resume_poll_seconds", 1.0) or 1.0)
+    poll_max = max(poll, float(getattr(settings, "stream_resume_poll_max_seconds", 10.0) or 10.0))
     idle_limit = float(getattr(settings, "stream_resume_idle_seconds", 300.0) or 300.0)
 
     async def resume_gen():
@@ -431,6 +432,7 @@ async def chat_stream_resume(request: Request, thread_id: str) -> StreamingRespo
 
             store = get_session_store(settings, tenant_id=auth.tenant_id)
             idle = 0.0
+            delay = poll
             while True:
                 events = await store.open(thread).get_events(GetEventsOpts(from_seq=cursor))
                 # `get_events(from_seq=...)` already applies `seq >= from_seq` in SQL
@@ -450,13 +452,20 @@ async def chat_stream_resume(request: Request, thread_id: str) -> StreamingRespo
                         },
                     }
                     yield f"id: {cursor}\ndata: {json.dumps(payload, default=str)}\n\n"
-                idle = 0.0 if fresh else idle + poll
+                if fresh:
+                    idle = 0.0
+                    delay = poll
+                else:
+                    # `delay`, not `poll`: the accounting has to follow the actual wait
+                    # or the idle limit stops meaning 300 seconds.
+                    idle += delay
+                    delay = _next_poll_delay(idle, delay, floor=poll, ceiling=poll_max)
                 if idle >= idle_limit:
                     # Close rather than hold an idle connection open forever; the
                     # client reconnects with its `Last-Event-ID` and loses nothing.
                     break
                 yield ": keep-alive\n\n"
-                await asyncio.sleep(poll)
+                await asyncio.sleep(delay)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -770,6 +779,26 @@ async def chat_history_delete(thread_id: str, request: Request) -> dict[str, str
     store = get_session_store(settings, tenant_id=auth.tenant_id)
     await store.open(thread).reset()
     return {"status": "deleted", "thread_id": thread}
+
+
+# How long a stream stays at the floor before the poll starts decaying, and how
+# sharply it decays after that.
+#
+# A plain exponential from the first empty round would be wrong here. Backing off costs
+# first-event latency -- a thread that goes quiet and then produces makes the client
+# wait up to the current delay -- and the moment a user is most likely to act is right
+# after they reattach. So the first half-minute stays at the floor, and only a stream
+# that has been silent past that decays. The load this finding is about comes from tabs
+# left open for minutes, not from the first few seconds of one.
+POLL_BACKOFF_GRACE_SECONDS = 30.0
+POLL_BACKOFF_FACTOR = 1.5
+
+
+def _next_poll_delay(idle: float, delay: float, *, floor: float, ceiling: float) -> float:
+    """The wait before the next poll of a quiet stream."""
+    if idle < POLL_BACKOFF_GRACE_SECONDS:
+        return floor
+    return min(delay * POLL_BACKOFF_FACTOR, ceiling)
 
 
 async def _stream_cursor(settings: Any, tenant_id: str, thread: str | None) -> int | None:
