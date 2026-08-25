@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Sequence
+from functools import lru_cache
 from typing import Any
 
 from starlette.requests import Request
@@ -31,6 +33,13 @@ def _is_public_path(path: str) -> bool:
 
 
 def _parse_api_keys(raw: str) -> dict[str, dict[str, Any]]:
+    """Deliberately not cached.
+
+    `_api_key_index` below is the cached layer, and it builds from a fresh parse. If
+    this returned a shared dict as well, a caller mutating it before the index happened
+    to be built would seed the credential table — an authentication bug reachable only
+    in a particular call order, which is the worst kind to go looking for.
+    """
     if not raw.strip():
         return {}
     try:
@@ -38,6 +47,28 @@ def _parse_api_keys(raw: str) -> dict[str, dict[str, Any]]:
         return data if isinstance(data, dict) else {}
     except json.JSONDecodeError:
         return {}
+
+
+@lru_cache(maxsize=4)
+def _api_key_index(raw: str) -> dict[str, tuple[str, dict[str, Any]]]:
+    """Digest of each configured key → (key, metadata).
+
+    The lookup was a loop of `constant_time_equal` over every configured key: constant
+    time per comparison, but linear in how many keys exist, so 5.9 µs on a miss with
+    fifty of them and growing with the deployment.
+
+    Hashing the presented token and looking it up is O(1), and the constant-time
+    comparison still happens -- against the one candidate the digest selected, which is
+    what makes the comparison meaningful. A SHA-256 digest reveals nothing about which
+    key was configured unless you already hold it.
+
+    Keyed on the raw settings string, so a rotated configuration invalidates this for
+    free and nothing has to remember to.
+    """
+    return {
+        hashlib.sha256(key.encode("utf-8")).hexdigest(): (key, meta if isinstance(meta, dict) else {})
+        for key, meta in _parse_api_keys(raw).items()
+    }
 
 
 async def authenticate_request(
@@ -75,12 +106,14 @@ async def authenticate_request(
                 {"error": "unauthorized", "reason": "missing_credentials"},
                 status_code=401,
             )
-        keys = _parse_api_keys(settings.auth_api_keys)
+        candidate = _api_key_index(settings.auth_api_keys).get(
+            hashlib.sha256(token.encode("utf-8")).hexdigest()
+        )
         matched: dict[str, Any] | None = None
-        for k, meta in keys.items():
-            if constant_time_equal(token, k):
-                matched = meta if isinstance(meta, dict) else {}
-                break
+        # Still constant-time, and still against the whole presented token -- the
+        # digest only chooses which key to compare against.
+        if candidate is not None and constant_time_equal(token, candidate[0]):
+            matched = candidate[1]
         if matched is None:
             return JSONResponse(
                 {"error": "unauthorized", "reason": "invalid_api_key"},
