@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2] — 2026-08-25
+
+### Fixed
+
+- **The Helm chart no longer pins the previous release's image.** `Chart.yaml`'s
+  `version` and `appVersion` and `values.yaml`'s `image.tag` track the release,
+  but `RELEASING.md` listed only the nine Python version fields and both greps it
+  offered matched Python files alone — so `v0.2.1` shipped a chart still pinned to
+  `0.2.0`. `helm install` from that tree deployed the image `v0.2.1` existed to
+  replace: the one where a migrated database returns no rows to a deployment that
+  has not opted into RLS. Anyone who installed `v0.2.1` by chart got `0.2.0`;
+  reinstall or `--set image.tag=0.2.2`. The procedure now counts twelve places and
+  greps for all of them.
+
+
 ## [0.2.1] — 2026-08-25
 
 ### Fixed
@@ -1014,6 +1029,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLI: `migrate`, `eval`, `mint-jwt`, `bundle-manifests`, `doctor`, `version`, `temporal-worker`.
 - Typed packages (`py.typed`) for harness, CLI, API, and worker.
 
+[0.2.2]: https://github.com/felix-run/felix/releases/tag/v0.2.2
 [0.2.1]: https://github.com/felix-run/felix/releases/tag/v0.2.1
 [0.2.0]: https://github.com/felix-run/felix/releases/tag/v0.2.0
 [0.1.0]: https://github.com/felix-run/felix/releases/tag/v0.1.0

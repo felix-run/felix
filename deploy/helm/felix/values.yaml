@@ -2,7 +2,7 @@ replicaCount: 1
 
 image:
   repository: felix
-  tag: "0.2.0"
+  tag: "0.2.2"
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
