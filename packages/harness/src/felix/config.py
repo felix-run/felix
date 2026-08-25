@@ -153,6 +153,26 @@ class Settings(BaseSettings):
     stream_resume_idle_seconds: float = Field(default=300.0, gt=0)
     stream_resume_poll_seconds: float = Field(default=1.0, ge=0.1, le=60.0)
 
+    # --- database pool ---
+    #
+    # Was hardcoded at 5 + 10 in two places, so fifteen connections per worker was a
+    # hard concurrency ceiling nobody could raise without editing the source: past it,
+    # requests queue for `db_pool_timeout_seconds` and then fail. That ceiling is
+    # reached sooner than it looks, because the session-event append path and the
+    # resume poll are both connection-hungry.
+    db_pool_size: int = Field(default=10, ge=1)
+    db_max_overflow: int = Field(default=20, ge=0)
+    db_pool_timeout_seconds: float = Field(default=30.0, gt=0)
+    # A round trip on every checkout, to discover a connection a pooler closed
+    # server-side. It earns that behind PgBouncer / RDS Proxy / Cloud SQL and wastes it
+    # against a direct Postgres, which is why it is a setting rather than a constant.
+    db_pool_pre_ping: bool = True
+
+    # Granian/uvicorn worker processes. Read from a bare `os.environ` in main.py until
+    # now, which is the one thing the conventions say not to do with configuration:
+    # invisible to `felix doctor`, absent from .env.example, and unvalidated.
+    workers: int = Field(default=1, ge=1)
+
     # --- misc ---
     default_manifest: str = "quick"
     hibernate_after_seconds: int = 300

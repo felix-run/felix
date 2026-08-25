@@ -194,8 +194,15 @@ async def test_dispose_survives_a_failing_engine() -> None:
 
 def test_pool_is_tuned_for_a_pooler() -> None:
     """No pool_recycle meant PgBouncer / RDS Proxy / Cloud SQL dropped idle connections
-    the pool still believed were live."""
-    from felix.db.session import POOL_RECYCLE_SECONDS, POOL_TIMEOUT_SECONDS
+    the pool still believed were live.
+
+    The timeout moved from a module constant to `db_pool_timeout_seconds`, so the
+    assertion follows it: what mattered was never where the number lived but that a
+    checkout cannot block forever. Recycle stays a constant, because its value is a
+    property of the pooler's own idle timeout rather than of this deployment.
+    """
+    from felix.config import Settings
+    from felix.db.session import POOL_RECYCLE_SECONDS
 
     assert 0 < POOL_RECYCLE_SECONDS <= 3600
-    assert POOL_TIMEOUT_SECONDS > 0
+    assert Settings(database_url="memory://x").db_pool_timeout_seconds > 0
