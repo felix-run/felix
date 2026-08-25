@@ -5,7 +5,7 @@ concrete enough to pick up in a single session.
 
 **Repos:** `felix-run/felix` (harness) · `felix-run/web` (chat-ui + float + docs)
 **Live:** [api.felix.run](https://api.felix.run) · [chat.felix.run](https://chat.felix.run) · [float.felix.run](https://float.felix.run) · [docs.felix.run](https://docs.felix.run)
-**Last reviewed:** 2026-08-24 (v0.2.0 tagged; ASGI latency audit, memory-trust wave, durable loop closed, PRs #55 and #57–#80)
+**Last reviewed:** 2026-08-25 (v0.2.1 tagged; RLS opt-out coherence and the upgrade runbook, PRs #84–#86)
 
 ---
 
@@ -456,6 +456,22 @@ remainder, none of it blocking.
 ---
 
 ## Shipped (recent)
+
+### RLS opt-out coherence (Aug 2026, v0.2.1)
+
+`0006_tenant_rls` applies `ENABLE` *and* `FORCE ROW LEVEL SECURITY`
+unconditionally, but the application set neither GUC unless `FELIX_DATABASE_RLS`
+was true — which it is not by default. On any connection RLS actually applies to,
+all 16 tenant tables returned zero rows and rejected writes, silently. Only a
+superuser or `BYPASSRLS` role escaped it, which is what the bundled compose stack
+uses, so it never appeared locally while being a total outage on managed
+Postgres. The listener now declares `app.rls_bypass` when RLS is off, making the
+flag a real runtime toggle; the migration stays unconditional so the schema is
+reproducible. `felix doctor` reports coherence between the two halves, including
+the case where RLS is on but the connection skips the policies entirely.
+
+`docs/UPGRADING.md` also landed: the upgrade path had lived in whoever last did
+one, and `RELEASING.md` stops at the tag by design.
 
 ### ASGI latency audit (Aug 2026)
 
