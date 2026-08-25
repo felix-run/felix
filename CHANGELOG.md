@@ -9,6 +9,157 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`ApprovalRule.when_args` gates a rule on the arguments a call carries.** Approval
+  rules matched on tool *name*, which is the wrong granularity when a tool is harmless
+  in one shape and a privileged operation in another. `remember` is ordinary capture
+  until it carries a `topic_key`, at which point it retires whatever else holds that
+  key — the same outcome `forget` is gated for, reached without touching `forget`, and
+  `recall` prints every stored key so they are enumerable. Gating the whole tool would
+  put an approval in front of every memory write. Names are not validated against the
+  gated tool's schema, so a typo yields a rule that never fires and still passes
+  `validate-manifest` and the attestation checks; a bind-time warning is the fix and is
+  recorded in the roadmap.
+
+- **`POST /chat/stream` honours `spec.execution.mode: durable`.** `POST /chat` enqueued
+  a fiber and returned 202 with a `resume_token`; the streaming route did not mention
+  the field at all, so a manifest asking for durable execution got it on one route and
+  was silently ignored on the other. It now streams the run's progress: the first frame
+  carries the token, status changes are reported as they happen, and a completed run
+  emits its final message. A disconnect tears down the *poll* rather than the run,
+  which is what durable is for — the opposite of the transient path, where a hung-up
+  client deliberately kills the run so it stops burning tokens.
+
+- **`FelixClient.prompt` waits for a durable run.** It returned the 202 receipt as
+  though it were the answer, so a caller switching a manifest to durable got
+  `{"status": "accepted", …}` where the content used to be — no error, just the wrong
+  shape. It now polls to a terminal status and emits progress. `wait_s` bounds the
+  wait: `0` returns the receipt without polling, and exhausting a budget returns
+  `status: "waiting"` rather than a failure, because the run is still going and the
+  token still resolves.
+
+- **`GET /chat/history` can be paged, and is bounded.** It returned every message a
+  thread had ever had, so the response grew for the life of a thread with no way to ask
+  for less. `limit` takes the *newest* events — `get_events(limit=n)` takes the first
+  n, which for a transcript is the wrong end — and `before_seq` pages backwards from
+  the `oldest_seq` a response hands back. The default is unchanged; lowering it is a
+  breaking change for a shipped client and belongs to a product decision.
+
+- **Store conformance covers sequence allocation.** `append_batch` returns the sequence
+  numbers it allocated, asserted against both backends, because the in-memory twin
+  counts a list where Postgres reads and locks — a value that is right for one arm
+  proves nothing about the other.
+
+### Changed
+
+- **All four HTTP middleware layers are pure ASGI.** Starlette implements
+  `BaseHTTPMiddleware` with a task group, an `anyio.Event` and a zero-buffer memory
+  object stream per request, and every response chunk crossed four of them. `/health`
+  went from 651.6 µs to 125.3 µs and an SSE chunk from 77.6 µs to 1.5 µs. An invariant
+  now bans `BaseHTTPMiddleware` at the source level so the tax cannot be reintroduced
+  by an `@app.middleware("http")` decorator.
+
+- **The database pool and worker count are configuration.** `pool_size=5,
+  max_overflow=10` was written literally into two engine constructors, so fifteen
+  connections per worker was a ceiling nobody could raise without editing the source.
+  Now `FELIX_DB_POOL_SIZE` (10), `FELIX_DB_MAX_OVERFLOW` (20),
+  `FELIX_DB_POOL_TIMEOUT_SECONDS`, `FELIX_DB_POOL_PRE_PING`, and `FELIX_WORKERS` —
+  the last of which was a bare `os.environ` read, invisible to `felix doctor` and
+  absent from `.env.example`.
+
+- **The resume stream backs off while a thread is quiet.** A fixed 1 Hz poll per client
+  until 300 seconds of silence is 100 queries/second across a hundred reattached tabs.
+  The poll now decays toward `FELIX_STREAM_RESUME_POLL_MAX_SECONDS` (10) — but only
+  after thirty seconds of silence, because backing off costs first-event latency and
+  the moment a user is most likely to act is right after they reattach.
+
+- **Recall surfaces every kind of memory, as reference material.** Recall filtered on
+  `kind="fact"`, so `instruction` and `task` rows were stored and never seen. All kinds
+  now reach the prompt in one `<known_facts>` block, explicitly reference material:
+  nothing recalled is an instruction to follow. An earlier version of this change gave
+  user-stated rules their own honoured block; that was withdrawn when the provenance
+  behind it did not survive review.
+
+### Fixed
+
+- **The streaming body-size cap silently did nothing.** `body_limit_middleware` wrapped
+  the request and handed it to `call_next`, which ignores its `request` argument
+  entirely — so the capped receive channel was never read, and a chunked upload with no
+  `Content-Length` had no limit at all. That is the case the wrapper was written for.
+
+- **`FELIX_DURABILITY=temporal` had never worked.** `@workflow.run` rejects a class
+  declared inside a function — the worker re-imports it by name inside its sandbox —
+  and the definitions were built inside `_defs()`, so every call raised. The two entry
+  points failed differently, which is why nobody noticed: `start_fiber_workflow` failed
+  into its caller's `except Exception`, logged a warning and let the Postgres scheduler
+  run the chat, while `felix temporal-worker` failed outright. A failed start now
+  records `backend: fibers` and `backend_fallback: temporal_start_failed` on the row,
+  because degrading quietly is defensible and degrading invisibly is what let this sit.
+
+- **Retirement of a memory is a decision by whoever retired it.** Resurrection was
+  gated on the row's *writer*, so an operator deleting an agent-written row — nearly
+  every row, and exactly the population the memory route exists to clean up — left
+  something any rank-1 writer could bring back by re-storing the same text, with no
+  tool call at all. Every retirement route now stamps `retired_by`, and both arms are
+  asserted against one table of rules rather than against each other.
+
+- **The rate limiter's eviction sweep stalled the worker.** It ran `max(v)` across every
+  tracked key inside a request, and keys are per-IP — so the defensive component's cost
+  grew with the attack it exists to absorb: 1412.7 µs at 50,000 keys, now 6.7 µs. The
+  steady-state hit also went from 13.92 µs to 0.37 µs, because the old code rebuilt the
+  whole timestamp list on every request.
+
+- **The bundled skills catalog was re-read on every chat request** — `rglob` plus
+  `read_text`, synchronously on the event loop, so it stalled every other request on
+  the worker rather than only the one that asked. 56.6 µs to 1.4 µs, and off the loop.
+
+- **Five independent store reads on the reattach path ran in series.** 2.66 ms to
+  1.38 ms against a real Postgres, and the gap widens with network latency rather than
+  narrowing. `GET /v1/models` resolved eight manifests one at a time on a cold cache.
+
+- **Credentials were re-parsed on every authenticated request** — 15.6 µs for fifty API
+  keys, and the same for JWT verifiers. Now parsed once per configuration, keyed on the
+  raw settings string so a rotation invalidates it without anything having to remember.
+
+- **Four resolver caches were unbounded, three of them keyed by tenant**, so every
+  tenant that resolved a manifest left an entry for the life of the process. Now
+  least-recently-used with a bound; the active-pointer cache in particular carried a
+  30-second TTL and was never *removed* when it lapsed, only ignored.
+
+- **The continue endpoint read the whole thread twice** — once for `analyze_wake`, then
+  again to look at its last element.
+
+### Security
+
+- **A client-supplied `thread_id` could forge log entries.** It arrives as
+  `Field(min_length=1)` with no charset constraint and reached the log without being
+  looked up first, so one request produced two lines:
+
+  ```
+  stream cursor unavailable for t-1
+  ERROR:felix_api.routes.chat:tenant acme authenticated as admin
+  ```
+
+  The second is fabricated. An attacker who can write "tenant X authenticated as admin"
+  into the trail makes it argue for something that never happened, and the trail is what
+  an incident is reconstructed from. Every untrusted value now goes through `loggable`,
+  which escapes rather than strips — an injection attempt shows as a literal `\n`
+  instead of vanishing.
+
+- **Arbitrary exception text no longer reaches API clients.** The SSE handlers relayed
+  `str(exc)` from a bare `except Exception`, so a driver error, a serializer failure or
+  an assertion reached an external caller verbatim — connection strings and schema
+  names included. Relaying is now opt-in per exception type through one funnel; anything
+  else gets `internal error (request <id>)`, which keeps a report joinable to its
+  traceback without the traceback travelling.
+
+- **A rejected secret path was logged unescaped.** `FileSecrets.get` logs the requested
+  path when it rejects it — a value chosen by whoever asked and, on that branch, one the
+  loader has just refused. A newline in it forged an entry among genuine rejection
+  records, and the forged one could claim an *accept*. An AST test now enforces that the
+  module logs key names and never values.
+
+### Added
+
 - **Reconnect to a chat stream after it drops.** `GET /chat/stream/{thread_id}`
   replays what a client missed and then tails the thread; frames on both streams now
   carry an `id:` a client hands back as `Last-Event-ID`. A cold reconnect opens with a
