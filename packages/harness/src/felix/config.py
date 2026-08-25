@@ -152,6 +152,10 @@ class Settings(BaseSettings):
     # session log as fast as Postgres answers and never close the connection.
     stream_resume_idle_seconds: float = Field(default=300.0, gt=0)
     stream_resume_poll_seconds: float = Field(default=1.0, ge=0.1, le=60.0)
+    # The ceiling the poll decays to once a stream has been quiet for a while. One
+    # hundred reattached clients at a fixed 1 Hz is a sustained 100 queries/second of
+    # pure polling, each checking out a pooled connection to learn nothing.
+    stream_resume_poll_max_seconds: float = Field(default=10.0, ge=0.1, le=300.0)
 
     # --- database pool ---
     #
