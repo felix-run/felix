@@ -744,16 +744,52 @@ async def chat_rewind(body: RewindRequest, request: Request) -> dict[str, Any]:
     return out
 
 
+# The most events one `GET /chat/history` response may carry.
+#
+# This endpoint loaded the whole thread and returned every message, so the response grew
+# without bound for the life of a thread -- a long-running session eventually returns a
+# payload nothing wants to hold, and the client has no way to ask for less.
+#
+# The cap is deliberately far above any thread that exists today. Lowering the *default*
+# would be the bigger win and is a breaking change for a shipped client, so it is left
+# as a decision: this makes paging possible and makes the response bounded, without
+# changing what an existing caller receives.
+MAX_HISTORY_EVENTS = 5000
+
+
 @router.get("/history/{thread_id}")
-async def chat_history(thread_id: str, request: Request) -> dict[str, Any]:
-    """Server-side transcript for a thread suffix (tenant-prefixed)."""
+async def chat_history(
+    thread_id: str,
+    request: Request,
+    limit: int | None = None,
+    before_seq: int | None = None,
+) -> dict[str, Any]:
+    """Server-side transcript for a thread suffix (tenant-prefixed).
+
+    `before_seq` pages backwards: it returns the events immediately preceding that
+    sequence, so a client walks a long thread by handing back the `oldest_seq` it last
+    received. `limit` counts *events read*, not messages returned, because the filter
+    below drops some kinds -- a limit that counted messages could not be turned into a
+    cursor without re-reading.
+    """
     auth = _auth_from_request(request)
     settings = request.app.state.settings
     thread = effective_thread_id(auth.tenant_id, thread_id)
     if thread is None:
         raise HTTPException(status_code=400, detail="invalid_thread_id")
-    store = get_session_store(settings, tenant_id=auth.tenant_id)
-    events = await store.open(thread).get_events()
+    if limit is not None and limit < 1:
+        raise HTTPException(status_code=400, detail="limit_must_be_positive")
+
+    window = min(limit or MAX_HISTORY_EVENTS, MAX_HISTORY_EVENTS)
+    session = get_session_store(settings, tenant_id=auth.tenant_id).open(thread)
+
+    # The newest window, not the oldest: `get_events(limit=n)` takes the first n, which
+    # for a transcript is the wrong end. `head` is O(1) on both arms, so this costs one
+    # cheap query rather than loading the thread to find its length.
+    upper = before_seq if before_seq is not None else int((await session.head()).get("seq") or 0)
+    lower = max(0, upper - window)
+    events = await session.get_events(GetEventsOpts(from_seq=lower, to_seq=upper))
+
     messages: list[dict[str, Any]] = []
     for ev in events:
         role = ev.role or ("assistant" if ev.kind == "assistant" else "user")
@@ -766,7 +802,16 @@ async def chat_history(thread_id: str, request: Request) -> dict[str, Any]:
                     "kind": ev.kind,
                 }
             )
-    return {"thread_id": thread, "messages": messages, "events": messages}
+    return {
+        "thread_id": thread,
+        "messages": messages,
+        "events": messages,
+        # `lower` rather than the first message's seq: the filter above may have dropped
+        # the oldest events in the window, and a cursor that skipped them would lose
+        # them on the next page.
+        "oldest_seq": lower,
+        "has_more": lower > 0,
+    }
 
 
 @router.delete("/history/{thread_id}")
@@ -1117,11 +1162,12 @@ async def chat_continue(body: ContinueRequest, request: Request) -> Any:
     await clear_abort(auth.tenant_id, thread)
     store = get_session_store(settings, tenant_id=auth.tenant_id)
     session = store.open(thread)
-    wake = analyze_wake(await session.get_events())
+    # Once. This read the whole thread, then read it again to look at one element.
+    events = await session.get_events()
+    wake = analyze_wake(events)
     if wake.fresh:
         raise HTTPException(status_code=400, detail="nothing_to_continue")
     # Last turn must be user or tool result for a clean continue.
-    events = await session.get_events()
     last = events[-1] if events else None
     if last and last.role == "assistant" and not last.tool_calls and not wake.pending_tool_calls:
         raise HTTPException(status_code=400, detail="already_complete")
