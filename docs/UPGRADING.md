@@ -40,10 +40,10 @@ Five migrations apply: `0005_session_fts`, `0006_tenant_rls`, `0007_approval_con
 only** — semantically identical — so a database already carrying them needs nothing. Verify rather
 than trust that: `git diff v0.1.0..v0.2.0 -- migrations/versions/0001_baseline.py`.
 
-### The one that can take production down: `0006_tenant_rls`
+### `0006_tenant_rls`, and which image you land on
 
-Its docstring says *"Optional tenant RLS policies (enable with `FELIX_DATABASE_RLS=true`)"*. The
-`upgrade()` is **not** optional — it runs unconditionally on all 16 tenant tables:
+`0006` applies `ENABLE` **and** `FORCE ROW LEVEL SECURITY` unconditionally to all 16 tenant tables,
+whatever `FELIX_DATABASE_RLS` says — the flag is the runtime half, not a gate on the DDL:
 
 ```sql
 ALTER TABLE "<t>" ENABLE ROW LEVEL SECURITY;
@@ -53,37 +53,52 @@ CREATE POLICY felix_tenant_isolation ON "<t>"
          OR tenant_id = current_setting('app.tenant_id', true));
 ```
 
-The application only sets those GUCs when `FELIX_DATABASE_RLS` is true, and it
-**defaults to false** (`db/session.py`: `if not settings.database_rls: return`). With neither GUC
-set, `current_setting(…, true)` is `NULL`, `tenant_id = NULL` is `NULL`, and the policy is not
-satisfied — so every row is filtered, silently, with no error.
+**In `v0.2.0` exactly, that combination blacks out the deployment.** With the flag false — the
+default — the application set neither GUC, so `tenant_id = current_setting('app.tenant_id', true)`
+was `NULL`, which is not true, and every one of those tables returned zero rows and rejected writes.
+No error; just empty results. Fixed after the tag: the listener now declares `app.rls_bypass` when
+RLS is off, so a migrated database is usable without opting in.
 
-Whether that reaches you depends entirely on **fact 2 above**:
+So the plan depends on the image you are landing on, and on **fact 2** — the connecting role, since
+only a superuser or `BYPASSRLS` role escapes a `FORCE`d policy:
 
-| Connecting role | Effect of `0006` | What to do |
+| Target image | Superuser / `BYPASSRLS` role | Plain role that owns the tables |
 |---|---|---|
-| `rolsuper` or `rolbypassrls` | **Inert.** RLS is skipped entirely, `FORCE` included. Nothing breaks — and nothing is isolated either. | Safe to migrate as-is. If you wanted the isolation, you need a non-superuser role *and* `FELIX_DATABASE_RLS=true`. |
-| Plain role that owns the tables | **`FORCE` applies to the owner.** Every one of the 16 tables returns zero rows and rejects writes. Total, silent outage. | Set `FELIX_DATABASE_RLS=true` in the same change as the migration. |
+| `v0.2.0` exactly | Fine. RLS is skipped entirely, `FORCE` included. | **Total, silent outage.** Set `FELIX_DATABASE_RLS=true` in the same change as the migration, or land a build that includes the fix. |
+| after `v0.2.0` | Fine. | Fine — the bypass is declared for you. |
 
-The second row is the normal case on managed Postgres — neither RDS's master user nor Cloud SQL's
-`postgres` is a real superuser. Do not assume the local Docker behaviour generalises: the bundled
-compose role is `rolsuper=t, rolbypassrls=t`, which is exactly the configuration that hides this.
+The right-hand column is the normal case on managed Postgres: neither RDS's master user nor Cloud
+SQL's `postgres` is a real superuser. Do not generalise from local Docker — the bundled compose role
+is `rolsuper=t, rolbypassrls=t`, which is exactly the configuration that hides all of this.
 
-Measured against a migrated database, reading `thread_state`:
+Measured against a migrated database, reading `thread_state` as a plain role:
 
-| Connecting as | Rows visible |
+| GUC state | Rows visible |
 |---|---|
-| the bundled superuser | 25 |
-| a plain role, no GUC set | **0** |
-| a plain role, `app.tenant_id` set | 25 |
+| none — `v0.2.0` with the flag false | **0** |
+| `app.rls_bypass=on` — after the fix | 25 |
+| `app.tenant_id` set — `FELIX_DATABASE_RLS=true` | 25 |
 
-You cannot skip `0006`. The chain is linear, so `0007`–`0009` require it.
+You cannot skip `0006`: the chain is linear, so `0007`–`0009` require it.
 
-With `FELIX_DATABASE_RLS=true`, one further edge remains: a session whose tenant cannot be resolved
-sets no GUC and therefore sees nothing (`_resolve_rls_tenant` returning empty is a silent `return`).
-Background paths that legitimately cross tenants — the fiber scheduler, memory maintenance — already
-wrap themselves in `rls_bypass()`; anything you have added that queries outside a request context
-needs the same.
+#### If you are turning RLS on
+
+Setting `FELIX_DATABASE_RLS=true` is necessary but not sufficient — **on a superuser or `BYPASSRLS`
+connection the policies are skipped and isolate nothing**, while everything appears to work. That is
+the failure worth checking for deliberately, because unlike a blackout it is silent in the direction
+that matters. `felix doctor` reports it:
+
+```
+ok    tenant RLS — enforced
+FAIL  tenant RLS — policies active but this role is superuser/BYPASSRLS, which skips them entirely
+FAIL  tenant RLS — FELIX_DATABASE_RLS=true but no policies — run `felix migrate head`
+```
+
+One further edge: a transaction whose tenant cannot be resolved is left filtered, which is the safe
+answer — a bypass there would be a hole — and after the fix it logs at WARNING rather than silently
+returning nothing. Background paths that legitimately cross tenants (the fiber scheduler, memory
+maintenance) already wrap themselves in `rls_bypass()`; anything you add that queries outside a
+request context needs the same.
 
 ### Lock profile of the rest
 
