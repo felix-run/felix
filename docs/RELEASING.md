@@ -8,10 +8,11 @@ Felix follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html), and `C
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Every workspace member shares one version
 number; they are versioned together and released together.
 
-## Version lives in nine places
+## Version lives in twelve places
 
 All five `pyproject.toml` files and all four `__init__.py` files must agree, or `felix version`
-reports one number while the built wheel carries another.
+reports one number while the built wheel carries another. The Helm chart carries three more, and
+they are the ones that get forgotten: they are not Python, so the greps below never covered them.
 
 | File | Field |
 |---|---|
@@ -24,12 +25,20 @@ reports one number while the built wheel carries another.
 | `packages/cli/src/felix_cli/__init__.py` | `__version__` |
 | `apps/api/src/felix_api/__init__.py` | `__version__` |
 | `apps/worker/src/felix_worker/__init__.py` | `__version__` |
+| `deploy/helm/felix/Chart.yaml` | `version` |
+| `deploy/helm/felix/Chart.yaml` | `appVersion` |
+| `deploy/helm/felix/values.yaml` | `image.tag` |
+
+`values.yaml`'s `image.tag` is the one that does damage when it is missed: `helm install` from the
+release tree then deploys the *previous* image, so an operator upgrading gets the version the
+release was meant to replace. `v0.2.1` shipped that way.
 
 Check them in one pass:
 
 ```bash
 grep -rn '^version = ' pyproject.toml packages/*/pyproject.toml apps/*/pyproject.toml
 grep -rn '__version__ = ' packages/*/src/*/__init__.py apps/*/src/*/__init__.py
+grep -rnE '^(version|appVersion):|^  tag:' deploy/helm/felix/Chart.yaml deploy/helm/felix/values.yaml
 ```
 
 ## Procedure
