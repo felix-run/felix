@@ -433,7 +433,10 @@ async def chat_stream_resume(request: Request, thread_id: str) -> StreamingRespo
             idle = 0.0
             while True:
                 events = await store.open(thread).get_events(GetEventsOpts(from_seq=cursor))
-                fresh = [e for e in events if e.seq >= (cursor or 0)]
+                # `get_events(from_seq=...)` already applies `seq >= from_seq` in SQL
+                # on both backends, so filtering again in Python re-walks the page to
+                # discard nothing.
+                fresh = events
                 for event in fresh:
                     cursor = event.seq + 1
                     payload = {

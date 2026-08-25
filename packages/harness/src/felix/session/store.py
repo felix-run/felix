@@ -27,17 +27,20 @@ class _MemorySession:
     id: str
     _events: list[SessionEvent] = field(default_factory=list)
 
-    async def append(self, event: AppendableEvent) -> None:
-        await self.append_batch([event])
+    async def append(self, event: AppendableEvent) -> int | None:
+        seqs = await self.append_batch([event])
+        return seqs[0] if seqs else None
 
-    async def append_batch(self, events: list[AppendableEvent]) -> None:
+    async def append_batch(self, events: list[AppendableEvent]) -> list[int]:
         now = time.time()
         from felix.secrets import redact_json, redact_text
 
+        allocated: list[int] = []
         for ev in events:
             content = ev.content
             if isinstance(content, str):
                 content = redact_text(content)
+            allocated.append(len(self._events))
             self._events.append(
                 SessionEvent(
                     seq=len(self._events),
@@ -51,6 +54,7 @@ class _MemorySession:
                     metadata=redact_json(ev.metadata) if ev.metadata else ev.metadata,
                 )
             )
+        return allocated
 
     async def get_events(self, opts: GetEventsOpts | None = None) -> list[SessionEvent]:
         opts = opts or GetEventsOpts()
@@ -119,12 +123,13 @@ class _PostgresSession:
     tenant_id: str
     session_factory: Any  # async_sessionmaker
 
-    async def append(self, event: AppendableEvent) -> None:
-        await self.append_batch([event])
+    async def append(self, event: AppendableEvent) -> int | None:
+        seqs = await self.append_batch([event])
+        return seqs[0] if seqs else None
 
-    async def append_batch(self, events: list[AppendableEvent]) -> None:
+    async def append_batch(self, events: list[AppendableEvent]) -> list[int]:
         if not self.id or not events:
-            return
+            return []
         from sqlalchemy import func, select
 
         from felix.db.models import SessionEventRow
@@ -145,6 +150,7 @@ class _PostgresSession:
                 )
             )
             next_seq = int(head) + 1
+            allocated = list(range(next_seq, next_seq + len(events)))
             now = time.time()
             for i, ev in enumerate(events):
                 content = ev.content
@@ -154,7 +160,7 @@ class _PostgresSession:
                     SessionEventRow(
                         tenant_id=self.tenant_id,
                         thread_id=self.id,
-                        seq=next_seq + i,
+                        seq=allocated[i],
                         ts=ev.ts if ev.ts is not None else now,
                         kind=ev.kind,
                         role=ev.role,
@@ -166,6 +172,8 @@ class _PostgresSession:
                     )
                 )
             await db.commit()
+            # After the commit, so a rolled-back append reports nothing allocated.
+            return allocated
 
     async def get_events(self, opts: GetEventsOpts | None = None) -> list[SessionEvent]:
         if not self.id:
