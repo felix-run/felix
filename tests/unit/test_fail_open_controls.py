@@ -281,8 +281,8 @@ async def test_verifier_outage_falls_back_to_a_real_measurement(
         ("Score: 0.9", 0.9),
         ("0.9/1.0", 0.9),
         ("\n  0.25 \n", 0.25),
-        ("7", 1.0),
-        ("-2", 0.0),
+        ("0", 0.0),
+        ("1", 1.0),
     ],
 )
 @pytest.mark.asyncio
@@ -294,6 +294,23 @@ async def test_verifier_replies_are_parsed_not_guessed(
 
     monkeypatch.setattr(delegating, "build_model", lambda *a, **k: _ChattyVerifier(reply))
     assert await _reflect_agent()._score("some answer", "nonempty", "") == expected
+
+
+@pytest.mark.parametrize("reply", ["7", "-2", "8 out of 10", "rated 95"])
+@pytest.mark.asyncio
+async def test_an_out_of_range_score_is_not_clamped_into_a_pass(
+    monkeypatch: pytest.MonkeyPatch, reply: str
+) -> None:
+    """Clamping "7" to 1.0 let a verifier answering out of ten clear every threshold.
+
+    An out-of-range reply is not a 0..1 measurement, so it is treated the same as an
+    unparseable one: fall through to the heuristic, which here is asked for a token the
+    answer does not contain and correctly refuses to pass it.
+    """
+    from felix.patterns import delegating
+
+    monkeypatch.setattr(delegating, "build_model", lambda *a, **k: _ChattyVerifier(reply))
+    assert await _reflect_agent()._score("some answer", "assert_present:zebra", "") == 0.0
 
 
 @pytest.mark.asyncio

@@ -68,10 +68,6 @@ class _FakeModel:
 
         return _R()
 
-    async def stream(self, messages: list[ChatMessage], tools: list):
-        for c in self.stream_chunks:
-            yield c
-
     async def stream_turn(self, messages: list[ChatMessage], tools: list):
         """Deltas then the authoritative result — the shape `_HttpModelClient` yields.
 

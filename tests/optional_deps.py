@@ -28,10 +28,9 @@ def require_optional(module: str, extra: str) -> Any:
     if os.environ.get(REQUIRE_ENV):
         try:
             return importlib.import_module(module)
-        except ImportError as exc:  # pragma: no cover — only reachable on a broken CI install
+        except ImportError:  # pragma: no cover — only reachable on a broken CI install
             pytest.fail(
                 f"{REQUIRE_ENV} is set but {module!r} is missing: the CI test job is expected "
                 f"to install felix-harness[{extra}], so these tests cannot be skipped here"
             )
-            raise AssertionError from exc
     return pytest.importorskip(module, reason=f"felix-harness[{extra}] not installed")

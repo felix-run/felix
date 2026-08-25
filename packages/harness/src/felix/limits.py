@@ -90,12 +90,14 @@ class EffectiveLimits:
     documented absolute the effective ceiling for every run.
     """
 
-    max_tool_calls: int | None
-    max_peer_hops: int | None
-    max_wall_clock_seconds: float | None
-    max_input_tokens: int | None
-    max_output_tokens: int | None
-    max_cost_usd: float | None
+    # Not optional: `effective_limits` fills every field from ABSOLUTE_LIMITS, so an
+    # EffectiveLimits always carries a cap. `Limits` is where the optionals live.
+    max_tool_calls: int
+    max_peer_hops: int
+    max_wall_clock_seconds: float
+    max_input_tokens: int
+    max_output_tokens: int
+    max_cost_usd: float
 
 
 def effective_limits(limits: Limits | None) -> EffectiveLimits:
