@@ -7,6 +7,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Streamed `parallel` and `plan_execute` runs are metered.** `_yield_model_stream`
+  drove the model through `model.stream()`, which yields text and nothing else, and
+  never called `record_usage` — the sole feed for `limit_state.tokens_input`,
+  `tokens_output` and `cost_usd`. Their synthesis and planning inferences were
+  therefore invisible to `limits.max_input_tokens`, `max_output_tokens` and
+  `max_cost_usd`, and produced no usage row, metric, or plugin sink record, while the
+  non-streaming twins of the same methods metered correctly. A declared spend ceiling
+  that only holds when you do not stream is not a ceiling. `reflect`'s verifier call
+  was unmetered on both paths and is now recorded too. No bundled manifest uses these
+  patterns, so this reached manifests that declare `spec.pattern: parallel` or
+  `plan_execute`.
+
+- **`reflect` no longer passes an answer it could not score.** `_score` returned
+  `0.8 if len(answer) > 40 else 0.4` on any exception — above the 0.7 default
+  `ReflectSpec.threshold` — so an unreachable verifier, a rate-limited one, or a reply
+  of `"Score: 0.9"` that `float()` rejects all silently *passed* the gate that exists
+  to catch bad answers, with nothing logged. It degrades to the same
+  `_heuristic_judge_score` fallback `_judge_score` uses, says so at WARNING, and reads
+  the first number out of a reply rather than assuming a bare one.
+
+- **`ABSOLUTE_LIMITS` is indexed, not `.get()`.** A missing key resolved to `None`,
+  which means "no cap at all" — the posture `effective_limits` exists to prevent. Its
+  values are also coerced per field, since the dict mixes `int` and `float` and the
+  `int` budgets were being filled from a `float`.
+
+- **The built-in command-screening deny rules are type-checked.**
+  `_DEFAULT_COMMAND_RULES` typed its decision as `str`, so they were never checked
+  against the `Literal` that `CommandRule.decision` requires.
+
+### Changed
+
+- **`stream_turn` is declared on the `ModelProvider` Protocol.** It was reached by
+  `getattr` and left off the published contract, so a third-party provider could
+  implement that contract in full and still land in the unmetered `stream()` path with
+  nothing to tell its author why.
+
+- **Each composite pattern is implemented once.** `_DelegatingAgent` carried an `_x`
+  and a `_stream_x` per pattern; the copies drifted, which is what produced the
+  metering defect above. They now share one `_run_*(input, *, emit_events)`, the shape
+  `patterns/react.py:_run` already uses. The agent moved to `patterns/delegating.py`
+  and the deep pattern's plan tools to `patterns/plan_tools.py`, taking
+  `patterns/__init__.py` from 920 lines to 152 and removing both of its `noqa: E402`
+  imports.
+
+- **The HTTP model client is one class per wire format.** `_OpenAIClient` and
+  `_AnthropicClient` replace a 593-line class that branched on a
+  `style: Literal["openai", "anthropic"]` flag in three places — the seam the
+  `ModelProvider` Protocol and the provider registry above it already described.
+
+- **The governance wrappers take their schema types instead of `Any`.**
+  `apply_command_screening`, `apply_content_screening`, `apply_limits`,
+  `apply_guardrails`, `apply_judges` and `wrap_final_response_judges` read typed
+  attributes rather than `getattr(config, "field", default)`, which wrote every default
+  twice and made a renamed field fail *open* — `getattr(screening, "enabled", False)`
+  disables screening silently. `_EffectiveLimits` is now `EffectiveLimits`.
+
+- **A test that needs an optional extra fails in CI instead of vanishing from it.**
+  `tests/unit/test_temporal_backend.py` gated six tests on `temporalio` while the CI
+  test job installed `--dev` only, so they never ran — and a module-level
+  `importorskip` collapses to one collect-time skip, so they never appeared in the skip
+  count either. Tests now gate through `require_optional(module, extra)`, which skips
+  locally and fails under `FELIX_REQUIRE_OPTIONAL_EXTRAS=1`; CI sets it and installs
+  the extras that gate tests. The coverage floor moves 60 to 70, matching the measured
+  number.
+
+- **`make check-ci` and `make conformance`.** Six gates CI runs had no make target, so
+  `make check` could pass while CI failed.
+
 ## [0.2.0] — 2026-08-24
 
 ### Added
