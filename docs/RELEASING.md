@@ -102,6 +102,8 @@ grep -rn '__version__ = ' packages/*/src/*/__init__.py apps/*/src/*/__init__.py
 - Watch the scheduled `smoke.yml` run against `api.felix.run` after deploying — it exercises health,
   a sync `/chat`, a durable `202`, and the thinking/lease/search/abort surfaces, and it does not
   block PR CI, so a failure there is easy to miss.
+- **Deploying the tag is [`UPGRADING.md`](UPGRADING.md).** A release is not an upgrade: migrations
+  and the settings they require move with the image, not after it.
 
 ## If a release is wrong
 

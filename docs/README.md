@@ -15,6 +15,7 @@ site at **[docs.felix.run](https://docs.felix.run)**, authored in the separate
 | [`ROADMAP.md`](ROADMAP.md) | Living tracker of what to build next; status updated in place |
 | [`RELEASING.md`](RELEASING.md) | Cutting a release: version, changelog, tag, and what CI does |
 | [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) | Local failure modes and the actual fix for each |
+| [`UPGRADING.md`](UPGRADING.md) | Moving a deployment between versions: migrations, the settings that must move with them, verification, rollback |
 
 Filenames in this directory are `UPPERCASE.md`.
 
