@@ -5,7 +5,7 @@ concrete enough to pick up in a single session.
 
 **Repos:** `felix-run/felix` (harness) · `felix-run/web` (chat-ui + float + docs)
 **Live:** [api.felix.run](https://api.felix.run) · [chat.felix.run](https://chat.felix.run) · [float.felix.run](https://float.felix.run) · [docs.felix.run](https://docs.felix.run)
-**Last reviewed:** 2026-08-25 (v0.2.1 tagged; RLS opt-out coherence and the upgrade runbook, PRs #84–#86)
+**Last reviewed:** 2026-08-25 (v0.2.2 tagged; RLS opt-out coherence, the upgrade runbook, and the Helm version fields the release procedure never counted, PRs #84–#89)
 
 ---
 
