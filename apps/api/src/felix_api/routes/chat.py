@@ -802,11 +802,22 @@ async def _build_thread_snapshot(
     from felix.steer import peek_steer_count
 
     store = get_session_store(settings, tenant_id=tenant_id)
-    events = await store.open(thread).get_events()
-    meta = await get_thread_meta(settings=settings, tenant_id=tenant_id, thread_id=thread)
-    leaf = await load_leaf(settings=settings, tenant_id=tenant_id, thread_id=thread) or get_leaf(thread)
-    steer_n = await peek_steer_count(tenant_id, thread)
-    lease = await lease_status(thread)
+    # Five reads against four different stores, none of which depends on another. They
+    # ran in series on `GET /chat/sessions/{id}`, on both lease endpoints and on every
+    # cold SSE reconnect -- the reattach path, where latency is the most visible thing
+    # in the product.
+    #
+    # `gather` holds more pool connections at once, which is why it waited for the pool
+    # to become a setting rather than a hardcoded 5 + 10.
+    events, meta, stored_leaf, steer_n, lease = await asyncio.gather(
+        store.open(thread).get_events(),
+        get_thread_meta(settings=settings, tenant_id=tenant_id, thread_id=thread),
+        load_leaf(settings=settings, tenant_id=tenant_id, thread_id=thread),
+        peek_steer_count(tenant_id, thread),
+        lease_status(thread),
+    )
+    # `get_leaf` is synchronous and in-process, so it stays out of the fan-out.
+    leaf = stored_leaf or get_leaf(thread)
     return build_snapshot(
         thread_id=thread,
         events=events,
