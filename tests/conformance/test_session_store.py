@@ -405,3 +405,37 @@ async def test_concurrent_batches_keep_their_events_contiguous(store: Any) -> No
     for start in (0, 3, 6):
         tags = {(e.content or "").split("-")[0] for e in events[start : start + 3]}
         assert len(tags) == 1, f"batch was interleaved at seq {start}: {tags}"
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_append_returns_the_sequence_numbers_it_allocated(store: Any) -> None:
+    """The writer computes these under the lock; handing them back saves a `max(seq)`
+    read to learn a number that was just decided.
+
+    Asserted against both arms because sequence allocation is the one thing the
+    in-memory twin models differently — it counts a list, Postgres reads and locks —
+    so a returned value that is right for one arm proves nothing about the other.
+    """
+    session = store.open("seq-return")
+
+    first = await session.append_batch([_msg("a"), _msg("b")])
+    assert first == [0, 1], f"expected the first batch to start at 0, got {first}"
+
+    second = await session.append_batch([_msg("c")])
+    assert second == [2], f"the second batch must continue the run, got {second}"
+
+    # The numbers reported are the numbers stored, not a parallel count.
+    stored = [e.seq for e in await session.get_events()]
+    assert stored == first + second == [0, 1, 2]
+
+    single = await session.append(_msg("d"))
+    assert single == 3, f"append should report its own seq, got {single}"
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_an_empty_append_allocates_nothing(store: Any) -> None:
+    session = store.open("seq-empty")
+    assert await session.append_batch([]) == []
+    assert await session.get_events() == []
