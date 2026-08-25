@@ -135,8 +135,26 @@ grep -rnE '^(version|appVersion):|^  tag:' deploy/helm/felix/Chart.yaml deploy/h
 
 ## After the tag
 
-- The Docker image is built from `deploy/docker/Dockerfile`; nothing builds it automatically on a
-  tag. Build and push it deliberately if the release is meant to produce an image.
+- **Publish the images.** Nothing builds them on a tag. A release publishes two tags, each for
+  **both** architectures — a single-arch image is the failure worth guarding against, because it
+  pushes and pulls fine and then dies with `exec format error` on the host that needed the other
+  one:
+
+  ```bash
+  docker buildx build --platform linux/amd64,linux/arm64 -f deploy/docker/Dockerfile \
+    --build-arg FELIX_EXTRAS=""    -t ghcr.io/felix-run/felix:vX.Y.Z-plain --push .
+  docker buildx build --platform linux/amd64,linux/arm64 -f deploy/docker/Dockerfile \
+    --build-arg FELIX_EXTRAS="gcp" -t ghcr.io/felix-run/felix:vX.Y.Z-gcp   --push .
+  ```
+
+  Substitute the real tag: `:X.Y.Z` for the plain build, `:X.Y.Z-gcp` for the one
+  `deploy/docker/compose.gcp.yml` deploys. Confirm what you published rather than trusting the
+  push output — `docker manifest inspect ghcr.io/felix-run/felix:X.Y.Z` must list both platforms.
+
+- **Deployments pin the tag themselves**, via `FELIX_IMAGE_TAG` in the host `.env`. That is
+  deliberately not defaulted in the repo: a default would be another place a release has to
+  remember to bump, and the version-places table above exists because that has already gone wrong
+  twice.
 - Publishing to PyPI is not wired up either. `uv publish` exists but no workflow calls it.
 - Watch the scheduled `smoke.yml` run against `api.felix.run` after deploying — it exercises health,
   a sync `/chat`, a durable `202`, and the thinking/lease/search/abort surfaces, and it does not

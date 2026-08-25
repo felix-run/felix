@@ -1,4 +1,16 @@
 # GCP / public VM overlay — tunnel-only API; Secret Manager + no host DB/cache.
+#
+# Runs a *published* image rather than building on the host. The base compose
+# builds `felix:latest` from the checkout, which meant the deployed artifact was
+# whatever that host happened to compile — not the release, and not reproducible
+# anywhere else. `FELIX_IMAGE_TAG` is required rather than defaulted so the
+# version is pinned deliberately in the host `.env`; a default here would be a
+# thirteenth place a release has to remember to bump, which is the mistake
+# `RELEASING.md` already records twice.
+#
+# The image needs the `gcp` extra for Secret Manager, so this points at the
+# `-gcp` variant. Releases publish both `:X.Y.Z` and `:X.Y.Z-gcp`, each for
+# linux/amd64 and linux/arm64.
 # Usage on GCE (repo root / /opt/felix):
 #   make up-gcp
 #   docker compose -f deploy/docker/compose.yml \
@@ -21,6 +33,11 @@ x-gcp-secrets: &gcp-secrets
 
 services:
   api:
+    # Pull the release rather than build it. `!reset` drops the base file's
+    # `build:` so `up` can never silently compile a different artifact.
+    build: !reset null
+    image: ghcr.io/felix-run/felix:${FELIX_IMAGE_TAG:?set FELIX_IMAGE_TAG in .env, e.g. 0.2.2}-gcp
+    pull_policy: always
     # Loopback only — Cloudflare tunnel on the host reaches 127.0.0.1:8080.
     ports: !override
       - "127.0.0.1:8080:8080"
@@ -36,6 +53,11 @@ services:
       - "metadata:169.254.169.254"
 
   worker:
+    # Pull the release rather than build it. `!reset` drops the base file's
+    # `build:` so `up` can never silently compile a different artifact.
+    build: !reset null
+    image: ghcr.io/felix-run/felix:${FELIX_IMAGE_TAG:?set FELIX_IMAGE_TAG in .env, e.g. 0.2.2}-gcp
+    pull_policy: always
     volumes:
       - felix-data:/data
       - ${FELIX_WORKSPACE_HOST:-./workspace}:/workspace
@@ -47,6 +69,11 @@ services:
       - "metadata:169.254.169.254"
 
   scheduler:
+    # Pull the release rather than build it. `!reset` drops the base file's
+    # `build:` so `up` can never silently compile a different artifact.
+    build: !reset null
+    image: ghcr.io/felix-run/felix:${FELIX_IMAGE_TAG:?set FELIX_IMAGE_TAG in .env, e.g. 0.2.2}-gcp
+    pull_policy: always
     environment:
       <<: *gcp-secrets
     extra_hosts:

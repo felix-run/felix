@@ -27,6 +27,20 @@ FELIX_CONSUMER_SHARED_SECRET=$(openssl rand -hex 32)  # required for /internal
 Prefer Workload Identity over JSON key files.
 Install extras: `uv sync --extra gcp` (or image build with `FELIX_EXTRAS=gcp`).
 
+The compose overlay deploys the published `-gcp` image rather than building on the host, so set the
+release you want in the host `.env` and bring it up:
+
+```bash
+echo 'FELIX_IMAGE_TAG=0.2.2' >> .env          # the release to run; required, not defaulted
+docker compose -f deploy/docker/compose.yml \
+  -f deploy/docker/compose.gcp.yml -f deploy/docker/compose.lite.yml \
+  --project-directory . up -d
+```
+
+Upgrading is then bumping `FELIX_IMAGE_TAG` and repeating that `up -d`. Note `make` is not
+necessarily installed on a minimal VM image — the compose invocation above is what `make up-gcp`
+runs, and works without it.
+
 ## GCE + Compose
 
 On the VM (`/opt/felix`), set:

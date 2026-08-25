@@ -132,18 +132,23 @@ All default safely; none is required.
 ```bash
 # 0. Take a backup and verify you can restore it. Not a snapshot you have never restored.
 
-# 1. Build and push the image for the target tag. Nothing does this on a tag.
-git checkout v0.2.0
-docker build -f deploy/docker/Dockerfile -t <registry>/felix:v0.2.0 .
-docker push <registry>/felix:v0.2.0
+# 1. Move the checkout to the tag (it supplies the migrations and compose files).
+cd /opt/felix && git fetch --tags && git checkout vX.Y.Z
 
-# 2. Apply migrations, from the target version's code, against the production database.
+# 2. Migrate FIRST, from the target version's code, before the new app starts.
+#    Otherwise the new image boots against a schema it does not have yet.
 #    `felix migrate` only ever upgrades — there is no downgrade subcommand.
-FELIX_DATABASE_URL=<prod> uv run felix migrate head
+docker compose <-f overlays…> run --rm --no-deps api felix migrate head
 
-# 3. Roll the image, with any settings the table above says you need, in the SAME change.
-#    FELIX_DATABASE_RLS in particular must not lag behind the migration.
+# 3. Pin the release and roll. Deployments that use the published image set the
+#    tag in the host .env rather than the repo defaulting it.
+echo 'FELIX_IMAGE_TAG=X.Y.Z' >> .env     # or edit the existing line
+docker compose <-f overlays…> up -d
 ```
+
+`make up-gcp` wraps that last command, but **`make` is not installed on every host** — a minimal
+VM image often lacks it, and the failure (`make: command not found`) happens before anything rolls.
+The compose invocation above is what the target runs and needs no `make`.
 
 Steps 2 and 3 are one change. If your platform cannot do them atomically, prefer migrating
 *immediately* before the roll and keep the gap short — the window between them is the window in
