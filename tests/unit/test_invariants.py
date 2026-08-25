@@ -482,3 +482,141 @@ def test_every_memory_store_function_is_classified() -> None:
     assert mislabelled == [], f"classified as not-retirement but writes visibility: {mislabelled}"
     undeclared = sorted(detected - set(RETIREMENT))
     assert undeclared == [], f"writes visibility with no retirement classification: {undeclared}"
+
+
+def test_ci_installs_every_extra_the_tests_gate_on() -> None:
+    """An extras-gated test module must be one CI actually installs the extra for.
+
+    `tests/unit/test_temporal_backend.py` gated six tests on `temporalio`, which lives
+    behind the `temporal` extra — and the CI test job installed `--dev` only. Those tests
+    never ran in CI, and because a module-level `importorskip` collapses to one
+    collect-time skip they never appeared in the skip count either: the run simply
+    reported fewer tests. The most recent Temporal change shipped with its tests
+    unexecuted.
+
+    Adding a new gate is fine; adding one CI cannot satisfy is what this catches.
+    """
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    install = next(
+        (
+            line
+            for line in workflow.splitlines()
+            if "uv sync" in line and "--dev" in line and "--extra" in line
+        ),
+        "",
+    )
+    installed = set(re.findall(r"--extra\s+([A-Za-z0-9_-]+)", install))
+
+    gated: set[str] = set()
+    for path in (ROOT / "tests").rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "require_optional"
+                and len(node.args) == 2
+                and isinstance(node.args[1], ast.Constant)
+            ):
+                gated.add(str(node.args[1].value))
+
+    assert gated, "no require_optional() gates found — has the helper been renamed?"
+    missing = sorted(gated - installed)
+    assert missing == [], (
+        f"tests gate on extras the CI test job does not install: {missing}. "
+        f"Add `--extra {' --extra '.join(missing)}` to the Pytest job's uv sync, "
+        f"or the tests behind them will silently not run."
+    )
+
+
+def test_optional_extras_are_gated_through_the_helper() -> None:
+    """A bare `importorskip` bypasses the CI requirement flag, so it must not come back."""
+    helper = ROOT / "tests" / "optional_deps.py"  # where the one legitimate call lives
+    offenders = []
+    for path in (ROOT / "tests").rglob("*.py"):
+        if path == helper:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "importorskip"
+            ):
+                offenders.append(f"{path.relative_to(ROOT)}:{node.lineno}")
+    assert offenders == [], (
+        "use tests/optional_deps.py:require_optional(module, extra) instead of "
+        f"pytest.importorskip so CI can require the extra: {offenders}"
+    )
+
+
+# The governance wrappers whose config comes straight from the manifest schema.
+GOVERNANCE_WRAPPERS = {
+    "apply_command_screening",
+    "apply_content_screening",
+    "apply_limits",
+    "apply_guardrails",
+    "apply_judges",
+    "wrap_final_response_judges",
+}
+
+
+def test_governance_wrappers_read_their_config_as_typed_attributes() -> None:
+    """No `getattr(config, "field", default)` in the wrappers that enforce the manifest.
+
+    `CommandScreening`, `ContentScreening`, `Limits` and `Guardrails` are strict pydantic
+    models, but the wrappers took them as `Any` and read every field through a `getattr`
+    default. That wrote each default twice — once in the schema, once at the read site,
+    free to disagree — and made a renamed field fail *open*: `getattr(screening,
+    "enabled", False)` on a model that no longer has `enabled` disables screening
+    silently. The `Guardrails.providers` comment records the same shape shipping once
+    already, as a typo that meant no wrapper was applied while `guardrails_enabled()`
+    still returned True.
+
+    Reading the fields as attributes is what lets `ty` see this layer at all.
+    """
+    builder = HARNESS / "manifests" / "builder.py"
+    tree = ast.parse(builder.read_text(encoding="utf-8"), str(builder))
+
+    offenders: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+        if node.name not in GOVERNANCE_WRAPPERS:
+            continue
+        params = {a.arg for a in node.args.args}
+        for call in ast.walk(node):
+            if (
+                isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Name)
+                and call.func.id == "getattr"
+                and len(call.args) >= 2
+                and isinstance(call.args[0], ast.Name)
+                and call.args[0].id in params
+            ):
+                offenders.append(f"{node.name}:{call.lineno} getattr({call.args[0].id}, ...)")
+
+    assert offenders == [], (
+        f"governance config must be read as typed attributes, not getattr defaults: {offenders}"
+    )
+
+
+def test_governance_wrappers_declare_their_config_type() -> None:
+    """`Any` here is what let the getattr defaults hide. Keep the annotations concrete."""
+    builder = HARNESS / "manifests" / "builder.py"
+    tree = ast.parse(builder.read_text(encoding="utf-8"), str(builder))
+
+    untyped: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+        if node.name not in GOVERNANCE_WRAPPERS:
+            continue
+        for arg in node.args.args:
+            if arg.arg in {"self", "tools", "agent", "manifest_id"}:
+                continue
+            rendered = ast.unparse(arg.annotation) if arg.annotation else "<none>"
+            if "Any" in rendered or rendered == "<none>":
+                untyped.append(f"{node.name}({arg.arg}: {rendered})")
+
+    assert untyped == [], f"governance wrapper config parameters must not be Any: {untyped}"

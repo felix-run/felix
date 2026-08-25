@@ -574,8 +574,25 @@ copies with nothing comparing them, or in code nothing exercised.
       exposed that wrapper cloning silently dropped unknown fields (#40)
 - [x] Side requests — compaction, memory, screening, branch summaries — spent
       the conversation's prompt cache (#41)
+- [x] **The composite patterns were the same drift, one file over.** Streamed
+      `parallel` and `plan_execute` never called `record_usage`, so their
+      synthesis and planning inferences were unbilled and escaped
+      `limits.max_cost_usd` while the non-streaming twins metered correctly;
+      `reflect`'s verifier was unmetered on both paths and returned `0.8` — above
+      its own 0.7 threshold — whenever it could not be reached. Every pattern is
+      now one `_run_*(input, *, emit_events)`, and `stream_turn` is on the
+      `ModelProvider` Protocol so a plugin provider can see what implementing
+      only `stream()` forfeits (#82)
+- [x] Six Temporal tests never ran in CI: gated on an extra the test job did not
+      install, and a module-level `importorskip` collapses to one collect-time
+      skip, so they vanished without touching the skip count. Extras-gated tests
+      now fail under `FELIX_REQUIRE_OPTIONAL_EXTRAS`, and an invariant asserts CI
+      installs every extra the tests gate on (#82)
+- [x] The governance wrappers took `Any` and read strict pydantic config through
+      `getattr` defaults, so a renamed field failed *open* and `ty` could not see
+      the layer at all; typing it surfaced two further defects on contact (#82)
 
-PRs `#34` … `#41`. Remaining items are under **Next → Harness → From the
+PRs `#34` … `#41`, `#82`. Remaining items are under **Next → Harness → From the
 harness audit**.
 
 ### DX / CI hardening wave (Aug 2026)

@@ -9,6 +9,7 @@ import pytest
 from felix.config import Settings
 from felix.manifests.builder import BuildDeps, apply_content_screening, build_agent
 from felix.manifests.schema import ContentScreening, QueueRef
+from felix.patterns.model import ModelChatResult, StreamDelta, TokenUsage
 from felix.patterns.types import ChatMessage, Event, InvokeInput, InvokeOutput
 from felix.tools.queues import enqueue_message, tools_from_queues
 from felix.tools.types import ToolInvocationCtx, define_tool
@@ -70,6 +71,20 @@ class _FakeModel:
     async def stream(self, messages: list[ChatMessage], tools: list):
         for c in self.stream_chunks:
             yield c
+
+    async def stream_turn(self, messages: list[ChatMessage], tools: list):
+        """Deltas then the authoritative result — the shape `_HttpModelClient` yields.
+
+        Present so the composite streaming paths exercise the branch the real providers
+        take. A fake with only `stream()` sends them down the un-streamed `chat()`
+        fallback, which would quietly stop covering incremental output here.
+        """
+        for c in self.stream_chunks:
+            yield StreamDelta(kind="text", text=c)
+        yield ModelChatResult(
+            message=ChatMessage(role="assistant", content="".join(self.stream_chunks)),
+            usage=TokenUsage(input=1, output=1),
+        )
 
 
 @pytest.mark.asyncio
@@ -174,10 +189,10 @@ async def test_mcp_and_peer_transport_is_screened() -> None:
 
 @pytest.mark.asyncio
 async def test_router_forwards_child_stream(monkeypatch: pytest.MonkeyPatch) -> None:
-    import felix.patterns as patterns
+    from felix.patterns import delegating
 
-    monkeypatch.setattr(patterns, "_model_for", lambda *a, **k: _FakeModel(chat_text="alpha"))
-    agent = patterns._DelegatingAgent(
+    monkeypatch.setattr(delegating, "_model_for", lambda *a, **k: _FakeModel(chat_text="alpha"))
+    agent = delegating._DelegatingAgent(
         tools=[],
         pattern="router",
         manifest_id="r",
@@ -197,9 +212,9 @@ async def test_router_forwards_child_stream(monkeypatch: pytest.MonkeyPatch) -> 
 
 @pytest.mark.asyncio
 async def test_groupchat_streams_each_child(monkeypatch: pytest.MonkeyPatch) -> None:
-    import felix.patterns as patterns
+    from felix.patterns import delegating
 
-    agent = patterns._DelegatingAgent(
+    agent = delegating._DelegatingAgent(
         tools=[],
         pattern="groupchat",
         manifest_id="g",
@@ -220,10 +235,10 @@ async def test_groupchat_streams_each_child(monkeypatch: pytest.MonkeyPatch) -> 
 
 @pytest.mark.asyncio
 async def test_parallel_streams_synthesis(monkeypatch: pytest.MonkeyPatch) -> None:
-    import felix.patterns as patterns
+    from felix.patterns import delegating
 
-    monkeypatch.setattr(patterns, "_model_for", lambda *a, **k: _FakeModel(stream_chunks=("X", "Y")))
-    agent = patterns._DelegatingAgent(
+    monkeypatch.setattr(delegating, "_model_for", lambda *a, **k: _FakeModel(stream_chunks=("X", "Y")))
+    agent = delegating._DelegatingAgent(
         tools=[],
         pattern="parallel",
         manifest_id="p",
@@ -240,10 +255,10 @@ async def test_parallel_streams_synthesis(monkeypatch: pytest.MonkeyPatch) -> No
 
 @pytest.mark.asyncio
 async def test_deep_forwards_inner_stream() -> None:
-    import felix.patterns as patterns
+    from felix.patterns import delegating
 
     inner = _FakeStreamAgent("tok", "en")
-    agent = patterns._DelegatingAgent(
+    agent = delegating._DelegatingAgent(
         tools=[],
         pattern="deep",
         manifest_id="d",

@@ -124,14 +124,13 @@ def _client(monkeypatch: Any, payload: dict[str, Any]):
 
     fake = _FakeAsyncClient(payload)
     monkeypatch.setattr(model_mod.httpx, "AsyncClient", fake)
-    return model_mod._HttpModelClient(
+    return model_mod._AnthropicClient(
         model_id="claude-test",
         route=model_mod.ModelRoute(provider="anthropic", model="claude-test"),
         settings=Settings(allow_insecure=True, auth_mode="none", environment="development"),
         spec=None,
         base_url="https://example.invalid",
         api_key="k",
-        style="anthropic",
     )
 
 

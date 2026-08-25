@@ -14,7 +14,7 @@ from felix.tools.types import ToolInvocationCtx, define_tool
 
 @pytest.mark.asyncio
 async def test_openai_stream_parses_sse_deltas(monkeypatch: pytest.MonkeyPatch) -> None:
-    from felix.patterns.model import ModelRoute, _HttpModelClient
+    from felix.patterns.model import ModelRoute, _OpenAIClient
 
     class _FakeResp:
         status_code = 200
@@ -54,14 +54,13 @@ async def test_openai_stream_parses_sse_deltas(monkeypatch: pytest.MonkeyPatch) 
 
     monkeypatch.setattr(model_mod.httpx, "AsyncClient", _FakeClient)
 
-    client = _HttpModelClient(
+    client = _OpenAIClient(
         model_id="gpt-4.1",
         route=ModelRoute(provider="openai", model="gpt-4.1"),
         settings=Settings(database_url="memory://t", object_store="memory", allow_insecure=True),
         spec=None,
         base_url="https://api.openai.com/v1",
         api_key="test",
-        style="openai",
     )
     parts = [
         c

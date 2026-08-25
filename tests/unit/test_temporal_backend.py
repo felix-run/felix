@@ -24,7 +24,9 @@ from typing import Any
 import pytest
 from felix.config import Settings
 
-pytest.importorskip("temporalio", reason="felix-harness[temporal] not installed")
+from tests.optional_deps import require_optional
+
+require_optional("temporalio", "temporal")
 
 
 def _settings(**kw: Any) -> Settings:

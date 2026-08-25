@@ -1,4 +1,4 @@
-.PHONY: help schema install install-full install-warehouse lint fmt type test check dev dev-key up up-lite up-gcp up-full down cli seed migrate doctor docker-build
+.PHONY: help schema install install-full install-warehouse lint fmt type test check check-ci conformance dev dev-key up up-lite up-gcp up-full down cli seed migrate doctor docker-build
 
 COMPOSE := docker compose -f deploy/docker/compose.yml --project-directory .
 COMPOSE_LITE := $(COMPOSE) -f deploy/docker/compose.lite.yml
@@ -10,6 +10,8 @@ help:
 	@echo "  install-full      uv sync --all-extras --dev"
 	@echo "  install-warehouse uv sync --extra warehouse --dev (DuckDB analytics)"
 	@echo "  lint/fmt/type/test/check"
+	@echo "  check-ci          check + every other gate CI runs (no infrastructure)"
+	@echo "  conformance       store contract vs a real Postgres (needs FELIX_CONFORMANCE_DATABASE_URL)"
 	@echo "  test              ./scripts/test.sh (in-memory stores; args: ./scripts/test.sh -k expr)"
 	@echo "  dev               run API locally (auth=none)"
 	@echo "  up                deploy/docker compose (lean: fs object store, mem caps)"
@@ -60,6 +62,31 @@ schema:
 
 check: lint type test
 	uv run ruff format --check .
+
+# Everything CI gates on that `check` does not: the structural and packaging jobs.
+# `make check` passing while CI failed meant these had to be remembered by hand.
+#
+# Two CI jobs are deliberately absent. `conformance` needs a database — it has its own
+# target below. `lean` is meaningful only in a lean venv: scripts/lean-import-check.py
+# proves nothing when the extras are installed, and a gate that passes vacuously is worse
+# than no gate. tests/unit/test_invariants.py checks the same rule statically, in any venv.
+check-ci: check
+	uv run felix bundle-manifests
+	uv run python scripts/gen-manifest-schema.py --check
+	python3 scripts/validate-toolkit.py
+	FELIX_ALLOW_INSECURE=true FELIX_AUTH_MODE=none \
+		FELIX_DATABASE_URL=memory://ci FELIX_OBJECT_STORE=memory \
+		uv run felix eval --dataset smoke --manifest quick \
+			--fixture fixtures/eval/smoke.json --mock
+	uv run pre-commit run --all-files
+
+# Needs a reachable Postgres; CI runs this as its own job against a service container.
+conformance:
+	@test -n "$$FELIX_CONFORMANCE_DATABASE_URL" || { \
+		echo "Set FELIX_CONFORMANCE_DATABASE_URL to a Postgres URL, e.g."; \
+		echo "  FELIX_CONFORMANCE_DATABASE_URL=postgresql+psycopg://u:p@localhost:5432/db make conformance"; \
+		exit 1; }
+	FELIX_CONFORMANCE_REQUIRE_POSTGRES=1 ./scripts/test.sh tests/conformance -q
 
 dev:
 	@echo "Felix -> http://localhost:$${FELIX_PORT:-8080}"

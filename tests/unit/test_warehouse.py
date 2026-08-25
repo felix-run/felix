@@ -15,6 +15,8 @@ from felix.warehouse import (
     duckdb_path,
 )
 
+from tests.optional_deps import require_optional
+
 
 def test_build_none_by_default() -> None:
     settings = Settings(database_url="memory://test")
@@ -88,7 +90,7 @@ async def test_audit_flush_exports_into_shared_memory_factory(
 
 @pytest.mark.asyncio
 async def test_duckdb_export_when_extra_installed(tmp_path: Path) -> None:
-    pytest.importorskip("duckdb")
+    require_optional("duckdb", "warehouse")
     path = tmp_path / "felix.duckdb"
     wh = DuckDbWarehouse(path)
     assert await wh.ping() is True

@@ -130,7 +130,6 @@
       "Bash(uv sync*)",
       "Bash(uv run ruff*)",
       "Bash(uv run ty*)",
-      "Bash(uv run pytest*)",
       "Bash(uv run felix *)",
       "Bash(uv run python -c*)",
       "Bash(uv lock*)",

@@ -15,6 +15,8 @@ Granian (API), Taskiq (worker/scheduler), Postgres+pgvector, Valkey/Redis, plugg
 make install            # uv sync --dev (lean core; what CI uses)
 make install-full       # uv sync --all-extras --dev (aws/gcp/mcp/browser/embeddings/…)
 make check              # ruff check + ty check + pytest + ruff format --check
+make check-ci           # check + manifest bundle/schema, toolkit, mock eval, pre-commit
+make conformance        # store contract vs Postgres (needs FELIX_CONFORMANCE_DATABASE_URL)
 make lint / fmt / type / test
 make dev                # API on :8080 with FELIX_AUTH_MODE=none, fs object store
 make cli                # httpx REPL client (clients/cli.py)
@@ -34,7 +36,7 @@ reads it, so a bare `uv run pytest` fails on DB-touching tests. `./scripts/test.
 in-memory environment and is what `make test` and CI both run:
 
 ```bash
-./scripts/test.sh                                   # full suite (~12s)
+./scripts/test.sh                                   # full suite (~50s)
 ./scripts/test.sh tests/unit/test_react_loop.py -q  # one file
 ./scripts/test.sh -k compact                        # one theme
 make check                                          # lint + type + test + format check
@@ -55,8 +57,16 @@ uv run python scripts/gen-manifest-schema.py --check   # editor JSON Schema is c
 
 `tests/unit/test_invariants.py` turns the rules below into failures: `.env.example` covers every
 `Settings` field, no optional dependency is imported at module scope, every Postgres-touching module
-has a `memory://` path, the governance wrapper order is unchanged, and `schemas/manifest.schema.json`
-still matches the pydantic models. Change a rule deliberately and you update the test with it.
+has a `memory://` path, the governance wrapper order is unchanged, `schemas/manifest.schema.json`
+still matches the pydantic models, and the CI test job installs every extra the tests gate on.
+Change a rule deliberately and you update the test with it.
+
+A test that needs an optional extra gates on `tests/optional_deps.py:require_optional(module,
+extra)`, never a bare `pytest.importorskip` — an invariant enforces this. A module-level
+`importorskip` collapses a whole file into one collect-time skip, so it vanishes from the run
+without touching the skip count; that is how six Temporal tests went unexecuted in CI. CI installs
+`--extra temporal --extra warehouse` and sets `FELIX_REQUIRE_OPTIONAL_EXTRAS=1`, which turns a
+missing extra into a failure. Locally, without that variable, these still skip as before.
 
 Store conformance (`tests/conformance/`) runs one contract against every backend, because the
 invariant above only asserts an in-memory twin *exists* — not that it behaves like the Postgres

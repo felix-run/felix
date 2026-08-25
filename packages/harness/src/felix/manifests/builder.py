@@ -5,14 +5,19 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
-from typing import Any
+from typing import Any, Literal
 
 from felix.auth.context import AuthContext
 from felix.context import try_get_context
-from felix.limits import effective_limits
+from felix.limits import EffectiveLimits, effective_limits
 from felix.manifests.loader import load_bundled, parse_manifest
 from felix.manifests.schema import (
     ApprovalRule,
+    CommandScreening,
+    ContentScreening,
+    Guardrails,
+    JudgeRule,
+    Limits,
     Manifest,
     Policy,
     guardrails_enabled,
@@ -193,13 +198,15 @@ def _screenable_command_text(args: ToolInput, transport: str) -> str:
     return "\n".join(p for p in parts if p)
 
 
-def apply_command_screening(tools: list[Tool], screening: Any, manifest_id: str) -> list[Tool]:
-    if not getattr(screening, "enabled", False):
+def apply_command_screening(
+    tools: list[Tool], screening: CommandScreening | None, manifest_id: str
+) -> list[Tool]:
+    if screening is None or not screening.enabled:
         return tools
     import re
 
-    rules = list(getattr(screening, "rules", []) or [])
-    if getattr(screening, "include_defaults", True):
+    rules = list(screening.rules)
+    if screening.include_defaults:
         from felix.manifests.schema import CommandRule
 
         existing = {r.pattern for r in rules}
@@ -208,7 +215,7 @@ def apply_command_screening(tools: list[Tool], screening: Any, manifest_id: str)
                 rules.append(CommandRule(pattern=pattern, decision=decision, reason=reason))
 
     compiled = [(re.compile(r.pattern, re.I), r.decision, r.reason or r.pattern) for r in rules]
-    targets = set(getattr(screening, "target_tools", []) or [])
+    targets = set(screening.target_tools)
 
     def wrap_one(tool: Tool) -> Tool:
         if targets and tool.name not in targets:
@@ -239,7 +246,7 @@ def apply_command_screening(tools: list[Tool], screening: Any, manifest_id: str)
                                 rule_id=f"command:{reason}",
                                 args=args,
                                 ctx=ctx,
-                                ttl_seconds=int(getattr(screening, "approval_ttl_seconds", 300) or 300),
+                                ttl_seconds=screening.approval_ttl_seconds,
                                 reason=reason,
                             )
                             if not ok:
@@ -266,7 +273,7 @@ def apply_command_screening(tools: list[Tool], screening: Any, manifest_id: str)
 
 
 # Default deny/approval patterns when command_screening.include_defaults is true.
-_DEFAULT_COMMAND_RULES: tuple[tuple[str, str, str], ...] = (
+_DEFAULT_COMMAND_RULES: tuple[tuple[str, Literal["allow", "deny", "require_approval"], str], ...] = (
     (r"rm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+)*(/|~|/etc|/var|/usr|/home)", "deny", "destructive rm"),
     (r"\bmkfs\b|\bdd\s+if=", "deny", "disk wipe"),
     (r":\(\)\s*\{\s*:\|:&\s*\}\s*;", "deny", "fork bomb"),
@@ -293,12 +300,14 @@ def _is_untrusted_tool(tool: Tool) -> bool:
     return source.startswith(("mcp", "peer", "a2a", "queue", "browser"))
 
 
-def apply_content_screening(tools: list[Tool], screening: Any, manifest_id: str) -> list[Tool]:
-    if not getattr(screening, "enabled", False):
+def apply_content_screening(
+    tools: list[Tool], screening: ContentScreening | None, manifest_id: str
+) -> list[Tool]:
+    if screening is None or not screening.enabled:
         return tools
-    on_flag = getattr(screening, "on_flag", "quarantine")
-    named = set(getattr(screening, "tools", []) or [])
-    model_id = (getattr(screening, "model", "") or "").strip()
+    on_flag = screening.on_flag
+    named = set(screening.tools)
+    model_id = screening.model.strip()
 
     def wrap_one(tool: Tool) -> Tool:
         if named and tool.name not in named:
@@ -433,7 +442,7 @@ async def _await_approval(
     return True, args, ""
 
 
-def apply_limits(tools: list[Tool], limits: Any, manifest_id: str) -> list[Tool]:
+def apply_limits(tools: list[Tool], limits: Limits | EffectiveLimits, manifest_id: str) -> list[Tool]:
     def wrap_one(tool: Tool) -> Tool:
         inner = tool.executor
 
@@ -455,13 +464,13 @@ def apply_limits(tools: list[Tool], limits: Any, manifest_id: str) -> list[Tool]
                 trip(ls, verdict.reason)
                 return deny_output(f"[limits] {verdict.reason}", "limits")
 
-            max_calls = getattr(limits, "max_tool_calls", None)
+            max_calls = limits.max_tool_calls
             if max_calls is not None and ls.tool_calls >= max_calls:
                 return deny_output(
                     f"[limits] max_tool_calls ({max_calls}) exceeded",
                     "limits",
                 )
-            max_hops = getattr(limits, "max_peer_hops", None)
+            max_hops = limits.max_peer_hops
             if (
                 max_hops is not None
                 and (tool.is_peer or tool.name.startswith("peer_"))
@@ -490,12 +499,14 @@ def apply_limits(tools: list[Tool], limits: Any, manifest_id: str) -> list[Tool]
     return _wrap_tools(tools, wrap_one)
 
 
-def apply_guardrails(tools: list[Tool], guardrails: Any, manifest_id: str) -> list[Tool]:
-    providers = set(getattr(guardrails, "providers", []) or [])
+def apply_guardrails(tools: list[Tool], guardrails: Guardrails | None, manifest_id: str) -> list[Tool]:
+    if guardrails is None:
+        return tools
+    providers = set(guardrails.providers)
     if "pii" not in providers:
         return tools
-    block = bool(getattr(guardrails, "block_on_match", False))
-    targets = set(getattr(guardrails, "targets", []) or [])
+    block = guardrails.block_on_match
+    targets = set(guardrails.targets)
     # Default targets include output; skip wrapping when only input is requested.
     if targets and "output" not in targets and "final_response" not in targets:
         return tools
@@ -606,10 +617,10 @@ def _looks_negated(criteria: str) -> bool:
     return any(m in criteria for m in _NEGATION_MARKERS)
 
 
-async def _judge_score(content: str, judge: Any, *, settings: Any | None = None) -> float:
+async def _judge_score(content: str, judge: JudgeRule, *, settings: Any | None = None) -> float:
     """Heuristic score, or LLM score when ``judge.model`` is set."""
-    criteria = getattr(judge, "criteria", "") or ""
-    model_id = (getattr(judge, "model", "") or "").strip()
+    criteria = judge.criteria
+    model_id = judge.model.strip()
     if not model_id or settings is None:
         return _heuristic_judge_score(content, criteria)
     try:
@@ -623,17 +634,17 @@ async def _judge_score(content: str, judge: Any, *, settings: Any | None = None)
             user_input="",
             answer=content,
             criteria=criteria,
-            threshold=float(getattr(judge, "threshold", 0.7) or 0.7),
+            threshold=judge.threshold,
         )
         return float(result.get("score") or 0.0)
     except Exception:
         return _heuristic_judge_score(content, criteria)
 
 
-def apply_judges(tools: list[Tool], guardrails: Any, manifest_id: str) -> list[Tool]:
+def apply_judges(tools: list[Tool], guardrails: Guardrails | None, manifest_id: str) -> list[Tool]:
     """Apply tool-output judges (heuristic, or LLM when JudgeRule.model is set)."""
     _ = manifest_id
-    judges = [j for j in getattr(guardrails, "judges", []) if not getattr(j, "final_response", False)]
+    judges = [j for j in (guardrails.judges if guardrails else []) if not j.final_response]
     if not judges:
         return tools
 
@@ -675,10 +686,10 @@ def apply_judges(tools: list[Tool], guardrails: Any, manifest_id: str) -> list[T
     return _wrap_tools(tools, wrap_one)
 
 
-def wrap_final_response_judges(agent: Agent, guardrails: Any, manifest_id: str) -> Agent:
+def wrap_final_response_judges(agent: Agent, guardrails: Guardrails | None, manifest_id: str) -> Agent:
     """Apply final_response=True judges to the agent's reply."""
     _ = manifest_id
-    judges = [j for j in getattr(guardrails, "judges", []) if getattr(j, "final_response", False)]
+    judges = [j for j in (guardrails.judges if guardrails else []) if j.final_response]
     if not judges:
         return agent
 

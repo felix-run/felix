@@ -63,14 +63,14 @@ def _client(monkeypatch: Any, lines: list[str], style: str):
     from felix.patterns import model as model_mod
 
     monkeypatch.setattr(model_mod.httpx, "AsyncClient", _FakeAsyncClient(lines))
-    return model_mod._HttpModelClient(
+    cls = model_mod._AnthropicClient if style == "anthropic" else model_mod._OpenAIClient
+    return cls(
         model_id="m",
         route=model_mod.ModelRoute(provider=style, model="m"),
         settings=Settings(allow_insecure=True, auth_mode="none", environment="development"),
         spec=None,
         base_url="https://example.invalid",
         api_key="k",
-        style=style,  # type: ignore[arg-type]
     )
 
 
