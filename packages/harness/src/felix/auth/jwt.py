@@ -6,6 +6,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import TYPE_CHECKING, Any, Literal
 
 from joserfc import jwk, jwt
@@ -47,6 +48,7 @@ class VerifyFail:
 VerifyResult = VerifyOk | VerifyFail
 
 
+@lru_cache(maxsize=4)
 def parse_verifiers(jwt_verifiers: str) -> list[VerifierConfig]:
     """Parse FELIX_JWT_VERIFIERS: comma-separated scheme:issuer[:audience][;tenant=…]."""
     out: list[VerifierConfig] = []
