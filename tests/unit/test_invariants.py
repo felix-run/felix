@@ -497,14 +497,21 @@ def test_ci_installs_every_extra_the_tests_gate_on() -> None:
     Adding a new gate is fine; adding one CI cannot satisfy is what this catches.
     """
     workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    # Anchored to the job that runs the suite, not the first `uv sync` in the file: a new
+    # job added above it with its own `--extra` would otherwise silently become the thing
+    # this invariant reads, and it would pass while asserting about the wrong install.
+    lines = workflow.splitlines()
+    runs_suite = next(
+        (i for i, line in enumerate(lines) if "./scripts/test.sh" in line and "--cov" in line), None
+    )
+    assert runs_suite is not None, "no CI step runs the suite with coverage — has ci.yml moved?"
     install = next(
-        (
-            line
-            for line in workflow.splitlines()
-            if "uv sync" in line and "--dev" in line and "--extra" in line
-        ),
+        (line for line in reversed(lines[:runs_suite]) if "uv sync" in line),
         "",
     )
+    # `--all-extras` satisfies every gate, so the check is vacuous rather than wrong there.
+    if "--all-extras" in install:
+        return
     installed = set(re.findall(r"--extra\s+([A-Za-z0-9_-]+)", install))
 
     gated: set[str] = set()
@@ -551,14 +558,48 @@ def test_optional_extras_are_gated_through_the_helper() -> None:
 
 
 # The governance wrappers whose config comes straight from the manifest schema.
-GOVERNANCE_WRAPPERS = {
-    "apply_command_screening",
-    "apply_content_screening",
-    "apply_limits",
-    "apply_guardrails",
-    "apply_judges",
-    "wrap_final_response_judges",
-}
+#
+# Derived from EXPECTED_WRAPPER_ORDER rather than hand-written. A hand-written list was a
+# second, partial copy of the stack: it named six of the nine wrappers, so the same
+# fail-open shape could ship in `apply_secret_masking`, `apply_policies` or
+# `apply_approvals` with both invariants below still green — a vacuous gate, which is the
+# failure this file exists to prevent. Adding a tenth wrapper now forces it into
+# EXPECTED_WRAPPER_ORDER (test_governance_wrapper_order_is_unchanged fails otherwise) and
+# it is checked here for free.
+#
+# `apply_artifact_spill` is excluded because it lives in felix/artifacts.py, not
+# builder.py; the intersection below drops it, and test_governance_wrappers_all_resolve
+# asserts the set is not silently empty.
+GOVERNANCE_WRAPPERS = set(EXPECTED_WRAPPER_ORDER) | {"wrap_final_response_judges"}
+
+# Parameters that are plumbing rather than manifest config. Deliberately short: an
+# earlier version also excluded `secrets`, `policies` and `rules` — which are exactly the
+# parameters of the three wrappers the hand-written set had been missing, so the exclusion
+# recreated the same blind spot by another route. They are already typed `list[str]`,
+# `list[Policy]` and `list[ApprovalRule]`, so they need no exemption to pass.
+_NON_CONFIG_PARAMS = {"self", "tools", "agent", "manifest_id"}
+
+
+def _builder_wrappers() -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
+    """The governance wrappers actually defined in builder.py."""
+    builder = HARNESS / "manifests" / "builder.py"
+    tree = ast.parse(builder.read_text(encoding="utf-8"), str(builder))
+    return [
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name in GOVERNANCE_WRAPPERS
+    ]
+
+
+def test_governance_wrappers_all_resolve() -> None:
+    """Without this, renaming a wrapper turns both invariants below into vacuous passes."""
+    found = {n.name for n in _builder_wrappers()}
+    missing = sorted(GOVERNANCE_WRAPPERS - found - {"apply_artifact_spill"})
+    assert missing == [], (
+        f"GOVERNANCE_WRAPPERS names functions not defined in builder.py: {missing}. "
+        "Renamed or moved? Update the set, or the checks below stop covering them."
+    )
+    assert len(found) >= 8, f"expected the full wrapper stack, found only {sorted(found)}"
 
 
 def test_governance_wrappers_read_their_config_as_typed_attributes() -> None:
@@ -575,16 +616,9 @@ def test_governance_wrappers_read_their_config_as_typed_attributes() -> None:
 
     Reading the fields as attributes is what lets `ty` see this layer at all.
     """
-    builder = HARNESS / "manifests" / "builder.py"
-    tree = ast.parse(builder.read_text(encoding="utf-8"), str(builder))
-
     offenders: list[str] = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
-            continue
-        if node.name not in GOVERNANCE_WRAPPERS:
-            continue
-        params = {a.arg for a in node.args.args}
+    for node in _builder_wrappers():
+        params = {a.arg for a in (*node.args.args, *node.args.kwonlyargs)}
         for call in ast.walk(node):
             if (
                 isinstance(call, ast.Call)
@@ -603,20 +637,63 @@ def test_governance_wrappers_read_their_config_as_typed_attributes() -> None:
 
 def test_governance_wrappers_declare_their_config_type() -> None:
     """`Any` here is what let the getattr defaults hide. Keep the annotations concrete."""
-    builder = HARNESS / "manifests" / "builder.py"
-    tree = ast.parse(builder.read_text(encoding="utf-8"), str(builder))
-
     untyped: list[str] = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
-            continue
-        if node.name not in GOVERNANCE_WRAPPERS:
-            continue
-        for arg in node.args.args:
-            if arg.arg in {"self", "tools", "agent", "manifest_id"}:
+    for node in _builder_wrappers():
+        for arg in (*node.args.args, *node.args.kwonlyargs):
+            if arg.arg in _NON_CONFIG_PARAMS:
                 continue
             rendered = ast.unparse(arg.annotation) if arg.annotation else "<none>"
             if "Any" in rendered or rendered == "<none>":
                 untyped.append(f"{node.name}({arg.arg}: {rendered})")
 
     assert untyped == [], f"governance wrapper config parameters must not be Any: {untyped}"
+
+
+# `model.py` holds the clients themselves plus the fallback/escalation composites: they
+# *are* the call, and metering is the caller's job. Every other module under patterns/ is
+# a caller.
+_UNMETERED_BY_DESIGN = {"model.py"}
+
+
+def test_a_pattern_that_reaches_a_model_records_the_usage() -> None:
+    """Structural, because per-pattern tests cannot cover the next pattern someone adds.
+
+    This defect has now shipped twice. `patterns/model.py:stream_turn` records the first:
+    a streamed turn followed by a second `chat()` for the real answer billed the input
+    twice and metered only one, so `limits.max_cost_usd` counted roughly half of what a
+    streaming run spent. Then `_stream_parallel` and `_stream_plan_execute` never called
+    `record_usage` at all, so streamed runs of those patterns were entirely unbilled and
+    escaped the token and cost budgets.
+
+    `record_usage` is the sole feed for `ctx.limit_state`, which `limits.check_budgets`
+    reads — so a model call that misses it is not merely absent from the usage table, it
+    is invisible to the declared spend ceiling. A test per pattern would not have caught
+    either instance in the pattern that came next.
+    """
+    patterns = HARNESS / "patterns"
+    offenders: list[str] = []
+
+    for path in sorted(patterns.glob("*.py")):
+        if path.name in _UNMETERED_BY_DESIGN:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+                continue
+            reaches_model = any(
+                isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Attribute)
+                and call.func.attr in {"chat", "stream_turn"}
+                for call in ast.walk(node)
+            )
+            if not reaches_model:
+                continue
+            names = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+            if "record_usage" not in names:
+                offenders.append(f"{path.name}:{node.lineno} {node.name}")
+
+    assert offenders == [], (
+        "these call a model without recording usage, so the spend they cause escapes "
+        f"limits.max_cost_usd and the token budgets: {offenders}. Call record_usage on the "
+        "ModelChatResult, or route the call through a helper that does."
+    )

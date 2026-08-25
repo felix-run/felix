@@ -8,6 +8,7 @@ import logging
 import random
 import time
 import uuid
+from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol, runtime_checkable
@@ -704,7 +705,7 @@ def _parse_openai_tool_calls(raw: list[dict[str, Any]] | None) -> list[ToolCall]
 
 
 @dataclass
-class _HttpModelClient:
+class _HttpModelClient(ABC):
     """Shared transport for the HTTP providers: OpenAI-style and Anthropic.
 
     This was one class carrying a `style: Literal["openai", "anthropic"]` flag and
@@ -778,7 +779,11 @@ class _HttpModelClient:
             yield chunk
 
     # --- what a wire format must provide -------------------------------------------
+    #
+    # Abstract, so a wire format missing one fails at construction rather than at the
+    # first call that happens to need it.
 
+    @abstractmethod
     def _body(
         self,
         messages: list[ChatMessage],
@@ -790,6 +795,7 @@ class _HttpModelClient:
     ) -> dict[str, Any]:
         raise NotImplementedError
 
+    @abstractmethod
     async def _chat(
         self,
         messages: list[ChatMessage],
@@ -801,6 +807,7 @@ class _HttpModelClient:
     ) -> ModelChatResult:
         raise NotImplementedError
 
+    @abstractmethod
     def _stream_turn(
         self,
         messages: list[ChatMessage],
@@ -810,6 +817,7 @@ class _HttpModelClient:
     ) -> AsyncIterator[StreamDelta | ModelChatResult]:
         raise NotImplementedError
 
+    @abstractmethod
     def _stream(
         self,
         messages: list[ChatMessage],

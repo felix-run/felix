@@ -15,6 +15,9 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
 
+# `felix.manifests.schema` is a leaf — it imports only `felix.security.ssrf` — so this is
+# safe at module scope even though `manifests/builder.py` imports `felix.patterns`.
+from felix.manifests.schema import PlanExecuteSpec, ReflectSpec
 from felix.patterns.model import ModelChatResult, build_model, record_usage
 from felix.patterns.react import build_react_agent
 from felix.patterns.types import (
@@ -30,13 +33,32 @@ logger = logging.getLogger(__name__)
 
 _SCORE_RE = re.compile(r"[-+]?\d*\.?\d+")
 
+# What an unset `ReflectSpec.criteria` means to a *model*. Deliberately not passed to the
+# heuristic scorer: it reads criteria as tokens to match, so "general helpfulness" scores
+# ~0 against almost any real answer, and a verifier outage would then burn every one of
+# `max_iterations` passes on a default-configured agent. `_heuristic_judge_score` has its
+# own empty-criteria branch, which is the right answer when nothing was asked for.
+_DEFAULT_REFLECT_CRITERIA = "general helpfulness"
+
 
 def _parse_score(raw: str | None) -> float | None:
-    """First number in a verifier reply, clamped to 0..1. None when there is none.
+    """The first 0..1 number in a verifier reply. None when there is not one.
 
     Verifiers are told to reply with a bare number and frequently do not — "Score: 0.9",
     "0.9/1.0", a leading newline. Taking `.split()[0]` and calling `float()` on it turned
     every one of those into an exception, so the caller's fallback decided the gate.
+
+    A number outside 0..1 is *not* clamped into range. Clamping read "7" — almost
+    certainly a verifier answering out of ten — as a perfect 1.0 that cleared every
+    threshold. That is the fail-open this control exists to remove, so an out-of-range
+    reply is treated as unparseable and falls through to the heuristic, which measures
+    something real.
+
+    The residual gap is a reply whose first number is coincidentally a valid score
+    ("Answer 1 of 3: ..." reads as 1.0). Detecting that needs prose parsing, which would
+    trade a narrow, visible limitation for a wide, invisible one; the verifier is asked
+    for a bare number and the two realistic deviations — a label before it, a
+    denominator after it — are both handled.
     """
     if not raw:
         return None
@@ -44,12 +66,10 @@ def _parse_score(raw: str | None) -> float | None:
     if match is None:
         return None
     try:
-        return max(0.0, min(1.0, float(match.group())))
+        score = float(match.group())
     except ValueError:  # pragma: no cover — the pattern only matches parseable numbers
         return None
-
-
-# Ensure react is registered — providers registered below after _model_for.
+    return score if 0.0 <= score <= 1.0 else None
 
 
 _TERMINAL_EVENTS = frozenset({"done", "on_chain_end"})
@@ -231,8 +251,14 @@ class _DelegatingAgent:
     settings: Any = None
     max_turns: int = 4
     aggregator_prompt: str = ""
-    reflect_cfg: Any = None
-    plan_cfg: Any = None
+    # Typed, not `Any`: these are the same strict pydantic models the governance
+    # wrappers were just converted away from reading through `getattr` defaults. Every
+    # such read restated a schema default at the read site, free to disagree with the
+    # schema, and turned a renamed field into a silent fall back to the local default
+    # rather than an error. `max_iterations` is `ge=1, le=5`; a rename to `max_passes`
+    # would have left reflect quietly running two passes forever.
+    reflect_cfg: ReflectSpec | None = None
+    plan_cfg: PlanExecuteSpec | None = None
 
     # --- the two public entry points, both draining the one loop -------------------
 
@@ -252,11 +278,9 @@ class _DelegatingAgent:
 
     async def _run(self, input: InvokeInput, *, emit_events: bool) -> AsyncIterator[Event | InvokeOutput]:
         """Dispatch to the pattern. Yields display events, then one `InvokeOutput`."""
-        if self.pattern == "deep" and self.inner is not None:
-            async for item in self._forward(self.inner, input, emit_events=emit_events):
-                yield item
-            return
-
+        # No `deep` branch: the dispatch table has no "deep" key, so it falls to the
+        # `self.inner` forward below — which is what a dedicated branch did anyway. Having
+        # both read as though `deep` were special.
         runner = {
             "router": self._run_router,
             "parallel": self._run_parallel,
@@ -312,25 +336,36 @@ class _DelegatingAgent:
         tap = _Tap()
         async for ev in _pipe_stream(agent, input, tap, swallow_terminal=True):
             yield ev
+        # As in `_forward`: never re-invoke to fill a missing output. `_stream_reflect`
+        # did (`tap.output or await base.invoke(current)`), silently doubling the cost of
+        # a turn whose child emitted no terminal event.
         yield tap.output if tap.output is not None else _empty_output(input)
 
     async def _generate(
         self, model: Any, messages: list[ChatMessage], *, emit_events: bool
-    ) -> AsyncIterator[Event | str]:
-        """Produce assistant text from `model`, ending with the complete string.
+    ) -> AsyncIterator[Event | ChatMessage]:
+        """Produce an assistant message from `model`, ending with the complete one.
 
         Both arms record usage — this is the single place a composite pattern reaches a
         model for text, so metering cannot differ between streaming and not.
+
+        The non-streaming arm yields the model's own `ChatMessage` rather than rebuilding
+        one from its text. Collapsing the stream/non-stream pair briefly did rebuild it,
+        which silently dropped `thinking` from the synthesized answer of a `parallel` or
+        `plan_execute` run — `session/types.py` persists and replays those blocks, so an
+        extended-thinking manifest lost its reasoning on exactly the turn that composed
+        the answer. Streaming still rebuilds, because `stream()` yields text and the wire
+        gives it nothing else to carry.
         """
         if not emit_events:
             result = await model.chat(messages, [])
             record_usage(result, manifest_id=self.manifest_id, model_id=model.model_id)
-            yield result.message.content or ""
+            yield result.message
             return
         collected: list[str] = []
         async for ev in _yield_model_stream(model, messages, collected, manifest_id=self.manifest_id):
             yield ev
-        yield "".join(collected)
+        yield ChatMessage(role="assistant", content="".join(collected))
 
     def _base_agent(self, *, recursion_limit: Any = None) -> Agent:
         """The react agent a single-agent composite wraps."""
@@ -411,7 +446,7 @@ class _DelegatingAgent:
         model = _model_for(input, self.settings, self.model_spec)
         prompt = self.aggregator_prompt or self.system_prompt or "Synthesize the answers."
 
-        text = ""
+        final = ChatMessage(role="assistant", content="")
         async for item in self._generate(
             model,
             [
@@ -423,12 +458,11 @@ class _DelegatingAgent:
             ],
             emit_events=emit_events,
         ):
-            if isinstance(item, str):
-                text = item
+            if isinstance(item, ChatMessage):
+                final = item
             else:
                 yield item
 
-        final = ChatMessage(role="assistant", content=text)
         async for item in self._finish(
             InvokeOutput(messages=[*input.messages, final], final=final), emit_events=emit_events
         ):
@@ -479,11 +513,11 @@ class _DelegatingAgent:
         self, input: InvokeInput, *, emit_events: bool
     ) -> AsyncIterator[Event | InvokeOutput]:
         base = self.inner or self._base_agent()
-        cfg = self.reflect_cfg
-        max_iter = int(getattr(cfg, "max_iterations", 2) or 2)
-        threshold = float(getattr(cfg, "threshold", 0.7) or 0.7)
-        criteria = str(getattr(cfg, "criteria", "") or "general helpfulness")
-        verifier_id = str(getattr(cfg, "verifier_model", "") or "")
+        cfg = self.reflect_cfg or ReflectSpec()
+        max_iter = cfg.max_iterations
+        threshold = cfg.threshold
+        criteria = cfg.criteria
+        verifier_id = cfg.verifier_model
 
         messages = list(input.messages)
         current = input
@@ -502,7 +536,8 @@ class _DelegatingAgent:
                 break
             critique = (
                 f"Previous answer scored {score:.2f} (need ≥{threshold}). "
-                f"Improve against: {criteria}\n\nPrior answer:\n{draft.final.content}"
+                f"Improve against: {criteria or _DEFAULT_REFLECT_CRITERIA}\n\n"
+                f"Prior answer:\n{draft.final.content}"
             )
             # Reflect re-runs the *same* conversation, so unlike a sub-agent step it keeps
             # the caller's thread_id.
@@ -518,6 +553,11 @@ class _DelegatingAgent:
 
     async def _score(self, answer: str, criteria: str, verifier_id: str) -> float:
         """Score an answer 0..1 against the reflect criteria.
+
+        `criteria` is passed through raw. The model prompt substitutes
+        `_DEFAULT_REFLECT_CRITERIA` when it is empty, because a model needs something to
+        judge against; the heuristic does not, because it would match those words as
+        tokens. One string, two consumers that must read it differently.
 
         Degrades to `_heuristic_judge_score` — the same fallback `_judge_score` uses in
         `manifests/builder.py` — when the verifier is unavailable or unparseable. It used
@@ -549,7 +589,7 @@ class _DelegatingAgent:
                     ),
                     ChatMessage(
                         role="user",
-                        content=f"Criteria: {criteria}\n\nAnswer:\n{answer}",
+                        content=f"Criteria: {criteria or _DEFAULT_REFLECT_CRITERIA}\n\nAnswer:\n{answer}",
                     ),
                 ],
                 [],
@@ -575,8 +615,8 @@ class _DelegatingAgent:
     async def _run_plan_execute(
         self, input: InvokeInput, *, emit_events: bool
     ) -> AsyncIterator[Event | InvokeOutput]:
-        cfg = self.plan_cfg
-        max_subtasks = int(getattr(cfg, "max_subtasks", 8) or 8)
+        cfg = self.plan_cfg or PlanExecuteSpec()
+        max_subtasks = cfg.max_subtasks
         model = _model_for(input, self.settings, self.model_spec)
 
         plan_result = await model.chat(
@@ -602,7 +642,7 @@ class _DelegatingAgent:
         if not lines:
             lines = [input.messages[-1].content if input.messages else "complete the task"]
 
-        executor = self.inner or self._base_agent(recursion_limit=getattr(cfg, "executor_recursion_limit", 6))
+        executor = self.inner or self._base_agent(recursion_limit=cfg.executor_recursion_limit)
 
         notes: list[str] = []
         for i, step in enumerate(lines, 1):
@@ -623,7 +663,7 @@ class _DelegatingAgent:
                     yield item
             notes.append(f"{i}. {step} → {step_text}")
 
-        text = ""
+        final = ChatMessage(role="assistant", content="")
         async for item in self._generate(
             model,
             [
@@ -633,12 +673,11 @@ class _DelegatingAgent:
             ],
             emit_events=emit_events,
         ):
-            if isinstance(item, str):
-                text = item
+            if isinstance(item, ChatMessage):
+                final = item
             else:
                 yield item
 
-        final = ChatMessage(role="assistant", content=text)
         async for item in self._finish(
             InvokeOutput(messages=[*input.messages, final], final=final), emit_events=emit_events
         ):

@@ -5,13 +5,13 @@ The package entry point wires the patterns together; it does not implement them.
 `patterns/delegating.py`, and the deep pattern's plan tools in `patterns/plan_tools.py`.
 
 Importing this module is what makes the built-ins resolvable: `register_pattern` runs at
-import time, and nothing in core enumerates patterns. `felix.patterns.react` is imported
-for the same reason — it registers `react` as a side effect.
+import time, and nothing in core enumerates patterns. `react` registers itself as a side
+effect of the `build_react_agent` import below — a `from`-import executes the module it
+reads from, so a separate `import felix.patterns.react` alongside it would be redundant.
 """
 
 from __future__ import annotations
 
-import felix.patterns.react  # noqa: F401  — registers the `react` pattern on import
 from felix.patterns.delegating import _DelegatingAgent
 from felix.patterns.model import register_builtin_providers
 from felix.patterns.plan_tools import _plan_tools
