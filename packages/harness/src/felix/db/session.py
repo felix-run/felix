@@ -153,6 +153,19 @@ _ENGINES: list[AsyncEngine] = []
 POOL_RECYCLE_SECONDS = 1800
 
 
+def _connect_args(settings: Settings, url: str) -> dict[str, object]:
+    """Driver options, which only exist for the driver they belong to.
+
+    Guarded on the URL rather than assumed: `prepare_threshold` is a psycopg option,
+    and passing it to any other driver is a connection-time error rather than a
+    no-op.
+    """
+    if not settings.db_prepared_statements and "+psycopg" in url:
+        # None disables auto-preparation entirely; 0 would prepare *everything*.
+        return {"prepare_threshold": None}
+    return {}
+
+
 def _pool_kwargs(settings: Settings) -> dict[str, object]:
     """Pool sizing for every engine this module builds.
 
@@ -174,7 +187,11 @@ def get_engine(database_url: str | None = None) -> AsyncEngine:
     _ensure_rls_listener()
     settings = get_settings()
     url = _normalize_url(database_url or settings.database_url)
-    engine = create_async_engine(url, **_pool_kwargs(settings))  # type: ignore[arg-type]
+    engine = create_async_engine(
+        url,
+        connect_args=_connect_args(settings, url),
+        **_pool_kwargs(settings),  # type: ignore[arg-type]
+    )
     _ENGINES.append(engine)
     return engine
 
@@ -254,8 +271,10 @@ def create_engine_from_settings(settings: Settings) -> AsyncEngine:
     tuned pools existed against the same database. Both now go through
     `_pool_kwargs`, so they cannot drift apart again."""
     _ensure_rls_listener()
+    url = _normalize_url(settings.database_url)
     engine = create_async_engine(
-        _normalize_url(settings.database_url),
+        url,
+        connect_args=_connect_args(settings, url),
         **_pool_kwargs(settings),  # type: ignore[arg-type]
     )
     _ENGINES.append(engine)

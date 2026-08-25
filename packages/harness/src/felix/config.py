@@ -171,6 +171,19 @@ class Settings(BaseSettings):
     # server-side. It earns that behind PgBouncer / RDS Proxy / Cloud SQL and wastes it
     # against a direct Postgres, which is why it is a setting rather than a constant.
     db_pool_pre_ping: bool = True
+    # Whether the driver may prepare statements server-side.
+    #
+    # Must be `false` behind a transaction-mode pooler that does not itself track
+    # prepared statements. psycopg3 auto-prepares after five executions, and under
+    # transaction pooling the sixth lands on a different server connection where that
+    # statement was never created -- measured against PgBouncer 1.25, Felix failed on
+    # exactly the sixth append with `InFailedSqlTransaction`.
+    #
+    # Two ways out, and which applies depends on whether you control the pooler.
+    # PgBouncer >= 1.21 with `max_prepared_statements > 0` tracks them for you and
+    # Felix works unchanged. RDS Proxy instead *pins* the session when it sees one,
+    # which defeats the multiplexing you deployed it for -- there, turn this off.
+    db_prepared_statements: bool = True
 
     # Granian/uvicorn worker processes. Read from a bare `os.environ` in main.py until
     # now, which is the one thing the conventions say not to do with configuration:
