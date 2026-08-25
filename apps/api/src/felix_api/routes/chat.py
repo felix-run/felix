@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request
@@ -302,7 +303,7 @@ async def chat(body: ChatRequest, request: Request) -> Any:
             raise http from exc
         raise
     execution = getattr(getattr(resolved.manifest, "spec", None), "execution", None)
-    if getattr(execution, "mode", "transient") == "durable":
+    if execution is not None and getattr(execution, "mode", "transient") == "durable":
         from felix.durability.runs import start_durable_chat
         from felix.manifests.pin import pin_fields
 
@@ -378,6 +379,69 @@ async def chat_run(resume_token: str, request: Request) -> dict[str, Any]:
     if row is None:
         raise HTTPException(status_code=404, detail="run_not_found")
     return row
+
+
+async def _durable_run_gen(*, settings: Any, tenant_id: str, accepted: dict[str, Any]):
+    """Stream a durable run's progress instead of pretending it is synchronous.
+
+    `POST /chat` honours `spec.execution.mode: durable` and returns 202 with a
+    `resume_token`; this endpoint did not mention it at all, so a manifest that asked
+    for durable execution got it on one route and was silently ignored on the other.
+
+    Streaming the run rather than returning 202 keeps the SSE contract a caller of this
+    endpoint already has, and it delivers what durable is actually for: a disconnect
+    here tears down the *poll*, not the run. That is the opposite of the transient
+    path, where a hung-up client deliberately kills the run so it stops burning tokens.
+
+    The first frame carries the `resume_token`, so a client that drops before the run
+    finishes can come back to `GET /chat/runs/{token}` rather than starting over.
+    """
+    import json
+
+    from felix.durability.runs import get_durable_run
+
+    token = str(accepted.get("resume_token") or "")
+    yield f"data: {json.dumps({'event': 'run_accepted', 'data': accepted}, default=str)}\n\n"
+
+    poll = float(getattr(settings, "stream_resume_poll_seconds", 1.0) or 1.0)
+    poll_max = max(poll, float(getattr(settings, "stream_resume_poll_max_seconds", 10.0) or 10.0))
+    # The run's own TTL bounds this, not the resume stream's idle limit: a durable run
+    # that outlives its expiry is finished either way, and holding the connection past
+    # that point would keep a worker busy for a result that can no longer arrive.
+    deadline = float(accepted.get("expires_at") or 0) or None
+
+    waited = 0.0
+    delay = poll
+    last_status = ""
+    while True:
+        run = await get_durable_run(settings, tenant_id, token)
+        if run is None:
+            yield error_frame(f"run_not_found:{token}", kind="run_error")
+            break
+        status = str(run.get("status") or "")
+        if status != last_status:
+            last_status = status
+            waited = 0.0
+            delay = poll
+            payload = {"event": "run_status", "data": {"status": status, "resume_token": token}}
+            yield f"data: {json.dumps(payload, default=str)}\n\n"
+        if status in _RUN_TERMINAL:
+            if status == "completed":
+                final = {"event": "final", "data": run.get("final") or {}}
+                yield f"data: {json.dumps(final, default=str)}\n\n"
+            else:
+                yield error_frame(str(run.get("error") or status), kind="run_error")
+            break
+        if deadline and time.time() * 1000 >= deadline:
+            # Says which it was. "expired" and "still running" look identical to a
+            # client that only sees the stream close.
+            yield error_frame(f"run_expired:{token}", kind="run_error")
+            break
+        yield ": keep-alive\n\n"
+        await asyncio.sleep(delay)
+        waited += delay
+        delay = _next_poll_delay(waited, delay, floor=poll, ceiling=poll_max)
+    yield DONE
 
 
 @router.get("/stream/{thread_id}")
@@ -519,6 +583,29 @@ async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
         if http is not None:
             raise http from exc
         raise
+    execution = getattr(getattr(resolved.manifest, "spec", None), "execution", None)
+    if execution is not None and getattr(execution, "mode", "transient") == "durable":
+        from felix.durability.runs import start_durable_chat
+        from felix.manifests.pin import pin_fields
+
+        accepted = await start_durable_chat(
+            settings,
+            auth.tenant_id,
+            manifest_id=body.manifest,
+            messages=messages,
+            thread_id=thread,
+            model_id=model_id,
+            execution=execution,
+            pin=pin_fields(resolved.manifest, version=resolved.version),
+        )
+        return sse_response(
+            _durable_run_gen(
+                settings=settings,
+                tenant_id=auth.tenant_id,
+                accepted=accepted,
+            )
+        )
+
     req_ctx = RequestContext(
         settings=settings,
         auth=auth,
@@ -835,6 +922,9 @@ async def chat_history_delete(thread_id: str, request: Request) -> dict[str, str
 # after they reattach. So the first half-minute stays at the floor, and only a stream
 # that has been silent past that decays. The load this finding is about comes from tabs
 # left open for minutes, not from the first few seconds of one.
+# Fiber statuses that mean the run will not change again.
+_RUN_TERMINAL = frozenset({"completed", "failed", "expired", "cancelled"})
+
 POLL_BACKOFF_GRACE_SECONDS = 30.0
 POLL_BACKOFF_FACTOR = 1.5
 
