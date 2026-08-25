@@ -482,3 +482,69 @@ def test_every_memory_store_function_is_classified() -> None:
     assert mislabelled == [], f"classified as not-retirement but writes visibility: {mislabelled}"
     undeclared = sorted(detected - set(RETIREMENT))
     assert undeclared == [], f"writes visibility with no retirement classification: {undeclared}"
+
+
+def test_ci_installs_every_extra_the_tests_gate_on() -> None:
+    """An extras-gated test module must be one CI actually installs the extra for.
+
+    `tests/unit/test_temporal_backend.py` gated six tests on `temporalio`, which lives
+    behind the `temporal` extra — and the CI test job installed `--dev` only. Those tests
+    never ran in CI, and because a module-level `importorskip` collapses to one
+    collect-time skip they never appeared in the skip count either: the run simply
+    reported fewer tests. The most recent Temporal change shipped with its tests
+    unexecuted.
+
+    Adding a new gate is fine; adding one CI cannot satisfy is what this catches.
+    """
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    install = next(
+        (
+            line
+            for line in workflow.splitlines()
+            if "uv sync" in line and "--dev" in line and "--extra" in line
+        ),
+        "",
+    )
+    installed = set(re.findall(r"--extra\s+([A-Za-z0-9_-]+)", install))
+
+    gated: set[str] = set()
+    for path in (ROOT / "tests").rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "require_optional"
+                and len(node.args) == 2
+                and isinstance(node.args[1], ast.Constant)
+            ):
+                gated.add(str(node.args[1].value))
+
+    assert gated, "no require_optional() gates found — has the helper been renamed?"
+    missing = sorted(gated - installed)
+    assert missing == [], (
+        f"tests gate on extras the CI test job does not install: {missing}. "
+        f"Add `--extra {' --extra '.join(missing)}` to the Pytest job's uv sync, "
+        f"or the tests behind them will silently not run."
+    )
+
+
+def test_optional_extras_are_gated_through_the_helper() -> None:
+    """A bare `importorskip` bypasses the CI requirement flag, so it must not come back."""
+    helper = ROOT / "tests" / "optional_deps.py"  # where the one legitimate call lives
+    offenders = []
+    for path in (ROOT / "tests").rglob("*.py"):
+        if path == helper:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "importorskip"
+            ):
+                offenders.append(f"{path.relative_to(ROOT)}:{node.lineno}")
+    assert offenders == [], (
+        "use tests/optional_deps.py:require_optional(module, extra) instead of "
+        f"pytest.importorskip so CI can require the extra: {offenders}"
+    )

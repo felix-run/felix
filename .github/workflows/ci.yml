@@ -126,17 +126,24 @@ jobs:
         # events where a poisoned cache could be written (v10 hardening).
       - name: Set up Python
         run: uv python install 3.14
-      # Use lean install in CI for speed; full extras remain available locally.
+      # Lean install plus only the extras that gate tests. `--all-extras` would drag in
+      # playwright, boto3 and presidio for no coverage; these two are the ones whose
+      # absence silently deletes tests (see tests/optional_deps.py).
       - name: Install dependencies
-        run: uv sync --locked --dev
+        run: uv sync --locked --dev --extra temporal --extra warehouse
       - name: Bundle manifests
         run: uv run felix bundle-manifests
       # ./scripts/test.sh owns the in-memory test environment — the same
       # entry point `make test` uses, so CI and local runs cannot drift.
       # Coverage floor is the measured number, ratcheted up deliberately —
       # never an aspirational one, which only teaches people to bypass it.
+      # REQUIRE_OPTIONAL_EXTRAS turns a missing extra into a failure instead of a
+      # collect-time skip: a module-level importorskip removes a whole file from the
+      # run without touching the skip count, which reads exactly like a pass.
       - name: Pytest
-        run: ./scripts/test.sh -q --cov --cov-report=term:skip-covered --cov-fail-under=60
+        env:
+          FELIX_REQUIRE_OPTIONAL_EXTRAS: "1"
+        run: ./scripts/test.sh -q --cov --cov-report=term:skip-covered --cov-fail-under=70
 
   # The in-memory stores are the CI test path, and nothing compared them against the
   # Postgres ones they stand in for — so a green suite was evidence about the twin, not
