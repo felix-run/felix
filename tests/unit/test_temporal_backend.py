@@ -84,7 +84,7 @@ def test_the_activity_advances_a_fiber(monkeypatch: pytest.MonkeyPatch) -> None:
         return {**row, "status": "completed"}
 
     monkeypatch.setattr("felix.durability.fibers.advance_fiber", _advance)
-    monkeypatch.setattr("felix.config.get_settings", lambda: _settings())
+    monkeypatch.setattr("felix.config.get_settings", _settings)
 
     out = asyncio.run(defs.fiber_step({"id": "f1", "status": "pending"}))
     assert seen and seen[0]["id"] == "f1"
