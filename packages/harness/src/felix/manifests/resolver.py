@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
@@ -48,10 +49,66 @@ class ResolveOptions:
     thread_id: str | None = None
 
 
-_version_blob_cache: dict[str, Manifest] = {}
-_active_pointer_cache: dict[str, dict[str, Any]] = {}
-_tenant_obj_cache: dict[str, Manifest] = {}
-_global_obj_cache: dict[str, Manifest] = {}
+# Entries kept per resolver cache.
+#
+# Three of the four below are keyed partly by tenant, so as plain dicts they only ever
+# grew: every tenant that resolved a manifest left an entry behind for the life of the
+# process. That is a slow leak rather than a latency problem, and it scales with how
+# many tenants a deployment serves -- which is the number an operator is least able to
+# bound.
+#
+# Generous on purpose. Eviction costs a re-read from Postgres or the object store, so
+# too small is merely slower while too large is the thing being fixed; a thousand
+# manifest blobs is a few megabytes and covers any realistic working set.
+MAX_CACHE_ENTRIES = 1024
+
+
+class _BoundedCache:
+    """A mapping that forgets its least-recently-used entry instead of growing.
+
+    Deliberately not a `dict` subclass. The first version was, and inheriting from
+    `dict` meant overriding `get` -- whose stdlib signature is positional-only with a
+    key typed `object` -- which produced a stream of type errors for no benefit. The
+    resolver needs five operations; a class that offers exactly those five has no
+    signature to conflict with, and it cannot be handed somewhere that quietly expects
+    the other thirty.
+    """
+
+    __slots__ = ("_data", "_maxsize")
+
+    def __init__(self, maxsize: int = MAX_CACHE_ENTRIES) -> None:
+        self._data: OrderedDict[str, Any] = OrderedDict()
+        self._maxsize = maxsize
+
+    def get(self, key: str, default: Any = None) -> Any:
+        if key not in self._data:
+            return default
+        self._data.move_to_end(key)
+        return self._data[key]
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        self._data[key] = value
+        self._data.move_to_end(key)
+        while len(self._data) > self._maxsize:
+            self._data.popitem(last=False)
+
+    def pop(self, key: str, default: Any = None) -> Any:
+        return self._data.pop(key, default)
+
+    def clear(self) -> None:
+        self._data.clear()
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+    def __contains__(self, key: str) -> bool:
+        return key in self._data
+
+
+_version_blob_cache: _BoundedCache = _BoundedCache()
+_active_pointer_cache: _BoundedCache = _BoundedCache()
+_tenant_obj_cache: _BoundedCache = _BoundedCache()
+_global_obj_cache: _BoundedCache = _BoundedCache()
 
 
 def _blob_key(tenant_id: str, name: str, version: int) -> str:
@@ -154,12 +211,13 @@ async def _read_tenant_postgres(
 async def _read_object(
     store: ObjectStore | None,
     key: str,
-    cache: dict[str, Manifest],
+    cache: _BoundedCache,
 ) -> Manifest | None:
     if store is None:
         return None
-    if key in cache:
-        return cache[key]
+    hit = cache.get(key)
+    if hit is not None:
+        return hit
     raw = await store.get_json(key)
     if raw is None:
         return None
