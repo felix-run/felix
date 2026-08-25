@@ -4,25 +4,23 @@ from __future__ import annotations
 
 import pytest
 from felix.config import Settings
+from felix_api.app import create_app
 from httpx import ASGITransport, AsyncClient
 
 
 @pytest.mark.asyncio
 async def test_health() -> None:
-    try:
-        from felix_api.app import create_app
-    except ImportError as exc:
-        pytest.skip(f"create_app imports incomplete: {exc}")
-
+    # Neither the import nor the call is guarded. `felix-api` is a workspace member, so
+    # it is installed wherever this suite runs, and `create_app` has no optional
+    # dependency on this path -- a guard around either could only ever convert "the app
+    # does not import" or "the app does not start" into a skip, and a skipped health
+    # check reads exactly like a passing one.
     settings = Settings(
         allow_insecure=True,
         auth_mode="none",
         environment="development",
     )
-    try:
-        app = create_app(settings=settings, plugins=[])
-    except Exception as exc:
-        pytest.skip(f"create_app requires harness modules: {exc}")
+    app = create_app(settings=settings, plugins=[])
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:

@@ -56,16 +56,21 @@ def _xml_escape(value: str) -> str:
     return str(value).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
 
 
+_CATALOG_PREAMBLE = (
+    "You have access to the following skills. Use activate_skill to load full instructions "
+    "when a task matches a skill description. Only names and descriptions are listed here."
+)
+
+
 def skill_catalog_xml(catalog: SkillCatalog) -> str:
     """Progressive-disclosure catalog block for the system prompt (agentskills.io style)."""
+    # Named rather than written inline: two adjacent string literals inside a list are
+    # far more often a missing comma than a deliberate concatenation, so the shape is
+    # worth not using where a reader has to judge which one it is.
     public = catalog.list_public()
     if not public:
         return ""
-    lines = [
-        "You have access to the following skills. Use activate_skill to load full instructions "
-        "when a task matches a skill description. Only names and descriptions are listed here.",
-        "<available_skills>",
-    ]
+    lines = [_CATALOG_PREAMBLE, "<available_skills>"]
     for skill in public:
         # Escaped: name and description come from a SKILL.md in the tenant object store,
         # and this block is appended to the *system prompt*. A description containing

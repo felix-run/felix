@@ -82,5 +82,7 @@ async def test_build_react_agent_calculator() -> None:
             )
         )
     except Exception as exc:
+        # Genuinely conditional, unlike the other two: this one wants a live backend.
         pytest.skip(f"model backend unavailable: {exc}")
-    assert result.final is not None
+    else:
+        assert result.final is not None

@@ -265,7 +265,6 @@ class _StreamOverflowThenOk:
         self.turns += 1
         if self.turns == 1:
             raise _err("prompt is too long")
-            yield  # pragma: no cover - generator marker
         yield StreamDelta(kind="text", text="recovered")
         yield ModelChatResult(
             message=ChatMessage(role="assistant", content="recovered"),
