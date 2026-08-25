@@ -210,3 +210,95 @@ def test_every_string_is_screened_for_execution_transports() -> None:
 
     out = _screenable_command_text({"anything": "sudo reboot"}, "container")
     assert "sudo reboot" in out
+
+
+# --- the reflect verifier is a quality gate, so it fails closed too --------------
+
+
+def _reflect_agent():
+    from felix.patterns import delegating
+
+    return delegating._DelegatingAgent(tools=[], pattern="reflect", manifest_id="r", manifest_version="1")
+
+
+class _DeadVerifier:
+    model_id = "dead"
+
+    async def chat(self, messages, tools):
+        raise RuntimeError("verifier unreachable")
+
+
+class _ChattyVerifier:
+    """Replies with prose around the number, which `float()` alone cannot read."""
+
+    model_id = "chatty"
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+    async def chat(self, messages, tools):
+        from felix.patterns.model import ModelChatResult
+        from felix.patterns.types import ChatMessage
+
+        return ModelChatResult(message=ChatMessage(role="assistant", content=self.text))
+
+
+@pytest.mark.asyncio
+async def test_unreachable_verifier_does_not_pass_the_gate(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """It returned 0.8 — above the 0.7 default threshold — so an outage *passed* every answer."""
+    from felix.patterns import delegating
+
+    monkeypatch.setattr(delegating, "build_model", lambda *a, **k: _DeadVerifier())
+    answer = "a long answer that would have cleared the old length heuristic outright"
+
+    with caplog.at_level(logging.WARNING):
+        score = await _reflect_agent()._score(answer, "assert_present:zebra", "")
+
+    assert score == 0.0, "an unmeasured answer must not clear the gate"
+    assert any("verifier" in r.message for r in caplog.records), "the outage must be visible"
+
+
+@pytest.mark.asyncio
+async def test_verifier_outage_falls_back_to_a_real_measurement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The fallback is the shared heuristic, not a constant — so criteria still decide."""
+    from felix.patterns import delegating
+
+    monkeypatch.setattr(delegating, "build_model", lambda *a, **k: _DeadVerifier())
+    agent = _reflect_agent()
+
+    assert await agent._score("hello there", "assert_present:hello", "") == 1.0
+    assert await agent._score("hello there", "assert_absent:hello", "") == 0.0
+
+
+@pytest.mark.parametrize(
+    ("reply", "expected"),
+    [
+        ("0.9", 0.9),
+        ("Score: 0.9", 0.9),
+        ("0.9/1.0", 0.9),
+        ("\n  0.25 \n", 0.25),
+        ("7", 1.0),
+        ("-2", 0.0),
+    ],
+)
+@pytest.mark.asyncio
+async def test_verifier_replies_are_parsed_not_guessed(
+    monkeypatch: pytest.MonkeyPatch, reply: str, expected: float
+) -> None:
+    """`.split()[0]` + `float()` rejected every one of these but the first."""
+    from felix.patterns import delegating
+
+    monkeypatch.setattr(delegating, "build_model", lambda *a, **k: _ChattyVerifier(reply))
+    assert await _reflect_agent()._score("some answer", "nonempty", "") == expected
+
+
+@pytest.mark.asyncio
+async def test_unparseable_verifier_reply_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    from felix.patterns import delegating
+
+    monkeypatch.setattr(delegating, "build_model", lambda *a, **k: _ChattyVerifier("I cannot score this"))
+    assert await _reflect_agent()._score("x", "assert_present:zebra", "") == 0.0

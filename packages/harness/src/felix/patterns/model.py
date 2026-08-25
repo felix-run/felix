@@ -112,6 +112,24 @@ class ModelProvider(Protocol):
         opts: ModelChatOptions | None = None,
     ) -> AsyncIterator[str]: ...
 
+    # Optional, but the difference matters: `stream()` yields text and nothing else, so a
+    # provider that implements only it cannot report tool calls *or* usage from a streamed
+    # request. `record_usage` is the sole feed for `limits.max_input_tokens`,
+    # `max_output_tokens` and `max_cost_usd`, so callers must either use `stream_turn` or
+    # pay for a second `chat()` to meter the turn — see `_stream_one_turn` in
+    # `patterns/react.py` and `_yield_model_stream` in `patterns/delegating.py`.
+    #
+    # It was left off this Protocol entirely, which meant a third-party provider could
+    # implement the published contract in full and still land in the unmetered path with
+    # nothing to tell its author why. Callers detect it with `getattr(model, "stream_turn",
+    # None)`; declaring it here is what makes the capability visible and checkable.
+    def stream_turn(
+        self,
+        messages: list[ChatMessage],
+        tools: list[Tool],
+        opts: ModelChatOptions | None = None,
+    ) -> AsyncIterator[StreamDelta | ModelChatResult]: ...
+
 
 # Alias used throughout patterns
 ModelClient = ModelProvider
