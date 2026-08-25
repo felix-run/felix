@@ -321,6 +321,52 @@ is prose that should follow whichever way the first one goes.
       so the check is cheap, and tools carrying a raw JSON schema are
       checkable too. Decide whether it warns or refuses.
 
+#### From the ASGI latency audit (Aug 2026)
+
+Nine of the ten findings landed as #55 and #66–#74. These two are what is left,
+and both are decisions rather than fixes someone can just apply.
+
+- [ ] **Collapse `append_batch`'s read-modify-write** — the Postgres arm takes
+      a transaction-scoped advisory lock, reads `coalesce(max(seq), -1)`,
+      inserts, and commits. Folding the read into the insert
+      (`INSERT … SELECT coalesce(max(seq), -1) + :offset … RETURNING seq`)
+      would shorten the lock window to a single round trip, so it no longer
+      brackets a client round trip while every other writer on the thread
+      waits. Deferred because it is the write path for every session event and
+      the highest-risk change the audit named: the multi-row sequence
+      allocation has to move into SQL, and the in-memory twin models allocation
+      differently (it counts a list). Conformance against a real Postgres is
+      mandatory, not optional — `FELIX_CONFORMANCE_REQUIRE_POSTGRES=1`. The
+      related bullet, buffering appends during a streaming turn and flushing at
+      structural boundaries, is a bigger change to the turn loop and should
+      follow rather than lead.
+- [ ] **Decide on a JWT verification cache** — `verify_jwt` does synchronous
+      signature verification on the event loop for every request in `jwt` mode.
+      A small TTL cache keyed on the token digest removes the repeat cost for a
+      chatty client. Not done with the parse caching in #72 because it is not a
+      performance question: the entry has to expire well before the token does,
+      and a cached "valid" survives a revocation for as long as it lives. That
+      is a security posture call about how stale an authorisation may be, and
+      it wants an owner rather than a default.
+
+Recorded as known and accepted, not as gaps:
+
+- `export_session` returns a whole branch as JSONL and is deliberately not
+  paginated — an export that silently truncates is worse than a slow one.
+- `_build_thread_snapshot` carries the transcript a reconnecting client
+  rebuilds from, so bounding it changes what a reconnect *means*. `#74` bounded
+  `GET /chat/history` and left this alone on purpose.
+- `GET /chat/history` can now page, but its *default* still returns up to 5000
+  events. Lowering it is the bigger win and a breaking change for felix-web, so
+  it is a product decision rather than a fix.
+- `_stream_cursor` still runs one query per structural SSE frame. #67 returned
+  the allocated sequence numbers so a writer need not re-read them, but the
+  Postgres store hands out a fresh session object per `open()` while the
+  in-memory store caches one per thread — so the object the agent writes
+  through is not the object the route reads. Bridging them needs a head cache
+  whose staleness cuts both ways: stale low replays events, stale high skips
+  them.
+
 ### Product (`felix-run/web`)
 
 - [ ] **Session-control UX gaps** — export JSONL from UI, clearer
@@ -402,6 +448,58 @@ remainder, none of it blocking.
 ---
 
 ## Shipped (recent)
+
+### ASGI latency audit (Aug 2026)
+
+A measured audit of the FastAPI/Starlette layer, then nine of its ten findings.
+Every figure below came from a benchmark against this checkout rather than from
+reading the code, and three of the audit's own conclusions did not survive being
+measured.
+
+- [x] **Four `BaseHTTPMiddleware` layers wrapped every request and every
+      streamed token.** Starlette implements each with a task group, an
+      `anyio.Event` and a zero-buffer memory object stream, so a response chunk
+      crossed four of them. Converting all four to pure ASGI took `/health` from
+      651.6 µs to 125.3 µs and an SSE chunk from 77.6 µs to 1.5 µs. The
+      streaming body cap became real in the same change: `call_next` ignores its
+      `request` argument, so the capped receive channel was never read and a
+      chunked upload with no `Content-Length` had no limit at all (#55)
+- [x] **`with_heartbeat` allocated a task per streamed event** — 44.17 µs to
+      1.10 µs with a pump task and a bounded queue (#55)
+- [x] **The pool was hardcoded at 5 + 10 in two places**, so fifteen
+      connections per worker was a ceiling nobody could raise; `FELIX_WORKERS`
+      was a bare `os.environ` read. Both are settings now, and both engines size
+      themselves through one function so they cannot drift apart again (#66)
+- [x] **`append_batch` discarded the sequence numbers it had just allocated
+      under the lock** — returned now, asserted on both arms (#67)
+- [x] **Rate-limit eviction ran `max(v)` across every tracked key**, and keys
+      are per-IP, so the defensive component's cost grew with the attack it
+      absorbs: 1412.7 µs to 6.7 µs at 50k keys. The bigger everyday win was the
+      steady-state hit — 13.92 µs to 0.37 µs — which the audit had measured at
+      1.5 µs and explicitly ruled out (#68)
+- [x] **The bundled skills catalog was re-walked on every chat request**,
+      synchronously on the event loop: 56.6 µs to 1.4 µs. The audit's suggested
+      mtime key would have bought almost nothing — the walk dominates, not the
+      reads (#69)
+- [x] **Five sequential store reads on the reattach path** — 2.66 ms to 1.38 ms
+      against a real Postgres, and the gap widens with network latency rather
+      than narrowing (#70)
+- [x] **The resume stream polled at a fixed 1 Hz per client until 300 s of
+      silence** — 300 polls per idle window down to 61, with the first thirty
+      seconds deliberately left at the floor so reattach latency is unchanged
+      (#71)
+- [x] **Credentials were re-parsed on every authenticated request** — 21.5 µs
+      to 0.4 µs. The audit's hashed-index suggestion was implemented and then
+      dropped: it optimised the wrong half, and CodeQL was right that a hash of
+      a credential in the auth path needs an argument nobody should have to
+      make (#72)
+- [x] **Four resolver caches were unbounded and three were tenant-keyed**, so
+      every tenant that resolved a manifest left an entry for the life of the
+      process (#73)
+- [x] **`GET /chat/history` returned every message a thread had ever had.**
+      Bounded and pageable, taking the newest window rather than the oldest —
+      `get_events(limit=n)` takes the first n, which for a transcript is the
+      wrong end (#74)
 
 ### Cross-harness port audit (Aug 2026)
 
