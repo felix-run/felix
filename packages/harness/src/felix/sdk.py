@@ -2,12 +2,24 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
+
+# Statuses a durable run will not move on from.
+RUN_TERMINAL = frozenset({"completed", "failed", "expired", "cancelled"})
+
+# Poll pacing for a durable run. Same shape as the server's resume stream: start
+# responsive, decay while nothing is happening. A durable run exists because it may
+# take a while, so a fixed rate is wrong at one end or the other.
+RUN_POLL_FLOOR_SECONDS = 0.5
+RUN_POLL_CEILING_SECONDS = 5.0
+RUN_POLL_FACTOR = 1.5
 
 
 @dataclass
@@ -61,7 +73,20 @@ class FelixClient:
         thread_id: str | None = None,
         model: str | None = None,
         messages: list[dict[str, Any]] | None = None,
+        wait_s: float | None = None,
     ) -> dict[str, Any]:
+        """Send a prompt and return the answer.
+
+        A manifest with `spec.execution.mode: durable` answers 202 with a
+        `resume_token` rather than a result, because the run is handed to a worker.
+        This used to return that envelope as though it were the answer, so a caller
+        switching a manifest to durable got `{"status": "accepted", ...}` where the
+        content had been -- no error, just the wrong shape.
+
+        `wait_s` bounds the wait. `None` means "until the run finishes or its own TTL
+        expires"; `0` returns the 202 immediately, for a caller that wants to hold the
+        token and poll on its own schedule.
+        """
         body = {
             "manifest": manifest or self._manifest,
             "messages": messages or [{"role": "user", "content": text}],
@@ -77,8 +102,60 @@ class FelixClient:
             )
             resp.raise_for_status()
             data = resp.json()
+            if resp.status_code == 202 and data.get("resume_token") and wait_s != 0:
+                self._emit({"event": "run_accepted", "data": data})
+                data = await self._await_run(client, data, wait_s=wait_s)
             self._emit({"event": "prompt_result", "data": data})
             return data
+
+    async def _await_run(
+        self,
+        client: httpx.AsyncClient,
+        accepted: dict[str, Any],
+        *,
+        wait_s: float | None,
+    ) -> dict[str, Any]:
+        """Poll a durable run to completion, emitting progress as it goes.
+
+        Backs off the way the server's own streams do rather than holding a fixed 1 Hz:
+        a durable run is durable because it may take a while, and a client that polls a
+        finished-in-30-seconds run at the same rate as an hour-long one is wrong for one
+        of them.
+
+        Three ways to stop, and the caller can tell which happened: the run reaches a
+        terminal status, the run's own `expires_at` passes, or `wait_s` runs out. The
+        last returns the acceptance envelope with `status: "waiting"` -- the token is
+        still good, so giving up waiting is not the same as the run failing.
+        """
+        token = str(accepted.get("resume_token") or "")
+        url = f"{self.base_url.rstrip('/')}/chat/runs/{token}"
+        expires_at = float(accepted.get("expires_at") or 0) or None
+
+        waited = 0.0
+        delay = RUN_POLL_FLOOR_SECONDS
+        last_status = ""
+        while True:
+            resp = await client.get(url, headers=self._headers())
+            if resp.status_code == 404:
+                return {**accepted, "status": "expired", "error": f"run_not_found:{token}"}
+            resp.raise_for_status()
+            run = resp.json()
+            status = str(run.get("status") or "")
+            if status != last_status:
+                last_status = status
+                self._emit({"event": "run_status", "data": run})
+            if status in RUN_TERMINAL:
+                return run
+            if expires_at is not None and time.time() * 1000 >= expires_at:
+                return {**run, "status": "expired"}
+            if wait_s is not None and waited >= wait_s:
+                # Not a failure. The run is still going and the token still resolves.
+                return {**accepted, "status": "waiting", "waited_s": waited}
+            if wait_s is not None:
+                delay = min(delay, max(0.0, wait_s - waited))
+            await asyncio.sleep(delay)
+            waited += delay
+            delay = min(delay * RUN_POLL_FACTOR, RUN_POLL_CEILING_SECONDS)
 
     async def stream(
         self,
