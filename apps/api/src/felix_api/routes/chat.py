@@ -14,6 +14,7 @@ from felix.logging_setup import loggable
 from felix.patterns.model import ModelGatewayError
 from felix.patterns.types import ChatMessage, InvokeInput
 from felix.runtime import build_tenant_agent, prepare_tenant_invoke, resolve_tenant_manifest
+from felix.session.notify import wait_for_events
 from felix.session.store import get_session_store
 from felix.session.tree import fork_thread, get_leaf, rewind_to
 from felix.session.types import GetEventsOpts
@@ -497,6 +498,7 @@ async def chat_stream_resume(request: Request, thread_id: str) -> StreamingRespo
             store = get_session_store(settings, tenant_id=auth.tenant_id)
             idle = 0.0
             delay = poll
+            notified = False
             while True:
                 events = await store.open(thread).get_events(GetEventsOpts(from_seq=cursor))
                 # `get_events(from_seq=...)` already applies `seq >= from_seq` in SQL
@@ -523,13 +525,26 @@ async def chat_stream_resume(request: Request, thread_id: str) -> StreamingRespo
                     # `delay`, not `poll`: the accounting has to follow the actual wait
                     # or the idle limit stops meaning 300 seconds.
                     idle += delay
-                    delay = _next_poll_delay(idle, delay, floor=poll, ceiling=poll_max)
+                    # A notified stream polls only as a safety net, so it can afford a
+                    # far longer interval. When Redis drops, `by_notification` goes
+                    # False on the next wait and this tightens back on its own.
+                    ceiling = NOTIFIED_POLL_CEILING_SECONDS if notified else poll_max
+                    delay = _next_poll_delay(idle, delay, floor=poll, ceiling=ceiling)
                 if idle >= idle_limit:
                     # Close rather than hold an idle connection open forever; the
                     # client reconnects with its `Last-Event-ID` and loses nothing.
                     break
                 yield ": keep-alive\n\n"
-                await asyncio.sleep(delay)
+                # Wait for the thread to move rather than sleeping through it. The
+                # query after this runs either way, so a dropped notification costs
+                # latency and never correctness -- which is what lets the ceiling
+                # relax below rather than disappear.
+                wake = await wait_for_events(auth.tenant_id, thread, timeout=delay)
+                if wake.woken:
+                    idle = 0.0
+                    delay = poll
+                    continue
+                notified = wake.by_notification
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -924,6 +939,12 @@ async def chat_history_delete(thread_id: str, request: Request) -> dict[str, str
 # left open for minutes, not from the first few seconds of one.
 # Fiber statuses that mean the run will not change again.
 _RUN_TERMINAL = frozenset({"completed", "failed", "expired", "cancelled"})
+
+# The ceiling a stream may decay to once notifications are actually being delivered.
+# Far above the un-notified ceiling because the poll is then a safety net against a
+# dropped pub/sub message rather than the mechanism itself: one query per minute per
+# idle client instead of one every ten seconds.
+NOTIFIED_POLL_CEILING_SECONDS = 60.0
 
 POLL_BACKOFF_GRACE_SECONDS = 30.0
 POLL_BACKOFF_FACTOR = 1.5
