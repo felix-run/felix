@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from functools import lru_cache
 
-from sqlalchemy import event, text
+from sqlalchemy import Connection, event, text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -73,32 +73,68 @@ def _resolve_rls_tenant(session: Session) -> str | None:
     return None
 
 
+def _rls_after_begin(session: Session, transaction: object, connection: Connection) -> None:
+    """Bind the RLS GUCs for a transaction. Module-level so it can be tested."""
+    settings = get_settings()
+    if not getattr(settings, "database_rls", False):
+        # Declare the bypass rather than setting nothing.
+        #
+        # Migration 0006 applies ENABLE *and* FORCE ROW LEVEL SECURITY
+        # unconditionally, so the policy is live on a migrated database
+        # whatever this setting says. Returning here left both GUCs unset,
+        # and the policy's `tenant_id = current_setting('app.tenant_id',
+        # true)` is then `NULL` -- not true -- so every row was filtered.
+        # Silently: no error, just empty results everywhere.
+        #
+        # That only bites a connection RLS actually applies to. A superuser
+        # or BYPASSRLS role skips it entirely, FORCE included, which is what
+        # the bundled compose role is and why local development never showed
+        # this. On managed Postgres -- where you are not superuser -- it is a
+        # total outage.
+        #
+        # `database_rls=false` means "RLS is not how this deployment
+        # isolates tenants"; the query layer still scopes every read and
+        # write. Saying so explicitly is what makes a migrated database
+        # usable without opting in.
+        connection.execute(text("SELECT set_config('app.rls_bypass', 'on', true)"))
+        return
+    if _rls_bypass.get():
+        connection.execute(text("SELECT set_config('app.rls_bypass', 'on', true)"))
+        return
+    tid = _resolve_rls_tenant(session)
+    if not tid:
+        # RLS *is* the isolation mechanism here and we cannot say whose data
+        # this is, so the policy is left to filter -- deny is the only safe
+        # answer. Log it: an unexplained empty result is otherwise
+        # indistinguishable from an empty table, and this is the one path
+        # that produces it on a correctly configured deployment.
+        logger.warning(
+            "RLS is on but no tenant could be resolved for this transaction; "
+            "it will see no rows. Wrap cross-tenant work in rls_bypass(), or "
+            "set the tenant via rls_tenant()/session.info['tenant_id']."
+        )
+        return
+    connection.execute(
+        text("SELECT set_config('app.tenant_id', :t, true)"),
+        {"t": tid},
+    )
+
+
 def _ensure_rls_listener() -> None:
     global _listener_installed
     if _listener_installed:
         return
-
-    @event.listens_for(Session, "after_begin")
-    def _after_begin(session: Session, transaction: object, connection: object) -> None:
-        settings = get_settings()
-        if not getattr(settings, "database_rls", False):
-            return
-        if _rls_bypass.get():
-            connection.execute(text("SELECT set_config('app.rls_bypass', 'on', true)"))  # type: ignore[union-attr]
-            return
-        tid = _resolve_rls_tenant(session)
-        if not tid:
-            return
-        connection.execute(  # type: ignore[union-attr]
-            text("SELECT set_config('app.tenant_id', :t, true)"),
-            {"t": tid},
-        )
-
+    event.listen(Session, "after_begin", _rls_after_begin)
     _listener_installed = True
 
 
 async def apply_tenant_rls(session: AsyncSession, settings: Settings, tenant_id: str) -> None:
-    """Explicitly set RLS GUCs on an open session (also covered by after_begin)."""
+    """Explicitly set RLS GUCs on an open session (also covered by after_begin).
+
+    Returning early when RLS is off is safe *because* ``after_begin`` has already
+    declared ``app.rls_bypass`` for the transaction; without that this would leave
+    a FORCE'd policy filtering everything.
+    """
     if not getattr(settings, "database_rls", False) or _use_memory(settings):
         return
     session.info["tenant_id"] = tenant_id
