@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import logging
 from collections.abc import Sequence
 from typing import Any
 
@@ -16,8 +15,6 @@ from felix.config import Settings, get_settings
 from felix.context import AuthContext as CtxAuth
 from felix.context import LimitState, RequestContext, async_run_with_context
 from felix.security.constant_time import constant_time_equal
-
-logger = logging.getLogger("felix.auth.middleware")
 
 # Unauthenticated access allowed even when auth_mode is jwt/api_key (probes + discovery).
 # /metrics is NOT public: its counters carry tenant-supplied manifest ids and remote

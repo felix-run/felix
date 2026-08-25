@@ -42,7 +42,6 @@ from felix.tools.types import Tool
 logger = logging.getLogger("felix.patterns.react")
 
 DEFAULT_RECURSION = 10
-_SEQUENTIAL_TRANSPORTS = frozenset({"client", "approval"})
 
 
 def _status_for_stop(stop: str) -> str:

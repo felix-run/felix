@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-import logging
 from datetime import timedelta
 from typing import Any
 
 from felix.config import Settings
-
-logger = logging.getLogger("felix.durability.temporal")
 
 TASK_QUEUE = "felix-fibers"
 

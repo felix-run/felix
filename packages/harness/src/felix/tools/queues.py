@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import logging
 import time
 import uuid
 from collections import deque
@@ -16,8 +15,6 @@ from felix.context import try_get_context
 from felix.db.session import _use_memory
 from felix.manifests.schema import QueueRef
 from felix.tools.types import Tool, ToolInvocationCtx, define_tool
-
-logger = logging.getLogger("felix.tools.queues")
 
 _memory: dict[str, deque[str]] = {}
 

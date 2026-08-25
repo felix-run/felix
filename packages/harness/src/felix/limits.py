@@ -13,13 +13,10 @@ agent loop cannot drift apart on what "over budget" means.
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass
 from typing import Any
 
 from felix.context import LimitState
-
-now_ms = lambda: int(time.time() * 1000)
 
 
 @dataclass(frozen=True)
