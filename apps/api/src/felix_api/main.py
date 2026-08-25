@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import os
-
 
 def create_application():
     """ASGI factory used by granian/uvicorn ``felix_api.main:create_application``."""
@@ -19,7 +17,7 @@ def main() -> None:
     settings = get_settings()
     host = settings.host
     port = settings.port
-    workers = int(os.environ.get("FELIX_WORKERS", "1"))
+    workers = settings.workers
 
     try:
         from granian.constants import Interfaces

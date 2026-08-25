@@ -115,7 +115,22 @@ _ENGINES: list[AsyncEngine] = []
 # it, PgBouncer / RDS Proxy / Cloud SQL close connections the pool still believes are
 # live, and pool_pre_ping pays a round trip to discover that on every checkout.
 POOL_RECYCLE_SECONDS = 1800
-POOL_TIMEOUT_SECONDS = 30
+
+
+def _pool_kwargs(settings: Settings) -> dict[str, object]:
+    """Pool sizing for every engine this module builds.
+
+    One function rather than two literal blocks: the second engine previously had no
+    pool sizing at all, and when that was fixed it was fixed by copying the numbers --
+    which is how two differently tuned pools against the same database happen.
+    """
+    return {
+        "pool_pre_ping": settings.db_pool_pre_ping,
+        "pool_size": settings.db_pool_size,
+        "max_overflow": settings.db_max_overflow,
+        "pool_recycle": POOL_RECYCLE_SECONDS,
+        "pool_timeout": settings.db_pool_timeout_seconds,
+    }
 
 
 @lru_cache
@@ -123,16 +138,21 @@ def get_engine(database_url: str | None = None) -> AsyncEngine:
     _ensure_rls_listener()
     settings = get_settings()
     url = _normalize_url(database_url or settings.database_url)
-    engine = create_async_engine(
-        url,
-        pool_pre_ping=True,
-        pool_size=5,
-        max_overflow=10,
-        pool_recycle=POOL_RECYCLE_SECONDS,
-        pool_timeout=POOL_TIMEOUT_SECONDS,
-    )
+    engine = create_async_engine(url, **_pool_kwargs(settings))  # type: ignore[arg-type]
     _ENGINES.append(engine)
     return engine
+
+
+@lru_cache(maxsize=16)
+def _factory_for(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
+    """One sessionmaker per engine.
+
+    Keyed on the engine rather than on settings: `Settings` is not hashable, and the
+    engine is already the thing a factory is bound to. `dispose_engine` clears this
+    alongside the engine cache, so a disposed engine cannot be kept alive by a factory
+    still holding a reference to it.
+    """
+    return async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
 
 def get_session_factory(
@@ -144,7 +164,7 @@ def get_session_factory(
     if engine is None:
         url = None if settings is None else settings.database_url
         engine = get_engine(url)
-    return async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    return _factory_for(engine)
 
 
 @asynccontextmanager
@@ -183,6 +203,8 @@ async def dispose_engine() -> None:
     no way to reach them.
     """
     get_engine.cache_clear()
+    # Or a factory keeps a disposed engine reachable.
+    _factory_for.cache_clear()
     engines, _ENGINES[:] = list(_ENGINES), []
     for engine in engines:
         try:
@@ -193,15 +215,12 @@ async def dispose_engine() -> None:
 
 def create_engine_from_settings(settings: Settings) -> AsyncEngine:
     """A second engine, previously with no pool sizing at all — so two differently
-    tuned pools existed against the same database."""
+    tuned pools existed against the same database. Both now go through
+    `_pool_kwargs`, so they cannot drift apart again."""
     _ensure_rls_listener()
     engine = create_async_engine(
         _normalize_url(settings.database_url),
-        pool_pre_ping=True,
-        pool_size=5,
-        max_overflow=10,
-        pool_recycle=POOL_RECYCLE_SECONDS,
-        pool_timeout=POOL_TIMEOUT_SECONDS,
+        **_pool_kwargs(settings),  # type: ignore[arg-type]
     )
     _ENGINES.append(engine)
     return engine
