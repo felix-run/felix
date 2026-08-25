@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-08-24
+
 ### Added
 
 - **`ApprovalRule.when_args` gates a rule on the arguments a call carries.** Approval
@@ -909,4 +911,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLI: `migrate`, `eval`, `mint-jwt`, `bundle-manifests`, `doctor`, `version`, `temporal-worker`.
 - Typed packages (`py.typed`) for harness, CLI, API, and worker.
 
+[0.2.0]: https://github.com/felix-run/felix/releases/tag/v0.2.0
 [0.1.0]: https://github.com/felix-run/felix/releases/tag/v0.1.0

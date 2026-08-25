@@ -1,6 +1,6 @@
 [project]
 name = "felix-api"
-version = "0.1.0"
+version = "0.2.0"
 description = "Felix API — FastAPI HTTP surface for the agent harness."
 requires-python = ">=3.14"
 license = "Apache-2.0"
