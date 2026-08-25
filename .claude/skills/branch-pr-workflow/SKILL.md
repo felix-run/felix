@@ -15,7 +15,7 @@ Commit or push **only when the user asks**.
 
    ```bash
    git switch main && git pull --ff-only origin main
-   git switch -c <type>/<short-slug>     # feat/ fix/ docs/ chore/ refactor/
+   git switch -c <type>/<short-slug>     # feat/ fix/ docs/ chore/ refactor/ release/
    ```
 
 2. **Feature-scoped PRs.** The unit of a PR is a feature or audit area, not a single edit. Group
