@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections import defaultdict
+from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -22,41 +22,77 @@ class RateLimiterBackend(Protocol):
 # whose job is to prevent DoS.
 MAX_TRACKED_KEYS = 50_000
 
+# Keys examined for expiry per request. Eviction is incremental rather than a periodic
+# full sweep: the sweep ran `max(v)` over every tracked key *inside a request*, which at
+# 20,000 keys stalled the whole worker for ~1 ms — and key count is attacker-influenced,
+# since keys are per-IP. A spray of source addresses inflated the work the defensive
+# component did on every request it served. Four is enough to outpace one new key per
+# request while staying constant-cost.
+EVICT_PER_HIT = 4
+
 
 @dataclass
 class InMemoryRateLimiter:
-    """Sliding-ish fixed window for tests and single-process deploys."""
+    """Sliding-ish fixed window for tests and single-process deploys.
 
-    _windows: dict[str, list[float]] = field(default_factory=lambda: defaultdict(list))
-    _last_sweep: float = 0.0
+    Ordered by last hit, so the front of `_windows` is always the least-recently-seen
+    key — which is exactly the key whose window elapsed longest ago. That makes expiry
+    a look at the front rather than a scan, and it makes the ceiling a `popitem` rather
+    than a sort.
+    """
+
+    _windows: OrderedDict[str, deque[float]] = field(default_factory=OrderedDict)
 
     async def hit(self, key: str, *, limit: int, window_seconds: int) -> bool:
         now = time.monotonic()
         cutoff = now - window_seconds
-        self._maybe_evict(now, window_seconds)
-        bucket = [t for t in self._windows[key] if t > cutoff]
-        if len(bucket) >= limit:
+        self._evict_some(cutoff)
+
+        # `.get`, not `[]`: the old defaultdict inserted an entry for every key it was
+        # merely asked about.
+        bucket = self._windows.get(key)
+        if bucket is None:
+            bucket = deque()
             self._windows[key] = bucket
+        else:
+            self._windows.move_to_end(key)
+
+        # Timestamps are appended in order, so the deque is sorted and dropping from
+        # the left is amortised O(1) -- where the old comprehension rebuilt the whole
+        # list on every request.
+        while bucket and bucket[0] <= cutoff:
+            bucket.popleft()
+
+        if len(bucket) >= limit:
             return False
         bucket.append(now)
-        self._windows[key] = bucket
+        self._enforce_ceiling()
         return True
 
-    def _maybe_evict(self, now: float, window_seconds: int) -> None:
-        """Drop keys whose window has fully elapsed. Nothing evicted them before."""
-        if now - self._last_sweep < window_seconds:
-            return
-        self._last_sweep = now
-        cutoff = now - window_seconds
-        stale = [k for k, v in self._windows.items() if not v or max(v) <= cutoff]
-        for k in stale:
-            del self._windows[k]
-        # Hard ceiling in case a sweep cannot keep up with the arrival rate.
-        if len(self._windows) > MAX_TRACKED_KEYS:
-            for k in sorted(self._windows, key=lambda k: max(self._windows[k] or [0]))[
-                : len(self._windows) - MAX_TRACKED_KEYS
-            ]:
-                del self._windows[k]
+    def _evict_some(self, cutoff: float) -> None:
+        """Expire a bounded number of the oldest keys.
+
+        Bounded, so the cost per request is constant no matter how many keys are
+        tracked. Correct, because insertion order is last-hit order: once the front
+        key is still live, every key behind it is too.
+        """
+        for _ in range(EVICT_PER_HIT):
+            if not self._windows:
+                return
+            key = next(iter(self._windows))
+            bucket = self._windows[key]
+            if bucket and bucket[-1] > cutoff:
+                return
+            del self._windows[key]
+
+    def _enforce_ceiling(self) -> None:
+        """A hard cap, in case arrivals outpace expiry.
+
+        Keys are per-IP, so without a bound a spray of source addresses grows the dict
+        forever — a memory-exhaustion DoS in the component whose job is to prevent one.
+        """
+        while len(self._windows) > MAX_TRACKED_KEYS:
+            self._windows.popitem(last=False)
 
 
 @dataclass
@@ -71,7 +107,11 @@ class RedisRateLimiter:
         # INCR then EXPIRE is not atomic: a crash between them leaves a key with no TTL,
         # and that principal is then rate-limited permanently. A pipeline applies both.
         try:
-            pipe = self.redis.pipeline()
+            # `transaction=False`: the default wraps INCR + EXPIRE in MULTI/EXEC, which
+            # buys atomicity this does not need — the two commands are independent and
+            # the `nx` on EXPIRE already makes it idempotent — and pays two extra round
+            # trips per request for it.
+            pipe = self.redis.pipeline(transaction=False)
             pipe.incr(rkey)
             pipe.expire(rkey, window_seconds, nx=True)
             results = await pipe.execute()
