@@ -49,19 +49,18 @@ This list is exhaustive. A large file **not** named here has no such defense —
 The section above was read as "every big file in this repo is deliberate," which is how
 the two largest modules in the harness kept getting a pass. They are not defended:
 
-- `packages/harness/src/felix/patterns/model.py` (~1,580 lines). `_HttpModelClient` alone is
-  ~600 lines and hand-dispatches two wire protocols on a `style == "anthropic"` string flag,
-  through paired `_chat_*` / `_stream_turn_*` / `_stream_*` / `_*_body` methods. The file
-  already defines the `ModelProvider` Protocol and a provider registry — the right seam,
-  unused, since all three factories return this one class. Two implementations behind the
-  existing Protocol is the intended shape.
-- `packages/harness/src/felix/patterns/__init__.py` (~980 lines). A package `__init__` holding
-  six pattern builders, `_plan_tools`, and `_DelegatingAgent`. Two of the repo's four `noqa:
-  E402`s are here, working around a circular-import ordering a `patterns/delegating.py` split
-  would remove. `react` already lives in its own module; the other six should too.
+- `packages/harness/src/felix/patterns/model.py` (~1,630 lines). The wire clients were split
+  into `_OpenAIClient` and `_AnthropicClient` behind a 113-line `_HttpModelClient` base, so the
+  `style == "anthropic"` flag and its three dispatch sites are gone. What remains is a long
+  file rather than a tangled one: the two wire formats (~200 and ~320 lines) plus request
+  building, retry/backoff, SSE parsing, usage recording, and the `_FallbackClient` /
+  `_EscalationClient` composites. Moving the two clients into their own modules is the
+  obvious next step and is mechanical; nothing depends on them staying here.
 
-`_DelegatingAgent` carries a `_x` / `_stream_x` pair per pattern. That duplication has already
-produced real defects twice — see the duplication rule below.
+`packages/harness/src/felix/patterns/__init__.py` was 920 lines and is now 152: the composite
+agent moved to `patterns/delegating.py` and the deep pattern's plan tools to
+`patterns/plan_tools.py`, which also removed both of that file's `noqa: E402` imports.
+`delegating.py` is ~645 lines and holds one `_run_*` per pattern.
 
 ## Duplication that is a defect, not a counter-rule
 
@@ -76,11 +75,13 @@ repo that has repeatedly shipped bugs, because the copies drift silently:
   `stream_turn`, which yields deltas and ends with the authoritative `ModelChatResult`.
 - `patterns/__init__.py` — `_stream_parallel` and `_stream_plan_execute` never called
   `record_usage`, so streamed runs of those patterns were unbilled and escaped the token and
-  cost budgets, while their non-streaming twins metered correctly. Fixed in
-  `_yield_model_stream`; `tests/unit/test_pattern_metering.py` now asserts both halves.
+  cost budgets, while their non-streaming twins metered correctly. Fixed by collapsing
+  `_DelegatingAgent` onto one `_run_*(input, *, emit_events)` per pattern, the same shape
+  `react.py` uses; `tests/unit/test_pattern_metering.py` asserts the budgets move on both
+  `invoke()` and `stream_events()`, parametrized so a reopened split fails.
 
-When you touch one half of such a pair, check the other. `_DelegatingAgent` is still built this
-way and is the remaining place this can recur.
+All three are now written once. If you find yourself adding a `_stream_x` beside an `_x`, that
+is the defect, not the design — thread `emit_events` through the one implementation instead.
 
 ## Duplication counter-rules specific to this repo
 

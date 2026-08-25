@@ -125,14 +125,13 @@ def _client(monkeypatch: Any):
     from felix.patterns import model as model_mod
 
     monkeypatch.setattr(model_mod.httpx, "AsyncClient", _FakeClient())
-    return model_mod._HttpModelClient(
+    return model_mod._AnthropicClient(
         model_id="claude-sonnet-4-5",
         route=model_mod.ModelRoute(provider="anthropic", model="claude-sonnet-4-5"),
         settings=Settings(allow_insecure=True, auth_mode="none", environment="development"),
         spec=_Spec(),
         base_url="https://example.invalid",
         api_key="k",
-        style="anthropic",
     )
 
 

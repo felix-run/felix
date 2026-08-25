@@ -705,13 +705,35 @@ def _parse_openai_tool_calls(raw: list[dict[str, Any]] | None) -> list[ToolCall]
 
 @dataclass
 class _HttpModelClient:
+    """Shared transport for the HTTP providers: OpenAI-style and Anthropic.
+
+    This was one class carrying a `style: Literal["openai", "anthropic"]` flag and
+    branching on it in `chat`, `stream_turn` and `stream`, with eight provider-specific
+    methods behind them — while the `ModelProvider` Protocol and the provider registry
+    right above it already described exactly the seam that flag was standing in for.
+    All three factories returned this one class.
+
+    The subclasses now hold everything wire-specific. This base owns only what does not
+    differ: the connection fields, and resolving `ModelChatOptions` against `spec`
+    defaults once so the three entry points cannot disagree about what temperature or
+    token ceiling a turn ran with.
+    """
+
     model_id: str
     route: ModelRoute
     settings: Settings
     spec: Any
     base_url: str
     api_key: str
-    style: Literal["openai", "anthropic"]
+
+    def _resolve(self, opts: ModelChatOptions | None) -> tuple[ModelChatOptions, float, int | None]:
+        """Options for this turn, with `spec` supplying whatever the caller left unset."""
+        opts = opts or ModelChatOptions()
+        temperature = (
+            opts.temperature if opts.temperature is not None else getattr(self.spec, "temperature", 0)
+        )
+        max_tokens = opts.max_tokens or getattr(self.spec, "max_tokens", None)
+        return opts, temperature, max_tokens
 
     async def chat(
         self,
@@ -719,21 +741,90 @@ class _HttpModelClient:
         tools: list[Tool],
         opts: ModelChatOptions | None = None,
     ) -> ModelChatResult:
-        opts = opts or ModelChatOptions()
-        temperature = (
-            opts.temperature if opts.temperature is not None else getattr(self.spec, "temperature", 0)
-        )
-        max_tokens = opts.max_tokens or getattr(self.spec, "max_tokens", None)
+        opts, temperature, max_tokens = self._resolve(opts)
+        return await self._chat(messages, tools, temperature, max_tokens, isolate_cache=opts.isolate_cache)
 
-        if self.style == "anthropic":
-            return await self._chat_anthropic(
-                messages, tools, temperature, max_tokens, isolate_cache=opts.isolate_cache
-            )
-        return await self._chat_openai(
-            messages, tools, temperature, max_tokens, isolate_cache=opts.isolate_cache
-        )
+    async def stream_turn(
+        self,
+        messages: list[ChatMessage],
+        tools: list[Tool],
+        opts: ModelChatOptions | None = None,
+    ) -> AsyncIterator[StreamDelta | ModelChatResult]:
+        """Stream one turn in a single request, ending with the authoritative result.
 
-    def _openai_body(
+        The agent loop used to stream a turn for display and then call `chat()` to get
+        the real answer — two full inferences for one turn. That billed the input twice,
+        metered only the second (so `limits.max_cost_usd` and the token budgets counted
+        roughly half of what a streaming run actually spent), and sampled the answer
+        twice, so the text a user watched arrive could differ from the text that was
+        saved. It also meant the streamed request carried no tools at all.
+
+        One request now yields display deltas and finishes by yielding the
+        `ModelChatResult` — same message, tool calls, stop reason and usage that `chat()`
+        would have returned. Callers distinguish the final item by type.
+        """
+        _, temperature, max_tokens = self._resolve(opts)
+        async for item in self._stream_turn(messages, tools, temperature, max_tokens):
+            yield item
+
+    async def stream(
+        self,
+        messages: list[ChatMessage],
+        tools: list[Tool],
+        opts: ModelChatOptions | None = None,
+    ) -> AsyncIterator[str]:
+        _, temperature, max_tokens = self._resolve(opts)
+        async for chunk in self._stream(messages, tools, temperature, max_tokens):
+            yield chunk
+
+    # --- what a wire format must provide -------------------------------------------
+
+    def _body(
+        self,
+        messages: list[ChatMessage],
+        tools: list[Tool],
+        temperature: float,
+        max_tokens: int | None,
+        *,
+        isolate_cache: bool = False,
+    ) -> dict[str, Any]:
+        raise NotImplementedError
+
+    async def _chat(
+        self,
+        messages: list[ChatMessage],
+        tools: list[Tool],
+        temperature: float,
+        max_tokens: int | None,
+        *,
+        isolate_cache: bool = False,
+    ) -> ModelChatResult:
+        raise NotImplementedError
+
+    def _stream_turn(
+        self,
+        messages: list[ChatMessage],
+        tools: list[Tool],
+        temperature: float,
+        max_tokens: int | None,
+    ) -> AsyncIterator[StreamDelta | ModelChatResult]:
+        raise NotImplementedError
+
+    def _stream(
+        self,
+        messages: list[ChatMessage],
+        tools: list[Tool],
+        temperature: float,
+        max_tokens: int | None,
+    ) -> AsyncIterator[str]:
+        raise NotImplementedError
+
+
+@dataclass
+class _OpenAIClient(_HttpModelClient):
+    """The OpenAI chat-completions wire format — also Ollama and any LiteLLM gateway."""
+
+    def _body(
         self,
         messages: list[ChatMessage],
         tools: list[Tool],
@@ -754,7 +845,7 @@ class _HttpModelClient:
         apply_openai_thinking_cache(body, self.spec, isolate_cache=isolate_cache)
         return body
 
-    async def _chat_openai(
+    async def _chat(
         self,
         messages: list[ChatMessage],
         tools: list[Tool],
@@ -763,7 +854,7 @@ class _HttpModelClient:
         *,
         isolate_cache: bool = False,
     ) -> ModelChatResult:
-        body = self._openai_body(messages, tools, temperature, max_tokens, isolate_cache=isolate_cache)
+        body = self._body(messages, tools, temperature, max_tokens, isolate_cache=isolate_cache)
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
         async with httpx.AsyncClient(timeout=120.0) as client:
             resp = await _post_with_retry(
@@ -791,7 +882,149 @@ class _HttpModelClient:
             usage=_openai_usage(usage_raw),
         )
 
-    def _anthropic_body(
+    async def _stream_turn(
+        self,
+        messages: list[ChatMessage],
+        tools: list[Tool],
+        temperature: float,
+        max_tokens: int | None,
+    ) -> AsyncIterator[StreamDelta | ModelChatResult]:
+        body = self._body(messages, tools, temperature, max_tokens)
+        body["stream"] = True
+        # Usage is omitted from a streamed response unless it is asked for, and without
+        # it a streaming turn would meter as zero tokens.
+        body["stream_options"] = {"include_usage": True}
+        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+
+        text_parts: list[str] = []
+        tools_by_index: dict[int, dict[str, Any]] = {}
+        usage = TokenUsage()
+        raw_stop: str | None = None
+
+        async with (
+            httpx.AsyncClient(timeout=120.0) as client,
+            client.stream(
+                "POST",
+                f"{self.base_url.rstrip('/')}/chat/completions",
+                json=body,
+                headers=headers,
+            ) as resp,
+        ):
+            if resp.status_code >= 400:
+                raw = await resp.aread()
+                raise ModelGatewayError("openai", resp.status_code, raw.decode("utf-8", errors="replace"))
+            async for line in resp.aiter_lines():
+                if not line:
+                    continue
+                if line.startswith("data:"):
+                    payload = line[5:].strip()
+                elif line.startswith("{"):
+                    payload = line.strip()
+                else:
+                    continue
+                if payload == "[DONE]":
+                    break
+                try:
+                    data = json.loads(payload)
+                except json.JSONDecodeError:
+                    continue
+
+                if data.get("usage"):
+                    usage = _openai_usage(data["usage"])
+                for choice in data.get("choices") or []:
+                    raw_stop = choice.get("finish_reason") or raw_stop
+                    delta = choice.get("delta") or {}
+                    content = delta.get("content")
+                    if content:
+                        text_parts.append(str(content))
+                        yield StreamDelta(kind="text", text=str(content))
+                    for raw_call in delta.get("tool_calls") or []:
+                        index = int(raw_call.get("index") or 0)
+                        entry = tools_by_index.setdefault(index, {"id": "", "name": "", "json": ""})
+                        if raw_call.get("id"):
+                            entry["id"] = str(raw_call["id"])
+                        fn = raw_call.get("function") or {}
+                        if fn.get("name"):
+                            entry["name"] = str(fn["name"])
+                        if fn.get("arguments"):
+                            entry["json"] = str(entry["json"]) + str(fn["arguments"])
+
+        tool_calls = [
+            ToolCall(
+                id=entry["id"] or f"call_{uuid.uuid4().hex[:12]}",
+                name=str(entry["name"]),
+                args=_parse_tool_arguments(entry["json"]),
+            )
+            for _, entry in sorted(tools_by_index.items())
+            if entry.get("name")
+        ]
+        yield ModelChatResult(
+            message=ChatMessage(
+                role="assistant",
+                content="".join(text_parts),
+                tool_calls=tool_calls or None,
+            ),
+            stop_reason=_map_stop(raw_stop, _OPENAI_STOP, had_tool_calls=bool(tool_calls)),
+            usage=usage,
+        )
+
+    async def _stream(
+        self,
+        messages: list[ChatMessage],
+        tools: list[Tool],
+        temperature: float,
+        max_tokens: int | None,
+    ) -> AsyncIterator[str]:
+        body: dict[str, Any] = {
+            "model": self.route.model,
+            "messages": _messages_to_openai(messages),
+            "temperature": temperature,
+            "stream": True,
+        }
+        if max_tokens:
+            body["max_tokens"] = max_tokens
+        apply_openai_thinking_cache(body, self.spec)
+        # Streaming path is text-oriented; tool calls use chat() in the agent loop.
+        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        async with (
+            httpx.AsyncClient(timeout=120.0) as client,
+            client.stream(
+                "POST",
+                f"{self.base_url.rstrip('/')}/chat/completions",
+                json=body,
+                headers=headers,
+            ) as resp,
+        ):
+            if resp.status_code >= 400:
+                text = await resp.aread()
+                raise ModelGatewayError("openai", resp.status_code, text.decode("utf-8", errors="replace"))
+            async for line in resp.aiter_lines():
+                if not line:
+                    continue
+                if line.startswith("data:"):
+                    payload = line[5:].strip()
+                elif line.startswith("{"):
+                    payload = line.strip()
+                else:
+                    continue
+                if payload == "[DONE]":
+                    break
+                try:
+                    data = json.loads(payload)
+                except json.JSONDecodeError:
+                    continue
+                for choice in data.get("choices") or []:
+                    delta = choice.get("delta") or {}
+                    content = delta.get("content")
+                    if content:
+                        yield str(content)
+
+
+@dataclass
+class _AnthropicClient(_HttpModelClient):
+    """The Anthropic messages wire format, including thinking blocks and cache points."""
+
+    def _body(
         self,
         messages: list[ChatMessage],
         tools: list[Tool],
@@ -853,7 +1086,7 @@ class _HttpModelClient:
         apply_anthropic_thinking_cache(body, self.spec, self.route.model, isolate_cache=isolate_cache)
         return body
 
-    async def _chat_anthropic(
+    async def _chat(
         self,
         messages: list[ChatMessage],
         tools: list[Tool],
@@ -862,7 +1095,7 @@ class _HttpModelClient:
         *,
         isolate_cache: bool = False,
     ) -> ModelChatResult:
-        body = self._anthropic_body(messages, tools, temperature, max_tokens, isolate_cache=isolate_cache)
+        body = self._body(messages, tools, temperature, max_tokens, isolate_cache=isolate_cache)
         headers = {
             "x-api-key": self.api_key,
             "anthropic-version": "2023-06-01",
@@ -914,45 +1147,14 @@ class _HttpModelClient:
             ),
         )
 
-    async def stream_turn(
-        self,
-        messages: list[ChatMessage],
-        tools: list[Tool],
-        opts: ModelChatOptions | None = None,
-    ) -> AsyncIterator[StreamDelta | ModelChatResult]:
-        """Stream one turn in a single request, ending with the authoritative result.
-
-        The agent loop used to stream a turn for display and then call `chat()` to get
-        the real answer — two full inferences for one turn. That billed the input twice,
-        metered only the second (so `limits.max_cost_usd` and the token budgets counted
-        roughly half of what a streaming run actually spent), and sampled the answer
-        twice, so the text a user watched arrive could differ from the text that was
-        saved. It also meant the streamed request carried no tools at all.
-
-        One request now yields display deltas and finishes by yielding the
-        `ModelChatResult` — same message, tool calls, stop reason and usage that `chat()`
-        would have returned. Callers distinguish the final item by type.
-        """
-        opts = opts or ModelChatOptions()
-        temperature = (
-            opts.temperature if opts.temperature is not None else getattr(self.spec, "temperature", 0)
-        )
-        max_tokens = opts.max_tokens or getattr(self.spec, "max_tokens", None)
-        if self.style == "anthropic":
-            async for item in self._stream_turn_anthropic(messages, tools, temperature, max_tokens):
-                yield item
-            return
-        async for item in self._stream_turn_openai(messages, tools, temperature, max_tokens):
-            yield item
-
-    async def _stream_turn_anthropic(
+    async def _stream_turn(
         self,
         messages: list[ChatMessage],
         tools: list[Tool],
         temperature: float,
         max_tokens: int | None,
     ) -> AsyncIterator[StreamDelta | ModelChatResult]:
-        body = self._anthropic_body(messages, tools, temperature, max_tokens)
+        body = self._body(messages, tools, temperature, max_tokens)
         body["stream"] = True
         headers = {
             "x-api-key": self.api_key,
@@ -1054,162 +1256,7 @@ class _HttpModelClient:
             usage=usage,
         )
 
-    async def _stream_turn_openai(
-        self,
-        messages: list[ChatMessage],
-        tools: list[Tool],
-        temperature: float,
-        max_tokens: int | None,
-    ) -> AsyncIterator[StreamDelta | ModelChatResult]:
-        body = self._openai_body(messages, tools, temperature, max_tokens)
-        body["stream"] = True
-        # Usage is omitted from a streamed response unless it is asked for, and without
-        # it a streaming turn would meter as zero tokens.
-        body["stream_options"] = {"include_usage": True}
-        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
-
-        text_parts: list[str] = []
-        tools_by_index: dict[int, dict[str, Any]] = {}
-        usage = TokenUsage()
-        raw_stop: str | None = None
-
-        async with (
-            httpx.AsyncClient(timeout=120.0) as client,
-            client.stream(
-                "POST",
-                f"{self.base_url.rstrip('/')}/chat/completions",
-                json=body,
-                headers=headers,
-            ) as resp,
-        ):
-            if resp.status_code >= 400:
-                raw = await resp.aread()
-                raise ModelGatewayError("openai", resp.status_code, raw.decode("utf-8", errors="replace"))
-            async for line in resp.aiter_lines():
-                if not line:
-                    continue
-                if line.startswith("data:"):
-                    payload = line[5:].strip()
-                elif line.startswith("{"):
-                    payload = line.strip()
-                else:
-                    continue
-                if payload == "[DONE]":
-                    break
-                try:
-                    data = json.loads(payload)
-                except json.JSONDecodeError:
-                    continue
-
-                if data.get("usage"):
-                    usage = _openai_usage(data["usage"])
-                for choice in data.get("choices") or []:
-                    raw_stop = choice.get("finish_reason") or raw_stop
-                    delta = choice.get("delta") or {}
-                    content = delta.get("content")
-                    if content:
-                        text_parts.append(str(content))
-                        yield StreamDelta(kind="text", text=str(content))
-                    for raw_call in delta.get("tool_calls") or []:
-                        index = int(raw_call.get("index") or 0)
-                        entry = tools_by_index.setdefault(index, {"id": "", "name": "", "json": ""})
-                        if raw_call.get("id"):
-                            entry["id"] = str(raw_call["id"])
-                        fn = raw_call.get("function") or {}
-                        if fn.get("name"):
-                            entry["name"] = str(fn["name"])
-                        if fn.get("arguments"):
-                            entry["json"] = str(entry["json"]) + str(fn["arguments"])
-
-        tool_calls = [
-            ToolCall(
-                id=entry["id"] or f"call_{uuid.uuid4().hex[:12]}",
-                name=str(entry["name"]),
-                args=_parse_tool_arguments(entry["json"]),
-            )
-            for _, entry in sorted(tools_by_index.items())
-            if entry.get("name")
-        ]
-        yield ModelChatResult(
-            message=ChatMessage(
-                role="assistant",
-                content="".join(text_parts),
-                tool_calls=tool_calls or None,
-            ),
-            stop_reason=_map_stop(raw_stop, _OPENAI_STOP, had_tool_calls=bool(tool_calls)),
-            usage=usage,
-        )
-
-    async def stream(
-        self,
-        messages: list[ChatMessage],
-        tools: list[Tool],
-        opts: ModelChatOptions | None = None,
-    ) -> AsyncIterator[str]:
-        opts = opts or ModelChatOptions()
-        temperature = (
-            opts.temperature if opts.temperature is not None else getattr(self.spec, "temperature", 0)
-        )
-        max_tokens = opts.max_tokens or getattr(self.spec, "max_tokens", None)
-        if self.style == "anthropic":
-            async for chunk in self._stream_anthropic(messages, tools, temperature, max_tokens):
-                yield chunk
-            return
-        async for chunk in self._stream_openai(messages, tools, temperature, max_tokens):
-            yield chunk
-
-    async def _stream_openai(
-        self,
-        messages: list[ChatMessage],
-        tools: list[Tool],
-        temperature: float,
-        max_tokens: int | None,
-    ) -> AsyncIterator[str]:
-        body: dict[str, Any] = {
-            "model": self.route.model,
-            "messages": _messages_to_openai(messages),
-            "temperature": temperature,
-            "stream": True,
-        }
-        if max_tokens:
-            body["max_tokens"] = max_tokens
-        apply_openai_thinking_cache(body, self.spec)
-        # Streaming path is text-oriented; tool calls use chat() in the agent loop.
-        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
-        async with (
-            httpx.AsyncClient(timeout=120.0) as client,
-            client.stream(
-                "POST",
-                f"{self.base_url.rstrip('/')}/chat/completions",
-                json=body,
-                headers=headers,
-            ) as resp,
-        ):
-            if resp.status_code >= 400:
-                text = await resp.aread()
-                raise ModelGatewayError("openai", resp.status_code, text.decode("utf-8", errors="replace"))
-            async for line in resp.aiter_lines():
-                if not line:
-                    continue
-                if line.startswith("data:"):
-                    payload = line[5:].strip()
-                elif line.startswith("{"):
-                    payload = line.strip()
-                else:
-                    continue
-                if payload == "[DONE]":
-                    break
-                try:
-                    data = json.loads(payload)
-                except json.JSONDecodeError:
-                    continue
-                for choice in data.get("choices") or []:
-                    delta = choice.get("delta") or {}
-                    content = delta.get("content")
-                    if content:
-                        yield str(content)
-
-    async def _stream_anthropic(
+    async def _stream(
         self,
         messages: list[ChatMessage],
         tools: list[Tool],
@@ -1485,53 +1532,44 @@ def _is_provider_error(err: object) -> bool:
 
 
 def _make_anthropic(model_id: str, route: ModelRoute, spec: Any, settings: Settings) -> ModelClient:
-    return _HttpModelClient(
+    return _AnthropicClient(
         model_id=model_id,
         route=route,
         settings=settings,
         spec=spec,
         base_url="https://api.anthropic.com",
         api_key=settings.anthropic_api_key,
-        style="anthropic",
     )
 
 
 def _make_openai(model_id: str, route: ModelRoute, spec: Any, settings: Settings) -> ModelClient:
     base = settings.litellm_base_url or "https://api.openai.com/v1"
-    return _HttpModelClient(
+    return _OpenAIClient(
         model_id=model_id,
         route=route,
         settings=settings,
         spec=spec,
         base_url=base if base.endswith("/v1") else f"{base.rstrip('/')}/v1",
         api_key=settings.openai_api_key,
-        style="openai",
     )
 
 
 def _make_ollama(model_id: str, route: ModelRoute, spec: Any, settings: Settings) -> ModelClient:
     base = settings.ollama_base_url.rstrip("/") + "/v1"
-    return _HttpModelClient(
+    return _OpenAIClient(
         model_id=model_id,
         route=route,
         settings=settings,
         spec=spec,
         base_url=base,
         api_key="ollama",
-        style="openai",
     )
 
 
 def register_builtin_providers() -> None:
-    register_model_provider(
-        "anthropic", lambda mid, route, spec, settings: _make_anthropic(mid, route, spec, settings)
-    )
-    register_model_provider(
-        "openai", lambda mid, route, spec, settings: _make_openai(mid, route, spec, settings)
-    )
-    register_model_provider(
-        "ollama", lambda mid, route, spec, settings: _make_ollama(mid, route, spec, settings)
-    )
+    register_model_provider("anthropic", _make_anthropic)
+    register_model_provider("openai", _make_openai)
+    register_model_provider("ollama", _make_ollama)
 
 
 def build_one_model(settings: Settings, spec: Any, logical_id: str) -> ModelClient:
