@@ -179,6 +179,14 @@ ceiling requests queue for `FELIX_DB_POOL_TIMEOUT_SECONDS` and then fail. Set
 `FELIX_DB_POOL_PRE_PING=false` against a direct Postgres; it costs a round trip per checkout and
 only earns it behind PgBouncer, RDS Proxy, or Cloud SQL.
 
+**Behind a pooler.** `WORKERS × (POOL_SIZE + MAX_OVERFLOW)` is the ceiling, and four workers on the
+defaults is 120 connections against a stock Postgres `max_connections` of 100 — which is when a
+transaction-mode pooler stops being optional. Set `FELIX_DB_PREPARED_STATEMENTS=false` there:
+psycopg3 auto-prepares after five executions, and under transaction pooling the sixth lands on a
+different server connection and fails. PgBouncer ≥ 1.21 with `max_prepared_statements > 0` tracks
+them for you and needs no change; RDS Proxy instead pins the session when it sees one, defeating the
+multiplexing you deployed it for, so turn preparation off there.
+
 Felix runs on infrastructure **you** operate. Cloudflare DNS, CDN, TLS, and WAF in front of your
 origin are fine. There is **no** Cloudflare Workers, Durable Objects, Hyperdrive, R2-as-binding,
 Queues, or Workflows compute in this stack.
