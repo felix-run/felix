@@ -45,6 +45,13 @@ pytestmark_arithmetic = pytest.mark.skipif(not HAS_BACKOFF, reason="no backoff t
 FLOOR, CEILING = 1.0, 10.0
 
 
+def _pacing():
+    """The pacing object under the settings the route would build it with."""
+    from felix_api.routes.chat import _ResumePacing
+
+    return _ResumePacing(floor=1.0, ceiling=10.0, idle_limit=300.0)
+
+
 def _ramp(floor: float = FLOOR, ceiling: float = CEILING) -> list[tuple[float, float]]:
     """(idle_seconds, delay_used) for one uninterrupted quiet window."""
     idle, delay, out = 0.0, floor, []
@@ -257,3 +264,102 @@ async def test_a_wake_puts_the_interval_back_on_the_floor(
     assert slept[i] > 1.0, "sanity: the wake did not land on a backed-off wait"
     assert len(slept) > i + 1, "the loop stopped before the wait after the wake"
     assert slept[i + 1] == 1.0, f"the wait after a wake should be the floor, was {slept[i + 1]}"
+
+
+# --- the pacing rules, directly -------------------------------------------------------
+#
+# These used to be reachable only by driving the whole ASGI app, which is why the
+# notified ceiling went un-asserted for a release: the cost of reaching a branch was a
+# full request. Now they are a few lines each.
+
+
+@pytestmark_arithmetic
+def test_pacing_starts_at_the_floor() -> None:
+    assert _pacing().timeout == 1.0
+
+
+@pytestmark_arithmetic
+def test_pacing_holds_the_floor_through_the_grace_window() -> None:
+    """A tab reattaching after a redeploy should not be answered slowly because it was
+    briefly quiet. Only a stream silent past the grace window decays."""
+    p = _pacing()
+    # The rule is `idle < GRACE`, so the wait that takes idle *to* 30s is the last one
+    # at the floor and the next one decays. Asserting the boundary rather than a count
+    # keeps this honest about which side of it the change happens on.
+    for _ in range(int(POLL_BACKOFF_GRACE_SECONDS) - 1):
+        p.went_quiet()
+        assert p.timeout == 1.0, "backed off inside the grace window"
+    p.went_quiet()
+    assert p.timeout > 1.0, "still at the floor after the grace window elapsed"
+
+
+@pytestmark_arithmetic
+def test_pacing_decays_to_the_ceiling_and_stops() -> None:
+    p = _pacing()
+    for _ in range(200):
+        p.went_quiet()
+    assert p.timeout == 10.0, f"settled at {p.timeout}, not the ceiling"
+
+
+@pytestmark_arithmetic
+def test_activity_puts_the_interval_back_on_the_floor() -> None:
+    p = _pacing()
+    for _ in range(200):
+        p.went_quiet()
+    p.saw_events()
+    assert p.timeout == 1.0
+
+
+@pytestmark_arithmetic
+def test_a_notified_stream_decays_past_the_un_notified_ceiling() -> None:
+    """The branch the end-to-end tests could not reach until this was extracted."""
+    from felix.session.notify import Wake
+    from felix_api.routes.chat import NOTIFIED_POLL_CEILING_SECONDS
+
+    p = _pacing()
+    for _ in range(400):
+        p.waited(Wake(woken=False, by_notification=True))
+        p.went_quiet()
+    assert p.timeout == NOTIFIED_POLL_CEILING_SECONDS
+
+
+@pytestmark_arithmetic
+def test_losing_notifications_tightens_the_interval_again() -> None:
+    """Redis dropping must not leave a stream on the minute-long ceiling: the poll is
+    the safety net, and it stops being one if it stays that slow."""
+    from felix.session.notify import Wake
+    from felix_api.routes.chat import NOTIFIED_POLL_CEILING_SECONDS
+
+    p = _pacing()
+    for _ in range(400):
+        p.waited(Wake(woken=False, by_notification=True))
+        p.went_quiet()
+    assert p.timeout == NOTIFIED_POLL_CEILING_SECONDS
+
+    p.waited(Wake(woken=False, by_notification=False))
+    p.went_quiet()
+    assert p.timeout <= 10.0, f"stayed on the notified ceiling at {p.timeout}"
+
+
+@pytestmark_arithmetic
+def test_a_wake_resets_the_interval() -> None:
+    from felix.session.notify import Wake
+
+    p = _pacing()
+    for _ in range(200):
+        p.went_quiet()
+    p.waited(Wake(woken=True, by_notification=True))
+    assert p.timeout == 1.0
+
+
+@pytestmark_arithmetic
+def test_pacing_gives_up_only_after_the_idle_limit() -> None:
+    """The idle accounting follows the actual wait, so the limit means the seconds it
+    says rather than a count of iterations."""
+    p = _pacing()
+    assert not p.exhausted
+    waited = 0.0
+    while not p.exhausted:
+        waited += p.timeout
+        p.went_quiet()
+    assert 300.0 <= waited <= 310.0, f"gave up after {waited}s of silence, not ~300s"

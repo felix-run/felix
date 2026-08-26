@@ -180,7 +180,16 @@ async def _yield_model_stream(
             if isinstance(item, ModelChatResult):
                 record_usage(item, manifest_id=manifest_id, model_id=model.model_id)
                 continue
-            if item.kind != "text" or not item.text:
+            if not item.text:
+                continue
+            if item.kind == "thinking":
+                # Dropped entirely here, where react at least forwarded it as
+                # progress. Not collected: `collected` becomes the delegate's
+                # answer, and reasoning is not part of it.
+                yield Event(
+                    event="thinking_delta",
+                    data={"chunk": {"content": item.text}, "delta": item.text},
+                )
                 continue
             collected.append(item.text)
             yield Event(

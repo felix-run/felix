@@ -166,14 +166,22 @@ def _connect_args(settings: Settings, url: str) -> dict[str, object]:
     return {}
 
 
-def _pool_kwargs(settings: Settings) -> dict[str, object]:
-    """Pool sizing for every engine this module builds.
+def _engine_kwargs(settings: Settings, url: str) -> dict[str, object]:
+    """Everything `create_async_engine` needs, for every engine this module builds.
 
-    One function rather than two literal blocks: the second engine previously had no
-    pool sizing at all, and when that was fixed it was fixed by copying the numbers --
-    which is how two differently tuned pools against the same database happen.
+    One function rather than several: the second engine once had no pool sizing at all,
+    and when that was fixed it was fixed by copying the numbers -- which is how two
+    differently tuned pools against the same database happen. `connect_args` was then
+    added as a *separate* helper and reintroduced exactly that shape, one more thing
+    each call site had to remember independently. The test that walked the AST to check
+    both builders passed `connect_args` existed only because they could diverge; folding
+    them back together is what makes that unnecessary rather than merely satisfied.
+
+    The next driver option -- `application_name`, a statement timeout, `sslmode` --
+    lands here and reaches both engines.
     """
     return {
+        "connect_args": _connect_args(settings, url),
         "pool_pre_ping": settings.db_pool_pre_ping,
         "pool_size": settings.db_pool_size,
         "max_overflow": settings.db_max_overflow,
@@ -189,8 +197,7 @@ def get_engine(database_url: str | None = None) -> AsyncEngine:
     url = _normalize_url(database_url or settings.database_url)
     engine = create_async_engine(
         url,
-        connect_args=_connect_args(settings, url),
-        **_pool_kwargs(settings),  # type: ignore[arg-type]
+        **_engine_kwargs(settings, url),  # type: ignore[arg-type]
     )
     _ENGINES.append(engine)
     return engine
@@ -269,13 +276,12 @@ async def dispose_engine() -> None:
 def create_engine_from_settings(settings: Settings) -> AsyncEngine:
     """A second engine, previously with no pool sizing at all — so two differently
     tuned pools existed against the same database. Both now go through
-    `_pool_kwargs`, so they cannot drift apart again."""
+    `_engine_kwargs`, so they cannot drift apart again."""
     _ensure_rls_listener()
     url = _normalize_url(settings.database_url)
     engine = create_async_engine(
         url,
-        connect_args=_connect_args(settings, url),
-        **_pool_kwargs(settings),  # type: ignore[arg-type]
+        **_engine_kwargs(settings, url),  # type: ignore[arg-type]
     )
     _ENGINES.append(engine)
     return engine

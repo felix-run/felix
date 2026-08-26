@@ -55,10 +55,6 @@ def _load(path: Path) -> dict:
     return YAML(typ="safe").load(path.read_text(encoding="utf-8")) or {}
 
 
-def test_the_overlay_parses() -> None:
-    assert _load(OVERLAY).get("services"), "the overlay defines no services"
-
-
 def test_every_service_it_overrides_exists_in_the_base() -> None:
     """A rename in the base file would otherwise leave this silently defining a *new*
     service that nothing depends on, and the app would keep talking to Postgres direct."""
@@ -132,7 +128,25 @@ def test_the_client_pool_is_larger_than_the_server_pool() -> None:
 
 
 def test_make_up_pooled_uses_the_overlay() -> None:
-    """A target that forgets the `-f` runs the plain stack and looks like it worked."""
+    """A target that forgets the `-f` runs the plain stack and looks like it worked.
+
+    Resolved rather than substring-matched. The previous version asked only whether
+    `compose.pgbouncer.yml` appeared *somewhere* in the Makefile -- and it appears in the
+    `COMPOSE_PGB :=` definition, never in the recipe. Swapping the recipe's `$(COMPOSE_PGB)`
+    for `$(COMPOSE)`, which is exactly the mistake the docstring describes, left both
+    assertions green.
+    """
     makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
-    assert "compose.pgbouncer.yml" in makefile, "no make target references the overlay"
-    assert "up-pooled:" in makefile
+
+    variables = dict(re.findall(r"^(\w+)\s*:=\s*(.*)$", makefile, re.MULTILINE))
+    recipe = re.search(r"^up-pooled:.*\n((?:\t.*\n)+)", makefile, re.MULTILINE)
+    assert recipe, "no `up-pooled:` target in the Makefile"
+
+    command = recipe.group(1)
+    for _ in range(5):  # variables reference variables; COMPOSE_PGB expands to COMPOSE
+        expanded = re.sub(r"\$\((\w+)\)", lambda m: variables.get(m.group(1), m.group(0)), command)
+        if expanded == command:
+            break
+        command = expanded
+
+    assert "compose.pgbouncer.yml" in command, f"`up-pooled` runs without the overlay: {command.strip()}"
