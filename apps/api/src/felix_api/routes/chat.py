@@ -14,7 +14,7 @@ from felix.logging_setup import loggable
 from felix.patterns.model import ModelGatewayError
 from felix.patterns.types import ChatMessage, InvokeInput
 from felix.runtime import build_tenant_agent, prepare_tenant_invoke, resolve_tenant_manifest
-from felix.session.notify import wait_for_events
+from felix.session.notify import thread_watch
 from felix.session.store import get_session_store
 from felix.session.tree import fork_thread, get_leaf, rewind_to
 from felix.session.types import GetEventsOpts
@@ -499,52 +499,55 @@ async def chat_stream_resume(request: Request, thread_id: str) -> StreamingRespo
             idle = 0.0
             delay = poll
             notified = False
-            while True:
-                events = await store.open(thread).get_events(GetEventsOpts(from_seq=cursor))
-                # `get_events(from_seq=...)` already applies `seq >= from_seq` in SQL
-                # on both backends, so filtering again in Python re-walks the page to
-                # discard nothing.
-                fresh = events
-                for event in fresh:
-                    cursor = event.seq + 1
-                    payload = {
-                        "event": "session_event",
-                        "data": {
-                            "seq": event.seq,
-                            "kind": event.kind,
-                            "role": event.role,
-                            "content": event.content,
-                            "name": event.name,
-                        },
-                    }
-                    yield f"id: {cursor}\ndata: {json.dumps(payload, default=str)}\n\n"
-                if fresh:
-                    idle = 0.0
-                    delay = poll
-                else:
-                    # `delay`, not `poll`: the accounting has to follow the actual wait
-                    # or the idle limit stops meaning 300 seconds.
-                    idle += delay
-                    # A notified stream polls only as a safety net, so it can afford a
-                    # far longer interval. When Redis drops, `by_notification` goes
-                    # False on the next wait and this tightens back on its own.
-                    ceiling = NOTIFIED_POLL_CEILING_SECONDS if notified else poll_max
-                    delay = _next_poll_delay(idle, delay, floor=poll, ceiling=ceiling)
-                if idle >= idle_limit:
-                    # Close rather than hold an idle connection open forever; the
-                    # client reconnects with its `Last-Event-ID` and loses nothing.
-                    break
-                yield ": keep-alive\n\n"
-                # Wait for the thread to move rather than sleeping through it. The
-                # query after this runs either way, so a dropped notification costs
-                # latency and never correctness -- which is what lets the ceiling
-                # relax below rather than disappear.
-                wake = await wait_for_events(auth.tenant_id, thread, timeout=delay)
-                if wake.woken:
-                    idle = 0.0
-                    delay = poll
-                    continue
-                notified = wake.by_notification
+            # One subscription for the life of the stream. Waiting through a watch
+            # rather than a call per iteration is what keeps this to a single
+            # SUBSCRIBE/UNSUBSCRIBE pair instead of one per poll interval.
+            async with thread_watch(auth.tenant_id, thread) as watch:
+                while True:
+                    events = await store.open(thread).get_events(GetEventsOpts(from_seq=cursor))
+                    # `get_events(from_seq=...)` already applies `seq >= from_seq` in SQL
+                    # on both backends, so filtering again in Python re-walks the page to
+                    # discard nothing.
+                    fresh = events
+                    for event in fresh:
+                        cursor = event.seq + 1
+                        payload = {
+                            "event": "session_event",
+                            "data": {
+                                "seq": event.seq,
+                                "kind": event.kind,
+                                "role": event.role,
+                                "content": event.content,
+                                "name": event.name,
+                            },
+                        }
+                        yield f"id: {cursor}\ndata: {json.dumps(payload, default=str)}\n\n"
+                    if fresh:
+                        idle = 0.0
+                        delay = poll
+                    else:
+                        # `delay`, not `poll`: the accounting has to follow the actual wait
+                        # or the idle limit stops meaning 300 seconds.
+                        idle += delay
+                        # A notified stream polls only as a safety net, so it can afford a
+                        # far longer interval. When Redis drops, `by_notification` goes
+                        # False on the next wait and this tightens back on its own.
+                        ceiling = NOTIFIED_POLL_CEILING_SECONDS if notified else poll_max
+                        delay = _next_poll_delay(idle, delay, floor=poll, ceiling=ceiling)
+                    if idle >= idle_limit:
+                        # Close rather than hold an idle connection open forever; the
+                        # client reconnects with its `Last-Event-ID` and loses nothing.
+                        break
+                    yield ": keep-alive\n\n"
+                    # Wait for the thread to move rather than sleeping through it. The
+                    # query after this runs either way, so a dropped notification costs
+                    # latency and never correctness -- which is what lets the ceiling
+                    # relax below rather than disappear.
+                    wake = await watch.wait(timeout=delay)
+                    notified = wake.by_notification
+                    if wake.woken:
+                        idle = 0.0
+                        delay = poll
         except asyncio.CancelledError:
             raise
         except Exception as exc:
