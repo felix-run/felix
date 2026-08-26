@@ -93,13 +93,20 @@ async def _get_redis() -> Any | None:
     if _redis is not None:
         return _redis
     if _connecting is not None:
-        # Another task is mid-connect. Awaiting its future rather than building a second
-        # client is what stops concurrent cold starts from each opening a connection and
-        # orphaning all but the last -- nothing ever closed the losers.
-        with contextlib.suppress(Exception):
-            await _connecting
-        return _redis
-    _connecting = asyncio.get_running_loop().create_future()
+        if not _connecting.done() and _connecting.get_loop() is loop:
+            # Another task is mid-connect. Awaiting its future rather than building a
+            # second client is what stops concurrent cold starts from each opening a
+            # connection and orphaning all but the last -- nothing ever closed the losers.
+            with contextlib.suppress(Exception):
+                await _connecting
+            return _redis
+        # A guard with no flight behind it: a connect whose loop closed before its
+        # `finally` could run. Short-circuiting on it turns a single-flight guard into a
+        # permanent latch -- every later call returns `_redis` without attempting a
+        # connect, which is the indefinite degradation `_RETRY_AFTER_SECONDS` exists to
+        # prevent. Discard it and connect.
+        _connecting = None
+    _connecting = fut = loop.create_future()
     try:
         from felix.config import get_settings
 
@@ -120,13 +127,17 @@ async def _get_redis() -> Any | None:
         _redis_failed_until = time.monotonic() + _RETRY_AFTER_SECONDS
         return None
     finally:
-        if _connecting is not None and not _connecting.done():
-            _connecting.set_result(None)
-        _connecting = None
+        # `fut`, not the global: whoever created a future must be the one to resolve it,
+        # or a waiter blocks forever on a future nobody owns any more. The global can be
+        # cleared under us -- `_teardown` does exactly that.
+        if not fut.done():
+            fut.set_result(None)
+        if _connecting is fut:
+            _connecting = None
 
 
 async def _teardown() -> None:
-    global _redis, _redis_loop, _redis_failed_until, _pubsub, _pump
+    global _redis, _redis_loop, _redis_failed_until, _pubsub, _pump, _connecting
     if _pump is not None:
         _pump.cancel()
         with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -137,6 +148,9 @@ async def _teardown() -> None:
                 await obj.aclose()
     _redis = _redis_loop = _pubsub = _pump = None
     _redis_failed_until = 0.0
+    # The in-flight guard too, or `reset_notifications` does not do what it says: a
+    # connect still pending here leaves a guard nothing will ever clear.
+    _connecting = None
     _subscribed.clear()
 
 

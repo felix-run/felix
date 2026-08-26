@@ -492,3 +492,32 @@ def test_the_retry_cooldown_is_a_cooldown() -> None:
     so it stays green if the real value were zero — which is the opposite failure: a
     connection attempt on every wait against a hard-down Redis."""
     assert notify._RETRY_AFTER_SECONDS > 0
+
+
+@pytest.mark.asyncio
+async def test_an_abandoned_connect_does_not_latch_the_module_off() -> None:
+    """`_connecting` is a single-flight guard, and a guard that outlives its flight is a
+    latch.
+
+    The `finally` that clears it does not run if the loop closes with the connect still
+    pending — a pytest session creates and destroys a loop per test, so this is ordinary
+    there. Every later `_get_redis` then short-circuited on the stale guard and returned
+    `_redis` without attempting a connect, for the life of the process. That is the
+    indefinite degradation `_RETRY_AFTER_SECONDS` exists to prevent, arriving by another
+    door.
+    """
+    stale = asyncio.get_running_loop().create_future()
+    stale.set_result(None)
+    notify._connecting = stale
+
+    await notify._get_redis()
+    assert notify._connecting is None, "a spent guard survived the call that observed it"
+
+
+@pytest.mark.asyncio
+async def test_reset_drops_the_in_flight_guard_too() -> None:
+    """`reset_notifications` is documented as dropping every connection and waiter. It
+    cleared six module globals and left this one, which is the one that latches."""
+    notify._connecting = asyncio.get_running_loop().create_future()
+    await notify.reset_notifications()
+    assert notify._connecting is None
