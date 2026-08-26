@@ -5,7 +5,7 @@ concrete enough to pick up in a single session.
 
 **Repos:** `felix-run/felix` (harness) · `felix-run/web` (chat-ui + float + docs)
 **Live:** [api.felix.run](https://api.felix.run) · [chat.felix.run](https://chat.felix.run) · [float.felix.run](https://float.felix.run) · [docs.felix.run](https://docs.felix.run)
-**Last reviewed:** 2026-08-25 (v0.2.2 tagged; RLS opt-out coherence, the upgrade runbook, and the Helm version fields the release procedure never counted, PRs #84–#89)
+**Last reviewed:** 2026-08-25 (connections and notifications: the pooler seam, thread wake-ups, and the review pass that found what shipping them broke, PRs #91–#101)
 
 ---
 
@@ -26,13 +26,18 @@ something from **Next**.
 
 ## Suggested pick-up order
 
-1. **Cowork completion smoke** on GCE — the last piece of the durable loop, and the
+1. **Scale-out proof** — two API replicas behind one origin. Promoted from **Next**
+   because #93 changed what it is worth: cross-replica wake-ups now exist, and
+   nothing exercises them. The Redis arm of `session/notify.py` has no test at all
+   — every check on it is the in-process path or a fake — and a single replica
+   never needs the cross-process channel, so this is the only thing that would.
+2. **Cowork completion smoke** on GCE — the last piece of the durable loop, and the
    only one that needs a dogfood run on live infrastructure first.
-2. Docs getting-started (Python) + governed demo policy decision.
-3. Pick from **Next → Harness**: the memory-trust decisions, the ASGI audit's last
+3. Docs getting-started (Python) + governed demo policy decision.
+4. Pick from **Next → Harness**: the memory-trust decisions, the ASGI audit's last
    two items, or single-sourcing the version.
 
-Items 3–6 of the previous order are done: `spec.a2a`, `spec.anomaly`,
+Items 3–6 of an earlier order are done: `spec.a2a`, `spec.anomaly`,
 `inbound.schemes` and `outbound.providers` are all enforced, the durable client
 poll landed in #76 and #78, and `v0.2.0` is tagged.
 
@@ -126,7 +131,12 @@ Files: `packages/harness/src/felix/sdk.py`,
       optional nightly against `api.felix.run` that does not block PRs
       (`--llm-judge` opt-in).
 - [ ] **Scale-out proof** — Redis leases + steer/waiters are multi-replica
-      capable; document and smoke two API replicas behind one origin.
+      capable; document and smoke two API replicas behind one origin. Now also
+      the only thing that would exercise `session/notify.py`'s Redis arm: the
+      pub/sub fan-out, the shared subscriber connection and its pump task are
+      covered by a fake and by nothing else, and a single-replica deployment
+      never reaches them because writer and reader are the same process. See
+      the pick-up order — this is item 1.
 - [ ] **Sandbox ladder extras** — capability-bridge / gVisor as documented
       extras, not default lean image.
 - [ ] **OAuth / dynamic provider keys** — secrets backends cover static keys;
@@ -472,6 +482,72 @@ the case where RLS is on but the connection skips the policies entirely.
 
 `docs/UPGRADING.md` also landed: the upgrade path had lived in whoever last did
 one, and `RELEASING.md` stops at the tag by design.
+
+### Connections and notifications (Aug 2026)
+
+Two ceilings the ASGI audit had measured but not removed: connections, and query
+volume that grows with connected clients rather than with work. Landed as #91–#94
+and #96–#99, plus #101. Then a review pass over the result, which is where most of
+this list came from.
+
+- [x] **A pooler seam, and then the pooler.** `FELIX_DB_PREPARED_STATEMENTS`
+      (#91) exists because psycopg3 auto-prepares after five executions and the
+      sixth lands on a different server connection under transaction pooling —
+      five identical queries succeed first, so the symptom arrives detached from
+      its cause. `make up-pooled` (#94) makes PgBouncer a target rather than a
+      paragraph. Booting it (#96) is the first time anything pulled the image,
+      and the pull failed: `edoburu/pgbouncer:1.25.2` is the version PgBouncer
+      prints in its own log, not a tag. A test asserting "pinned and not
+      `:latest`" was happy with a tag that resolves to nothing. Once fixed, the
+      overlay did what it claims — api, worker and scheduler, each with its own
+      pool, sharing **two** Postgres backends, and 40 consecutive requests past
+      the prepare threshold with no error.
+- [x] **Wake a resume stream instead of asking it every second** (#93) — query
+      volume there grew with *connected users*, not with turns, which is the
+      line that crosses first at scale. Redis pub/sub, ref-counted on one shared
+      subscriber connection, with the poll left underneath: the notification is
+      a hint, never the source of truth, so a dropped message costs latency and
+      never correctness.
+- [x] **What shipping that broke, found by running the quality reviewers
+      retroactively** (#97). Worth recording because none of it was caught by
+      the tests that shipped alongside it:
+      - `_announce` defaulted `tenant_id` to `"default"` and the in-memory
+        session had no tenant to pass, so every `memory://` append announced on
+        that channel whoever wrote it. A real tenant's reader was never woken; a
+        `"default"` reader was woken by other tenants' writes. `get_session_store`
+        had the same bug in its storage half. Every test used `"default"` — the
+        one value that could not fail.
+      - The subscription was scoped to a *wait*, not a reader, so a stream
+        subscribed and unsubscribed once per poll interval while the docstring
+        said "as readers come and go".
+      - The refcount was taken *after* the SUBSCRIBE round trip, so a departing
+        reader could unsubscribe a channel an arriving one was still waiting on
+        — while it reported `by_notification=True` and stretched its poll to a
+        minute. A stream that believes it is being woken and is not.
+- [x] **A spent connect guard latched notifications off for good** (#101) —
+      found by reviewing a CodeQL false positive rather than by the alert being
+      right. `_connecting` is a single-flight guard whose `finally` does not run
+      if the loop closes mid-connect; every later call then short-circuited on it
+      and returned `None` without attempting a connect, for the life of the
+      process.
+- [x] **Collapsed `_connect_args` back into `_pool_kwargs`** (#98). The split
+      reintroduced exactly the shape `_pool_kwargs`'s docstring exists to
+      prevent, and the AST test asserting both builders passed `connect_args`
+      existed only because they could diverge. Also added the conformance arm
+      that runs seven queries against a real connection — that the setting
+      reaches the driver was a pure-function assertion; that it stops psycopg
+      preparing had been checked once, by hand.
+- [x] **Separated resume pacing from resume framing** (#99) — 107 lines to 83.
+      The point was not the line count: the 60-second notified ceiling, the whole
+      reason #93 exists, shipped a release with no assertion anywhere, and the
+      reason was visible in what covering it took. It is four lines now.
+
+Three tests written during this wave did not fail against the code they were
+written for, and were only caught by running them against it: a race repro whose
+fake let two SUBSCRIBEs overlap when a real connection serializes them, a
+Makefile check that matched a variable definition rather than the recipe, and a
+grace-window assertion that was simply off by one. The habit that catches these
+is running a new test against the unfixed code and requiring FAILED, not ERROR.
 
 ### ASGI latency audit (Aug 2026)
 
