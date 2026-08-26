@@ -38,7 +38,7 @@ SSE_HEARTBEAT_SECONDS = 15.0
 # approval and client-tool frames, which mark the longest pauses in a stream and so
 # the likeliest moment for a connection to drop. This set is short and does not grow
 # when someone registers a pattern.
-PER_TOKEN_EVENTS = frozenset({"text_delta", "on_chat_model_stream", "session_progress"})
+PER_TOKEN_EVENTS = frozenset({"text_delta", "thinking_delta", "on_chat_model_stream", "session_progress"})
 
 
 def is_resume_point(event_name: str) -> bool:

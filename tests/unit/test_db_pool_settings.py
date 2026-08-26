@@ -17,19 +17,23 @@ import pytest
 from felix.config import Settings
 from felix.db import session as db_session
 
+PG = "postgresql+psycopg://u:p@localhost:5432/db"
+
 
 def _settings(**kw: object) -> Settings:
-    return Settings(database_url="postgresql+psycopg://u:p@localhost:5432/db", **kw)
+    return Settings(database_url=PG, **kw)
 
 
-def test_the_pool_kwargs_come_from_settings() -> None:
-    kwargs = db_session._pool_kwargs(
-        _settings(
-            db_pool_size=7,
-            db_max_overflow=13,
-            db_pool_timeout_seconds=11.5,
-            db_pool_pre_ping=False,
-        )
+def _kwargs(**kw: object) -> dict[str, object]:
+    return db_session._engine_kwargs(_settings(**kw), PG)
+
+
+def test_the_engine_kwargs_come_from_settings() -> None:
+    kwargs = _kwargs(
+        db_pool_size=7,
+        db_max_overflow=13,
+        db_pool_timeout_seconds=11.5,
+        db_pool_pre_ping=False,
     )
     assert kwargs["pool_size"] == 7
     assert kwargs["max_overflow"] == 13
@@ -39,7 +43,7 @@ def test_the_pool_kwargs_come_from_settings() -> None:
 
 def test_the_defaults_raise_the_old_ceiling() -> None:
     """The point of the change, not just its mechanism."""
-    kwargs = db_session._pool_kwargs(_settings())
+    kwargs = _kwargs()
     ceiling = int(kwargs["pool_size"]) + int(kwargs["max_overflow"])
     assert ceiling == 30, f"expected the documented default ceiling, got {ceiling}"
     assert ceiling > 15, "the old hardcoded ceiling"
@@ -49,28 +53,35 @@ def test_recycle_stays_a_constant() -> None:
     """Deliberately not a setting: it exists to beat a pooler's own idle timeout, and
     the value is a property of PgBouncer/RDS Proxy defaults rather than of this
     deployment."""
-    assert db_session._pool_kwargs(_settings())["pool_recycle"] == db_session.POOL_RECYCLE_SECONDS
+    assert _kwargs()["pool_recycle"] == db_session.POOL_RECYCLE_SECONDS
 
 
-def test_both_engines_are_sized_the_same_way() -> None:
-    """The second engine once had no pool sizing at all, and the fix copied the
-    literals across. Two differently tuned pools against one database is the failure
-    this asserts against — so it checks that neither constructor carries its own."""
+def test_no_engine_configures_itself() -> None:
+    """The second engine once had no pool sizing at all, and the fix copied the literals
+    across. Two differently tuned pools against one database is the failure this asserts
+    against — so it checks that no constructor carries its own.
+
+    `connect_args` is in the list because it was briefly a *separate* helper, which put
+    every engine back in the position of having to remember two things independently.
+    Deliberately not asserting how many engines exist: a third added for a good reason
+    should inherit this check, not fail it.
+    """
     import ast
     import inspect
 
-    src = inspect.getsource(db_session)
-    tree = ast.parse(src)
+    own = {"pool_size", "max_overflow", "pool_pre_ping", "pool_timeout", "connect_args"}
+    tree = ast.parse(inspect.getsource(db_session))
+    seen = 0
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
+        if not isinstance(node, ast.Call) or getattr(node.func, "id", None) != "create_async_engine":
             continue
-        if getattr(node.func, "id", None) != "create_async_engine":
-            continue
-        literals = {kw.arg for kw in node.keywords if kw.arg is not None}
-        assert not literals & {"pool_size", "max_overflow", "pool_pre_ping", "pool_timeout"}, (
-            f"create_async_engine at line {node.lineno} sizes its own pool; "
-            f"go through _pool_kwargs so the two engines cannot drift"
+        seen += 1
+        literals = {kw.arg for kw in node.keywords if kw.arg is not None} & own
+        assert not literals, (
+            f"create_async_engine at line {node.lineno} configures itself ({sorted(literals)}); "
+            "go through _engine_kwargs so engines cannot drift apart"
         )
+    assert seen, "found no engine constructors — has this module been restructured?"
 
 
 def test_the_session_factory_is_reused_per_engine() -> None:
