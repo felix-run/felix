@@ -26,9 +26,12 @@ logger = logging.getLogger("felix.artifacts")
 # like addresses something other than what the caller named.
 #
 # The leading character is not decoration. An earlier spelling allowed `.` anywhere,
-# which accepts `..` — a segment with no slash in it that still climbs out of the
-# tenant prefix once the path is normalised. Requiring the first character to be
-# alphanumeric excludes `.`, `..` and dotfiles together.
+# so `..` passed — a segment with no slash in it, which every traversal case tested
+# alongside it had. No backend would have leaked: the filesystem store rejects a `..`
+# part outright, and S3/GCS/memory treat the key as a literal rather than normalising
+# it, so the escape only ever produced a 500 on one backend and a miss on the rest.
+# It is closed here anyway, because a reference format whose safety depends on what
+# each backend happens to do with a bad key is not a reference format.
 _ID = re.compile(r"\A[0-9a-f]{32}\Z")
 _MANIFEST_ID = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 
@@ -45,6 +48,10 @@ def valid_artifact_ref(manifest_id: str, artifact_id: str) -> bool:
     like; `_contained` says what the result must be regardless — that the key still
     resolves under this tenant's prefix once normalised. A charset is an argument
     that traversal is impossible, and that argument has already been wrong once.
+
+    The containment check is this layer's own guarantee, not a restatement of the
+    backend's. The filesystem store makes the same check about its root and the
+    others never normalise at all; none of them knows what a tenant is.
     """
     if not (_MANIFEST_ID.match(manifest_id) and _ID.match(artifact_id)):
         return False

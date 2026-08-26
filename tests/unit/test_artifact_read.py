@@ -84,10 +84,11 @@ async def test_a_traversing_reference_never_becomes_a_key() -> None:
         ("cowork", "../../acme/cowork/secret"),
         ("cowork/nested", ID),
         ("cowork", "not-a-uuid"),
-        # No slash, and it still climbs out of the tenant prefix once the path is
-        # normalised. The first spelling of the charset allowed `.` anywhere and so
-        # accepted these; every traversal case tested alongside them had a slash in
-        # it, which is why the suite agreed with the bug. CodeQL did not.
+        # No slash in them, which every traversal case tested alongside them had —
+        # so the first spelling of the charset accepted these and the suite agreed
+        # with the bug. Not a leak on any backend (the filesystem store rejects a
+        # `..` part, and the rest treat the key as a literal), but a 500 on one and
+        # a miss on the others is not what a bad reference should produce.
         ("..", ID),
         (".", ID),
         (".hidden", ID),
