@@ -52,22 +52,17 @@ def test_the_option_is_not_passed_to_a_driver_that_has_no_such_option() -> None:
         assert db_session._connect_args(disabled, url) == {}, url
 
 
-def test_both_engine_builders_pass_connect_args() -> None:
-    """Two engines exist, and the second went years with no pool sizing at all because
-    nothing compared them. Asserted structurally so they cannot drift again."""
-    import ast
-    import inspect
+def test_the_engine_kwargs_carry_the_option_to_every_engine() -> None:
+    """Reaching the engine is the half that matters; `_connect_args` returning the right
+    dict is worth nothing if a constructor does not pass it.
 
-    tree = ast.parse(inspect.getsource(db_session))
-    calls = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "create_async_engine"
-    ]
-    assert len(calls) == 2, f"expected two engine constructors, found {len(calls)}"
-    for call in calls:
-        kwargs = {kw.arg for kw in call.keywords if kw.arg is not None}
-        assert "connect_args" in kwargs, (
-            f"create_async_engine at line {call.lineno} does not pass connect_args, so a "
-            f"pooler-mode deployment would work through one engine and fail through the other"
-        )
+    The structural half of this — that no engine configures itself — lives in
+    `test_db_pool_settings.py:test_no_engine_configures_itself`, which asserts it for
+    every engine rather than for exactly two. The version here counted them, so a third
+    engine added for a good reason would have failed a test whose message read "expected
+    two engine constructors".
+    """
+    assert db_session._engine_kwargs(_settings(db_prepared_statements=False), PG)["connect_args"] == {
+        "prepare_threshold": None
+    }
+    assert db_session._engine_kwargs(_settings(db_prepared_statements=True), PG)["connect_args"] == {}
