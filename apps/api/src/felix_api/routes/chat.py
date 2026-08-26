@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request
@@ -14,7 +15,7 @@ from felix.logging_setup import loggable
 from felix.patterns.model import ModelGatewayError
 from felix.patterns.types import ChatMessage, InvokeInput
 from felix.runtime import build_tenant_agent, prepare_tenant_invoke, resolve_tenant_manifest
-from felix.session.notify import wait_for_events
+from felix.session.notify import Wake, thread_watch
 from felix.session.store import get_session_store
 from felix.session.tree import fork_thread, get_leaf, rewind_to
 from felix.session.types import GetEventsOpts
@@ -496,55 +497,31 @@ async def chat_stream_resume(request: Request, thread_id: str) -> StreamingRespo
                 )
 
             store = get_session_store(settings, tenant_id=auth.tenant_id)
-            idle = 0.0
-            delay = poll
-            notified = False
-            while True:
-                events = await store.open(thread).get_events(GetEventsOpts(from_seq=cursor))
-                # `get_events(from_seq=...)` already applies `seq >= from_seq` in SQL
-                # on both backends, so filtering again in Python re-walks the page to
-                # discard nothing.
-                fresh = events
-                for event in fresh:
-                    cursor = event.seq + 1
-                    payload = {
-                        "event": "session_event",
-                        "data": {
-                            "seq": event.seq,
-                            "kind": event.kind,
-                            "role": event.role,
-                            "content": event.content,
-                            "name": event.name,
-                        },
-                    }
-                    yield f"id: {cursor}\ndata: {json.dumps(payload, default=str)}\n\n"
-                if fresh:
-                    idle = 0.0
-                    delay = poll
-                else:
-                    # `delay`, not `poll`: the accounting has to follow the actual wait
-                    # or the idle limit stops meaning 300 seconds.
-                    idle += delay
-                    # A notified stream polls only as a safety net, so it can afford a
-                    # far longer interval. When Redis drops, `by_notification` goes
-                    # False on the next wait and this tightens back on its own.
-                    ceiling = NOTIFIED_POLL_CEILING_SECONDS if notified else poll_max
-                    delay = _next_poll_delay(idle, delay, floor=poll, ceiling=ceiling)
-                if idle >= idle_limit:
-                    # Close rather than hold an idle connection open forever; the
-                    # client reconnects with its `Last-Event-ID` and loses nothing.
-                    break
-                yield ": keep-alive\n\n"
-                # Wait for the thread to move rather than sleeping through it. The
-                # query after this runs either way, so a dropped notification costs
-                # latency and never correctness -- which is what lets the ceiling
-                # relax below rather than disappear.
-                wake = await wait_for_events(auth.tenant_id, thread, timeout=delay)
-                if wake.woken:
-                    idle = 0.0
-                    delay = poll
-                    continue
-                notified = wake.by_notification
+            pacing = _ResumePacing(floor=poll, ceiling=poll_max, idle_limit=idle_limit)
+            # One subscription for the life of the stream. Waiting through a watch
+            # rather than a call per iteration is what keeps this to a single
+            # SUBSCRIBE/UNSUBSCRIBE pair instead of one per poll interval.
+            async with thread_watch(auth.tenant_id, thread) as watch:
+                while True:
+                    # `get_events(from_seq=...)` already applies `seq >= from_seq` in SQL
+                    # on both backends, so filtering again in Python re-walks the page to
+                    # discard nothing.
+                    events = await store.open(thread).get_events(GetEventsOpts(from_seq=cursor))
+                    for event in events:
+                        cursor = event.seq + 1
+                        yield _session_event_frame(event, cursor)
+                    if events:
+                        pacing.saw_events()
+                    else:
+                        pacing.went_quiet()
+                    if pacing.exhausted:
+                        break
+                    yield ": keep-alive\n\n"
+                    # Wait for the thread to move rather than sleeping through it. The
+                    # query above runs either way, so a dropped notification costs
+                    # latency and never correctness -- which is what lets the ceiling
+                    # relax rather than disappear.
+                    pacing.waited(await watch.wait(timeout=pacing.timeout))
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -955,6 +932,81 @@ def _next_poll_delay(idle: float, delay: float, *, floor: float, ceiling: float)
     if idle < POLL_BACKOFF_GRACE_SECONDS:
         return floor
     return min(delay * POLL_BACKOFF_FACTOR, ceiling)
+
+
+def _session_event_frame(event: Any, cursor: int) -> str:
+    """One `session_event` SSE frame.
+
+    `id:` is the *next* sequence the client should expect, not the one it just got, so a
+    client can hand it straight back as `Last-Event-ID`. Every `id:` on this stream means
+    the same thing, including the snapshot's.
+    """
+    import json
+
+    payload = {
+        "event": "session_event",
+        "data": {
+            "seq": event.seq,
+            "kind": event.kind,
+            "role": event.role,
+            "content": event.content,
+            "name": event.name,
+        },
+    }
+    return f"id: {cursor}\ndata: {json.dumps(payload, default=str)}\n\n"
+
+
+@dataclass(slots=True)
+class _ResumePacing:
+    """How long a resume stream waits before asking again, and when it gives up.
+
+    Split out of `chat_stream_resume` because the rules were interleaved line by line
+    with SSE framing -- `yield f"id: {cursor}\ndata: ..."` two lines from the decay
+    ceiling. Those are protocol and policy at different levels, and the comment density
+    around them was what a missing seam looks like. Here the rules sit together and can
+    be read as rules; the loop reads as protocol.
+
+    Nothing about the behaviour changed: `saw_events`, `went_quiet`, `exhausted` and
+    `waited` are the four things the loop body did, in the order it did them.
+    """
+
+    floor: float
+    ceiling: float
+    idle_limit: float
+    #: How long to wait for the next append. The loop reads this, never computes it.
+    timeout: float = 0.0
+    _idle: float = 0.0
+    _notified: bool = False
+
+    def __post_init__(self) -> None:
+        self.timeout = self.floor
+
+    @property
+    def exhausted(self) -> bool:
+        """Time to close rather than hold an idle connection open forever. The client
+        reconnects with its `Last-Event-ID` and loses nothing."""
+        return self._idle >= self.idle_limit
+
+    def saw_events(self) -> None:
+        """Backoff is a measure of idleness, so activity resets it -- otherwise a thread
+        that goes quiet and then busy answers the next message at the decayed interval."""
+        self._idle = 0.0
+        self.timeout = self.floor
+
+    def went_quiet(self) -> None:
+        # `self.timeout`, not `self.floor`: the accounting has to follow the actual wait
+        # or the idle limit stops meaning the number of seconds it says.
+        self._idle += self.timeout
+        # A notified stream polls only as a safety net, so it can afford a far longer
+        # interval. When Redis drops, `by_notification` goes False on the next wait and
+        # this tightens back on its own, without anything having to notice.
+        ceiling = NOTIFIED_POLL_CEILING_SECONDS if self._notified else self.ceiling
+        self.timeout = _next_poll_delay(self._idle, self.timeout, floor=self.floor, ceiling=ceiling)
+
+    def waited(self, wake: Wake) -> None:
+        self._notified = wake.by_notification
+        if wake.woken:
+            self.saw_events()
 
 
 async def _stream_cursor(settings: Any, tenant_id: str, thread: str | None) -> int | None:

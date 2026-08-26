@@ -122,10 +122,16 @@ def create_app(
             # Release process-lifetime resources. The S3 client had no close() at all
             # and dispose_engine() was a no-op, so both lingered across worker recycles.
             from felix.db.session import dispose_engine
+            from felix.session.notify import reset_notifications
             from felix.storage import close_object_stores
 
             with contextlib.suppress(Exception):
                 await close_object_stores()
+            # Thread notifications hold a Redis client, a pubsub connection and a
+            # long-lived pump task -- the same shape as the resources above, which
+            # lingered across worker recycles until they were joined here.
+            with contextlib.suppress(Exception):
+                await reset_notifications()
             with contextlib.suppress(Exception):
                 await dispose_engine()
             shutdown_observability()

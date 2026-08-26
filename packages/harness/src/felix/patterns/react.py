@@ -374,6 +374,20 @@ class _ReactAgent:
                         event="text_delta",
                         data={"chunk": {"content": item.text}, "delta": item.text},
                     )
+                elif item.kind == "thinking" and item.text:
+                    # Reasoning has always been on the wire, but only inside the
+                    # `session_progress` envelope below — a frame whose job is run
+                    # phase, carrying model output as a passenger. Every consumer
+                    # had to know to dig for it, and the one that renders the
+                    # transcript read `phase` and dropped the rest.
+                    #
+                    # Its own name, shaped like `text_delta` so a reader that
+                    # handles one can handle the other. The progress frame keeps
+                    # carrying it: anything already reading it there still works.
+                    yield Event(
+                        event="thinking_delta",
+                        data={"chunk": {"content": item.text}, "delta": item.text},
+                    )
                 yield Event(
                     event="session_progress",
                     data={

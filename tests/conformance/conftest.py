@@ -123,7 +123,9 @@ async def store(request: pytest.FixtureRequest) -> AsyncIterator[Any]:
     if backend == "memory":
         from felix.session.store import InMemorySessionStore
 
-        yield InMemorySessionStore()
+        # Same tenant as the Postgres arm below: the contract can only compare the
+        # two backends on tenant-scoped behaviour if both are scoped to a tenant.
+        yield InMemorySessionStore(tenant_id="conformance")
         return
 
     url = postgres_url()

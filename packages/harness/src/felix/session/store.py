@@ -25,6 +25,11 @@ logger = logging.getLogger("felix.session.store")
 @dataclass
 class _MemorySession:
     id: str
+    # Carried for the same reason `_PostgresSession` carries it: the notification channel
+    # is keyed by tenant, and a twin that cannot name its tenant announces on someone
+    # else's channel. Not used for storage isolation -- `InMemorySessionStore` is
+    # per-tenant, so a session only ever reaches the store that made it.
+    tenant_id: str = "default"
     _events: list[SessionEvent] = field(default_factory=list)
 
     async def append(self, event: AppendableEvent) -> int | None:
@@ -54,7 +59,7 @@ class _MemorySession:
                     metadata=redact_json(ev.metadata) if ev.metadata else ev.metadata,
                 )
             )
-        await _announce(self.id)
+        await _announce(self.id, tenant_id=self.tenant_id)
         return allocated
 
     async def get_events(self, opts: GetEventsOpts | None = None) -> list[SessionEvent]:
@@ -82,26 +87,41 @@ class _MemorySession:
 
 
 class InMemorySessionStore:
-    """Process-local session store for unit tests."""
+    """Process-local session store for unit tests.
 
-    def __init__(self) -> None:
+    Takes a tenant the way `PostgresSessionStore` does. It does not need one to keep
+    events apart -- `get_session_store` hands out one store per tenant, so two tenants
+    using the same thread id already get different stores -- but a session that cannot
+    name its tenant cannot announce on the right channel, and the twin then behaves
+    differently from the Postgres store it stands in for.
+    """
+
+    def __init__(self, *, tenant_id: str = "default") -> None:
+        self.tenant_id = tenant_id
         self._sessions: dict[str, _MemorySession] = {}
 
     def open(self, thread_id: str) -> Session:
         if not thread_id:
-            return _MemorySession(id="")
+            return _MemorySession(id="", tenant_id=self.tenant_id)
         if thread_id not in self._sessions:
-            self._sessions[thread_id] = _MemorySession(id=thread_id)
+            self._sessions[thread_id] = _MemorySession(id=thread_id, tenant_id=self.tenant_id)
         return self._sessions[thread_id]
 
 
-async def _announce(thread_id: str, *, tenant_id: str = "default") -> None:
+async def _announce(thread_id: str, *, tenant_id: str) -> None:
     """Tell any waiting reader this thread moved. Best effort by construction.
 
     Called from the store rather than a route, so it covers every writer -- the agent
     loop, steering, tool results, the management API -- instead of only the ones a
     particular endpoint knows about. A notification failure must never fail an append
     that already succeeded, which is why nothing here propagates.
+
+    `tenant_id` is required rather than defaulted. It was defaulted to "default" once,
+    and the in-memory twin -- which had no tenant to pass -- silently took it, so every
+    `memory://` append announced on tenant "default": a real tenant's reader was never
+    woken, and a "default" reader was woken by other tenants' writes. A wrong channel
+    key produces no error, only silence, so the type checker has to be the thing that
+    catches it.
     """
     if not thread_id:
         return
@@ -109,7 +129,11 @@ async def _announce(thread_id: str, *, tenant_id: str = "default") -> None:
         from felix.session.notify import notify_appended
 
         await notify_appended(tenant_id, thread_id)
-    except Exception:  # pragma: no cover - notify_appended swallows its own
+    except Exception:
+        # `notify_appended` swallows its own failures, so this is the second line of
+        # defence rather than the first -- but it is reachable: `_wake_local` sets
+        # `asyncio.Event`s, and an event created by a loop that has since closed raises
+        # from `set()`. This `except` is the only thing between that and a failed append.
         logger.debug("thread notification failed", exc_info=True)
 
 
@@ -296,7 +320,10 @@ class PostgresSessionStore:
         )
 
 
-_memory_session_store = InMemorySessionStore()
+# One store per tenant, created on first use. Process-lifetime, like the single store
+# this replaced: `memory://` callers rely on reopening a thread and finding its events,
+# so the state has to outlive any one `get_session_store` call.
+_memory_session_stores: dict[str, InMemorySessionStore] = {}
 
 
 def _use_in_memory_session(settings: Settings) -> bool:
@@ -306,7 +333,10 @@ def _use_in_memory_session(settings: Settings) -> bool:
 
 def get_session_store(settings: Settings, *, tenant_id: str = "default") -> SessionStore:
     if _use_in_memory_session(settings):
-        return _memory_session_store
+        store = _memory_session_stores.get(tenant_id)
+        if store is None:
+            store = _memory_session_stores[tenant_id] = InMemorySessionStore(tenant_id=tenant_id)
+        return store
     from felix.db.session import get_session_factory
 
     return PostgresSessionStore(
