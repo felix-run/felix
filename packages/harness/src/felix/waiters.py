@@ -21,17 +21,41 @@ def _key(name: str) -> str:
     return f"{_PREFIX}{name}"
 
 
+#: How long a single BLPOP may block, in seconds.
+#:
+#: Must stay below the client's `socket_timeout`. BLPOP blocks server-side while the
+#: client sits in a socket read, so a block longer than the socket timeout raises
+#: `TimeoutError` on a connection that is working perfectly — and the handler below
+#: reads that as "Redis is unusable" and falls back to the in-process path.
+#:
+#: That is not hypothetical. With a 2 s socket timeout and the 300 s default approval
+#: wait, *every* approval fell back after two seconds. The decision then went to Redis
+#: while the run waited on a local future nobody would ever resolve, and the run was
+#: told `denied / timeout` — after a human had clicked Approve and been told it worked.
+#:
+#: Slicing rather than raising the socket timeout keeps that timeout meaningful: a
+#: genuinely dead connection is still detected in seconds instead of hanging for the
+#: whole wait. It costs one round trip per slice, on a path where a human is thinking.
+#: Latency is unaffected — BLPOP returns the moment an item is pushed.
+BLOCK_SLICE_SECONDS = 1
+
+
 async def wait(name: str, *, timeout: float) -> dict[str, Any] | None:
     """Block until ``signal(name, payload)`` or timeout. Returns payload or None."""
     rkey = _key(name)
     client = await _conn.get()
     if client is not None:
         try:
-            item = await client.blpop(rkey, timeout=max(1, int(timeout)))
-            if not item:
-                return None
-            _, raw = item
-            return json.loads(raw)
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + timeout
+            while True:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    return None
+                item = await client.blpop(rkey, timeout=min(BLOCK_SLICE_SECONDS, max(1, int(remaining))))
+                if item:
+                    _, raw = item
+                    return json.loads(raw)
         except Exception:
             logger.debug("waiter redis blpop failed", exc_info=True)
 
