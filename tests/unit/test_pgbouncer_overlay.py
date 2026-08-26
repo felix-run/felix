@@ -7,12 +7,16 @@ while leaving prepared statements on fails on the *sixth* query, which is late e
 look like something else.
 
 These are structural rather than behavioural: bringing the stack up needs Docker and
-would fight a developer's running containers. The Felix-through-PgBouncer behaviour is
-verified in felix-run/felix#91 against a real pooler.
+would fight a developer's running containers. The stack has since been booted by hand on
+isolated ports -- 40 consecutive requests through the pooler, well past psycopg's
+five-execution prepare threshold, against two server backends shared by api, worker, and
+scheduler. That run is also what proved a structural check can pass for an image tag that
+does not exist, which `test_the_image_is_pinned_to_a_tag_that_could_exist` now covers.
 """
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -49,10 +53,6 @@ def _load(path: Path) -> dict:
     from ruamel.yaml import YAML
 
     return YAML(typ="safe").load(path.read_text(encoding="utf-8")) or {}
-
-
-def test_the_overlay_parses() -> None:
-    assert _load(OVERLAY).get("services"), "the overlay defines no services"
 
 
 def test_every_service_it_overrides_exists_in_the_base() -> None:
@@ -99,11 +99,24 @@ def test_the_pool_mode_is_transaction() -> None:
     assert env["POOL_MODE"] == "transaction"
 
 
-def test_the_image_is_pinned() -> None:
-    """`:latest` on the component that sits between the app and its database is how a
-    deployment changes behaviour without anyone changing anything."""
+def test_the_image_is_pinned_to_a_tag_that_could_exist() -> None:
+    """`:latest` on the component between the app and its database is how a deployment
+    changes behaviour without anyone changing anything.
+
+    The tag shape is checked too, because "pinned and not :latest" passed happily for
+    `1.25.2` -- a tag this repository invented by reading the version PgBouncer prints in
+    its own startup log. edoburu publishes `vMAJOR.MINOR.PATCH-pN`, so the pull failed at
+    `compose up` with a tag that had looked pinned in review and in CI. Nothing offline
+    can prove a tag exists; a shape check is what catches the plausible-looking wrong one.
+    """
     image = _load(OVERLAY)["services"]["pgbouncer"]["image"]
-    assert ":" in image and not image.endswith(":latest"), image
+    repo, _, tag = image.partition(":")
+    assert tag and tag != "latest", image
+    if repo == "edoburu/pgbouncer":
+        assert re.fullmatch(r"v\d+\.\d+\.\d+-p\d+", tag), (
+            f"{tag!r} is not edoburu's tag scheme (vMAJOR.MINOR.PATCH-pN); "
+            "a tag that does not exist fails at `compose up`, not in review"
+        )
 
 
 def test_the_client_pool_is_larger_than_the_server_pool() -> None:
@@ -115,7 +128,25 @@ def test_the_client_pool_is_larger_than_the_server_pool() -> None:
 
 
 def test_make_up_pooled_uses_the_overlay() -> None:
-    """A target that forgets the `-f` runs the plain stack and looks like it worked."""
+    """A target that forgets the `-f` runs the plain stack and looks like it worked.
+
+    Resolved rather than substring-matched. The previous version asked only whether
+    `compose.pgbouncer.yml` appeared *somewhere* in the Makefile -- and it appears in the
+    `COMPOSE_PGB :=` definition, never in the recipe. Swapping the recipe's `$(COMPOSE_PGB)`
+    for `$(COMPOSE)`, which is exactly the mistake the docstring describes, left both
+    assertions green.
+    """
     makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
-    assert "compose.pgbouncer.yml" in makefile, "no make target references the overlay"
-    assert "up-pooled:" in makefile
+
+    variables = dict(re.findall(r"^(\w+)\s*:=\s*(.*)$", makefile, re.MULTILINE))
+    recipe = re.search(r"^up-pooled:.*\n((?:\t.*\n)+)", makefile, re.MULTILINE)
+    assert recipe, "no `up-pooled:` target in the Makefile"
+
+    command = recipe.group(1)
+    for _ in range(5):  # variables reference variables; COMPOSE_PGB expands to COMPOSE
+        expanded = re.sub(r"\$\((\w+)\)", lambda m: variables.get(m.group(1), m.group(0)), command)
+        if expanded == command:
+            break
+        command = expanded
+
+    assert "compose.pgbouncer.yml" in command, f"`up-pooled` runs without the overlay: {command.strip()}"

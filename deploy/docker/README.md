@@ -23,6 +23,12 @@
 
 `make up-pooled` puts PgBouncer in transaction mode between Felix and Postgres.
 
+Verified end to end: api, worker, and scheduler each holding their own pool shared **two**
+Postgres backends, and 40 consecutive requests — well past the five executions at which
+psycopg3 starts preparing statements — went through without a prepared-statement error.
+Run `felix migrate head` against Postgres directly, not through the pooler; the schema has
+to exist before the app can serve anything.
+
 Reach for it when the connection arithmetic stops working. Each Felix process holds its
 own pool, so the ceiling is:
 
