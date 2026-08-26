@@ -9,6 +9,7 @@ marker naming an object that could not be fetched by anyone.
 from __future__ import annotations
 
 import logging
+import posixpath
 import re
 import time
 import uuid
@@ -21,10 +22,15 @@ from felix.tools.types import Tool, ToolInvocationCtx, ToolOutput, tool_output_c
 logger = logging.getLogger("felix.artifacts")
 
 # A spilled id is a uuid4 hex. A manifest id is looser, so it is bounded here rather
-# than trusted: both land in an object key, and a segment containing `/` or `..`
-# would address something other than what the caller named.
+# than trusted: both land in an object key, and a segment that is not what it looks
+# like addresses something other than what the caller named.
+#
+# The leading character is not decoration. An earlier spelling allowed `.` anywhere,
+# which accepts `..` — a segment with no slash in it that still climbs out of the
+# tenant prefix once the path is normalised. Requiring the first character to be
+# alphanumeric excludes `.`, `..` and dotfiles together.
 _ID = re.compile(r"\A[0-9a-f]{32}\Z")
-_MANIFEST_ID = re.compile(r"\A[A-Za-z0-9._-]{1,128}\Z")
+_MANIFEST_ID = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 
 
 def artifact_key(tenant_id: str, manifest_id: str, artifact_id: str) -> str:
@@ -33,8 +39,22 @@ def artifact_key(tenant_id: str, manifest_id: str, artifact_id: str) -> str:
 
 
 def valid_artifact_ref(manifest_id: str, artifact_id: str) -> bool:
-    """Whether these are safe to build a key from."""
-    return bool(_MANIFEST_ID.match(manifest_id) and _ID.match(artifact_id))
+    """Whether these are safe to build a key from.
+
+    Two independent checks, deliberately. The patterns say what a reference may look
+    like; `_contained` says what the result must be regardless — that the key still
+    resolves under this tenant's prefix once normalised. A charset is an argument
+    that traversal is impossible, and that argument has already been wrong once.
+    """
+    if not (_MANIFEST_ID.match(manifest_id) and _ID.match(artifact_id)):
+        return False
+    return _contained("t", artifact_key("t", manifest_id, artifact_id))
+
+
+def _contained(tenant_id: str, key: str) -> bool:
+    """Whether a built key still lives under its tenant's prefix."""
+    prefix = f"artifacts/{tenant_id}/"
+    return posixpath.normpath(key).startswith(prefix) and ".." not in key.split("/")
 
 
 async def read_artifact(
@@ -51,7 +71,12 @@ async def read_artifact(
     """
     if object_store is None or not valid_artifact_ref(manifest_id, artifact_id):
         return None
-    raw = await object_store.get(artifact_key(tenant_id, manifest_id, artifact_id))
+    key = artifact_key(tenant_id, manifest_id, artifact_id)
+    # Checked again against the real tenant. `valid_artifact_ref` proves the reference
+    # cannot climb out of *a* prefix; this is the one it actually landed in.
+    if not _contained(tenant_id, key):
+        return None
+    raw = await object_store.get(key)
     if raw is None:
         return None
     return raw.decode("utf-8", errors="replace")
