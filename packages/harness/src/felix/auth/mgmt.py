@@ -83,6 +83,7 @@ def subject_from_request(request: Request) -> str:
 SCOPE_MANIFESTS_READ = "manifests:read"
 SCOPE_MANIFESTS_WRITE = "manifests:write"
 SCOPE_AUDIT_READ = "audit:read"
+SCOPE_ARTIFACTS_READ = "artifacts:read"
 SCOPE_APPROVALS_READ = "approvals:read"
 SCOPE_APPROVALS_WRITE = "approvals:write"
 SCOPE_JOBS_READ = "jobs:read"
@@ -98,6 +99,7 @@ SCOPE_MEMORY_WRITE = "memory:write"
 __all__ = [
     "SCOPE_APPROVALS_READ",
     "SCOPE_APPROVALS_WRITE",
+    "SCOPE_ARTIFACTS_READ",
     "SCOPE_AUDIT_READ",
     "SCOPE_EVAL_READ",
     "SCOPE_EVAL_WRITE",
