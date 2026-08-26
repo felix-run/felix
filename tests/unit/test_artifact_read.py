@@ -135,3 +135,58 @@ def test_a_dot_segment_cannot_escape_the_tenant_prefix() -> None:
     # of `artifacts/acme/` entirely.
     assert not _contained("acme", artifact_key("acme", "..", ID))
     assert not valid_artifact_ref("..", ID)
+
+
+class TestFilesystemStoreKeys:
+    """The filesystem store validates a key by allowlist, not by screening for `..`.
+
+    It screened only for `..` before, which left every other way a segment can fail
+    to be a name — a newline, a NUL, a space, a leading dash — accepted and handed
+    to the filesystem. This is the sink CodeQL names for the artifact read path, and
+    it is shared: instruction-file keys from a manifest reach it too.
+    """
+
+    def _store(self, tmp_path):
+        from felix.storage.fs import FilesystemObjectStore
+
+        class _S:
+            object_store_path = str(tmp_path)
+            data_dir = str(tmp_path)
+
+        return FilesystemObjectStore(_S())
+
+    def test_it_accepts_the_keys_the_harness_actually_uses(self, tmp_path) -> None:
+        import pytest as _pytest
+
+        store = self._store(tmp_path)
+        for key in (
+            f"artifacts/acme/cowork/{ID}.txt",
+            "workspace/acme/AGENTS.md",
+            "__felix_readiness_probe__",
+            ".agents.md",
+        ):
+            try:
+                store._path(key)
+            except ValueError:  # pragma: no cover - the assertion is the message
+                _pytest.fail(f"rejected a key the harness uses: {key!r}")
+
+    def test_it_refuses_a_segment_that_is_not_a_name(self, tmp_path) -> None:
+        import pytest as _pytest
+
+        store = self._store(tmp_path)
+        for key in (
+            "artifacts/../etc/passwd",
+            "artifacts/./x",
+            "artifacts/a b/x",
+            "artifacts/a\nb/x",
+            "artifacts/a\x00b/x",
+            "",
+            "/",
+        ):
+            with _pytest.raises(ValueError):
+                store._path(key)
+
+    def test_a_valid_key_still_lands_under_the_root(self, tmp_path) -> None:
+        store = self._store(tmp_path)
+        path = store._path("artifacts/acme/cowork/x.txt")
+        assert path.is_relative_to(tmp_path.resolve())
