@@ -29,11 +29,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import time
-import weakref
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
+
+from felix.redis_conn import RedisConnection
 
 logger = logging.getLogger("felix.session.notify")
 
@@ -44,18 +44,27 @@ _PREFIX = "felix:thread:"
 # for a single-replica deployment.
 _waiters: dict[str, set[asyncio.Event]] = {}
 
-# How long to stay on the polling path after a failed connection attempt.
-#
-# Not a permanent latch: a Redis blip would otherwise degrade a worker to polling for
-# the life of the process, and the whole point of this module is that the poll is the
-# safety net rather than the mechanism. Long enough that a hard-down Redis costs one
-# attempt per interval rather than one per wait.
-_RETRY_AFTER_SECONDS = 30.0
 
-_redis: Any | None = None
-_redis_loop: weakref.ref[asyncio.AbstractEventLoop] | None = None
-_connecting: asyncio.Future[None] | None = None
-_redis_failed_until: float = 0.0
+async def _drop_pubsub() -> None:
+    """Let go of everything derived from the client, before the client goes.
+
+    `RedisConnection` owns the client and knows when to replace it; it cannot know that
+    this module also holds a pub/sub connection and a reader task on top of it. This is
+    the hook it calls first.
+    """
+    global _pubsub, _pump
+    if _pump is not None:
+        _pump.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await _pump
+    if _pubsub is not None:
+        with contextlib.suppress(Exception):
+            await _pubsub.aclose()
+    _pubsub = _pump = None
+    _subscribed.clear()
+
+
+_conn = RedisConnection("thread notifications", on_reset=_drop_pubsub)
 _pubsub: Any | None = None
 _pump: asyncio.Task[None] | None = None
 _subscribed: dict[str, int] = {}
@@ -77,81 +86,6 @@ class Wake:
 
     woken: bool
     by_notification: bool
-
-
-async def _get_redis() -> Any | None:
-    global _redis, _redis_loop, _redis_failed_until, _connecting
-    loop = asyncio.get_running_loop()
-    if _redis is not None and (_redis_loop is None or _redis_loop() is not loop):
-        # A weak reference rather than `id()`: CPython reuses freed addresses, so a new
-        # loop allocated where a closed one lived compares equal by id, the teardown is
-        # skipped, and the module goes on using a connection bound to a dead loop. A
-        # dead loop's weakref reads as None, which compares unequal by construction.
-        await _teardown()
-    if time.monotonic() < _redis_failed_until:
-        return None
-    if _redis is not None:
-        return _redis
-    if _connecting is not None:
-        if not _connecting.done() and _connecting.get_loop() is loop:
-            # Another task is mid-connect. Awaiting its future rather than building a
-            # second client is what stops concurrent cold starts from each opening a
-            # connection and orphaning all but the last -- nothing ever closed the losers.
-            with contextlib.suppress(Exception):
-                await _connecting
-            return _redis
-        # A guard with no flight behind it: a connect whose loop closed before its
-        # `finally` could run. Short-circuiting on it turns a single-flight guard into a
-        # permanent latch -- every later call returns `_redis` without attempting a
-        # connect, which is the indefinite degradation `_RETRY_AFTER_SECONDS` exists to
-        # prevent. Discard it and connect.
-        _connecting = None
-    _connecting = fut = loop.create_future()
-    try:
-        from felix.config import get_settings
-
-        url = (getattr(get_settings(), "redis_url", "") or "").strip()
-        if not url:
-            # Configuration, not a blip: nothing to retry, so back off for a long time
-            # rather than re-reading settings on every wait.
-            _redis_failed_until = time.monotonic() + 3600.0
-            return None
-        import redis.asyncio as redis
-
-        client = redis.from_url(url, decode_responses=True, socket_connect_timeout=1.0, socket_timeout=2.0)
-        await client.ping()
-        _redis, _redis_loop = client, weakref.ref(loop)
-        return _redis
-    except Exception:
-        logger.debug("thread notifications unavailable; polling only", exc_info=True)
-        _redis_failed_until = time.monotonic() + _RETRY_AFTER_SECONDS
-        return None
-    finally:
-        # `fut`, not the global: whoever created a future must be the one to resolve it,
-        # or a waiter blocks forever on a future nobody owns any more. The global can be
-        # cleared under us -- `_teardown` does exactly that.
-        if not fut.done():
-            fut.set_result(None)
-        if _connecting is fut:
-            _connecting = None
-
-
-async def _teardown() -> None:
-    global _redis, _redis_loop, _redis_failed_until, _pubsub, _pump, _connecting
-    if _pump is not None:
-        _pump.cancel()
-        with contextlib.suppress(asyncio.CancelledError, Exception):
-            await _pump
-    for obj in (_pubsub, _redis):
-        if obj is not None:
-            with contextlib.suppress(Exception):
-                await obj.aclose()
-    _redis = _redis_loop = _pubsub = _pump = None
-    _redis_failed_until = 0.0
-    # The in-flight guard too, or `reset_notifications` does not do what it says: a
-    # connect still pending here leaves a guard nothing will ever clear.
-    _connecting = None
-    _subscribed.clear()
 
 
 async def _pump_messages(pubsub: Any) -> None:
@@ -200,7 +134,7 @@ def _wake_local(channel: str) -> None:
 async def _ensure_subscribed(channel: str) -> bool:
     """Subscribe this process to `channel`, sharing one connection. True if subscribed."""
     global _pubsub, _pump
-    client = await _get_redis()
+    client = await _conn.get()
     if client is None:
         return False
     # Claim the refcount slot *before* the await, not after.
@@ -327,7 +261,7 @@ async def notify_appended(tenant_id: str, thread_id: str) -> None:
         _wake_local(channel)
         # `_get_redis` caches its client and returns None once it has failed, so this
         # costs one connection attempt per process rather than one per append.
-        client = await _get_redis()
+        client = await _conn.get()
         if client is not None:
             await client.publish(channel, "1")
     except Exception:
@@ -343,7 +277,7 @@ async def reset_notifications() -> None:
     before the lifespan started joining them.
     """
     _waiters.clear()
-    await _teardown()
+    await _conn.aclose()
 
 
 __all__ = [

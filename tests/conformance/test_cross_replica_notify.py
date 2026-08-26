@@ -25,6 +25,7 @@ import asyncio
 import os
 import sys
 import textwrap
+import time
 
 import pytest
 
@@ -135,3 +136,78 @@ async def test_an_append_on_another_replica_wakes_this_one(notify_against_redis)
 
     assert wake.woken is True, "an append on another process did not wake this reader"
     assert wake.by_notification is True
+
+
+@pytest.mark.asyncio
+async def test_a_steer_enqueued_on_another_replica_reaches_the_run(notify_against_redis) -> None:
+    """Steer had no two-replica assertion, and it is the one where falling back is not a
+    degradation but a wrong answer.
+
+    A user types "stop" into whichever replica their browser is talking to; the turn is
+    running on another. `enqueue` writes to Redis so the run can drain it. If it writes
+    to the process-local queue instead, it still returns `{"queued": "steer"}` — the user
+    gets a 200 and the agent keeps going.
+    """
+    _notify, url = notify_against_redis
+    from felix import steer
+
+    await steer._conn.aclose()  # connect against the conformance Redis, not a cached one
+    try:
+        other_replica = textwrap.dedent(f"""
+            import asyncio, os
+            os.environ["FELIX_DATABASE_URL"] = "memory://xrep"
+            os.environ["FELIX_REDIS_URL"] = {url!r}
+            from felix.steer import enqueue
+            asyncio.run(enqueue("xrep", "steered", kind="steer", text="please stop"))
+        """)
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-c",
+            other_replica,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _out, err = await asyncio.wait_for(proc.communicate(), timeout=60.0)
+        assert proc.returncode == 0, f"the other replica failed: {err.decode()[-800:]}"
+
+        drained = await steer.drain_steer("xrep", "steered")
+        assert [m.text for m in drained] == ["please stop"], (
+            "a steer enqueued on another replica never reached this one"
+        )
+        assert await steer.should_cancel_remaining_tools("xrep", "steered") is True, (
+            "the cancel flag did not cross, so the run would finish its tool calls first"
+        )
+    finally:
+        await steer._conn.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_blip_does_not_make_steer_permanently_process_local(
+    notify_against_redis,  # taken for its side effects: it points get_settings at the conformance Redis
+) -> None:
+    """The failure mode that made this worth fixing rather than just testing.
+
+    A single failed connect used to latch the module onto its in-process queue for the
+    life of the process. Nothing surfaced it: `enqueue` kept returning success, and only
+    a multi-replica deployment could tell the difference.
+
+    Takes `notify_against_redis` for its side effects only -- it points `get_settings`
+    at the conformance Redis, which is what `steer._conn` reads. Nothing here needs the
+    values it yields, so unpacking them was two unused locals pretending to be setup.
+    """
+    from felix import steer
+
+    await steer._conn.aclose()
+    try:
+        steer._conn._failed_until = time.monotonic() + 3600  # a blip, as it were
+        assert await steer._conn.get() is None, "sanity: the cooldown should be in force"
+
+        steer._conn._failed_until = 0.0  # ... and it passes
+        assert await steer._conn.get() is not None, "the connection never recovered"
+
+        await steer.enqueue("xrep", "recovered", kind="steer", text="after the blip")
+        assert [m.text for m in await steer._drain_redis("xrep", "recovered", "steer")] == [
+            "after the blip"
+        ], "the steer went to the local queue, invisible to the replica running the turn"
+    finally:
+        await steer._conn.aclose()
