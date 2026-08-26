@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Literal
 
+from felix.redis_conn import RedisConnection
+
 logger = logging.getLogger("felix.steer")
 
 
@@ -36,10 +38,7 @@ class _RunQueue:
 
 
 _queues: dict[str, _RunQueue] = {}
-_lock = asyncio.Lock()
-_redis: Any | None = None
-_redis_loop: int | None = None
-_redis_failed = False
+_conn = RedisConnection("steer")
 
 
 def _key(tenant_id: str, thread_id: str) -> str:
@@ -50,50 +49,18 @@ def _redis_key(tenant_id: str, thread_id: str, kind: str) -> str:
     return f"felix:steer:{tenant_id}:{thread_id}:{kind}"
 
 
-async def _get_redis() -> Any | None:
-    global _redis, _redis_loop, _redis_failed
-    loop_id = id(asyncio.get_running_loop())
-    if _redis is not None and _redis_loop != loop_id:
-        with contextlib.suppress(Exception):
-            await _redis.aclose()
-        _redis = None
-        _redis_loop = None
-        _redis_failed = False
-    if _redis_failed:
-        return None
-    if _redis is not None:
-        return _redis
-    try:
-        from felix.config import get_settings
-
-        settings = get_settings()
-        url = getattr(settings, "redis_url", "") or ""
-        if not url:
-            return None
-        import redis.asyncio as redis
-
-        client = redis.from_url(
-            url,
-            decode_responses=True,
-            socket_connect_timeout=1.0,
-            socket_timeout=2.0,
-        )
-        await client.ping()
-        _redis = client
-        _redis_loop = loop_id
-        return _redis
-    except Exception:
-        logger.debug("steer redis unavailable; using in-process", exc_info=True)
-        _redis_failed = True
-        return None
-
-
 async def ensure_run_queue(tenant_id: str, thread_id: str) -> _RunQueue:
-    async with _lock:
-        k = _key(tenant_id, thread_id)
-        if k not in _queues:
-            _queues[k] = _RunQueue()
-        return _queues[k]
+    """The in-process queue for a run, created on first use.
+
+    No lock. There is no `await` between the check and the insert, so asyncio cannot
+    interleave another task into the middle of one. The `asyncio.Lock` this replaces was
+    worse than unnecessary: its waiters bind to the loop that created them, so a process
+    using more than one event loop can leave it held by a loop that no longer exists.
+    """
+    k = _key(tenant_id, thread_id)
+    if k not in _queues:
+        _queues[k] = _RunQueue()
+    return _queues[k]
 
 
 async def enqueue(
@@ -104,7 +71,7 @@ async def enqueue(
     text: str,
 ) -> dict[str, str]:
     qk = QueueKind(kind) if not isinstance(kind, QueueKind) else kind
-    client = await _get_redis()
+    client = await _conn.get()
     if client is not None:
         try:
             payload = json.dumps({"kind": qk.value, "text": text})
@@ -132,7 +99,7 @@ async def enqueue(
 
 async def request_abort(tenant_id: str, thread_id: str) -> dict[str, Any]:
     """Abort the active run: cancel remaining tools and mark the queue aborted."""
-    client = await _get_redis()
+    client = await _conn.get()
     if client is not None:
         try:
             await client.set(_redis_key(tenant_id, thread_id, "cancel"), "1", ex=3600)
@@ -154,7 +121,7 @@ async def request_abort(tenant_id: str, thread_id: str) -> dict[str, Any]:
 
 
 async def is_aborted(tenant_id: str, thread_id: str) -> bool:
-    client = await _get_redis()
+    client = await _conn.get()
     if client is not None:
         try:
             if await client.get(_redis_key(tenant_id, thread_id, "abort")):
@@ -166,7 +133,7 @@ async def is_aborted(tenant_id: str, thread_id: str) -> bool:
 
 
 async def clear_abort(tenant_id: str, thread_id: str) -> None:
-    client = await _get_redis()
+    client = await _conn.get()
     if client is not None:
         with contextlib.suppress(Exception):
             await client.delete(_redis_key(tenant_id, thread_id, "abort"))
@@ -178,7 +145,7 @@ async def peek_steer_count(tenant_id: str, thread_id: str) -> int:
     """Non-destructive count of queued steer messages (best-effort)."""
     q = await ensure_run_queue(tenant_id, thread_id)
     n = q.steer.qsize()
-    client = await _get_redis()
+    client = await _conn.get()
     if client is not None:
         with contextlib.suppress(Exception):
             n += int(await client.llen(_redis_key(tenant_id, thread_id, QueueKind.STEER.value)))
@@ -186,7 +153,7 @@ async def peek_steer_count(tenant_id: str, thread_id: str) -> int:
 
 
 async def _drain_redis(tenant_id: str, thread_id: str, kind: str) -> list[QueuedMessage]:
-    client = await _get_redis()
+    client = await _conn.get()
     if client is None:
         return []
     out: list[QueuedMessage] = []
@@ -251,7 +218,7 @@ async def drain_follow_up(
 async def should_cancel_remaining_tools(tenant_id: str, thread_id: str) -> bool:
     if await is_aborted(tenant_id, thread_id):
         return True
-    client = await _get_redis()
+    client = await _conn.get()
     if client is not None:
         try:
             return bool(await client.get(_redis_key(tenant_id, thread_id, "cancel")))
@@ -262,7 +229,7 @@ async def should_cancel_remaining_tools(tenant_id: str, thread_id: str) -> bool:
 
 
 async def clear_cancel_flag(tenant_id: str, thread_id: str) -> None:
-    client = await _get_redis()
+    client = await _conn.get()
     if client is not None:
         try:
             await client.delete(_redis_key(tenant_id, thread_id, "cancel"))
@@ -273,8 +240,9 @@ async def clear_cancel_flag(tenant_id: str, thread_id: str) -> None:
 
 
 async def release_run_queue(tenant_id: str, thread_id: str) -> None:
-    async with _lock:
-        _queues.pop(_key(tenant_id, thread_id), None)
+    # Same reasoning as `ensure_run_queue`: a single dict operation, no `await` in the
+    # middle of it, so there is nothing for a lock to serialise.
+    _queues.pop(_key(tenant_id, thread_id), None)
 
 
 __all__ = [

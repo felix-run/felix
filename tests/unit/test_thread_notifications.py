@@ -100,50 +100,9 @@ async def test_without_redis_nothing_claims_to_be_notified(monkeypatch: pytest.M
     Compose stack up has one running, and this passed or failed depending on that.
     """
 
-    async def _no_redis() -> None:
-        return None
-
-    monkeypatch.setattr(notify, "_get_redis", _no_redis)
+    monkeypatch.setattr(notify, "_conn", _StubConn(None))
     wake = await notify.wait_for_events("t", "th", timeout=0.05)
     assert wake.by_notification is False
-
-
-@pytest.mark.asyncio
-async def test_a_failed_connection_is_retried_rather_than_latched(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A Redis blip must not degrade a worker to polling for the life of the process.
-
-    The first version latched a boolean, so one failed connect meant that worker never
-    tried again — and the poll underneath kept everything correct, which is exactly why
-    nobody would have noticed the wake had stopped working.
-    """
-    import time
-
-    from felix import config as config_mod
-
-    attempts: list[float] = []
-
-    def _unreachable() -> Settings:
-        attempts.append(time.monotonic())
-        # Port 1 is reserved and refuses immediately, so this fails fast rather than
-        # spending the connect timeout.
-        return Settings(database_url="memory://notify", redis_url="redis://127.0.0.1:1/0")
-
-    monkeypatch.setattr(config_mod, "get_settings", _unreachable)
-    monkeypatch.setattr(notify, "_RETRY_AFTER_SECONDS", 60.0)
-
-    assert await notify._get_redis() is None
-    assert len(attempts) == 1, "the first call should try"
-    assert notify._redis_failed_until > time.monotonic(), "no cooldown was recorded"
-
-    assert await notify._get_redis() is None
-    assert len(attempts) == 1, "a call inside the cooldown should not retry"
-
-    notify._redis_failed_until = time.monotonic() - 1  # cooldown elapsed
-    assert await notify._get_redis() is None
-    assert len(attempts) == 2, "a call after the cooldown should retry"
-    assert notify._redis_failed_until > time.monotonic(), "the retry did not re-arm"
 
 
 @pytest.mark.asyncio
@@ -311,6 +270,24 @@ async def test_a_failing_notifier_does_not_fail_the_append(monkeypatch: pytest.M
 # interesting failures need.
 
 
+class _StubConn:
+    """Stands in for the module's `RedisConnection`.
+
+    Replacing the collaborator rather than monkeypatching a method on it: `RedisConnection`
+    uses `__slots__`, so its methods cannot be patched — which is the right pressure. A
+    test that reaches inside a dependency to reshape it is testing the reshaping.
+    """
+
+    def __init__(self, client: object | None) -> None:
+        self._client = client
+
+    async def get(self) -> object | None:
+        return self._client
+
+    async def aclose(self) -> None:
+        return None
+
+
 class _FakePubSub:
     """One connection, so commands queue behind each other -- as they do on a real one.
 
@@ -375,11 +352,7 @@ class _FakeRedis:
 def fake_redis(monkeypatch: pytest.MonkeyPatch):
     def _make(delay: float = 0.0) -> _FakeRedis:
         client = _FakeRedis(delay=delay)
-
-        async def _get() -> _FakeRedis:
-            return client
-
-        monkeypatch.setattr(notify, "_get_redis", _get)
+        monkeypatch.setattr(notify, "_conn", _StubConn(client))
         return client
 
     return _make
@@ -485,39 +458,3 @@ def test_the_postgres_arm_announces_after_its_transaction() -> None:
                 inside.append(inner.lineno)
 
     assert not inside, f"_announce is inside the transaction block at line(s) {inside}"
-
-
-def test_the_retry_cooldown_is_a_cooldown() -> None:
-    """`test_a_failed_connection_is_retried_rather_than_latched` patches this constant,
-    so it stays green if the real value were zero — which is the opposite failure: a
-    connection attempt on every wait against a hard-down Redis."""
-    assert notify._RETRY_AFTER_SECONDS > 0
-
-
-@pytest.mark.asyncio
-async def test_an_abandoned_connect_does_not_latch_the_module_off() -> None:
-    """`_connecting` is a single-flight guard, and a guard that outlives its flight is a
-    latch.
-
-    The `finally` that clears it does not run if the loop closes with the connect still
-    pending — a pytest session creates and destroys a loop per test, so this is ordinary
-    there. Every later `_get_redis` then short-circuited on the stale guard and returned
-    `_redis` without attempting a connect, for the life of the process. That is the
-    indefinite degradation `_RETRY_AFTER_SECONDS` exists to prevent, arriving by another
-    door.
-    """
-    stale = asyncio.get_running_loop().create_future()
-    stale.set_result(None)
-    notify._connecting = stale
-
-    await notify._get_redis()
-    assert notify._connecting is None, "a spent guard survived the call that observed it"
-
-
-@pytest.mark.asyncio
-async def test_reset_drops_the_in_flight_guard_too() -> None:
-    """`reset_notifications` is documented as dropping every connection and waiter. It
-    cleared six module globals and left this one, which is the one that latches."""
-    notify._connecting = asyncio.get_running_loop().create_future()
-    await notify.reset_notifications()
-    assert notify._connecting is None

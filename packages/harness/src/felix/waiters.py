@@ -3,58 +3,18 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import logging
 from typing import Any
+
+from felix.redis_conn import RedisConnection
 
 logger = logging.getLogger("felix.waiters")
 
 _PREFIX = "felix:waiter:"
 _local: dict[str, asyncio.Future[str]] = {}
 _lock = asyncio.Lock()
-_redis: Any | None = None
-_redis_loop: int | None = None
-_redis_failed = False
-
-
-async def _get_redis() -> Any | None:
-    """Return a Redis client bound to the current event loop, or None."""
-    global _redis, _redis_loop, _redis_failed
-    loop_id = id(asyncio.get_running_loop())
-    if _redis is not None and _redis_loop != loop_id:
-        with contextlib.suppress(Exception):
-            await _redis.aclose()
-        _redis = None
-        _redis_loop = None
-        _redis_failed = False
-    if _redis_failed:
-        return None
-    if _redis is not None:
-        return _redis
-    try:
-        from felix.config import get_settings
-
-        settings = get_settings()
-        url = getattr(settings, "redis_url", "") or ""
-        if not url:
-            return None
-        import redis.asyncio as redis
-
-        client = redis.from_url(
-            url,
-            decode_responses=True,
-            socket_connect_timeout=1.0,
-            socket_timeout=2.0,
-        )
-        await client.ping()
-        _redis = client
-        _redis_loop = loop_id
-        return _redis
-    except Exception:
-        logger.debug("waiter redis unavailable; using in-process", exc_info=True)
-        _redis_failed = True
-        return None
+_conn = RedisConnection("waiters")
 
 
 def _key(name: str) -> str:
@@ -64,7 +24,7 @@ def _key(name: str) -> str:
 async def wait(name: str, *, timeout: float) -> dict[str, Any] | None:
     """Block until ``signal(name, payload)`` or timeout. Returns payload or None."""
     rkey = _key(name)
-    client = await _get_redis()
+    client = await _conn.get()
     if client is not None:
         try:
             item = await client.blpop(rkey, timeout=max(1, int(timeout)))
@@ -99,7 +59,7 @@ async def signal(name: str, payload: dict[str, Any]) -> bool:
     """Deliver a payload to a waiting ``wait(name)`` caller."""
     rkey = _key(name)
     raw = json.dumps(payload, default=str)
-    client = await _get_redis()
+    client = await _conn.get()
     if client is not None:
         try:
             await client.rpush(rkey, raw)
