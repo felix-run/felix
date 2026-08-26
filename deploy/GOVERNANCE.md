@@ -330,6 +330,7 @@ implies the matching `*:read`.
 |-------|--------|
 | `manifests:read` / `manifests:write` | `/manifests` |
 | `audit:read` | `/audit` |
+| `artifacts:read` | `/artifacts` — read back a tool output too large to keep in the transcript. Its own scope rather than part of `audit:read`, because a spilled result is raw tool output and often the most sensitive data a run touches |
 | `approvals:read` / `approvals:write` | `/approvals` |
 | `jobs:read` / `jobs:write` | `/jobs` |
 | `plans:read` / `plans:write` | `/plans` |

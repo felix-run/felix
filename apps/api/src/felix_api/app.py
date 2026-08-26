@@ -26,6 +26,7 @@ from felix_api.middleware import BodyLimitMiddleware, RateLimitMiddleware, Reque
 from felix_api.routes import (
     a2a,
     approvals,
+    artifacts,
     audit,
     chat,
     internal,
@@ -236,6 +237,7 @@ def create_app(
     app.include_router(chat.router, prefix="/chat")
     app.include_router(internal.router, prefix="/internal")
     app.include_router(audit.router, prefix="/audit")
+    app.include_router(artifacts.router, prefix="/artifacts")
     app.include_router(approvals.router, prefix="/approvals")
     app.include_router(plans.router, prefix="/plans")
     app.include_router(jobs.router, prefix="/jobs")
