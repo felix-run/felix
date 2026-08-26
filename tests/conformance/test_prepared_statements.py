@@ -29,12 +29,19 @@ EXECUTIONS = 7
 
 
 def _url() -> str:
+    """The conformance database, or a skip — or a failure where a skip would lie.
+
+    One exit rather than falling off the end after `pytest.skip`. Both `skip` and `fail`
+    raise, so the old shape was correct, but a function annotated `-> str` that ends
+    without a `return` reads as a bug and is flagged as one; anyone changing this later
+    has to re-derive that those two calls never come back.
+    """
     url = postgres_url()
-    if url:
-        return url
-    if os.environ.get(REQUIRE_ENV):
-        pytest.fail(f"{REQUIRE_ENV} is set but {PG_URL_ENV} is not")
-    pytest.skip(f"{PG_URL_ENV} unset — the prepared-statement contract did not run")
+    if not url:
+        if os.environ.get(REQUIRE_ENV):
+            pytest.fail(f"{REQUIRE_ENV} is set but {PG_URL_ENV} is not")
+        pytest.skip(f"{PG_URL_ENV} unset — the prepared-statement contract did not run")
+    return url
 
 
 async def _prepared_after_repeated_queries(*, enabled: bool) -> int:
