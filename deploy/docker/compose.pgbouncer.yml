@@ -38,7 +38,11 @@ x-pooled-db: &pooled-db
 
 services:
   pgbouncer:
-    image: edoburu/pgbouncer:1.25.2
+    # The tag scheme is `vMAJOR.MINOR.PATCH-pN`, not the bare version PgBouncer prints
+    # in its own startup log -- `1.25.2` resolves to nothing, and a structural check
+    # that only asks "is it pinned and not :latest" passes for a tag that does not
+    # exist. Booting it is what caught that.
+    image: edoburu/pgbouncer:v1.25.2-p0
     environment:
       DB_HOST: postgres
       DB_PORT: "5432"
