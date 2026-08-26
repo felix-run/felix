@@ -182,14 +182,19 @@ async def test_a_steer_enqueued_on_another_replica_reaches_the_run(notify_agains
 
 
 @pytest.mark.asyncio
-async def test_a_blip_does_not_make_steer_permanently_process_local(notify_against_redis) -> None:
+async def test_a_blip_does_not_make_steer_permanently_process_local(
+    notify_against_redis,  # taken for its side effects: it points get_settings at the conformance Redis
+) -> None:
     """The failure mode that made this worth fixing rather than just testing.
 
     A single failed connect used to latch the module onto its in-process queue for the
     life of the process. Nothing surfaced it: `enqueue` kept returning success, and only
     a multi-replica deployment could tell the difference.
+
+    Takes `notify_against_redis` for its side effects only -- it points `get_settings`
+    at the conformance Redis, which is what `steer._conn` reads. Nothing here needs the
+    values it yields, so unpacking them was two unused locals pretending to be setup.
     """
-    _notify, _url = notify_against_redis
     from felix import steer
 
     await steer._conn.aclose()
