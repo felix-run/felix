@@ -18,6 +18,7 @@
 | `compose.lite.yml` | Tight mem caps; no host ports for DB/cache |
 | `compose.gcp.yml` | Public VM: no DB/cache publish; workspace mount |
 | `compose.pgbouncer.yml` | PgBouncer in transaction mode in front of Postgres |
+| `compose.replicas.yml` | Two API replicas behind one nginx origin |
 
 ## Connection pooling
 
@@ -86,3 +87,46 @@ docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:lates
 Note the trade-off: base images are digest-pinned for reproducibility, but
 `apt-get upgrade` means OS package versions can still move between builds.
 Security patching wins over bit-identical rebuilds here.
+
+## Two replicas behind one origin
+
+```bash
+make up-replicas               # boot it
+./scripts/smoke-replicas.sh    # boot it, prove it, tear it down
+```
+
+Almost everything in Felix behaves identically on one replica and on two, which is
+precisely why the parts that do not are the parts nothing exercises by accident:
+
+- a resume stream reattaches to whichever replica the origin picks, which is generally
+  not the one that ran the turn. `session/notify.py` carries the wake across — and on a
+  single replica the in-process waiter answers first, so Redis is never consulted and a
+  completely broken pub/sub fan-out is indistinguishable from a working one.
+- steer, approvals and fiber leases are Redis- and Postgres-backed for the same reason.
+  A second replica is what proves none of them are quietly process-local.
+
+The smoke script runs the stack with `FELIX_STREAM_RESUME_POLL_SECONDS=30`, and that is
+the whole design rather than a detail. At the default 1 s floor a cross-replica append
+would reach the reader within a second whether or not it was ever notified, so the test
+would pass against a broken notification layer. At 30 s, prompt delivery has only one
+explanation. A measured run delivered in **2 ms**:
+
+```
+   10 upstream=192.168.32.4:8080
+   10 upstream=192.168.32.5:8080
+   A is subscribed to felix:thread:default:default:smoke-…
+   delivered 2 ms after the append, against a 30s poll floor
+```
+
+Verified to fail, too: with the publish in `notify_appended` disabled, the script exits
+non-zero with `NOT DELIVERED`.
+
+nginx is a load balancer here and nothing more — not a recommendation about your
+production ingress. Two settings in `nginx-replicas.conf` are load-bearing for any
+origin you put in front of Felix: `proxy_buffering off`, without which an SSE stream is
+withheld until the response completes and looks hung; and a `proxy_read_timeout` longer
+than `FELIX_STREAM_RESUME_IDLE_SECONDS`, so the origin is not what closes a healthy
+idle stream.
+
+Combine with `compose.pgbouncer.yml` when you want both. Two replicas is also what
+makes the connection ceiling arrive sooner, since the pool is per process.
