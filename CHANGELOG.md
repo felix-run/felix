@@ -7,6 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Approvals were silently denied on any deployment with Redis configured.** Present
+  in 0.2.0, 0.2.1 and 0.2.2 — verified against each tag — and the Compose default
+  configures Redis. A run
+  pausing for approval waits on a Redis `BLPOP`; the shared client sets a 2-second
+  socket timeout; BLPOP blocks server-side while the client sits in a socket read.
+  So every wait longer than two seconds — that is, every approval a human answers —
+  raised a socket timeout on a perfectly healthy connection, was read as "Redis is
+  unavailable", and fell back to an in-process future. The decision then went to
+  Redis while the run waited on a future nobody would resolve, and the run was told
+  `denied / timeout`. **The approver saw success and the agent denied the call**,
+  with nothing logged, because from the code's point of view nothing failed. Not a
+  multi-replica problem: the two halves miss each other inside a single process. If
+  you run 0.2.x with approvals, assume decisions were lost and re-check anything
+  that depended on one.
+- **A steer sent after a Redis blip stopped reaching the run.** `_redis_failed`
+  latched on the first failed connect and was never cleared, so the process fell
+  back to a queue local to itself for its whole life. `enqueue` kept returning
+  `{"queued": "steer"}` while the replica running the turn saw nothing — a user
+  typing "stop" got a 200 and the agent kept going. The same latch degraded thread
+  notifications to polling permanently. Connection handling is now one helper with
+  a bounded cooldown, shared by notifications, steer and waiters.
+- **Thread notifications, on several counts.** A subscription was scoped to a single
+  wait rather than to the reader, so a stream subscribed and unsubscribed once per
+  poll interval; the reference count was taken after the SUBSCRIBE round trip, so a
+  departing reader could unsubscribe a channel an arriving one still needed while it
+  believed it was being notified; and a connect abandoned by a closing event loop
+  left a guard that disabled notifications for the life of the process.
+- **`memory://` announced every append on tenant `"default"`.** The in-memory session
+  store took a tenant and ignored it, so a real tenant's reader was never woken and a
+  `"default"` reader was woken by other tenants' writes. Development and test path
+  only — Postgres was unaffected — but the two stores no longer disagree.
+- **The PgBouncer overlay named an image tag that does not exist.**
+  `edoburu/pgbouncer:1.25.2` is the version PgBouncer prints in its own log, not a
+  published tag, so `make up-pooled` failed at the pull.
+
+### Added
+
+- **`FELIX_DB_PREPARED_STATEMENTS`** — set it `false` behind a pooler that does not
+  track prepared statements. psycopg3 prepares after five executions and the sixth
+  lands on a different server connection, so this fails on the sixth query rather
+  than the first. RDS Proxy forces the choice: it pins the session when it sees a
+  prepared statement, defeating the pooling it was deployed for.
+- **`make up-pooled`** — PgBouncer in transaction mode in front of Postgres, for when
+  `WORKERS x (POOL_SIZE + MAX_OVERFLOW)` outgrows your `max_connections`.
+- **`make up-replicas` and `scripts/smoke-replicas.sh`** — two API replicas behind one
+  origin, and a smoke that proves a resume stream on one sees an append made on the
+  other.
+- **Compose passes the resume-pacing settings** (`FELIX_STREAM_RESUME_IDLE_SECONDS`,
+  `..._POLL_SECONDS`, `..._POLL_MAX_SECONDS`). They were documented in `.env.example`
+  and unreachable from Compose.
+
+### Changed
+
+- A resume stream that is genuinely being notified now relaxes its poll to 60 seconds
+  rather than 10, since the poll is a safety net once wake-ups are being delivered.
+  It tightens again on its own when they stop.
+
 ## [0.2.2] — 2026-08-25
 
 ### Fixed
