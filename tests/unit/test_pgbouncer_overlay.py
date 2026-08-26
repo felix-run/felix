@@ -7,12 +7,16 @@ while leaving prepared statements on fails on the *sixth* query, which is late e
 look like something else.
 
 These are structural rather than behavioural: bringing the stack up needs Docker and
-would fight a developer's running containers. The Felix-through-PgBouncer behaviour is
-verified in felix-run/felix#91 against a real pooler.
+would fight a developer's running containers. The stack has since been booted by hand on
+isolated ports -- 40 consecutive requests through the pooler, well past psycopg's
+five-execution prepare threshold, against two server backends shared by api, worker, and
+scheduler. That run is also what proved a structural check can pass for an image tag that
+does not exist, which `test_the_image_is_pinned_to_a_tag_that_could_exist` now covers.
 """
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -99,11 +103,24 @@ def test_the_pool_mode_is_transaction() -> None:
     assert env["POOL_MODE"] == "transaction"
 
 
-def test_the_image_is_pinned() -> None:
-    """`:latest` on the component that sits between the app and its database is how a
-    deployment changes behaviour without anyone changing anything."""
+def test_the_image_is_pinned_to_a_tag_that_could_exist() -> None:
+    """`:latest` on the component between the app and its database is how a deployment
+    changes behaviour without anyone changing anything.
+
+    The tag shape is checked too, because "pinned and not :latest" passed happily for
+    `1.25.2` -- a tag this repository invented by reading the version PgBouncer prints in
+    its own startup log. edoburu publishes `vMAJOR.MINOR.PATCH-pN`, so the pull failed at
+    `compose up` with a tag that had looked pinned in review and in CI. Nothing offline
+    can prove a tag exists; a shape check is what catches the plausible-looking wrong one.
+    """
     image = _load(OVERLAY)["services"]["pgbouncer"]["image"]
-    assert ":" in image and not image.endswith(":latest"), image
+    repo, _, tag = image.partition(":")
+    assert tag and tag != "latest", image
+    if repo == "edoburu/pgbouncer":
+        assert re.fullmatch(r"v\d+\.\d+\.\d+-p\d+", tag), (
+            f"{tag!r} is not edoburu's tag scheme (vMAJOR.MINOR.PATCH-pN); "
+            "a tag that does not exist fails at `compose up`, not in review"
+        )
 
 
 def test_the_client_pool_is_larger_than_the_server_pool() -> None:
