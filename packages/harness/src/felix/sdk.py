@@ -451,6 +451,99 @@ class FelixClient:
             resp.raise_for_status()
             return resp.json()
 
+    async def tool_result(
+        self,
+        tool_call_id: str,
+        content: Any = "",
+        *,
+        thread_id: str | None = None,
+        error: bool = False,
+    ) -> dict[str, Any]:
+        """Answer a ``tool_request`` frame, whose tool runs on the client.
+
+        A ``tool_request`` is a real round trip inside the model loop: the run is
+        parked until the result is posted, so a client that receives one and has no
+        way to reply hangs for as long as the lease allows rather than failing. Pass
+        ``error=True`` to report a failed execution — that still unblocks the run,
+        which silence does not.
+        """
+        tid = thread_id if thread_id is not None else self._thread_id
+        if not tid:
+            raise ValueError("thread_id required for tool_result")
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.post(
+                f"{self.base_url.rstrip('/')}/chat/tool_result",
+                headers=self._headers(),
+                json={
+                    "thread_id": tid,
+                    "tool_call_id": tool_call_id,
+                    "content": content,
+                    "error": error,
+                },
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+    async def list_approvals(
+        self,
+        *,
+        status: str | None = "pending",
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        """Approvals awaiting a decision.
+
+        The `approval_required` frame carries the id, but a caller only sees that
+        frame while it is attached. A durable run, or one whose stream dropped, has
+        no such frame to read — polling here is the only way to find what it is
+        waiting on. Needs the ``approvals:read`` scope, so a 403 is a narrow key
+        rather than an empty queue.
+        """
+        params: dict[str, Any] = {"limit": limit}
+        if status is not None:
+            params["status"] = status
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.get(
+                f"{self.base_url.rstrip('/')}/approvals",
+                headers=self._headers(),
+                params=params,
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+    async def decide_approval(
+        self,
+        approval_id: str,
+        *,
+        approved: bool,
+        note: str = "",
+        edited_args: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Approve or deny a gated tool call, releasing the run that is waiting.
+
+        The counterpart to `resolve_ui`, for the other interrupt that holds a run
+        open. Without it a manifest that gates its writes could be driven from a
+        browser and not from here, which is backwards: an unattended caller is the
+        one that most needs to answer, because no one is watching it park.
+
+        `edited_args` approves a *modified* call — the operator's third option
+        between yes and no, and the reason the decision carries a body at all.
+        Needs the ``approvals:write`` scope.
+        """
+        body: dict[str, Any] = {
+            "decision": "approved" if approved else "denied",
+            "note": note,
+        }
+        if edited_args is not None:
+            body["edited_args"] = edited_args
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.post(
+                f"{self.base_url.rstrip('/')}/approvals/{approval_id}/decide",
+                headers=self._headers(),
+                json=body,
+            )
+            resp.raise_for_status()
+            return resp.json()
+
     async def resolve_ui(
         self,
         request_id: str,
