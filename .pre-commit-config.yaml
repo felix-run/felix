@@ -15,8 +15,10 @@ repos:
         # Helm templates are Go templates, and the Compose overlays use the
         # `!override` / `!reset` tags, which a plain YAML parser cannot
         # construct. Both are validated properly in CI instead:
-        # `helm lint` and `docker compose config -q`.
-        exclude: ^(deploy/helm/|deploy/docker/compose\.(lite|gcp)\.yml$)
+        # `helm lint` and `docker compose config -q` over every overlay --
+        # which the docker job did only for the base file until #104, so the
+        # exclusions here had been trading one check for none.
+        exclude: ^(deploy/helm/|deploy/docker/compose\.(lite|gcp|replicas)\.yml$)
       - id: check-added-large-files
         args: [--maxkb=1000]
       - id: check-merge-conflict

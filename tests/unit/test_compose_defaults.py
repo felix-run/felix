@@ -1,4 +1,6 @@
-"""A default written twice is a default that drifts.
+"""Compose files, checked where nothing else checks them.
+
+A default written twice is a default that drifts.
 
 Compose has to name a value for any setting it passes through — `${VAR:-}` sends an
 empty string, which a float field rejects at startup — so the numeric knobs it exposes
@@ -37,4 +39,27 @@ def test_the_compose_default_matches_the_settings_default(env_var: str, field: s
     expected = getattr(Settings(database_url="memory://x"), field)
     assert float(written) == float(expected), (
         f"compose defaults {env_var} to {written}, but Settings.{field} is {expected}"
+    )
+
+
+def test_every_overlay_is_validated_by_ci() -> None:
+    """An overlay nothing parses is an overlay that rots.
+
+    `check-yaml` cannot construct Compose's `!override` / `!reset` tags, so the overlays
+    using them are excluded from it — and the CI docker job ran `compose config` on the
+    base file alone, so those exclusions were trading one check for none. The overlays
+    were validated by nothing at all, which is how a typo survives until someone runs
+    the matching `make up-*` target.
+    """
+    root = COMPOSE.parent
+    workflow = (Path(__file__).resolve().parents[2] / ".github" / "workflows" / "ci.yml").read_text(
+        encoding="utf-8"
+    )
+    overlays = sorted(p.name for p in root.glob("compose.*.yml"))
+    assert overlays, "no overlays found — has deploy/docker been restructured?"
+
+    missing = [name for name in overlays if name not in workflow]
+    assert not missing, (
+        f"overlays no CI step validates: {missing}. Add them to the docker job's "
+        "`Compose config` step, or they are checked by nothing."
     )

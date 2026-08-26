@@ -275,8 +275,26 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Every overlay, not just the base file. `check-yaml` cannot parse the ones
+      # using Compose's `!override` / `!reset` tags and skips them, so this is the
+      # only thing standing between an overlay and a typo nobody notices until
+      # someone runs the matching `make up-*` target.
       - name: Compose config
-        run: docker compose -f deploy/docker/compose.yml --project-directory . config --quiet
+        run: |
+          set -euo pipefail
+          # Each overlay passed as separate arguments rather than one splittable
+          # string: the combinations mirror the COMPOSE_* variables in the Makefile,
+          # so what CI validates is what `make up-*` actually runs.
+          check() {
+            echo "::group::compose.yml $*"
+            docker compose -f deploy/docker/compose.yml "$@" --project-directory . config --quiet
+            echo "::endgroup::"
+          }
+          check
+          check -f deploy/docker/compose.lite.yml
+          check -f deploy/docker/compose.gcp.yml -f deploy/docker/compose.lite.yml
+          check -f deploy/docker/compose.pgbouncer.yml
+          check -f deploy/docker/compose.replicas.yml
         env:
           POSTGRES_PASSWORD: ci-compose-check-not-a-secret
           MINIO_ROOT_PASSWORD: ci-compose-check-not-a-secret
@@ -284,6 +302,14 @@ jobs:
           # the interpolation check has to supply one. `make up` generates a real
           # key into .env; this value only has to be non-empty.
           FELIX_AUTH_API_KEYS: '{"sk-ci-compose-check-not-a-secret":{"tenant_id":"default","sub":"ci","scopes":["admin"]}}'
+          # The gcp overlay pins `secrets_backend=gcp`, which refuses to interpolate
+          # without a project. Only needed because this step now validates that
+          # overlay at all — nothing did before, so nothing had hit this.
+          FELIX_GCP_PROJECT: ci-compose-check
+          # Likewise: the gcp overlay deploys a published image rather than building
+          # one, so it demands a tag. Any non-empty value satisfies an interpolation
+          # check -- this step parses the file, it does not pull anything.
+          FELIX_IMAGE_TAG: ci-compose-check
       - name: Build lean image
         run: docker build -f deploy/docker/Dockerfile --build-arg FELIX_EXTRAS= -t felix:ci .
       # Scans the image we actually ship, OS packages included. Unfixed
