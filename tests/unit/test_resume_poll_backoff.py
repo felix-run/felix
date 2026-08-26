@@ -19,6 +19,8 @@ Modelled over one 300-second idle window, floor 1s and ceiling 10s:
 
 from __future__ import annotations
 
+import contextlib
+
 import pytest
 from felix.config import Settings
 
@@ -133,15 +135,24 @@ def test_idle_accounting_follows_the_actual_wait() -> None:
 # --- the wiring, not just the arithmetic --------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_the_loop_actually_waits_the_backed_off_delay(
+async def _record_waits(
     monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The arithmetic above is only worth anything if the loop uses it.
+    *,
+    wake_once_backed_off: bool = False,
+    delivering: bool = False,
+    idle_limit: float = 120.0,
+    ceiling: float = 10.0,
+) -> tuple[list[float], list[int]]:
+    """Drive the real resume loop, recording what it asks to wait *for*.
 
-    Passing `poll` to `sleep` while feeding `delay` to the accounting would keep the
-    1 Hz cadence and still look correct in every unit test of `_next_poll_delay`. So
-    this records what the loop actually sleeps for.
+    Instrumenting the wait rather than a sleep is the difference between measuring the
+    backoff and measuring nothing: the loop used to `asyncio.sleep(delay)`, and when the
+    mechanism changed underneath this test it hung for 120 seconds instead of failing.
+
+    It is patched at `thread_watch` for the same reason. The loop now holds one watch for
+    the life of the stream rather than calling `wait_for_events` per iteration, and a
+    patch aimed at the old name would have gone quietly unused — a test that measures
+    nothing looks exactly like a test that passes.
     """
     from felix.session.notify import Wake
     from felix_api.app import create_app
@@ -150,18 +161,24 @@ async def test_the_loop_actually_waits_the_backed_off_delay(
 
     slept: list[float] = []
 
-    async def _record(_tenant: str, _thread: str, *, timeout: float):
-        """Stand in for the wait, recording what the loop asked to wait *for*.
+    fired: list[int] = []
 
-        The loop used to `asyncio.sleep(delay)`; it now waits on a thread notification
-        with the same delay as its timeout. Instrumenting the wait rather than the
-        sleep is the difference between measuring the backoff and measuring nothing --
-        this test hung for 120 seconds when the mechanism changed underneath it.
-        """
-        slept.append(timeout)
-        return Wake(woken=False, by_notification=False)
+    class _Watch:
+        async def wait(self, *, timeout: float) -> Wake:
+            slept.append(timeout)
+            # Wake on the first wait that has actually backed off, rather than at a
+            # fixed index: the grace window means the first ~30 waits are all the floor,
+            # so a hard-coded index tests nothing and moves whenever the grace does.
+            woken = wake_once_backed_off and not fired and timeout > 1.0
+            if woken:
+                fired.append(len(slept) - 1)
+            return Wake(woken=woken, by_notification=delivering)
 
-    monkeypatch.setattr(chat_mod, "wait_for_events", _record)
+    @contextlib.asynccontextmanager
+    async def _watch(_tenant: str, _thread: str):
+        yield _Watch()
+
+    monkeypatch.setattr(chat_mod, "thread_watch", _watch)
 
     settings = Settings(
         allow_insecure=True,
@@ -170,10 +187,10 @@ async def test_the_loop_actually_waits_the_backed_off_delay(
         object_store="memory",
         database_url="memory://backoff",
         redis_url="",
-        stream_resume_idle_seconds=120.0,
+        stream_resume_idle_seconds=idle_limit,
         stream_resume_poll_seconds=1.0,
         # Only on a version that has it; the route defaults to 10.0 either way.
-        **({"stream_resume_poll_max_seconds": 10.0} if HAS_BACKOFF else {}),
+        **({"stream_resume_poll_max_seconds": ceiling} if HAS_BACKOFF else {}),
     )
     app = create_app(settings=settings, plugins=[])
     client = AsyncClient(transport=ASGITransport(app=app), base_url="http://test", timeout=30.0)
@@ -181,10 +198,62 @@ async def test_the_loop_actually_waits_the_backed_off_delay(
         assert resp.status_code == 200
         async for _chunk in resp.aiter_text():
             pass
+    return slept, fired
 
-    assert slept, "the resume loop never slept"
+
+@pytest.mark.asyncio
+async def test_the_loop_actually_waits_the_backed_off_delay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The arithmetic elsewhere in this file is only worth anything if the loop uses it.
+
+    Passing `poll` to the wait while feeding `delay` to the accounting would keep the
+    1 Hz cadence and still look correct in every unit test of `_next_poll_delay`.
+    """
+    slept, _ = await _record_waits(monkeypatch)
+
+    assert slept, "the resume loop never waited"
     assert slept[0] == 1.0, f"the first wait should be the floor, was {slept[0]}"
-    assert max(slept) > 1.0, "the loop never backed off; it is probably sleeping `poll`"
-    assert max(slept) <= 10.0, f"slept past the configured ceiling: {max(slept)}"
+    assert max(slept) > 1.0, "the loop never backed off; it is probably waiting `poll`"
+    assert max(slept) <= 10.0, f"waited past the configured ceiling: {max(slept)}"
     # 120s of idle at a fixed 1 Hz would be 120 waits.
     assert len(slept) < 60, f"{len(slept)} polls to cover 120s of silence"
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not HAS_BACKOFF, reason="notified ceiling arrived with the backoff")
+async def test_a_notified_stream_relaxes_to_the_longer_ceiling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The reason the notification layer exists, and it had no assertion anywhere.
+
+    A stream that is genuinely being woken can let its poll become a safety net rather
+    than the mechanism — that is the whole query-volume argument for #93. The existing
+    coverage fed `by_notification=False` on every wait, so this branch never ran and the
+    60-second ceiling was asserted by nothing.
+    """
+    from felix_api.routes.chat import NOTIFIED_POLL_CEILING_SECONDS
+
+    slept, _ = await _record_waits(monkeypatch, delivering=True, idle_limit=600.0)
+
+    assert max(slept) > 10.0, "a notified stream stayed on the un-notified ceiling"
+    assert max(slept) <= NOTIFIED_POLL_CEILING_SECONDS, f"waited past the ceiling: {max(slept)}"
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not HAS_BACKOFF, reason="needs the backoff loop")
+async def test_a_wake_puts_the_interval_back_on_the_floor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Backoff is an idleness measure, so activity has to reset it.
+
+    Without this, a thread that goes quiet and then busy keeps answering at the backed-off
+    interval — the user sends a message and waits out a ten-second poll for the reply.
+    """
+    slept, fired = await _record_waits(monkeypatch, wake_once_backed_off=True)
+
+    assert fired, "the loop never backed off, so the reset was never exercised"
+    i = fired[0]
+    assert slept[i] > 1.0, "sanity: the wake did not land on a backed-off wait"
+    assert len(slept) > i + 1, "the loop stopped before the wait after the wake"
+    assert slept[i + 1] == 1.0, f"the wait after a wake should be the floor, was {slept[i + 1]}"
