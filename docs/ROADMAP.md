@@ -26,16 +26,15 @@ something from **Next**.
 
 ## Suggested pick-up order
 
-1. **Scale-out proof** — two API replicas behind one origin. Promoted from **Next**
-   because #93 changed what it is worth: cross-replica wake-ups now exist, and
-   nothing exercises them. The Redis arm of `session/notify.py` has no test at all
-   — every check on it is the in-process path or a fake — and a single replica
-   never needs the cross-process channel, so this is the only thing that would.
-2. **Cowork completion smoke** on GCE — the last piece of the durable loop, and the
+1. **Cowork completion smoke** on GCE — the last piece of the durable loop, and the
    only one that needs a dogfood run on live infrastructure first.
-3. Docs getting-started (Python) + governed demo policy decision.
-4. Pick from **Next → Harness**: the memory-trust decisions, the ASGI audit's last
+2. Docs getting-started (Python) + governed demo policy decision.
+3. Pick from **Next → Harness**: the memory-trust decisions, the ASGI audit's last
    two items, or single-sourcing the version.
+
+Scale-out proof was item 1 and landed in #104, which also closed the gap that made
+it urgent: `session/notify.py`'s Redis arm now has a conformance arm gated on a real
+server, and `scripts/smoke-replicas.sh` proves a cross-replica wake end to end.
 
 Items 3–6 of an earlier order are done: `spec.a2a`, `spec.anomaly`,
 `inbound.schemes` and `outbound.providers` are all enforced, the durable client
@@ -130,13 +129,14 @@ Files: `packages/harness/src/felix/sdk.py`,
 - [ ] **Live-model eval (optional CI)** — fixture/`--mock` is in CI;
       optional nightly against `api.felix.run` that does not block PRs
       (`--llm-judge` opt-in).
-- [ ] **Scale-out proof** — Redis leases + steer/waiters are multi-replica
-      capable; document and smoke two API replicas behind one origin. Now also
-      the only thing that would exercise `session/notify.py`'s Redis arm: the
-      pub/sub fan-out, the shared subscriber connection and its pump task are
-      covered by a fake and by nothing else, and a single-replica deployment
-      never reaches them because writer and reader are the same process. See
-      the pick-up order — this is item 1.
+- [x] **Scale-out proof** — `compose.replicas.yml`, `make up-replicas` and
+      `scripts/smoke-replicas.sh`, plus a conformance arm gated on a real Redis
+      (#104). Measured: an append on replica B reached a resume stream on replica A
+      in **2 ms**, against a deliberately slowed 30 s poll floor — at the 1 s default
+      the same test passes against a completely broken notification layer, which is
+      the trap this was built to avoid. Steer, approvals and fiber leases still have
+      no two-replica assertion of their own; the stack to write one against now
+      exists.
 - [ ] **Sandbox ladder extras** — capability-bridge / gVisor as documented
       extras, not default lean image.
 - [ ] **OAuth / dynamic provider keys** — secrets backends cover static keys;
@@ -541,6 +541,15 @@ this list came from.
       The point was not the line count: the 60-second notified ceiling, the whole
       reason #93 exists, shipped a release with no assertion anywhere, and the
       reason was visible in what covering it took. It is four lines now.
+
+- [x] **Proved the thing two replicas do that one cannot** (#104) — `notify.py`'s
+      whole reason for existing was the part with no coverage, because in one process
+      the in-process waiter answers first and Redis is never consulted. Building the
+      proof also found that the CI docker job validated only the base compose file:
+      the overlays were excluded from `check-yaml` for using `!reset`, under a comment
+      promising CI checked them instead, and CI did not. Turning that on found the gcp
+      overlay could not be parsed at all without two variables nothing had ever
+      supplied.
 
 Three tests written during this wave did not fail against the code they were
 written for, and were only caught by running them against it: a race repro whose
