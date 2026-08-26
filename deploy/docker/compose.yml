@@ -21,6 +21,13 @@ x-felix-env: &felix-env
   FELIX_REDIS_URL: redis://valkey:6379/0
   FELIX_ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
   FELIX_OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  # Resume-stream pacing. Documented in .env.example but unreachable from Compose
+  # until now, which made them untunable in exactly the deployment that needs them.
+  # The literals repeat `Settings`' own defaults, so
+  # tests/unit/test_compose_defaults.py asserts they still match.
+  FELIX_STREAM_RESUME_IDLE_SECONDS: ${FELIX_STREAM_RESUME_IDLE_SECONDS:-300}
+  FELIX_STREAM_RESUME_POLL_SECONDS: ${FELIX_STREAM_RESUME_POLL_SECONDS:-1}
+  FELIX_STREAM_RESUME_POLL_MAX_SECONDS: ${FELIX_STREAM_RESUME_POLL_MAX_SECONDS:-10}
   FELIX_DEFAULT_MANIFEST: ${FELIX_DEFAULT_MANIFEST:-quick}
   FELIX_DEFAULT_MODEL_ID: ${FELIX_DEFAULT_MODEL_ID:-claude-sonnet}
   FELIX_MODEL_ROUTES: ${FELIX_MODEL_ROUTES:-}
