@@ -169,6 +169,20 @@ def _bundled_dir_candidates() -> list[Path]:
     ]
 
 
+def _configured_skills_dir() -> Path | None:
+    """`FELIX_SKILLS_DIR`, if set and present. Not cached — settings can be reloaded."""
+    from felix.config import get_settings
+
+    try:
+        raw = (get_settings().skills_dir or "").strip()
+    except Exception:
+        return None
+    if not raw:
+        return None
+    candidate = Path(raw).expanduser()
+    return candidate if candidate.is_dir() else None
+
+
 @lru_cache(maxsize=1)
 def _default_bundled_dir() -> Path | None:
     """Resolved once. Derived from `__file__`, so it cannot change while the process
@@ -212,11 +226,21 @@ async def load_manifest_skills(
 ) -> SkillCatalog:
     """Resolve SkillRef list into a SkillCatalog."""
     catalog = SkillCatalog()
+    roots: list[Path] = []
     if bundled_dir is None:
-        bundled_dir = _default_bundled_dir()
+        default_dir = _default_bundled_dir()
+        if default_dir is not None:
+            roots.append(default_dir)
+        # FELIX_SKILLS_DIR is searched after the bundled dir, so an operator (or a
+        # package that ships skills) can add to the catalog without a repo checkout.
+        configured = _configured_skills_dir()
+        if configured is not None:
+            roots.append(configured)
+    else:
+        roots.append(bundled_dir)
 
-    if bundled_dir is not None:
-        bundled = await _bundled_catalog(bundled_dir)
+    for root in roots:
+        bundled = await _bundled_catalog(root)
         # A copy: the cached catalog is shared between requests, and the loop below
         # mutates `catalog.skills` with tenant-resolved and placeholder entries.
         catalog.skills.update(bundled.skills)

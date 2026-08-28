@@ -34,8 +34,12 @@ async def _on_worker_startup(_state: object) -> None:
     from felix.plugins import get_registry, load_optional_plugins
     from felix.secrets import hydrate_secrets
 
-    await hydrate_secrets(_settings)
     load_optional_plugins()
+    # Backend names are open strings resolved against their registries, so validate
+    # here too. The API validated at create_app; without this the worker learned
+    # about FELIX_SECRETS_BACKEND=vualt from a traceback in the middle of a task.
+    _settings.validate_runtime()
+    await hydrate_secrets(_settings)
     _register_plugin_cron_tasks()
     logger.info(
         "worker_startup secrets_backend=%s plugins=%s",

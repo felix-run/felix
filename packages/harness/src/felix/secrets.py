@@ -6,8 +6,12 @@ import json
 import logging
 import os
 import re
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from felix.config import Settings
 
 from felix.logging_setup import loggable
 
@@ -124,21 +128,67 @@ class GcpSecretManager:
         return resp.payload.data.decode("utf-8")
 
 
+SecretsFactory = Callable[["Settings"], SecretsProvider]
+
+_backends: dict[str, SecretsFactory] = {}
+
+
+def register_secrets_backend(name: str, factory: SecretsFactory) -> None:
+    """Register a secrets backend for ``FELIX_SECRETS_BACKEND=<name>``.
+
+    ``SecretsProvider`` was already a Protocol behind a hardcoded if/elif. Call
+    this at import time from a ``felix.plugins`` entry point to add Vault,
+    1Password, SOPS, or a bespoke provider.
+    """
+    _backends[name] = factory
+
+
+def list_secrets_backends() -> list[str]:
+    return sorted(_backends)
+
+
+def _build_env(settings: Any) -> SecretsProvider:
+    _ = settings
+    return EnvSecrets()
+
+
+def _build_file(settings: Any) -> SecretsProvider:
+    return FileSecrets(getattr(settings, "secrets_dir", "./secrets"))
+
+
+def _build_aws(settings: Any) -> SecretsProvider:
+    return AwsSecretsManager(getattr(settings, "aws_region", "us-east-1"))
+
+
+def _build_gcp(settings: Any) -> SecretsProvider:
+    project = getattr(settings, "gcp_project", "") or ""
+    if not project:
+        raise RuntimeError("FELIX_GCP_PROJECT required for secrets_backend=gcp")
+    return GcpSecretManager(project)
+
+
+register_secrets_backend("env", _build_env)
+register_secrets_backend("file", _build_file)
+register_secrets_backend("aws", _build_aws)
+register_secrets_backend("gcp", _build_gcp)
+
+
 def build_secrets(settings: object) -> SecretsProvider:
+    """Factory from FELIX_SECRETS_BACKEND (default env). Backends are registrable.
+
+    An unknown backend raises: falling back to `env` would silently serve empty
+    secrets and fail much later, somewhere unrelated.
+    """
     from felix.config import Settings
 
     assert isinstance(settings, Settings)
     backend = getattr(settings, "secrets_backend", "env")
-    if backend == "file":
-        return FileSecrets(getattr(settings, "secrets_dir", "./secrets"))
-    if backend == "aws":
-        return AwsSecretsManager(getattr(settings, "aws_region", "us-east-1"))
-    if backend == "gcp":
-        project = getattr(settings, "gcp_project", "") or ""
-        if not project:
-            raise RuntimeError("FELIX_GCP_PROJECT required for secrets_backend=gcp")
-        return GcpSecretManager(project)
-    return EnvSecrets()
+    factory = _backends.get(backend)
+    if factory is None:
+        raise RuntimeError(
+            f"Unknown FELIX_SECRETS_BACKEND={backend!r} (registered: {', '.join(list_secrets_backends())})"
+        )
+    return factory(settings)
 
 
 async def hydrate_secrets(settings: object) -> list[str]:
@@ -304,16 +354,19 @@ __all__ = [
     "EnvSecrets",
     "FileSecrets",
     "GcpSecretManager",
+    "SecretsFactory",
     "SecretsProvider",
     "build_secrets",
     "collected_secret_values",
     "hydrate_secrets",
     "is_secret_ref",
+    "list_secrets_backends",
     "looks_like_plaintext_secret",
     "normalize_secret_ref",
     "redact_json",
     "redact_text",
     "register_resolved_secret",
+    "register_secrets_backend",
     "resolve_secret_value",
     "secret_ref_name",
 ]

@@ -1,7 +1,8 @@
 """Plugin seam — core never imports optional feature packages.
 
-Optional packages register routes, tools, auth modes, cron tasks, and
-rate-limit keys via the registry (or ``felix.plugins`` entry points).
+Optional packages register routes, tools, auth modes, cron tasks, agent-loop
+hooks, audit/usage sinks, and rate-limit keys via the registry (or the
+``felix.plugins`` entry-point group).
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
-    from fastapi import APIRouter, FastAPI
+    from fastapi import FastAPI
 
     from felix.config import Settings
     from felix.tools.types import Tool
@@ -53,9 +54,9 @@ class PluginRegistry:
     """Process-wide registry; optional packages populate at startup."""
 
     _authenticators: dict[str, AuthenticatorBuilder] = field(default_factory=dict)
-    _routers: list[Any] = field(default_factory=list)
     _plugins: list[Any] = field(default_factory=list)
     _audit_sink_factory: Callable[[], Any] | None = None
+    _audit_sink: Any | None = None
     _usage_sink_factory: Callable[[Settings], Any] | None = None
     _startup_hooks: list[Callable[..., Awaitable[Any]]] = field(default_factory=list)
     _loaded: bool = False
@@ -69,25 +70,40 @@ class PluginRegistry:
     def authenticator_builder(self, mode: str) -> AuthenticatorBuilder | None:
         return self._authenticators.get(mode)
 
-    def register_router(self, router: APIRouter) -> None:
-        self._routers.append(router)
-
-    @property
-    def routers(self) -> list[Any]:
-        return list(self._routers)
-
     @property
     def plugins(self) -> list[Any]:
         return list(self._plugins)
 
     def register_audit_sink(self, factory: Callable[[], Any]) -> None:
         self._audit_sink_factory = factory
+        self._audit_sink = None
+
+    def audit_sink_factory(self) -> Callable[[], Any] | None:
+        return self._audit_sink_factory
+
+    def audit_sink(self) -> Any | None:
+        """The constructed sink, built once.
+
+        `record_event` runs per tool call and per turn, so building the sink per
+        event would hand a plugin that opens an HTTP client in its factory one
+        client per audit event, on the event loop.
+        """
+        if self._audit_sink is None and self._audit_sink_factory is not None:
+            self._audit_sink = self._audit_sink_factory()
+        return self._audit_sink
 
     def register_usage_sink(self, factory: Callable[[Settings], Any]) -> None:
         self._usage_sink_factory = factory
 
+    def usage_sink_factory(self) -> Callable[[Settings], Any] | None:
+        return self._usage_sink_factory
+
     def register_startup_hook(self, hook: Callable[..., Awaitable[Any]]) -> None:
         self._startup_hooks.append(hook)
+
+    @property
+    def startup_hooks(self) -> list[Callable[..., Awaitable[Any]]]:
+        return list(self._startup_hooks)
 
     def register_before_turn(self, hook: Callable[..., Any]) -> None:
         from felix.hooks import get_agent_hooks
@@ -127,11 +143,6 @@ def get_registry() -> PluginRegistry:
     return _registry
 
 
-def installed_plugins() -> list[Any]:
-    """The ONLY core-side line that may list plugins (composition seat)."""
-    return list(_registry.plugins)
-
-
 def load_optional_plugins(reg: PluginRegistry | None = None) -> bool:
     """Load optional plugins from ``felix.plugins`` entry points if installed.
 
@@ -160,8 +171,18 @@ def load_optional_plugins(reg: PluginRegistry | None = None) -> bool:
         except Exception:
             logger.exception("failed loading plugin entry point %s", ep.name)
             continue
-        if callable(register):
+        if not callable(register):
+            continue
+        try:
             register(registry)
-            loaded = True
-            logger.info("loaded optional plugin entry point %s", ep.name)
+        except Exception:
+            # Guarding `ep.load()` but not `register()` left the front door of the
+            # seam as its one undefended call site, while every consumer downstream
+            # (tool registration, agent hooks, sinks, startup hooks) is defensive.
+            # One misconfigured plugin would take down whichever process loaded it,
+            # including `Settings.validate_runtime`, whose job is a legible error.
+            logger.exception("plugin entry point %s failed during register()", ep.name)
+            continue
+        loaded = True
+        logger.info("loaded optional plugin entry point %s", ep.name)
     return loaded

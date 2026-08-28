@@ -952,6 +952,9 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+a2a = [
+    { name = "felix-harness", extra = ["a2a"] },
+]
 aws = [
     { name = "felix-harness", extra = ["aws"] },
 ]
@@ -967,8 +970,14 @@ full = [
 gcp = [
     { name = "felix-harness", extra = ["gcp"] },
 ]
+granian = [
+    { name = "felix-harness", extra = ["granian"] },
+]
 mcp = [
     { name = "felix-harness", extra = ["mcp"] },
+]
+oidc = [
+    { name = "felix-harness", extra = ["oidc"] },
 ]
 otel = [
     { name = "felix-harness", extra = ["otel"] },
@@ -1011,12 +1020,15 @@ requires-dist = [
     { name = "felix-api", editable = "apps/api" },
     { name = "felix-cli", editable = "packages/cli" },
     { name = "felix-harness", editable = "packages/harness" },
+    { name = "felix-harness", extras = ["a2a"], marker = "extra == 'a2a'", editable = "packages/harness" },
     { name = "felix-harness", extras = ["aws"], marker = "extra == 'aws'", editable = "packages/harness" },
     { name = "felix-harness", extras = ["aws", "gcp", "otel", "mcp"], marker = "extra == 'full'", editable = "packages/harness" },
     { name = "felix-harness", extras = ["browser"], marker = "extra == 'browser'", editable = "packages/harness" },
     { name = "felix-harness", extras = ["embeddings"], marker = "extra == 'embeddings'", editable = "packages/harness" },
     { name = "felix-harness", extras = ["gcp"], marker = "extra == 'gcp'", editable = "packages/harness" },
+    { name = "felix-harness", extras = ["granian"], marker = "extra == 'granian'", editable = "packages/harness" },
     { name = "felix-harness", extras = ["mcp"], marker = "extra == 'mcp'", editable = "packages/harness" },
+    { name = "felix-harness", extras = ["oidc"], marker = "extra == 'oidc'", editable = "packages/harness" },
     { name = "felix-harness", extras = ["otel"], marker = "extra == 'otel'", editable = "packages/harness" },
     { name = "felix-harness", extras = ["pii"], marker = "extra == 'pii'", editable = "packages/harness" },
     { name = "felix-harness", extras = ["sandbox"], marker = "extra == 'sandbox'", editable = "packages/harness" },
@@ -1026,7 +1038,7 @@ requires-dist = [
     { name = "felix-harness", extras = ["warehouse-doris"], marker = "extra == 'warehouse-doris'", editable = "packages/harness" },
     { name = "felix-worker", editable = "apps/worker" },
 ]
-provides-extras = ["aws", "gcp", "otel", "mcp", "browser", "embeddings", "warehouse", "warehouse-clickhouse", "warehouse-doris", "temporal", "sandbox", "pii", "full"]
+provides-extras = ["aws", "gcp", "otel", "mcp", "a2a", "oidc", "granian", "browser", "embeddings", "warehouse", "warehouse-clickhouse", "warehouse-doris", "temporal", "sandbox", "pii", "full"]
 
 [package.metadata.requires-dev]
 dev = [

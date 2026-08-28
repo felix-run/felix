@@ -81,6 +81,13 @@ def parse_verifiers(jwt_verifiers: str) -> list[VerifierConfig]:
             continue
         scheme = bits[0].strip()
         if scheme not in {"access", "cognito", "self"}:
+            # Silently dropping this left an operator with a verifier that simply
+            # never matched and no indication why.
+            logger.warning(
+                "ignoring JWT verifier with unknown scheme %r (expected access|cognito|self): %s",
+                scheme,
+                part,
+            )
             continue
         # issuer may contain colons (https://…)
         rest = part[len(scheme) + 1 :]

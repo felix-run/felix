@@ -290,14 +290,35 @@ _INJECTION_MARKERS = (
     "system prompt",
 )
 
-_UNTRUSTED_TRANSPORTS = frozenset({"mcp", "a2a", "browser", "container", "sandbox", "queue"})
+# Trust is an allowlist, not a denylist. `Tool.executor.transport` is an open `str`
+# (tools/types.py) — a plugin may mint its own — so an untrusted-denylist silently fails
+# *open*: any transport nobody remembered to list skipped content screening entirely. That
+# already bit two in-tree transports, "http" (HttpExecutor returns arbitrary remote body
+# text) and "client" (content originates in the user's browser). Only transports that
+# execute in this process are trusted; everything else is screened by default.
+_TRUSTED_TRANSPORTS = frozenset({"local"})
+
+# Defence in depth for the one case the transport check cannot see: a tool that
+# claims the in-process transport but is bound to something external. Kept in step
+# with `_UNTRUSTED_TRANSPORTS`' former members — a gap here is a trusted tool.
+_UNTRUSTED_SOURCE_PREFIXES = (
+    "mcp",
+    "peer",
+    "a2a",
+    "queue",
+    "browser",
+    "client",
+    "sandbox",
+    "container",
+)
 
 
 def _is_untrusted_tool(tool: Tool) -> bool:
-    if tool.executor.transport in _UNTRUSTED_TRANSPORTS:
+    """True unless the tool executes in-process. Unknown transports are untrusted."""
+    if tool.executor.transport not in _TRUSTED_TRANSPORTS:
         return True
     source = tool.source or ""
-    return source.startswith(("mcp", "peer", "a2a", "queue", "browser"))
+    return source.startswith(_UNTRUSTED_SOURCE_PREFIXES)
 
 
 def apply_content_screening(
@@ -1275,6 +1296,9 @@ async def build_agent(
                 "context_prelude": context_prelude,
                 "manifest_id": m.metadata.name,
                 "manifest_version": m.metadata.version,
+                # Plugin-owned config, namespaced by plugin name. Core never reads
+                # inside it; a registered pattern picks out its own key.
+                "extensions": dict(m.spec.extensions),
                 "recursion_limit": m.spec.recursion_limit,
                 "max_turns": m.spec.max_turns,
                 "aggregator_prompt": m.spec.aggregator_prompt,

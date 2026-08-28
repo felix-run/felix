@@ -17,6 +17,21 @@ app = typer.Typer(
 )
 
 
+def _load_plugins() -> list[str]:
+    """Discover ``felix.plugins`` entry points so plugin patterns and tools exist.
+
+    Without this the CLI saw only built-ins: a manifest naming a plugin-registered
+    pattern or tool validated as broken here while working against the API.
+    Importing ``felix.patterns`` registers the built-in patterns and providers,
+    which also happens at import time.
+    """
+    import felix.patterns  # noqa: F401 — import-time pattern registration
+    from felix.plugins import get_registry, load_optional_plugins
+
+    load_optional_plugins()
+    return [str(getattr(p, "name", p)) for p in get_registry().plugins]
+
+
 @app.command("version")
 def version_cmd() -> None:
     """Print Felix CLI / harness version."""
@@ -70,6 +85,7 @@ def eval_cmd(
     from felix.eval import store as eval_store
     from felix.eval.runner import start_run
 
+    _load_plugins()
     settings = get_settings()
 
     async def _run() -> None:
@@ -163,11 +179,19 @@ def validate_manifest_cmd(
     from felix.config import Settings
     from felix.manifests.governance import GovernanceError, validate_governance
     from felix.manifests.loader import load_manifest_file
+    from felix.patterns.registry import list_patterns
 
+    _load_plugins()
     settings = Settings(environment=environment)  # type: ignore[arg-type]
     try:
         manifest = load_manifest_file(path)
         validate_governance(manifest, settings)
+        # The registry is open, so this is the only place a bad pattern name can be
+        # caught before build time.
+        pattern = manifest.spec.pattern
+        if pattern not in list_patterns():
+            known = ", ".join(sorted(list_patterns()))
+            raise ValueError(f"unknown pattern {pattern!r} (registered: {known})")
     except GovernanceError as exc:
         rprint(f"[red]governance fail[/red] {path}: {exc}")
         raise SystemExit(1) from exc
@@ -197,7 +221,31 @@ def doctor_cmd() -> None:
         rprint(f"  {mark}  {label}{suffix}")
 
     rprint("[bold]Felix doctor[/bold]")
-    check("auth_mode", settings.auth_mode in {"none", "api_key", "jwt"}, settings.auth_mode)
+    # Report what the seam actually discovered — a plugin that failed to import is
+    # only a log line otherwise, so a silently-absent feature looks like a bug in core.
+    from felix.patterns.registry import list_patterns
+
+    plugin_names = _load_plugins()
+    rprint(f"  [dim]plugins[/dim]  {', '.join(plugin_names) if plugin_names else 'none installed'}")
+    rprint(f"  [dim]patterns[/dim] {', '.join(sorted(list_patterns()))}")
+    # `_load_plugins()` above populated the authenticator registry, so a
+    # plugin-registered mode is valid here. Checking the built-in set alone made
+    # doctor red-FAIL the very seam an operator had just installed.
+    from felix.auth.context import BUILTIN_AUTH_MODES
+    from felix.plugins import get_registry
+
+    mode = settings.auth_mode
+    mode_ok = mode in BUILTIN_AUTH_MODES or get_registry().authenticator_builder(mode) is not None
+    detail = mode if mode in BUILTIN_AUTH_MODES else f"{mode} (plugin)" if mode_ok else mode
+    check("auth_mode", mode_ok, detail)
+
+    # Every open backend setting resolved against its registry, reported rather than
+    # raised — doctor's job is to list what is wrong, not to stop at the first thing.
+    try:
+        settings._validate_registry_backed_settings()
+        check("backends resolve", True)
+    except RuntimeError as exc:
+        check("backends resolve", False, str(exc))
     if settings.auth_mode == "none":
         from felix.config import _is_loopback_host
 

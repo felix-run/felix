@@ -46,7 +46,11 @@ class Settings(BaseSettings):
     allow_insecure: bool = False  # required if auth_mode=none and host binds public
 
     # --- auth ---
-    auth_mode: Literal["none", "api_key", "jwt"] = "none"
+    # Open on purpose: a plugin may register an authenticator for its own mode via
+    # `felix.plugins`. Built-ins are none|api_key|jwt; an unrecognised value is
+    # resolved against the plugin registry at request time and 401s if absent.
+    # `validate_runtime` rejects an unknown mode with no plugin behind it.
+    auth_mode: str = "none"
     auth_api_keys: str = ""  # JSON map token -> {tenant_id, sub, scopes[]}
     jwt_verifiers: str = ""  # comma-separated scheme:issuer (access|cognito|self)
     jwks_public: str = ""  # PEM or JWKS JSON for self-issued
@@ -79,7 +83,8 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     # Object store: s3 (AWS/MinIO) | gcs (GCP) | fs (local dir, small VMs) | memory
     # Lean default is fs — matches Docker image without aws/gcp extras.
-    object_store: Literal["s3", "gcs", "fs", "memory"] = "fs"
+    # Registrable: felix.storage.register_object_store adds a backend.
+    object_store: str = "fs"
     object_store_path: str = ""  # FELIX_OBJECT_STORE=fs → under data_dir/objects if empty
     s3_endpoint: str = "http://localhost:9000"  # empty = AWS default endpoint
     s3_access_key: str = "felix"
@@ -88,7 +93,8 @@ class Settings(BaseSettings):
     s3_region: str = "us-east-1"
     gcs_bucket: str = ""
     # Secrets: env | file | aws | gcp
-    secrets_backend: Literal["env", "file", "aws", "gcp"] = "env"
+    # Registrable: felix.secrets.register_secrets_backend adds a backend.
+    secrets_backend: str = "env"
     secrets_dir: str = "./secrets"
     # Extra secret names to resolve via backend for output masking (comma-separated)
     secret_names: str = ""
@@ -124,7 +130,8 @@ class Settings(BaseSettings):
     # Lean default: none. Recommended when enabling spill: duckdb
     # (felix-harness[warehouse]). Scale-out: clickhouse first; doris if
     # you already operate Apache Doris / want MySQL-protocol BI.
-    warehouse: Literal["none", "duckdb", "clickhouse", "doris", "memory"] = "none"
+    # Registrable: felix.warehouse.register_warehouse_backend adds a backend.
+    warehouse: str = "none"
     warehouse_path: str = ""  # duckdb file; default $FELIX_DATA_DIR/warehouse/felix.duckdb
     warehouse_url: str = ""  # clickhouse http(s)://… or doris mysql://…
     warehouse_database: str = "felix"
@@ -139,7 +146,13 @@ class Settings(BaseSettings):
     # installed; recall runs its full-text and topic-key channels and skips the
     # vector one. `sentence_transformers` needs felix-harness[embeddings]; `openai`
     # and `ollama` speak an OpenAI-compatible /embeddings endpoint over httpx.
-    memory_embedder: Literal["none", "sentence_transformers", "openai", "ollama"] = "none"
+    # Registrable: felix.memory.embedder.register_embedder_backend adds a backend.
+    memory_embedder: str = "none"
+
+    # Extra directory of SKILL.md packages, appended to the bundled `skills/` dir.
+    # Without this the only paths were derived from __file__ (a repo checkout), so a
+    # pip-installed Felix had no bundled skills and no way to point at its own.
+    skills_dir: str = ""
     memory_embedding_model: str = "bge-base-en-v1.5"
     memory_recall_limit: int = 8
 
@@ -212,8 +225,44 @@ class Settings(BaseSettings):
     def _strip_keys(cls, v: Any) -> Any:
         return v if v is not None else ""
 
+    def _validate_registry_backed_settings(self) -> None:
+        """Fail fast on a backend name nothing registered.
+
+        These settings are open strings so a ``felix.plugins`` package can add a
+        backend, which means a typo is no longer caught by pydantic. Resolve each
+        against its registry at startup instead of failing later and elsewhere.
+        """
+        from felix.plugins import get_registry, load_optional_plugins
+
+        load_optional_plugins()
+
+        from felix.auth.context import BUILTIN_AUTH_MODES
+
+        if self.auth_mode not in BUILTIN_AUTH_MODES:
+            if get_registry().authenticator_builder(self.auth_mode) is None:
+                raise RuntimeError(
+                    f"FELIX_AUTH_MODE={self.auth_mode!r} is not a built-in mode "
+                    "(none|api_key|jwt) and no installed plugin registered it."
+                )
+
+        from felix.memory.embedder import list_embedder_backends
+        from felix.secrets import list_secrets_backends
+        from felix.storage import list_object_stores
+        from felix.warehouse import list_warehouse_backends
+
+        for env_name, value, known in (
+            ("FELIX_OBJECT_STORE", self.object_store, list_object_stores()),
+            ("FELIX_SECRETS_BACKEND", self.secrets_backend, list_secrets_backends()),
+            ("FELIX_WAREHOUSE", (self.warehouse or "none").lower(), list_warehouse_backends()),
+            ("FELIX_MEMORY_EMBEDDER", self.memory_embedder, list_embedder_backends()),
+        ):
+            if value not in known:
+                names = ", ".join(known)
+                raise RuntimeError(f"Unknown {env_name}={value!r} (registered: {names})")
+
     def validate_runtime(self) -> None:
         """Fail fast on unsafe or incomplete configuration."""
+        self._validate_registry_backed_settings()
         if self.auth_mode == "none":
             if not self.allow_insecure and self.environment != "development":
                 raise RuntimeError(

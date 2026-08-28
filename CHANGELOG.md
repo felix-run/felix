@@ -43,6 +43,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The PgBouncer overlay named an image tag that does not exist.**
   `edoburu/pgbouncer:1.25.2` is the version PgBouncer prints in its own log, not a
   published tag, so `make up-pooled` failed at the pull.
+- **Content screening decided trust from a denylist, so it failed open.**
+  `Tool.executor.transport` is an open string — a plugin may mint its own — but
+  `apply_content_screening` skipped any tool whose transport was not on a hardcoded
+  untrusted list. Two in-tree transports were already falling through it: `http`,
+  whose executor returns arbitrary remote response text, and `client`, whose content
+  originates in the user's browser. Neither was screened by default, and nor was any
+  transport a third party introduced. Trust is now an allowlist — only in-process
+  (`local`) tools skip screening.
+- **Plugin tools did not exist outside the API process.** `compose()` was the only
+  path that registered them, so a manifest naming a plugin tool resolved over HTTP
+  and raised `Unknown tool` when the same manifest ran as a durable fiber, a
+  scheduled job, or an eval. `default_tool_provider()` now performs the same plugin
+  pass, and a test asserts both paths resolve the same tool set.
+- **Three plugin registration methods were never read.**
+  `register_authenticator`, `register_router`, and `register_audit_sink` accepted
+  registrations that core never consulted — a plugin following the documented
+  Protocol got no error and no effect, and `register_authenticator` was advertised in
+  the module docstring. Authenticators are now resolved by the auth middleware, audit
+  sinks receive events beside the usage sink, and the redundant router seam is gone
+  (`plugin.routes()` already covered it). A repo invariant now fails if any
+  `register_*` method loses its consumer.
+- **An unrecognised session strategy silently became `full_replay`.** A typo
+  (`windowed-20`, `compact`) bought unbounded context with nothing in the logs. It
+  now warns and names the known strategies.
+- **A JWT verifier with an unknown scheme was dropped without a word**, leaving an
+  operator with a verifier that simply never matched.
+- **`uv sync --extra oidc|a2a|granian` failed from the repo root.** All three were
+  declared on `felix-harness` but never forwarded from the workspace root.
+- **A plugin whose `register()` raised took down whichever process loaded it.**
+  `load_optional_plugins` guarded `ep.load()` but not `register(registry)`, leaving
+  the front door of the seam as its one undefended call site — including
+  `Settings.validate_runtime`, whose job is to produce a legible startup error.
+- **`felix doctor` red-FAILed a plugin-registered auth mode**, having just loaded
+  the plugin that registered it. The built-in mode set was written out in three
+  places; it now has one home in `felix.auth.context.BUILTIN_AUTH_MODES`.
+- **Backend names were validated only in the API process.** The worker learned
+  about `FELIX_SECRETS_BACKEND=vualt` from a traceback in the middle of a task;
+  it now validates at startup, and `felix doctor` reports the same check.
 
 ### Added
 
@@ -59,6 +97,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Compose passes the resume-pacing settings** (`FELIX_STREAM_RESUME_IDLE_SECONDS`,
   `..._POLL_SECONDS`, `..._POLL_MAX_SECONDS`). They were documented in `.env.example`
   and unreachable from Compose.
+- **Open registries for the remaining swappable backends.**
+  `register_object_store`, `register_secrets_backend`, and
+  `register_warehouse_backend` join the pattern, model-provider, and embedder
+  registries. `ObjectStore`, `SecretsProvider`, and `Warehouse` were already
+  Protocols, but each was selected by a hardcoded if/elif, so a third party could
+  implement the interface and had no way to have it chosen.
+- **`FELIX_OBJECT_STORE`, `FELIX_SECRETS_BACKEND`, `FELIX_WAREHOUSE`,
+  `FELIX_MEMORY_EMBEDDER`, and `FELIX_AUTH_MODE` accept registered names.** They were
+  closed `Literal`s, which made a registered backend unreachable — most visibly for
+  the embedder, whose registry had been open all along. An unknown value now fails at
+  startup with the registered names rather than being rejected by the schema.
+- **`register_session_strategy`** — `spec.session.strategy` was an open string parsed
+  by a closed parser.
+- **`spec.extensions`** — the one field exempt from the manifest schema's
+  `extra="forbid"`, namespaced by plugin name and delivered to a pattern builder as
+  `PatternBuildContext["extensions"]`. A plugin previously had no way to carry any
+  manifest configuration at all.
+- **`FELIX_SKILLS_DIR`** — an extra `SKILL.md` directory searched alongside the
+  bundled one. Bundled skills resolved only from `__file__`-relative repo paths, so a
+  pip-installed Felix had none and no way to point at its own.
+- **`examples/felix-plugin-example/`** — a working out-of-tree plugin exercising every
+  seam, including the `[project.entry-points."felix.plugins"]` declaration, for which
+  the repo previously held no example. `felix doctor` now lists discovered plugins and
+  registered patterns, and `felix validate-manifest` rejects an unknown pattern name
+  (nothing validated the pattern before, so a bad name passed CI and failed at build).
+
+### Changed
+
+- **A plugin can no longer silently shadow a built-in.** Auth modes already refused
+  it; session strategies did not, so an installed package could replace
+  `compacting` for every manifest using it. `register_session_strategy` now rejects
+  a built-in prefix, and longest-prefix-wins makes resolution independent of
+  registration order.
+- **An audit sink is constructed once, not per event**, and a sink failure logs at
+  `warning` rather than `debug` — it is the compliance-export path, so a broken
+  export was invisible at default log level.
 
 ### Changed
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -9,6 +10,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from felix.security.expr import evaluate_expression
 from felix.tools.provider import InMemoryToolProvider, ToolProvider
 from felix.tools.types import define_tool
+
+logger = logging.getLogger("felix.tools.builtins")
 
 
 class CalculatorArgs(BaseModel):
@@ -86,10 +89,37 @@ def register_builtin_tools(provider: InMemoryToolProvider) -> None:
     )
 
 
+def register_plugin_tools(provider: InMemoryToolProvider) -> None:
+    """Register tools from installed plugins.
+
+    Core names no plugin: the registry is populated by ``felix.plugins`` entry
+    points. A plugin whose ``register_tools`` raises is skipped with a logged
+    exception rather than taking down the caller.
+    """
+    from felix.plugins import get_registry, load_optional_plugins
+
+    load_optional_plugins()
+    for plugin in get_registry().plugins:
+        register_tools = getattr(plugin, "register_tools", None)
+        if not callable(register_tools):
+            continue
+        try:
+            register_tools(provider.register)
+        except Exception:
+            logger.exception("plugin %r failed to register tools", getattr(plugin, "name", plugin))
+
+
 def default_tool_provider() -> ToolProvider:
-    """Fresh InMemoryToolProvider with builtins — used by fibers / workers."""
+    """Fresh InMemoryToolProvider with builtins + plugin tools.
+
+    Used by fibers, scheduled jobs, eval, and the CLI. This must include plugin
+    tools: without them a manifest naming a plugin tool resolved over HTTP (which
+    goes through the API's ``compose``) but raised ``Unknown tool`` when the same
+    manifest ran as a durable fiber or a cron job.
+    """
     provider = InMemoryToolProvider()
     register_builtin_tools(provider)
+    register_plugin_tools(provider)
     return provider
 
 
@@ -97,4 +127,5 @@ __all__ = [
     "CalculatorArgs",
     "default_tool_provider",
     "register_builtin_tools",
+    "register_plugin_tools",
 ]

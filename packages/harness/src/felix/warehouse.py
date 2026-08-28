@@ -18,8 +18,12 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from felix.config import Settings
 
 logger = logging.getLogger("felix.warehouse")
 
@@ -316,32 +320,77 @@ def duckdb_path(settings: object) -> Path:
     return root / "felix.duckdb"
 
 
+WarehouseFactory = Callable[["Settings"], Warehouse]
+
+_backends: dict[str, WarehouseFactory] = {}
+
+
+def register_warehouse_backend(name: str, factory: WarehouseFactory) -> None:
+    """Register a warehouse backend for ``FELIX_WAREHOUSE=<name>``.
+
+    ``Warehouse`` was already a Protocol behind a hardcoded if/elif. Call this at
+    import time from a ``felix.plugins`` entry point to add Snowflake, BigQuery,
+    or a bespoke sink. Postgres remains the system of record either way.
+    """
+    _backends[name] = factory
+
+
+def list_warehouse_backends() -> list[str]:
+    return sorted(_backends)
+
+
+def _build_none(settings: Any) -> Warehouse:
+    _ = settings
+    return NoneWarehouse()
+
+
+def _build_memory(settings: Any) -> Warehouse:
+    _ = settings
+    return MemoryWarehouse()
+
+
+def _build_duckdb(settings: Any) -> Warehouse:
+    return DuckDbWarehouse(duckdb_path(settings))
+
+
+def _build_clickhouse(settings: Any) -> Warehouse:
+    return ClickHouseWarehouse(
+        url=getattr(settings, "warehouse_url", "") or "http://localhost:8123",
+        database=getattr(settings, "warehouse_database", "") or "felix",
+    )
+
+
+def _build_doris(settings: Any) -> Warehouse:
+    return DorisWarehouse(
+        url=getattr(settings, "warehouse_url", "") or "mysql://localhost:9030",
+        database=getattr(settings, "warehouse_database", "") or "felix",
+    )
+
+
+register_warehouse_backend("none", _build_none)
+register_warehouse_backend("memory", _build_memory)
+register_warehouse_backend("duckdb", _build_duckdb)
+register_warehouse_backend("clickhouse", _build_clickhouse)
+register_warehouse_backend("doris", _build_doris)
+
+
 def build_warehouse(settings: object) -> Warehouse:
-    """Factory from FELIX_WAREHOUSE=none|duckdb|clickhouse|doris|memory.
+    """Factory from FELIX_WAREHOUSE (default none). Backends are registrable.
 
     Locked recommendation: use ``duckdb`` for analytics on small VMs
     (``uv sync --extra warehouse``). Scale-out → ``clickhouse`` first;
     ``doris`` only if you already run Apache Doris / want MySQL-protocol BI.
     Runtime lean default is ``none`` (Postgres remains system of record).
     """
+    from felix.config import Settings
+
+    assert isinstance(settings, Settings)
     backend = (getattr(settings, "warehouse", "none") or "none").lower()
-    if backend in {"none", ""}:
-        return NoneWarehouse()
-    if backend == "memory":
-        return MemoryWarehouse()
-    if backend == "duckdb":
-        return DuckDbWarehouse(duckdb_path(settings))
-    if backend == "clickhouse":
-        return ClickHouseWarehouse(
-            url=getattr(settings, "warehouse_url", "") or "http://localhost:8123",
-            database=getattr(settings, "warehouse_database", "") or "felix",
-        )
-    if backend == "doris":
-        return DorisWarehouse(
-            url=getattr(settings, "warehouse_url", "") or "mysql://localhost:9030",
-            database=getattr(settings, "warehouse_database", "") or "felix",
-        )
-    raise ValueError(f"Unknown FELIX_WAREHOUSE={backend!r}")
+    factory = _backends.get(backend)
+    if factory is None:
+        known = ", ".join(list_warehouse_backends())
+        raise RuntimeError(f"Unknown FELIX_WAREHOUSE={backend!r} (registered: {known})")
+    return factory(settings)
 
 
 async def export_audit_events(
@@ -365,8 +414,11 @@ __all__ = [
     "MemoryWarehouse",
     "NoneWarehouse",
     "Warehouse",
+    "WarehouseFactory",
     "build_warehouse",
     "duckdb_path",
     "export_audit_events",
+    "list_warehouse_backends",
+    "register_warehouse_backend",
     "warehouse_path",
 ]

@@ -10,7 +10,11 @@ Small VMs should prefer ``FELIX_OBJECT_STORE=fs`` (no extra deps).
 from __future__ import annotations
 
 import logging
-from typing import Any, Protocol, runtime_checkable
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from felix.config import Settings
 
 logger = logging.getLogger("felix.storage")
 
@@ -92,23 +96,45 @@ def reset_object_store_cache_for_tests() -> None:
     _STORE_CACHE.clear()
 
 
-def build_object_store(settings: object) -> ObjectStore:
-    """Factory from FELIX_OBJECT_STORE=s3|gcs|fs|memory (default s3)."""
-    from felix.config import Settings
+ObjectStoreFactory = Callable[["Settings"], ObjectStore]
 
-    assert isinstance(settings, Settings)
-    backend = getattr(settings, "object_store", "s3")
-    if backend == "memory":
-        return MemoryObjectStore()
-    if backend == "fs":
-        from felix.storage.fs import FilesystemObjectStore
+_backends: dict[str, ObjectStoreFactory] = {}
 
-        return FilesystemObjectStore(settings)
-    if backend == "gcs":
-        from felix.storage.gcs import GcsObjectStore
 
-        return GcsObjectStore(settings)
-    # s3 — requires felix-harness[aws] (aiobotocore)
+def register_object_store(name: str, factory: ObjectStoreFactory) -> None:
+    """Register an object-store backend for ``FELIX_OBJECT_STORE=<name>``.
+
+    ``ObjectStore`` was already a Protocol, but the factory was a hardcoded
+    if/elif, so a third party could implement the interface and still had no way
+    to have it selected. Call this at import time from a ``felix.plugins`` entry
+    point to add Azure Blob, a Vault-backed store, or a bespoke backend.
+    """
+    _backends[name] = factory
+
+
+def list_object_stores() -> list[str]:
+    return sorted(_backends)
+
+
+def _build_memory(settings: Any) -> ObjectStore:
+    _ = settings
+    return MemoryObjectStore()
+
+
+def _build_fs(settings: Any) -> ObjectStore:
+    from felix.storage.fs import FilesystemObjectStore
+
+    return FilesystemObjectStore(settings)
+
+
+def _build_gcs(settings: Any) -> ObjectStore:
+    from felix.storage.gcs import GcsObjectStore
+
+    return GcsObjectStore(settings)
+
+
+def _build_s3(settings: Any) -> ObjectStore:
+    # requires felix-harness[aws] (aiobotocore)
     try:
         import aiobotocore  # noqa: F401
     except ImportError as exc:
@@ -121,11 +147,38 @@ def build_object_store(settings: object) -> ObjectStore:
     return S3ObjectStore(settings)
 
 
+register_object_store("memory", _build_memory)
+register_object_store("fs", _build_fs)
+register_object_store("gcs", _build_gcs)
+register_object_store("s3", _build_s3)
+
+
+def build_object_store(settings: object) -> ObjectStore:
+    """Factory from FELIX_OBJECT_STORE (default s3). Backends are registrable.
+
+    An unknown backend raises rather than degrading: objects are the artifact and
+    skill substrate, so a typo must not silently strand writes in memory.
+    """
+    from felix.config import Settings
+
+    assert isinstance(settings, Settings)
+    backend = getattr(settings, "object_store", "s3")
+    factory = _backends.get(backend)
+    if factory is None:
+        raise RuntimeError(
+            f"Unknown FELIX_OBJECT_STORE={backend!r} (registered: {', '.join(list_object_stores())})"
+        )
+    return factory(settings)
+
+
 __all__ = [
     "MemoryObjectStore",
     "ObjectStore",
+    "ObjectStoreFactory",
     "build_object_store",
     "close_object_stores",
     "get_object_store",
+    "list_object_stores",
+    "register_object_store",
     "reset_object_store_cache_for_tests",
 ]

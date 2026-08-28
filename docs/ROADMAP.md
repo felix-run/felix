@@ -5,7 +5,7 @@ concrete enough to pick up in a single session.
 
 **Repos:** `felix-run/felix` (harness) · `felix-run/web` (chat-ui + float + docs)
 **Live:** [api.felix.run](https://api.felix.run) · [chat.felix.run](https://chat.felix.run) · [float.felix.run](https://float.felix.run) · [docs.felix.run](https://docs.felix.run)
-**Last reviewed:** 2026-08-25 (connections and notifications: the pooler seam, thread wake-ups, and the review pass that found what shipping them broke, PRs #91–#101)
+**Last reviewed:** 2026-08-28 (extensibility audit: the seams that were open, the ones that only looked open, and the two that were bugs)
 
 ---
 
@@ -299,6 +299,45 @@ accommodations in `eval.py:132` (alias route named for the client),
 breaks felix-web. Whether `felix/ui/` is dead code or a plugin-seam affordance
 needs a real reachability check (entry points, registry, string lookup) before
 anyone deletes it.
+
+#### From the extensibility audit (Aug 2026)
+
+Audited whether the harness lives up to "aggressively extensible — features other
+tools bake in are buildable as a plugin, a skill, or a third-party package". It
+mostly did not, and two of the gaps were bugs rather than missing affordances.
+
+- [x] **Content screening trusted a denylist and failed open.** `transport` is an
+      open `str`, so any transport not on `_UNTRUSTED_TRANSPORTS` skipped screening —
+      including in-tree `http` (remote response text) and `client` (browser content).
+      Inverted to a `_TRUSTED_TRANSPORTS` allowlist.
+- [x] **Plugin tools existed only in the API process.** `default_tool_provider()`
+      backs fibers, scheduled jobs, eval and the CLI and registered builtins only, so
+      a plugin tool resolved on `/chat` and raised `Unknown tool` as a durable run.
+- [x] **Dead registration seams wired or removed** — `register_authenticator`
+      (now read by the auth middleware), `register_audit_sink` (now fanned out beside
+      the usage sink), `register_router` (deleted; `plugin.routes()` covered it). A
+      new invariant fails if any `register_*` method loses its consumer.
+- [x] **Closed `Literal`s in front of open registries opened** — object store,
+      secrets, warehouse, embedder, auth mode, each validated against its registry at
+      startup. Storage/secrets/warehouse gained registries to be validated against.
+- [x] **`spec.extensions`** gives a plugin somewhere to put manifest config; the rest
+      of the schema stays `extra="forbid"`.
+- [x] **`register_session_strategy`**, and an unknown strategy warns instead of
+      silently degrading to full replay.
+- [x] **The third-party story** — `examples/felix-plugin-example/`, an entry-point
+      test, `FELIX_SKILLS_DIR`, a public `internals/plugins` page, a README
+      "Extending Felix" section, and the principle written into
+      `.claude/rules/felix-invariants.md`.
+- [x] **`felix/ui/` reachability question answered** (see the note above): it is live
+      code, not a plugin-seam affordance. The only importer is
+      `felix_api/routes/chat.py:1123` (`from felix.ui import resolve_ui_response`),
+      plus one test; no entry point, registry, or string lookup reaches it.
+- [ ] **`MemorySpec.checkpointer` is read by nothing.** Left in place and marked
+      RESERVED: eight bundled manifests set it and `extra="forbid"` means removing it
+      breaks any user manifest that does too. Delete it in a breaking manifest change,
+      or give it an implementation.
+- [ ] **`durability` stays a closed `Literal`.** Fibers-vs-Temporal is not a factory
+      swap, so a registry there is a feature, not a refactor.
 
 #### From the memory-trust + scanner wave (Aug 2026)
 

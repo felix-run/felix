@@ -2,8 +2,10 @@
 
 ``installed_plugins()`` is the ONLY core-side line that may list plugins.
 Removing a feature is deleting its entry (or uninstalling the optional package
-that ``load_optional_plugins`` discovers). Tool registration for plugins
-happens here; the worker registers plugin ``cron_tasks`` on startup.
+that ``load_optional_plugins`` discovers). Plugin tool registration is shared
+with ``felix.tools.builtins.register_plugin_tools`` so every entry point — API,
+fibers, scheduled jobs, eval, CLI — resolves the same tool set; the worker
+registers plugin ``cron_tasks`` on startup.
 """
 
 from __future__ import annotations
@@ -12,7 +14,7 @@ from typing import Any
 
 from felix.config import Settings
 from felix.plugins import get_registry, load_optional_plugins
-from felix.tools.builtins import register_builtin_tools
+from felix.tools.builtins import register_builtin_tools, register_plugin_tools
 from felix.tools.provider import InMemoryToolProvider, ToolProvider
 
 
@@ -30,10 +32,8 @@ def compose(settings: Settings) -> ToolProvider:
     _ = settings  # reserved for env-gated tool wiring
     provider = InMemoryToolProvider()
     register_builtin_tools(provider)
-
-    for plugin in installed_plugins():
-        register_tools = getattr(plugin, "register_tools", None)
-        if callable(register_tools):
-            register_tools(provider.register)
+    # Shared with `default_tool_provider`, so fibers, scheduled jobs, eval, and the
+    # CLI resolve the same tool set this process does.
+    register_plugin_tools(provider)
 
     return provider
