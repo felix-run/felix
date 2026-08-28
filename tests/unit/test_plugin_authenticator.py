@@ -55,11 +55,9 @@ def _sso_builder(settings: Settings) -> Any:
 
 def _install(monkeypatch: pytest.MonkeyPatch, mode: str, builder: Any) -> None:
     """Register an authenticator on a registry isolated from other tests."""
-    import felix.plugins as plugins_mod
-
     registry = PluginRegistry()
     registry.register_authenticator(mode, builder)
-    monkeypatch.setattr(plugins_mod, "_registry", registry)
+    monkeypatch.setattr("felix.plugins._registry", registry)
 
 
 @pytest.mark.asyncio

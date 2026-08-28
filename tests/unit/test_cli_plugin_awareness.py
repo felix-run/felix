@@ -29,12 +29,12 @@ spec:
 
 @pytest.fixture
 def _restore_patterns() -> Any:
-    import felix.patterns.registry as reg
+    from felix.patterns.registry import _patterns
 
-    saved = dict(reg._patterns)
+    saved = dict(_patterns)
     yield
-    reg._patterns.clear()
-    reg._patterns.update(saved)
+    _patterns.clear()
+    _patterns.update(saved)
 
 
 def _write(tmp_path: Path, pattern: str) -> Path:
@@ -61,9 +61,10 @@ def test_a_plugin_registered_pattern_validates(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _restore_patterns: Any
 ) -> None:
     """The regression: this failed before the CLI loaded plugins."""
-    import felix_cli.main as cli
 
-    async def _build(ctx: dict[str, Any]) -> Any: ...
+    async def _build(ctx: dict[str, Any]) -> None:
+        """A registered pattern builder. Never invoked — validation does not build."""
+        return None
 
     def _load_with_plugin() -> list[str]:
         """Stands in for a plugin registering a pattern from its entry point."""
@@ -72,7 +73,7 @@ def test_a_plugin_registered_pattern_validates(
         register_pattern("acme-loop", _build)
         return ["acme"]
 
-    monkeypatch.setattr(cli, "_load_plugins", _load_with_plugin)
+    monkeypatch.setattr("felix_cli.main._load_plugins", _load_with_plugin)
 
     result = runner.invoke(app, ["validate-manifest", str(_write(tmp_path, "acme-loop"))])
     assert result.exit_code == 0, result.output

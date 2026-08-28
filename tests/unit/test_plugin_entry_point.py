@@ -125,10 +125,9 @@ async def test_a_self_authenticating_mount_bypasses_auth() -> None:
 
 
 def test_plugin_cron_tasks_register_on_the_worker(monkeypatch: pytest.MonkeyPatch) -> None:
-    import felix.plugins as plugins_mod
 
     registry = _install(monkeypatch, lambda reg: reg.register_plugin(_Plugin()))
-    monkeypatch.setattr(plugins_mod, "_registry", registry)
+    monkeypatch.setattr("felix.plugins._registry", registry)
 
     from felix_worker.tasks import _register_plugin_cron_tasks
 
@@ -200,11 +199,10 @@ async def test_plugin_tool_reaches_every_entry_point(monkeypatch: pytest.MonkeyP
     registered builtins only, so a manifest naming a plugin tool resolved over
     HTTP and raised `Unknown tool` when run as a durable fiber or a cron job.
     """
-    import felix.plugins as plugins_mod
     from felix.tools.builtins import default_tool_provider
 
     registry = _install(monkeypatch, lambda reg: reg.register_plugin(_Plugin()))
-    monkeypatch.setattr(plugins_mod, "_registry", registry)
+    monkeypatch.setattr("felix.plugins._registry", registry)
 
     provider = default_tool_provider()
     assert provider.has("fake__tool")
@@ -216,13 +214,12 @@ async def test_plugin_tool_reaches_every_entry_point(monkeypatch: pytest.MonkeyP
 
 def test_compose_and_default_provider_agree(monkeypatch: pytest.MonkeyPatch) -> None:
     """Both paths must resolve the same tool set, or manifests behave differently."""
-    import felix.plugins as plugins_mod
     from felix.config import Settings
     from felix.tools.builtins import default_tool_provider
     from felix_api.composition import compose
 
     registry = _install(monkeypatch, lambda reg: reg.register_plugin(_Plugin()))
-    monkeypatch.setattr(plugins_mod, "_registry", registry)
+    monkeypatch.setattr("felix.plugins._registry", registry)
 
     composed = compose(Settings())
     # Assert the tool is actually there, not merely that both paths agree — they

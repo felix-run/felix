@@ -136,7 +136,6 @@ def test_full_replay_does_not_warn(caplog: pytest.LogCaptureFixture) -> None:
 
 def test_audit_events_reach_a_plugin_sink(monkeypatch: pytest.MonkeyPatch, clean_audit_buffer: Any) -> None:
     """`register_audit_sink` accepted a factory that nothing ever called."""
-    import felix.plugins as plugins_mod
     from felix.audit.store import record_event
     from felix.plugins import PluginRegistry
 
@@ -153,7 +152,7 @@ def test_audit_events_reach_a_plugin_sink(monkeypatch: pytest.MonkeyPatch, clean
 
     registry = PluginRegistry()
     registry.register_audit_sink(_Sink)
-    monkeypatch.setattr(plugins_mod, "_registry", registry)
+    monkeypatch.setattr("felix.plugins._registry", registry)
 
     record_event(Settings(), "acme", "tool_call", manifest_id="quick", status="ok")
     record_event(Settings(), "acme", "tool_call", manifest_id="quick", status="ok")
@@ -170,7 +169,6 @@ def test_a_raising_audit_sink_does_not_lose_the_event(
     monkeypatch: pytest.MonkeyPatch, clean_audit_buffer: Any
 ) -> None:
     """Postgres stays the system of record; a bad sink must not break the write."""
-    import felix.plugins as plugins_mod
     from felix.audit.store import _pending, record_event
     from felix.plugins import PluginRegistry
 
@@ -180,7 +178,7 @@ def test_a_raising_audit_sink_does_not_lose_the_event(
 
     registry = PluginRegistry()
     registry.register_audit_sink(_Broken)
-    monkeypatch.setattr(plugins_mod, "_registry", registry)
+    monkeypatch.setattr("felix.plugins._registry", registry)
 
     before = len(_pending)
     record_event(Settings(), "acme", "tool_call")

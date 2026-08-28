@@ -28,12 +28,12 @@ def _manifest(spec: dict[str, Any]) -> dict[str, Any]:
 
 @pytest.fixture
 def _restore_patterns() -> Any:
-    import felix.patterns.registry as reg
+    from felix.patterns.registry import _patterns
 
-    saved = dict(reg._patterns)
+    saved = dict(_patterns)
     yield
     reset_pattern_registry()
-    reg._patterns.update(saved)
+    _patterns.update(saved)
 
 
 @pytest.mark.asyncio
