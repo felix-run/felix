@@ -115,8 +115,12 @@ def test_a_raising_startup_hook_does_not_kill_the_api(
     app = create_app(settings=Settings(auth_mode="none", host="127.0.0.1"), plugins=[])
     # TestClient as a context manager runs the lifespan; httpx's ASGITransport
     # does not, which would make this test pass without ever invoking a hook.
+    #
+    # `/live` and not `/ready`: readiness probes Redis and Postgres and correctly
+    # 503s without them, which is CI's normal state. Liveness is what this test
+    # actually means — the process came up and serves.
     with TestClient(app) as client:
-        resp = client.get("/ready")
+        resp = client.get("/live")
 
     assert resp.status_code == 200
     # The bad hook ran, was contained, and did not prevent the next one.
