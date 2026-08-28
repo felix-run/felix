@@ -81,7 +81,10 @@ def test_a_stateful_checkpointer_accepts_any_strategy(strategy: str) -> None:
 
 def test_a_plugin_can_register_a_checkpointer(restore_checkpointers: Any) -> None:
     class _Redis:
-        def open(self, thread_id: str) -> Any: ...
+        """Stands in for a plugin-supplied store; never opened here."""
+
+        def open(self, thread_id: str) -> Any:
+            raise NotImplementedError
 
     register_checkpointer("acme-redis", lambda settings, tenant: _Redis())
 
