@@ -18,19 +18,42 @@ uninstalling the package. `tests/unit/test_plugin_boundary.py` asserts both this
 
 ## What a plugin can register
 
+On the registry / plugin object:
+
 | Capability | Hook |
 |---|---|
-| Routes | `plugin.routes(app, tools=…)` or `registry.register_router()` |
+| Routes | `plugin.routes(app, tools=…)` |
 | Tools | `plugin.register_tools(register)` |
-| Auth modes | `registry.register_authenticator(mode, builder)` |
+| Auth modes | `registry.register_authenticator(mode, builder)` + `FELIX_AUTH_MODE=<mode>` |
 | Cron tasks | `plugin.cron_tasks` → registered by the worker at startup |
 | Rate-limit keys | `plugin.rate_limit_key(request)` |
 | Body limits | `plugin.body_limit_bytes` |
 | Self-authenticating mounts | `plugin.self_authenticating_mounts` |
-| Audit / usage sinks | `registry.register_audit_sink_factory()` / `register_usage_sink_factory()` |
-| Startup hooks | `registry._startup_hooks` (awaited in the API lifespan) |
+| Audit / usage sinks | `registry.register_audit_sink(factory)` / `register_usage_sink(factory)` |
+| Startup hooks | `registry.register_startup_hook(hook)` (awaited in the API lifespan) |
+| Agent-loop hooks | `registry.register_before_turn` / `filter_history` / `before_compact` / `before_tool` / `after_tool` / `compact_failed` |
 
-The `FelixPlugin` Protocol in `plugins.py` documents the full shape.
+Open registries in core, called at import time (not on the registry object):
+
+| Capability | Hook |
+|---|---|
+| Patterns | `felix.patterns.registry.register_pattern(name, builder)` → `spec.pattern` |
+| Model providers | `felix.patterns.model_registry.register_model_provider(name, factory)` |
+| Object stores | `felix.storage.register_object_store(name, factory)` → `FELIX_OBJECT_STORE` |
+| Secrets backends | `felix.secrets.register_secrets_backend(name, factory)` → `FELIX_SECRETS_BACKEND` |
+| Warehouses | `felix.warehouse.register_warehouse_backend(name, factory)` → `FELIX_WAREHOUSE` |
+| Embedders | `felix.memory.embedder.register_embedder_backend(name, factory)` → `FELIX_MEMORY_EMBEDDER` |
+| Session strategies | `felix.session.strategies.register_session_strategy(prefix, factory)` → `spec.session.strategy` |
+
+Manifest config: `spec.extensions.<plugin-name>` is the one field exempt from
+`extra="forbid"`; it reaches a pattern builder as `PatternBuildContext["extensions"]`.
+
+The `FelixPlugin` Protocol in `plugins.py` documents the full shape, and
+`examples/felix-plugin-example/` is a working package that exercises every row above.
+
+**Not extensible, deliberately:** the nine-wrapper governance order in `builder.py` is
+fixed (`before_tool` / `after_tool` hooks are the sanctioned boundary, outside the
+stack), and `Guardrails.providers` is closed — see `docs/ROADMAP.md` for the rationale.
 
 ## The lean-default rule
 

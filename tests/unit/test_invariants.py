@@ -697,3 +697,86 @@ def test_a_pattern_that_reaches_a_model_records_the_usage() -> None:
         f"limits.max_cost_usd and the token budgets: {offenders}. Call record_usage on the "
         "ModelChatResult, or route the call through a helper that does."
     )
+
+
+def _self_attrs_touched(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
+    """Names like `_plugins` from `self._plugins.append(...)` or `self._x = y`."""
+    return {
+        node.attr
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "self"
+        and node.attr.startswith("_")
+    }
+
+
+def _identifiers(tree: ast.AST) -> set[str]:
+    """Every name a module actually *uses* — not text in comments or string literals.
+
+    Matching raw file text made the check satisfiable by coincidence: a dead
+    `register_router` passed on the `_router` inside `include_router`.
+    """
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            names.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            names.add(node.attr)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, ast.alias):
+            names.add(node.asname or node.name.split(".")[0])
+    return names
+
+
+def test_every_plugin_registration_method_has_a_consumer() -> None:
+    """A `register_*` seam nobody reads is worse than a missing one.
+
+    `register_authenticator`, `register_router`, and `register_audit_sink` all
+    accepted registrations that core never consulted, so a plugin following the
+    documented Protocol got no error and no effect.
+
+    Rather than guess at names, this resolves the chain: each `register_*` method
+    writes some `self._field`; a public member of `PluginRegistry` reads that field
+    and is the accessor; core must reference the accessor or the field itself.
+    """
+    plugins_py = HARNESS / "plugins.py"
+    tree = ast.parse(plugins_py.read_text(encoding="utf-8"))
+
+    registry = next(
+        (n for n in ast.walk(tree) if isinstance(n, ast.ClassDef) and n.name == "PluginRegistry"),
+        None,
+    )
+    assert registry is not None, "PluginRegistry not found"
+
+    methods = [n for n in registry.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+    registrars = [m for m in methods if m.name.startswith("register_")]
+    assert registrars, "PluginRegistry exposes no register_* methods"
+
+    used: set[str] = set()
+    for root in SOURCE_ROOTS:
+        for path in root.rglob("*.py"):
+            if path == plugins_py:
+                continue
+            used |= _identifiers(ast.parse(path.read_text(encoding="utf-8")))
+
+    orphans: list[str] = []
+    for method in registrars:
+        fields = _self_attrs_touched(method)
+        accessors = {
+            m.name
+            for m in methods
+            if not m.name.startswith(("_", "register_")) and (_self_attrs_touched(m) & fields)
+        }
+        # A hook forwarded straight to another module (register_before_turn and
+        # friends) stores nothing here; its consumer is that module's runner.
+        if not fields:
+            continue
+        if not ({method.name, *accessors, *fields} & used):
+            orphans.append(f"{method.name} (writes {', '.join(sorted(fields))})")
+
+    assert orphans == [], (
+        "plugin registration methods whose registration nothing in core reads — "
+        f"wire them or delete them: {'; '.join(orphans)}"
+    )

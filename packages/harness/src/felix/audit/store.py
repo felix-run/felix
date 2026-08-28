@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 import uuid
 from typing import Any
@@ -12,6 +13,8 @@ from felix.buffers import DurableBuffer
 from felix.config import Settings
 from felix.db.models import AuditEvent
 from felix.db.session import _use_memory, get_session_factory
+
+logger = logging.getLogger("felix.audit.store")
 
 now_ms = lambda: int(time.time() * 1000)
 
@@ -56,6 +59,30 @@ def record_event(
         "payload_json": redact_json(payload) if payload else {},
     }
     _pending.append(event)
+    _fanout_to_plugin_sink(event)
+
+
+def _fanout_to_plugin_sink(event: dict[str, Any]) -> None:
+    """Mirror the event to a plugin audit sink, if one is registered.
+
+    Postgres stays the system of record; a sink is an additional consumer (SIEM,
+    compliance export). It must never be able to lose an audit event, so failure
+    is logged and swallowed — same contract as the usage sink.
+    """
+    try:
+        from felix.plugins import get_registry
+
+        sink = get_registry().audit_sink()
+        if sink is None:
+            return
+        record = getattr(sink, "record", None)
+        if callable(record):
+            record(event)
+    except Exception:
+        # Warning, not debug: an audit event that cannot be exported is a
+        # governance gap, and this is the SIEM/compliance path. Still swallowed —
+        # Postgres is the system of record and must not be blocked by a sink.
+        logger.warning("audit_sink_failed", exc_info=True)
 
 
 async def query(

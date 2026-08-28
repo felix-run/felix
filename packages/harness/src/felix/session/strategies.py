@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from felix.patterns.types import ChatMessage
@@ -261,6 +262,53 @@ class SemanticSessionStrategy:
         ]
 
 
+SessionStrategyFactory = Callable[..., SessionStrategy]
+
+_strategies: dict[str, SessionStrategyFactory] = {}
+
+# Built-in prefixes, so an unrecognised strategy can name what it could have been.
+_BUILTIN_STRATEGIES = ("full_replay", "windowed:N", "summarizing:N", "compacting[:N]", "semantic:N")
+
+# The prefixes the parser below claims. A plugin may not take one of these.
+_BUILTIN_STRATEGY_PREFIXES = frozenset({"full_replay", "windowed", "summarizing", "compacting", "semantic"})
+
+
+def register_session_strategy(prefix: str, factory: SessionStrategyFactory) -> None:
+    """Register a session strategy under ``prefix``.
+
+    ``SessionStrategy`` is a Protocol and `spec.session.strategy` is an open
+    string, but the parser was closed, so a third party could implement the
+    interface and never be selected. A registered prefix matches either exactly
+    (``"mine"``) or as ``"mine:<arg>"``; the factory receives the argument text
+    (empty string when absent) plus the same keyword budget the built-ins get.
+    """
+    if prefix in _BUILTIN_STRATEGY_PREFIXES:
+        # Same rule as auth modes: a plugin may add a strategy, never silently
+        # replace a built-in. Strategy governs how much context reaches the model,
+        # so shadowing `compacting` from an installed package is the same class of
+        # risk as shadowing `api_key`.
+        raise ValueError(
+            f"session strategy {prefix!r} is built in and cannot be overridden "
+            f"(built-ins: {', '.join(sorted(_BUILTIN_STRATEGY_PREFIXES))})"
+        )
+    _strategies[prefix] = factory
+
+
+def list_session_strategies() -> list[str]:
+    return sorted(_strategies)
+
+
+def _match_registered(raw: str) -> tuple[SessionStrategyFactory, str] | None:
+    """Longest prefix wins, so resolution does not depend on registration order."""
+    for prefix in sorted(_strategies, key=len, reverse=True):
+        factory = _strategies[prefix]
+        if raw == prefix:
+            return factory, ""
+        if raw.startswith(f"{prefix}:"):
+            return factory, raw[len(prefix) + 1 :]
+    return None
+
+
 def get_session_strategy(
     spec: str,
     *,
@@ -273,6 +321,18 @@ def get_session_strategy(
     from felix.session.compaction import CompactingSessionStrategy
 
     raw = (spec or "full_replay").strip()
+
+    registered = _match_registered(raw)
+    if registered is not None:
+        factory, arg = registered
+        return factory(
+            arg,
+            reserve_tokens=reserve_tokens,
+            keep_recent_tokens=keep_recent_tokens,
+            context_window_tokens=context_window_tokens,
+            compaction_enabled=compaction_enabled,
+        )
+
     if raw.startswith("windowed:"):
         n = int(raw.split(":", 1)[1] or "20")
         return WindowedSessionStrategy(n)
@@ -304,6 +364,15 @@ def get_session_strategy(
     if raw.startswith("semantic:"):
         n = int(raw.split(":", 1)[1] or "10")
         return SemanticSessionStrategy(n)
+    if raw != "full_replay":
+        # Silently degrading meant a typo ("windowed-20", "compact") bought full
+        # replay and an unbounded context, with nothing in the logs to say so.
+        known = ", ".join((*_BUILTIN_STRATEGIES, *list_session_strategies()))
+        logger.warning(
+            "unknown session strategy %r; falling back to full_replay (known: %s)",
+            raw,
+            known,
+        )
     return FullReplaySessionStrategy()
 
 
@@ -317,4 +386,6 @@ __all__ = [
     "full_replay_session_strategy",
     "get_session_strategy",
     "is_pinned",
+    "list_session_strategies",
+    "register_session_strategy",
 ]

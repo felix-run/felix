@@ -1,0 +1,19 @@
+[project]
+name = "felix-plugin-example"
+version = "0.1.0"
+description = "Reference third-party Felix plugin — every seam, in one package."
+requires-python = ">=3.14"
+dependencies = []
+
+# THIS is the declaration that makes a package a Felix plugin. The group name is
+# fixed; the entry-point name is yours. The value points at a `register(registry)`
+# callable that core invokes once at startup.
+[project.entry-points."felix.plugins"]
+example = "felix_plugin_example:register"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/felix_plugin_example"]

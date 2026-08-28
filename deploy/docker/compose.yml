@@ -33,6 +33,9 @@ x-felix-env: &felix-env
   FELIX_MODEL_ROUTES: ${FELIX_MODEL_ROUTES:-}
   FELIX_OLLAMA_BASE_URL: ${FELIX_OLLAMA_BASE_URL:-http://host.docker.internal:11434}
   FELIX_WORKSPACE_ROOT: ${FELIX_WORKSPACE_ROOT:-/workspace}
+  # Extra SKILL.md directory, searched alongside the image's bundled skills/.
+  # Mount it into the container as well when you set this.
+  FELIX_SKILLS_DIR: ${FELIX_SKILLS_DIR:-}
   # Analytics spill (recommended duckdb). Requires FELIX_DOCKER_EXTRAS=warehouse
   FELIX_WAREHOUSE: ${FELIX_WAREHOUSE:-none}
   FELIX_DATA_DIR: /data

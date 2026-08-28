@@ -537,7 +537,7 @@ def record_usage(result: ModelChatResult, *, manifest_id: str, model_id: str | N
     try:
         from felix.plugins import get_registry
 
-        factory = get_registry()._usage_sink_factory
+        factory = get_registry().usage_sink_factory()
         if factory is not None:
             sink = factory(settings)
             record = getattr(sink, "record", None)

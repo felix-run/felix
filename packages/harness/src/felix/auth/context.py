@@ -6,6 +6,13 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+# The auth modes core resolves itself. `FELIX_AUTH_MODE` is an open string so a
+# plugin can register another, but these are NOT overridable: letting an optional
+# package redefine `api_key` would make a weaker authenticator installable by
+# accident. Defined here rather than in `middleware` so the CLI and `config` can
+# read it without importing Starlette.
+BUILTIN_AUTH_MODES = frozenset({"none", "api_key", "jwt"})
+
 
 @dataclass(slots=True)
 class Principal:

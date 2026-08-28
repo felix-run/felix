@@ -11,6 +11,20 @@ Rules that hold across the whole repo. Violating one is a blocking review findin
   screening → content screening → limits → guardrails → judges → approvals → artifact spill. Each
   wrapper clones the tool with a new executor, so order defines precedence. Never reorder to make a
   test pass. Details: the **governance-pipeline** skill.
+- **Extensibility is the product.** Felix must not dictate a workflow: what other harnesses
+  bake in should be buildable here as a plugin, a skill, or a third-party package, with core
+  staying minimal. Concretely — a list that selects a swappable implementation is an open
+  registry (`register_pattern`, `register_model_provider`, `register_object_store`,
+  `register_secrets_backend`, `register_warehouse_backend`, `register_embedder_backend`,
+  `register_session_strategy`), and the setting that selects one is an open `str` validated
+  against that registry, never a closed `Literal`. A closed list is a decision that needs a
+  written reason next to it. Details: the **plugin-seam** skill.
+- **A registration seam must have a reader.** Every `PluginRegistry.register_*` method is
+  consumed somewhere in core; `tests/unit/test_invariants.py` enforces it. A seam that accepts
+  input and silently drops it is worse than no seam.
+- **Trust is an allowlist.** `Tool.executor.transport` is open, so governance decides trust by
+  what is known-safe (`_TRUSTED_TRANSPORTS`), never by a denylist — a denylist fails open for
+  exactly the third-party transports the seam exists to allow.
 - **Core never names an optional plugin.** `apps/api/src/felix_api/composition.py` is the only
   place; everything else goes through `felix/plugins.py`. `tests/unit/test_plugin_boundary.py`
   enforces it. Details: the **plugin-seam** skill.

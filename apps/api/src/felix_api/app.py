@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -42,6 +43,8 @@ from felix_api.routes import (
 from felix_api.routes import (
     eval as eval_routes,
 )
+
+logger = logging.getLogger("felix_api.app")
 
 CORE_BODY_LIMIT_BYTES = 1024 * 1024
 
@@ -94,8 +97,13 @@ def create_app(
         app.state.plugins = plugin_list
         await hydrate_secrets(cfg)
         setup_observability(cfg)
-        for hook in get_registry()._startup_hooks:
-            await hook(app)
+        for hook in get_registry().startup_hooks:
+            # One bad third-party hook must not take down API startup; every other
+            # plugin call site is already defensive.
+            try:
+                await hook(app)
+            except Exception:
+                logger.exception("plugin startup hook %r failed", getattr(hook, "__name__", hook))
         # The agent loop emits audit and usage events in *this* process; without a
         # flusher here they are never written and the buffer grows unbounded.
         flush_task = start_flush_task(cfg)

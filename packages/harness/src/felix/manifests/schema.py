@@ -274,7 +274,13 @@ class MemoryRecall(_Strict):
 
 
 class MemorySpec(_Strict):
+    # RESERVED — nothing reads this field. Session state is the append-only event
+    # log (`session/store.py`); there is no checkpointer abstraction behind it.
+    # Kept accepted because eight bundled manifests set it and `extra="forbid"`
+    # would reject them on removal; removing it is a breaking manifest change.
     checkpointer: Literal["agentcore", "sqlite", "do", "postgres", "none"] = "postgres"
+    # Only `pgvector` / `memory` / `none` are branched on (builder.py); the other
+    # members are accepted but behave as `pgvector`.
     store: Literal["agentcore", "memory", "vectorize", "pgvector", "none"] = "pgvector"
     capture: MemoryCapture = Field(default_factory=MemoryCapture)
     consolidate: MemoryConsolidate = Field(default_factory=MemoryConsolidate)
@@ -529,6 +535,18 @@ class Spec(_Strict):
     approvals: list[ApprovalRule] = Field(default_factory=list)
     governance: GovernanceSpec = Field(default_factory=GovernanceSpec)
     recursion_limit: int | None = Field(default=None, ge=1, le=ABSOLUTE_LIMITS["recursion_limit"])
+    # The one relaxation of `extra="forbid"`. A plugin that registers a pattern or
+    # tool otherwise has no way to be configured from a manifest, because every
+    # unknown key is a validation error. Namespace by plugin name:
+    #
+    #     spec:
+    #       extensions:
+    #         acme-billing: {plan: pro}
+    #
+    # Core never reads inside these values; they reach a pattern builder through
+    # `PatternBuildContext["extensions"]`. Governance does not apply to them, so a
+    # plugin must treat its own config as trusted operator input, not model input.
+    extensions: dict[str, Any] = Field(default_factory=dict)
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 

@@ -1778,6 +1778,11 @@
           ],
           "default": null,
           "title": "Recursion Limit"
+        },
+        "extensions": {
+          "additionalProperties": true,
+          "title": "Extensions",
+          "type": "object"
         }
       },
       "title": "Spec",

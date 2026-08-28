@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import inspect
 import json
+import logging
 from collections.abc import Sequence
 from functools import lru_cache
 from typing import Any
@@ -10,12 +12,44 @@ from typing import Any
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from felix.auth.context import ANONYMOUS, AuthContext, Principal, require_scope
+from felix.auth.context import (
+    ANONYMOUS,
+    BUILTIN_AUTH_MODES,
+    AuthContext,
+    Principal,
+    require_scope,
+)
 from felix.auth.jwt import parse_verifiers, verify_jwt
 from felix.config import Settings, get_settings
 from felix.context import AuthContext as CtxAuth
 from felix.context import LimitState, RequestContext, async_run_with_context
 from felix.security.constant_time import constant_time_equal
+
+logger = logging.getLogger("felix.auth.middleware")
+
+
+async def _call_authenticator(
+    builder: Any, settings: Settings, request: Request
+) -> AuthContext | JSONResponse:
+    """Invoke a plugin authenticator.
+
+    ``builder(settings)`` yields the authenticator; it is then called with the
+    request. Either step may be async, and the authenticator may be a plain
+    callable or an object exposing ``authenticate``.
+    """
+    authenticator = builder(settings)
+    if inspect.isawaitable(authenticator):
+        authenticator = await authenticator
+    call = getattr(authenticator, "authenticate", authenticator)
+    result = call(request)
+    if inspect.isawaitable(result):
+        result = await result
+    if not isinstance(result, (AuthContext, JSONResponse)):
+        raise TypeError(
+            f"plugin authenticator returned {type(result).__name__}, expected AuthContext or JSONResponse"
+        )
+    return result
+
 
 # Unauthenticated access allowed even when auth_mode is jwt/api_key (probes + discovery).
 # /metrics is NOT public: its counters carry tenant-supplied manifest ids and remote
@@ -79,6 +113,28 @@ async def authenticate_request(
 
     if _is_public_path(path):
         return ANONYMOUS
+
+    # A plugin-registered mode wins over the built-ins, so an optional package can
+    # add an auth scheme (OIDC, mTLS, a vendor SSO) without editing core. Built-in
+    # mode names are not overridable — a plugin cannot silently weaken `api_key`.
+    if mode not in BUILTIN_AUTH_MODES:
+        from felix.plugins import get_registry
+
+        builder = get_registry().authenticator_builder(mode)
+        if builder is None:
+            logger.error("unknown FELIX_AUTH_MODE %r and no plugin registered it", mode)
+            return JSONResponse(
+                {"error": "unauthorized", "reason": "unknown_auth_mode"},
+                status_code=401,
+            )
+        try:
+            return await _call_authenticator(builder, settings, request)
+        except Exception:
+            logger.exception("plugin authenticator for mode %r failed", mode)
+            return JSONResponse(
+                {"error": "unauthorized", "reason": "authenticator_error"},
+                status_code=401,
+            )
 
     if mode == "api_key":
         token = ""

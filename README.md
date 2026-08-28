@@ -166,8 +166,8 @@ through Protocols, not a single vendor SDK.
 `felix-harness[aws]` and `felix-harness[gcp]` extras. Small VMs can use `FELIX_OBJECT_STORE=fs` with
 zero cloud SDKs.
 
-- Set `FELIX_OBJECT_STORE` to `s3`, `gcs`, `fs`, or `memory`
-- Set `FELIX_SECRETS_BACKEND` to `env`, `file`, `aws`, or `gcp`
+- Set `FELIX_OBJECT_STORE` to `s3`, `gcs`, `fs`, `memory`, or a backend you register
+- Set `FELIX_SECRETS_BACKEND` to `env`, `file`, `aws`, `gcp`, or a backend you register
 - Deploy notes: [`deploy/aws/`](deploy/aws/), [`deploy/gcp/`](deploy/gcp/)
 - Manifest secrets, plus opt-in SOC 2 and EU AI Act mapping: [`deploy/GOVERNANCE.md`](deploy/GOVERNANCE.md)
 - Helm: enable `persistence` when using `fs`, so `/data` survives restarts
@@ -190,6 +190,51 @@ multiplexing you deployed it for, so turn preparation off there.
 Felix runs on infrastructure **you** operate. Cloudflare DNS, CDN, TLS, and WAF in front of your
 origin are fine. There is **no** Cloudflare Workers, Durable Objects, Hyperdrive, R2-as-binding,
 Queues, or Workflows compute in this stack.
+
+### Extending Felix
+
+Felix is built to **not dictate your workflow**. Features other harnesses bake in are meant to
+be added from outside: core stays minimal, and the seams below are open by design.
+
+Install a package that declares a `felix.plugins` entry point and core discovers it at startup
+— Felix never imports it by name:
+
+```toml
+[project.entry-points."felix.plugins"]
+my-plugin = "my_plugin:register"
+```
+
+`register(registry)` is then called once. Through the registry a plugin adds **tools**, **HTTP
+routes**, **cron tasks**, **auth modes**, **rate-limit keys**, **body limits**,
+**self-authenticating mounts**, **startup hooks**, **audit/usage sinks**, and six
+**agent-loop hooks** (`before_turn`, `filter_history`, `before_compact`, `before_tool`,
+`after_tool`, `compact_failed`).
+
+Core also exposes open registries, callable at import time, each selected by ordinary config:
+
+| Register | Selected by |
+|---|---|
+| `register_pattern` | `spec.pattern` |
+| `register_model_provider` | `FELIX_MODEL_ROUTES` |
+| `register_object_store` | `FELIX_OBJECT_STORE` |
+| `register_secrets_backend` | `FELIX_SECRETS_BACKEND` |
+| `register_warehouse_backend` | `FELIX_WAREHOUSE` |
+| `register_embedder_backend` | `FELIX_MEMORY_EMBEDDER` |
+| `register_session_strategy` | `spec.session.strategy` |
+
+A plugin carries its own manifest config under `spec.extensions.<name>` — the one field exempt
+from the schema's `extra="forbid"` — and reads it from the pattern build context.
+
+Agent Skills need no code at all: drop a `SKILL.md` under the directory named by
+`FELIX_SKILLS_DIR`, or upload one per tenant to the object store.
+
+**[`examples/felix-plugin-example/`](examples/felix-plugin-example/)** is a working package that
+exercises every seam above.
+
+Two things are deliberately **not** extensible: the nine-wrapper governance order in
+`manifests/builder.py` (order defines precedence, so `before_tool` / `after_tool` hooks are the
+sanctioned boundary instead), and `spec.guardrails.providers`. Both have their rationale
+recorded in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## API surfaces
 
