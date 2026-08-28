@@ -44,6 +44,7 @@ Open registries in core, called at import time (not on the registry object):
 | Warehouses | `felix.warehouse.register_warehouse_backend(name, factory)` → `FELIX_WAREHOUSE` |
 | Embedders | `felix.memory.embedder.register_embedder_backend(name, factory)` → `FELIX_MEMORY_EMBEDDER` |
 | Session strategies | `felix.session.strategies.register_session_strategy(prefix, factory)` → `spec.session.strategy` |
+| Checkpointers | `felix.session.store.register_checkpointer(name, factory)` → `spec.memory.checkpointer` |
 
 Manifest config: `spec.extensions.<plugin-name>` is the one field exempt from
 `extra="forbid"`; it reaches a pattern builder as `PatternBuildContext["extensions"]`.

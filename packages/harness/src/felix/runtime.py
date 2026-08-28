@@ -12,7 +12,7 @@ from felix.manifests.pin import ensure_thread_pin
 from felix.manifests.resolver import ResolvedManifest, resolve_manifest
 from felix.manifests.store import PostgresManifestStore
 from felix.patterns.types import Agent
-from felix.session.store import get_session_store
+from felix.session.store import build_checkpointer, validate_checkpointer_config
 from felix.session.strategies import get_session_strategy
 from felix.tools.provider import ToolProvider
 
@@ -98,9 +98,21 @@ async def build_tenant_agent(
     workspace_root: str | None = None,
     load_agents_md: bool = False,
 ) -> Agent:
-    session_store = get_session_store(settings, tenant_id=tenant_id)
-    strategy_spec = getattr(getattr(manifest, "spec", None), "session", None)
+    spec = getattr(manifest, "spec", None)
+    checkpointer = str(getattr(getattr(spec, "memory", None), "checkpointer", "postgres") or "postgres")
+    strategy_spec = getattr(spec, "session", None)
     strategy_name = getattr(strategy_spec, "strategy", "full_replay") if strategy_spec else "full_replay"
+    memory_spec = getattr(spec, "memory", None)
+    validate_checkpointer_config(
+        checkpointer,
+        session_strategy=strategy_name,
+        compact_after_turn=bool(getattr(strategy_spec, "compact_after_turn", False)),
+        memory_capture=bool(getattr(getattr(memory_spec, "capture", None), "enabled", False)),
+        memory_recall_tools=bool(getattr(getattr(memory_spec, "recall", None), "tools", False)),
+    )
+    # `None` here is a supported outcome, not a failure: `checkpointer: none` runs
+    # the agent with no session state, which the loop already handles.
+    session_store = build_checkpointer(checkpointer, settings, tenant_id=tenant_id)
     reserve = int(getattr(strategy_spec, "reserve_tokens", 16384) or 16384)
     keep_recent = int(getattr(strategy_spec, "keep_recent_tokens", 20000) or 20000)
     context_window = _context_window_for_manifest(manifest, strategy_spec)

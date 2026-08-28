@@ -84,6 +84,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`spec.memory.checkpointer` now selects where session state lives**, having
+  shipped as a closed `Literal` that no code read. Every value silently meant
+  "whatever `FELIX_DATABASE_URL` points at". It is now resolved through an open
+  registry: `postgres` (default, unchanged) and `none` (no session state — every
+  turn starts from the messages it was given), plus anything a plugin adds with
+  `register_checkpointer`.
+
+  There is deliberately no in-process built-in. A thread is not manifest-scoped —
+  fifteen `/chat` routes address one by id with no manifest in hand — so a manifest
+  choosing a different *backend* would split-brain, the agent reading one log while
+  `/history`, `/continue` and `/compact` read another. `none` is exempt because it
+  is a claim about the agent, enforced where the agent reads.
+
+  `agentcore`, `sqlite` and `do` are no longer accepted. They never did anything,
+  and `do` named Cloudflare Durable Objects — compute this stack deliberately does
+  not run. A manifest setting one now fails validation instead of quietly getting
+  Postgres. No bundled manifest used them.
+
+  `checkpointer: none` is refused alongside anything the loop would silently drop
+  for want of a store: a `session.strategy` other than `full_replay`,
+  `session.compact_after_turn`, and `memory.capture.enabled` — the last because
+  `_turn_seq` stamps `origin_seq` from the session head, so with no store every
+  fact lands at genesis and supersession ordering collapses rather than erroring.
+
+  A bad name is now refused at manifest *write* time (`PUT /manifests/{name}`) as
+  well as by the CLI. Opening the field from `Literal` to `str` moved typo-catching
+  out of pydantic, and a stored typo would otherwise have raised inside every
+  build — a 500 per request until someone read a traceback.
+
 - **`FELIX_DB_PREPARED_STATEMENTS`** — set it `false` behind a pooler that does not
   track prepared statements. psycopg3 prepares after five executions and the sixth
   lands on a different server connection, so this fails on the sixth query rather

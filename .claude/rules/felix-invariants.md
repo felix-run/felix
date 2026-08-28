@@ -16,7 +16,7 @@ Rules that hold across the whole repo. Violating one is a blocking review findin
   staying minimal. Concretely — a list that selects a swappable implementation is an open
   registry (`register_pattern`, `register_model_provider`, `register_object_store`,
   `register_secrets_backend`, `register_warehouse_backend`, `register_embedder_backend`,
-  `register_session_strategy`), and the setting that selects one is an open `str` validated
+  `register_session_strategy`, `register_checkpointer`), and the setting that selects one is an open `str` validated
   against that registry, never a closed `Literal`. A closed list is a decision that needs a
   written reason next to it. Details: the **plugin-seam** skill.
 - **A registration seam must have a reader.** Every `PluginRegistry.register_*` method is

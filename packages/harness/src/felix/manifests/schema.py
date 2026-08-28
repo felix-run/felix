@@ -274,11 +274,17 @@ class MemoryRecall(_Strict):
 
 
 class MemorySpec(_Strict):
-    # RESERVED — nothing reads this field. Session state is the append-only event
-    # log (`session/store.py`); there is no checkpointer abstraction behind it.
-    # Kept accepted because eight bundled manifests set it and `extra="forbid"`
-    # would reject them on removal; removing it is a breaking manifest change.
-    checkpointer: Literal["agentcore", "sqlite", "do", "postgres", "none"] = "postgres"
+    # Where this agent's session state lives. The append-only event log is the
+    # checkpoint: `postgres` persists it; `none` keeps nothing, so every turn starts
+    # from the messages it was given. There is no in-process built-in on purpose —
+    # see the comment above the registry in `session/store.py`.
+    #
+    # Open string, resolved against `session.store`'s checkpointer registry, so a
+    # plugin can add one. It shipped as a Literal that no code read — `agentcore`,
+    # `sqlite` and `do` all silently meant `postgres`, and `do` (Durable Objects)
+    # names compute this stack deliberately does not run. Those three are now a
+    # validation error rather than a lie.
+    checkpointer: str = "postgres"
     # Only `pgvector` / `memory` / `none` are branched on (builder.py); the other
     # members are accepted but behave as `pgvector`.
     store: Literal["agentcore", "memory", "vectorize", "pgvector", "none"] = "pgvector"

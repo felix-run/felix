@@ -42,7 +42,7 @@ Defaults when the block is absent: `full_replay`, reserve 16384, keep_recent 200
 
 ## Memory
 
-`memory.store: pgvector|memory|none`, `memory.checkpointer: postgres`. When the store is not `none`
+`memory.store: pgvector|memory|none`, `memory.checkpointer: postgres   # postgres | none, or one you register`. When the store is not `none`
 and capture is enabled, `memory/capture.py:active_facts_prompt` injects durable facts into the
 system prompt at compile time. `procedural_memory.enabled` adds a `remember_procedure` tool; recall
 happens per turn inside the ReAct loop.

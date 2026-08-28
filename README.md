@@ -221,6 +221,7 @@ Core also exposes open registries, callable at import time, each selected by ord
 | `register_warehouse_backend` | `FELIX_WAREHOUSE` |
 | `register_embedder_backend` | `FELIX_MEMORY_EMBEDDER` |
 | `register_session_strategy` | `spec.session.strategy` |
+| `register_checkpointer` | `spec.memory.checkpointer` |
 
 A plugin carries its own manifest config under `spec.extensions.<name>` — the one field exempt
 from the schema's `extra="forbid"` — and reads it from the pattern build context.

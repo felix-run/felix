@@ -1032,6 +1032,13 @@ async def build_agent(
 
         sub_agents: dict[str, Agent] = {}
         if m.spec.sub_agents:
+            # A sub-agent inherits `deps.session_store`, so its own
+            # `spec.memory.checkpointer` is not consulted. That is currently
+            # unreachable rather than merely tolerated: `patterns/delegating.py`
+            # invokes every child with `thread_id=None`, and each session guard in
+            # the react loop requires a thread as well as a store. Give sub-agents a
+            # thread and this starts mattering — resolve the child's checkpointer
+            # here, and validate it, which `build_agent` also does not do today.
             builder = deps.sub_agent_builder or (lambda name: build_agent(name, deps=deps))
             for name in m.spec.sub_agents:
                 sub_agents[name] = await builder(name)

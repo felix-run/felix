@@ -55,6 +55,14 @@ def _http_from_invoke_prep(exc: Exception) -> HTTPException | None:
     if isinstance(exc, ValueError) and str(exc).startswith("secret not found"):
         # Ours, and written to tell an operator which secret is missing.
         return HTTPException(status_code=503, detail=client_safe_message(exc, authored_for_clients=True))
+    if isinstance(exc, ValueError) and str(exc).startswith(
+        ("unknown checkpointer", "memory.checkpointer is")
+    ):
+        # A manifest stored before `memory.checkpointer` was implemented can name a
+        # value that is now rejected — `agentcore`, `sqlite`, `do` were all inert.
+        # `PUT /manifests` refuses new ones, but existing rows only fail here, and
+        # unmapped that is a 500 with a traceback on every request for the manifest.
+        return HTTPException(status_code=422, detail=client_safe_message(exc, authored_for_clients=True))
     return None
 
 

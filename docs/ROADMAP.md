@@ -141,9 +141,10 @@ Files: `packages/harness/src/felix/sdk.py`,
       extras, not default lean image.
 - [ ] **OAuth / dynamic provider keys** — secrets backends cover static keys;
       refresh/`getApiKey(provider)` only if a real customer path needs it.
-- [ ] **Schema cleanup pass** — delete dead `memory.checkpointer` aliases
-      (`agentcore` / `do` / `sqlite`) and any other unused fields after
-      enforce-or-drop decisions above.
+- [ ] **Schema cleanup pass** — unused fields still to decide on after the
+      enforce-or-drop calls above. `memory.checkpointer` is done: it selects the
+      session store for real, and the three names that could never work here are a
+      validation error instead of a silent alias.
 
 #### From the cross-harness port audit (Aug 2026)
 
@@ -332,10 +333,13 @@ mostly did not, and two of the gaps were bugs rather than missing affordances.
       code, not a plugin-seam affordance. The only importer is
       `felix_api/routes/chat.py:1123` (`from felix.ui import resolve_ui_response`),
       plus one test; no entry point, registry, or string lookup reaches it.
-- [ ] **`MemorySpec.checkpointer` is read by nothing.** Left in place and marked
-      RESERVED: eight bundled manifests set it and `extra="forbid"` means removing it
-      breaks any user manifest that does too. Delete it in a breaking manifest change,
-      or give it an implementation.
+- [x] **`MemorySpec.checkpointer` now selects the session store.** Implemented
+      rather than deleted, so the eight bundled manifests setting it keep working.
+      `postgres` (default) / `none`, open via `register_checkpointer`.
+      `none` returns no store at all, reusing the path the react loop already takes
+      for a request with no thread, and is refused alongside a session strategy that
+      needs state, `session.compact_after_turn`, `memory.capture.enabled` or
+      `memory.recall.tools` — each of which would otherwise be silently dropped.
 - [ ] **`durability` stays a closed `Literal`.** Fibers-vs-Temporal is not a factory
       swap, so a registry there is a feature, not a refactor.
 
@@ -477,8 +481,12 @@ remainder, none of it blocking.
 
 - [!] **`memory.consolidate` LLM merge** — worker already hash-dedupes.
       `enabled` / `model` / `after_facts` stay unused on purpose (v1).
-- [!] **`memory.checkpointer` aliases** — dead vendor names; delete on
-      schema cleanup, do not implement.
+- [x] **`memory.checkpointer` aliases** — resolved by implementing the field
+      rather than deleting it. `postgres` / `none` are built in and the registry is
+      open (`register_checkpointer`), so `agentcore` can be a plugin. `do` names
+      Durable Objects and stays unimplementable here by invariant. There is no
+      in-process built-in: a thread is not manifest-scoped, so a per-manifest
+      *backend* would split-brain with the fifteen session routes.
 - [!] **`FELIX_POLICY_BUNDLE_PUBKEY` / OPA** — no signed policy-bundle
       runtime in v1 (governance stays manifest compile + wrappers).
 - [!] **Commerce / billing plugin** — seam only; no Stripe in-tree.
