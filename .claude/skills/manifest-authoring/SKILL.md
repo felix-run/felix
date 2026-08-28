@@ -40,9 +40,14 @@ spec:
     keep_recent_tokens: 20000
     context_window_tokens: 128000
   memory:
-    checkpointer: postgres
+    checkpointer: postgres   # postgres | none, or one you register
     store: pgvector
 ```
+
+`checkpointer: none` runs the agent with no session state — every turn starts from
+the messages it was given. It is refused alongside anything the loop would
+drop for want of a store: a `session.strategy` other than `full_replay`,
+`session.compact_after_turn`, or `memory.capture.enabled`.
 
 Copy `manifests/governed.yaml` when the agent needs governance — it is the fullest worked example
 (policies, limits, approvals, screening, guardrails, anomaly, framework mapping, compile pinning).

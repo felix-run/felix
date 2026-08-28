@@ -180,6 +180,7 @@ def validate_manifest_cmd(
     from felix.manifests.governance import GovernanceError, validate_governance
     from felix.manifests.loader import load_manifest_file
     from felix.patterns.registry import list_patterns
+    from felix.session.store import validate_checkpointer_config
 
     _load_plugins()
     settings = Settings(environment=environment)  # type: ignore[arg-type]
@@ -192,6 +193,15 @@ def validate_manifest_cmd(
         if pattern not in list_patterns():
             known = ", ".join(sorted(list_patterns()))
             raise ValueError(f"unknown pattern {pattern!r} (registered: {known})")
+        # Same reason: `checkpointer` is an open string resolved against a registry,
+        # so an unknown one is only catchable here or at build time.
+        validate_checkpointer_config(
+            manifest.spec.memory.checkpointer,
+            session_strategy=manifest.spec.session.strategy,
+            compact_after_turn=manifest.spec.session.compact_after_turn,
+            memory_capture=manifest.spec.memory.capture.enabled,
+            memory_recall_tools=manifest.spec.memory.recall.tools,
+        )
     except GovernanceError as exc:
         rprint(f"[red]governance fail[/red] {path}: {exc}")
         raise SystemExit(1) from exc

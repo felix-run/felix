@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -345,6 +346,137 @@ def get_session_store(settings: Settings, *, tenant_id: str = "default") -> Sess
     )
 
 
+# --- checkpointers -----------------------------------------------------------
+#
+# `spec.memory.checkpointer` names where a manifest's session state is kept. The
+# session event log *is* Felix's checkpoint: `postgres` persists it and `none` keeps
+# nothing. See below for why there is no in-process built-in.
+#
+# The field shipped as a closed `Literal["agentcore", "sqlite", "do", "postgres",
+# "none"]` that no code read, so every value silently meant "whatever
+# FELIX_DATABASE_URL points at". Three of those five could never be implemented
+# here — `do` is Durable Objects, which this stack does not run; `agentcore` is a
+# vendor service; `sqlite` has no store. They now fail validation instead of
+# quietly meaning `postgres`, and a plugin can register the real thing.
+
+CheckpointerFactory = Callable[[Settings, str], SessionStore | None]
+
+_checkpointers: dict[str, CheckpointerFactory] = {}
+
+
+def register_checkpointer(name: str, factory: CheckpointerFactory) -> None:
+    """Register a session-state backend for ``spec.memory.checkpointer``.
+
+    The factory takes ``(settings, tenant_id)`` and returns a ``SessionStore``, or
+    ``None`` to run the agent with no session state at all.
+    """
+    if name in _BUILTIN_CHECKPOINTERS:
+        # Same rule as auth modes and session strategies. A checkpointer decides
+        # where every conversation lands, so shadowing `postgres` from an installed
+        # package is a larger blast radius than either.
+        raise ValueError(
+            f"checkpointer {name!r} is built in and cannot be overridden "
+            f"(built-ins: {', '.join(sorted(_BUILTIN_CHECKPOINTERS))})"
+        )
+    _checkpointers[name] = factory
+
+
+def list_checkpointers() -> list[str]:
+    return sorted(_checkpointers)
+
+
+def _checkpoint_postgres(settings: Settings, tenant_id: str) -> SessionStore | None:
+    """The configured store — Postgres, or its in-memory twin under `memory://`."""
+    return get_session_store(settings, tenant_id=tenant_id)
+
+
+def _checkpoint_none(settings: Settings, tenant_id: str) -> SessionStore | None:
+    """No session state. Each turn starts from the messages it was given.
+
+    Returning ``None`` rather than a null store reuses the path the react loop
+    already takes for a request with no thread — every session call there is
+    guarded on ``session_store is None``, so this needs no new branch and cannot
+    half-persist.
+    """
+    _ = settings, tenant_id
+    return None
+
+
+_checkpointers["postgres"] = _checkpoint_postgres
+_checkpointers["none"] = _checkpoint_none
+_BUILTIN_CHECKPOINTERS = frozenset(_checkpointers)
+
+# There is deliberately no in-process built-in. A thread is not manifest-scoped:
+# fifteen `/chat` routes address one by `thread_id` with no manifest in hand, so they
+# resolve the store from `FELIX_DATABASE_URL` and cannot see a per-manifest choice.
+# A manifest picking a *different backend* would therefore split-brain — the agent
+# reading one log while `/history`, `/continue`, `/compact`, `/fork` and `/rewind`
+# read another. `none` is exempt because it is a claim about the agent ("keeps no
+# session state"), enforced where the agent reads, not a competing backend.
+# A plugin that registers one owns that consistency problem knowingly.
+
+
+def build_checkpointer(name: str, settings: Settings, *, tenant_id: str = "default") -> SessionStore | None:
+    """Resolve `spec.memory.checkpointer` to a store, or None for no persistence."""
+    return _require_checkpointer(name)(settings, tenant_id)
+
+
+def _require_checkpointer(name: str) -> CheckpointerFactory:
+    factory = _checkpointers.get(name)
+    if factory is None:
+        raise ValueError(f"unknown checkpointer {name!r} (registered: {', '.join(list_checkpointers())})")
+    return factory
+
+
+def validate_checkpointer_config(
+    name: str,
+    *,
+    session_strategy: str = "full_replay",
+    compact_after_turn: bool = False,
+    memory_capture: bool = False,
+    memory_recall_tools: bool = False,
+) -> None:
+    """Reject a checkpointer that cannot do what the rest of the spec asks of it.
+
+    Raises rather than warns, because the failure it prevents is silence: with no
+    session store the react loop skips strategy rendering entirely (every call
+    there is guarded on ``session_store is None``), so a manifest asking for
+    `compacting` alongside `none` would get full replay of nothing and no
+    indication that its strategy was dropped.
+    """
+    _require_checkpointer(name)
+    if name != "none":
+        return
+
+    # Everything that silently degrades with no session store. Most are guarded on
+    # `session_store is None` in the react loop; the memory ones instead read a
+    # session head that is never written. Either way the request is dropped without
+    # an error, which is the failure this validator exists to convert.
+    strategy = (session_strategy or "full_replay").strip()
+    dropped: list[str] = []
+    if strategy != "full_replay":
+        dropped.append(f"session.strategy {strategy!r}")
+    if compact_after_turn:
+        dropped.append("session.compact_after_turn")
+    if memory_recall_tools:
+        # `memory/tools.py:_provenance` stamps `origin_seq` from the session head via
+        # `get_session_store`, not through the agent's checkpointer, so with no store
+        # `head()` on an unwritten thread returns seq 0 and every remembered fact
+        # lands at genesis — the same collapse as capture, by a different route.
+        dropped.append("memory.recall.tools")
+    if memory_capture:
+        # `_turn_seq` reads the session head to stamp `origin_seq`; with no store it
+        # is None every turn, so every fact lands at genesis and supersession
+        # ordering collapses rather than erroring.
+        dropped.append("memory.capture.enabled")
+    if dropped:
+        # Phrased to read correctly for one item or several.
+        raise ValueError(
+            f"memory.checkpointer is 'none', which silently drops: {', '.join(dropped)}. "
+            "Use a checkpointer that persists, or remove them from the spec."
+        )
+
+
 def _payload_to_appendable(event_type: str, payload: dict[str, Any]) -> AppendableEvent:
     known_kinds: set[str] = {
         "message",
@@ -392,9 +524,14 @@ async def append_event(
 
 
 __all__ = [
+    "CheckpointerFactory",
     "InMemorySessionStore",
     "PostgresSessionStore",
     "SessionStore",
     "append_event",
+    "build_checkpointer",
     "get_session_store",
+    "list_checkpointers",
+    "register_checkpointer",
+    "validate_checkpointer_config",
 ]

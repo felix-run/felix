@@ -15,6 +15,7 @@ from felix.auth.mgmt import (
 from felix.manifests.governance import GovernanceError, assert_stdio_allowed
 from felix.manifests.loader import parse_manifest
 from felix.manifests.schema import Manifest
+from felix.session.store import validate_checkpointer_config
 from pydantic import BaseModel, Field
 
 from felix_api.threads import effective_thread_id
@@ -102,6 +103,21 @@ async def upsert_manifest(name: str, body: ManifestUpsert, request: Request) -> 
     try:
         assert_stdio_allowed(parsed, request.app.state.settings)
     except GovernanceError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    # Same reason. `memory.checkpointer` is an open string resolved against a
+    # registry, so pydantic no longer catches a typo — and stored, it would raise
+    # inside every build, i.e. a 500 on every request for this manifest until
+    # someone read a traceback. A 400 here is the same trade `assert_stdio_allowed`
+    # makes above.
+    try:
+        validate_checkpointer_config(
+            parsed.spec.memory.checkpointer,
+            session_strategy=parsed.spec.session.strategy,
+            compact_after_turn=parsed.spec.session.compact_after_turn,
+            memory_capture=parsed.spec.memory.capture.enabled,
+            memory_recall_tools=parsed.spec.memory.recall.tools,
+        )
+    except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     row = await manifest_store.put_version(
         request.app.state.settings,

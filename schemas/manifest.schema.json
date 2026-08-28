@@ -996,13 +996,6 @@
       "properties": {
         "checkpointer": {
           "default": "postgres",
-          "enum": [
-            "agentcore",
-            "sqlite",
-            "do",
-            "postgres",
-            "none"
-          ],
           "title": "Checkpointer",
           "type": "string"
         },
