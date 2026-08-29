@@ -207,14 +207,16 @@ async def test_internal_requires_secret_when_configured(none_settings: Settings)
     none_settings.consumer_shared_secret = "s3cret-value-here"
     app = create_app(settings=none_settings, plugins=[])
     transport = ASGITransport(app=app)
+    # `default:` prefix: this asserts the secret gate, and an unprefixed id is now
+    # refused on its own (403) before the gate's result could be observed.
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         denied = await client.post(
-            "/internal/sessions/s1/events",
+            "/internal/sessions/default:s1/events",
             json={"type": "message", "content": "hello"},
         )
         assert denied.status_code == 401
         ok = await client.post(
-            "/internal/sessions/s1/events",
+            "/internal/sessions/default:s1/events",
             headers={"x-felix-consumer-secret": "s3cret-value-here"},
             json={"type": "message", "content": "hello"},
         )

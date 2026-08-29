@@ -6,12 +6,18 @@ accepted queue-transport results without content screening.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from felix.context import try_get_context
+from felix.logging_setup import loggable
 from felix.security.constant_time import constant_time_equal
 from pydantic import BaseModel, Field
+
+from felix_api.threads import thread_belongs_to_tenant
+
+logger = logging.getLogger("felix_api.internal")
 
 router = APIRouter(tags=["Internal"])
 
@@ -59,6 +65,20 @@ async def append_session_event(session_id: str, body: SessionEventWrite, request
 
     settings = request.app.state.settings
     tenant = _tenant(request)
+
+    # The session id arrives already built, from the queue write-back envelope, so
+    # it is checked for ownership rather than composed from a suffix. Without this
+    # the id went straight to `append_event` under whatever tenant the consumer
+    # credential named: a tenantless service key files every tenant's write-backs
+    # into `default`, and it is the one primitive that can plant a thread id under a
+    # tenant that does not own it.
+    if not thread_belongs_to_tenant(tenant, session_id):
+        logger.warning(
+            "internal write refused: thread %s is not in tenant %s",
+            loggable(session_id, limit=80),
+            loggable(tenant, limit=64),
+        )
+        raise HTTPException(status_code=403, detail="thread_not_in_tenant")
 
     # Always screen text content on the landing path (TS hole fix).
     text = body.content

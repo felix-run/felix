@@ -22,6 +22,7 @@ from felix.runtime import build_tenant_agent, prepare_tenant_invoke, resolve_ten
 from pydantic import BaseModel, Field
 
 from felix_api.errors import client_safe_message
+from felix_api.threads import effective_thread_id
 
 logger = logging.getLogger("felix_api.routes.openai_compat")
 
@@ -94,7 +95,17 @@ async def chat_completions(body: ChatCompletionsRequest, request: Request) -> An
     settings = request.app.state.settings
     tools = request.app.state.tools
     auth = _auth(request)
-    thread = f"{auth.tenant_id}:{body.user}" if body.user else None
+    # `effective_thread_id`, not a hand-rolled prefix. The tenant was applied, so this
+    # was never cross-tenant — but `body.user` was never delimiter-screened, so a
+    # client could send `user: "fiber:abc123"` or `"job:nightly"` and append its turns
+    # to a durable fiber's or a scheduled job's session log, which that run then
+    # replays as history. It also minted ids the chat routes can never address.
+    thread = effective_thread_id(auth.tenant_id, body.user)
+    if body.user and thread is None:
+        return JSONResponse(
+            {"error": {"message": "invalid user", "type": "invalid_request_error", "code": "invalid_user"}},
+            status_code=400,
+        )
 
     try:
         resolved = await resolve_tenant_manifest(settings, auth.tenant_id, body.model, thread_id=thread)
