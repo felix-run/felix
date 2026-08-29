@@ -1058,10 +1058,15 @@ async def build_agent(
         )
 
         # Governance compile checks (frameworks + plaintext secret policy).
-        from felix.manifests.governance import apply_transparency_notice, validate_governance
+        from felix.manifests.governance import (
+            apply_transparency_notice,
+            assert_cost_limit_is_measurable,
+            validate_governance,
+        )
         from felix.manifests.secret_refs import resolve_outbound_secrets
 
         validate_governance(m, deps.settings)
+        assert_cost_limit_is_measurable(m, deps.settings)
         if m.spec.governance.transparency_notice:
             system_prompt = apply_transparency_notice(system_prompt or "", m.metadata.name)
 

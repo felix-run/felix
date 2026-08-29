@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`limits.max_cost_usd` was enforced against a number nobody chose.** Three faults
+  compounded. The catalog's `_DEFAULT` carried `ModelPricing()`, whose field defaults are
+  Claude Sonnet's list price, so **every model Felix did not recognise billed at $3/$15 per
+  Mtok** — including anything an operator added through `FELIX_MODEL_ROUTES`, and every
+  local Ollama model, which is free. `entry_for` was then fed the *logical* route id rather
+  than the wire model, so a route named `fast` matched nothing in the catalog and fell to
+  that default even when it pointed at a model Felix knows perfectly well. And a turn that
+  reported no usage accumulated nothing and said nothing, leaving the run uncapped.
+
+  Unknown is now unknown: `ModelCatalogEntry.pricing` may be `None`, an unpriced model
+  contributes zero rather than a guess, and `is_priced()` distinguishes "free" from "no
+  idea" — a local model is priced at an explicit zero, which is a fact about the deployment
+  rather than an absence of information. Pricing keys on the wire model
+  (`record_usage(..., wire_model_id=...)`) while reporting keeps the logical name, because
+  that is what an operator configured and recognises.
+
+  A cap that cannot be counted now fails at *compile*: a manifest that explicitly declares
+  `limits.max_cost_usd` on a model with no known rates is refused, with `spec.model.price`
+  named as the way to supply them. Only a declared cap is refused — `effective_limits` fills
+  an unset one from `ABSOLUTE_LIMITS`, and refusing on that would break every local
+  deployment over a ceiling the author never asked for. At runtime, a turn reporting no
+  usage logs a warning and increments `felix_model_unmetered` instead of passing silently;
+  the usual cause is a provider whose streamed response omits usage, which makes the whole
+  run free as far as the budgets are concerned.
+
+- **Compaction sized every manifest against 128K.** `runtime.py` resolved the context window
+  from `spec.model.id`, which is a logical route name, so it matched only the loose
+  `claude-sonnet` family key. A manifest on the default route compacted against 128K instead
+  of the 1M window it pays for — summarising away seven eighths of the context and spending
+  a model call to do it. It now resolves the route first.
+
 ### Added
 
 - **A provider is a descriptor, and a plugin can finally be given a credential.** Adding a

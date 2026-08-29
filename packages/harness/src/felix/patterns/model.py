@@ -70,8 +70,46 @@ def parse_model_routes(settings: Settings | None = None) -> dict[str, ModelRoute
     return routes
 
 
-def record_usage(result: ModelChatResult, *, manifest_id: str, model_id: str | None = None) -> None:
-    if not result.usage:
+def wire_model_id(client: Any) -> str:
+    """The provider's own model id, which is what the catalog and the price table key on.
+
+    `client.model_id` is the *logical* route name — `fast`, `claude-sonnet`, whatever the
+    operator called it in `FELIX_MODEL_ROUTES` — and feeding that to `entry_for` matched
+    nothing, so every custom route fell to the catalog default. Reporting still uses the
+    logical name, because that is what an operator configured and recognises.
+    """
+    route = getattr(client, "route", None)
+    return str(getattr(route, "model", "") or getattr(client, "model_id", "") or "")
+
+
+def record_usage(
+    result: ModelChatResult,
+    *,
+    manifest_id: str,
+    model_id: str | None = None,
+    wire_model_id: str | None = None,
+) -> None:
+    """Meter one turn: run budgets, Prometheus, the usage store, and the plugin sink.
+
+    `model_id` is the logical route name and is what gets *reported*. `wire_model_id` is
+    the provider's own id and is what gets *priced*, because that is what the catalog keys
+    on. When they were the same argument, every custom route priced at the catalog default.
+    """
+    if not result.usage or not (
+        result.usage.input or result.usage.output or result.usage.cache_read or result.usage.cache_creation
+    ):
+        # Not a no-op worth passing over quietly. `record_usage` is the only feed for
+        # `limits.max_input_tokens`, `max_output_tokens` and `max_cost_usd`, so a turn that
+        # reports nothing is a turn that cannot be capped — the budgets fail *open*. Most
+        # often this is a provider whose streamed response omits usage (the OpenAI wire
+        # format needs `stream_options.include_usage`, and a third-party implementation
+        # that forgets it makes the whole run free as far as limits are concerned).
+        logger.warning(
+            "model turn reported no usage; this turn is unmetered and cannot count "
+            "against limits.max_cost_usd (model=%s)",
+            model_id or "default",
+        )
+        record_counter("felix_model_unmetered", {"manifest_id": manifest_id, "model": model_id or "default"})
         return
     labels = {"manifest_id": manifest_id, "model": model_id or "default"}
     ctx = try_get_context()
@@ -84,7 +122,7 @@ def record_usage(result: ModelChatResult, *, manifest_id: str, model_id: str | N
         try:
             from felix.usage.pricing import usage_with_cost
 
-            priced = usage_with_cost(u, model_id=model_id or "")
+            priced = usage_with_cost(u, model_id=wire_model_id or model_id or "")
             ctx.limit_state.cost_usd += float((priced.get("cost") or {}).get("total") or 0.0)
         except Exception:
             logger.debug("usage pricing unavailable", exc_info=True)
@@ -475,4 +513,5 @@ __all__ = [
     "record_usage",
     "register_builtin_providers",
     "resolve_provider_config",
+    "wire_model_id",
 ]

@@ -85,7 +85,11 @@ class ModelCatalogEntry:
 
     context_window: int = 128_000
     max_output_tokens: int = 8_192
-    pricing: ModelPricing = field(default_factory=ModelPricing)
+    # `None` means *unknown*, not free. `ModelPricing()`'s field defaults are Claude
+    # Sonnet's list price, so an entry that simply omitted rates used to bill an
+    # unrelated model at $3/$15 per Mtok. A model with no known rates must price at
+    # nothing and be reported as unmeterable, never guessed at.
+    pricing: ModelPricing | None = field(default_factory=ModelPricing)
     quirks: ModelQuirks = field(default_factory=ModelQuirks)
     # Whether the model accepts thinking at all. The *level* vocabulary lives in
     # `felix.session.thinking`; importing it here would cycle back through
@@ -204,7 +208,10 @@ _CATALOG: dict[str, ModelCatalogEntry] = {
     "o3": ModelCatalogEntry(context_window=128_000, supports_thinking=True),
     "o4": ModelCatalogEntry(context_window=128_000, supports_thinking=True),
     # --- Local ---
-    "llama": ModelCatalogEntry(context_window=128_000),
+    # Free: a model served by a local Ollama or vLLM costs nothing per token. This is a
+    # statement about the deployment, not a rate card, and it is the reason a local
+    # model must not inherit the unknown-price path.
+    "llama": ModelCatalogEntry(context_window=128_000, pricing=ModelPricing(0.0, 0.0, 0.0, 0.0)),
 }
 
 # Unknown ids split their defaults on purpose. The *request shape* assumes the current
@@ -215,7 +222,12 @@ _CATALOG: dict[str, ModelCatalogEntry] = {
 _DEFAULT = ModelCatalogEntry(
     context_window=128_000,
     max_output_tokens=128_000,
-    pricing=ModelPricing(),
+    # Deliberately unpriced. This used to be `ModelPricing()`, whose defaults are Claude
+    # Sonnet's rates — so every model Felix did not recognise, including anything an
+    # operator added through `FELIX_MODEL_ROUTES`, was billed at $3/$15 per Mtok and
+    # measured against `limits.max_cost_usd` on that basis. A 20x-wrong number is worse
+    # than no number, because it looks like enforcement.
+    pricing=None,
     quirks=_MODERN_QUIRKS,
 )
 
@@ -247,6 +259,11 @@ def clamp_effort(level: str, quirks: ModelQuirks) -> str:
     return lvl
 
 
+def is_priced(model_id: str | None) -> bool:
+    """Whether Felix knows this model's rates well enough to enforce a spend cap."""
+    return entry_for(model_id).pricing is not None
+
+
 __all__ = [
     "ModelCatalogEntry",
     "ModelPricing",
@@ -254,4 +271,5 @@ __all__ = [
     "all_entries",
     "clamp_effort",
     "entry_for",
+    "is_priced",
 ]

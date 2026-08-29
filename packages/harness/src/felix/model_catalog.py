@@ -14,6 +14,7 @@ from felix_ai.catalog import (
     all_entries,
     clamp_effort,
     entry_for,
+    is_priced,
 )
 
 __all__ = [
@@ -23,4 +24,5 @@ __all__ = [
     "all_entries",
     "clamp_effort",
     "entry_for",
+    "is_priced",
 ]

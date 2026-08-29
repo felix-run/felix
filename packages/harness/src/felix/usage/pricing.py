@@ -9,12 +9,20 @@ from __future__ import annotations
 
 from typing import Any
 
-from felix.model_catalog import all_entries, entry_for
+from felix.model_catalog import all_entries, entry_for, is_priced
+
+# An unknown model has no rates at all, which is different from having zero rates: it must
+# contribute nothing to spend rather than contribute a guess. `_UNPRICED` is what the cost
+# maths sees, and `is_priced()` is how callers tell the two apart.
+_UNPRICED: dict[str, Any] = {"input": 0.0, "output": 0.0, "cache_read": 0.0, "cache_write": 0.0}
 
 
 def _prices_view() -> dict[str, dict[str, Any]]:
-    view = {key: entry.pricing.as_dict() for key, entry in all_entries().items()}
-    view["default"] = entry_for("").pricing.as_dict()
+    view = {
+        key: (entry.pricing.as_dict() if entry.pricing is not None else dict(_UNPRICED))
+        for key, entry in all_entries().items()
+    }
+    view["default"] = dict(_UNPRICED)
     return view
 
 
@@ -23,7 +31,8 @@ DEFAULT_PRICES: dict[str, dict[str, Any]] = _prices_view()
 
 def _lookup_price(model_id: str) -> dict[str, Any]:
     """Rates for a model id, resolved through the catalog's single matching rule."""
-    return entry_for(model_id).pricing.as_dict()
+    pricing = entry_for(model_id).pricing
+    return pricing.as_dict() if pricing is not None else dict(_UNPRICED)
 
 
 def _apply_tier(price: dict[str, Any], total_input_tokens: int) -> dict[str, Any]:
@@ -121,4 +130,4 @@ def usage_with_cost(
     return out_d
 
 
-__all__ = ["DEFAULT_PRICES", "estimate_cost", "usage_with_cost"]
+__all__ = ["DEFAULT_PRICES", "estimate_cost", "is_priced", "usage_with_cost"]
