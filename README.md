@@ -153,6 +153,7 @@ Client → Ingress (Caddy / Traefik / nginx / Cloudflare DNS+CDN)
 | `apps/api` | HTTP: `/chat`, `/v1`, `/a2a`, `/mcp`, management APIs, OpenAPI |
 | `apps/worker` | Audit flush, scheduled jobs, memory consolidation, retention, anomaly scan, continuous eval, fiber resume |
 | `felix-scheduler` | Enqueues labeled Taskiq cron tasks — **required alongside the worker**, or nothing periodic fires |
+| `packages/ai` | Model layer: wire formats, catalog, turn types. Imports nothing from `felix` |
 | `packages/harness` | Manifests, patterns, tools, session, governance, auth, plugins |
 | `packages/cli` | `felix migrate \| eval \| mint-jwt \| bundle-manifests \| validate-manifest \| doctor \| version \| temporal-worker` |
 | `manifests/` | Bundled agents: `quick`, `deep`, `router`, `oss-only`, `hybrid-router`, `support`, `cowork`, `governed`, `contributor` |

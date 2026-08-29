@@ -17,7 +17,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 HARNESS = ROOT / "packages" / "harness" / "src" / "felix"
+AI = ROOT / "packages" / "ai" / "src" / "felix_ai"
 SOURCE_ROOTS = [
+    ROOT / "packages" / "ai" / "src",
     ROOT / "packages" / "harness" / "src",
     ROOT / "packages" / "cli" / "src",
     ROOT / "apps" / "api" / "src",
@@ -893,4 +895,36 @@ def test_no_outbound_http_client_hardcodes_its_timeout() -> None:
     assert offenders == [], (
         "an outbound client hardcodes its timeout; read it from Settings or a per-ref field "
         f"so an operator can raise it, or add it to `exempt` with a reason: {offenders}"
+    )
+
+
+def test_the_model_layer_does_not_import_the_harness() -> None:
+    """`felix_ai` must not import `felix` — that is what makes Felix model-agnostic.
+
+    The provider seam was already open, but everything a provider needs to be *correct* —
+    pricing, context windows, request shaping, usage accounting — lived in the harness and
+    was Anthropic-shaped. Splitting the model layer into a package that cannot reach back
+    is what turns "model-agnostic" from a claim into a property: anything the harness wants
+    to inject has to arrive as a Protocol (`ToolSchema`, `ModelConfig`) or through an
+    explicit sink (`felix_ai.observability`, `felix_ai.context`).
+
+    A lazy import inside a function is not an escape hatch: this walks every import node,
+    not only the module-scope ones.
+    """
+    offenders: list[str] = []
+    for path in _python_files(AI):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                names = [node.module or ""]
+            else:
+                continue
+            for name in names:
+                if name == "felix" or name.startswith("felix."):
+                    offenders.append(f"{path.relative_to(ROOT)}:{node.lineno} imports {name}")
+    assert offenders == [], (
+        "packages/ai may not import the harness — inject it as a Protocol or a sink:\n  "
+        + "\n  ".join(offenders)
     )

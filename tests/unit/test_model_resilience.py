@@ -15,12 +15,12 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from felix.patterns.model import (
+from felix_ai.wire.transport import (
     MODEL_MAX_RETRIES,
     _backoff_delay,
-    _post_with_retry,
     _retry_after_seconds,
 )
+from felix_ai.wire.transport import post_with_retry as _post_with_retry
 
 
 class _Resp:

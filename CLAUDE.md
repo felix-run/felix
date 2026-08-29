@@ -88,6 +88,12 @@ Eval smoke (no model calls): `uv run felix eval --dataset smoke --manifest quick
 
 ### Workspace layout
 
+- `packages/ai` (`felix_ai`) — the model layer: wire formats (`wire/openai_completions.py`,
+  `wire/anthropic_messages.py`), the model catalog, and the neutral turn types. **It may not
+  import `felix`** — `tests/unit/test_invariants.py` enforces that, and it is what makes
+  Felix model-agnostic rather than merely claiming to be. Anything the harness injects
+  arrives as a Protocol (`ToolSchema`, `ModelConfig`) or a sink (`felix_ai.observability`,
+  `felix_ai.context`, installed by `patterns/model_sinks.py`).
 - `packages/harness` (`felix`) — all the logic: manifests, patterns, tools, session,
   governance, auth, memory, eval, durability, storage, plugins.
 - `packages/cli` (`felix`) — `migrate | eval | mint-jwt | bundle-manifests | validate-manifest | doctor | version | temporal-worker`.
@@ -123,7 +129,10 @@ Adding a pattern means `register_pattern(...)` at import time — nothing in cor
 
 The harness talks to Postgres, a cache, an object store, secrets, model providers, and the
 warehouse through Protocols with swappable implementations (`storage/{fs,s3,gcs}.py`,
-`secrets.py`, `patterns/model.py:ModelProvider`, `warehouse.py`). AWS and GCP are optional
+`secrets.py`, `felix_ai.types:ModelProvider`, `warehouse.py`). For models the split is
+physical: `felix.patterns.model` keeps only what needs the harness — route resolution
+against `Settings`, `record_usage`, and the fallback/escalation composites — while every
+wire format lives in `felix_ai` and reaches back through nothing. AWS and GCP are optional
 extras; the default path is `FELIX_OBJECT_STORE=fs` with zero cloud SDKs. Keep it that way —
 heavy deps (Playwright, sentence-transformers, DuckDB, Presidio, Temporal) live behind
 extras and are imported lazily inside functions, never at module top level.

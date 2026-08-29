@@ -380,8 +380,8 @@ def test_provider_handoff_detection() -> None:
 
 
 def test_multimodal_chat_message_parse() -> None:
-    from felix.patterns.model import _messages_to_openai
     from felix.patterns.types import ChatMessage
+    from felix_ai.wire.openai_completions import _messages_to_openai
 
     msg = ChatMessage.model_validate(
         {

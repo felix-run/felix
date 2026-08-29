@@ -32,6 +32,11 @@ Rules that hold across the whole repo. Violating one is a blocking review findin
   imported lazily inside the function that needs them — never at module top level.
 - **Protocols, not vendors.** Storage, secrets, model providers, and the warehouse are swappable
   implementations behind Protocols.
+- **`packages/ai` never imports `felix`.** The model layer is a separate workspace member so
+  model-agnosticism is structural, not aspirational; `tests/unit/test_invariants.py` walks every
+  import node, so a lazy in-function import is not an escape hatch. What the harness needs to
+  inject goes through a Protocol (`ToolSchema`, `ModelConfig`) or a sink
+  (`felix_ai.observability`, `felix_ai.context`).
 - **`memory://` must keep working.** Every store has an in-memory twin; that is the CI test path.
   Run tests with `./scripts/test.sh` (or `make test`), never a bare `pytest`.
 - **A model change needs an Alembic revision**, and published revisions are never edited.

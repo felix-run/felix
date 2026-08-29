@@ -11,13 +11,10 @@ from __future__ import annotations
 
 import pytest
 from felix.model_catalog import clamp_effort, entry_for
-from felix.patterns.model import (
-    _ANTHROPIC_STOP,
-    _OPENAI_STOP,
-    _map_stop,
-    apply_anthropic_thinking_cache,
-)
 from felix.patterns.react import _status_for_stop
+from felix_ai.wire.anthropic_messages import _ANTHROPIC_STOP, apply_anthropic_thinking_cache
+from felix_ai.wire.base import map_stop as _map_stop
+from felix_ai.wire.openai_completions import _OPENAI_STOP
 
 # --- the capability table -------------------------------------------------------
 

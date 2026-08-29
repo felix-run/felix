@@ -121,13 +121,14 @@ class _FakeClient:
 
 
 def _client(monkeypatch: Any):
+    import httpx
     from felix.config import Settings
-    from felix.patterns import model as model_mod
+    from felix_ai import AnthropicMessagesClient, ModelRoute
 
-    monkeypatch.setattr(model_mod.httpx, "AsyncClient", _FakeClient())
-    return model_mod._AnthropicClient(
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeClient())
+    return AnthropicMessagesClient(
         model_id="claude-sonnet-4-5",
-        route=model_mod.ModelRoute(provider="anthropic", model="claude-sonnet-4-5"),
+        route=ModelRoute(provider="anthropic", model="claude-sonnet-4-5"),
         settings=Settings(allow_insecure=True, auth_mode="none", environment="development"),
         spec=_Spec(),
         base_url="https://example.invalid",

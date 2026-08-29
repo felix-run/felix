@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The model layer is its own workspace package, and it cannot import the harness.**
+  `packages/ai` (`felix_ai`) now holds the two wire formats, the model catalog, the neutral
+  turn types, and the HTTP transport. `felix.patterns.model` keeps only what genuinely needs
+  the harness: resolving `FELIX_MODEL_ROUTES` against `Settings`, metering a turn through
+  `record_usage`, and the fallback/escalation composites. Every public name it used to export
+  is re-exported, so no call site outside the wire tests changed.
+
+  The point is not tidiness. Felix's provider *seam* was already open — `register_model_provider`
+  is a plain dict and nothing in core enumerates providers — but everything a provider needs in
+  order to be **correct** was private and Anthropic-shaped. `_HttpModelClient`, `_post_with_retry`,
+  the SSE parsers, tool-argument repair and stop-reason mapping were all underscore-prefixed and
+  excluded from `__all__`, so a third-party provider had to re-derive retry-on-429, `Retry-After`
+  handling and usage accounting — and what it got wrong in usage fails *open* on
+  `limits.max_cost_usd`. Those are now public: `HttpModelClient`, `post_with_retry`, `map_stop`,
+  `parse_tool_arguments`, `tool_json_schema`, `OpenAICompletionsClient`, `AnthropicMessagesClient`.
+
+  `felix_ai` may not import `felix`, and `tests/unit/test_invariants.py` walks every import node
+  — a lazy in-function import is not an escape hatch. That is what makes "model-agnostic" a
+  property of the build rather than a claim in a README. The two things the harness genuinely has
+  to inject arrive through Protocols the harness types already satisfy structurally (`ToolSchema`
+  for a tool's name/description/schema, `ModelConfig` for the request timeout) and two explicit
+  sinks (`felix_ai.observability` for counters, `felix_ai.context` for the prompt-cache key),
+  installed once by `patterns/model_sinks.py`.
+
+  Behaviour is unchanged. `felix.model_catalog` and the message types re-export from their new
+  home, so `usage/`, `react.py` and `runtime.py` are untouched. The tool parameter on
+  `ModelProvider` widened from `list[Tool]` to `Sequence[ToolSchema]`, which is what the wire
+  layer always actually needed — it only iterates — and fixes a variance mismatch that made the
+  composites fail to satisfy the Protocol they implement.
+
 ### Fixed
 
 - **The last two hardcoded outbound timeouts, and no bound on the configurable ones.**

@@ -7,6 +7,7 @@ license = "Apache-2.0"
 authors = [{ name = "Blake Bauman", email = "blake.bauman@gmail.com" }]
 requires-python = ">=3.14"
 dependencies = [
+    "felix-ai",
     "felix-harness",
     "felix-cli",
     "felix-api",
@@ -61,6 +62,7 @@ package = false
 members = ["packages/*", "apps/*"]
 
 [tool.uv.sources]
+felix-ai = { workspace = true }
 felix-harness = { workspace = true }
 felix-cli = { workspace = true }
 felix-api = { workspace = true }
@@ -96,6 +98,7 @@ ignore = [
 # not in pytest addopts so a single-test run stays fast.
 [tool.coverage.run]
 source = [
+    "packages/ai/src/felix_ai",
     "packages/harness/src/felix",
     "packages/cli/src/felix_cli",
     "apps/api/src/felix_api",
