@@ -26,7 +26,7 @@ class SandboxArgs(BaseModel):
     code: str = Field(default="", description="Python source to run in the sandbox.")
     path: str | None = Field(default=None, description="Optional workspace path the snippet may touch.")
     stdin: dict[str, Any] | None = Field(
-        default=None, description="Optional JSON payload written to the container stdin."
+        default=None, description="Optional JSON payload exposed as FELIX_SANDBOX_INPUT."
     )
 
 
@@ -61,7 +61,19 @@ class _SandboxToolExecutor:
         if self._path_prefix and path and not path.startswith(self._path_prefix):
             return f"sandbox_error: path must start with {self._path_prefix!r}"
         code = str(args.get("code") or "")
-        command = ["python", "-c", code] if code else ["python", "-c", "import sys; print(sys.stdin.read())"]
+        command = (
+            [
+                "python",
+                "-c",
+                code,
+            ]
+            if code
+            else [
+                "python",
+                "-c",
+                "import sys, os, json; print(json.loads(os.environ['FELIX_SANDBOX_INPUT']))",
+            ]
+        )
         runner = SandboxExecutor(
             image=self._image,
             command=command,
