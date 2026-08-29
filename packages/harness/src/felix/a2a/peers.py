@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from felix.manifests.schema import A2APeerRef
 from felix.security.ssrf import assert_safe_outbound_url
+from felix.timeouts import request_timeout
 from felix.tools.types import Tool, ToolInvocationCtx, define_tool
 
 logger = logging.getLogger("felix.a2a.peers")
@@ -20,6 +21,17 @@ class PeerArgs(BaseModel):
 
     message: str = Field(min_length=1, description="Message to send to the peer agent.")
     manifest: str | None = Field(default=None, description="Optional peer manifest name override.")
+
+
+# A peer call runs an entire agent turn on the far side, so its ceiling is the loosest of
+# the outbound integrations. Connect is pinned separately for the same reason as elsewhere:
+# a raised request ceiling must not become a raised ceiling on reaching a dead host.
+DEFAULT_PEER_TIMEOUT_S = 60.0
+
+
+def _peer_timeout(ref: A2APeerRef) -> httpx.Timeout:
+    """Per-peer request timeout."""
+    return request_timeout(ref.timeout_ms, default_s=DEFAULT_PEER_TIMEOUT_S)
 
 
 def _auth_headers(auth: str) -> dict[str, str]:
@@ -80,7 +92,7 @@ def make_peer_tool(ref: A2APeerRef, *, allow_http: bool = False) -> Tool:
         }
         if args.manifest:
             payload["params"]["manifest"] = args.manifest  # type: ignore[index]
-        async with httpx.AsyncClient(timeout=60.0, follow_redirects=False) as client:
+        async with httpx.AsyncClient(timeout=_peer_timeout(ref), follow_redirects=False) as client:
             resp = await client.post(endpoint, json=payload, headers=_auth_headers(ref.auth))
             resp.raise_for_status()
             body = resp.json()
@@ -113,4 +125,4 @@ def tools_from_peers(
     return out
 
 
-__all__ = ["make_peer_tool", "tools_from_peers"]
+__all__ = ["DEFAULT_PEER_TIMEOUT_S", "make_peer_tool", "tools_from_peers"]

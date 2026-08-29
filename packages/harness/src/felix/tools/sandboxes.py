@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from felix.manifests.schema import ContainerRef, SandboxRef
 from felix.security.ssrf import assert_safe_outbound_url
+from felix.timeouts import DEFAULT_CONNECT_TIMEOUT_S, timeout_seconds
 from felix.tools.transports import SandboxExecutor
 from felix.tools.types import (
     Tool,
@@ -18,6 +19,9 @@ from felix.tools.types import (
     ToolOutput,
     define_tool_with_executor,
 )
+
+DEFAULT_SANDBOX_TIMEOUT_S = 30.0
+DEFAULT_CONTAINER_TIMEOUT_S = 30.0
 
 
 class SandboxArgs(BaseModel):
@@ -111,7 +115,7 @@ class _ContainerExecutor:
         assert_safe_outbound_url(gateway_url, allow_http=allow_http)
         self._url = gateway_url
         self._image = image
-        self._timeout = (timeout_ms or 30_000) / 1000.0
+        self._timeout_s = timeout_seconds(timeout_ms, default_s=DEFAULT_CONTAINER_TIMEOUT_S)
         self._auth = auth
 
     def _headers(self) -> dict[str, str]:
@@ -130,8 +134,9 @@ class _ContainerExecutor:
             "image": self._image,
             "payload": args.get("payload") if "payload" in args else args,
         }
+        timeout = httpx.Timeout(self._timeout_s, connect=DEFAULT_CONNECT_TIMEOUT_S)
         try:
-            async with httpx.AsyncClient(timeout=self._timeout, follow_redirects=False) as client:
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
                 resp = await client.post(self._url, json=body, headers=self._headers())
                 resp.raise_for_status()
                 return resp.text
@@ -173,7 +178,7 @@ def tools_from_sandboxes(refs: list[SandboxRef], *, settings: Any | None = None)
         # `binding` is manifest-supplied and reaches `docker run`, so an unrestricted
         # value is arbitrary image pull-and-run on the host holding the Docker socket.
         assert_sandbox_image_allowed(image, settings)
-        timeout_s = max(1.0, int(ref.timeout_ms or 30_000) / 1000)
+        timeout_s = timeout_seconds(ref.timeout_ms, default_s=DEFAULT_SANDBOX_TIMEOUT_S)
         name = ref.sandbox_tool_name or ref.name
         out.append(
             define_tool_with_executor(

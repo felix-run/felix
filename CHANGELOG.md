@@ -7,7 +7,89 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The last two hardcoded outbound timeouts, and no bound on the configurable ones.**
+  Making the model and MCP ceilings raisable left `memory/embedder.py` on a hardcoded 60s
+  for an OpenAI-compatible `/embeddings` call — a model-provider request that ignored the
+  model-provider setting — and `HttpExecutor` on a hardcoded 30s. The embedder now reads
+  `Settings.model_timeout_seconds`, since both its factories already receive settings;
+  **its effective default therefore moves from 60s to 120s**, and it runs inline on the
+  memory-recall path. `HttpExecutor` is constructed nowhere in core — it is a plugin-facing
+  export — so it now *accepts* a caller-supplied ceiling rather than gaining a configurable
+  one.
+
+  The container executor was the outbound client that missed the connect pin in the
+  previous change, and the one carrying a tenant-supplied `timeout_ms`: a gateway that
+  blackholes SYN could park a socket for the whole request ceiling, per tool call. Connect
+  is now pinned at 10s across every outbound client, from one shared constant rather than
+  five module-private copies of the same policy.
+
+  `timeout_ms` was also unbounded on all five refs that carry it, so a tenant-supplied
+  manifest could ask for a 24-hour outbound call and hold a connection open for it. It had
+  no floor either, so a negative value reached `httpx` as a deadline in the past through the
+  two conversion sites that did not floor. Both ends are now enforced in the schema, and
+  `ClientToolRef.timeout_seconds` — the sixth timeout in that file, which spelled the same
+  ceiling as a bare `3600` — shares the derived constant.
+
+  A security review of the bound then found the larger hold-open knob on the same
+  tenant-supplied surface: `ApprovalRule.ttl_seconds` was unbounded, and an unanswered
+  approval holds the request, an asyncio task and a Redis connection for its whole TTL while
+  the waiter polls once a second for the duration. A thousand-day TTL validated. Both it and
+  `command_screening.approval_ttl_seconds` now share the derived ceiling.
+
+  The outbound ref lists are capped at 64. Validating one ref resolves its hostname through
+  a synchronous `getaddrinfo` inside a pydantic validator, on the API event loop, so list
+  length multiplies a blocking call — an uncapped list in one `PUT /manifests` could stall
+  every other request on the worker for minutes. The cap contains the amplification; moving
+  resolution off the validator is the actual fix and is not attempted here.
+
+  Memory recall now degrades on time as well as on error. It runs inline in a turn and is
+  best-effort, so inheriting a model timeout sized for a long generation was the wrong
+  budget; a hung embedder is abandoned after five seconds.
+
+  Treat the ceiling as a bound rather than a guarantee: `max_wall_clock_seconds` is checked
+  before dispatch and between turns, never during a call, so a run's real ceiling is its
+  budget plus the longest call it can still start.
+
+  The invariant added with the previous change was vacuous: it matched only
+  `timeout=<constant>`, and the same commit moved every literal inside `httpx.Timeout(...)`
+  — an `ast.Call` — so nothing it named could trigger it. It now resolves the value (bare
+  constant, module-level constant by name, all-constant `httpx.Timeout(...)`, or a missing
+  `timeout=` where httpx applies its own silent 5s) and discovers its own file set instead
+  of reading a hand-maintained list that a new client silently escapes. Exemptions are
+  explicit and carry a reason.
+
+- **A model request that legitimately took longer than two minutes failed the run, three
+  times over.** Six `httpx.AsyncClient` sites in `patterns/model.py` shared a hardcoded
+  `timeout=120.0` with no setting, and `_post_with_retry` caught `httpx.HTTPError` — which
+  includes `ReadTimeout` — and retried. So a generation that needed more than the ceiling
+  re-sent identical input and waited out the identical ceiling `max_retries + 1` times
+  before surfacing as a 500.
+
+  This is not hypothetical: it is what stopped an agent from pushing three files through a
+  single MCP tool call, because emitting roughly 40 KB of file content as tool arguments
+  takes longer than 120s. The work had to be split into one call per file.
+
+  `FELIX_MODEL_TIMEOUT_SECONDS` (default `120`) now bounds each HTTP request to a model
+  provider, read from the `Settings` the client was built with rather than the process
+  globals — `build_model` exists so a caller can pass its own. On a streaming call it bounds
+  the gap between chunks rather than the whole turn, which is why the reported failure only
+  ever hit the non-streaming `chat()` path.
+
+  Read and write timeouts are no longer retried; connect timeouts and retryable status codes
+  are unchanged, because nothing was accepted and the next attempt is a genuinely different
+  bet. Connect is pinned at 10s separately, so raising the request ceiling for a long
+  generation does not also let an unreachable endpoint hang for that long.
+
 ### Added
+
+- **`spec.mcp_servers[].timeout_ms` and `spec.peers[].timeout_ms`.** `ContainerRef` and
+  `SandboxRef` already carried a per-integration timeout; the MCP and A2A refs did not, so
+  30s and 60s respectively were unraisable and a slow-but-working server produced a tool
+  result that read like a refusal. A peer call runs an entire agent turn on the far side,
+  so it had the tightest ceiling on the longest operation. Both are floored at one second
+  and reach discovery and the call alike, over HTTP and stdio.
 
 - **`manifests/contributor.yaml` — Felix working on the Felix codebase.** Every piece
   this needs already existed; nothing wired them together. The manifest points the

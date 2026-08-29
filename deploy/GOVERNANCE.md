@@ -136,6 +136,31 @@ surfacing at the first model call.
 
 ## Outbound egress
 
+### Per-integration timeouts
+
+Every outbound integration carries its own request ceiling, and each is capped at
+`MAX_INTEGRATION_TIMEOUT_MS` — 3,600,000 ms, derived from
+`ABSOLUTE_LIMITS["max_wall_clock_seconds"]`, the longest a run is ever meant to take. The
+cap exists because these fields are tenant-supplied through `PUT /manifests`: unbounded,
+they are a knob for holding connections, tasks and pool slots open indefinitely. A value of
+zero or below is rejected rather than floored, so a manifest that can never work does not
+validate.
+
+| Field | Default |
+|-------|---------|
+| `spec.mcp_servers[].timeout_ms` | 30s |
+| `spec.peers[].timeout_ms` | 60s — a peer call runs a whole agent turn on the far side |
+| `spec.containers[].timeout_ms` | 30s |
+| `spec.sandboxes[].timeout_ms` | 30s |
+| `spec.browser_tools[].timeout_ms` | 15s, and it bounds `page.goto` only |
+| `spec.client_tools[].timeout_seconds` | 120s |
+
+Connect is pinned separately at 10s on every outbound client and does **not** scale with
+these values: reaching a host takes seconds or never, so a raised request ceiling must not
+also let an unreachable host park a socket. `FELIX_MODEL_TIMEOUT_SECONDS` (default 120)
+bounds each model-provider request the same way.
+
+
 Every manifest-supplied or model-supplied URL is checked before it is dialled. The guard
 **resolves the hostname** and rejects the request if *any* returned address is loopback,
 link-local (cloud metadata), private, carrier-grade NAT, reserved, multicast, or
@@ -215,7 +240,13 @@ not be continued.
 
 `spec.limits` bounds a single run. Every field is enforced at two points — before each
 tool call and at the top of each agent turn — so a run can exceed a budget by at most one
-step:
+step.
+
+Size that step honestly: a step includes the outbound call it makes, and no deadline is
+propagated into the executor, so a budget is never enforced *during* a call. A run's real
+ceiling is `max_wall_clock_seconds` plus the longest single call it can still start —
+bounded, since every per-integration `timeout_ms` is capped (below), but not equal to the
+budget alone.
 
 | Field | Bounds |
 |-------|--------|
