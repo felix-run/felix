@@ -7,7 +7,149 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`manifests/contributor.yaml` — Felix working on the Felix codebase.** Every piece
+  this needs already existed; nothing wired them together. The manifest points the
+  workspace file tools at a Felix checkout, binds the Docker sandbox for snippet
+  checks, declares four developer skills (`felix-architecture`, `felix-conventions`,
+  `felix-testing`, `felix-contributing`, all new under `skills/`), and reaches GitHub
+  over MCP so the agent can open pull requests against the repository it runs on.
+
+  Three limits are structural, not oversights, and the system prompt tells the agent
+  about each so it cannot claim otherwise. The sandbox has no network and no volume
+  mount, so it verifies snippets and cannot run the suite — `make check` and CI do
+  that. `write_file` replaces whole files rather than patching. The local checkout and
+  GitHub are separate worlds: editing one does not touch the other.
+
+  Controls, since this agent can write to its own source: `write_file` and every
+  mutating `github__` tool *in the recorded catalog* require approval, under
+  `eu_ai_act` at `risk_tier: high` so that `allow_unattended: false` is enforced at
+  compile time rather than being an inert field. Content screening is on because MCP
+  output carries an untrusted transport and GitHub issue bodies are written by
+  strangers. No client tool, container, queue, peer, sub-agent, or stdio MCP server is
+  declared, so the isolated container is the only code execution the agent gets.
+
+  One gap is worth naming rather than burying: approval rules match tool names exactly
+  — there are no globs in the governance stack — and `McpServerRef` has no per-server
+  tool allowlist, so the entire remote catalog binds as `github__*`. A write tool that
+  GitHub adds or renames binds ungated, and no unit test can catch it, because the test
+  can only compare the manifest to itself. Closing that needs a tool allowlist on
+  `McpServerRef` or a toolset-scoped MCP URL.
+
+
 ### Fixed
+
+- **The anomaly scan and continuous eval only ever ran for tenant `default`.** Both
+  take `tenant_id: str = "default"` and the worker cron passed nothing, so on a
+  multi-tenant deployment anomaly detection covered one tenant and a canary in any
+  other was never benchmarked — the rollout looked clean because nothing looked.
+  `run_due_jobs` had the identical bug and was fixed once already; these two were not
+  swept up with it.
+
+  Both now sweep every tenant, enumerated from the data that gives them work (audit
+  events, active manifest pointers), isolating each tenant's failure so one tenant's
+  bad data cannot stop detection for the rest. The enumeration takes an RLS bypass —
+  the worker has no request context, so without one the policy filters everything and
+  the scan sees nothing for anybody.
+
+  This is a detection-coverage gap rather than an exploit: nothing was exposed, but
+  on a multi-tenant deployment the control reported healthy while watching a single
+  tenant.
+
+- **`SkillRef.name` and `version` shaped an object key without validation.** Both are
+  unvalidated manifest strings interpolated straight into
+  `skills/{tenant}/{name}/SKILL.md`. No shipped backend could be walked with them —
+  the filesystem store rejects `..` segments and S3/GCS treat keys as literal text —
+  but `artifacts.py` deliberately validates its own key parts rather than trusting
+  whichever store an operator configured, and this loader did not. They are now
+  checked as single segments before any key is built, so the guarantee does not
+  depend on the backend.
+
+  The lookup order was also interleaved, tenant-then-shared *per version*, so a
+  shared **versioned** skill was tried before the tenant's own unversioned one and
+  the tenant's was never read — the same shadowing shape as the `AGENTS.md` layer
+  fixed alongside the context-file scoping. Every tenant-scoped key is now tried
+  before any shared one. The shared `skills/{name}/` namespace remains an operator
+  layer: no route lets a tenant write a bare object key.
+
+- **`POST /internal/sessions/{id}/events` wrote into whatever tenant the consumer
+  credential named, whatever thread the path asked for.** The session id went
+  straight from the URL into `append_event` with no tenant prefix, no delimiter
+  rejection, and no check that the thread belonged to the caller — the one rule
+  `felix_api/threads.py` exists to keep in a single place. A consumer credential
+  carrying no tenant resolves to `default`, so on that configuration every tenant's
+  queue write-backs were filed into `default`'s session log. It was also the only
+  primitive that could plant a thread id under a tenant that does not own it, which
+  is what the memory-provenance cross-tenant read needed to be more than a wrong
+  number.
+
+  The id now has to belong to the caller's tenant or the write is refused with
+  `403 thread_not_in_tenant`. Ownership is a prefix check rather than a
+  delimiter-free suffix, because fibers legitimately mint `{tenant}:fiber:{id}`;
+  ids are compared whole, so `acme:default:x` is a different thread from
+  `default:x` rather than a route to it.
+
+  **Operator action:** a queue consumer must authenticate with a credential scoped
+  to the tenant whose work it processes. A tenantless service key can now only write
+  to `default:` threads — previously it wrote to any thread, into `default`.
+
+- **`/v1/chat/completions` composed a thread id by hand instead of using the shared
+  rule.** `f"{tenant}:{body.user}"` applied the tenant prefix but never screened
+  `body.user` for delimiters, so a client could send `user: "fiber:abc123"` or
+  `"job:nightly"` and have its turns appended to a durable fiber's or a scheduled
+  job's session log — which that unattended run then replays as history. Within a
+  tenant, so not a cross-tenant read, but a prompt-injection channel into runs
+  nobody is watching. It also minted ids the chat routes could never address, so
+  those threads could not be listed, exported or deleted. It now goes through
+  `effective_thread_id` and answers `400 invalid_user`.
+
+- **The two thread-id helpers disagreed.** `effective_thread_id` rejected `#` and
+  applied no tenant check; `thread_belongs_to_tenant` did the reverse. Both now
+  refuse a tenant id carrying `:` or `#` — the tenant prefix is the whole ownership
+  boundary, so `acme` and `acme:sub` would otherwise both "own" `acme:sub:x`, and
+  `session/lease.py` keys a lease by thread id alone — and both cap the id at 512
+  characters, which was previously unbounded into a primary key, an index, an
+  advisory-lock key and a Redis channel name.
+
+- **A manifest could name another tenant's object-store key and have the contents
+  read into its system prompt.** `spec.system_prompt.files`, `system_md` and
+  `append_system_md` are unvalidated strings, and the loaders tried each key *as-is*
+  before scoping it to `workspace/{tenant}/` — so the unscoped attempt hit first and
+  won. Anyone with `manifests:write` could author
+  `files: ["workspace/other-tenant/notes.md"]` and read it back through the model.
+  Keys are now rewritten into the caller's own prefix rather than offered the chance
+  to escape it.
+
+  The local fallback had the matching hole: it joined the key onto
+  `FELIX_WORKSPACE_ROOT` with no containment, so an absolute key resolved outside the
+  root entirely (`Path("/srv/ws") / "/etc/passwd"` is `/etc/passwd`) and `../` was
+  never normalised. It now goes through `resolve_under_root`, the same gate the
+  workspace tools use.
+
+  `load_agents_md_layer` keeps its unprefixed lookup deliberately: its filenames are
+  fixed, not manifest-supplied, so it is an operator-placed layer rather than a key
+  an agent can choose. It now searches the tenant's own copy first, so that layer
+  cannot shadow a tenant's file.
+
+  `load_agents_md_layer` keeps a shared operator layer, but now checks **all three**
+  tenant-scoped filenames before any shared one. The loop was tenant-then-shared per
+  *name*, so a shared `AGENTS.override.md` beat a tenant's own `AGENTS.md` and that
+  file was never consulted. The shared layer is object-store only: the workspace root
+  is one shared directory with no tenant component, so any manifest binding
+  `write_file` could otherwise drop an `AGENTS.override.md` into another tenant's
+  system prompt.
+
+  An existing test asserted the old behaviour — it stored `AGENTS.md` at the bare key
+  and expected a manifest to reach it.
+
+  **Operator action required.** Context files now resolve only under
+  `workspace/{tenant}/`, in the object store *and* under `FELIX_WORKSPACE_ROOT`.
+  Anything previously placed at a bare key or at the root of the workspace directory
+  stops being found, silently — the prompt just loses that section. Move them:
+  `workspace/<tenant>/AGENTS.md`, and `<FELIX_WORKSPACE_ROOT>/workspace/<tenant>/…`
+  on disk. A bare `AGENTS.md` / `AGENTS.override.md` / `CLAUDE.md` **object** still
+  works as a shared operator layer; the same file on disk no longer does.
 
 - **The `remember` tool read the wrong tenant's session log.** `_provenance`
   resolved the session store without a `tenant_id`, so it always got tenant

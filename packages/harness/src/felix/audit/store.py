@@ -85,6 +85,27 @@ def _fanout_to_plugin_sink(event: dict[str, Any]) -> None:
         logger.warning("audit_sink_failed", exc_info=True)
 
 
+async def list_tenants_with_events(settings: Settings) -> list[str]:
+    """Every tenant that has at least one audit event.
+
+    `run_anomaly_scan` defaulted to ``tenant_id="default"`` and the worker cron never
+    passed one, so anomaly detection covered a single tenant. Same shape as
+    `jobs.store.list_tenants_with_jobs`, including the bypass.
+    """
+    if _use_memory(settings):
+        return sorted({str(e["tenant_id"]) for e in _memory_events})
+
+    from felix.db.session import rls_bypass
+
+    factory = get_session_factory(settings=settings)
+    # Cross-tenant maintenance: without a bypass the sweep runs with no
+    # app.tenant_id GUC and RLS returns nothing for everyone.
+    with rls_bypass():
+        async with factory() as db:
+            rows = (await db.execute(select(AuditEvent.tenant_id).distinct())).scalars().all()
+            return sorted({str(r) for r in rows})
+
+
 async def query(
     settings: Settings,
     tenant_id: str,

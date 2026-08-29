@@ -320,6 +320,23 @@ decision. A token with **no** tenant claim in `claim` mode is now rejected — i
 previously fell back to the issuer host's first DNS label, silently putting every such
 user in the same tenant.
 
+### Periodic controls are per-tenant
+
+The worker's scans sweep every tenant, not just `default`. That is worth checking after
+an upgrade, because the failure mode is silent: a detection control that runs for one
+tenant looks identical, in logs and metrics, to one that finds nothing.
+
+| Control | Sweep | Enumerated from |
+|---|---|---|
+| Scheduled jobs | `run_due_jobs_all_tenants` | tenants with a job |
+| Anomaly scan | `run_anomaly_scan_all_tenants` | tenants with audit events |
+| Continuous eval | `run_continuous_eval_all_tenants` | tenants with an active manifest |
+
+Each sweep isolates a tenant's failure so one tenant's bad data cannot stop detection
+for the rest, and each takes an RLS bypass for the enumeration only — the per-tenant
+work that follows runs scoped. `felix-scheduler` must be running alongside
+`felix-worker` or none of them fire at all.
+
 ## Management API scopes
 
 When `FELIX_AUTH_MODE` is `jwt` or `api_key`, management routes require scopes

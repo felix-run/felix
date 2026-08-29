@@ -178,6 +178,27 @@ def test_path_prefix_applies_to_navigation_not_subresources() -> None:
 # --- sandbox --------------------------------------------------------------------
 
 
+# The bug this guards against: `input=` was passed to `containers.run()` for as long as the
+# sandbox existed, so every call failed against a real daemon. It survived because the fake
+# below accepts any kwarg — the suite pinned the confinement flags but never the call
+# signature. Derive the accepted set from docker-py's own constants; a hand-copied list
+# drifts from the SDK and re-opens the same gap.
+#
+# Captured at import, before any test stubs sys.modules["docker"]. None when the sandbox
+# extra is absent, in which case the fake skips the check — the gated test below is the
+# arm that must not silently vanish, so it uses require_optional rather than this.
+def _real_docker_run_kwargs() -> frozenset[str] | None:
+    try:
+        from docker.models.containers import RUN_CREATE_KWARGS, RUN_HOST_CONFIG_KWARGS
+    except ImportError:
+        return None
+    # `run()` consumes these four itself rather than forwarding them.
+    return frozenset({*RUN_CREATE_KWARGS, *RUN_HOST_CONFIG_KWARGS, "command", "remove", "stdout", "stderr"})
+
+
+_VALID_DOCKER_RUN_KWARGS = _real_docker_run_kwargs()
+
+
 def _stub_docker(sleep_s: float) -> None:
     fake = types.ModuleType("docker")
 
@@ -185,6 +206,12 @@ def _stub_docker(sleep_s: float) -> None:
         last_kwargs: dict = {}
 
         def run(self, *a, **k):
+            # Reject what a real daemon would reject, so the fake cannot bless a call
+            # signature docker-py does not accept.
+            if _VALID_DOCKER_RUN_KWARGS is not None:
+                unknown = set(k.keys()) - _VALID_DOCKER_RUN_KWARGS
+                if unknown:
+                    raise TypeError(f"run() got an unexpected keyword argument {unknown.pop()!r}")
             _Containers.last_kwargs = k
             time.sleep(sleep_s)
             return b"ok"
@@ -242,6 +269,46 @@ async def test_sandbox_is_confined() -> None:
     assert kwargs["nano_cpus"] > 0
     assert "no-new-privileges:true" in kwargs["security_opt"]
     assert kwargs["network_disabled"] is True
+
+
+@pytest.mark.asyncio
+async def test_sandbox_uses_environment_not_stdin() -> None:
+    """The sandbox passes JSON via environment variable, not stdin."""
+    _stub_docker(0.0)
+    from felix.tools.transports import SandboxExecutor
+
+    await SandboxExecutor().execute({"test": "data"})
+    kwargs = sys.modules["docker"].from_env().containers.last_kwargs
+    assert "environment" in kwargs
+    assert "FELIX_SANDBOX_INPUT" in kwargs["environment"]
+    assert "input" not in kwargs, "docker-py doesn't support 'input' parameter"
+
+
+@pytest.mark.asyncio
+async def test_sandbox_kwargs_are_accepted_by_real_docker_py() -> None:
+    """Every kwarg the executor sends must be one docker-py actually forwards.
+
+    The fake cannot prove this on its own — it is only as strict as the list it is given.
+    This arm reads the SDK, so a kwarg that docker-py drops or renames fails here rather
+    than in production.
+    """
+    from tests.optional_deps import require_optional
+
+    models = require_optional("docker.models.containers", "sandbox")
+    accepted = {
+        *models.RUN_CREATE_KWARGS,
+        *models.RUN_HOST_CONFIG_KWARGS,
+        "command",
+        "remove",
+        "stdout",
+        "stderr",
+    }
+    _stub_docker(0.0)
+    from felix.tools.transports import SandboxExecutor
+
+    await SandboxExecutor().execute({"k": "v"})
+    sent = set(sys.modules["docker"].from_env().containers.last_kwargs)
+    assert not sent - accepted, f"docker-py would reject: {sorted(sent - accepted)}"
 
 
 # --- sandbox image allowlist -----------------------------------------------------

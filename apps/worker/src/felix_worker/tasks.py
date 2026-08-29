@@ -127,17 +127,17 @@ async def retention_sweep() -> None:
 @broker.task(schedule=[{"cron": "*/30 * * * *"}])
 async def anomaly_scan() -> None:
     """Detect tenant-level usage anomalies."""
-    from felix.jobs.anomaly import run_anomaly_scan
+    from felix.jobs.anomaly import run_anomaly_scan_all_tenants
 
-    await run_anomaly_scan(_settings)
+    await run_anomaly_scan_all_tenants(_settings)
 
 
 @broker.task(schedule=[{"cron": "*/10 * * * *"}])
 async def continuous_eval() -> None:
     """Online-benchmark active canaries against sampled traffic."""
-    from felix.jobs.continuous_eval import run_continuous_eval
+    from felix.jobs.continuous_eval import run_continuous_eval_all_tenants
 
-    await run_continuous_eval(_settings)
+    await run_continuous_eval_all_tenants(_settings)
 
 
 @broker.task(schedule=[{"cron": "* * * * *"}])
