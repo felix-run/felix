@@ -1,0 +1,169 @@
+# yaml-language-server: $schema=../schemas/manifest.schema.json
+# Felix working on Felix — workspace file tools over its own checkout, a network-isolated
+# Python sandbox, developer skills, and GitHub over MCP so it can open pull requests.
+#
+# Requires, on the process running the API:
+#   FELIX_WORKSPACE_ROOT=/path/to/felix     # the checkout this agent reads and edits
+#   GITHUB_MCP_TOKEN=<fine-grained PAT>     # Contents:write + Pull requests:write, this repo only
+#
+# The sandbox needs a reachable Docker daemon, so run the API on a host that has one. Do not
+# mount the Docker socket into a container to satisfy this — that hands the agent root on the
+# host, which is the opposite of what the sandbox is for.
+#
+# Validate: felix validate-manifest manifests/contributor.yaml -e development
+apiVersion: felix/v1
+kind: Agent
+metadata:
+  name: contributor
+  version: 1.0.0
+  description: >
+    Felix as a contributor to its own codebase — reads and edits the workspace checkout,
+    verifies snippets in an isolated sandbox, and opens pull requests through GitHub MCP.
+  tags: [react, coding, workspace, mcp]
+
+spec:
+  pattern: react
+
+  model:
+    temperature: 0
+
+  system_prompt:
+    # CLAUDE.md is this repo's own contributor guide, resolved under FELIX_WORKSPACE_ROOT.
+    # The agent's instructions are the same ones a human contributor is handed.
+    files: [CLAUDE.md]
+    inline: |
+      You are Felix, working on the Felix codebase itself.
+
+      How to work:
+      - Read before you write. Open the file you are about to change and the code that calls
+        it. Never invent an API, a flag, or a file path — confirm it exists first.
+      - Make small, reversible changes. One concern per change. If a task needs two unrelated
+        edits, say so and do the one that was asked.
+      - write_file replaces a whole file. Read the current contents first and reproduce them
+        exactly except for your edit. Losing an unrelated line is a real failure, not a nit.
+      - Follow the conventions already in the file you are editing over any general habit.
+      - Activate the skill that matches the work before starting it. felix-architecture for
+        where things live, felix-conventions for how to write it, felix-testing for how to
+        verify it, felix-contributing for how it ships.
+
+      What you cannot do, and must not pretend to do:
+      - The sandbox runs one short Python snippet with no network and no access to this
+        checkout. It is for checking that a small piece of logic behaves as you think. It
+        cannot run the test suite, ruff, ty, or make. Do not claim a change is tested because
+        a snippet ran.
+      - You cannot run shell commands or git. Branches, commits, and pull requests happen
+        through the github__ tools, which call the GitHub API directly.
+      - Editing the workspace does not change GitHub, and pushing to GitHub does not change
+        the workspace. They are separate. When you have done both, say so; when you have done
+        only one, say which.
+
+      Reporting:
+      - State plainly what you changed, what you verified, and what you could not verify.
+      - If a gate has not been run, say it has not been run. Never describe unverified work as
+        tested.
+      - Always refer to yourself as Felix, never as Claude or any other name.
+
+  tools:
+    - list_dir
+    - read_file
+    - search_files
+    - write_file
+    - calculator
+    - list_skills
+    - activate_skill
+    - deactivate_skill
+
+  skills:
+    - name: felix-architecture
+    - name: felix-conventions
+    - name: felix-testing
+    - name: felix-contributing
+
+  # Docker-run code execution: non-root, read-only rootfs, all capabilities dropped,
+  # networking disabled, 256 MB, one CPU, killed at the timeout. `binding` is the image, and
+  # python:3.14-slim is the default allowlisted one — anything else needs
+  # FELIX_SANDBOX_ALLOWED_IMAGES. There is no workspace mount and no way to add one, which is
+  # what makes it safe and also what keeps it from running the suite.
+  sandboxes:
+    - name: run_python
+      description: >
+        Run a short Python snippet in an isolated container to check a piece of logic.
+        No network, no filesystem access, no access to this repository. Stateless between calls.
+      binding: python:3.14-slim
+      timeout_ms: 30000
+
+  # Tools bind as github__<remote tool>: github__create_branch, github__push_files,
+  # github__create_pull_request, github__get_file_contents, and so on. Binding failure is
+  # logged and non-fatal, so an unreachable server yields an agent with no GitHub tools
+  # rather than an error — check the log, not the reply, before believing this works.
+  mcp_servers:
+    - name: github
+      transport: http
+      url: https://api.githubcopilot.com/mcp/
+      auth: secret:GITHUB_MCP_TOKEN
+
+  # Nothing reaches disk or GitHub without a human decision. Approvals pause the run; resume
+  # with POST /approvals/{id}/decide. allow_unattended stays false — an agent editing its own
+  # source is exactly the case where a background run should stop and wait.
+  approvals:
+    - id: workspace-write
+      description: Confirm a write to the Felix checkout
+      tools: [write_file]
+      ttl_seconds: 600
+      allow_unattended: false
+    - id: github-mutate
+      description: Confirm a branch, commit, or pull request against the repository
+      tools:
+        - github__create_branch
+        - github__create_or_update_file
+        - github__push_files
+        - github__create_pull_request
+        - github__update_pull_request
+        - github__merge_pull_request
+      ttl_seconds: 600
+      allow_unattended: false
+
+  # For sandbox transports every string argument is screened, not just command-shaped ones,
+  # so this covers the snippet body too. include_defaults brings in destructive rm, disk
+  # wipes, fork bombs, curl-pipe-shell, and privilege escalation.
+  command_screening:
+    enabled: true
+    include_defaults: true
+    approval_ttl_seconds: 300
+    rules:
+      - pattern: '\bgit\s+push\b'
+        decision: deny
+        reason: pushes go through the approved github__ tools, not a shell
+      - pattern: '\bgh\s+(pr|repo|auth)\b'
+        decision: deny
+        reason: use the github__ tools so the approval gate applies
+
+  # MCP output is untrusted: issue bodies, pull request comments, and file contents pulled
+  # from GitHub are written by strangers, and this agent can write code. Quarantine rather
+  # than block so a flagged fetch degrades instead of killing the run.
+  content_screening:
+    enabled: true
+    on_flag: quarantine
+
+  limits:
+    max_tool_calls: 200
+    max_wall_clock_seconds: 3600
+
+  max_turns: 40
+
+  session:
+    strategy: compacting
+    reserve_tokens: 16384
+    keep_recent_tokens: 20000
+    context_window_tokens: 128000
+    compaction_enabled: true
+
+  # Local, single-operator posture. A deployed variant should set allow_anonymous: false with
+  # schemes and required_scopes, and add spec.policies gating the github__ tools on a scope —
+  # omitted here because auth_mode=none has no principal to carry one.
+  auth:
+    inbound:
+      allow_anonymous: true
+
+  observability:
+    trace: true

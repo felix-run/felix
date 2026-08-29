@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`manifests/contributor.yaml` — Felix working on the Felix codebase.** Every piece
+  this needs already existed; nothing wired them together. The manifest points the
+  workspace file tools at a Felix checkout, binds the Docker sandbox for snippet
+  checks, declares four developer skills (`felix-architecture`, `felix-conventions`,
+  `felix-testing`, `felix-contributing`, all new under `skills/`), and reaches GitHub
+  over MCP so the agent can open pull requests against the repository it runs on.
+
+  Three limits are structural, not oversights, and the system prompt tells the agent
+  about each so it cannot claim otherwise. The sandbox has no network and no volume
+  mount, so it verifies snippets and cannot run the suite — `make check` and CI do
+  that. `write_file` replaces whole files rather than patching. The local checkout and
+  GitHub are separate worlds: editing one does not touch the other.
+
+  Controls, since this agent can write to its own source: `write_file` and every
+  mutating `github__` tool require approval with `allow_unattended: false`; content
+  screening is on because MCP output carries an untrusted transport and GitHub issue
+  bodies are written by strangers; command screening keeps the built-in defaults and
+  denies shelling out to `git push` or `gh`. No client tool is declared — the isolated
+  container is the only code execution the agent gets.
+
+
 ### Fixed
 
 - **The anomaly scan and continuous eval only ever ran for tenant `default`.** Both
