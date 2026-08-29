@@ -267,6 +267,19 @@ Python client: `from felix.sdk import FelixClient` — `prompt`, `stream`, `stee
 
 ### Models
 
+`FELIX_MODEL_TIMEOUT_SECONDS` (default `120`) bounds each HTTP request to a model provider.
+Generating a large tool call — a file's contents as an argument, say — can exceed it, and the
+failure surfaces as a failed run rather than a slow one. On a **streaming** call it bounds the
+gap between chunks rather than the whole turn. Read and write timeouts are deliberately **not**
+retried: the retry re-sends identical input and waits out the identical ceiling, so the answer
+is a larger timeout, not another attempt. Connect timeouts still retry, and connect is pinned
+at 10s so raising this does not also let an unreachable provider hang.
+
+Outbound integrations carry their own ceilings: `spec.mcp_servers[].timeout_ms` (default 30s),
+`spec.peers[].timeout_ms` (default 60s), and the existing `timeout_ms` on sandboxes and
+containers.
+
+
 Manifests reference **logical** model ids, mapped to wire ids by `FELIX_MODEL_ROUTES` (a JSON
 override) or by the built-in defaults:
 

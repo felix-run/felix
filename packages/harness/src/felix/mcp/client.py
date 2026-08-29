@@ -22,6 +22,19 @@ def _next_id() -> int:
     return _RPC_ID
 
 
+DEFAULT_MCP_TIMEOUT_S = 30.0
+# Same reasoning as the model client: a raised request ceiling must not become a raised
+# ceiling on reaching an unreachable host.
+_CONNECT_TIMEOUT_S = 10.0
+
+
+def _timeout_s(ref: McpServerRef) -> float:
+    """Per-server request timeout in seconds, floored at 1s."""
+    if not ref.timeout_ms:
+        return DEFAULT_MCP_TIMEOUT_S
+    return max(1.0, int(ref.timeout_ms) / 1000)
+
+
 def _headers(auth: str) -> dict[str, str]:
     headers = {
         "content-type": "application/json",
@@ -43,7 +56,7 @@ async def mcp_rpc(
     *,
     auth: str = "",
     allow_http: bool = False,
-    wait_s: float = 30.0,
+    wait_s: float = DEFAULT_MCP_TIMEOUT_S,
 ) -> dict[str, Any]:
     """POST a JSON-RPC request to an MCP HTTP endpoint."""
     assert_safe_outbound_url(url, allow_http=allow_http)
@@ -53,7 +66,8 @@ async def mcp_rpc(
         "method": method,
         "params": params or {},
     }
-    async with httpx.AsyncClient(timeout=wait_s, follow_redirects=False) as client:
+    timeout = httpx.Timeout(wait_s, connect=_CONNECT_TIMEOUT_S)
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
         resp = await client.post(url, json=payload, headers=_headers(auth))
         resp.raise_for_status()
         # Some MCP HTTP servers return SSE; take the first JSON data line if needed.
@@ -89,7 +103,7 @@ async def list_remote_tools(
     if ref.transport == "stdio":
         from felix.mcp.stdio import list_stdio_tools
 
-        return await list_stdio_tools(ref)
+        return await list_stdio_tools(ref, wait_s=_timeout_s(ref))
     try:
         await mcp_rpc(
             ref.url,
@@ -101,10 +115,13 @@ async def list_remote_tools(
             },
             auth=ref.auth,
             allow_http=allow_http,
+            wait_s=_timeout_s(ref),
         )
     except Exception:
         logger.debug("MCP initialize failed for %s (continuing)", ref.name, exc_info=True)
-    result = await mcp_rpc(ref.url, "tools/list", {}, auth=ref.auth, allow_http=allow_http)
+    result = await mcp_rpc(
+        ref.url, "tools/list", {}, auth=ref.auth, allow_http=allow_http, wait_s=_timeout_s(ref)
+    )
     tools = result.get("tools") if isinstance(result, dict) else None
     if not isinstance(tools, list):
         return []
@@ -134,7 +151,9 @@ def _bind_remote_tool(
         if ref.transport == "stdio":
             from felix.mcp.stdio import stdio_rpc
 
-            result = await stdio_rpc(ref, "tools/call", {"name": remote_name, "arguments": args or {}})
+            result = await stdio_rpc(
+                ref, "tools/call", {"name": remote_name, "arguments": args or {}}, wait_s=_timeout_s(ref)
+            )
         else:
             result = await mcp_rpc(
                 ref.url,
@@ -142,6 +161,7 @@ def _bind_remote_tool(
                 {"name": remote_name, "arguments": args or {}},
                 auth=ref.auth,
                 allow_http=allow_http,
+                wait_s=_timeout_s(ref),
             )
         if isinstance(result, dict):
             content = result.get("content")
@@ -190,4 +210,4 @@ async def tools_from_mcp_servers(
     return out
 
 
-__all__ = ["list_remote_tools", "mcp_rpc", "tools_from_mcp_servers"]
+__all__ = ["DEFAULT_MCP_TIMEOUT_S", "list_remote_tools", "mcp_rpc", "tools_from_mcp_servers"]

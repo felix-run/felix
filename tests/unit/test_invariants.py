@@ -815,3 +815,37 @@ def test_no_tenant_scoped_accessor_defaults_to_the_default_tenant() -> None:
         "tenant_id must not default to 'default' on a session accessor — omitting it "
         f"should be a TypeError, not another tenant's log: {'; '.join(offenders)}"
     )
+
+
+def test_no_outbound_http_client_hardcodes_its_timeout() -> None:
+    """Every `httpx.AsyncClient(timeout=...)` on a configurable path takes a computed value.
+
+    Six client sites in `patterns/model.py` shared a hardcoded `timeout=120.0`, so no
+    deployment could raise the ceiling without editing the harness — and a generation that
+    legitimately needed longer failed the whole run. A source-text check would pass the
+    moment someone adds a seventh site with a fresh literal, so walk the tree instead: a
+    `timeout=` that is a bare constant is the defect.
+    """
+    configurable = (
+        ROOT / "packages/harness/src/felix/patterns/model.py",
+        ROOT / "packages/harness/src/felix/mcp/client.py",
+        ROOT / "packages/harness/src/felix/a2a/peers.py",
+    )
+    offenders: list[str] = []
+    for path in configurable:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if not (isinstance(func, ast.Attribute) and func.attr == "AsyncClient"):
+                continue
+            for kw in node.keywords:
+                if kw.arg == "timeout" and isinstance(kw.value, ast.Constant):
+                    rel = path.relative_to(ROOT)
+                    offenders.append(f"{rel}:{node.lineno} timeout={kw.value.value!r}")
+
+    assert offenders == [], (
+        "an outbound client hardcodes its timeout; read it from Settings or a per-ref "
+        f"field so an operator can raise it: {'; '.join(offenders)}"
+    )

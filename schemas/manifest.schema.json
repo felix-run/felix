@@ -41,6 +41,18 @@
           "default": "",
           "title": "Auth",
           "type": "string"
+        },
+        "timeout_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timeout Ms"
         }
       },
       "required": [
@@ -898,6 +910,18 @@
           ],
           "title": "Transport",
           "type": "string"
+        },
+        "timeout_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timeout Ms"
         }
       },
       "required": [
