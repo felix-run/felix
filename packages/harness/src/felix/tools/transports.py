@@ -47,8 +47,11 @@ class EchoExecutor:
 class SandboxExecutor:
     """Optional Docker sandbox rung (requires ``felix-harness[sandbox]``).
 
-    Runs a short-lived container with JSON args as stdin. Disabled unless the
-    docker SDK is importable.
+    Runs a short-lived container with the JSON args in the ``FELIX_SANDBOX_INPUT``
+    environment variable. Not stdin: ``containers.run()`` has no way to write to a
+    container's stdin, and passing ``input=`` there — which is ``subprocess.run``'s
+    signature, not docker-py's — failed every call against a real daemon.
+    Disabled unless the docker SDK is importable.
     """
 
     transport = "sandbox"
@@ -66,7 +69,11 @@ class SandboxExecutor:
         nano_cpus: int = 1_000_000_000,
     ) -> None:
         self._image = image
-        self._command = command or ["python", "-c", "import sys; print(sys.stdin.read())"]
+        self._command = command or [
+            "python",
+            "-c",
+            "import sys, os, json; print(json.loads(os.environ['FELIX_SANDBOX_INPUT']))",
+        ]
         self._network_disabled = network_disabled
         self._mem_limit = mem_limit
         self._user = user
@@ -92,7 +99,7 @@ class SandboxExecutor:
             return client.containers.run(
                 self._image,
                 self._command,
-                input=payload.encode("utf-8"),
+                environment={"FELIX_SANDBOX_INPUT": payload},
                 network_disabled=self._network_disabled,
                 mem_limit=self._mem_limit,
                 remove=True,
