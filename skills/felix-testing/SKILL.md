@@ -3,6 +3,12 @@ name: felix-testing
 description: How to run and write tests for the Felix harness — the in-memory memory:// path, ./scripts/test.sh instead of bare pytest, the structural invariant gates, and how optional-extra tests must be gated. Use before running any test command in this repo, when a test fails with a Postgres connection error, or when adding coverage for a change.
 ---
 
+> This is a summary. The source of truth is CLAUDE.md (Running tests) and `.claude/skills/felix-dev-loop/SKILL.md` — read it with `read_file` when
+> the two disagree, and trust the checkout over this file.
+> The commands below are what a human or CI runs on your change. You cannot run
+> them: you have no shell. Name the ones that still need running instead of
+> reporting them as done.
+
 # Felix testing
 
 ## Run tests with ./scripts/test.sh, never a bare pytest

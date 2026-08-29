@@ -3,6 +3,9 @@ name: felix-architecture
 description: How the Felix harness is put together — the manifest compile pipeline, the fixed governance wrapper order, the workspace layout, and the plugin seam. Use when changing anything under packages/harness, apps/api, or apps/worker, or when you need to know where a piece of behavior lives before editing it.
 ---
 
+> This is a summary. The source of truth is CLAUDE.md (Architecture) and `.claude/rules/felix-invariants.md` in the checkout — read it with `read_file` when
+> the two disagree, and trust the checkout over this file.
+
 # Felix architecture
 
 Felix is a self-hostable agents harness. A YAML manifest (`apiVersion: felix/v1`) is compiled at

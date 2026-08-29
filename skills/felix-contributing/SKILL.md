@@ -3,6 +3,12 @@ name: felix-contributing
 description: How a change becomes a pull request in the Felix repo — branch naming, feature-scoped PRs, the rule against stacking, the gates a change must pass before it ships, and what belongs in the PR body. Use when preparing a change for review, opening a pull request, or deciding how to scope work.
 ---
 
+> This is a summary. The source of truth is `.claude/skills/branch-pr-workflow/SKILL.md` — read it with `read_file` when
+> the two disagree, and trust the checkout over this file.
+> The commands below are what a human or CI runs on your change. You cannot run
+> them: you have no shell. Name the ones that still need running instead of
+> reporting them as done.
+
 # Contributing to Felix
 
 Land work on a branch and open a pull request into `main`. `main` is the release source; keep it

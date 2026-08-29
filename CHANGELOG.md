@@ -23,11 +23,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   GitHub are separate worlds: editing one does not touch the other.
 
   Controls, since this agent can write to its own source: `write_file` and every
-  mutating `github__` tool require approval with `allow_unattended: false`; content
-  screening is on because MCP output carries an untrusted transport and GitHub issue
-  bodies are written by strangers; command screening keeps the built-in defaults and
-  denies shelling out to `git push` or `gh`. No client tool is declared — the isolated
-  container is the only code execution the agent gets.
+  mutating `github__` tool *in the recorded catalog* require approval, under
+  `eu_ai_act` at `risk_tier: high` so that `allow_unattended: false` is enforced at
+  compile time rather than being an inert field. Content screening is on because MCP
+  output carries an untrusted transport and GitHub issue bodies are written by
+  strangers. No client tool, container, queue, peer, sub-agent, or stdio MCP server is
+  declared, so the isolated container is the only code execution the agent gets.
+
+  One gap is worth naming rather than burying: approval rules match tool names exactly
+  — there are no globs in the governance stack — and `McpServerRef` has no per-server
+  tool allowlist, so the entire remote catalog binds as `github__*`. A write tool that
+  GitHub adds or renames binds ungated, and no unit test can catch it, because the test
+  can only compare the manifest to itself. Closing that needs a tool allowlist on
+  `McpServerRef` or a toolset-scoped MCP URL.
 
 
 ### Fixed

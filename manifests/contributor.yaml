@@ -6,7 +6,8 @@
 #   FELIX_WORKSPACE_ROOT=/path/to/felix     # the checkout this agent reads and edits
 #   GITHUB_MCP_TOKEN=<fine-grained PAT>     # Contents:write + Pull requests:write, this repo only
 #
-# The sandbox needs a reachable Docker daemon, so run the API on a host that has one. Do not
+# The sandbox needs felix-harness[sandbox] (uv sync --extra sandbox) and a reachable Docker
+# daemon; without the extra the tool binds cleanly and fails on every call. Do not
 # mount the Docker socket into a container to satisfy this — that hands the agent root on the
 # host, which is the opposite of what the sandbox is for.
 #
@@ -28,9 +29,11 @@ spec:
     temperature: 0
 
   system_prompt:
-    # CLAUDE.md is this repo's own contributor guide, resolved under FELIX_WORKSPACE_ROOT.
-    # The agent's instructions are the same ones a human contributor is handed.
-    files: [CLAUDE.md]
+    # No `files:` here on purpose. context_files._tenant_key rewrites every system_prompt.files
+    # key to workspace/<tenant>/<key>, so `files: [CLAUDE.md]` would resolve to
+    # $FELIX_WORKSPACE_ROOT/workspace/default/CLAUDE.md — which does not exist — and the miss is
+    # silent. The workspace *tools* use a different root with no tenant prefix, so the prompt
+    # tells the agent to read CLAUDE.md itself, which does work.
     inline: |
       You are Felix, working on the Felix codebase itself.
 
@@ -42,6 +45,8 @@ spec:
       - write_file replaces a whole file. Read the current contents first and reproduce them
         exactly except for your edit. Losing an unrelated line is a real failure, not a nit.
       - Follow the conventions already in the file you are editing over any general habit.
+      - Read CLAUDE.md at the workspace root before your first change in a session. It is this
+        repository's contributor guide and it outranks any habit you brought with you.
       - Activate the skill that matches the work before starting it. felix-architecture for
         where things live, felix-conventions for how to write it, felix-testing for how to
         verify it, felix-contributing for how it ships.
@@ -80,7 +85,9 @@ spec:
     - name: felix-contributing
 
   # Docker-run code execution: non-root, read-only rootfs, all capabilities dropped,
-  # networking disabled, 256 MB, one CPU, killed at the timeout. `binding` is the image, and
+  # networking disabled, 256 MB, one CPU. The timeout frees the *caller*: asyncio.wait_for
+  # cannot reach into Docker, so the container runs on until it exits, bounded only by the
+  # cpu/memory/pid caps. `binding` is the image, and
   # python:3.14-slim is the default allowlisted one — anything else needs
   # FELIX_SANDBOX_ALLOWED_IMAGES. There is no workspace mount and no way to add one, which is
   # what makes it safe and also what keeps it from running the suite.
@@ -102,9 +109,18 @@ spec:
       url: https://api.githubcopilot.com/mcp/
       auth: secret:GITHUB_MCP_TOKEN
 
-  # Nothing reaches disk or GitHub without a human decision. Approvals pause the run; resume
-  # with POST /approvals/{id}/decide. allow_unattended stays false — an agent editing its own
-  # source is exactly the case where a background run should stop and wait.
+  # Approvals pause the run; resume with POST /approvals/{id}/decide.
+  #
+  # Read the scope of this honestly. Approval rules match tool names exactly — there are no
+  # globs anywhere in the governance stack — and McpServerRef has no per-server tool allowlist,
+  # so the whole remote catalog binds as github__*. The list below is every mutating tool the
+  # GitHub MCP server exposed when this manifest was written. If GitHub adds or renames a write
+  # tool it binds UNGATED and no test here goes red, because a unit test can only compare this
+  # file to itself. Closing that properly needs a tool allowlist on McpServerRef, or a
+  # toolset-scoped MCP URL so fewer mutating tools bind at all.
+  #
+  # allow_unattended is only enforced under eu_ai_act at risk_tier high, which is why the
+  # governance block below sets exactly that — otherwise the field is decoration.
   approvals:
     - id: workspace-write
       description: Confirm a write to the Felix checkout
@@ -114,12 +130,28 @@ spec:
     - id: github-mutate
       description: Confirm a branch, commit, or pull request against the repository
       tools:
+        # repository contents
         - github__create_branch
         - github__create_or_update_file
         - github__push_files
+        - github__delete_file
+        - github__create_repository
+        - github__fork_repository
+        # pull requests
         - github__create_pull_request
         - github__update_pull_request
+        - github__update_pull_request_branch
         - github__merge_pull_request
+        - github__pull_request_review_write
+        - github__add_comment_to_pending_review
+        - github__add_reply_to_pull_request_comment
+        - github__request_copilot_review
+        # issues
+        - github__issue_write
+        - github__sub_issue_write
+        - github__add_issue_comment
+        # scanning
+        - github__run_secret_scanning
       ttl_seconds: 600
       allow_unattended: false
 
@@ -167,3 +199,14 @@ spec:
 
   observability:
     trace: true
+
+  # eu_ai_act at risk_tier high is what makes `allow_unattended: false` an enforced compile-time
+  # requirement rather than an inert field. It also forces forbid_plaintext_secrets and
+  # pin_compile true, and requires the transparency notice plus content screening — all of which
+  # this manifest wants anyway.
+  governance:
+    frameworks: [eu_ai_act]
+    risk_tier: high
+    transparency_notice: true
+    forbid_plaintext_secrets: true
+    pin_compile: true

@@ -3,6 +3,9 @@ name: felix-conventions
 description: The Python style and architecture conventions that make Felix code look like Felix code — settings, lazy optional imports, Protocols, the ruff and ty configuration, and the files that must change together when you add a setting or a model. Use when writing or reviewing Python in this repo, or when a lint or type check disagrees with an edit.
 ---
 
+> This is a summary. The source of truth is CLAUDE.md (Conventions) and `.claude/skills/python-conventions/SKILL.md` — read it with `read_file` when
+> the two disagree, and trust the checkout over this file.
+
 # Felix conventions
 
 ## Settings
