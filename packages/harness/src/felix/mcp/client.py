@@ -22,6 +22,16 @@ def _next_id() -> int:
     return _RPC_ID
 
 
+_DEFAULT_MCP_TIMEOUT_S = 30.0
+
+
+def _timeout_s(ref: McpServerRef) -> float:
+    """Per-server request timeout in seconds, floored at 1s."""
+    if not ref.timeout_ms:
+        return _DEFAULT_MCP_TIMEOUT_S
+    return max(1.0, int(ref.timeout_ms) / 1000)
+
+
 def _headers(auth: str) -> dict[str, str]:
     headers = {
         "content-type": "application/json",
@@ -43,7 +53,7 @@ async def mcp_rpc(
     *,
     auth: str = "",
     allow_http: bool = False,
-    wait_s: float = 30.0,
+    wait_s: float = _DEFAULT_MCP_TIMEOUT_S,
 ) -> dict[str, Any]:
     """POST a JSON-RPC request to an MCP HTTP endpoint."""
     assert_safe_outbound_url(url, allow_http=allow_http)
@@ -89,7 +99,7 @@ async def list_remote_tools(
     if ref.transport == "stdio":
         from felix.mcp.stdio import list_stdio_tools
 
-        return await list_stdio_tools(ref)
+        return await list_stdio_tools(ref, wait_s=_timeout_s(ref))
     try:
         await mcp_rpc(
             ref.url,
@@ -101,10 +111,13 @@ async def list_remote_tools(
             },
             auth=ref.auth,
             allow_http=allow_http,
+            wait_s=_timeout_s(ref),
         )
     except Exception:
         logger.debug("MCP initialize failed for %s (continuing)", ref.name, exc_info=True)
-    result = await mcp_rpc(ref.url, "tools/list", {}, auth=ref.auth, allow_http=allow_http)
+    result = await mcp_rpc(
+        ref.url, "tools/list", {}, auth=ref.auth, allow_http=allow_http, wait_s=_timeout_s(ref)
+    )
     tools = result.get("tools") if isinstance(result, dict) else None
     if not isinstance(tools, list):
         return []
@@ -134,7 +147,9 @@ def _bind_remote_tool(
         if ref.transport == "stdio":
             from felix.mcp.stdio import stdio_rpc
 
-            result = await stdio_rpc(ref, "tools/call", {"name": remote_name, "arguments": args or {}})
+            result = await stdio_rpc(
+                ref, "tools/call", {"name": remote_name, "arguments": args or {}}, wait_s=_timeout_s(ref)
+            )
         else:
             result = await mcp_rpc(
                 ref.url,
@@ -142,6 +157,7 @@ def _bind_remote_tool(
                 {"name": remote_name, "arguments": args or {}},
                 auth=ref.auth,
                 allow_http=allow_http,
+                wait_s=_timeout_s(ref),
             )
         if isinstance(result, dict):
             content = result.get("content")

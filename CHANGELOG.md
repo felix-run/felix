@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A model request that legitimately took longer than two minutes failed the run, three
+  times over.** Six `httpx.AsyncClient` sites in `patterns/model.py` shared a hardcoded
+  `timeout=120.0` with no setting, and `_post_with_retry` caught `httpx.HTTPError` — which
+  includes `ReadTimeout` — and retried. So a generation that needed more than the ceiling
+  re-sent identical input and waited out the identical ceiling `max_retries + 1` times
+  before surfacing as a 500.
+
+  This is not hypothetical: it is what stopped an agent from pushing three files through a
+  single MCP tool call, because emitting roughly 40 KB of file content as tool arguments
+  takes longer than 120s. The work had to be split into one call per file.
+
+  `FELIX_MODEL_TIMEOUT_SECONDS` (default `120`) now bounds a single non-streaming request,
+  and a read timeout is no longer retried — it is a ceiling, not backpressure, and the
+  answer is a larger timeout rather than another attempt. Connect errors and retryable
+  status codes are unchanged.
+
+### Added
+
+- **`spec.mcp_servers[].timeout_ms`.** `ContainerRef` and `SandboxRef` both carried a
+  per-integration timeout; `McpServerRef` did not, so its 30s was unraisable and a
+  slow-but-working MCP server was simply unusable — with a tool result that read like the
+  server had refused. The value is floored at one second and reaches discovery and the tool
+  call alike, over both HTTP and stdio.
+
+
 ### Added
 
 - **`manifests/contributor.yaml` — Felix working on the Felix codebase.** Every piece

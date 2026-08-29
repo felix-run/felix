@@ -146,3 +146,39 @@ async def test_peer_tool_message_send(monkeypatch: pytest.MonkeyPatch) -> None:
 
     tools = tools_from_peers([ref])
     assert len(tools) == 1
+
+
+@pytest.mark.asyncio
+async def test_mcp_timeout_is_per_server(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`McpServerRef.timeout_ms` must reach both discovery and the tool call.
+
+    30s was unraisable, so a slow-but-working server was unusable and the only symptom was a
+    tool result that read like the server had refused. `ContainerRef` and `SandboxRef` both
+    already carried a timeout; this closes the parity gap.
+    """
+    from felix.mcp import client as mcp_client
+
+    seen: list[float] = []
+
+    async def _fake_rpc(url, method, params=None, *, auth="", allow_http=False, wait_s=30.0):
+        seen.append(wait_s)
+        if method == "tools/list":
+            return {"tools": [{"name": "echo", "description": "e", "inputSchema": {}}]}
+        return {"content": [{"type": "text", "text": "ok"}]}
+
+    monkeypatch.setattr(mcp_client, "mcp_rpc", _fake_rpc)
+    ref = McpServerRef(name="slow", url="https://example.com/mcp", transport="http", timeout_ms=90_000)
+    tools = await tools_from_mcp_servers([ref])
+    assert [t.name for t in tools] == ["slow__echo"]
+
+    await tools[0].executor.execute({}, ToolInvocationCtx(manifest_id="m", tool_call_id="c"))
+    assert seen and all(w == 90.0 for w in seen), f"timeout did not reach every call: {seen}"
+
+
+def test_mcp_timeout_defaults_and_floor() -> None:
+    from felix.mcp.client import _DEFAULT_MCP_TIMEOUT_S, _timeout_s
+
+    assert _timeout_s(McpServerRef(name="a", url="https://e.com/m")) == _DEFAULT_MCP_TIMEOUT_S
+    assert _timeout_s(McpServerRef(name="a", url="https://e.com/m", timeout_ms=5_000)) == 5.0
+    # A sub-second timeout would fail every real call; floor it rather than honour it.
+    assert _timeout_s(McpServerRef(name="a", url="https://e.com/m", timeout_ms=10)) == 1.0

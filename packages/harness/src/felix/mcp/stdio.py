@@ -144,9 +144,9 @@ async def stdio_rpc(
                 await proc.wait()
 
 
-async def list_stdio_tools(ref: McpServerRef) -> list[dict[str, Any]]:
+async def list_stdio_tools(ref: McpServerRef, *, wait_s: float = 30.0) -> list[dict[str, Any]]:
     try:
-        result = await stdio_rpc(ref, "tools/list", {})
+        result = await stdio_rpc(ref, "tools/list", {}, wait_s=wait_s)
     except Exception:
         logger.warning("MCP stdio tools/list failed for %s", ref.name, exc_info=True)
         return []

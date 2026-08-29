@@ -116,6 +116,10 @@ class McpServerRef(_Strict):
     # Literal token or ``secret:NAME`` / ``{"secret": "NAME"}`` (resolved at compile).
     auth: str = ""
     transport: Literal["http", "sse", "stdio"] = "sse"
+    # Per-server request timeout, defaulting to 30s. ContainerRef and SandboxRef already
+    # carry one; without it a slow-but-working MCP server is unusable and the only symptom
+    # is a tool result that reads like the server refused.
+    timeout_ms: int | None = None
 
     @field_validator("auth", mode="before")
     @classmethod

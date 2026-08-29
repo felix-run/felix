@@ -88,6 +88,49 @@ async def test_connection_errors_are_retried() -> None:
 
 
 @pytest.mark.asyncio
+async def test_read_timeout_is_not_retried() -> None:
+    """A read timeout is a ceiling, not backpressure.
+
+    The request was accepted and the model is still generating; retrying re-sends identical
+    input and waits out the identical timeout, so a genuinely long generation used to cost
+    three full timeouts before surfacing as a failed run. The contrast with
+    `test_connection_errors_are_retried` is the point: a connect error is transient, a read
+    timeout is not.
+    """
+    import httpx
+
+    class _Slow:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def post(self, url, json=None, headers=None):
+            self.calls += 1
+            raise httpx.ReadTimeout("too slow")
+
+    c = _Slow()
+    with pytest.raises(httpx.ReadTimeout):
+        await _post_with_retry(c, "u", label="anthropic", json={}, headers={}, max_retries=2)
+    assert c.calls == 1, "a read timeout must not be retried"
+
+
+def test_model_timeout_is_configurable() -> None:
+    """Every model client must read the setting, not a constant.
+
+    Six `httpx.AsyncClient` sites shared a hardcoded 120.0, so a deployment could not raise
+    the ceiling without editing the harness.
+    """
+    import inspect
+
+    from felix.config import Settings
+    from felix.patterns import model as model_mod
+
+    assert Settings(model_timeout_seconds=300.0).model_timeout_seconds == 300.0
+    src = inspect.getsource(model_mod)
+    assert "AsyncClient(timeout=120.0)" not in src, "a client still hardcodes the timeout"
+    assert src.count("AsyncClient(timeout=_model_timeout_s())") >= 6
+
+
+@pytest.mark.asyncio
 async def test_connection_error_finally_raises() -> None:
     import httpx
 

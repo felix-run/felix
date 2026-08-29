@@ -267,6 +267,13 @@ Python client: `from felix.sdk import FelixClient` — `prompt`, `stream`, `stee
 
 ### Models
 
+`FELIX_MODEL_TIMEOUT_SECONDS` (default `120`) bounds a single non-streaming model request.
+Generating a large tool call — a file's contents as an argument, say — can exceed it, and the
+failure surfaces as a failed run rather than a slow one. A read timeout is deliberately **not**
+retried: the retry re-sends identical input and waits out the identical ceiling, so the answer
+is a larger timeout, not another attempt.
+
+
 Manifests reference **logical** model ids, mapped to wire ids by `FELIX_MODEL_ROUTES` (a JSON
 override) or by the built-in defaults:
 
