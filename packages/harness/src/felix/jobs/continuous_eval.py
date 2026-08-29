@@ -85,3 +85,23 @@ async def run_continuous_eval(settings: Settings, *, tenant_id: str = "default")
 
 
 __all__ = ["run_continuous_eval"]
+
+
+async def run_continuous_eval_all_tenants(settings: Settings) -> dict[str, Any]:
+    """Benchmark active canaries for every tenant that has one.
+
+    `run_continuous_eval` defaults to ``tenant_id="default"``, so a canary in any
+    other tenant was never scored — the rollout looked clean because nothing looked.
+    """
+    from felix.manifests.store import list_tenants_with_active
+
+    runs = 0
+    scanned = 0
+    for tenant_id in await list_tenants_with_active(settings):
+        scanned += 1
+        try:
+            result = await run_continuous_eval(settings, tenant_id=tenant_id)
+            runs += int(result.get("runs") or 0)
+        except Exception:
+            logger.exception("continuous_eval_failed tenant=%s", tenant_id)
+    return {"runs": runs, "tenants": scanned}
