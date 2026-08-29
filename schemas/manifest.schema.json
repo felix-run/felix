@@ -45,6 +45,7 @@
         "timeout_ms": {
           "anyOf": [
             {
+              "maximum": 3600000,
               "type": "integer"
             },
             {
@@ -257,6 +258,7 @@
         "timeout_ms": {
           "anyOf": [
             {
+              "maximum": 3600000,
               "type": "integer"
             },
             {
@@ -486,6 +488,7 @@
         "timeout_ms": {
           "anyOf": [
             {
+              "maximum": 3600000,
               "type": "integer"
             },
             {
@@ -914,6 +917,7 @@
         "timeout_ms": {
           "anyOf": [
             {
+              "maximum": 3600000,
               "type": "integer"
             },
             {
@@ -1473,6 +1477,7 @@
         "timeout_ms": {
           "anyOf": [
             {
+              "maximum": 3600000,
               "type": "integer"
             },
             {

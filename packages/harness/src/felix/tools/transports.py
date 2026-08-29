@@ -12,23 +12,36 @@ from typing import Any
 from felix.security.ssrf import assert_safe_outbound_url
 from felix.tools.types import ToolInput, ToolInvocationCtx, ToolOutput
 
+DEFAULT_HTTP_TOOL_TIMEOUT_S = 30.0
+# Connect must not scale with the request ceiling; reaching a host takes seconds or never.
+_CONNECT_TIMEOUT_S = 10.0
+
 
 class HttpExecutor:
     """Outbound HTTPS tool transport (SSRF-guarded)."""
 
     transport = "http"
 
-    def __init__(self, url: str, *, method: str = "POST", allow_http: bool = False) -> None:
+    def __init__(
+        self,
+        url: str,
+        *,
+        method: str = "POST",
+        allow_http: bool = False,
+        timeout_s: float = DEFAULT_HTTP_TOOL_TIMEOUT_S,
+    ) -> None:
         assert_safe_outbound_url(url, allow_http=allow_http)
         self._url = url
         self._method = method.upper()
         self._allow_http = allow_http
+        self._timeout_s = timeout_s
 
     async def execute(self, args: ToolInput, ctx: ToolInvocationCtx | None = None) -> ToolOutput:
         import httpx
 
         _ = ctx
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=False) as client:
+        timeout = httpx.Timeout(self._timeout_s, connect=_CONNECT_TIMEOUT_S)
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
             resp = await client.request(self._method, self._url, json=args)
             resp.raise_for_status()
             return resp.text

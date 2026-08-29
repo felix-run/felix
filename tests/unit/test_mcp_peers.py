@@ -226,3 +226,53 @@ def test_peer_timeout_is_per_peer() -> None:
     assert t.read == 300.0
     # Connect must not scale with the request ceiling.
     assert t.connect == 10.0
+
+
+def test_integration_timeouts_are_bounded() -> None:
+    """No manifest may pin a connection open past the run's own ceiling.
+
+    `timeout_ms` was unbounded on every ref, so a tenant-supplied manifest could ask for a
+    24-hour outbound call. The bound is derived rather than picked: a call that outlasts
+    `ABSOLUTE_LIMITS["max_wall_clock_seconds"]` can never complete anyway.
+    """
+    from felix.manifests.schema import (
+        ABSOLUTE_LIMITS,
+        MAX_INTEGRATION_TIMEOUT_MS,
+        BrowserToolRef,
+        ContainerRef,
+        SandboxRef,
+    )
+    from pydantic import ValidationError
+
+    assert ABSOLUTE_LIMITS["max_wall_clock_seconds"] * 1000 == MAX_INTEGRATION_TIMEOUT_MS
+
+    at_the_limit = MAX_INTEGRATION_TIMEOUT_MS
+    over = MAX_INTEGRATION_TIMEOUT_MS + 1
+    assert McpServerRef(name="a", url="https://e.com/m", timeout_ms=at_the_limit).timeout_ms == at_the_limit
+
+    # Every ref that carries a timeout, not just the two this work added.
+    for build in (
+        lambda ms: McpServerRef(name="a", url="https://e.com/m", timeout_ms=ms),
+        lambda ms: A2APeerRef(name="p", url="https://e.com", timeout_ms=ms),
+        lambda ms: ContainerRef(name="c", gateway_url="https://e.com", image="i", timeout_ms=ms),
+        lambda ms: SandboxRef(name="s", binding="python:3.14-slim", timeout_ms=ms),
+        lambda ms: BrowserToolRef(name="b", binding="chromium", timeout_ms=ms),
+    ):
+        with pytest.raises(ValidationError):
+            build(over)
+
+
+def test_embedder_honours_the_model_timeout() -> None:
+    """An `/embeddings` call is a model-provider request and was the last hardcoded one."""
+    from felix.config import Settings
+    from felix.memory.embedder import DEFAULT_EMBED_TIMEOUT_S, _build_ollama, _build_openai
+
+    settings = Settings(model_timeout_seconds=300.0, database_url="memory://t")
+    assert _build_openai(settings)._timeout_s == 300.0
+    assert _build_ollama(settings)._timeout_s == 300.0
+    # The default still stands in for a caller that builds one directly.
+    from felix.memory.embedder import OpenAIEmbedder
+
+    assert OpenAIEmbedder(model="m", api_key="", base_url="https://e.com")._timeout_s == (
+        DEFAULT_EMBED_TIMEOUT_S
+    )

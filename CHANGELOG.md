@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The last two hardcoded outbound timeouts, and no bound on the configurable ones.**
+  Making the model and MCP ceilings raisable left `memory/embedder.py` on a hardcoded 60s
+  for an OpenAI-compatible `/embeddings` call — a model-provider request that ignored the
+  model-provider setting — and `HttpExecutor` on a hardcoded 30s. Both now take the
+  ceiling (the embedder from `Settings.model_timeout_seconds`, since both its factories
+  already receive settings) and both pin connect at 10s, so raising a request ceiling does
+  not also raise the ceiling on reaching a host that is not there.
+
+  `timeout_ms` was also unbounded on all five refs that carry it, so a tenant-supplied
+  manifest could ask for a 24-hour outbound call and hold a connection open for it. The
+  bound is derived rather than picked: `MAX_INTEGRATION_TIMEOUT_MS` is
+  `ABSOLUTE_LIMITS["max_wall_clock_seconds"] * 1000`, because a call that outlasts the run
+  waiting on it can never complete.
+
+  The invariant added with the previous change now covers every outbound client in the
+  harness, so the next hardcoded timeout fails the build rather than being found by a
+  reviewer.
+
 - **A model request that legitimately took longer than two minutes failed the run, three
   times over.** Six `httpx.AsyncClient` sites in `patterns/model.py` shared a hardcoded
   `timeout=120.0` with no setting, and `_post_with_retry` caught `httpx.HTTPError` — which

@@ -25,6 +25,12 @@ ABSOLUTE_LIMITS = {
 }
 
 
+# An outbound call cannot usefully outlast the run that is waiting on it, so the ceiling
+# on any per-integration timeout is the absolute wall-clock limit. Without a bound, a
+# tenant-supplied manifest can pin a connection open for as long as it likes.
+MAX_INTEGRATION_TIMEOUT_MS = ABSOLUTE_LIMITS["max_wall_clock_seconds"] * 1000
+
+
 def assert_valid_manifest_name(name: str) -> None:
     if not name or len(name) > 128 or not MANIFEST_NAME_RE.match(name):
         raise ValueError(f"Invalid manifest name: {name!r}")
@@ -120,7 +126,7 @@ class McpServerRef(_Strict):
     # without it a slow-but-working MCP server is unusable and the only symptom is a tool
     # result that reads like the server refused. Over stdio this bounds each read — the
     # handshake and the call each get it — rather than the exchange as a whole.
-    timeout_ms: int | None = None
+    timeout_ms: int | None = Field(default=None, le=MAX_INTEGRATION_TIMEOUT_MS)
 
     @field_validator("auth", mode="before")
     @classmethod
@@ -165,7 +171,7 @@ class A2APeerRef(_Strict):
     auth: str = ""
     # A peer call runs an entire agent turn on the far side, so the 60s default is a tighter
     # ceiling on a longer operation than any other outbound integration has.
-    timeout_ms: int | None = None
+    timeout_ms: int | None = Field(default=None, le=MAX_INTEGRATION_TIMEOUT_MS)
 
     @field_validator("auth", mode="before")
     @classmethod
@@ -187,7 +193,7 @@ class ContainerRef(_Strict):
     gateway_url: str
     image: str = Field(min_length=1)
     container_tool_name: str = ""
-    timeout_ms: int | None = None
+    timeout_ms: int | None = Field(default=None, le=MAX_INTEGRATION_TIMEOUT_MS)
     auth: str = ""
     args_schema: dict[str, Any] | None = None
     fatal: bool = False
@@ -220,7 +226,7 @@ class SandboxRef(_Strict):
     description: str = ""
     binding: str = Field(min_length=1)
     sandbox_tool_name: str = ""
-    timeout_ms: int | None = None
+    timeout_ms: int | None = Field(default=None, le=MAX_INTEGRATION_TIMEOUT_MS)
     path_prefix: str = ""
     args_schema: dict[str, Any] | None = None
     fatal: bool = False
@@ -231,7 +237,7 @@ class BrowserToolRef(_Strict):
     description: str = ""
     binding: str = Field(min_length=1)
     op: Literal["content", "links", "snapshot", "screenshot", "pdf", "json"] = "content"
-    timeout_ms: int | None = None
+    timeout_ms: int | None = Field(default=None, le=MAX_INTEGRATION_TIMEOUT_MS)
     path_prefix: str = ""
     args_schema: dict[str, Any] | None = None
     fatal: bool = False

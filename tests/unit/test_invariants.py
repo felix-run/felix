@@ -830,6 +830,9 @@ def test_no_outbound_http_client_hardcodes_its_timeout() -> None:
         ROOT / "packages/harness/src/felix/patterns/model.py",
         ROOT / "packages/harness/src/felix/mcp/client.py",
         ROOT / "packages/harness/src/felix/a2a/peers.py",
+        ROOT / "packages/harness/src/felix/memory/embedder.py",
+        ROOT / "packages/harness/src/felix/tools/transports.py",
+        ROOT / "packages/harness/src/felix/auth/jwt.py",
     )
     offenders: list[str] = []
     for path in configurable:
