@@ -20,21 +20,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   single MCP tool call, because emitting roughly 40 KB of file content as tool arguments
   takes longer than 120s. The work had to be split into one call per file.
 
-  `FELIX_MODEL_TIMEOUT_SECONDS` (default `120`) now bounds a single non-streaming request,
-  and a read timeout is no longer retried — it is a ceiling, not backpressure, and the
-  answer is a larger timeout rather than another attempt. Connect errors and retryable
-  status codes are unchanged.
+  `FELIX_MODEL_TIMEOUT_SECONDS` (default `120`) now bounds each HTTP request to a model
+  provider, read from the `Settings` the client was built with rather than the process
+  globals — `build_model` exists so a caller can pass its own. On a streaming call it bounds
+  the gap between chunks rather than the whole turn, which is why the reported failure only
+  ever hit the non-streaming `chat()` path.
+
+  Read and write timeouts are no longer retried; connect timeouts and retryable status codes
+  are unchanged, because nothing was accepted and the next attempt is a genuinely different
+  bet. Connect is pinned at 10s separately, so raising the request ceiling for a long
+  generation does not also let an unreachable endpoint hang for that long.
 
 ### Added
 
-- **`spec.mcp_servers[].timeout_ms`.** `ContainerRef` and `SandboxRef` both carried a
-  per-integration timeout; `McpServerRef` did not, so its 30s was unraisable and a
-  slow-but-working MCP server was simply unusable — with a tool result that read like the
-  server had refused. The value is floored at one second and reaches discovery and the tool
-  call alike, over both HTTP and stdio.
-
-
-### Added
+- **`spec.mcp_servers[].timeout_ms` and `spec.peers[].timeout_ms`.** `ContainerRef` and
+  `SandboxRef` already carried a per-integration timeout; the MCP and A2A refs did not, so
+  30s and 60s respectively were unraisable and a slow-but-working server produced a tool
+  result that read like a refusal. A peer call runs an entire agent turn on the far side,
+  so it had the tightest ceiling on the longest operation. Both are floored at one second
+  and reach discovery and the call alike, over HTTP and stdio.
 
 - **`manifests/contributor.yaml` — Felix working on the Felix codebase.** Every piece
   this needs already existed; nothing wired them together. The manifest points the

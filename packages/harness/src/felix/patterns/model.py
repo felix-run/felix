@@ -317,21 +317,14 @@ def _map_stop(raw: Any, table: dict[str, StopReason], *, had_tool_calls: bool) -
     return "tool_use" if had_tool_calls else "end_turn"
 
 
+# A scalar `timeout=` sets connect, read, write and pool alike, so raising the read ceiling
+# for a long generation would also let an unreachable endpoint hang for that long — and
+# connect failures are exactly what this layer still retries. Reaching a provider takes
+# seconds or never.
+_CONNECT_TIMEOUT_S = 10.0
+
 # Retried statuses: rate limiting and transient upstream failures. 4xx other than these
 # will not succeed on a retry, so retrying them just burns latency.
-def _model_timeout_s() -> float:
-    """Read timeout for one model request, from `FELIX_MODEL_TIMEOUT_SECONDS`.
-
-    Read lazily rather than captured at import, so a process that reconfigures settings
-    picks it up, and so a missing/broken settings load degrades to the old constant
-    instead of failing the request.
-    """
-    try:
-        return float(get_settings().model_timeout_seconds)
-    except Exception:  # pragma: no cover — settings are constructed at startup
-        return 120.0
-
-
 _RETRY_STATUSES = frozenset({408, 409, 429, 500, 502, 503, 504})
 MODEL_MAX_RETRIES = 2  # three attempts total
 _BASE_BACKOFF_S = 0.5
@@ -417,17 +410,19 @@ async def _post_with_retry(
     for attempt in range(max_retries + 1):
         try:
             resp = await client.post(url, json=json, headers=headers)
-        except httpx.ReadTimeout:
-            # Not backpressure. The request was accepted and the model is still generating;
-            # a retry re-sends identical input and waits out the identical ceiling, so this
-            # used to cost three full timeouts before surfacing. Fail once and say so —
-            # the fix is a larger FELIX_MODEL_TIMEOUT_SECONDS, not another attempt.
-            record_counter("felix_model_read_timeout", {"provider": label})
+        except httpx.ReadTimeout, httpx.WriteTimeout:
+            # Not backpressure. The bytes were accepted (or are still going out) and a retry
+            # re-sends identical input to wait out an identical ceiling, so this used to cost
+            # three full timeouts before surfacing. Fail once and say so — the fix is a larger
+            # FELIX_MODEL_TIMEOUT_SECONDS, not another attempt.
+            #
+            # ConnectTimeout is deliberately NOT here: nothing was accepted, the far side may
+            # be briefly unreachable, and the next attempt is a genuinely different bet.
+            record_counter("felix_model_timeout", {"provider": label})
             logger.warning(
-                "%s read timed out after %.0fs; not retrying — raise FELIX_MODEL_TIMEOUT_SECONDS "
+                "%s timed out mid-request; not retrying — raise FELIX_MODEL_TIMEOUT_SECONDS "
                 "if this request is legitimately long",
                 label,
-                _model_timeout_s(),
             )
             raise
         except httpx.HTTPError as exc:
@@ -753,6 +748,18 @@ class _HttpModelClient(ABC):
     base_url: str
     api_key: str
 
+    def _timeout(self) -> httpx.Timeout:
+        """Request timeout for this client, from the `Settings` it was constructed with.
+
+        Read off the instance rather than the process-global settings: `build_model` exists
+        so a caller can pass its own `Settings`, and every other field here honours that.
+        On a streaming call the read bound applies between chunks, not to the whole turn.
+        """
+        return httpx.Timeout(
+            float(self.settings.model_timeout_seconds),
+            connect=_CONNECT_TIMEOUT_S,
+        )
+
     def _resolve(self, opts: ModelChatOptions | None) -> tuple[ModelChatOptions, float, int | None]:
         """Options for this turn, with `spec` supplying whatever the caller left unset."""
         opts = opts or ModelChatOptions()
@@ -890,7 +897,7 @@ class _OpenAIClient(_HttpModelClient):
     ) -> ModelChatResult:
         body = self._body(messages, tools, temperature, max_tokens, isolate_cache=isolate_cache)
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
-        async with httpx.AsyncClient(timeout=_model_timeout_s()) as client:
+        async with httpx.AsyncClient(timeout=self._timeout()) as client:
             resp = await _post_with_retry(
                 client,
                 f"{self.base_url.rstrip('/')}/chat/completions",
@@ -936,7 +943,7 @@ class _OpenAIClient(_HttpModelClient):
         raw_stop: str | None = None
 
         async with (
-            httpx.AsyncClient(timeout=_model_timeout_s()) as client,
+            httpx.AsyncClient(timeout=self._timeout()) as client,
             client.stream(
                 "POST",
                 f"{self.base_url.rstrip('/')}/chat/completions",
@@ -1021,7 +1028,7 @@ class _OpenAIClient(_HttpModelClient):
         # Streaming path is text-oriented; tool calls use chat() in the agent loop.
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
         async with (
-            httpx.AsyncClient(timeout=_model_timeout_s()) as client,
+            httpx.AsyncClient(timeout=self._timeout()) as client,
             client.stream(
                 "POST",
                 f"{self.base_url.rstrip('/')}/chat/completions",
@@ -1135,7 +1142,7 @@ class _AnthropicClient(_HttpModelClient):
             "anthropic-version": "2023-06-01",
             "Content-Type": "application/json",
         }
-        async with httpx.AsyncClient(timeout=_model_timeout_s()) as client:
+        async with httpx.AsyncClient(timeout=self._timeout()) as client:
             resp = await _post_with_retry(
                 client,
                 f"{self.base_url.rstrip('/')}/v1/messages",
@@ -1203,7 +1210,7 @@ class _AnthropicClient(_HttpModelClient):
         raw_stop: str | None = None
 
         async with (
-            httpx.AsyncClient(timeout=_model_timeout_s()) as client,
+            httpx.AsyncClient(timeout=self._timeout()) as client,
             client.stream(
                 "POST",
                 f"{self.base_url.rstrip('/')}/v1/messages",
@@ -1346,7 +1353,7 @@ class _AnthropicClient(_HttpModelClient):
             "Content-Type": "application/json",
         }
         async with (
-            httpx.AsyncClient(timeout=_model_timeout_s()) as client,
+            httpx.AsyncClient(timeout=self._timeout()) as client,
             client.stream(
                 "POST",
                 f"{self.base_url.rstrip('/')}/v1/messages",

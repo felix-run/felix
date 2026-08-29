@@ -22,13 +22,16 @@ def _next_id() -> int:
     return _RPC_ID
 
 
-_DEFAULT_MCP_TIMEOUT_S = 30.0
+DEFAULT_MCP_TIMEOUT_S = 30.0
+# Same reasoning as the model client: a raised request ceiling must not become a raised
+# ceiling on reaching an unreachable host.
+_CONNECT_TIMEOUT_S = 10.0
 
 
 def _timeout_s(ref: McpServerRef) -> float:
     """Per-server request timeout in seconds, floored at 1s."""
     if not ref.timeout_ms:
-        return _DEFAULT_MCP_TIMEOUT_S
+        return DEFAULT_MCP_TIMEOUT_S
     return max(1.0, int(ref.timeout_ms) / 1000)
 
 
@@ -53,7 +56,7 @@ async def mcp_rpc(
     *,
     auth: str = "",
     allow_http: bool = False,
-    wait_s: float = _DEFAULT_MCP_TIMEOUT_S,
+    wait_s: float = DEFAULT_MCP_TIMEOUT_S,
 ) -> dict[str, Any]:
     """POST a JSON-RPC request to an MCP HTTP endpoint."""
     assert_safe_outbound_url(url, allow_http=allow_http)
@@ -63,7 +66,8 @@ async def mcp_rpc(
         "method": method,
         "params": params or {},
     }
-    async with httpx.AsyncClient(timeout=wait_s, follow_redirects=False) as client:
+    timeout = httpx.Timeout(wait_s, connect=_CONNECT_TIMEOUT_S)
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
         resp = await client.post(url, json=payload, headers=_headers(auth))
         resp.raise_for_status()
         # Some MCP HTTP servers return SSE; take the first JSON data line if needed.
@@ -206,4 +210,4 @@ async def tools_from_mcp_servers(
     return out
 
 
-__all__ = ["list_remote_tools", "mcp_rpc", "tools_from_mcp_servers"]
+__all__ = ["DEFAULT_MCP_TIMEOUT_S", "list_remote_tools", "mcp_rpc", "tools_from_mcp_servers"]

@@ -93,9 +93,7 @@ async def test_read_timeout_is_not_retried() -> None:
 
     The request was accepted and the model is still generating; retrying re-sends identical
     input and waits out the identical timeout, so a genuinely long generation used to cost
-    three full timeouts before surfacing as a failed run. The contrast with
-    `test_connection_errors_are_retried` is the point: a connect error is transient, a read
-    timeout is not.
+    three full timeouts before surfacing as a failed run.
     """
     import httpx
 
@@ -113,21 +111,96 @@ async def test_read_timeout_is_not_retried() -> None:
     assert c.calls == 1, "a read timeout must not be retried"
 
 
-def test_model_timeout_is_configurable() -> None:
-    """Every model client must read the setting, not a constant.
+@pytest.mark.asyncio
+async def test_write_timeout_is_not_retried() -> None:
+    """Same argument for the sending half: a large body is as large on the second attempt."""
+    import httpx
 
-    Six `httpx.AsyncClient` sites shared a hardcoded 120.0, so a deployment could not raise
-    the ceiling without editing the harness.
+    class _Slow:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def post(self, url, json=None, headers=None):
+            self.calls += 1
+            raise httpx.WriteTimeout("too slow")
+
+    c = _Slow()
+    with pytest.raises(httpx.WriteTimeout):
+        await _post_with_retry(c, "u", label="anthropic", json={}, headers={}, max_retries=2)
+    assert c.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_connect_timeout_is_still_retried() -> None:
+    """The near miss that makes the boundary worth pinning.
+
+    `ConnectTimeout` is a `TimeoutException` like the two above, so broadening the handler to
+    `except httpx.TimeoutException` looks like tidying and silently stops retrying a
+    genuinely transient failure — nothing was accepted, so the next attempt is a different
+    bet.
     """
-    import inspect
+    import httpx
 
+    class _Flaky:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def post(self, url, json=None, headers=None):
+            self.calls += 1
+            if self.calls < 3:
+                raise httpx.ConnectTimeout("unreachable")
+            return _Resp(200)
+
+    c = _Flaky()
+    resp = await _post_with_retry(c, "u", label="anthropic", json={}, headers={}, max_retries=2)
+    assert c.calls == 3
+    assert resp.status_code == 200
+
+
+def test_a_timeout_does_not_advance_the_fallback_chain() -> None:
+    """`_FallbackClient` must not treat a timeout as a provider error.
+
+    If it did, a too-slow generation would be retried once per fallback model, each paying
+    the full ceiling — the same amplification this change removed from `_post_with_retry`.
+    """
+    import httpx
+    from felix.patterns.model import _is_provider_error
+
+    assert _is_provider_error(httpx.ReadTimeout("x")) is False
+    assert _is_provider_error(httpx.WriteTimeout("x")) is False
+
+
+def test_model_timeout_comes_from_the_clients_own_settings() -> None:
+    """The client must honour the `Settings` it was built with, not the process globals.
+
+    `build_model` exists so a caller can pass its own `Settings`, and every other field on
+    the client honours that. A timeout read from `get_settings()` would ignore it — and the
+    divergence is invisible until someone's configured value quietly fails to take effect.
+    """
     from felix.config import Settings
-    from felix.patterns import model as model_mod
+    from felix.patterns.model import _CONNECT_TIMEOUT_S, _make_anthropic
 
-    assert Settings(model_timeout_seconds=300.0).model_timeout_seconds == 300.0
-    src = inspect.getsource(model_mod)
-    assert "AsyncClient(timeout=120.0)" not in src, "a client still hardcodes the timeout"
-    assert src.count("AsyncClient(timeout=_model_timeout_s())") >= 6
+    client = _make_anthropic(
+        "claude-sonnet",
+        {"provider": "anthropic", "model": "claude-sonnet-5"},
+        None,
+        Settings(model_timeout_seconds=300.0, database_url="memory://t"),
+    )
+    timeout = client._timeout()
+    assert timeout.read == 300.0
+    assert timeout.write == 300.0
+    # Connect must NOT scale with the read ceiling: raising the timeout for a long
+    # generation would otherwise let an unreachable endpoint hang just as long, and connect
+    # failures are the class this layer still retries.
+    assert timeout.connect == _CONNECT_TIMEOUT_S
+
+
+def test_model_timeout_must_be_positive() -> None:
+    from felix.config import Settings
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        Settings(model_timeout_seconds=0, database_url="memory://t")
 
 
 @pytest.mark.asyncio

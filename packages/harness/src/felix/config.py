@@ -112,10 +112,11 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     litellm_base_url: str = ""
     model_routes: str = ""  # JSON override of logical id -> {provider, model}
-    # Read timeout for a single non-streaming model request. A large tool call — a file's
-    # contents as an argument, say — can legitimately take longer than two minutes to
-    # generate, and when it does the request fails and takes the whole run with it. Raise
-    # this rather than discovering the ceiling as a 500.
+    # Bounds each HTTP request to a model provider. A large tool call — a file's contents
+    # as an argument, say — can legitimately take longer than two minutes to generate, and
+    # when it does the request fails and takes the whole run with it. On a streaming call
+    # this bounds the gap between chunks rather than the whole turn. Connect is pinned
+    # separately, so raising this does not also raise the ceiling on reaching a dead host.
     model_timeout_seconds: float = Field(default=120.0, gt=0)
 
     # --- durability ---

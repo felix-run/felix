@@ -22,6 +22,19 @@ class PeerArgs(BaseModel):
     manifest: str | None = Field(default=None, description="Optional peer manifest name override.")
 
 
+# A peer call runs an entire agent turn on the far side, so its ceiling is the loosest of
+# the outbound integrations. Connect is pinned separately for the same reason as elsewhere:
+# a raised request ceiling must not become a raised ceiling on reaching a dead host.
+DEFAULT_PEER_TIMEOUT_S = 60.0
+_CONNECT_TIMEOUT_S = 10.0
+
+
+def _peer_timeout(ref: A2APeerRef) -> httpx.Timeout:
+    """Per-peer request timeout, floored at 1s."""
+    seconds = max(1.0, int(ref.timeout_ms) / 1000) if ref.timeout_ms else DEFAULT_PEER_TIMEOUT_S
+    return httpx.Timeout(seconds, connect=_CONNECT_TIMEOUT_S)
+
+
 def _auth_headers(auth: str) -> dict[str, str]:
     headers = {"content-type": "application/json"}
     if not auth:
@@ -80,7 +93,7 @@ def make_peer_tool(ref: A2APeerRef, *, allow_http: bool = False) -> Tool:
         }
         if args.manifest:
             payload["params"]["manifest"] = args.manifest  # type: ignore[index]
-        async with httpx.AsyncClient(timeout=60.0, follow_redirects=False) as client:
+        async with httpx.AsyncClient(timeout=_peer_timeout(ref), follow_redirects=False) as client:
             resp = await client.post(endpoint, json=payload, headers=_auth_headers(ref.auth))
             resp.raise_for_status()
             body = resp.json()
@@ -113,4 +126,4 @@ def tools_from_peers(
     return out
 
 
-__all__ = ["make_peer_tool", "tools_from_peers"]
+__all__ = ["DEFAULT_PEER_TIMEOUT_S", "make_peer_tool", "tools_from_peers"]

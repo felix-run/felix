@@ -8,6 +8,7 @@ import logging
 from typing import Any
 
 from felix.manifests.schema import McpServerRef
+from felix.mcp.client import DEFAULT_MCP_TIMEOUT_S
 from felix.security.stdio_policy import assert_stdio_command_allowed, stdio_child_env
 
 logger = logging.getLogger("felix.mcp.stdio")
@@ -30,7 +31,9 @@ async def _write_message(proc: asyncio.subprocess.Process, payload: dict[str, An
     await proc.stdin.drain()
 
 
-async def _read_message(proc: asyncio.subprocess.Process, *, wait_s: float = 30.0) -> dict[str, Any]:
+async def _read_message(
+    proc: asyncio.subprocess.Process, *, wait_s: float = DEFAULT_MCP_TIMEOUT_S
+) -> dict[str, Any]:
     if proc.stdout is None:
         raise RuntimeError("MCP stdio process has no stdout")
 
@@ -72,7 +75,7 @@ async def stdio_rpc(
     method: str,
     params: dict[str, Any] | None = None,
     *,
-    wait_s: float = 30.0,
+    wait_s: float = DEFAULT_MCP_TIMEOUT_S,
     settings: Any | None = None,
 ) -> dict[str, Any]:
     """Spawn ``ref.command``, handshake, call ``method``, then terminate."""
@@ -144,7 +147,9 @@ async def stdio_rpc(
                 await proc.wait()
 
 
-async def list_stdio_tools(ref: McpServerRef, *, wait_s: float = 30.0) -> list[dict[str, Any]]:
+async def list_stdio_tools(
+    ref: McpServerRef, *, wait_s: float = DEFAULT_MCP_TIMEOUT_S
+) -> list[dict[str, Any]]:
     try:
         result = await stdio_rpc(ref, "tools/list", {}, wait_s=wait_s)
     except Exception:
