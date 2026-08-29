@@ -818,37 +818,79 @@ def test_no_tenant_scoped_accessor_defaults_to_the_default_tenant() -> None:
 
 
 def test_no_outbound_http_client_hardcodes_its_timeout() -> None:
-    """Every `httpx.AsyncClient(timeout=...)` on a configurable path takes a computed value.
+    """Every outbound httpx client takes a timeout something can change.
 
     Six client sites in `patterns/model.py` shared a hardcoded `timeout=120.0`, so no
     deployment could raise the ceiling without editing the harness — and a generation that
-    legitimately needed longer failed the whole run. A source-text check would pass the
-    moment someone adds a seventh site with a fresh literal, so walk the tree instead: a
-    `timeout=` that is a bare constant is the defect.
+    legitimately needed longer failed the whole run.
+
+    The first version of this check only matched `timeout=<Constant>`, which made it
+    vacuous: the same commit that added files to it moved every literal inside
+    `httpx.Timeout(...)`, an `ast.Call`, so nothing it named could trigger it. It now
+    resolves the value — a bare constant, a module-level constant by name, an all-constant
+    `httpx.Timeout(...)`, or no `timeout=` at all (httpx then applies its own silent 5s).
+
+    The file set is discovered rather than listed, so a new outbound client is covered on
+    the day it is written and an exemption has to be argued for in `_EXEMPT` below.
     """
-    configurable = (
-        ROOT / "packages/harness/src/felix/patterns/model.py",
-        ROOT / "packages/harness/src/felix/mcp/client.py",
-        ROOT / "packages/harness/src/felix/a2a/peers.py",
-        ROOT / "packages/harness/src/felix/memory/embedder.py",
-        ROOT / "packages/harness/src/felix/tools/transports.py",
-        ROOT / "packages/harness/src/felix/auth/jwt.py",
-    )
+    # Reason required. A bare hardcode with no entry here fails the build.
+    exempt = {
+        "auth/jwt.py": "JWKS fetch is a fixed 5s by design; not a per-request budget",
+        "sdk.py": "client library — the caller supplies self.timeout",
+    }
+
+    def _module_constants(tree: ast.AST) -> set[str]:
+        names: set[str] = set()
+        for node in getattr(tree, "body", []):
+            if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant):
+                names.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        return names
+
+    def _is_hardcoded(value: ast.expr, consts: set[str]) -> bool:
+        if isinstance(value, ast.Constant):
+            return True
+        if isinstance(value, ast.Name):
+            return value.id in consts
+        if isinstance(value, ast.Call):
+            func = value.func
+            is_timeout = (isinstance(func, ast.Attribute) and func.attr == "Timeout") or (
+                isinstance(func, ast.Name) and func.id == "Timeout"
+            )
+            if is_timeout:
+                args = [*value.args, *(k.value for k in value.keywords)]
+                return bool(args) and all(_is_hardcoded(a, consts) for a in args)
+        return False
+
+    harness = ROOT / "packages/harness/src/felix"
     offenders: list[str] = []
-    for path in configurable:
+    for path in sorted(harness.rglob("*.py")):
+        rel = str(path.relative_to(harness))
+        if any(rel.endswith(k) for k in exempt):
+            continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
+        consts = _module_constants(tree)
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
             func = node.func
-            if not (isinstance(func, ast.Attribute) and func.attr == "AsyncClient"):
+            # httpx specifically: a bare `Client(...)` is also google.cloud.storage's.
+            if isinstance(func, ast.Attribute):
+                httpx_client = (
+                    isinstance(func.value, ast.Name)
+                    and func.value.id == "httpx"
+                    and func.attr in {"AsyncClient", "Client"}
+                )
+            else:
+                httpx_client = getattr(func, "id", "") == "AsyncClient"
+            if not httpx_client:
                 continue
-            for kw in node.keywords:
-                if kw.arg == "timeout" and isinstance(kw.value, ast.Constant):
-                    rel = path.relative_to(ROOT)
-                    offenders.append(f"{rel}:{node.lineno} timeout={kw.value.value!r}")
+            kw = next((k for k in node.keywords if k.arg == "timeout"), None)
+            if kw is None:
+                offenders.append(f"{rel}:{node.lineno} no timeout= (httpx defaults to 5s)")
+            elif _is_hardcoded(kw.value, consts):
+                offenders.append(f"{rel}:{node.lineno} hardcoded timeout")
 
     assert offenders == [], (
-        "an outbound client hardcodes its timeout; read it from Settings or a per-ref "
-        f"field so an operator can raise it: {'; '.join(offenders)}"
+        "an outbound client hardcodes its timeout; read it from Settings or a per-ref field "
+        f"so an operator can raise it, or add it to `exempt` with a reason: {offenders}"
     )

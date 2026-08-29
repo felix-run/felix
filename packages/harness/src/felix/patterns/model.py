@@ -25,6 +25,7 @@ from felix.patterns.model_registry import (
     register_model_provider,
 )
 from felix.patterns.types import ChatMessage, ToolCall
+from felix.timeouts import DEFAULT_CONNECT_TIMEOUT_S
 from felix.tools.types import Tool
 
 logger = logging.getLogger("felix.patterns.model")
@@ -316,12 +317,6 @@ def _map_stop(raw: Any, table: dict[str, StopReason], *, had_tool_calls: bool) -
     # Provider omitted it — preserve the previous behaviour rather than guess.
     return "tool_use" if had_tool_calls else "end_turn"
 
-
-# A scalar `timeout=` sets connect, read, write and pool alike, so raising the read ceiling
-# for a long generation would also let an unreachable endpoint hang for that long — and
-# connect failures are exactly what this layer still retries. Reaching a provider takes
-# seconds or never.
-_CONNECT_TIMEOUT_S = 10.0
 
 # Retried statuses: rate limiting and transient upstream failures. 4xx other than these
 # will not succeed on a retry, so retrying them just burns latency.
@@ -757,7 +752,7 @@ class _HttpModelClient(ABC):
         """
         return httpx.Timeout(
             float(self.settings.model_timeout_seconds),
-            connect=_CONNECT_TIMEOUT_S,
+            connect=DEFAULT_CONNECT_TIMEOUT_S,
         )
 
     def _resolve(self, opts: ModelChatOptions | None) -> tuple[ModelChatOptions, float, int | None]:

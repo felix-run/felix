@@ -45,6 +45,7 @@
         "timeout_ms": {
           "anyOf": [
             {
+              "exclusiveMinimum": 0,
               "maximum": 3600000,
               "type": "integer"
             },
@@ -137,6 +138,7 @@
           "anyOf": [
             {
               "exclusiveMinimum": 0,
+              "maximum": 3600,
               "type": "integer"
             },
             {
@@ -258,6 +260,7 @@
         "timeout_ms": {
           "anyOf": [
             {
+              "exclusiveMinimum": 0,
               "maximum": 3600000,
               "type": "integer"
             },
@@ -420,7 +423,7 @@
         "approval_ttl_seconds": {
           "default": 300,
           "exclusiveMinimum": 0,
-          "maximum": 86400,
+          "maximum": 3600,
           "title": "Approval Ttl Seconds",
           "type": "integer"
         }
@@ -488,6 +491,7 @@
         "timeout_ms": {
           "anyOf": [
             {
+              "exclusiveMinimum": 0,
               "maximum": 3600000,
               "type": "integer"
             },
@@ -917,6 +921,7 @@
         "timeout_ms": {
           "anyOf": [
             {
+              "exclusiveMinimum": 0,
               "maximum": 3600000,
               "type": "integer"
             },
@@ -1477,6 +1482,7 @@
         "timeout_ms": {
           "anyOf": [
             {
+              "exclusiveMinimum": 0,
               "maximum": 3600000,
               "type": "integer"
             },
@@ -1658,6 +1664,7 @@
           "items": {
             "$ref": "#/$defs/McpServerRef"
           },
+          "maxItems": 64,
           "title": "Mcp Servers",
           "type": "array"
         },
@@ -1665,6 +1672,7 @@
           "items": {
             "$ref": "#/$defs/A2APeerRef"
           },
+          "maxItems": 64,
           "title": "Peers",
           "type": "array"
         },
@@ -1672,6 +1680,7 @@
           "items": {
             "$ref": "#/$defs/ContainerRef"
           },
+          "maxItems": 64,
           "title": "Containers",
           "type": "array"
         },
@@ -1679,6 +1688,7 @@
           "items": {
             "$ref": "#/$defs/QueueRef"
           },
+          "maxItems": 64,
           "title": "Queues",
           "type": "array"
         },
@@ -1686,6 +1696,7 @@
           "items": {
             "$ref": "#/$defs/SandboxRef"
           },
+          "maxItems": 64,
           "title": "Sandboxes",
           "type": "array"
         },
@@ -1693,6 +1704,7 @@
           "items": {
             "$ref": "#/$defs/BrowserToolRef"
           },
+          "maxItems": 64,
           "title": "Browser Tools",
           "type": "array"
         },
@@ -1700,6 +1712,7 @@
           "items": {
             "$ref": "#/$defs/ClientToolRef"
           },
+          "maxItems": 64,
           "title": "Client Tools",
           "type": "array"
         },

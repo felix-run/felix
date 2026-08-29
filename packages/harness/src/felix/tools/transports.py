@@ -10,11 +10,10 @@ import asyncio
 from typing import Any
 
 from felix.security.ssrf import assert_safe_outbound_url
+from felix.timeouts import DEFAULT_CONNECT_TIMEOUT_S
 from felix.tools.types import ToolInput, ToolInvocationCtx, ToolOutput
 
 DEFAULT_HTTP_TOOL_TIMEOUT_S = 30.0
-# Connect must not scale with the request ceiling; reaching a host takes seconds or never.
-_CONNECT_TIMEOUT_S = 10.0
 
 
 class HttpExecutor:
@@ -40,7 +39,7 @@ class HttpExecutor:
         import httpx
 
         _ = ctx
-        timeout = httpx.Timeout(self._timeout_s, connect=_CONNECT_TIMEOUT_S)
+        timeout = httpx.Timeout(self._timeout_s, connect=DEFAULT_CONNECT_TIMEOUT_S)
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
             resp = await client.request(self._method, self._url, json=args)
             resp.raise_for_status()

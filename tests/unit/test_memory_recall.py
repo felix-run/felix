@@ -212,3 +212,36 @@ async def test_a_failing_embedder_loses_a_channel_not_the_turn() -> None:
     hits = await recall(_settings(), TENANT, "runbook", manifest_id=MANIFEST, embedder=_Broken())
     assert hits, "a dead embedding endpoint must not take out full-text recall"
     assert "vector" not in hits[0].channels
+
+
+@pytest.mark.asyncio
+async def test_recall_embedding_degrades_on_time_not_just_on_error() -> None:
+    """Recall is best-effort and runs inline in a turn, so it needs its own budget.
+
+    The embedder inherits `FELIX_MODEL_TIMEOUT_SECONDS`, which is sized for a generation
+    whose failure kills the run. Raising that to accommodate a slow model must not also let
+    a degradable recall add minutes to a turn.
+    """
+    import asyncio
+
+    from felix.memory import recall as recall_mod
+
+    class _Hangs:
+        enabled = True
+
+        async def embed(self, texts):
+            await asyncio.sleep(60)
+            return [[0.0]]
+
+    monkey_budget = 0.05
+    original = recall_mod.RECALL_EMBED_BUDGET_S
+    recall_mod.RECALL_EMBED_BUDGET_S = monkey_budget
+    try:
+        started = asyncio.get_running_loop().time()
+        result = await recall_mod._embed_query(_Hangs(), "q")
+        elapsed = asyncio.get_running_loop().time() - started
+    finally:
+        recall_mod.RECALL_EMBED_BUDGET_S = original
+
+    assert result is None, "a slow embedder must degrade, not propagate"
+    assert elapsed < 5.0, f"recall waited {elapsed:.1f}s on a hung embedder"

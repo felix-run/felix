@@ -19,6 +19,7 @@ from collections.abc import Callable, Sequence
 from typing import Any, Protocol, runtime_checkable
 
 from felix.config import Settings
+from felix.timeouts import DEFAULT_CONNECT_TIMEOUT_S
 
 logger = logging.getLogger("felix.memory.embedder")
 
@@ -26,8 +27,6 @@ logger = logging.getLogger("felix.memory.embedder")
 # An embeddings call is a model-provider request, so it honours the same ceiling; the
 # default stands in when a caller builds the embedder without settings.
 DEFAULT_EMBED_TIMEOUT_S = 60.0
-# Connect must not scale with the request ceiling.
-_CONNECT_TIMEOUT_S = 10.0
 
 
 @runtime_checkable
@@ -117,7 +116,7 @@ class OpenAIEmbedder:
         headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
         # Connect is pinned separately: raising the request ceiling for a large batch must
         # not also raise the ceiling on reaching a provider that is simply not there.
-        timeout = httpx.Timeout(self._timeout_s, connect=_CONNECT_TIMEOUT_S)
+        timeout = httpx.Timeout(self._timeout_s, connect=DEFAULT_CONNECT_TIMEOUT_S)
         async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.post(
                 f"{self._base_url}/embeddings",

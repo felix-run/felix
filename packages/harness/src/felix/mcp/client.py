@@ -9,6 +9,7 @@ import httpx
 
 from felix.manifests.schema import McpServerRef
 from felix.security.ssrf import assert_safe_outbound_url
+from felix.timeouts import DEFAULT_CONNECT_TIMEOUT_S, timeout_seconds
 from felix.tools.types import Tool, ToolInvocationCtx, define_tool
 
 logger = logging.getLogger("felix.mcp.client")
@@ -23,16 +24,11 @@ def _next_id() -> int:
 
 
 DEFAULT_MCP_TIMEOUT_S = 30.0
-# Same reasoning as the model client: a raised request ceiling must not become a raised
-# ceiling on reaching an unreachable host.
-_CONNECT_TIMEOUT_S = 10.0
 
 
 def _timeout_s(ref: McpServerRef) -> float:
-    """Per-server request timeout in seconds, floored at 1s."""
-    if not ref.timeout_ms:
-        return DEFAULT_MCP_TIMEOUT_S
-    return max(1.0, int(ref.timeout_ms) / 1000)
+    """Per-server request timeout in seconds."""
+    return timeout_seconds(ref.timeout_ms, default_s=DEFAULT_MCP_TIMEOUT_S)
 
 
 def _headers(auth: str) -> dict[str, str]:
@@ -66,7 +62,7 @@ async def mcp_rpc(
         "method": method,
         "params": params or {},
     }
-    timeout = httpx.Timeout(wait_s, connect=_CONNECT_TIMEOUT_S)
+    timeout = httpx.Timeout(wait_s, connect=DEFAULT_CONNECT_TIMEOUT_S)
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
         resp = await client.post(url, json=payload, headers=_headers(auth))
         resp.raise_for_status()

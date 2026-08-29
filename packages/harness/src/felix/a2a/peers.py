@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from felix.manifests.schema import A2APeerRef
 from felix.security.ssrf import assert_safe_outbound_url
+from felix.timeouts import request_timeout
 from felix.tools.types import Tool, ToolInvocationCtx, define_tool
 
 logger = logging.getLogger("felix.a2a.peers")
@@ -26,13 +27,11 @@ class PeerArgs(BaseModel):
 # the outbound integrations. Connect is pinned separately for the same reason as elsewhere:
 # a raised request ceiling must not become a raised ceiling on reaching a dead host.
 DEFAULT_PEER_TIMEOUT_S = 60.0
-_CONNECT_TIMEOUT_S = 10.0
 
 
 def _peer_timeout(ref: A2APeerRef) -> httpx.Timeout:
-    """Per-peer request timeout, floored at 1s."""
-    seconds = max(1.0, int(ref.timeout_ms) / 1000) if ref.timeout_ms else DEFAULT_PEER_TIMEOUT_S
-    return httpx.Timeout(seconds, connect=_CONNECT_TIMEOUT_S)
+    """Per-peer request timeout."""
+    return request_timeout(ref.timeout_ms, default_s=DEFAULT_PEER_TIMEOUT_S)
 
 
 def _auth_headers(auth: str) -> dict[str, str]:
