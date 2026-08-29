@@ -158,10 +158,20 @@ def _build_sentence_transformers(settings: Settings) -> Embedder:
 
 
 def _build_openai(settings: Settings) -> Embedder:
+    # `openai_base_url` is not a field on Settings and never was, so this read always fell
+    # through to the default: the embedder could not be pointed at the same gateway as the
+    # model client, silently. Resolving through the provider descriptor means the two now
+    # agree by construction, including a FELIX_MODEL_PROVIDER_OPTIONS override.
+    from felix_ai.providers.compat import OPENAI_COMPATIBLE
+
+    from felix.patterns.model import resolve_provider_config
+
+    openai_spec = next(spec for spec in OPENAI_COMPATIBLE if spec.name == "openai")
+    base_url, api_key = resolve_provider_config(openai_spec, settings)
     return OpenAIEmbedder(
         model=str(getattr(settings, "memory_embedding_model", "") or "text-embedding-3-small"),
-        api_key=str(getattr(settings, "openai_api_key", "") or ""),
-        base_url=str(getattr(settings, "openai_base_url", "") or "https://api.openai.com/v1"),
+        api_key=api_key,
+        base_url=base_url,
         dim=int(getattr(settings, "memory_embedding_dim", 0) or 0) or None,
         timeout_s=float(getattr(settings, "model_timeout_seconds", DEFAULT_EMBED_TIMEOUT_S)),
     )

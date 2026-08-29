@@ -281,6 +281,27 @@ Outbound integrations carry their own ceilings: `spec.mcp_servers[].timeout_ms` 
 containers.
 
 
+A provider is a descriptor — a wire format, an endpoint, and where its credential lives —
+so adding one is a row rather than a module. Both wire formats and the HTTP transport are
+public in `felix_ai.wire` (`OpenAICompletionsClient`, `AnthropicMessagesClient`,
+`post_with_retry`, `map_stop`, `parse_tool_arguments`), because re-deriving retry-on-429,
+SSE parsing and usage accounting is most of the work of writing a provider — and what a
+provider gets wrong in usage reporting fails *open* on `limits.max_cost_usd`.
+
+`FELIX_MODEL_PROVIDER_OPTIONS` carries a per-provider endpoint and credential as JSON. The
+built-in providers have named settings, but a provider added by a plugin cannot — `Settings`
+ignores unknown env vars — so this is how an installed provider is given a key. An entry
+also overrides the named field, which is how a built-in is pointed at a gateway:
+
+```
+FELIX_MODEL_PROVIDER_OPTIONS={"anthropic":{"base_url":"https://gateway.internal/v1"}}
+```
+
+Values stored under a key/token/secret name are added to the redaction list, so a provider
+credential cannot reach tool output. Providers named in `FELIX_MODEL_ROUTES` are resolved
+against the registry at startup, so a typo fails immediately rather than on the first
+request that happens to take that route.
+
 Manifests reference **logical** model ids, mapped to wire ids by `FELIX_MODEL_ROUTES` (a JSON
 override) or by the built-in defaults:
 

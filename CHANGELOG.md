@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A provider is a descriptor, and a plugin can finally be given a credential.** Adding a
+  provider meant a hand-written factory plus a `Settings` field plus a `_HYDRATE_MAP` entry
+  plus a `.env.example` block plus a README row — and the easy one to forget, `_HYDRATE_MAP`,
+  is also what feeds `collected_secret_values()`. Forgetting it did not merely skip secrets
+  hydration; it meant the key was **never masked out of tool output**. `ProviderSpec` in
+  `felix_ai.providers` collapses that to one row and the harness *derives* the secret
+  handling, so adding a provider cannot silently open that hole.
+
+  `FELIX_MODEL_PROVIDER_OPTIONS` is a new JSON setting carrying a per-provider endpoint and
+  credential. The built-in providers have named `Settings` fields; a plugin's provider cannot,
+  because `Settings` is `extra="ignore"` — so `FELIX_MYPROVIDER_API_KEY` never lands anywhere
+  and a registered third-party provider had **no way to be given a key at all**. An entry also
+  overrides the named field, which is how a built-in gets pointed at a gateway. Values under a
+  key/token/secret name are added to the redaction list.
+
+  `PluginRegistry.register_model_provider` now exists, and the reference plugin demonstrates
+  it. It was the one open registry with no seam on the registry object and no example, so the
+  documented way to add a provider was to read core's source.
+
+### Fixed
+
+- **`FELIX_MODEL_ROUTES` provider names are validated at startup.** It was the one
+  registry-backed setting `_validate_registry_backed_settings` skipped, so a typo surfaced
+  mid-request and only on the route actually taken — a bad *fallback* stayed invisible until
+  the primary was already failing, which is the worst moment to find a second misconfiguration.
+
+- **The OpenAI embedder could never be pointed at a gateway.** `_build_openai` read
+  `settings.openai_base_url`, which is not a field on `Settings` and never has been, so the
+  read always fell through to `api.openai.com` — silently, on the inline memory-recall path,
+  while the model client honoured `FELIX_LITELLM_BASE_URL`. Both now resolve through the same
+  provider descriptor and agree by construction.
+
+- **An Ollama base URL ending in `/v1` produced `/v1/v1`.** The factory appended
+  unconditionally; the descriptor appends only when absent.
+
+- **`build_model` no longer lazily re-registers providers.** `if not list_model_providers():
+  register_builtin_providers()` was a sentinel that could only be right while nothing else
+  registered first: after a `reset_model_provider_registry()` it restored the three builtins
+  and dropped every plugin provider, because `load_optional_plugins` had already run and would
+  not run again. `felix.patterns` registers the builtins at import, before anything can call
+  `build_model`.
+
 ### Changed
 
 - **The model layer is its own workspace package, and it cannot import the harness.**

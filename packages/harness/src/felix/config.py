@@ -112,6 +112,10 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     litellm_base_url: str = ""
     model_routes: str = ""  # JSON override of logical id -> {provider, model}
+    # JSON: provider name -> {"base_url": ..., "api_key": ...}. The built-in providers
+    # have named fields above; a plugin's provider cannot, because Settings ignores
+    # extras, so without this an installed provider had no way to be given a key.
+    model_provider_options: str = ""
     # Bounds each HTTP request to a model provider. A large tool call — a file's contents
     # as an argument, say — can legitimately take longer than two minutes to generate, and
     # when it does the request fails and takes the whole run with it. On a streaming call
@@ -265,6 +269,32 @@ class Settings(BaseSettings):
             if value not in known:
                 names = ", ".join(known)
                 raise RuntimeError(f"Unknown {env_name}={value!r} (registered: {names})")
+
+        self._validate_model_route_providers()
+
+    def _validate_model_route_providers(self) -> None:
+        """Every provider named in FELIX_MODEL_ROUTES must be registered.
+
+        This was the one registry-backed setting with no startup check. A typo surfaced
+        only when a request happened to take that route — so a bad *fallback* stayed
+        invisible until the primary was already failing, which is the worst possible moment
+        to discover a second misconfiguration.
+        """
+        import felix.patterns  # noqa: F401  — importing registers the built-in providers
+        from felix.patterns.model import parse_model_routes
+        from felix.patterns.model_registry import list_model_providers
+
+        known = set(list_model_providers())
+        if not known:
+            return
+        unknown = sorted(
+            {route.provider for route in parse_model_routes(self).values() if route.provider not in known}
+        )
+        if unknown:
+            raise RuntimeError(
+                f"Unknown model provider(s) in FELIX_MODEL_ROUTES: {', '.join(unknown)} "
+                f"(registered: {', '.join(sorted(known))})"
+            )
 
     def validate_runtime(self) -> None:
         """Fail fast on unsafe or incomplete configuration."""

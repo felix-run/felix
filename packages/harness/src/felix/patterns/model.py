@@ -14,10 +14,11 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from felix_ai.providers import ProviderSpec, builtin_provider_specs
 from felix_ai.types import (
     ChatMessage,
     ModelChatOptions,
@@ -310,45 +311,89 @@ def _is_provider_error(err: object) -> bool:
     return bool(isinstance(status, int) and (status >= 500 or status == 429))
 
 
-def _make_anthropic(model_id: str, route: ModelRoute, spec: Any, settings: Settings) -> ModelClient:
-    return AnthropicMessagesClient(
-        model_id=model_id,
-        route=route,
-        settings=settings,
-        spec=spec,
-        base_url="https://api.anthropic.com",
-        api_key=settings.anthropic_api_key,
-    )
+def parse_provider_options(settings: Settings | None = None) -> dict[str, dict[str, str]]:
+    """`FELIX_MODEL_PROVIDER_OPTIONS` — per-provider endpoint and credential.
+
+    The built-in providers have named `Settings` fields, but a plugin's cannot: `Settings`
+    is `extra="ignore"`, so `FELIX_MYPROVIDER_API_KEY` never lands on it. Without this a
+    registered third-party provider had no way to be given a key at all, which made the
+    open registry a good deal less open than it looked.
+
+    Malformed JSON degrades to no options with a warning rather than failing startup, the
+    same way `parse_model_routes` treats a malformed route table.
+    """
+    settings = settings or get_settings()
+    raw = (getattr(settings, "model_provider_options", "") or "").strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.warning("invalid FELIX_MODEL_PROVIDER_OPTIONS; ignoring")
+        return {}
+    if not isinstance(parsed, dict):
+        logger.warning("FELIX_MODEL_PROVIDER_OPTIONS must be an object; ignoring")
+        return {}
+    out: dict[str, dict[str, str]] = {}
+    for name, opts in parsed.items():
+        if isinstance(opts, dict):
+            out[str(name)] = {str(k): str(v) for k, v in opts.items()}
+    return out
 
 
-def _make_openai(model_id: str, route: ModelRoute, spec: Any, settings: Settings) -> ModelClient:
-    base = settings.litellm_base_url or "https://api.openai.com/v1"
-    return OpenAICompletionsClient(
-        model_id=model_id,
-        route=route,
-        settings=settings,
-        spec=spec,
-        base_url=base if base.endswith("/v1") else f"{base.rstrip('/')}/v1",
-        api_key=settings.openai_api_key,
-    )
+def resolve_provider_config(spec: ProviderSpec, settings: Settings) -> tuple[str, str]:
+    """The endpoint and credential for one provider, most specific source winning.
+
+    An explicit `FELIX_MODEL_PROVIDER_OPTIONS` entry beats the provider's named `Settings`
+    field, which beats the descriptor's default. That ordering is what lets an operator
+    point a built-in provider somewhere else without a new setting, and lets a plugin
+    provider be configured with no `Settings` field at all.
+    """
+    options = parse_provider_options(settings).get(spec.name, {})
+
+    configured = options.get("base_url")
+    if not configured and spec.base_url_config_key:
+        configured = str(getattr(settings, spec.base_url_config_key, "") or "")
+    base_url = spec.resolve_base_url(configured)
+
+    api_key = options.get("api_key") or ""
+    if not api_key and spec.api_key_config_key:
+        api_key = str(getattr(settings, spec.api_key_config_key, "") or "")
+    if not api_key and spec.api_key_literal:
+        api_key = spec.api_key_literal
+    return base_url, api_key
 
 
-def _make_ollama(model_id: str, route: ModelRoute, spec: Any, settings: Settings) -> ModelClient:
-    base = settings.ollama_base_url.rstrip("/") + "/v1"
-    return OpenAICompletionsClient(
-        model_id=model_id,
-        route=route,
-        settings=settings,
-        spec=spec,
-        base_url=base,
-        api_key="ollama",
-    )
+def provider_factory(spec: ProviderSpec) -> Callable[..., ModelClient]:
+    """Adapt a `ProviderSpec` into the `(logical_id, route, spec, settings)` factory."""
+
+    def factory(model_id: str, route: ModelRoute, model_spec: Any, settings: Settings) -> ModelClient:
+        base_url, api_key = resolve_provider_config(spec, settings)
+        return spec.wire(
+            model_id=model_id,
+            route=route,
+            settings=settings,
+            spec=model_spec,
+            base_url=base_url,
+            api_key=api_key,
+        )
+
+    factory.__name__ = f"_make_{spec.name}"
+    factory.__qualname__ = factory.__name__
+    return factory
 
 
 def register_builtin_providers() -> None:
-    register_model_provider("anthropic", _make_anthropic)
-    register_model_provider("openai", _make_openai)
-    register_model_provider("ollama", _make_ollama)
+    """Register every built-in provider. Idempotent — registration is last-write-wins.
+
+    This used to be guarded in `build_model` by `if not list_model_providers()`, a sentinel
+    that could only be right while nothing else ever registered first: after a
+    `reset_model_provider_registry()` it restored the three builtins and silently dropped
+    every plugin provider, because `load_optional_plugins` had already run and would not
+    run again.
+    """
+    for spec in builtin_provider_specs():
+        register_model_provider(spec.name, provider_factory(spec))
 
 
 def build_one_model(settings: Settings, spec: Any, logical_id: str) -> ModelClient:
@@ -367,8 +412,6 @@ def build_one_model(settings: Settings, spec: Any, logical_id: str) -> ModelClie
 
 def build_model(settings: Settings | None, spec: Any) -> ModelClient:
     settings = settings or get_settings()
-    if not list_model_providers():
-        register_builtin_providers()
     primary_id = getattr(spec, "id", None) or settings.default_model_id
     client = build_one_model(settings, spec, primary_id)
     fallbacks_ids = list(getattr(spec, "fallbacks", None) or [])
@@ -425,8 +468,11 @@ __all__ = [
     "build_model",
     "build_one_model",
     "parse_model_routes",
+    "parse_provider_options",
     "post_with_retry",
+    "provider_factory",
     "reasoning_effort_from_budget",
     "record_usage",
     "register_builtin_providers",
+    "resolve_provider_config",
 ]
