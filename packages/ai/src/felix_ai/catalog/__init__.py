@@ -88,11 +88,13 @@ class ModelCatalogEntry:
 
     context_window: int = 128_000
     max_output_tokens: int = 8_192
-    # `None` means *unknown*, not free. `ModelPricing()`'s field defaults are Claude
-    # Sonnet's list price, so an entry that simply omitted rates used to bill an
-    # unrelated model at $3/$15 per Mtok. A model with no known rates must price at
-    # nothing and be reported as unmeterable, never guessed at.
-    pricing: ModelPricing | None = field(default_factory=ModelPricing)
+    # `None` means *unknown*, not free — and it is the default on purpose. `ModelPricing()`
+    # carries Claude Sonnet's list price in its own field defaults, so a catalog entry that
+    # simply omitted rates billed an unrelated model at $3/$15 per Mtok. Several did: the
+    # `gpt-4.1`, `gpt-4`, `o1`/`o3`/`o4` and `llama` entries all state, in a comment, that
+    # they have no bundled rate — and all of them were priced as Sonnet anyway. An entry
+    # that does not state rates does not have them.
+    pricing: ModelPricing | None = None
     quirks: ModelQuirks = field(default_factory=ModelQuirks)
     # Whether the model accepts thinking at all. The *level* vocabulary lives in
     # `felix.session.thinking`; importing it here would cycle back through
@@ -231,10 +233,12 @@ _CATALOG: dict[str, ModelCatalogEntry] = {
         quirks=ModelQuirks(sampling=False, max_completion_tokens=True),
     ),
     # --- Local ---
-    # Free: a model served by a local Ollama or vLLM costs nothing per token. This is a
-    # statement about the deployment, not a rate card, and it is the reason a local
-    # model must not inherit the unknown-price path.
-    "llama": ModelCatalogEntry(context_window=128_000, pricing=ModelPricing(0.0, 0.0, 0.0, 0.0)),
+    # Unpriced, not free. Llama runs locally *and* is served for money by Workers AI,
+    # Groq, Together and Fireworks — and `entry_for` matches by substring, so pricing this
+    # entry at zero would have made every hosted Llama free to `limits.max_cost_usd`.
+    # Whether tokens cost anything is a property of the provider, not the model name:
+    # `ProviderSpec.bills_per_token` carries it.
+    "llama": ModelCatalogEntry(context_window=128_000),
 }
 
 # Unknown ids split their defaults on purpose. The *request shape* assumes the current

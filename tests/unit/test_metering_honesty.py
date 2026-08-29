@@ -19,7 +19,7 @@ from felix.manifests.governance import GovernanceError, assert_cost_limit_is_mea
 from felix.manifests.loader import parse_manifest
 from felix.patterns.model import record_usage, wire_model_id
 from felix.usage.pricing import estimate_cost
-from felix_ai.catalog import entry_for, is_priced
+from felix_ai.catalog import is_priced
 from felix_ai.types import ChatMessage, ModelChatResult, ModelRoute, TokenUsage
 
 
@@ -47,12 +47,24 @@ def test_a_known_model_is_still_priced() -> None:
     assert cost["total"] > 0.0
 
 
-def test_a_local_model_is_priced_at_zero_not_unknown() -> None:
-    """Free is a fact about a local runtime, not an absence of information — and it must
-    not take the unknown-price path, which would refuse a declared spend cap."""
-    assert is_priced("llama3.2")
-    assert entry_for("llama3.2").pricing is not None
-    assert estimate_cost(model_id="llama3.2", tokens_input=1_000_000)["total"] == 0.0
+def test_free_is_a_property_of_the_provider_not_the_model_name() -> None:
+    """Llama runs on a laptop *and* is sold by Workers AI, Groq, Together and Fireworks,
+    and `entry_for` matches by substring — so pricing the `llama` catalog entry at zero
+    would make every hosted Llama free to `limits.max_cost_usd`. Locality lives on the
+    provider instead."""
+    from felix_ai.providers import builtin_provider_specs
+
+    assert not is_priced("llama3.2")
+    assert not is_priced("@cf/meta/llama-3.3-70b-instruct-fp8-fast")
+    by_name = {s.name: s for s in builtin_provider_specs()}
+    assert by_name["ollama"].bills_per_token is False
+    assert by_name["workers_ai"].bills_per_token is True
+
+
+def test_a_local_route_can_still_declare_a_spend_cap() -> None:
+    """Spend on a local runtime is zero, so the cap holds without any rates."""
+    settings = _settings(model_routes='{"local":{"provider":"ollama","model":"llama3.2"}}')
+    assert_cost_limit_is_measurable(_manifest("local", limits={"max_cost_usd": 5.0}), settings)
 
 
 # --- the wire id is what gets priced -------------------------------------------------

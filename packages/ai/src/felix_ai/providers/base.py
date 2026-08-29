@@ -14,9 +14,18 @@ somewhere `Settings` has never heard of.
 
 from __future__ import annotations
 
+import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from felix_ai.wire.base import HttpModelClient
+
+
+class ProviderConfigError(ValueError):
+    """A provider is registered but cannot be addressed with what it was given."""
+
+
+_PLACEHOLDER = re.compile(r"\{([a-z_][a-z0-9_]*)\}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,13 +50,45 @@ class ProviderSpec:
     # original Ollama factory appended unconditionally, so an operator who set
     # FELIX_OLLAMA_BASE_URL to a URL already ending in /v1 got /v1/v1 and a 404.
     ensure_v1_suffix: bool = False
+    # Headers beyond auth, as (header name, option key). The header is sent only when the
+    # option is set, which is how one provider covers both "direct" and "routed through a
+    # gateway" without being two providers.
+    header_options: tuple[tuple[str, str], ...] = field(default_factory=tuple)
+    # Whether tokens cost money here. False for a local runtime, where spend is trivially
+    # zero and a declared `limits.max_cost_usd` is therefore enforceable without rates.
+    # This cannot be read off the model: Llama runs on a laptop and is also sold by four
+    # hosted providers, and the catalog matches model ids by substring.
+    bills_per_token: bool = True
 
-    def resolve_base_url(self, configured: str | None) -> str:
-        """The endpoint for this provider, given whatever the operator configured."""
+    def placeholders(self) -> tuple[str, ...]:
+        """Option names the endpoint template needs, e.g. `account_id`."""
+        return tuple(dict.fromkeys(_PLACEHOLDER.findall(self.base_url_default)))
+
+    def resolve_base_url(self, configured: str | None, options: Mapping[str, str] | None = None) -> str:
+        """The endpoint for this provider, given whatever the operator configured.
+
+        The template may carry `{option}` placeholders filled from the provider's options —
+        Cloudflare puts the account id in the URL path, and several others put a region or
+        a project there. Templating keeps that a property of the row rather than a special
+        case in the factory.
+        """
         base = (configured or "").strip() or self.base_url_default
+        opts = options or {}
+        missing = [name for name in _PLACEHOLDER.findall(base) if not opts.get(name)]
+        if missing:
+            raise ProviderConfigError(
+                f"provider {self.name!r} needs {', '.join(sorted(set(missing)))} — set it in "
+                f'FELIX_MODEL_PROVIDER_OPTIONS, e.g. {{"{self.name}": {{"{missing[0]}": "..."}}}}'
+            )
+        base = _PLACEHOLDER.sub(lambda m: opts[m.group(1)], base)
         if self.ensure_v1_suffix and not base.rstrip("/").endswith("/v1"):
             base = base.rstrip("/") + "/v1"
         return base
 
+    def resolve_headers(self, options: Mapping[str, str] | None = None) -> dict[str, str]:
+        """Provider headers for this configuration; absent options contribute nothing."""
+        opts = options or {}
+        return {header: opts[key] for header, key in self.header_options if opts.get(key)}
 
-__all__ = ["ProviderSpec"]
+
+__all__ = ["ProviderConfigError", "ProviderSpec"]

@@ -231,7 +231,9 @@ class OpenAICompletionsClient(HttpModelClient):
         isolate_cache: bool = False,
     ) -> ModelChatResult:
         body = self._body(messages, tools, temperature, max_tokens, isolate_cache=isolate_cache)
-        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        headers = self._headers(
+            {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        )
         async with httpx.AsyncClient(timeout=self._timeout()) as client:
             resp = await post_with_retry(
                 client,
@@ -270,7 +272,9 @@ class OpenAICompletionsClient(HttpModelClient):
         # Usage is omitted from a streamed response unless it is asked for, and without
         # it a streaming turn would meter as zero tokens.
         body["stream_options"] = {"include_usage": True}
-        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        headers = self._headers(
+            {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        )
 
         text_parts: list[str] = []
         tools_by_index: dict[int, dict[str, Any]] = {}
@@ -363,7 +367,9 @@ class OpenAICompletionsClient(HttpModelClient):
             body["max_tokens"] = max_tokens
         apply_openai_thinking_cache(body, self.spec, self.route.model, isolate_cache=isolate_cache)
         # Streaming path is text-oriented; tool calls use chat() in the agent loop.
-        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        headers = self._headers(
+            {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        )
         async with (
             httpx.AsyncClient(timeout=self._timeout()) as client,
             client.stream(

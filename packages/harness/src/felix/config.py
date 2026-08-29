@@ -327,7 +327,8 @@ def get_settings() -> Settings:
     return Settings()
 
 
-# Logical model routes — Workers AI dropped; Ollama / LiteLLM fill the OSS slot.
+# Logical model routes. Providers are registered descriptors (see felix_ai.providers);
+# these are just the ids Felix ships pre-mapped. Anything else is FELIX_MODEL_ROUTES.
 DEFAULT_MODEL_ROUTES: dict[str, dict[str, str]] = {
     # Current generation. Wire ids are complete as written — no date suffixes.
     "claude-opus": {"provider": "anthropic", "model": "claude-opus-5"},

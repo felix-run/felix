@@ -16,7 +16,7 @@ import json
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
@@ -140,6 +140,21 @@ class HttpModelClient(ABC):
     spec: Any
     base_url: str
     api_key: str
+    # Headers a provider needs beyond auth and content type — routing hints, tenancy, an
+    # API version. Merged last, so a provider can also override what the wire format sets:
+    # Cloudflare AI Gateway authenticates with `cf-aig-authorization` and wants the plain
+    # `Authorization` header gone.
+    extra_headers: dict[str, str] = field(default_factory=dict)
+
+    def _headers(self, base: dict[str, str]) -> dict[str, str]:
+        """Wire-format headers with the provider's overrides applied.
+
+        An override to the empty string removes the header, which is how a provider says
+        "do not send the one you would normally send" without the wire format knowing that
+        any such provider exists.
+        """
+        merged = {**base, **self.extra_headers}
+        return {k: v for k, v in merged.items() if v != ""}
 
     def _timeout(self) -> httpx.Timeout:
         """Request timeout for this client, from the `Settings` it was constructed with.

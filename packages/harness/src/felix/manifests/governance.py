@@ -133,6 +133,8 @@ def assert_cost_limit_is_measurable(manifest: Manifest, settings: Any | None = N
     if getattr(spec, "price", None):
         return  # rates supplied by the manifest itself
 
+    from felix_ai.providers import builtin_provider_specs
+
     from felix.config import get_settings
     from felix.model_catalog import is_priced
     from felix.patterns.model import parse_model_routes
@@ -142,11 +144,15 @@ def assert_cost_limit_is_measurable(manifest: Manifest, settings: Any | None = N
     wanted = [getattr(spec, "id", None) or settings.default_model_id]
     wanted += list(getattr(spec, "fallbacks", None) or [])
 
+    free = {s.name for s in builtin_provider_specs() if not s.bills_per_token}
+
     unpriced: list[str] = []
     for logical_id in wanted:
         route = routes.get(str(logical_id))
         if route is None:
             continue  # unknown ids are reported by the model layer, not here
+        if route.provider in free:
+            continue  # spend on a local runtime is zero, so any cap holds
         if not is_priced(route.model):
             unpriced.append(f"{logical_id} -> {route.model}")
     if unpriced:

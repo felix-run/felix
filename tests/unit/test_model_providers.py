@@ -115,7 +115,7 @@ def test_provider_options_supply_a_credential_settings_has_no_field_for() -> Non
             '{"thirdparty":{"base_url":"https://configured.invalid/v1","api_key":"sk-third-party"}}'
         )
     )
-    base_url, api_key = resolve_provider_config(spec, settings)
+    base_url, api_key, _ = resolve_provider_config(spec, settings)
     assert base_url == "https://configured.invalid/v1"
     assert api_key == "sk-third-party"
 
@@ -126,13 +126,13 @@ def test_provider_options_override_a_builtin_field() -> None:
         anthropic_api_key="from-field",
         model_provider_options='{"anthropic":{"api_key":"from-options"}}',
     )
-    _, api_key = resolve_provider_config(ANTHROPIC, settings)
+    _, api_key, _headers = resolve_provider_config(ANTHROPIC, settings)
     assert api_key == "from-options"
 
 
 def test_a_builtin_still_reads_its_named_field() -> None:
     settings = _settings(anthropic_api_key="from-field")
-    base_url, api_key = resolve_provider_config(ANTHROPIC, settings)
+    base_url, api_key, _ = resolve_provider_config(ANTHROPIC, settings)
     assert api_key == "from-field"
     assert base_url == "https://api.anthropic.com"
 
@@ -184,7 +184,7 @@ def test_an_ollama_base_url_that_already_ends_in_v1_is_not_doubled() -> None:
 def test_the_openai_provider_honours_a_gateway_url() -> None:
     openai = next(s for s in OPENAI_COMPATIBLE if s.name == "openai")
     settings = _settings(litellm_base_url="https://gateway.invalid")
-    base_url, _ = resolve_provider_config(openai, settings)
+    base_url, _key, _headers = resolve_provider_config(openai, settings)
     assert base_url == "https://gateway.invalid/v1"
 
 

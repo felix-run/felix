@@ -167,7 +167,7 @@ def _build_openai(settings: Settings) -> Embedder:
     from felix.patterns.model import resolve_provider_config
 
     openai_spec = next(spec for spec in OPENAI_COMPATIBLE if spec.name == "openai")
-    base_url, api_key = resolve_provider_config(openai_spec, settings)
+    base_url, api_key, _headers = resolve_provider_config(openai_spec, settings)
     return OpenAIEmbedder(
         model=str(getattr(settings, "memory_embedding_model", "") or "text-embedding-3-small"),
         api_key=api_key,
@@ -188,10 +188,55 @@ def _build_ollama(settings: Settings) -> Embedder:
     )
 
 
+def _build_compat(provider_name: str) -> EmbedderFactory:
+    """An embedder against any registered OpenAI-compatible provider.
+
+    `/embeddings` is part of the same wire format as `/chat/completions`, so every provider
+    in that table can back one — and it resolves through the same descriptor, which means
+    the embedder and the model client cannot disagree about the endpoint or the credential.
+    That disagreement is exactly what the phantom `settings.openai_base_url` caused.
+    """
+
+    def factory(settings: Settings) -> Embedder:
+        from felix_ai.providers import builtin_provider_specs
+
+        from felix.patterns.model import resolve_provider_config
+
+        spec = next(s for s in builtin_provider_specs() if s.name == provider_name)
+        base_url, api_key, _headers = resolve_provider_config(spec, settings)
+        return OpenAIEmbedder(
+            model=str(getattr(settings, "memory_embedding_model", "") or ""),
+            api_key=api_key,
+            base_url=base_url,
+            dim=int(getattr(settings, "memory_embedding_dim", 0) or 0) or None,
+            timeout_s=float(getattr(settings, "model_timeout_seconds", DEFAULT_EMBED_TIMEOUT_S)),
+        )
+
+    return factory
+
+
 register_embedder_backend("none", _build_none)
 register_embedder_backend("sentence_transformers", _build_sentence_transformers)
 register_embedder_backend("openai", _build_openai)
 register_embedder_backend("ollama", _build_ollama)
+
+
+def _register_compat_embedders() -> None:
+    """Every OpenAI-compatible provider becomes a selectable `FELIX_MEMORY_EMBEDDER`.
+
+    `openai` and `ollama` keep their hand-written factories above because they carry model
+    defaults worth keeping; the rest have no sensible default embedding model, so
+    `FELIX_MEMORY_EMBEDDING_MODEL` is required for them.
+    """
+    from felix_ai.providers.compat import OPENAI_COMPATIBLE
+
+    for spec in OPENAI_COMPATIBLE:
+        if spec.name in _backends:
+            continue
+        register_embedder_backend(spec.name, _build_compat(spec.name))
+
+
+_register_compat_embedders()
 
 
 def build_embedder(settings: Settings) -> Embedder:

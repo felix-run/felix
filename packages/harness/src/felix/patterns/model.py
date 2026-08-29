@@ -379,7 +379,7 @@ def parse_provider_options(settings: Settings | None = None) -> dict[str, dict[s
     return out
 
 
-def resolve_provider_config(spec: ProviderSpec, settings: Settings) -> tuple[str, str]:
+def resolve_provider_config(spec: ProviderSpec, settings: Settings) -> tuple[str, str, dict[str, str]]:
     """The endpoint and credential for one provider, most specific source winning.
 
     An explicit `FELIX_MODEL_PROVIDER_OPTIONS` entry beats the provider's named `Settings`
@@ -392,21 +392,21 @@ def resolve_provider_config(spec: ProviderSpec, settings: Settings) -> tuple[str
     configured = options.get("base_url")
     if not configured and spec.base_url_config_key:
         configured = str(getattr(settings, spec.base_url_config_key, "") or "")
-    base_url = spec.resolve_base_url(configured)
+    base_url = spec.resolve_base_url(configured, options)
 
     api_key = options.get("api_key") or ""
     if not api_key and spec.api_key_config_key:
         api_key = str(getattr(settings, spec.api_key_config_key, "") or "")
     if not api_key and spec.api_key_literal:
         api_key = spec.api_key_literal
-    return base_url, api_key
+    return base_url, api_key, spec.resolve_headers(options)
 
 
 def provider_factory(spec: ProviderSpec) -> Callable[..., ModelClient]:
     """Adapt a `ProviderSpec` into the `(logical_id, route, spec, settings)` factory."""
 
     def factory(model_id: str, route: ModelRoute, model_spec: Any, settings: Settings) -> ModelClient:
-        base_url, api_key = resolve_provider_config(spec, settings)
+        base_url, api_key, headers = resolve_provider_config(spec, settings)
         return spec.wire(
             model_id=model_id,
             route=route,
@@ -414,6 +414,7 @@ def provider_factory(spec: ProviderSpec) -> Callable[..., ModelClient]:
             spec=model_spec,
             base_url=base_url,
             api_key=api_key,
+            extra_headers=headers,
         )
 
     factory.__name__ = f"_make_{spec.name}"

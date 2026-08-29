@@ -138,7 +138,10 @@ heavy deps (Playwright, sentence-transformers, DuckDB, Presidio, Temporal) live 
 extras and are imported lazily inside functions, never at module top level.
 
 There is deliberately **no** Cloudflare Workers / Durable Objects / Hyperdrive / R2-binding /
-Queues compute in this stack (Cloudflare DNS/CDN/WAF in front of an origin is fine).
+Queues compute in this stack (Cloudflare DNS/CDN/WAF in front of an origin is fine). The line is
+compute, not vendor: `workers_ai` is a registered model provider and `storage/s3.py` speaks to R2
+through its S3 endpoint, because both are outbound HTTPS calls. Felix must not *run on* Workers or
+Durable Objects, or depend on a binding only reachable from inside them.
 
 ### Plugin seam
 

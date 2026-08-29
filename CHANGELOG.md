@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Ten more providers, as table rows.** `workers_ai` (Cloudflare Workers AI), `groq`,
+  `together`, `deepseek`, `cerebras`, `fireworks`, `openrouter`, `xai`, `mistral`, and
+  `google` via its OpenAI-compatible endpoint. All speak OpenAI chat-completions, so each is
+  a `ProviderSpec` row rather than a module, and each is configured through
+  `FELIX_MODEL_PROVIDER_OPTIONS` — no settings field per vendor, which is the pattern that
+  does not scale.
+
+  Two things are not uniform, and both became properties of the row rather than special
+  cases in the factory. `base_url_default` may carry `{option}` placeholders, because
+  Cloudflare puts the account id in the URL path. And `header_options` sends a header only
+  when its option is set, which is how one provider covers both "direct" and "routed through
+  AI Gateway" (`cf-aig-gateway-id`) instead of being two providers. `HttpModelClient` gained
+  `extra_headers`, where an override to the empty string *removes* a header the wire format
+  would otherwise send.
+
+  Every OpenAI-compatible provider is now also selectable as `FELIX_MEMORY_EMBEDDER`, since
+  `/embeddings` is the same wire format — and it resolves through the same descriptor, so the
+  embedder and the model client cannot disagree about the endpoint or the credential.
+
+  **Calling a hosted Cloudflare API is not Cloudflare compute.** The no-Workers/DO/Hyperdrive
+  invariant is unchanged and now says so explicitly across README, CLAUDE.md, CONTRIBUTING,
+  the invariants rule and the reviewer agents: the line is where Felix *runs*, not whose API
+  it calls — the same distinction `storage/s3.py` already relied on for R2.
+
+### Fixed
+
+- **A catalog entry that stated no rates was billed as Claude Sonnet.** `ModelPricing()`
+  carries Sonnet's list price in its own field defaults, and it was the `pricing` field
+  default — so `gpt-4.1`, `gpt-4`, `o1`, `o3`, `o4` and `llama`, each of which says in a
+  comment that it has *no bundled rate*, were all priced at $3/$15 per Mtok anyway. An entry
+  that does not state rates now has none.
+
+- **"Free" was nearly made a property of the model's name.** An earlier pass in this cycle
+  priced the `llama` catalog entry at zero to represent a local runtime. `entry_for` matches
+  by substring, and Llama is sold by Workers AI, Groq, Together and Fireworks — so that would
+  have made every hosted Llama free to `limits.max_cost_usd`. Whether tokens cost anything is
+  a property of the provider (`ProviderSpec.bills_per_token`), and only `ollama` sets it
+  false; a local route can still declare a spend cap because zero spend satisfies any cap.
+
 ### Changed
 
 - **`spec.model.region` is removed.** Declared, never read by anything, and a leftover from

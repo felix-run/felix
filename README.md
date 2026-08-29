@@ -192,6 +192,9 @@ Felix runs on infrastructure **you** operate. Cloudflare DNS, CDN, TLS, and WAF 
 origin are fine. There is **no** Cloudflare Workers, Durable Objects, Hyperdrive, R2-as-binding,
 Queues, or Workflows compute in this stack.
 
+The line is **compute**, not vendor. Calling a hosted Cloudflare **API** over HTTPS — Workers AI as a model provider, R2 through its S3 endpoint — is an outbound request like any other and is fine. What Felix will not do
+is *run on* Workers or Durable Objects, or depend on a binding only available inside them.
+
 ### Extending Felix
 
 Felix is built to **not dictate your workflow**. Features other harnesses bake in are meant to
@@ -280,6 +283,28 @@ Outbound integrations carry their own ceilings: `spec.mcp_servers[].timeout_ms` 
 `spec.peers[].timeout_ms` (default 60s), and the existing `timeout_ms` on sandboxes and
 containers.
 
+
+Providers Felix ships, all speaking one of two wire formats:
+
+| Provider | Endpoint | Configured with |
+|---|---|---|
+| `anthropic` | `api.anthropic.com` | `FELIX_ANTHROPIC_API_KEY` |
+| `openai` | `api.openai.com/v1`, or `FELIX_LITELLM_BASE_URL` | `FELIX_OPENAI_API_KEY` |
+| `ollama` | `FELIX_OLLAMA_BASE_URL` | — (local, and billed as free) |
+| `workers_ai` | `api.cloudflare.com/…/accounts/{account_id}/ai/v1` | `api_key`, `account_id`, optional `gateway_id` |
+| `groq` `together` `deepseek` `cerebras` `fireworks` `openrouter` `xai` `mistral` `google` | each vendor's OpenAI-compatible endpoint | `api_key` |
+
+Everything past the first three is configured through `FELIX_MODEL_PROVIDER_OPTIONS` rather
+than a settings field per vendor. Each is also selectable as `FELIX_MEMORY_EMBEDDER`, since
+`/embeddings` is part of the same wire format.
+
+**None of the hosted tier ships with per-token rates, deliberately.** Felix does not invent
+prices: an unpriced model contributes zero to spend and a manifest that *declares*
+`limits.max_cost_usd` on one is refused at compile, pointing at `spec.model.price`. Guessing
+is how every unrecognised model came to be billed at Claude Sonnet's $3/$15 per Mtok.
+Cloudflare bills Workers AI in neurons rather than tokens, so a per-token rate for it would
+be fiction. `ollama` is exempt because a local runtime genuinely costs nothing — that is a
+property of the provider, not of the model's name.
 
 A provider is a descriptor — a wire format, an endpoint, and where its credential lives —
 so adding one is a row rather than a module. Both wire formats and the HTTP transport are

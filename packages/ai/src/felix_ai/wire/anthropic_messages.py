@@ -267,11 +267,13 @@ class AnthropicMessagesClient(HttpModelClient):
         isolate_cache: bool = False,
     ) -> ModelChatResult:
         body = self._body(messages, tools, temperature, max_tokens, isolate_cache=isolate_cache)
-        headers = {
-            "x-api-key": self.api_key,
-            "anthropic-version": "2023-06-01",
-            "Content-Type": "application/json",
-        }
+        headers = self._headers(
+            {
+                "x-api-key": self.api_key,
+                "anthropic-version": "2023-06-01",
+                "Content-Type": "application/json",
+            }
+        )
         async with httpx.AsyncClient(timeout=self._timeout()) as client:
             resp = await post_with_retry(
                 client,
@@ -327,11 +329,13 @@ class AnthropicMessagesClient(HttpModelClient):
     ) -> AsyncIterator[StreamDelta | ModelChatResult]:
         body = self._body(messages, tools, temperature, max_tokens)
         body["stream"] = True
-        headers = {
-            "x-api-key": self.api_key,
-            "anthropic-version": "2023-06-01",
-            "Content-Type": "application/json",
-        }
+        headers = self._headers(
+            {
+                "x-api-key": self.api_key,
+                "anthropic-version": "2023-06-01",
+                "Content-Type": "application/json",
+            }
+        )
 
         text_parts: list[str] = []
         thinking_by_index: dict[int, dict[str, Any]] = {}
@@ -479,11 +483,13 @@ class AnthropicMessagesClient(HttpModelClient):
         if system:
             body["system"] = system
         apply_anthropic_thinking_cache(body, self.spec, self.route.model, isolate_cache=isolate_cache)
-        headers = {
-            "x-api-key": self.api_key,
-            "anthropic-version": "2023-06-01",
-            "Content-Type": "application/json",
-        }
+        headers = self._headers(
+            {
+                "x-api-key": self.api_key,
+                "anthropic-version": "2023-06-01",
+                "Content-Type": "application/json",
+            }
+        )
         async with (
             httpx.AsyncClient(timeout=self._timeout()) as client,
             client.stream(
