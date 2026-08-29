@@ -241,7 +241,7 @@ async def test_react_reads_the_turn_ordinal_from_the_session_log() -> None:
     from felix.session.store import InMemorySessionStore
     from felix.session.types import AppendableEvent
 
-    store = InMemorySessionStore()
+    store = InMemorySessionStore(tenant_id="default")
     agent = build_react_agent(
         {
             "tools": [],

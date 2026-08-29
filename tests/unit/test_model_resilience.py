@@ -181,7 +181,7 @@ def _threaded_agent(prelude: str):
             "system_prompt": "You are Felix.",
             "context_prelude": prelude,
             "recursion_limit": 3,
-            "session_store": InMemorySessionStore(),
+            "session_store": InMemorySessionStore(tenant_id="default"),
             "session_strategy": get_session_strategy("full_replay"),
         }
     )

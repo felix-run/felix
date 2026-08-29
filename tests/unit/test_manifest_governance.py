@@ -237,7 +237,7 @@ async def test_session_and_audit_redact_secrets(tmp_path) -> None:
     from felix.session.store import InMemorySessionStore
     from felix.session.types import AppendableEvent
 
-    store = InMemorySessionStore()
+    store = InMemorySessionStore(tenant_id="default")
     session = store.open("t:thread")
     await session.append(AppendableEvent(kind="message", role="user", content="token=supersecretvalue123"))
     events = await session.get_events()

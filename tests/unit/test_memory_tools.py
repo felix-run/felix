@@ -221,7 +221,10 @@ async def test_remember_stamps_provenance_from_the_request_context() -> None:
     from felix.session.types import AppendableEvent
 
     settings = _settings()
-    session = get_session_store(settings).open("th-live")
+    # Seeded under the tenant the request runs as. This said `tenant_id="default"`
+    # while the context below is TENANT, and passed only because `_provenance` read
+    # tenant "default" whatever the caller was — the test encoded the bug.
+    session = get_session_store(settings, tenant_id=TENANT).open("th-live")
     for text in ("one", "two"):
         await session.append(AppendableEvent(kind="message", role="user", content=text))
 
@@ -245,3 +248,38 @@ async def test_remember_without_a_request_context_still_stores() -> None:
     await _run("remember", content="Stored outside any request.")
     rows = await memory_store.list_active(_settings(), TENANT, manifest_id=MANIFEST)
     assert rows[0]["origin_seq"] is None
+
+
+@pytest.mark.asyncio
+async def test_remember_ignores_a_colliding_thread_in_another_tenant() -> None:
+    """The collision case, proved through the tool rather than through `_provenance`.
+
+    The sibling test above covers the common shape — this tenant's thread is simply
+    absent from `"default"`, so a wrong read yields 0. This covers the one that turns
+    a wrong read into a plausible *wrong answer*: both tenants hold the same thread
+    id at different depths, so reading the wrong log returns a real ordinal.
+    """
+    from felix.context import AuthContext, RequestContext, async_run_with_context
+    from felix.session.store import get_session_store
+    from felix.session.types import AppendableEvent
+
+    settings = _settings()
+    thread = "th-collide"
+    for tenant, depth in (("default", 7), (TENANT, 3)):
+        session = get_session_store(settings, tenant_id=tenant).open(thread)
+        for i in range(depth):
+            await session.append(AppendableEvent(kind="message", role="user", content=str(i)))
+
+    ctx = RequestContext(
+        settings=settings,
+        auth=AuthContext(tenant_id=TENANT),
+        manifest_id=MANIFEST,
+        thread_id=thread,
+    )
+    async with async_run_with_context(ctx):
+        await _run("remember", content="Written while another tenant holds this thread id.")
+
+    rows = await memory_store.list_active(settings, TENANT, manifest_id=MANIFEST)
+    row = next(r for r in rows if r["thread_id"] == thread)
+    # 3, this tenant's own depth — not 7, which is what reading "default" returns.
+    assert row["origin_seq"] == 3

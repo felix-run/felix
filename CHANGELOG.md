@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The `remember` tool read the wrong tenant's session log.** `_provenance`
+  resolved the session store without a `tenant_id`, so it always got tenant
+  `"default"`. For every other tenant the thread was not there, `head()` returned
+  seq 0, and each remembered fact was stamped `origin_seq = 0` — so `as_of` read
+  the whole store as genesis and supersession ordering collapsed. Where a thread id
+  also existed under `"default"`, the ordinal was read from *that* tenant's log
+  instead, which is a cross-tenant read that only tenant RLS (opt-in, off by
+  default) would have stopped.
+
+  An existing test asserted the buggy behaviour: it seeded the log under
+  `"default"` while running the request as another tenant, and passed only because
+  the production code read `"default"` too.
+
 - **Approvals were silently denied on any deployment with Redis configured.** Present
   in 0.2.0, 0.2.1 and 0.2.2 — verified against each tag — and the Compose default
   configures Redis. A run
@@ -81,6 +94,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend names were validated only in the API process.** The worker learned
   about `FELIX_SECRETS_BACKEND=vualt` from a traceback in the middle of a task;
   it now validates at startup, and `felix doctor` reports the same check.
+
+### Changed
+
+- **`tenant_id` no longer defaults on the session-layer accessors** —
+  `get_session_store`, `build_checkpointer`, `PostgresSessionStore` and
+  `InMemorySessionStore`. Omitting it silently meant tenant `"default"`, which is
+  how the `remember` bug above went unnoticed. Source-incompatible for an
+  out-of-repo caller that omitted it; every in-repo call site already passed one.
+  A repo invariant now fails if the default comes back. Note the residual: an
+  explicit `tenant_id="default"` still compiles, so the regression test asserting on
+  the resulting ordinal is the real guard, not the signature.
 
 ### Added
 
