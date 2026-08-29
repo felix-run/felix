@@ -208,9 +208,8 @@ def test_mcp_timeout_default_and_floor() -> None:
     assert _timeout_s(base) == 30.0
     assert _timeout_s(McpServerRef(name="a", url="https://e.com/m", timeout_ms=5_000)) == 5.0
     # A sub-second timeout would fail every real call; floor it rather than honour it.
+    # 0 and negatives no longer reach here at all — the schema rejects them.
     assert _timeout_s(McpServerRef(name="a", url="https://e.com/m", timeout_ms=10)) == 1.0
-    # 0 is "unset", not "instant" — the falsy check takes it to the default, not the floor.
-    assert _timeout_s(McpServerRef(name="a", url="https://e.com/m", timeout_ms=0)) == 30.0
 
 
 def test_peer_timeout_is_per_peer() -> None:
@@ -226,3 +225,36 @@ def test_peer_timeout_is_per_peer() -> None:
     assert t.read == 300.0
     # Connect must not scale with the request ceiling.
     assert t.connect == 10.0
+
+
+def test_every_outbound_client_pins_connect_separately() -> None:
+    """Connect must not scale with the request ceiling, on every outbound client.
+
+    The container executor was the one that missed it, and it is the one carrying a
+    tenant-supplied `timeout_ms` — so a gateway on a public address that blackholes SYN
+    could park a socket for the full request ceiling, per tool call.
+    """
+    from felix.manifests.schema import ContainerRef
+    from felix.memory.embedder import OpenAIEmbedder
+    from felix.timeouts import DEFAULT_CONNECT_TIMEOUT_S, request_timeout
+    from felix.tools.sandboxes import _ContainerExecutor
+    from felix.tools.transports import HttpExecutor
+
+    ref = ContainerRef(name="c", gateway_url="https://example.com", image="i", timeout_ms=3_600_000)
+    ex = _ContainerExecutor(
+        gateway_url=ref.gateway_url,
+        image=ref.image,
+        timeout_ms=ref.timeout_ms,
+        auth="",
+        allow_http=False,
+    )
+    assert ex._timeout_s == 3600.0
+
+    # The shared helper is what guarantees the split; assert it directly for each default.
+    for default in (30.0, 60.0):
+        t = request_timeout(None, default_s=default)
+        assert t.read == default
+        assert t.connect == DEFAULT_CONNECT_TIMEOUT_S
+
+    assert HttpExecutor("https://example.com/x")._timeout_s == 30.0
+    assert OpenAIEmbedder(model="m", api_key="", base_url="https://e.com")._timeout_s == 60.0

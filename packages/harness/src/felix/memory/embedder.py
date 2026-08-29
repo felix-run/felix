@@ -19,8 +19,14 @@ from collections.abc import Callable, Sequence
 from typing import Any, Protocol, runtime_checkable
 
 from felix.config import Settings
+from felix.timeouts import DEFAULT_CONNECT_TIMEOUT_S
 
 logger = logging.getLogger("felix.memory.embedder")
+
+
+# An embeddings call is a model-provider request, so it honours the same ceiling; the
+# default stands in when a caller builds the embedder without settings.
+DEFAULT_EMBED_TIMEOUT_S = 60.0
 
 
 @runtime_checkable
@@ -87,11 +93,20 @@ class OpenAIEmbedder:
 
     enabled = True
 
-    def __init__(self, *, model: str, api_key: str, base_url: str, dim: int | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        model: str,
+        api_key: str,
+        base_url: str,
+        dim: int | None = None,
+        timeout_s: float = DEFAULT_EMBED_TIMEOUT_S,
+    ) -> None:
         self.model = model
         self.dim = dim
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
+        self._timeout_s = timeout_s
 
     async def embed(self, texts: Sequence[str]) -> list[list[float]]:
         if not texts:
@@ -99,7 +114,10 @@ class OpenAIEmbedder:
         import httpx
 
         headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
-        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
+        # Connect is pinned separately: raising the request ceiling for a large batch must
+        # not also raise the ceiling on reaching a provider that is simply not there.
+        timeout = httpx.Timeout(self._timeout_s, connect=DEFAULT_CONNECT_TIMEOUT_S)
+        async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.post(
                 f"{self._base_url}/embeddings",
                 json={"model": self.model, "input": list(texts)},
@@ -145,6 +163,7 @@ def _build_openai(settings: Settings) -> Embedder:
         api_key=str(getattr(settings, "openai_api_key", "") or ""),
         base_url=str(getattr(settings, "openai_base_url", "") or "https://api.openai.com/v1"),
         dim=int(getattr(settings, "memory_embedding_dim", 0) or 0) or None,
+        timeout_s=float(getattr(settings, "model_timeout_seconds", DEFAULT_EMBED_TIMEOUT_S)),
     )
 
 
@@ -155,6 +174,7 @@ def _build_ollama(settings: Settings) -> Embedder:
         api_key="",
         base_url=base,
         dim=int(getattr(settings, "memory_embedding_dim", 0) or 0) or None,
+        timeout_s=float(getattr(settings, "model_timeout_seconds", DEFAULT_EMBED_TIMEOUT_S)),
     )
 
 
@@ -183,6 +203,7 @@ def build_embedder(settings: Settings) -> Embedder:
 
 
 __all__ = [
+    "DEFAULT_EMBED_TIMEOUT_S",
     "Embedder",
     "EmbedderFactory",
     "NullEmbedder",

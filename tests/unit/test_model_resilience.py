@@ -178,7 +178,8 @@ def test_model_timeout_comes_from_the_clients_own_settings() -> None:
     divergence is invisible until someone's configured value quietly fails to take effect.
     """
     from felix.config import Settings
-    from felix.patterns.model import _CONNECT_TIMEOUT_S, _make_anthropic
+    from felix.patterns.model import _make_anthropic
+    from felix.timeouts import DEFAULT_CONNECT_TIMEOUT_S
 
     client = _make_anthropic(
         "claude-sonnet",
@@ -192,7 +193,7 @@ def test_model_timeout_comes_from_the_clients_own_settings() -> None:
     # Connect must NOT scale with the read ceiling: raising the timeout for a long
     # generation would otherwise let an unreachable endpoint hang just as long, and connect
     # failures are the class this layer still retries.
-    assert timeout.connect == _CONNECT_TIMEOUT_S
+    assert timeout.connect == DEFAULT_CONNECT_TIMEOUT_S
 
 
 def test_model_timeout_must_be_positive() -> None:

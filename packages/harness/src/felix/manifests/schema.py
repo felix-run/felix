@@ -25,6 +25,27 @@ ABSOLUTE_LIMITS = {
 }
 
 
+# Without a bound a tenant-supplied manifest can pin a connection open for as long as it
+# likes, so the ceiling is the absolute wall-clock limit — the longest a run is ever meant
+# to take.
+#
+# Read that as a bound, not a guarantee. `max_wall_clock_seconds` is checked before dispatch
+# and at the top of a turn, never during a call, and no deadline is propagated into the
+# executor. A run's real ceiling is therefore its budget plus the longest single call it can
+# still start. This is also the *absolute* limit rather than the manifest's own, so a
+# manifest declaring a 10s budget may still declare an hour-long call. Clamping each call to
+# the run's remaining budget is the change that would make this a guarantee.
+MAX_INTEGRATION_TIMEOUT_S = ABSOLUTE_LIMITS["max_wall_clock_seconds"]
+MAX_INTEGRATION_TIMEOUT_MS = MAX_INTEGRATION_TIMEOUT_S * 1000
+
+# Outbound ref lists are capped because validating one resolves its hostname through a
+# synchronous getaddrinfo inside a pydantic validator, on the API event loop. Length is
+# therefore an amplification factor on a blocking call: an uncapped list in a single
+# PUT /manifests can stall every other request on the worker for minutes. The cap
+# contains the blast radius; moving resolution off the validator is the actual fix.
+MAX_REFS = 64
+
+
 def assert_valid_manifest_name(name: str) -> None:
     if not name or len(name) > 128 or not MANIFEST_NAME_RE.match(name):
         raise ValueError(f"Invalid manifest name: {name!r}")
@@ -120,7 +141,7 @@ class McpServerRef(_Strict):
     # without it a slow-but-working MCP server is unusable and the only symptom is a tool
     # result that reads like the server refused. Over stdio this bounds each read — the
     # handshake and the call each get it — rather than the exchange as a whole.
-    timeout_ms: int | None = None
+    timeout_ms: int | None = Field(default=None, gt=0, le=MAX_INTEGRATION_TIMEOUT_MS)
 
     @field_validator("auth", mode="before")
     @classmethod
@@ -165,7 +186,7 @@ class A2APeerRef(_Strict):
     auth: str = ""
     # A peer call runs an entire agent turn on the far side, so the 60s default is a tighter
     # ceiling on a longer operation than any other outbound integration has.
-    timeout_ms: int | None = None
+    timeout_ms: int | None = Field(default=None, gt=0, le=MAX_INTEGRATION_TIMEOUT_MS)
 
     @field_validator("auth", mode="before")
     @classmethod
@@ -187,7 +208,7 @@ class ContainerRef(_Strict):
     gateway_url: str
     image: str = Field(min_length=1)
     container_tool_name: str = ""
-    timeout_ms: int | None = None
+    timeout_ms: int | None = Field(default=None, gt=0, le=MAX_INTEGRATION_TIMEOUT_MS)
     auth: str = ""
     args_schema: dict[str, Any] | None = None
     fatal: bool = False
@@ -220,7 +241,7 @@ class SandboxRef(_Strict):
     description: str = ""
     binding: str = Field(min_length=1)
     sandbox_tool_name: str = ""
-    timeout_ms: int | None = None
+    timeout_ms: int | None = Field(default=None, gt=0, le=MAX_INTEGRATION_TIMEOUT_MS)
     path_prefix: str = ""
     args_schema: dict[str, Any] | None = None
     fatal: bool = False
@@ -231,7 +252,7 @@ class BrowserToolRef(_Strict):
     description: str = ""
     binding: str = Field(min_length=1)
     op: Literal["content", "links", "snapshot", "screenshot", "pdf", "json"] = "content"
-    timeout_ms: int | None = None
+    timeout_ms: int | None = Field(default=None, gt=0, le=MAX_INTEGRATION_TIMEOUT_MS)
     path_prefix: str = ""
     args_schema: dict[str, Any] | None = None
     fatal: bool = False
@@ -243,7 +264,7 @@ class ClientToolRef(_Strict):
     name: str = Field(min_length=1)
     description: str = ""
     args_schema: dict[str, Any] | None = None
-    timeout_seconds: float | None = Field(default=None, gt=0, le=3600)
+    timeout_seconds: float | None = Field(default=None, gt=0, le=MAX_INTEGRATION_TIMEOUT_S)
     fatal: bool = False
 
 
@@ -456,7 +477,11 @@ class ApprovalRule(_Strict):
     id: str = Field(min_length=1)
     description: str = ""
     tools: list[str] = Field(default_factory=list)
-    ttl_seconds: int | None = Field(default=None, gt=0)
+    # Bounded for the same reason as every `timeout_ms`, and more urgently: an unanswered
+    # approval holds the request, an asyncio task, and a Redis connection for the whole TTL,
+    # and the waiter polls once a second for the duration. Unbounded, one tenant can park
+    # thousands of them permanently.
+    ttl_seconds: int | None = Field(default=None, gt=0, le=MAX_INTEGRATION_TIMEOUT_S)
     one_shot: bool = False
     bind_principal: bool = False
     allow_unattended: bool = False
@@ -489,7 +514,7 @@ class CommandScreening(_Strict):
     target_tools: list[str] = Field(default_factory=list)
     # How long a `require_approval` rule waits for a human before failing closed.
     # Finite by default so a run cannot block forever on an approver who never comes.
-    approval_ttl_seconds: int = Field(default=300, gt=0, le=86_400)
+    approval_ttl_seconds: int = Field(default=300, gt=0, le=MAX_INTEGRATION_TIMEOUT_S)
 
 
 class ContentScreening(_Strict):
@@ -519,13 +544,13 @@ class Spec(_Strict):
     prompts: list[PromptTemplateSpec] = Field(default_factory=list)
     tools: list[str] = Field(default_factory=list)
     skills: list[SkillRef] = Field(default_factory=list)
-    mcp: list[McpServerRef] = Field(default_factory=list, alias="mcp_servers")
-    peers: list[A2APeerRef] = Field(default_factory=list)
-    containers: list[ContainerRef] = Field(default_factory=list)
-    queues: list[QueueRef] = Field(default_factory=list)
-    sandboxes: list[SandboxRef] = Field(default_factory=list)
-    browser_tools: list[BrowserToolRef] = Field(default_factory=list)
-    client_tools: list[ClientToolRef] = Field(default_factory=list)
+    mcp: list[McpServerRef] = Field(default_factory=list, alias="mcp_servers", max_length=MAX_REFS)
+    peers: list[A2APeerRef] = Field(default_factory=list, max_length=MAX_REFS)
+    containers: list[ContainerRef] = Field(default_factory=list, max_length=MAX_REFS)
+    queues: list[QueueRef] = Field(default_factory=list, max_length=MAX_REFS)
+    sandboxes: list[SandboxRef] = Field(default_factory=list, max_length=MAX_REFS)
+    browser_tools: list[BrowserToolRef] = Field(default_factory=list, max_length=MAX_REFS)
+    client_tools: list[ClientToolRef] = Field(default_factory=list, max_length=MAX_REFS)
     sub_agents: list[str] = Field(default_factory=list)
     aggregator_prompt: str = ""
     max_turns: int = Field(default=4, ge=1, le=ABSOLUTE_LIMITS["max_turns"])

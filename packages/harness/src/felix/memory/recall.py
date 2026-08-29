@@ -21,6 +21,7 @@ and the rest still return results.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from dataclasses import dataclass, field
@@ -174,11 +175,24 @@ def _rank(
     return [hit for _, _, hit in hits[:limit]]
 
 
+# Recall runs inline in a turn and is best-effort by design, so it needs a budget of its
+# own. The embedder inherits `FELIX_MODEL_TIMEOUT_SECONDS`, which is sized for a long
+# generation whose failure kills the run — raising it to 600s for that reason must not also
+# let a degradable recall add ten minutes to a turn. Degrade on time as well as on error.
+RECALL_EMBED_BUDGET_S = 5.0
+
+
 async def _embed_query(embedder: Any | None, query: str) -> list[float] | None:
     if embedder is None or not getattr(embedder, "enabled", False):
         return None
     try:
-        vectors = await embedder.embed([query])
+        vectors = await asyncio.wait_for(embedder.embed([query]), timeout=RECALL_EMBED_BUDGET_S)
+    except TimeoutError:
+        logger.warning(
+            "query embedding exceeded %.0fs; recall running without the vector channel",
+            RECALL_EMBED_BUDGET_S,
+        )
+        return None
     except Exception:
         # A recall that loses its vector channel is worse than one that keeps it, and
         # far better than a turn that fails because an embedding endpoint was down.
