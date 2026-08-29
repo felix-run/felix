@@ -983,7 +983,7 @@
           "type": "boolean"
         },
         "model": {
-          "default": "llama-3-fast",
+          "default": "claude-haiku",
           "title": "Model",
           "type": "string"
         },
@@ -1121,18 +1121,6 @@
           ],
           "default": null,
           "title": "Max Tokens"
-        },
-        "region": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Region"
         },
         "cache": {
           "default": false,

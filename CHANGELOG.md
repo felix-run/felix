@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`spec.model.region` is removed.** Declared, never read by anything, and a leftover from
+  a Bedrock-shaped past. Same disposition as the `checkpointer` aliases: `_Strict` forbids
+  extras, so a manifest that sets it now fails validation instead of carrying decorative
+  surface that looks like it configures something.
+
+- **`memory.consolidate.model` and the eval judge default now point at `claude-haiku`.**
+  Both defaulted to `llama-3-fast`, which routes to Ollama — the exact bug already fixed and
+  explained on `memory.capture.model`, which these were the missed siblings of. A deployment
+  holding only an Anthropic key had consolidation fail on every run, and the LLM judge
+  silently degrade to the heuristic, each saying so only in a log.
+
+### Fixed
+
+- **Cross-provider handoff decided the provider by sniffing the model id.**
+  `provider_family` matched `claude`, `gpt`, `llama`, `mistral` as substrings — the last
+  vendor sniff in the harness — and it gates whether a thread's tool calls and images are
+  flattened to plain text before switching models. It got two things wrong: an operator who
+  routed `claude-flavoured` to OpenAI got the wrong answer, and two *different* unrecognised
+  providers both answered `unknown`, so a genuine cross-provider switch looked like a no-op
+  and replayed content the next model could not read.
+
+  The function already took a `routes` argument and **no caller passed it**, so the clean
+  path existed and was simply unwired. The route table is now the only source; an id missing
+  from it is distinctly unknown, keyed on the id, so two unrecognised models still count as
+  a family change.
+
 ### Fixed
 
 - **The OpenAI path shaped nothing, and carried an Anthropic field to every endpoint.**
