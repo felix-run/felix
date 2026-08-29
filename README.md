@@ -155,7 +155,7 @@ Client → Ingress (Caddy / Traefik / nginx / Cloudflare DNS+CDN)
 | `felix-scheduler` | Enqueues labeled Taskiq cron tasks — **required alongside the worker**, or nothing periodic fires |
 | `packages/harness` | Manifests, patterns, tools, session, governance, auth, plugins |
 | `packages/cli` | `felix migrate \| eval \| mint-jwt \| bundle-manifests \| validate-manifest \| doctor \| version \| temporal-worker` |
-| `manifests/` | Bundled agents: `quick`, `deep`, `router`, `oss-only`, `hybrid-router`, `support`, `cowork`, `governed` |
+| `manifests/` | Bundled agents: `quick`, `deep`, `router`, `oss-only`, `hybrid-router`, `support`, `cowork`, `governed`, `contributor` |
 
 ### Vendor independence
 
@@ -318,7 +318,9 @@ than sent, because an unverifiable signature rejects the whole turn.
 
 Sessions and skills:
 
-- **Skills** live under `skills/` as Agent Skills `SKILL.md` files; declare them with `spec.skills`
+- **Skills** live under `skills/` as Agent Skills `SKILL.md` files; declare them with `spec.skills`.
+  Bundled: `calculator-help`, plus the developer set used by the `contributor` manifest —
+  `felix-architecture`, `felix-conventions`, `felix-testing`, `felix-contributing`
 - **Session strategies**: `compacting` (token-threshold), `windowed:N`, `semantic:N`, `full_replay`
   — `compacting` sizes itself to the model's context window unless `spec.session.context_window_tokens` says otherwise, and compacts once more if the provider
   rejects a request for length anyway
