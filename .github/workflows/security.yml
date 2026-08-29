@@ -35,7 +35,21 @@ jobs:
         uses: github/codeql-action/init@c16c0f3f2812ec4bb3750a5ed64873fe2ce0fbef # codeql-bundle-v2.26.3
         with:
           languages: python
-          queries: security-and-quality
+          # `security-extended`, not `security-and-quality`. The two are identical
+          # on security queries — quality is the only difference — and the quality
+          # suite is a second linter that duplicates ruff without knowing this
+          # repo's deliberate exemptions.
+          #
+          # It produced 88 dismissals before this change: 58 re-reporting what ruff
+          # already enforces (`py/ineffectual-statement` is B018, `py/unused-import`
+          # is F401), and 30 disagreeing with choices made on purpose —
+          # `py/unused-global-variable` cannot see cross-module constant reads, so
+          # it flags every exported constant this package has.
+          #
+          # Security coverage is unchanged. If you want a quality query back, add
+          # `.github/codeql/codeql-config.yml` and name it, rather than reinstating
+          # the whole suite.
+          queries: security-extended
       - name: Analyze
         uses: github/codeql-action/analyze@c16c0f3f2812ec4bb3750a5ed64873fe2ce0fbef # codeql-bundle-v2.26.3
         with:
