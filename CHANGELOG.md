@@ -26,6 +26,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on a multi-tenant deployment the control reported healthy while watching a single
   tenant.
 
+- **`SkillRef.name` and `version` shaped an object key without validation.** Both are
+  unvalidated manifest strings interpolated straight into
+  `skills/{tenant}/{name}/SKILL.md`. No shipped backend could be walked with them —
+  the filesystem store rejects `..` segments and S3/GCS treat keys as literal text —
+  but `artifacts.py` deliberately validates its own key parts rather than trusting
+  whichever store an operator configured, and this loader did not. They are now
+  checked as single segments before any key is built, so the guarantee does not
+  depend on the backend.
+
+  The lookup order was also interleaved, tenant-then-shared *per version*, so a
+  shared **versioned** skill was tried before the tenant's own unversioned one and
+  the tenant's was never read — the same shadowing shape as the `AGENTS.md` layer
+  fixed alongside the context-file scoping. Every tenant-scoped key is now tried
+  before any shared one. The shared `skills/{name}/` namespace remains an operator
+  layer: no route lets a tenant write a bare object key.
+
 - **`POST /internal/sessions/{id}/events` wrote into whatever tenant the consumer
   credential named, whatever thread the path asked for.** The session id went
   straight from the URL into `append_event` with no tenant prefix, no delimiter

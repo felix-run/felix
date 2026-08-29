@@ -16,6 +16,22 @@ logger = logging.getLogger("felix.skills.loader")
 
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n(.*)$", re.DOTALL)
 _NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
+# A version may carry dots (`1.2.0`) which a name may not, but is otherwise the same
+# shape: one segment, no separators, not a traversal.
+_VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def _safe_segment(value: str, pattern: re.Pattern[str], *, limit: int = 64) -> bool:
+    """True when ``value`` may be interpolated into an object key as one segment.
+
+    `SkillRef.name` and `version` are unvalidated manifest strings, and they were
+    interpolated straight into `skills/{tenant}/{name}/SKILL.md`. No shipped backend
+    could be walked with them — the fs store rejects `..` segments and S3/GCS treat
+    keys as literal text — but `artifacts.py` deliberately validates its own key
+    parts rather than trusting whichever store an operator configured, and this is
+    the same argument.
+    """
+    return bool(value) and len(value) <= limit and bool(pattern.match(value)) and value not in {".", ".."}
 
 
 def _parse_frontmatter(raw: str) -> tuple[dict[str, str], str]:
@@ -93,14 +109,28 @@ async def load_skill_from_store(
     name: str,
     version: str | None = None,
 ) -> Skill | None:
-    """Load skills/{tenant}/{name}/SKILL.md or skills/{name}/SKILL.md from an ObjectStore."""
-    keys = [
-        f"skills/{tenant_id}/{name}/SKILL.md",
-        f"skills/{name}/SKILL.md",
-    ]
+    """Load skills/{tenant}/{name}/SKILL.md or skills/{name}/SKILL.md from an ObjectStore.
+
+    The tenant's own skill wins. Every tenant-scoped key is tried before any shared
+    one, rather than interleaving them by version — interleaved, a shared *versioned*
+    skill beat the tenant's own unversioned skill and the tenant's was never read.
+
+    The shared `skills/{name}/` namespace is an operator layer: no route lets a
+    tenant write a bare object key, so it cannot be planted by another tenant.
+    """
+    if not _safe_segment(name, _NAME_RE):
+        logger.warning("skill name %r is not a usable key segment; skipped", name)
+        return None
+    if version is not None and not _safe_segment(version, _VERSION_RE, limit=32):
+        logger.warning("skill version %r is not a usable key segment; ignored", version)
+        version = None
+
+    tenant_keys = [f"skills/{tenant_id}/{name}/SKILL.md"]
+    shared_keys = [f"skills/{name}/SKILL.md"]
     if version:
-        keys.insert(0, f"skills/{tenant_id}/{name}/{version}/SKILL.md")
-        keys.insert(1, f"skills/{name}/{version}/SKILL.md")
+        tenant_keys.insert(0, f"skills/{tenant_id}/{name}/{version}/SKILL.md")
+        shared_keys.insert(0, f"skills/{name}/{version}/SKILL.md")
+    keys = tenant_keys + shared_keys
     for key in keys:
         try:
             data = await store.get(key)
