@@ -99,3 +99,22 @@ async def run_anomaly_scan(settings: Settings, *, tenant_id: str = "default") ->
 
 
 __all__ = ["run_anomaly_scan"]
+
+
+async def run_anomaly_scan_all_tenants(settings: Settings) -> list[dict]:
+    """Scan every tenant that has audit events. Returns the combined findings.
+
+    `run_anomaly_scan` defaults to ``tenant_id="default"`` and the worker cron never
+    passed one, so on a multi-tenant deployment this detection control silently
+    covered a single tenant. Same fix, and same shape, as `run_due_jobs_all_tenants`.
+    """
+    from felix.audit.store import list_tenants_with_events
+
+    findings: list[dict] = []
+    for tenant_id in await list_tenants_with_events(settings):
+        try:
+            findings.extend(await run_anomaly_scan(settings, tenant_id=tenant_id))
+        except Exception:
+            # One tenant's bad data must not stop the scan for everyone else.
+            logger.exception("anomaly_scan_failed tenant=%s", tenant_id)
+    return findings

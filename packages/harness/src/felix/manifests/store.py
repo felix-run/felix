@@ -74,6 +74,24 @@ async def list_active(settings: Settings, tenant_id: str) -> list[dict[str, Any]
         return [_active_dict(r) for r in rows]
 
 
+async def list_tenants_with_active(settings: Settings) -> list[str]:
+    """Every tenant that has at least one active manifest pointer.
+
+    `run_continuous_eval` defaulted to ``tenant_id="default"``, so a canary in any
+    other tenant was never benchmarked.
+    """
+    if _use_memory(settings):
+        return sorted({str(t) for (t, _n) in _memory_active})
+
+    from felix.db.session import rls_bypass
+
+    factory = get_session_factory(settings=settings)
+    with rls_bypass():
+        async with factory() as db:
+            rows = (await db.execute(select(ManifestActive.tenant_id).distinct())).scalars().all()
+            return sorted({str(r) for r in rows})
+
+
 async def get_version(settings: Settings, tenant_id: str, name: str, version: int) -> dict[str, Any] | None:
     if _use_memory(settings):
         row = _memory_manifests.get((tenant_id, name, version))

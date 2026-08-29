@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The anomaly scan and continuous eval only ever ran for tenant `default`.** Both
+  take `tenant_id: str = "default"` and the worker cron passed nothing, so on a
+  multi-tenant deployment anomaly detection covered one tenant and a canary in any
+  other was never benchmarked — the rollout looked clean because nothing looked.
+  `run_due_jobs` had the identical bug and was fixed once already; these two were not
+  swept up with it.
+
+  Both now sweep every tenant, enumerated from the data that gives them work (audit
+  events, active manifest pointers), isolating each tenant's failure so one tenant's
+  bad data cannot stop detection for the rest. The enumeration takes an RLS bypass —
+  the worker has no request context, so without one the policy filters everything and
+  the scan sees nothing for anybody.
+
+  This is a detection-coverage gap rather than an exploit: nothing was exposed, but
+  on a multi-tenant deployment the control reported healthy while watching a single
+  tenant.
+
 - **`POST /internal/sessions/{id}/events` wrote into whatever tenant the consumer
   credential named, whatever thread the path asked for.** The session id went
   straight from the URL into `append_event` with no tenant prefix, no delimiter
