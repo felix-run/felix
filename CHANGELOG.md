@@ -9,6 +9,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A manifest could name another tenant's object-store key and have the contents
+  read into its system prompt.** `spec.system_prompt.files`, `system_md` and
+  `append_system_md` are unvalidated strings, and the loaders tried each key *as-is*
+  before scoping it to `workspace/{tenant}/` — so the unscoped attempt hit first and
+  won. Anyone with `manifests:write` could author
+  `files: ["workspace/other-tenant/notes.md"]` and read it back through the model.
+  Keys are now rewritten into the caller's own prefix rather than offered the chance
+  to escape it.
+
+  The local fallback had the matching hole: it joined the key onto
+  `FELIX_WORKSPACE_ROOT` with no containment, so an absolute key resolved outside the
+  root entirely (`Path("/srv/ws") / "/etc/passwd"` is `/etc/passwd`) and `../` was
+  never normalised. It now goes through `resolve_under_root`, the same gate the
+  workspace tools use.
+
+  `load_agents_md_layer` keeps its unprefixed lookup deliberately: its filenames are
+  fixed, not manifest-supplied, so it is an operator-placed layer rather than a key
+  an agent can choose. It now searches the tenant's own copy first, so that layer
+  cannot shadow a tenant's file.
+
+  `load_agents_md_layer` keeps a shared operator layer, but now checks **all three**
+  tenant-scoped filenames before any shared one. The loop was tenant-then-shared per
+  *name*, so a shared `AGENTS.override.md` beat a tenant's own `AGENTS.md` and that
+  file was never consulted. The shared layer is object-store only: the workspace root
+  is one shared directory with no tenant component, so any manifest binding
+  `write_file` could otherwise drop an `AGENTS.override.md` into another tenant's
+  system prompt.
+
+  An existing test asserted the old behaviour — it stored `AGENTS.md` at the bare key
+  and expected a manifest to reach it.
+
+  **Operator action required.** Context files now resolve only under
+  `workspace/{tenant}/`, in the object store *and* under `FELIX_WORKSPACE_ROOT`.
+  Anything previously placed at a bare key or at the root of the workspace directory
+  stops being found, silently — the prompt just loses that section. Move them:
+  `workspace/<tenant>/AGENTS.md`, and `<FELIX_WORKSPACE_ROOT>/workspace/<tenant>/…`
+  on disk. A bare `AGENTS.md` / `AGENTS.override.md` / `CLAUDE.md` **object** still
+  works as a shared operator layer; the same file on disk no longer does.
+
 - **The `remember` tool read the wrong tenant's session log.** `_provenance`
   resolved the session store without a `tenant_id`, so it always got tenant
   `"default"`. For every other tenant the thread was not there, `head()` returned

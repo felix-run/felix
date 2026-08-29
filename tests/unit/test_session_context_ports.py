@@ -214,7 +214,10 @@ async def test_context_files_from_store() -> None:
     from felix.storage import MemoryObjectStore
 
     store = MemoryObjectStore()
-    await store.put("AGENTS.md", b"# Project\nUse tabs.")
+    # Under the tenant's own prefix. This used to store at the bare key and pass,
+    # because `system_prompt.files` keys were tried as-is before being scoped —
+    # which is what let a manifest name another tenant's object.
+    await store.put("workspace/t/AGENTS.md", b"# Project\nUse tabs.")
     parts = await load_instruction_files(file_keys=["AGENTS.md"], object_store=store, tenant_id="t")
     assert parts and "Use tabs" in parts[0]
 
