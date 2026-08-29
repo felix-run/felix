@@ -433,6 +433,8 @@ class AnthropicMessagesClient(HttpModelClient):
         tools: Sequence[ToolSchema],
         temperature: float,
         max_tokens: int | None,
+        *,
+        isolate_cache: bool = False,
     ) -> AsyncIterator[str]:
         system = ""
         converted: list[dict[str, Any]] = []
@@ -476,7 +478,7 @@ class AnthropicMessagesClient(HttpModelClient):
         }
         if system:
             body["system"] = system
-        apply_anthropic_thinking_cache(body, self.spec, self.route.model)
+        apply_anthropic_thinking_cache(body, self.spec, self.route.model, isolate_cache=isolate_cache)
         headers = {
             "x-api-key": self.api_key,
             "anthropic-version": "2023-06-01",

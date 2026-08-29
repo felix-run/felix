@@ -15,6 +15,7 @@ from typing import Any
 
 import httpx
 
+from felix_ai.catalog import known_entry_for
 from felix_ai.context import resolve_cache_key
 from felix_ai.types import (
     ChatMessage,
@@ -48,17 +49,58 @@ def reasoning_effort_from_budget(budget: int) -> str:
 def apply_openai_thinking_cache(
     body: dict[str, Any],
     spec: Any,
+    model: str = "",
     *,
     cache_key: str | None = None,
     isolate_cache: bool = False,
 ) -> None:
-    """Attach thinking budget + prompt cache hints to an OpenAI-style request."""
+    """Shape an OpenAI-style request for the model it is actually going to.
+
+    This used to emit three things unconditionally whenever `spec.thinking_budget` was set:
+    `reasoning_effort`, which only OpenAI's reasoning models accept; `prompt_cache_key`,
+    which is OpenAI-specific; and an Anthropic `thinking` block, which is not an OpenAI
+    field at all. The same body goes to api.openai.com, to Ollama and to any vLLM or
+    self-written gateway, and a server that validates its request schema rejects the
+    unknown key — so "OpenAI-compatible" carried an Anthropic parameter into every
+    endpoint that spoke the format.
+
+    Request shaping was also Anthropic-only in a second sense: `ModelQuirks` had exactly
+    one reader, on the messages path. So the OpenAI path had no `max_output_tokens` clamp
+    and no sampling suppression, which is why the `o1`/`o3`/`o4` catalog entries could
+    never have worked — those reject `temperature` and require `max_completion_tokens`.
+
+    Everything here is gated on `known_entry_for`, not `entry_for`: an unmatched id yields
+    `_DEFAULT`, whose quirks describe the current Claude generation, and applying those to
+    an unknown OpenAI endpoint would strip `temperature` from a model that accepts it.
+    Unknown means "shape nothing", which is the direction that fails safe on this path —
+    omitting an optional parameter is survivable, sending a rejected one is a hard 400.
+    """
+    entry = known_entry_for(model or str(body.get("model") or ""))
+    caps = entry.quirks if entry is not None else None
+
+    if entry is not None:
+        if body.get("max_tokens"):
+            body["max_tokens"] = min(int(body["max_tokens"]), entry.max_output_tokens)
+        if caps is not None and not caps.sampling:
+            body.pop("temperature", None)
+            body.pop("top_p", None)
+            body.pop("top_k", None)
+        if caps is not None and caps.max_completion_tokens and "max_tokens" in body:
+            body["max_completion_tokens"] = body.pop("max_tokens")
+
     budget = getattr(spec, "thinking_budget", None) if spec is not None else None
     if budget:
         n = int(budget)
-        body["reasoning_effort"] = reasoning_effort_from_budget(n)
-        # LiteLLM / Anthropic-via-OpenAI also honor this block.
-        body["thinking"] = {"type": "enabled", "budget_tokens": n}
+        if entry is not None and entry.supports_thinking:
+            body["reasoning_effort"] = reasoning_effort_from_budget(n)
+        # An Anthropic model reached through a LiteLLM-style OpenAI shim still wants the
+        # Anthropic block. Keyed on the dialect the model natively speaks, because
+        # `caps.budget_tokens` defaults to True and so cannot tell an OpenAI entry apart
+        # from a pre-4.6 Claude one.
+        if entry is not None and entry.native_wire == "anthropic" and caps is not None:
+            if caps.budget_tokens:
+                body["thinking"] = {"type": "enabled", "budget_tokens": n}
+
     if isolate_cache:
         return
     if spec is not None and getattr(spec, "cache", False):
@@ -176,7 +218,7 @@ class OpenAICompletionsClient(HttpModelClient):
             body["max_tokens"] = max_tokens
         if tools:
             body["tools"] = _tools_to_openai(tools)
-        apply_openai_thinking_cache(body, self.spec, isolate_cache=isolate_cache)
+        apply_openai_thinking_cache(body, self.spec, self.route.model, isolate_cache=isolate_cache)
         return body
 
     async def _chat(
@@ -308,6 +350,8 @@ class OpenAICompletionsClient(HttpModelClient):
         tools: Sequence[ToolSchema],
         temperature: float,
         max_tokens: int | None,
+        *,
+        isolate_cache: bool = False,
     ) -> AsyncIterator[str]:
         body: dict[str, Any] = {
             "model": self.route.model,
@@ -317,7 +361,7 @@ class OpenAICompletionsClient(HttpModelClient):
         }
         if max_tokens:
             body["max_tokens"] = max_tokens
-        apply_openai_thinking_cache(body, self.spec)
+        apply_openai_thinking_cache(body, self.spec, self.route.model, isolate_cache=isolate_cache)
         # Streaming path is text-oriented; tool calls use chat() in the agent loop.
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
         async with (

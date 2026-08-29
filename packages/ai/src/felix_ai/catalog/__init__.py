@@ -48,6 +48,9 @@ class ModelQuirks:
     effort_xhigh: bool = False
     # Thinking is on unless explicitly disabled (Opus 5 behaves this way; 4.7/4.8 do not).
     thinking_on_by_default: bool = False
+    # OpenAI reasoning models renamed `max_tokens` to `max_completion_tokens` and reject
+    # the old spelling outright.
+    max_completion_tokens: bool = False
 
 
 @dataclass(frozen=True)
@@ -97,6 +100,12 @@ class ModelCatalogEntry:
     # records the capability and `usage.catalog` expands it into level names.
     supports_thinking: bool = False
     input_modalities: tuple[str, ...] = ("text",)
+    # The wire dialect this model natively speaks. It is not the dialect it is *reached*
+    # through: an Anthropic model behind a LiteLLM shim is addressed with OpenAI
+    # chat-completions but still wants Anthropic's `thinking` block, and that is the only
+    # way to know which requests should carry one. `ModelQuirks.budget_tokens` cannot
+    # answer it — that flag defaults to True, so every OpenAI entry looks pre-4.6 Anthropic.
+    native_wire: str = ""
 
 
 _TEXT_AND_IMAGE: tuple[str, ...] = ("text", "image")
@@ -133,6 +142,7 @@ _FRONTIER = ModelCatalogEntry(
     quirks=_MODERN_QUIRKS,
     supports_thinking=True,
     input_modalities=_TEXT_AND_IMAGE,
+    native_wire="anthropic",
 )
 _PRE_46 = ModelCatalogEntry(
     context_window=200_000,
@@ -141,6 +151,7 @@ _PRE_46 = ModelCatalogEntry(
     quirks=_LEGACY_QUIRKS,
     supports_thinking=True,
     input_modalities=_TEXT_AND_IMAGE,
+    native_wire="anthropic",
 )
 
 _FAMILY = replace(_PRE_46, quirks=_MODERN_QUIRKS, max_output_tokens=128_000)
@@ -204,9 +215,21 @@ _CATALOG: dict[str, ModelCatalogEntry] = {
     "gpt-4": ModelCatalogEntry(context_window=128_000, supports_thinking=True),
     # OpenAI reasoning families. Context and rates were never tabulated for these, so
     # they keep the default; only their thinking support was previously recognised.
-    "o1": ModelCatalogEntry(context_window=128_000, supports_thinking=True),
-    "o3": ModelCatalogEntry(context_window=128_000, supports_thinking=True),
-    "o4": ModelCatalogEntry(context_window=128_000, supports_thinking=True),
+    "o1": ModelCatalogEntry(
+        context_window=128_000,
+        supports_thinking=True,
+        quirks=ModelQuirks(sampling=False, max_completion_tokens=True),
+    ),
+    "o3": ModelCatalogEntry(
+        context_window=128_000,
+        supports_thinking=True,
+        quirks=ModelQuirks(sampling=False, max_completion_tokens=True),
+    ),
+    "o4": ModelCatalogEntry(
+        context_window=128_000,
+        supports_thinking=True,
+        quirks=ModelQuirks(sampling=False, max_completion_tokens=True),
+    ),
     # --- Local ---
     # Free: a model served by a local Ollama or vLLM costs nothing per token. This is a
     # statement about the deployment, not a rate card, and it is the reason a local
@@ -259,6 +282,25 @@ def clamp_effort(level: str, quirks: ModelQuirks) -> str:
     return lvl
 
 
+def known_entry_for(model_id: str | None) -> ModelCatalogEntry | None:
+    """The catalog entry for a model, or `None` when nothing matched.
+
+    `entry_for` answers with `_DEFAULT` for an unrecognised id, which is right for sizing a
+    context window but wrong for *shaping a request*: `_DEFAULT.quirks` describes the
+    current Claude generation, so applying it to an unknown OpenAI-compatible endpoint
+    would strip `temperature` from a model that accepts it. A rule you did not actually
+    match is not a rule.
+    """
+    mid = (model_id or "").strip().lower()
+    if not mid:
+        return None
+    best: tuple[int, ModelCatalogEntry] | None = None
+    for key, entry in _CATALOG.items():
+        if key in mid and (best is None or len(key) > best[0]):
+            best = (len(key), entry)
+    return best[1] if best else None
+
+
 def is_priced(model_id: str | None) -> bool:
     """Whether Felix knows this model's rates well enough to enforce a spend cap."""
     return entry_for(model_id).pricing is not None
@@ -272,4 +314,5 @@ __all__ = [
     "clamp_effort",
     "entry_for",
     "is_priced",
+    "known_entry_for",
 ]

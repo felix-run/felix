@@ -200,8 +200,13 @@ class HttpModelClient(ABC):
         tools: Sequence[ToolSchema],
         opts: ModelChatOptions | None = None,
     ) -> AsyncIterator[str]:
-        _, temperature, max_tokens = self._resolve(opts)
-        async for chunk in self._stream(messages, tools, temperature, max_tokens):
+        opts, temperature, max_tokens = self._resolve(opts)
+        # `isolate_cache` was dropped here, so a side request on the text-stream path still
+        # wrote the conversation's prompt-cache key — churning the cached prefix the next
+        # real turn would have hit, which is the exact thing the option exists to prevent.
+        async for chunk in self._stream(
+            messages, tools, temperature, max_tokens, isolate_cache=opts.isolate_cache
+        ):
             yield chunk
 
     # --- what a wire format must provide -------------------------------------------
@@ -250,6 +255,8 @@ class HttpModelClient(ABC):
         tools: Sequence[ToolSchema],
         temperature: float,
         max_tokens: int | None,
+        *,
+        isolate_cache: bool = False,
     ) -> AsyncIterator[str]:
         raise NotImplementedError
 

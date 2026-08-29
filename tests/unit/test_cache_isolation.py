@@ -82,7 +82,10 @@ def test_isolation_does_not_disable_thinking() -> None:
         thinking_budget = 8192
 
     body: dict[str, Any] = {}
-    apply_openai_thinking_cache(body, _Thinking(), isolate_cache=True)
+    # The model is named because `reasoning_effort` is now gated on the catalog saying the
+    # target accepts it; it used to be sent to every OpenAI-compatible endpoint, including
+    # the ones that 400 on it.
+    apply_openai_thinking_cache(body, _Thinking(), "gpt-4.1", isolate_cache=True)
     assert body["reasoning_effort"] == "medium"
     assert "prompt_cache_key" not in body
 

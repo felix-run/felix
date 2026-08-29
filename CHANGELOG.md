@@ -9,6 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The OpenAI path shaped nothing, and carried an Anthropic field to every endpoint.**
+  `ModelQuirks` had exactly one reader — the Anthropic wire format — and its docstring said
+  so. The OpenAI-compatible path, which is also Ollama and every LiteLLM/vLLM gateway, had
+  no `max_output_tokens` clamp and no sampling suppression, which is why the `o1`/`o3`/`o4`
+  catalog entries could never have worked: those reject `temperature` and require
+  `max_completion_tokens`, and both were sent regardless. Meanwhile it emitted an Anthropic
+  `thinking` block into **every** request whenever `spec.thinking_budget` was set, on the
+  grounds that a LiteLLM proxy to Anthropic honours it — but the same body goes to
+  api.openai.com, to Ollama and to any self-written gateway, and a server that validates its
+  request schema rejects the unknown key outright. `reasoning_effort` went out just as
+  widely, to models that have never accepted it.
+
+  Shaping is now capability-driven on both paths. Crucially it keys on `known_entry_for`,
+  not `entry_for`: an unmatched id yields `_DEFAULT`, whose quirks describe the current
+  Claude generation, so shaping on that would strip `temperature` from an unknown OpenAI
+  endpoint that accepts it. Unknown means shape nothing — on this path omitting an optional
+  parameter is survivable and sending a rejected one is a hard 400. The Anthropic block now
+  keys on a new `ModelCatalogEntry.native_wire`, because `ModelQuirks.budget_tokens` defaults
+  to `True` and so cannot tell an OpenAI entry from a pre-4.6 Claude one — an Anthropic model
+  behind an OpenAI shim still gets its block, and nothing else does.
+
+- **`ModelChatOptions.isolate_cache` was ignored on the text-stream path.** `stream()`
+  resolved the options and then dropped them, so `_stream` could not see the flag: a
+  summariser or screening call still wrote the conversation's `prompt_cache_key`, churning
+  the cached prefix the next real turn would have hit — the exact thing the option exists to
+  prevent. It is threaded through to both wire formats now.
+
+### Fixed
+
 - **`limits.max_cost_usd` was enforced against a number nobody chose.** Three faults
   compounded. The catalog's `_DEFAULT` carried `ModelPricing()`, whose field defaults are
   Claude Sonnet's list price, so **every model Felix did not recognise billed at $3/$15 per
