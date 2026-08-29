@@ -9,6 +9,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A conformance contract for model providers.** `tests/conformance/test_model_provider.py`
+  runs one contract against three arms — `scripted`, `openai`, `anthropic` — mirroring how
+  the store suite runs one contract across backends. None needs infrastructure, so every arm
+  runs on every CI run and a skip there would be a bug rather than a missing database.
+
+  Twelve test files each built their own model double, and every one re-decided what a
+  provider owes its caller — which is how `stream_turn` stayed off the published Protocol
+  for so long: a double that implemented it and one that did not both looked correct alone.
+  Nothing exercised the chain a third-party provider actually travels, either. The contract
+  pins the *de facto* shape, not just the declared one: `opts` accepted as the **third
+  positional argument** (six side-request call sites pass it that way, so a keyword-only
+  `opts` is a `TypeError`), `model_id` and `route` as bare attributes, usage reported from
+  both `chat` and `stream_turn`, stop reasons in the neutral vocabulary, tool arguments
+  parsed to a dict whatever the wire sent, and a `ModelGatewayError` whose `.status`
+  `_is_provider_error` can read while the upstream body stays out of `str(exc)`.
+
+  The fake transport models the endpoint rather than replaying a tape: OpenAI omits usage
+  from a streamed response unless `stream_options.include_usage` asked for it, so the fake
+  does too. Without that the contract could not see a provider that forgets to ask — the
+  highest-value provider bug there is, because it leaves every streamed run unmetered and
+  the budgets fail open.
+
+- **`felix_ai.providers.scripted`** — the model double, written once. Opt-in rather than
+  registered by default: a fake in the production registry would let a typo in
+  `FELIX_MODEL_ROUTES` succeed silently and answer every prompt with canned text.
+
+### Changed
+
+- **One provider registry, not two.** `felix.patterns.model_registry` re-exports
+  `felix_ai.registry`, so a provider written against `felix_ai` alone — the point of the
+  package boundary — and one written against the harness land in the same dict. Two
+  registries would have meant `build_one_model` finding only half the providers.
+
+### Added
+
 - **Ten more providers, as table rows.** `workers_ai` (Cloudflare Workers AI), `groq`,
   `together`, `deepseek`, `cerebras`, `fireworks`, `openrouter`, `xai`, `mistral`, and
   `google` via its OpenAI-compatible endpoint. All speak OpenAI chat-completions, so each is

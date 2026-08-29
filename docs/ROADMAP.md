@@ -243,9 +243,13 @@ Deferred deliberately; each has a written reason, not just a lack of time.
 - [ ] **Telemetry vocabulary** — OTel and Prometheus are wired but there is no
       span/attribute vocabulary and no schema. Most of the value was the
       conformance-suite pattern, which `tests/conformance/` already has.
-- [ ] **Scripted model provider** — a `scripted` provider in
-      `patterns/model_registry.py` to replace the ad-hoc doubles each test file
-      builds. Convenience: the doubles work, and this would not find bugs.
+- [x] **Scripted model provider** — shipped as `felix_ai.providers.scripted`,
+      opt-in rather than registered by default (a fake in the production registry
+      would let a typo in `FELIX_MODEL_ROUTES` answer prompts with canned text).
+      Filed as convenience that "would not find bugs"; it became the no-HTTP arm
+      of `tests/conformance/test_model_provider.py`, which does — nothing
+      previously exercised registration → route → `build_one_model` → turn →
+      `record_usage`, the chain a third-party provider actually travels.
 - [ ] **Long-context price tiers** — `estimate_cost` supports request-wide
       tiers but **no bundled entry sets them**, so any provider that bills long
       context at a premium is still under-counted, and `limits.max_cost_usd`

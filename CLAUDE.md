@@ -68,7 +68,13 @@ without touching the skip count; that is how six Temporal tests went unexecuted 
 `--extra temporal --extra warehouse` and sets `FELIX_REQUIRE_OPTIONAL_EXTRAS=1`, which turns a
 missing extra into a failure. Locally, without that variable, these still skip as before.
 
-Store conformance (`tests/conformance/`) runs one contract against every backend, because the
+Conformance (`tests/conformance/`) runs one contract against every implementation of a seam.
+`test_model_provider.py` does it for model providers — three arms (`scripted`, `openai`,
+`anthropic`), none needing infrastructure, so a skip there is a bug rather than a missing
+database. It covers the chain nothing else does: registration → `FELIX_MODEL_ROUTES` →
+`build_one_model` → a turn → `record_usage`.
+
+Store conformance runs the same way against every backend, because the
 invariant above only asserts an in-memory twin *exists* — not that it behaves like the Postgres
 store it stands in for. The in-memory arm runs everywhere; the Postgres arm needs a database:
 
