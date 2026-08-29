@@ -780,3 +780,38 @@ def test_every_plugin_registration_method_has_a_consumer() -> None:
         "plugin registration methods whose registration nothing in core reads — "
         f"wire them or delete them: {'; '.join(orphans)}"
     )
+
+
+def test_no_tenant_scoped_accessor_defaults_to_the_default_tenant() -> None:
+    """A `tenant_id` that defaults is a cross-tenant read waiting to happen.
+
+    `_provenance` called `get_session_store(settings)` and silently read tenant
+    "default"'s session log for every caller. That is the third time this class has
+    landed — `_announce` and `get_session_store`'s storage half preceded it, both
+    recorded in docs/ROADMAP.md — so the rule is enforced rather than remembered.
+
+    Scoped to the session layer, where the accessors hand back a whole tenant's log.
+    """
+    session_dir = HARNESS / "session"
+    offenders: list[str] = []
+
+    for path in sorted(session_dir.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            args = node.args
+            # Defaults align to the tail of their own parameter list.
+            pairs = list(zip(args.args[len(args.args) - len(args.defaults) :], args.defaults, strict=True))
+            pairs += [(a, d) for a, d in zip(args.kwonlyargs, args.kw_defaults, strict=True) if d is not None]
+            for arg, default in pairs:
+                if arg.arg != "tenant_id":
+                    continue
+                if isinstance(default, ast.Constant) and default.value == "default":
+                    rel = path.relative_to(ROOT)
+                    offenders.append(f"{rel}:{node.lineno} {node.name}")
+
+    assert offenders == [], (
+        "tenant_id must not default to 'default' on a session accessor — omitting it "
+        f"should be a TypeError, not another tenant's log: {'; '.join(offenders)}"
+    )

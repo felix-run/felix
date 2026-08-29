@@ -113,7 +113,7 @@ async def test_summarize_abandoned_branch_fallback() -> None:
     from felix.session.tree import annotate_and_append
     from felix.session.types import AppendableEvent
 
-    store = InMemorySessionStore()
+    store = InMemorySessionStore(tenant_id="default")
     session = store.open("tenant:thread-branch")
     ids = await annotate_and_append(
         session,

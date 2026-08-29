@@ -74,7 +74,7 @@ class ListMemoriesArgs(BaseModel):
     limit: int = Field(default=20, ge=1, le=100)
 
 
-async def _provenance(settings: Settings) -> tuple[str, int | None]:
+async def _provenance(settings: Settings, *, tenant_id: str) -> tuple[str, int | None]:
     """The thread and turn ordinal this tool call belongs to.
 
     Resolved at call time, not when the tool is bound: the agent is compiled before
@@ -82,7 +82,19 @@ async def _provenance(settings: Settings) -> tuple[str, int | None]:
     a memory the agent writes through `remember` carries no provenance at all, while
     one captured automatically does — and `as_of` would then misreport, because half
     the writes look like genesis.
+
+    `tenant_id` is required rather than defaulted. Omitting it resolved the store for
+    tenant "default" whatever the caller was, so every other tenant read a log that
+    did not hold its thread and stamped `origin_seq = 0` — reintroducing exactly the
+    genesis collapse this function exists to prevent. Where a thread id also existed
+    under "default", it read that tenant's log instead.
     """
+    # The thread comes from the request and the tenant from the binding, on purpose.
+    # `origin_seq` is an ordinal into a session log, and it is only meaningful
+    # against the log of the tenant the row is written under — which is
+    # `b.tenant_id`, the same value `put_memory` takes. Reading the tenant from the
+    # context instead would stamp a real ordinal from one tenant onto a row owned by
+    # another: a wrong number rather than a missing one, and unfalsifiable later.
     from felix.context import try_get_context
 
     req = try_get_context()
@@ -92,7 +104,7 @@ async def _provenance(settings: Settings) -> tuple[str, int | None]:
     try:
         from felix.session.store import get_session_store
 
-        head = await get_session_store(settings).open(thread_id).head()
+        head = await get_session_store(settings, tenant_id=tenant_id).open(thread_id).head()
         return thread_id, int(head.get("seq") or 0)
     except Exception:
         logger.debug("turn ordinal unavailable for %s", thread_id, exc_info=True)
@@ -122,7 +134,7 @@ class _Binding:
 
 def _remember_tool(b: _Binding) -> Tool:
     async def handler(args: RememberArgs, _ctx: ToolInvocationCtx | None = None) -> str:
-        thread_id, origin_seq = await _provenance(b.settings)
+        thread_id, origin_seq = await _provenance(b.settings, tenant_id=b.tenant_id)
         row = await memory_store.put_memory(
             b.settings,
             b.tenant_id,

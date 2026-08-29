@@ -563,7 +563,13 @@ this list came from.
         that channel whoever wrote it. A real tenant's reader was never woken; a
         `"default"` reader was woken by other tenants' writes. `get_session_store`
         had the same bug in its storage half. Every test used `"default"` — the
-        one value that could not fail.
+        one value that could not fail. **Third instance, Aug 2026:**
+        `memory/tools.py:_provenance` called `get_session_store(settings)` with no
+        tenant, so `remember` read tenant `"default"`'s log for every caller and
+        stamped `origin_seq = 0`. Same shape, same cause: a `tenant_id` that
+        defaults. The defaults are now gone from the session accessors and
+        `tests/unit/test_invariants.py` fails if one comes back — a required
+        keyword catches omission, though not an explicit `tenant_id="default"`.
       - The subscription was scoped to a *wait*, not a reader, so a stream
         subscribed and unsubscribed once per poll interval while the docstring
         said "as readers come and go".

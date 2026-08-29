@@ -74,7 +74,7 @@ async def test_skill_tools_activate() -> None:
 
 @pytest.mark.asyncio
 async def test_compacting_strategy_without_model() -> None:
-    store = InMemorySessionStore()
+    store = InMemorySessionStore(tenant_id="default")
     session = store.open("t:compact")
     # Many long events to exceed tiny window
     for i in range(20):
@@ -118,7 +118,7 @@ def test_estimate_tokens() -> None:
 
 @pytest.mark.asyncio
 async def test_session_tree_fork_rewind() -> None:
-    store = InMemorySessionStore()
+    store = InMemorySessionStore(tenant_id="default")
     src = store.open("t:src")
     await annotate_and_append(
         src,
@@ -221,7 +221,7 @@ async def test_context_files_from_store() -> None:
 
 @pytest.mark.asyncio
 async def test_model_change_event_kind() -> None:
-    store = InMemorySessionStore()
+    store = InMemorySessionStore(tenant_id="default")
     session = store.open("t:model")
     await annotate_and_append(
         session,

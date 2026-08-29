@@ -56,7 +56,7 @@ def test_there_is_no_in_process_builtin() -> None:
     """
     assert set(list_checkpointers()) >= {"none", "postgres"}
     with pytest.raises(ValueError, match="unknown checkpointer"):
-        build_checkpointer("memory", MEMORY)
+        build_checkpointer("memory", MEMORY, tenant_id="t")
 
 
 def test_none_means_no_store_at_all() -> None:
@@ -69,7 +69,7 @@ def test_none_means_no_store_at_all() -> None:
 def test_the_unimplementable_values_are_now_errors(name: str) -> None:
     """They used to be accepted and silently mean `postgres`."""
     with pytest.raises(ValueError, match="unknown checkpointer"):
-        build_checkpointer(name, MEMORY)
+        build_checkpointer(name, MEMORY, tenant_id="t")
     with pytest.raises(ValueError, match="unknown checkpointer"):
         validate_checkpointer_config(name, session_strategy="full_replay")
 
@@ -89,7 +89,7 @@ def test_a_plugin_can_register_a_checkpointer(restore_checkpointers: Any) -> Non
     register_checkpointer("acme-redis", lambda settings, tenant: _Redis())
 
     assert "acme-redis" in list_checkpointers()
-    assert isinstance(build_checkpointer("acme-redis", MEMORY), _Redis)
+    assert isinstance(build_checkpointer("acme-redis", MEMORY, tenant_id="t"), _Redis)
     validate_checkpointer_config("acme-redis", session_strategy="compacting")
 
     # The field must still accept the plugin's name — reverting it to a Literal

@@ -97,7 +97,7 @@ class InMemorySessionStore:
     differently from the Postgres store it stands in for.
     """
 
-    def __init__(self, *, tenant_id: str = "default") -> None:
+    def __init__(self, *, tenant_id: str) -> None:
         self.tenant_id = tenant_id
         self._sessions: dict[str, _MemorySession] = {}
 
@@ -309,7 +309,7 @@ class _PostgresSession:
 class PostgresSessionStore:
     """Postgres-backed SessionStore (session_events table)."""
 
-    def __init__(self, session_factory: Any, *, tenant_id: str = "default") -> None:
+    def __init__(self, session_factory: Any, *, tenant_id: str) -> None:
         self._session_factory = session_factory
         self._tenant_id = tenant_id
 
@@ -332,7 +332,17 @@ def _use_in_memory_session(settings: Settings) -> bool:
     return ":memory:" in url or "sqlite" in url or url.startswith("memory://")
 
 
-def get_session_store(settings: Settings, *, tenant_id: str = "default") -> SessionStore:
+def get_session_store(settings: Settings, *, tenant_id: str) -> SessionStore:
+    """The session store for one tenant.
+
+    `tenant_id` has no default on purpose. A default made omitting it silent rather
+    than wrong-looking, which is how a caller came to read tenant "default"'s log
+    for every tenant. A missing tenant is now a TypeError where the mistake is,
+    rather than a quiet cross-tenant read three layers away.
+
+    Note the residual risk this does *not* cover: an explicit `tenant_id="default"`
+    still compiles. Only a test that asserts on the resulting ordinal catches that.
+    """
     if _use_in_memory_session(settings):
         store = _memory_session_stores.get(tenant_id)
         if store is None:
@@ -416,7 +426,7 @@ _BUILTIN_CHECKPOINTERS = frozenset(_checkpointers)
 # A plugin that registers one owns that consistency problem knowingly.
 
 
-def build_checkpointer(name: str, settings: Settings, *, tenant_id: str = "default") -> SessionStore | None:
+def build_checkpointer(name: str, settings: Settings, *, tenant_id: str) -> SessionStore | None:
     """Resolve `spec.memory.checkpointer` to a store, or None for no persistence."""
     return _require_checkpointer(name)(settings, tenant_id)
 
