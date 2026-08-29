@@ -178,3 +178,40 @@ def test_an_undeclared_cap_is_not_refused() -> None:
     break every local Ollama deployment over a ceiling the author never asked for."""
     settings = _settings(model_routes='{"mystery":{"provider":"openai","model":"mystery-model"}}')
     assert_cost_limit_is_measurable(_manifest("mystery", limits={"max_tool_calls": 5}), settings)
+
+
+def test_an_unpriceable_fallback_is_refused_too() -> None:
+    """The sibling docstring above says a typo in a *fallback* stays invisible until the
+    primary is already failing. The same is true of an unpriceable one — and deleting the
+    `fallbacks` line from the check left the suite green."""
+    settings = _settings(
+        model_routes=(
+            '{"known":{"provider":"anthropic","model":"claude-sonnet-5"},'
+            '"mystery":{"provider":"openai","model":"mystery-model"}}'
+        )
+    )
+    manifest = _manifest("known", limits={"max_cost_usd": 5.0})
+    manifest.spec.model.fallbacks = ["mystery"]
+    with pytest.raises(GovernanceError, match="mystery"):
+        assert_cost_limit_is_measurable(manifest, settings)
+
+
+def test_a_route_absent_from_the_table_is_left_to_the_model_layer() -> None:
+    """`build_one_model` reports an unknown logical id with the registered providers named;
+    repeating that here would be a second, worse copy of the same message."""
+    settings = _settings(model_routes="{}")
+    assert_cost_limit_is_measurable(_manifest("nowhere", limits={"max_cost_usd": 5.0}), settings)
+
+
+@pytest.mark.asyncio
+async def test_the_cost_check_runs_at_compile() -> None:
+    """Every other test here calls the function directly, so nothing held `build_agent` to
+    actually invoking it — removing the call from the builder left the suite green."""
+    from felix.manifests.builder import BuildDeps, build_agent
+    from felix.tools.provider import InMemoryToolProvider
+
+    settings = _settings(model_routes='{"mystery":{"provider":"openai","model":"mystery-model"}}')
+    manifest = _manifest("mystery", limits={"max_cost_usd": 5.0})
+    deps = BuildDeps(tools=InMemoryToolProvider(), settings=settings, tenant_id="t")
+    with pytest.raises(GovernanceError, match="max_cost_usd"):
+        await build_agent(manifest, deps=deps, settings=settings)

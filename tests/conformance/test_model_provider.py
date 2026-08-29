@@ -261,6 +261,12 @@ def _user(text: str = "hi") -> list[ChatMessage]:
     return [ChatMessage(role="user", content=text)]
 
 
+def _with_system(text: str = "hi") -> list[ChatMessage]:
+    """A system prompt is where the Anthropic path places its cache breakpoint, so any
+    assertion about caching needs one to be meaningful."""
+    return [ChatMessage(role="system", content="you are a helper"), ChatMessage(role="user", content=text)]
+
+
 # --- the published shape ------------------------------------------------------------------
 
 
@@ -456,29 +462,31 @@ async def test_the_scripted_provider_is_not_registered_by_default() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_provider_with_only_chat_and_stream_still_runs() -> None:
-    """The Protocol declares `stream_turn` optional, so the contract states what omitting
-    it costs rather than pretending it is forbidden.
+async def test_a_fallback_skips_a_provider_that_cannot_stream_a_turn() -> None:
+    """What omitting `stream_turn` actually costs, asserted against production code.
 
-    A provider with only `stream()` cannot report tool calls *or* usage from a streamed
-    request, so the agent loop streams for display and calls `chat()` again to get the
-    authoritative, metered turn — two inferences for one turn, billed twice and sampled
-    twice. `_FallbackClient.stream_turn` skips such a client entirely.
+    The previous version of this test defined a `_ChatOnly` class and then asserted only
+    about that class — every claim in its docstring (`_FallbackClient` skips such a client,
+    the loop pays for a second inference) was unreachable from the test body, so no
+    production change could have made it fail.
+
+    `_FallbackClient.stream_turn` probes each client with `getattr(..., "stream_turn")` and
+    skips those without one. A chain of only such clients therefore yields nothing at all —
+    the caller falls back to `chat()`, correct but two inferences for one turn.
     """
-    from felix_ai.types import ChatMessage as CM
+    from felix.patterns.model import _FallbackClient
     from felix_ai.types import ModelChatResult
 
     class _ChatOnly:
-        model_id = "legacy"
-        route = ModelRoute(provider="legacy", model="legacy-1")
-
-        def __init__(self) -> None:
+        def __init__(self, name: str) -> None:
+            self.model_id = name
+            self.route = ModelRoute(provider="legacy", model=name)
             self.calls: list[str] = []
 
         async def chat(self, messages, tools, opts=None):
             self.calls.append("chat")
             return ModelChatResult(
-                message=CM(role="assistant", content="done"),
+                message=ChatMessage(role="assistant", content="done"),
                 usage=TokenUsage(input=EXPECT_INPUT, output=EXPECT_OUTPUT),
             )
 
@@ -486,12 +494,225 @@ async def test_a_provider_with_only_chat_and_stream_still_runs() -> None:
             self.calls.append("stream")
             yield "done"
 
-    client = _ChatOnly()
-    assert getattr(client, "stream_turn", None) is None, "the probe callers use"
+    primary = _ChatOnly("a")
+    chain = _FallbackClient(
+        primary=primary,
+        fallbacks=[_ChatOnly("b")],
+        model_id="a",
+        route=primary.route,
+    )
 
-    chunks = [c async for c in client.stream(_user(), [])]
-    result = await client.chat(_user(), [])
-    assert chunks == ["done"]
+    emitted = [item async for item in chain.stream_turn(_user(), [])]
+    assert emitted == [], "a chain with no stream_turn anywhere yields nothing"
+    assert primary.calls == [], "and does not silently fall back to chat() inside the composite"
+
+    # The turn still completes; it just costs the second inference the Protocol warns about.
+    result = await chain.chat(_user(), [])
     assert result.usage is not None and result.usage.input == EXPECT_INPUT
-    # The cost of the missing capability, stated: the turn took two calls.
-    assert client.calls == ["stream", "chat"]
+    assert primary.calls == ["chat"]
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_a_streamed_upstream_failure_also_raises(arm: _Arm) -> None:
+    """The non-streaming path was covered and the streaming one was not, though it is the
+    path a real turn takes. A streamed 5xx that yields nothing instead of raising means
+    `_FallbackClient` never fails over on a streamed request."""
+    from felix.patterns.model import _is_provider_error
+
+    arm.program_error(503)
+    with pytest.raises(ModelGatewayError) as excinfo:
+        async for _ in arm.client.stream_turn(_user(), []):
+            pass
+    assert excinfo.value.status == 503
+    assert _is_provider_error(excinfo.value)
+
+
+@pytest.mark.parametrize("arm", ["openai", "anthropic"], indirect=True)
+@pytest.mark.asyncio
+async def test_the_request_carries_what_the_turn_was_given(arm: _Arm) -> None:
+    """The contract covered only the response direction.
+
+    `_Transport.sent` was recorded and never asserted on, so a wire format that dropped
+    every tool result, every system prompt or every tool schema passed the whole suite —
+    for a file whose thesis is that twelve doubles each re-decide what a provider owes its
+    caller, the request half is the half that matters.
+    """
+    assert arm.transport is not None
+    arm.program_turn()
+
+    class _Tool:
+        name = "search"
+        description = "look things up"
+        args_schema = {"type": "object", "properties": {"q": {"type": "string"}}}
+        raw_input_schema = None
+
+    messages = [
+        ChatMessage(role="system", content="you are a helper"),
+        ChatMessage(role="user", content="find felix"),
+        ChatMessage(
+            role="assistant", content="", tool_calls=[ToolCall(id="c1", name="search", args={"q": "felix"})]
+        ),
+        ChatMessage(role="tool", tool_call_id="c1", name="search", content="a result"),
+    ]
+    await arm.client.chat(messages, [_Tool()])
+
+    body = arm.transport.sent[-1]
+    flat = json.dumps(body)
+    assert "you are a helper" in flat, "the system prompt must reach the provider"
+    assert "a result" in flat, "a tool result must be replayed, or the model re-calls the tool"
+    assert "search" in flat and "look things up" in flat, "the tool schema must be sent"
+    # Twice: once on the assistant's call and once on the result that answers it. Asserting
+    # mere presence passed even with the result's id blanked, since the call still carried it.
+    assert flat.count("c1") >= 2, "the tool call id must tie the result back to its call"
+
+    headers = arm.transport.headers[-1]
+    assert any("k" in v for v in headers.values()), "the credential must be on the request"
+
+
+@pytest.mark.parametrize("arm", ["openai", "anthropic"], indirect=True)
+@pytest.mark.asyncio
+async def test_isolate_cache_is_honoured_on_every_path(arm: _Arm) -> None:
+    """Accepting `ModelChatOptions` is not the same as obeying it.
+
+    The contract used to assert only that `chat` *takes* `isolate_cache=True`, and the fix
+    that threaded it through landed on `_stream` — the path callers reach only when a
+    provider has no `stream_turn` — while `stream_turn`, the primary metered path, still
+    dropped it. That is the same defect the fix was written to close, one method over.
+
+    A side request that writes the conversation's prompt-cache key churns the cached prefix
+    the next real turn would have hit, which is the entire point of the flag. The scripted
+    arm is excluded: it has no request body to inspect.
+    """
+    assert arm.transport is not None
+    spec = type("_Spec", (), {"cache": True, "thinking_budget": None, "temperature": 0, "max_tokens": None})()
+    arm.client.spec = spec
+
+    arm.program_turn()
+    await arm.client.chat(_with_system(), [], ModelChatOptions(isolate_cache=True))
+    arm.program_stream()
+    async for _ in arm.client.stream_turn(_with_system(), [], ModelChatOptions(isolate_cache=True)):
+        pass
+
+    for body in arm.transport.sent:
+        assert "prompt_cache_key" not in body, "an isolated request must not write the cache key"
+        for block in (body.get("system") or []) if isinstance(body.get("system"), list) else []:
+            assert "cache_control" not in block, "an isolated request must not place breakpoints"
+
+
+@pytest.mark.parametrize("arm", ["openai", "anthropic"], indirect=True)
+@pytest.mark.asyncio
+async def test_a_normal_request_still_asks_for_caching(arm: _Arm) -> None:
+    """The counterpart, so the test above cannot pass by never caching at all."""
+    assert arm.transport is not None
+    spec = type("_Spec", (), {"cache": True, "thinking_budget": None, "temperature": 0, "max_tokens": None})()
+    arm.client.spec = spec
+
+    arm.program_stream()
+    async for _ in arm.client.stream_turn(_with_system(), []):
+        pass
+
+    body = arm.transport.sent[-1]
+    cached = "prompt_cache_key" in body or any(
+        "cache_control" in block for block in (body.get("system") or []) if isinstance(block, dict)
+    )
+    assert cached, "a normal request should carry the caching hint this wire format uses"
+
+
+@pytest.mark.asyncio
+async def test_request_shaping_uses_the_wire_model_not_the_route_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The third place the logical-vs-wire id distinction has to hold.
+
+    Pricing and context-window sizing were both fixed by keying on `route.model`; shaping
+    is the same trick, and swapping `self.route.model` for `self.model_id` in the two
+    shaper call sites left the whole suite green — every shaping test calls the shaper
+    directly with a literal model string. Driven through a client, an operator's route
+    named `fast` pointing at `o3-mini` must still be shaped as a reasoning model.
+    """
+    import httpx
+    from felix.config import Settings
+    from felix_ai.wire.openai_completions import OpenAICompletionsClient
+
+    transport = _Transport()
+    monkeypatch.setattr(httpx, "AsyncClient", transport)
+    transport.response = _Resp(
+        200,
+        {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}], "usage": {}},
+    )
+
+    spec = type(
+        "_Spec", (), {"cache": False, "thinking_budget": None, "temperature": 0.7, "max_tokens": 4096}
+    )()
+    client = OpenAICompletionsClient(
+        model_id="fast",
+        route=ModelRoute(provider="openai", model="o3-mini"),
+        settings=Settings(database_url="memory://shaping", object_store="memory"),
+        spec=spec,
+        base_url="https://example.invalid/v1",
+        api_key="k",
+    )
+    await client.chat(_user(), [])
+
+    body = transport.sent[-1]
+    assert "temperature" not in body, "the o-series rejects sampling params"
+    assert "max_tokens" not in body, "the o-series renamed it"
+    assert body["max_completion_tokens"] == 4096
+
+
+def test_every_shipped_wire_format_has_an_arm() -> None:
+    """The docstring promises "add an arm and it inherits every assertion" — but a fourth
+    wire class would simply have no arm and nothing would say so. This is the model-layer
+    equivalent of `FELIX_CONFORMANCE_REQUIRE_POSTGRES`: an uncovered implementation must
+    fail rather than look like a pass."""
+    from felix_ai.providers import builtin_provider_specs
+    from felix_ai.wire.anthropic_messages import AnthropicMessagesClient
+    from felix_ai.wire.openai_completions import OpenAICompletionsClient
+
+    covered = {"openai": OpenAICompletionsClient, "anthropic": AnthropicMessagesClient}
+    shipped = {spec.wire for spec in builtin_provider_specs()}
+    assert shipped <= set(covered.values()), (
+        f"a wire format ships with no conformance arm: {shipped - set(covered.values())}"
+    )
+    assert set(covered) <= set(WIRE_FORMATS)
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_cache_tokens_are_reported_where_the_wire_format_has_them(arm: _Arm) -> None:
+    """`cache_read` and `cache_creation` feed `limit_state.tokens_input` and the cost
+    maths, so a wire format that parses them into the wrong field under-counts input on
+    every cached turn. Programmed only where the format carries them."""
+    if arm.wire != "anthropic":
+        pytest.skip("only the Anthropic wire format reports cache tokens natively")
+    assert arm.transport is not None
+    arm.transport.response = _Resp(
+        200,
+        {
+            "content": [{"type": "text", "text": "hi"}],
+            "stop_reason": "end_turn",
+            "usage": {
+                "input_tokens": EXPECT_INPUT,
+                "output_tokens": EXPECT_OUTPUT,
+                "cache_read_input_tokens": 5,
+                "cache_creation_input_tokens": 3,
+            },
+        },
+    )
+    result = await arm.client.chat(_user(), [])
+    assert result.usage is not None
+    assert result.usage.cache_read == 5
+    assert result.usage.cache_creation == 3
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_stream_yields_text_for_a_provider_that_only_streams(arm: _Arm) -> None:
+    """`stream()` is the path a provider without `stream_turn` lands on, and it was dead to
+    this suite — the Anthropic implementation of it was ~83 statements nothing executed.
+    It is now a text-only view of `_stream_turn`, so both share one request body and one
+    SSE loop instead of two that drift."""
+    arm.program_stream(content="hello")
+    chunks = [c async for c in arm.client.stream(_user(), [])]
+    assert "".join(chunks) == "hello"

@@ -85,9 +85,9 @@ def _context_window_for_manifest(manifest: Any, strategy_spec: Any) -> int:
         from felix.model_catalog import entry_for
         from felix.patterns.model import parse_model_routes
 
-        # `model_id` here is the logical route name, which matches nothing in the catalog —
-        # so every manifest fell through to the 128K default and compacted a 1M-context
-        # model as if it were eight times smaller.
+        # `model_id` here is the logical route name. `claude-sonnet` matched only the loose
+        # family key at 200K, so a manifest on the default route compacted against a fifth of
+        # the window it pays for; an id matching nothing at all fell to the 128K default.
         route = parse_model_routes().get(model_id)
         return entry_for(route.model if route is not None else model_id).context_window
     return int(declared or 128000)

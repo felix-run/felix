@@ -15,6 +15,15 @@ from felix_ai.catalog import (
     all_entries,
     clamp_effort,
     entry_for,
+    is_priced,
+    known_entry_for,
+)
+from felix_ai.providers import ProviderSpec, builtin_provider_specs
+from felix_ai.registry import (
+    ModelProviderFactory,
+    get_model_provider,
+    list_model_providers,
+    register_model_provider,
 )
 from felix_ai.types import (
     ChatMessage,
@@ -65,9 +74,11 @@ __all__ = [
     "ModelGatewayError",
     "ModelPricing",
     "ModelProvider",
+    "ModelProviderFactory",
     "ModelQuirks",
     "ModelRoute",
     "OpenAICompletionsClient",
+    "ProviderSpec",
     "Role",
     "StopReason",
     "StreamDelta",
@@ -77,11 +88,17 @@ __all__ = [
     "all_entries",
     "apply_anthropic_thinking_cache",
     "apply_openai_thinking_cache",
+    "builtin_provider_specs",
     "clamp_effort",
     "entry_for",
+    "get_model_provider",
+    "is_priced",
+    "known_entry_for",
+    "list_model_providers",
     "map_stop",
     "parse_tool_arguments",
     "post_with_retry",
     "reasoning_effort_from_budget",
+    "register_model_provider",
     "tool_json_schema",
 ]

@@ -159,14 +159,49 @@ def test_a_provider_key_from_the_options_map_is_masked() -> None:
     assert "https://x.invalid" not in values
 
 
-def test_every_builtin_provider_with_a_key_is_in_the_hydrate_map() -> None:
-    """Derived, not hand-listed — that map also feeds output masking, so a provider missing
-    from it leaks its key rather than merely failing to hydrate."""
+def test_a_declared_secret_name_is_actually_reachable() -> None:
+    """The guard must not restate the comprehension it guards.
+
+    This previously looped with `if spec.api_key_config_key and spec.secret_names` — the
+    identical predicate `_provider_secret_entries` derives the map with — so it asserted
+    nothing about the ten providers it was written to protect, and passed while all thirty
+    of their `secret_names` were inert. Declaring names without a config key to hydrate
+    them into is the bug; assert that no spec does it.
+    """
     from felix.secrets import _HYDRATE_MAP
 
     for spec in builtin_provider_specs():
-        if spec.api_key_config_key and spec.secret_names:
+        if spec.secret_names:
+            assert spec.api_key_config_key, (
+                f"{spec.name} declares secret_names with no config key to hydrate into, "
+                "so the secrets backend can never reach it"
+            )
             assert spec.api_key_config_key in _HYDRATE_MAP, spec.name
+
+
+def test_a_hosted_provider_credential_comes_from_a_secret_ref() -> None:
+    """The hosted providers have no `Settings` field, so their key arrives through the
+    options map — where a `secret:NAME` value resolves through the same backend."""
+    import asyncio
+
+    from felix.secrets import hydrate_secrets
+
+    settings = _settings(
+        secrets_backend="env",
+        model_provider_options='{"groq":{"api_key":"secret:CONFORMANCE_GROQ_KEY"}}',
+    )
+    import os
+
+    os.environ["CONFORMANCE_GROQ_KEY"] = "sk-from-the-backend"
+    try:
+        masked = asyncio.run(hydrate_secrets(settings))
+        _, api_key, _headers = resolve_provider_config(
+            next(s for s in builtin_provider_specs() if s.name == "groq"), settings
+        )
+        assert api_key == "sk-from-the-backend"
+        assert "sk-from-the-backend" in masked, "a resolved provider key must be redacted"
+    finally:
+        os.environ.pop("CONFORMANCE_GROQ_KEY", None)
 
 
 # --- endpoints --------------------------------------------------------------------------

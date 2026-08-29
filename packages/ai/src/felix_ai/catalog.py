@@ -260,15 +260,12 @@ _DEFAULT = ModelCatalogEntry(
 
 
 def entry_for(model_id: str | None) -> ModelCatalogEntry:
-    """The catalog entry for a wire model id, by longest matching key."""
-    mid = (model_id or "").strip().lower()
-    if not mid:
-        return _DEFAULT
-    best: tuple[int, ModelCatalogEntry] | None = None
-    for key, entry in _CATALOG.items():
-        if key in mid and (best is None or len(key) > best[0]):
-            best = (len(key), entry)
-    return best[1] if best else _DEFAULT
+    """The catalog entry for a wire model id, by longest matching key.
+
+    Falls back to `_DEFAULT` for an unrecognised id, which is right for sizing a context
+    window and wrong for shaping a request — see `known_entry_for`.
+    """
+    return known_entry_for(model_id) or _DEFAULT
 
 
 def all_entries() -> dict[str, ModelCatalogEntry]:

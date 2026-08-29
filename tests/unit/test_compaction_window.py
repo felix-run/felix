@@ -64,8 +64,9 @@ def test_missing_session_spec_is_not_an_error() -> None:
 
 def test_a_logical_route_id_resolves_to_the_wire_models_window() -> None:
     """`spec.model.id` is a *logical* route name in every bundled manifest, and feeding
-    that to the catalog matched only the loose `claude-sonnet` family key — so a manifest
-    on the default route compacted against 128K instead of the 1M it pays for."""
+    that to the catalog matched only the loose `claude-sonnet` family key, whose entry is
+    200K — so a manifest on the default route compacted against 200K instead of the 1M it
+    pays for. (128K is what an id matching *nothing* would have got.)"""
     from felix.config import Settings
     from felix.patterns.model import parse_model_routes
 

@@ -103,6 +103,14 @@ def test_every_entry_is_internally_coherent(model_id: str) -> None:
     assert "text" in entry.input_modalities
 
 
+def test_the_unpriced_set_is_exactly_this() -> None:
+    """Named exhaustively, not sampled: a *new* entry shipping unpriced silently zeroes
+    spend for a model that costs money, and the coherence assertions above now skip
+    unpriced entries. Adding one has to be a decision someone makes here."""
+    unpriced = {key for key, entry in all_entries().items() if entry.pricing is None}
+    assert unpriced == {"gpt-4.1", "gpt-4", "o1", "o3", "o4", "llama"}
+
+
 def test_an_entry_that_states_no_rates_has_none() -> None:
     """`ModelPricing()` carries Claude Sonnet's list price in its own field defaults, so
     while it was the field default, every entry that simply omitted rates billed at $3/$15

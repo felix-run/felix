@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The hosted providers' `secret_names` were inert.** `_compat` passed
+  `api_key_config_key=config_key and None`, which is the constant `None`, while declaring
+  `secret_names` anyway — and `_HYDRATE_MAP` is derived with
+  `if spec.api_key_config_key and spec.secret_names`, so all thirty names were unreachable.
+  The descriptor promised a hydration path it did not have, in the same commit as a comment
+  claiming derivation made that impossible. The hosted rows now declare neither (they have
+  no `Settings` field to hydrate *into*), and their credential can be a `secret:NAME` value
+  inside `FELIX_MODEL_PROVIDER_OPTIONS`, resolved at startup through the same backend as
+  MCP and peer refs. The guard test was equally vacuous — it reused the derivation's own
+  predicate — and now asserts that no descriptor declares names it cannot reach.
+
+- **`isolate_cache` was still dropped on the primary streaming path.** The previous fix
+  threaded it into `_stream` — which callers reach only when a provider has no
+  `stream_turn` — while `stream_turn` itself resolved the options and discarded them. The
+  same defect the fix was written to close, one method over. The conformance contract now
+  asserts the flag is *honoured* on both paths, not merely accepted.
+
+- **Embedders were registered for providers that may not serve `/embeddings`.** The whole
+  OpenAI-compatible table was registered, so `FELIX_MEMORY_EMBEDDER=groq` passed startup
+  validation and failed at the first embed. It is a declared capability on the row now.
+  Relatedly, `FELIX_MEMORY_EMBEDDING_MODEL` defaults to `bge-base-en-v1.5`, a
+  sentence-transformers name, and was read unconditionally — so that string went out as a
+  model id to OpenAI, which the old `_build_openai` did too. Only an explicitly set value
+  wins now; otherwise the provider's own default applies.
+
+### Changed
+
+- **Streaming is implemented once per wire format, not twice.** `_stream` is a text-only
+  view of `_stream_turn` in the base class, and both overrides are gone — 149 lines,
+  including a 32-line block byte-identical to its `stream_turn` sibling. The copies had
+  already drifted (`_body` attaches the `cache_control` breakpoint to the last tool; the
+  hand-built body carried no `tools` key at all), and neither was reachable for a shipped
+  client. SSE framing is one shared `iter_sse_json` rather than four copies.
+
+- **`entry_for` is defined in terms of `known_entry_for`**, so the catalog's "one rule for
+  finding it" is written once. The four transitional aliases in `felix.patterns.model` are
+  deleted — three had no readers and the fourth had one test import that now uses the public
+  name. `parse_model_routes` is cached on the routes string; it went from three call sites
+  to seven in this branch and re-parsed the JSON on each.
+
 ### Added
 
 - **A conformance contract for model providers.** `tests/conformance/test_model_provider.py`

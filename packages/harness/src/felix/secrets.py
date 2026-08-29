@@ -29,9 +29,8 @@ _PLAINTEXT_AUTH_RE = re.compile(
 )
 
 
-# Settings attrs that may hold secrets, and candidate names in the secrets backend.
-#
-# The model-provider half is derived from the provider descriptors rather than listed here.
+# The model-provider half of the map below is derived from the provider descriptors rather
+# than listed by hand.
 # This map is also what feeds `collected_secret_values()`, so a provider missing from it is
 # not merely un-hydrated — its key is never masked out of tool output. Deriving it means
 # adding a provider cannot silently create that hole.
@@ -45,6 +44,7 @@ def _provider_secret_entries() -> dict[str, tuple[str, ...]]:
     }
 
 
+# Settings attrs that may hold secrets, and candidate names in the secrets backend.
 _HYDRATE_MAP: dict[str, tuple[str, ...]] = {
     **_provider_secret_entries(),
     "consumer_shared_secret": (
@@ -201,6 +201,55 @@ def build_secrets(settings: object) -> SecretsProvider:
     return factory(settings)
 
 
+async def _hydrate_provider_options(settings: Any, provider: SecretsProvider) -> list[str]:
+    """Resolve `secret:NAME` values inside `FELIX_MODEL_PROVIDER_OPTIONS`, in place.
+
+    The hosted providers have no `Settings` field, so there is no attribute for the loop
+    above to hydrate into — which is why their descriptors declare no `secret_names`. Their
+    credential arrives through the options map instead, and a `secret:NAME` value there is
+    resolved through the same backend, the same way MCP and peer refs already work:
+
+        FELIX_MODEL_PROVIDER_OPTIONS={"groq": {"api_key": "secret:GROQ_API_KEY"}}
+
+    Rewriting the setting in place keeps `resolve_provider_config` synchronous — it runs per
+    agent build, and secret lookups are not something to do on that path.
+    """
+    raw = (getattr(settings, "model_provider_options", "") or "").strip()
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, dict):
+        return []
+
+    found: list[str] = []
+    changed = False
+    for opts in parsed.values():
+        if not isinstance(opts, dict):
+            continue
+        for name, value in list(opts.items()):
+            if not isinstance(value, str) or secret_ref_name(value) is None:
+                continue
+            try:
+                resolved = await resolve_secret_value(provider, value, register=False)
+            except Exception:
+                logger.warning(
+                    "provider option %s could not be resolved from the secrets backend",
+                    loggable(name, limit=60),
+                )
+                continue
+            if resolved:
+                opts[name] = resolved
+                changed = True
+                if len(resolved) >= 8:
+                    found.append(resolved)
+    if changed:
+        settings.model_provider_options = json.dumps(parsed)
+    return found
+
+
 async def hydrate_secrets(settings: object) -> list[str]:
     """Fill empty settings attrs from FELIX_SECRETS_BACKEND; cache values for masking.
 
@@ -230,6 +279,8 @@ async def hydrate_secrets(settings: object) -> list[str]:
                 if len(val) >= 8:
                     found.append(val)
                 break
+
+    found.extend(await _hydrate_provider_options(settings, provider))
 
     extra = getattr(settings, "secret_names", "") or ""
     for name in (n.strip() for n in extra.split(",") if n.strip()):

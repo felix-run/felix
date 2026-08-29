@@ -16,6 +16,7 @@ import json
 import logging
 from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
 
 from felix_ai.providers import ProviderSpec, builtin_provider_specs
@@ -57,17 +58,35 @@ from felix.patterns.model_registry import (
 logger = logging.getLogger("felix.patterns.model")
 
 
-def parse_model_routes(settings: Settings | None = None) -> dict[str, ModelRoute]:
-    settings = settings or get_settings()
-    routes = {k: ModelRoute(**v) for k, v in DEFAULT_MODEL_ROUTES.items()}
-    if settings.model_routes.strip():
+@lru_cache(maxsize=32)
+def _parse_routes_cached(raw: str) -> dict[str, ModelRoute]:
+    """Routes for one `FELIX_MODEL_ROUTES` string.
+
+    Keyed on the string rather than on `Settings`, which is neither hashable nor stable —
+    and the string is the whole input. `parse_model_routes` went from 3 call sites to 7 in
+    this branch (context-window sizing, handoff family, cost measurability, startup
+    validation, the request allowlist), so a single agent compile re-ran `json.loads` and
+    rebuilt the dict several times over.
+    """
+    routes = {
+        k: ModelRoute(provider=v["provider"], model=v["model"]) for k, v in DEFAULT_MODEL_ROUTES.items()
+    }
+    if raw.strip():
         try:
-            override = json.loads(settings.model_routes)
+            override = json.loads(raw)
             for k, v in override.items():
                 routes[k] = ModelRoute(provider=v["provider"], model=v["model"])
-        except json.JSONDecodeError, KeyError, TypeError:
+        except Exception:
             logger.warning("invalid FELIX_MODEL_ROUTES; using defaults")
     return routes
+
+
+def parse_model_routes(settings: Settings | None = None) -> dict[str, ModelRoute]:
+    """Logical model id -> route, with `FELIX_MODEL_ROUTES` overlaid on the defaults."""
+    settings = settings or get_settings()
+    # A copy per call: the cached dict is shared, and a caller that mutated it would
+    # silently reconfigure routing for every other caller in the process.
+    return dict(_parse_routes_cached(settings.model_routes or ""))
 
 
 def wire_model_id(client: Any) -> str:
@@ -80,6 +99,32 @@ def wire_model_id(client: Any) -> str:
     """
     route = getattr(client, "route", None)
     return str(getattr(route, "model", "") or getattr(client, "model_id", "") or "")
+
+
+def _metered_usage(result: ModelChatResult, *, manifest_id: str, model_id: str | None) -> TokenUsage | None:
+    """This turn's usage, or `None` after saying loudly that there wasn't any.
+
+    Returns the usage rather than a bool so the caller keeps the non-`None` narrowing —
+    an earlier version answered `is_unmetered()` and moved every `result.usage` access
+    below it back into `TokenUsage | None`.
+
+    Not a no-op worth passing over quietly. `record_usage` is the only feed for
+    `limits.max_input_tokens`, `max_output_tokens` and `max_cost_usd`, so a turn that
+    reports nothing is a turn that cannot be capped — the budgets fail *open*. Most often
+    this is a provider whose streamed response omits usage: the OpenAI wire format needs
+    `stream_options.include_usage`, and an implementation that forgets it makes the whole
+    run free as far as limits are concerned.
+    """
+    usage = result.usage
+    if usage and (usage.input or usage.output or usage.cache_read or usage.cache_creation):
+        return usage
+    logger.warning(
+        "model turn reported no usage; this turn is unmetered and cannot count "
+        "against limits.max_cost_usd (model=%s)",
+        model_id or "default",
+    )
+    record_counter("felix_model_unmetered", {"manifest_id": manifest_id, "model": model_id or "default"})
+    return None
 
 
 def record_usage(
@@ -95,27 +140,14 @@ def record_usage(
     the provider's own id and is what gets *priced*, because that is what the catalog keys
     on. When they were the same argument, every custom route priced at the catalog default.
     """
-    if not result.usage or not (
-        result.usage.input or result.usage.output or result.usage.cache_read or result.usage.cache_creation
-    ):
-        # Not a no-op worth passing over quietly. `record_usage` is the only feed for
-        # `limits.max_input_tokens`, `max_output_tokens` and `max_cost_usd`, so a turn that
-        # reports nothing is a turn that cannot be capped — the budgets fail *open*. Most
-        # often this is a provider whose streamed response omits usage (the OpenAI wire
-        # format needs `stream_options.include_usage`, and a third-party implementation
-        # that forgets it makes the whole run free as far as limits are concerned).
-        logger.warning(
-            "model turn reported no usage; this turn is unmetered and cannot count "
-            "against limits.max_cost_usd (model=%s)",
-            model_id or "default",
-        )
-        record_counter("felix_model_unmetered", {"manifest_id": manifest_id, "model": model_id or "default"})
+    usage = _metered_usage(result, manifest_id=manifest_id, model_id=model_id)
+    if usage is None:
         return
     labels = {"manifest_id": manifest_id, "model": model_id or "default"}
     ctx = try_get_context()
     tenant_id = "default"
     if ctx is not None:
-        u = result.usage
+        u = usage
         ctx.limit_state.tokens_input += u.input + u.cache_creation + u.cache_read
         ctx.limit_state.tokens_output += u.output
         # Accumulate spend so `limits.max_cost_usd` has something to measure.
@@ -130,8 +162,8 @@ def record_usage(
         settings = ctx.settings
     else:
         settings = get_settings()
-    record_counter("felix_tokens", {**labels, "kind": "input"}, result.usage.input)
-    record_counter("felix_tokens", {**labels, "kind": "output"}, result.usage.output)
+    record_counter("felix_tokens", {**labels, "kind": "input"}, usage.input)
+    record_counter("felix_tokens", {**labels, "kind": "output"}, usage.output)
     try:
         from felix.usage.store import record_tokens
 
@@ -140,10 +172,10 @@ def record_usage(
             tenant_id=tenant_id,
             manifest_id=manifest_id,
             model_id=model_id or "",
-            tokens_input=result.usage.input,
-            tokens_output=result.usage.output,
-            cache_creation=result.usage.cache_creation,
-            cache_read=result.usage.cache_read,
+            tokens_input=usage.input,
+            tokens_output=usage.output,
+            cache_creation=usage.cache_creation,
+            cache_read=usage.cache_read,
         )
     except Exception:
         logger.debug("usage_record_failed", exc_info=True)
@@ -159,7 +191,7 @@ def record_usage(
                     tenant_id=tenant_id,
                     manifest_id=manifest_id,
                     model_id=model_id or "",
-                    usage=result.usage,
+                    usage=usage,
                 )
     except Exception:
         logger.debug("usage_sink_failed", exc_info=True)
@@ -474,14 +506,6 @@ def build_model(settings: Settings | None, spec: Any) -> ModelClient:
             route=client.route,
         )
     return client
-
-
-# Transitional aliases for the names that moved to `felix_ai`. Kept so the ~40 call sites
-# across core, the API and the tests did not have to change in the same commit as the move.
-_HttpModelClient = HttpModelClient
-_OpenAIClient = OpenAICompletionsClient
-_AnthropicClient = AnthropicMessagesClient
-_post_with_retry = post_with_retry
 
 
 __all__ = [

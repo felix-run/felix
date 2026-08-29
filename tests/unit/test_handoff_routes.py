@@ -66,3 +66,39 @@ def test_routes_are_loaded_when_the_caller_supplies_none() -> None:
     it never did before."""
     assert provider_family("claude-sonnet") == "anthropic"
     assert needs_handoff("claude-sonnet", "gpt-4.1")
+
+
+def test_handoff_system_message_threads_the_routes_it_is_given() -> None:
+    """The parameter exists on all three functions now; only the bottom two were covered."""
+    from felix.patterns.types import ChatMessage
+    from felix.session.handoff import handoff_system_message
+
+    messages = [ChatMessage(role="user", content="earlier turn")]
+    note = handoff_system_message(
+        messages, previous_model="claude-sonnet", next_model="gpt-4.1", routes=_ROUTES
+    )
+    assert note is not None and "earlier turn" in note.content
+
+    # Same provider under two route names: no handoff, and the sniff cannot tell.
+    routes = {**_ROUTES, "second-openai": {"provider": "openai", "model": "gpt-4o"}}
+    assert (
+        handoff_system_message(messages, previous_model="gpt-4.1", next_model="second-openai", routes=routes)
+        is None
+    )
+
+
+def test_unresolvable_routes_degrade_rather_than_raise(monkeypatch: Any) -> None:
+    """`provider_family` now loads the route table itself when the caller passes none, so
+    it can fail in a way it never could before. A handoff note is never worth failing a run
+    for — but the degrade has to be deliberate, not incidental."""
+    from felix.patterns import model as model_mod
+    from felix.session import handoff as handoff_mod
+
+    def _boom(*a: Any, **kw: Any):
+        raise RuntimeError("routes unavailable")
+
+    monkeypatch.setattr(model_mod, "parse_model_routes", _boom)
+    assert handoff_mod._routes(None) == {}
+    # And the callers above it still answer rather than propagating.
+    assert provider_family("anything") == "unknown:anything"
+    assert needs_handoff("a", "b") is True

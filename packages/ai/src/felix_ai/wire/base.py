@@ -36,6 +36,31 @@ from felix_ai.wire.transport import DEFAULT_CONNECT_TIMEOUT_S
 logger = logging.getLogger("felix_ai.wire.base")
 
 
+async def iter_sse_json(resp: Any) -> AsyncIterator[dict[str, Any]]:
+    """Decoded SSE payloads from a streaming response, framing handled once.
+
+    Every wire format frames the same way — `data:` prefix, a bare `{` for servers that
+    omit it, `[DONE]` to stop, undecodable lines skipped rather than fatal — and each used
+    to carry its own copy. What differs is what the decoded object *means*, which stays in
+    the caller.
+    """
+    async for line in resp.aiter_lines():
+        if not line:
+            continue
+        if line.startswith("data:"):
+            payload = line[5:].strip()
+        elif line.startswith("{"):
+            payload = line.strip()
+        else:
+            continue
+        if payload == "[DONE]":
+            return
+        try:
+            yield json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+
+
 def map_stop(raw: Any, table: dict[str, StopReason], *, had_tool_calls: bool) -> StopReason:
     """Translate a provider stop reason, falling back to the old inference."""
     key = str(raw or "").strip().lower()
@@ -205,8 +230,10 @@ class HttpModelClient(ABC):
         `ModelChatResult` — same message, tool calls, stop reason and usage that `chat()`
         would have returned. Callers distinguish the final item by type.
         """
-        _, temperature, max_tokens = self._resolve(opts)
-        async for item in self._stream_turn(messages, tools, temperature, max_tokens):
+        opts, temperature, max_tokens = self._resolve(opts)
+        async for item in self._stream_turn(
+            messages, tools, temperature, max_tokens, isolate_cache=opts.isolate_cache
+        ):
             yield item
 
     async def stream(
@@ -260,11 +287,12 @@ class HttpModelClient(ABC):
         tools: Sequence[ToolSchema],
         temperature: float,
         max_tokens: int | None,
+        *,
+        isolate_cache: bool = False,
     ) -> AsyncIterator[StreamDelta | ModelChatResult]:
         raise NotImplementedError
 
-    @abstractmethod
-    def _stream(
+    async def _stream(
         self,
         messages: list[ChatMessage],
         tools: Sequence[ToolSchema],
@@ -273,11 +301,28 @@ class HttpModelClient(ABC):
         *,
         isolate_cache: bool = False,
     ) -> AsyncIterator[str]:
-        raise NotImplementedError
+        """Text-only view of `_stream_turn`, so no wire format implements streaming twice.
+
+        Both formats used to override this with a hand-built request body and their own
+        copy of the SSE loop — 32 byte-identical lines in the Anthropic case, and the copies
+        had already drifted: `_body` attaches the `cache_control` breakpoint to the last
+        tool, while the hand-built body carried no `tools` key at all, so it never got one.
+        The branch that added `isolate_cache` then fixed it here and missed `stream_turn`,
+        which is the shape of bug duplication produces.
+
+        Neither shipped client reaches this: `react.py` and `delegating.py` both take
+        `stream_turn` when present. It exists for a provider that implements only `stream`.
+        """
+        async for item in self._stream_turn(
+            messages, tools, temperature, max_tokens, isolate_cache=isolate_cache
+        ):
+            if isinstance(item, StreamDelta) and item.kind == "text" and item.text:
+                yield item.text
 
 
 __all__ = [
     "HttpModelClient",
+    "iter_sse_json",
     "map_stop",
     "parse_tool_arguments",
     "tool_json_schema",

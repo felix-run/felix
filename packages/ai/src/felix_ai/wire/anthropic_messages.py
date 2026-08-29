@@ -7,7 +7,6 @@ turn or the provider rejects the whole request.
 
 from __future__ import annotations
 
-import json
 import logging
 import uuid
 from collections.abc import AsyncIterator, Sequence
@@ -28,6 +27,7 @@ from felix_ai.types import (
 )
 from felix_ai.wire.base import (
     HttpModelClient,
+    iter_sse_json,
     map_stop,
     parse_tool_arguments,
     tool_json_schema,
@@ -326,8 +326,10 @@ class AnthropicMessagesClient(HttpModelClient):
         tools: Sequence[ToolSchema],
         temperature: float,
         max_tokens: int | None,
+        *,
+        isolate_cache: bool = False,
     ) -> AsyncIterator[StreamDelta | ModelChatResult]:
-        body = self._body(messages, tools, temperature, max_tokens)
+        body = self._body(messages, tools, temperature, max_tokens, isolate_cache=isolate_cache)
         body["stream"] = True
         headers = self._headers(
             {
@@ -355,16 +357,7 @@ class AnthropicMessagesClient(HttpModelClient):
             if resp.status_code >= 400:
                 raw = await resp.aread()
                 raise ModelGatewayError("anthropic", resp.status_code, raw.decode("utf-8", errors="replace"))
-            async for line in resp.aiter_lines():
-                if not line.startswith("data:"):
-                    continue
-                payload = line[5:].strip()
-                if not payload or payload == "[DONE]":
-                    continue
-                try:
-                    data = json.loads(payload)
-                except json.JSONDecodeError:
-                    continue
+            async for data in iter_sse_json(resp):
                 kind = data.get("type")
 
                 if kind == "message_start":
@@ -430,100 +423,6 @@ class AnthropicMessagesClient(HttpModelClient):
             stop_reason=map_stop(raw_stop, _ANTHROPIC_STOP, had_tool_calls=bool(tool_calls)),
             usage=usage,
         )
-
-    async def _stream(
-        self,
-        messages: list[ChatMessage],
-        tools: Sequence[ToolSchema],
-        temperature: float,
-        max_tokens: int | None,
-        *,
-        isolate_cache: bool = False,
-    ) -> AsyncIterator[str]:
-        system = ""
-        converted: list[dict[str, Any]] = []
-        for m in messages:
-            if m.role == "system":
-                system = (system + "\n" + m.content).strip() if system else m.content
-                continue
-            if m.role == "tool":
-                converted.append(
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "tool_result",
-                                "tool_use_id": m.tool_call_id,
-                                "content": m.content,
-                            }
-                        ],
-                    }
-                )
-                continue
-            if m.role == "assistant" and m.tool_calls:
-                # Thinking blocks come first and verbatim: with extended thinking on, the
-                # provider rejects a turn that replays a tool call without the signed
-                # reasoning that produced it.
-                blocks: list[dict[str, Any]] = _anthropic_thinking_blocks(m)
-                if m.content:
-                    blocks.append({"type": "text", "text": m.content})
-                for tc in m.tool_calls:
-                    blocks.append({"type": "tool_use", "id": tc.id, "name": tc.name, "input": tc.args})
-                converted.append({"role": "assistant", "content": blocks})
-                continue
-            converted.append(_anthropic_user_or_plain(m))
-
-        body: dict[str, Any] = {
-            "model": self.route.model,
-            "messages": converted,
-            "temperature": temperature,
-            "max_tokens": max_tokens or _DEFAULT_MAX_TOKENS,
-            "stream": True,
-        }
-        if system:
-            body["system"] = system
-        apply_anthropic_thinking_cache(body, self.spec, self.route.model, isolate_cache=isolate_cache)
-        headers = self._headers(
-            {
-                "x-api-key": self.api_key,
-                "anthropic-version": "2023-06-01",
-                "Content-Type": "application/json",
-            }
-        )
-        async with (
-            httpx.AsyncClient(timeout=self._timeout()) as client,
-            client.stream(
-                "POST",
-                f"{self.base_url.rstrip('/')}/v1/messages",
-                json=body,
-                headers=headers,
-            ) as resp,
-        ):
-            if resp.status_code >= 400:
-                text = await resp.aread()
-                raise ModelGatewayError(
-                    "anthropic",
-                    resp.status_code,
-                    text.decode("utf-8", errors="replace"),
-                )
-            async for line in resp.aiter_lines():
-                if not line.startswith("data:"):
-                    continue
-                payload = line[5:].strip()
-                if not payload or payload == "[DONE]":
-                    continue
-                try:
-                    data = json.loads(payload)
-                except json.JSONDecodeError:
-                    continue
-                if data.get("type") == "content_block_delta":
-                    delta = data.get("delta") or {}
-                    if delta.get("type") == "text_delta" and delta.get("text"):
-                        yield str(delta["text"])
-                elif data.get("type") == "content_block_start":
-                    block = data.get("content_block") or {}
-                    if block.get("type") == "text" and block.get("text"):
-                        yield str(block["text"])
 
 
 __all__ = [

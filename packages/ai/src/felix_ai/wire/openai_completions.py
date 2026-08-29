@@ -28,6 +28,7 @@ from felix_ai.types import (
 )
 from felix_ai.wire.base import (
     HttpModelClient,
+    iter_sse_json,
     map_stop,
     parse_tool_arguments,
     tool_json_schema,
@@ -266,8 +267,10 @@ class OpenAICompletionsClient(HttpModelClient):
         tools: Sequence[ToolSchema],
         temperature: float,
         max_tokens: int | None,
+        *,
+        isolate_cache: bool = False,
     ) -> AsyncIterator[StreamDelta | ModelChatResult]:
-        body = self._body(messages, tools, temperature, max_tokens)
+        body = self._body(messages, tools, temperature, max_tokens, isolate_cache=isolate_cache)
         body["stream"] = True
         # Usage is omitted from a streamed response unless it is asked for, and without
         # it a streaming turn would meter as zero tokens.
@@ -293,22 +296,7 @@ class OpenAICompletionsClient(HttpModelClient):
             if resp.status_code >= 400:
                 raw = await resp.aread()
                 raise ModelGatewayError("openai", resp.status_code, raw.decode("utf-8", errors="replace"))
-            async for line in resp.aiter_lines():
-                if not line:
-                    continue
-                if line.startswith("data:"):
-                    payload = line[5:].strip()
-                elif line.startswith("{"):
-                    payload = line.strip()
-                else:
-                    continue
-                if payload == "[DONE]":
-                    break
-                try:
-                    data = json.loads(payload)
-                except json.JSONDecodeError:
-                    continue
-
+            async for data in iter_sse_json(resp):
                 if data.get("usage"):
                     usage = _openai_usage(data["usage"])
                 for choice in data.get("choices") or []:
@@ -347,61 +335,6 @@ class OpenAICompletionsClient(HttpModelClient):
             stop_reason=map_stop(raw_stop, _OPENAI_STOP, had_tool_calls=bool(tool_calls)),
             usage=usage,
         )
-
-    async def _stream(
-        self,
-        messages: list[ChatMessage],
-        tools: Sequence[ToolSchema],
-        temperature: float,
-        max_tokens: int | None,
-        *,
-        isolate_cache: bool = False,
-    ) -> AsyncIterator[str]:
-        body: dict[str, Any] = {
-            "model": self.route.model,
-            "messages": _messages_to_openai(messages),
-            "temperature": temperature,
-            "stream": True,
-        }
-        if max_tokens:
-            body["max_tokens"] = max_tokens
-        apply_openai_thinking_cache(body, self.spec, self.route.model, isolate_cache=isolate_cache)
-        # Streaming path is text-oriented; tool calls use chat() in the agent loop.
-        headers = self._headers(
-            {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
-        )
-        async with (
-            httpx.AsyncClient(timeout=self._timeout()) as client,
-            client.stream(
-                "POST",
-                f"{self.base_url.rstrip('/')}/chat/completions",
-                json=body,
-                headers=headers,
-            ) as resp,
-        ):
-            if resp.status_code >= 400:
-                text = await resp.aread()
-                raise ModelGatewayError("openai", resp.status_code, text.decode("utf-8", errors="replace"))
-            async for line in resp.aiter_lines():
-                if not line:
-                    continue
-                if line.startswith("data:"):
-                    payload = line[5:].strip()
-                elif line.startswith("{"):
-                    payload = line.strip()
-                else:
-                    continue
-                if payload == "[DONE]":
-                    break
-                try:
-                    data = json.loads(payload)
-                except json.JSONDecodeError:
-                    continue
-                for choice in data.get("choices") or []:
-                    delta = choice.get("delta") or {}
-                    content = delta.get("content")
-                    if content:
-                        yield str(content)
 
 
 __all__ = [

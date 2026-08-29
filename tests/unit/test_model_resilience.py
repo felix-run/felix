@@ -360,9 +360,7 @@ def test_backoff_does_not_block_the_loop() -> None:
     """Sanity: the retry sleep is awaited, not time.sleep()."""
     import inspect
 
-    from felix.patterns import model
-
-    src = inspect.getsource(model._post_with_retry)
+    src = inspect.getsource(_post_with_retry)
     assert "await asyncio.sleep" in src
     assert "time.sleep" not in src
 

@@ -59,10 +59,17 @@ class ProviderSpec:
     # This cannot be read off the model: Llama runs on a laptop and is also sold by four
     # hosted providers, and the catalog matches model ids by substring.
     bills_per_token: bool = True
+    # Whether this endpoint serves `/embeddings` as well as `/chat/completions`. Not an
+    # inference from the wire format: several hosted providers implement chat only, and
+    # registering them as selectable embedders made `FELIX_MEMORY_EMBEDDER=groq` pass
+    # startup validation and fail at the first embed instead.
+    supports_embeddings: bool = False
+    # The model to embed with when the operator sets no `FELIX_MEMORY_EMBEDDING_MODEL`.
+    embedding_model: str = ""
 
-    def placeholders(self) -> tuple[str, ...]:
-        """Option names the endpoint template needs, e.g. `account_id`."""
-        return tuple(dict.fromkeys(_PLACEHOLDER.findall(self.base_url_default)))
+    def placeholders(self, base_url: str | None = None) -> tuple[str, ...]:
+        """Option names an endpoint template needs, e.g. `account_id`."""
+        return tuple(dict.fromkeys(_PLACEHOLDER.findall(base_url or self.base_url_default)))
 
     def resolve_base_url(self, configured: str | None, options: Mapping[str, str] | None = None) -> str:
         """The endpoint for this provider, given whatever the operator configured.
@@ -74,7 +81,7 @@ class ProviderSpec:
         """
         base = (configured or "").strip() or self.base_url_default
         opts = options or {}
-        missing = [name for name in _PLACEHOLDER.findall(base) if not opts.get(name)]
+        missing = [name for name in self.placeholders(base) if not opts.get(name)]
         if missing:
             raise ProviderConfigError(
                 f"provider {self.name!r} needs {', '.join(sorted(set(missing)))} — set it in "

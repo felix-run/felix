@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from felix.model_catalog import all_entries, entry_for, is_priced
+from felix.model_catalog import all_entries, entry_for
 
 # An unknown model has no rates at all, which is different from having zero rates: it must
 # contribute nothing to spend rather than contribute a guess. `_UNPRICED` is what the cost
@@ -130,4 +130,4 @@ def usage_with_cost(
     return out_d
 
 
-__all__ = ["DEFAULT_PRICES", "estimate_cost", "is_priced", "usage_with_cost"]
+__all__ = ["DEFAULT_PRICES", "estimate_cost", "usage_with_cost"]
