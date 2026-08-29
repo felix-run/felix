@@ -9,6 +9,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`POST /internal/sessions/{id}/events` wrote into whatever tenant the consumer
+  credential named, whatever thread the path asked for.** The session id went
+  straight from the URL into `append_event` with no tenant prefix, no delimiter
+  rejection, and no check that the thread belonged to the caller — the one rule
+  `felix_api/threads.py` exists to keep in a single place. A consumer credential
+  carrying no tenant resolves to `default`, so on that configuration every tenant's
+  queue write-backs were filed into `default`'s session log. It was also the only
+  primitive that could plant a thread id under a tenant that does not own it, which
+  is what the memory-provenance cross-tenant read needed to be more than a wrong
+  number.
+
+  The id now has to belong to the caller's tenant or the write is refused with
+  `403 thread_not_in_tenant`. Ownership is a prefix check rather than a
+  delimiter-free suffix, because fibers legitimately mint `{tenant}:fiber:{id}`;
+  ids are compared whole, so `acme:default:x` is a different thread from
+  `default:x` rather than a route to it.
+
+  **Operator action:** a queue consumer must authenticate with a credential scoped
+  to the tenant whose work it processes. A tenantless service key can now only write
+  to `default:` threads — previously it wrote to any thread, into `default`.
+
+- **`/v1/chat/completions` composed a thread id by hand instead of using the shared
+  rule.** `f"{tenant}:{body.user}"` applied the tenant prefix but never screened
+  `body.user` for delimiters, so a client could send `user: "fiber:abc123"` or
+  `"job:nightly"` and have its turns appended to a durable fiber's or a scheduled
+  job's session log — which that unattended run then replays as history. Within a
+  tenant, so not a cross-tenant read, but a prompt-injection channel into runs
+  nobody is watching. It also minted ids the chat routes could never address, so
+  those threads could not be listed, exported or deleted. It now goes through
+  `effective_thread_id` and answers `400 invalid_user`.
+
+- **The two thread-id helpers disagreed.** `effective_thread_id` rejected `#` and
+  applied no tenant check; `thread_belongs_to_tenant` did the reverse. Both now
+  refuse a tenant id carrying `:` or `#` — the tenant prefix is the whole ownership
+  boundary, so `acme` and `acme:sub` would otherwise both "own" `acme:sub:x`, and
+  `session/lease.py` keys a lease by thread id alone — and both cap the id at 512
+  characters, which was previously unbounded into a primary key, an index, an
+  advisory-lock key and a Redis channel name.
+
 - **A manifest could name another tenant's object-store key and have the contents
   read into its system prompt.** `spec.system_prompt.files`, `system_md` and
   `append_system_md` are unvalidated strings, and the loaders tried each key *as-is*
