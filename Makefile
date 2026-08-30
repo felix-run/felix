@@ -77,6 +77,7 @@ check: lint type test
 check-ci: check
 	uv run felix bundle-manifests
 	uv run python scripts/gen-manifest-schema.py --check
+	uv run python scripts/check-scalar-sri.py
 	python3 scripts/validate-toolkit.py
 	FELIX_ALLOW_INSECURE=true FELIX_AUTH_MODE=none \
 		FELIX_DATABASE_URL=memory://ci FELIX_OBJECT_STORE=memory \

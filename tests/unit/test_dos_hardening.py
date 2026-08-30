@@ -67,6 +67,16 @@ def test_metrics_is_no_longer_exempt() -> None:
     assert should_skip_rate_limit("/health") is True
 
 
+def test_docs_is_exempt_but_nothing_under_it_is() -> None:
+    """Swagger UI's /docs/oauth2-redirect was the only route ever served under /docs/.
+
+    It went with Swagger UI, so the prefix exemption went too — the Scalar reference is
+    the one exact path, and /docs/<anything> is now an ordinary 404 that counts.
+    """
+    assert should_skip_rate_limit("/docs") is True
+    assert should_skip_rate_limit("/docs/oauth2-redirect") is False
+
+
 def test_metrics_is_no_longer_public() -> None:
     """Counter labels carry tenant-supplied manifest ids and MCP tool names."""
     from felix.auth.middleware import _is_public_path

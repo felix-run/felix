@@ -82,6 +82,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bet. Connect is pinned at 10s separately, so raising the request ceiling for a long
   generation does not also let an unreachable endpoint hang for that long.
 
+### Changed
+
+- **`/docs` is the Scalar API reference, not Swagger UI.** The harness served FastAPI's
+  bundled Swagger UI while the docs site already described `/docs` as Scalar. It now renders
+  the same `/openapi.json` through a pinned Scalar bundle: tag sidebar, curl as the default
+  client, and a `servers` entry taken from the page's own origin — without it the spec has no
+  `servers` block, so every snippet rendered as a bare `curl /health` that could not be
+  pasted anywhere. No new dependency (Swagger UI was a CDN script too, and this is one HTML
+  route). The bundle is pinned and carries an SRI hash, so a public, always-unauthenticated
+  origin cannot be handed a different script than the one this commit reviewed. Swagger UI's
+  `/docs/oauth2-redirect` went with it — the only route ever served under `/docs/` — so the
+  rate limiter's orphaned `/docs/` prefix exemption goes too. The spec path and the curl
+  snippets' base URL both resolve per request against `root_path`, as Swagger UI's did —
+  precomputing them would have left `/redoc` working and `/docs` blank behind a proxy
+  prefix. `/openapi.json` and `/redoc` are unchanged, as is `/docs` being public in every
+  auth mode.
+
 ### Added
 
 - **`spec.mcp_servers[].timeout_ms` and `spec.peers[].timeout_ms`.** `ContainerRef` and
