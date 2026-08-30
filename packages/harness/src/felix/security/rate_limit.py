@@ -127,7 +127,9 @@ class RedisRateLimiter:
 # /metrics is deliberately NOT skipped: it is a scrape target with unbounded label
 # cardinality, so an unauthenticated caller polling it is a real amplification path.
 SKIP_EXACT = frozenset({"/health", "/docs", "/openapi.json", "/redoc"})
-SKIP_PREFIX = ("/.well-known/", "/docs/")
+# `/docs/` was here for Swagger UI's /docs/oauth2-redirect, which went with it; the
+# Scalar reference is the single exact path above.
+SKIP_PREFIX = ("/.well-known/",)
 
 
 def should_skip_rate_limit(path: str) -> bool:

@@ -23,6 +23,7 @@ from felix.tools.provider import ToolProvider
 from starlette.responses import Response
 
 from felix_api.composition import compose, installed_plugins
+from felix_api.docs import register_docs
 from felix_api.middleware import BodyLimitMiddleware, RateLimitMiddleware, RequestIdMiddleware
 from felix_api.routes import (
     a2a,
@@ -163,7 +164,11 @@ def create_app(
             "url": "https://github.com/felix-run/felix/blob/main/LICENSE",
         },
         lifespan=lifespan,
+        # Swagger UI gives up the /docs path to the Scalar reference mounted below.
+        # /openapi.json and /redoc are unchanged.
+        docs_url=None,
     )
+    register_docs(app)
     # Eager state so ASGI tests / middleware work before lifespan starts.
     app.state.settings = cfg
     app.state.tools = tool_provider
