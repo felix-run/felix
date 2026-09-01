@@ -240,3 +240,31 @@ def test_create_app_boots_without_being_handed_settings() -> None:
     app = create_app(plugins=[])
     assert app is not None
     assert any(getattr(r, "path", "") == "/health" for r in app.routes)
+
+
+@pytest.mark.asyncio
+async def test_store_posture_accepts_a_real_write(settings: Settings) -> None:
+    """The end-to-end contrast to the 405s, which was previously untestable.
+
+    An earlier version of this test poisoned eleven unrelated tests: the write landed in the
+    process-global in-memory store, and a minimal manifest has no `auth.inbound` block, so
+    stored `quick` shadowed the bundled file and everything downstream 401'd. It is safe now
+    because `tests/conftest.py` resets that store around every test — which is the actual
+    fix, rather than avoiding the assertion.
+    """
+    from felix_api.app import create_app
+
+    app = create_app(settings=settings, plugins=[])
+    body = {
+        "manifest": {
+            "apiVersion": "felix/v1",
+            "kind": "Agent",
+            "metadata": {"name": "quick"},
+            "spec": {"pattern": "react"},
+        }
+    }
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        resp = await c.put("/manifests/quick", json=body)
+        assert resp.status_code in {200, 201}, resp.text
+        listed = (await c.get("/manifests")).json()["items"]
+        assert any(row["name"] == "quick" for row in listed)

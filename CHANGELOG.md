@@ -181,6 +181,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The in-memory manifest store outlived the test that wrote to it.** The `memory://` twins
+  are module-level dicts by design, but nothing reset them between tests — so a manifest
+  stored as `quick` shadowed the bundled file for the rest of the session, and a minimal one
+  has no `auth.inbound` block, which 401'd everything downstream. That surfaced once as
+  eleven unrelated tests failing together, and the response at the time was to avoid the
+  assertion rather than fix the isolation.
+
+  `tests/conftest.py` now resets the store and the resolver caches around every test, and
+  the end-to-end write test that caused it is restored. `clear_resolver_cache()` also clears
+  the bundled cache, which it never did — under `manifest_source=bundled` that is the only
+  manifest cache in the system, so "clear the resolver cache" was not clearing it.
+
+
 - **`create_app()` crashed on boot when it was not handed settings.** The manifest-source
   posture added `if not settings.bundled_only:`, but `settings` is the *optional* parameter
   — the resolved config is `cfg = settings or get_settings()`. Production calls

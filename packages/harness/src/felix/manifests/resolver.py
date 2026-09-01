@@ -330,10 +330,16 @@ def invalidate_active(tenant_id: str, name: str) -> None:
 
 
 def clear_resolver_cache() -> None:
+    from felix.manifests.loader import clear_bundled_cache
+
     _version_blob_cache.clear()
     _active_pointer_cache.clear()
     _tenant_obj_cache.clear()
     _global_obj_cache.clear()
+    # The bundled cache is a manifest cache like the rest, and under
+    # `manifest_source=bundled` it is the only one — leaving it out meant "clear the
+    # resolver cache" did not.
+    clear_bundled_cache()
 
 
 __all__ = [
