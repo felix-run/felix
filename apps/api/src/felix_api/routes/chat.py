@@ -379,6 +379,17 @@ async def chat(body: ChatRequest, request: Request) -> Any:
     }
 
 
+def _safe_filename(thread_id: str) -> str:
+    """A thread id reduced to characters that cannot escape a quoted header parameter.
+
+    The id is interpolated into `filename="..."`. `effective_thread_id` rejects `:` and `#`,
+    which makes header splitting look unreachable — but it permits `"`, and one quote ends
+    the parameter early and starts attacker-controlled header text. Allowlist rather than
+    escape: a filename has no need of anything outside this set.
+    """
+    return "".join(c if (c.isalnum() or c in "-_.") else "_" for c in thread_id)[:128] or "session"
+
+
 @router.get("/runs/{resume_token}")
 async def chat_run(resume_token: str, request: Request) -> dict[str, Any]:
     """Poll a durable chat fiber started with ``spec.execution.mode: durable``."""
@@ -1158,7 +1169,7 @@ async def export_session(thread_id: str, request: Request) -> Any:
     return PlainTextResponse(
         body,
         media_type="application/x-ndjson",
-        headers={"Content-Disposition": f'attachment; filename="{thread_id}.jsonl"'},
+        headers={"Content-Disposition": f'attachment; filename="{_safe_filename(thread_id)}.jsonl"'},
     )
 
 
