@@ -62,20 +62,15 @@ has a `memory://` path, the governance wrapper order is unchanged, `schemas/mani
 still matches the pydantic models, and the CI test job installs every extra the tests gate on.
 Change a rule deliberately and you update the test with it.
 
-`tests/unit/test_entrypoint_wiring.py` covers the other half: the references production depends on
-that no import statement mentions. Every `[project.scripts]` target, the `module:attr` string Granian
-is handed, the Taskiq broker and scheduler paths, and the `felix-*` binary each container command
-names are resolved; and `create_application()` is called with the argument list production passes,
-which is none. `create_app()` shipped reading its optional `settings` parameter instead of the
-resolved `cfg` and died at boot with a green suite, because every test passes `settings=` and
-production is the only caller that does not.
+`tests/unit/test_entrypoint_wiring.py` covers the references production depends on that no import
+statement mentions: every `[project.scripts]` target, the `module:attr` string Granian is handed, the
+Taskiq broker/scheduler/module paths, and the `felix-*` binary each Compose, Dockerfile and Helm
+command names — plus `create_application()` called the way production calls it, with no arguments.
 
-**Prove a new test can fail.** `./scripts/prove-fails.sh <pytest target>` runs it against the
-pre-change source (a detached worktree on `PYTHONPATH`; your working tree is untouched) and reports
-PROVEN, VACUOUS, or BROKEN. `--base <ref>` picks the comparison point and `--only <dist>` shadows a
-single distribution when a distant base breaks `conftest.py`. Structural tests — AST walks, `rglob`
-corpora — need this most: one matched `timeout=<Constant>` while every literal it hunted lived inside
-`httpx.Timeout(...)`, so it could not fail on any file it named.
+`./scripts/prove-fails.sh <target> [--base <ref>] [--only <dists>]` runs a test against pre-change
+source and reports PROVEN / VACUOUS / BROKEN. It shadows `PYTHONPATH` only, so it cannot help a test
+that reads the tree from disk; for those the method is mutation. Why both exist, and what they are
+guarding against: `.claude/rules/felix-invariants.md`.
 
 A test that needs an optional extra gates on `tests/optional_deps.py:require_optional(module,
 extra)`, never a bare `pytest.importorskip` — an invariant enforces this. A module-level

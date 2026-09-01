@@ -1,7 +1,8 @@
 #!/bin/bash
-# PreToolUse(Bash): before opening a PR, make sure the quality reviewers actually ran
-# on this exact commit. Blocks `gh pr create` once per HEAD sha; a marker written after
-# the review satisfies it. Subagents only exist inside a Claude Code session, so this
+# PreToolUse(Bash): before opening a PR, name the reviewers that have not run on this exact
+# commit. Advisory -- it emits a note once per HEAD sha and exits 0; a marker written after
+# the review silences it. (It began as a hard block; see the note at the bottom for why it
+# is not one any more.) Subagents only exist inside a Claude Code session, so this
 # is the only place the review can be enforced locally.
 # Deliberately not covered: `gh pr create -R owner/repo` targets a repo by flag rather
 # than by cwd and so is never gated. This is a guardrail against the session taking a
@@ -116,8 +117,8 @@ changed=$(git -C "$workdir" diff --name-only "$base"...HEAD 2>/dev/null | grep -
 
 tests_changed=$(printf '%s\n' "$changed" | grep -c '^tests/')
 n=$(printf '%s\n' "$changed" | wc -l | tr -d ' ')
-second="felix-test-quality-reviewer is not needed — no tests changed."
-[ "$tests_changed" -gt 0 ] && second="Tests changed too, so also delegate to felix-test-quality-reviewer on the changed files under tests/."
+tests_note="felix-test-quality-reviewer is not needed — no tests changed."
+[ "$tests_changed" -gt 0 ] && tests_note="Tests changed too, so also delegate to felix-test-quality-reviewer on the changed files under tests/."
 
 # A change to a control is not the same kind of change as a change to a feature, and the
 # quality reviewers are not looking for the same things. A security fix carries the specific
@@ -127,12 +128,17 @@ second="felix-test-quality-reviewer is not needed — no tests changed."
 # name at the metadata service — a command-line injection into the flag that existed to
 # prevent exactly that reach. A reviewer caught it. Naming the paths here means the ask is
 # not contingent on the session noticing the change was security-shaped.
+# Anchored to the start of a path component, not matched as a bare substring: `rls` hit
+# inside `urls.py`, which is a false positive that trains people to ignore the note, and the
+# unanchored list still missed `manifests/builder.py`, where the load-bearing governance
+# wrapper order lives. Prefixes rather than whole words, so `screen` reaches `screening.py`
+# and `polic` reaches both `policy.py` and `policies.py`.
 security_changed=$(printf '%s\n' "$changed" | grep -E \
-  '(auth|security|governance|screen|secret|ssrf|egress|sandbox|policy|policies|approval|browser|stdio|transports|rls|tenant|internal)' || true)
-third="felix-security-reviewer is not needed — nothing changed on a control path."
+  '(^|[/_])(auth|security|governance|screen|secret|ssrf|egress|sandbox|polic|approval|browser|stdio|transport|rls|tenant|internal|builder)' || true)
+security_note="felix-security-reviewer is not needed — nothing changed on a control path."
 if [ -n "$security_changed" ]; then
   m=$(printf '%s\n' "$security_changed" | wc -l | tr -d ' ')
-  third="$m file(s) sit on a control path (auth, screening, secrets, egress, sandbox, tenancy), so also delegate to felix-security-reviewer. Ask it specifically whether this change introduced a *new* weakness while closing the one it targets — a value validated for one grammar and then re-serialized into another is this repo's recurring version of that."
+  security_note="$m file(s) sit on a control path (auth, screening, secrets, egress, sandbox, tenancy), so also delegate to felix-security-reviewer. Ask it specifically whether this change introduced a *new* weakness while closing the one it targets — a value validated for one grammar and then re-serialized into another is this repo's recurring version of that."
 fi
 
 # Advisory, not a block. This started as `exit 2` and the hard stop cost more than it
@@ -146,8 +152,8 @@ jq -cn --arg ctx "$(cat <<EOF
 $n Python file(s) changed against $base, and the quality reviewers have not run on this commit ($(printf '%s' "$sha" | cut -c1-8)). Worth doing before this PR is reviewed by anyone else:
 
   1. Delegate to felix-quality-reviewer on: git diff $base...HEAD
-  2. $second
-  3. $third
+  2. $tests_note
+  3. $security_note
   4. Act on the compounding findings, or say why each one stands.
   5. Record it so this note stops appearing:
        mkdir -p .claude/logs/quality-review && touch .claude/logs/quality-review/\$(git rev-parse HEAD)

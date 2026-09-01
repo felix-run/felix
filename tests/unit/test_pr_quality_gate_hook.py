@@ -31,9 +31,15 @@ import pytest
 HOOK = Path(__file__).resolve().parents[2] / ".claude" / "hooks" / "pr-quality-gate.sh"
 CREATE = "gh pr create --title t --body b"
 
+_HAS_JQ = subprocess.run(["which", "jq"], capture_output=True).returncode == 0
+# A silently skipped file looks exactly like a passing one — the reason CI sets
+# FELIX_REQUIRE_OPTIONAL_EXTRAS=1 for the extras gates. The same flag applies here: locally a
+# missing jq is a fair skip, in CI it means these tests stopped running and nobody was told.
+if not _HAS_JQ and os.environ.get("FELIX_REQUIRE_OPTIONAL_EXTRAS") == "1":
+    raise RuntimeError("jq is required in CI: without it this whole file skips and reads as a pass")
+
 pytestmark = pytest.mark.skipif(
-    subprocess.run(["which", "jq"], capture_output=True).returncode != 0,
-    reason="the hook no-ops without jq, so there is nothing to assert",
+    not _HAS_JQ, reason="the hook no-ops without jq, so there is nothing to assert"
 )
 
 
@@ -320,6 +326,14 @@ def _context(command: str, *, project: Path, cwd: Path) -> str:
         "packages/harness/src/felix/tools/browser.py",
         "packages/harness/src/felix/governance/inbound.py",
         "apps/api/src/felix_api/routes/internal.py",  # tenant/internal surface
+        "packages/harness/src/felix/governance/screening.py",  # `screen` as a prefix
+        "packages/harness/src/felix/manifests/policies.py",  # `polic` covers policy + policies
+        "packages/harness/src/felix/tools/transports.py",
+        "packages/harness/src/felix/db/rls_gucs.py",  # `rls` as a real path component
+        "packages/harness/src/felix/approvals.py",
+        # The governance wrapper order lives here and `.claude/rules/` calls it load-bearing;
+        # the unanchored pattern matched none of this path.
+        "packages/harness/src/felix/manifests/builder.py",
     ],
 )
 def test_a_control_path_change_also_asks_for_the_security_reviewer(tmp_path: Path, changed: str) -> None:
@@ -330,9 +344,18 @@ def test_a_control_path_change_also_asks_for_the_security_reviewer(tmp_path: Pat
     assert "felix-security-reviewer is not needed" not in note
 
 
-def test_an_ordinary_change_does_not_ask_for_the_security_reviewer(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "changed",
+    [
+        "packages/harness/src/felix/eval/runner.py",
+        # `rls` inside `urls`. Matched as a bare substring, this asked for a security review
+        # of a URL helper — and a false positive is how a note gets trained into noise.
+        "apps/api/src/felix_api/urls.py",
+    ],
+)
+def test_an_ordinary_change_does_not_ask_for_the_security_reviewer(tmp_path: Path, changed: str) -> None:
     """Asking every time is the same as never asking — the note has to mean something."""
-    project = _repo(tmp_path / "project", "packages/harness/src/felix/eval/runner.py")
+    project = _repo(tmp_path / "project", changed)
     note = _context(CREATE, project=project, cwd=project)
     assert "felix-quality-reviewer" in note, "the note should still be emitted"
     assert "felix-security-reviewer is not needed" in note

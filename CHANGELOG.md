@@ -225,8 +225,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `scripts/prove-fails.sh <target>` runs a test against pre-change source — a detached worktree on
   `PYTHONPATH`, working tree untouched — and reports **PROVEN** (failed: evidence), **VACUOUS**
   (passed: pins nothing), or **BROKEN** (*errored*, which is neither, and means the test itself is
-  wrong). `--base <ref>` picks the comparison point; `--only <dist>` shadows one distribution, for
-  when a distant base makes `tests/conftest.py` error in fixture setup. Two invariants here have
+  wrong). `--base <ref>` picks the comparison point; `--only <dists>` takes a comma-separated list of
+  distributions to shadow, for when a distant base makes `tests/conftest.py` error in fixture setup.
+  It shadows `PYTHONPATH` and changes nothing on disk, so a test that *reads* the tree is proven by
+  mutation instead — the script says so rather than printing a verdict it has no basis for. Two invariants here have
   been vacuous — one matched `timeout=<Constant>` while every literal it hunted lived inside
   `httpx.Timeout(...)` — and neither announced itself.
 

@@ -23,6 +23,16 @@
 # everything outside a package `src/` root still come from your working tree — which is the
 # point, since the test being proven is the new one.
 #
+# **It changes what `import` resolves, and nothing on disk.** That distinction is the whole
+# limitation, and an earlier version of this comment blurred it by saying the tool "reverts
+# Python under the five package src/ roots", which reads as though those files change. They
+# do not. A test that opens a file — `ROOT / "apps/api/src/felix_api/app.py"`, an `rglob` over
+# `packages/`, an AST walk of the tree — reads your working tree at every base, and this tool
+# can tell it nothing. That is most of the structural invariants in this repo. For those, the
+# procedure that works is mutation: introduce the violation on purpose, watch the test go red,
+# revert. This script warns when it sees that shape rather than handing you a confident verdict
+# it has no basis for.
+#
 # `--only <names>` shadows just those distributions (comma-separated: ai, harness, cli, api,
 # worker) and leaves the rest at your working tree. Reach for it when a whole-tree shadow
 # reports BROKEN for a reason that has nothing to do with the test: `tests/conftest.py` comes
@@ -30,11 +40,9 @@
 # calls something not yet written errors in fixture setup. Narrowing to the distribution the
 # change is in keeps the fixture working and still removes the fix.
 #
-# Limits, stated because a guard whose blind spot is undocumented is the defect it exists to
-# catch: only Python under the five package source roots is reverted. A change to a bundled
-# manifest, a JSON schema, a Compose file, or anything else read from disk at runtime is NOT
-# reverted, so a test asserting on those will read the new copy and report VACUOUS. For those,
-# check out the base ref in a real worktree and run there.
+# So: use this for a test that exercises code through an import — most behavioral tests. Do
+# not trust it for a test that reads files. Checking out the base ref in a real worktree and
+# running there is the fallback when you need the disk reverted too.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -93,6 +101,26 @@ shadow=$(IFS=:; echo "${present[*]}")
 
 echo "prove-fails: running against source at $(git rev-parse --short "$base") ($base)"
 echo "prove-fails: shadowing ${only:-all packages}"
+
+# Does the target read the tree from disk? If so this tool cannot revert what it sees, and
+# every verdict below is about the wrong thing. Saying so up front is the difference between
+# a limitation and a trap: the first target aimed at this was a scanning test, and it got a
+# confident PROVEN on a comparison that never happened.
+target=""
+for arg in "$@"; do
+  case "$arg" in -*) continue ;; *) target=${arg%%::*}; break ;; esac
+done
+if [ -n "$target" ] && [ -f "$target" ] &&
+   grep -qE '(Path\(__file__\)|\.rglob\(|\.glob\(|os\.walk\(|read_text\(|open\()' "$target"; then
+  cat <<WARN
+
+  !! $target reads files from the tree.
+     This shadows PYTHONPATH only — nothing on disk changes — so any assertion about file
+     *contents* sees your working tree at every base, and the verdict below does not mean
+     what it says. Use mutation instead: introduce the violation on purpose, run the test,
+     watch it go red, revert. Verdict follows for the import-driven parts only.
+WARN
+fi
 echo
 
 set +e
@@ -106,7 +134,10 @@ set -e
 printf '%s\n' "$out"
 echo
 
-summary=$(printf '%s' "$out" | tail -n 20)
+# The last non-empty line is pytest's summary ("1 failed, 2 passed in 0.4s"). Anchoring
+# there rather than grepping the last 20 lines keeps an assertion message like "found 2
+# errors in the manifest" from being counted as a collection error.
+summary=$(printf '%s\n' "$out" | grep -vE '^\s*$' | tail -n 1)
 verdict() { printf '\n%s\n' "$1"; }
 
 case "$status" in
@@ -117,10 +148,15 @@ Common cause: the assertion matches one syntactic form and the real code uses an
     exit 1
     ;;
   1)
-    if printf '%s' "$summary" | grep -qE '[0-9]+ error'; then
+    if printf '%s' "$summary" | grep -qE '(^|[, ])[0-9]+ errors?([, ]|$)'; then
       verdict "BROKEN — errored rather than failed. An ERROR means the test is wrong, not the
 code: a missing import, a symbol that does not exist at $base, a fixture that does not resolve.
-Fix the test so it FAILS against the old source, then re-run this."
+Fix the test so it FAILS against the old source, then re-run this.
+
+If the errors are in fixture setup rather than in the test body, this is probably not your
+test: tests/conftest.py comes from your working tree and is running against ${base} source, so
+it can call something that does not exist yet there. Retry with --only <dist> to shadow just
+the distribution you changed."
       exit 1
     fi
     verdict "PROVEN — failed against the pre-change source. This test is evidence."

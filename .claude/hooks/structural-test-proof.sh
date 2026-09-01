@@ -54,19 +54,26 @@ $rel scans the tree (AST/glob) and gained $count case(s):
 
 $list
 
-A scanning test that matches nothing passes, and reads exactly like the rule holding. Before
-relying on this one, prove it can fail:
+A scanning test that matches nothing passes, and reads exactly like the rule holding. Two in
+this repo did: one matched \`timeout=<Constant>\` while every literal it hunted lived inside
+\`httpx.Timeout(...)\`, and one checked a hand-written list naming six of nine governance
+wrappers. Both were green the day they were written.
 
-  ./scripts/prove-fails.sh $rel::$first          # against the source at HEAD
-  ./scripts/prove-fails.sh --base origin/main $rel
+Prove this one can fail, by mutation — the only method that works for a scan:
 
-PROVEN means it failed against the pre-change source. VACUOUS means it did not pin anything.
-BROKEN — an error rather than a failure — means the test itself is wrong; that is not a pass.
+  1. Introduce a real violation of the rule in the tree (a probe file under the scanned
+     root is usually enough, and leaves nothing to revert but one \`unlink\`).
+  2. Run \`./scripts/test.sh $rel::$first\`.
+  3. It must go RED. If it stays green the matcher sees a form the real code does not use.
+  4. Remove the violation and confirm the tree is clean.
 
-If the rule is new rather than a fix (nothing at HEAD violates it), prove-fails cannot help:
-introduce a violation on purpose in a scratch copy, watch the test go red, and revert. Either
-way, check that the corpus is non-empty — assert the file set or match set has members, so the
-day the scan stops finding anything is the day it fails rather than the day it goes quiet.
+\`./scripts/prove-fails.sh\` does NOT help here. It shadows PYTHONPATH, so it changes what
+\`import\` resolves and nothing on disk — a test that reads the tree sees your working copy at
+every base. Reach for it when the new case drives code through an import instead.
+
+Either way, check the corpus and the match set are non-empty: assert the file set has members
+and that the check examined candidates, so the day the scan stops finding anything is the day
+it fails rather than the day it goes quiet.
 EOF
 )" '{hookSpecificOutput:{hookEventName:"PostToolUse",additionalContext:$ctx}}'
 exit 0

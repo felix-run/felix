@@ -17,11 +17,14 @@ from it, and they are cheap:
   test supplies is untested. `create_app()` shipped reading `settings.x` instead of `cfg.x` and died
   at boot, green suite and all, because production is the only caller that passes nothing.
   `tests/unit/test_entrypoint_wiring.py` now calls each entrypoint the way its console script does.
-- **A test that cannot fail is worse than no test.** Prove it: `./scripts/prove-fails.sh <target>`
-  runs it against the pre-change source. **PROVEN** (failed) is evidence; **VACUOUS** (passed) means
-  it pins nothing; **BROKEN** (errored) means the test is wrong and tells you nothing either way.
-  An AST invariant here matched `timeout=<Constant>` while every literal it hunted lived inside
-  `httpx.Timeout(...)` — green on the day it was written, unable to fail on any file it named.
+- **A test that cannot fail is worse than no test.** For a test that drives code through an
+  import, `./scripts/prove-fails.sh <target>` runs it against pre-change source: **PROVEN** (failed)
+  is evidence, **VACUOUS** (passed) pins nothing, **BROKEN** (errored) means the test is wrong and
+  says nothing either way. It shadows `PYTHONPATH` and changes nothing on disk, so for a test that
+  *reads* the tree — every AST or `rglob` invariant here — the method is mutation instead: introduce
+  the violation, watch it go red, revert. An AST invariant here matched `timeout=<Constant>` while
+  every literal it hunted lived inside `httpx.Timeout(...)` — green the day it was written, unable to
+  fail on any file it named.
 - **Absence is the claim that rots fastest.** "Nothing reads this field", "this provider is
   fictional", "that has no caller" — re-derive it against the tree at HEAD before acting, never from
   an earlier note in the same session. `SkillRef.description` was nearly deleted as unread after
