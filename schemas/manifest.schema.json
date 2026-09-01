@@ -276,19 +276,6 @@
           "title": "Path Prefix",
           "type": "string"
         },
-        "args_schema": {
-          "anyOf": [
-            {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Args Schema"
-        },
         "fatal": {
           "default": false,
           "title": "Fatal",
@@ -506,19 +493,6 @@
           "default": "",
           "title": "Auth",
           "type": "string"
-        },
-        "args_schema": {
-          "anyOf": [
-            {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Args Schema"
         },
         "fatal": {
           "default": false,
@@ -1486,19 +1460,6 @@
           "title": "Path Prefix",
           "type": "string"
         },
-        "args_schema": {
-          "anyOf": [
-            {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Args Schema"
-        },
         "fatal": {
           "default": false,
           "title": "Fatal",
@@ -1582,18 +1543,6 @@
           "title": "Name",
           "type": "string"
         },
-        "version": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Version"
-        },
         "description": {
           "anyOf": [
             {
@@ -1605,6 +1554,18 @@
           ],
           "default": null,
           "title": "Description"
+        },
+        "version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Version"
         }
       },
       "required": [

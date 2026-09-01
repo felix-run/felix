@@ -211,6 +211,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Removed `args_schema` from `spec.sandboxes`, `spec.containers` and
+  `spec.browser_tools`.** All three binders hardcode their argument model — `SandboxArgs`,
+  `ContainerArgs`, `BrowserUrlArgs` — because the executor reads fixed keys. A
+  manifest-supplied schema could only advertise arguments the executor would then ignore,
+  which is worse than having none: the model is told a tool takes parameters it does not.
+  `QueueRef` and `ClientToolRef` genuinely read theirs and keep it.
+
+  Migration: a stored manifest setting one of the three now fails validation. Nothing could
+  have depended on its behaviour, because it had none.
+
+- **`test_inert_manifest_fields.py` now guards the class, not just the instances.** Twelve
+  fields are declared in `schema.py` and read nowhere — `precount`, `retention_days`,
+  `min_rate`, the `PlanExecuteSpec` block, and others. Each validates, completes in an
+  editor, and does nothing. They are pinned in a ratchet: adding an unread field fails the
+  build, and fixing one also fails until it is removed from the set, so both edits are
+  deliberate.
+
+
 - **`/docs` is the Scalar API reference, not Swagger UI.** The harness served FastAPI's
   bundled Swagger UI while the docs site already described `/docs` as Scalar. It now renders
   the same `/openapi.json` through a pinned Scalar bundle: tag sidebar, curl as the default

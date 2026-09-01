@@ -122,8 +122,11 @@ class PromptTemplateSpec(_Strict):
 
 class SkillRef(_Strict):
     name: str
-    version: str | None = None
+    # Read by `a2a/card.py`, which surfaces it on the agent card. Not read by the skills
+    # loader — a skill's own SKILL.md frontmatter supplies the description used in the
+    # catalogue — so the two are deliberately separate.
     description: str | None = None
+    version: str | None = None
 
 
 class McpServerRef(_Strict):
@@ -219,7 +222,6 @@ class ContainerRef(_Strict):
     container_tool_name: str = ""
     timeout_ms: int | None = Field(default=None, gt=0, le=MAX_INTEGRATION_TIMEOUT_MS)
     auth: str = ""
-    args_schema: dict[str, Any] | None = None
     fatal: bool = False
 
     @field_validator("auth", mode="before")
@@ -250,6 +252,11 @@ class QueueRef(_Strict):
     fatal: bool = False
 
 
+# No `args_schema` on the three refs below. `tools_from_sandboxes`, `tools_from_containers`
+# and the browser binder each hardcode their argument model (`SandboxArgs`,
+# `ContainerArgs`, `BrowserUrlArgs`) because the executor reads fixed keys — a
+# manifest-supplied schema could only advertise arguments the executor would ignore,
+# which is worse than none. `QueueRef` and `ClientToolRef` do read theirs.
 class SandboxRef(_Strict):
     name: str = Field(min_length=1)
     description: str = ""
@@ -257,7 +264,6 @@ class SandboxRef(_Strict):
     sandbox_tool_name: str = ""
     timeout_ms: int | None = Field(default=None, gt=0, le=MAX_INTEGRATION_TIMEOUT_MS)
     path_prefix: str = ""
-    args_schema: dict[str, Any] | None = None
     fatal: bool = False
 
 
@@ -268,7 +274,6 @@ class BrowserToolRef(_Strict):
     op: Literal["content", "links", "snapshot", "screenshot", "pdf", "json"] = "content"
     timeout_ms: int | None = Field(default=None, gt=0, le=MAX_INTEGRATION_TIMEOUT_MS)
     path_prefix: str = ""
-    args_schema: dict[str, Any] | None = None
     fatal: bool = False
 
 
