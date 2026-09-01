@@ -120,17 +120,6 @@ class Settings(BaseSettings):
     model_timeout_seconds: float = Field(default=120.0, gt=0)
 
     # --- durability ---
-    # Where a manifest may come from. `store` is the full product: Postgres versions with
-    # canary and rollback, tenant and global object-store layers, then the bundled YAML.
-    # `bundled` collapses that to the files baked into the image and refuses every write,
-    # which is the right posture for a single-tenant or self-hosted deployment that has no
-    # use for runtime authoring — it removes the whole write surface rather than guarding it.
-    #
-    # A closed Literal on purpose, unlike the registry-backed settings: these two are not
-    # swappable implementations, they are a posture core itself enforces, and a third value
-    # would have no reader.
-    manifest_source: Literal["store", "bundled"] = "store"
-
     durability: Literal["fibers", "temporal"] = "fibers"
     temporal_host: str = "localhost:7233"
     temporal_namespace: str = "default"
@@ -222,6 +211,16 @@ class Settings(BaseSettings):
 
     # --- misc ---
     default_manifest: str = "quick"
+    # Where a manifest may come from. `store` is the full product: Postgres versions with
+    # canary and rollback, then the bundled YAML. `bundled` serves only the files baked into
+    # the image — the write routes are not registered at all, so the capability is absent
+    # rather than refused, and nothing above bundled is consulted.
+    #
+    # A closed Literal on purpose, unlike the registry-backed settings: this names a policy
+    # core itself enforces, not a component core loads, so there is nothing for a third
+    # value to select.
+    manifest_source: Literal["store", "bundled"] = "store"
+
     hibernate_after_seconds: int = 300
     # How often each emitting process drains its audit/usage buffers. The agent
     # loop runs in the API, so the API must flush too — the worker cron alone only
@@ -241,6 +240,11 @@ class Settings(BaseSettings):
     @classmethod
     def _strip_keys(cls, v: Any) -> Any:
         return v if v is not None else ""
+
+    @property
+    def bundled_only(self) -> bool:
+        """True when the image is the only manifest source."""
+        return self.manifest_source == "bundled"
 
     def _validate_registry_backed_settings(self) -> None:
         """Fail fast on a backend name nothing registered.

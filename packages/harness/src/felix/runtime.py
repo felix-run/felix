@@ -31,7 +31,11 @@ async def resolve_tenant_manifest(
         tenant_id,
         name,
         thread_id=thread_id,
-        manifest_store=PostgresManifestStore(settings),
+        # Under `bundled` the layers above the image do not exist, so they are not supplied.
+        # `_read_tenant_postgres` and `_read_object` already return None for a missing store,
+        # which is the same collapse a branch in the resolver would produce — expressed by
+        # absence rather than by policy in the deepest function on this path.
+        manifest_store=None if settings.bundled_only else PostgresManifestStore(settings),
     )
 
 

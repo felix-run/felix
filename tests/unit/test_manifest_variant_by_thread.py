@@ -120,52 +120,47 @@ def test_bundled_loader_contains_the_name_within_its_directory(tmp_path) -> None
 
 
 @pytest.mark.asyncio
-async def test_bundled_posture_never_reads_the_store(tmp_path) -> None:
-    """`manifest_source=bundled` removes the layers rather than finding them empty.
+async def test_bundled_posture_never_constructs_a_manifest_store(monkeypatch, tmp_path) -> None:
+    """The posture is expressed by not supplying the store, not by a branch below it.
 
-    The point of the posture is that Postgres and the object store are not consulted at
-    all, so a deployment that sets it has no runtime-authoring surface to guard. A store
-    that raises if touched is the only way to assert absence rather than emptiness.
+    `_read_tenant_postgres` already returns None for a missing store, so withholding it at
+    the runtime seam collapses resolution to the image without policy in the deepest
+    function on this path. Asserting the store is never *built* is what pins that: a branch
+    inside the resolver would still construct one on every request.
     """
+    from felix import runtime as runtime_mod
     from felix.config import Settings
-    from felix.manifests.resolver import resolve_manifest
 
     (tmp_path / "solo.yaml").write_text(
         "apiVersion: felix/v1\nkind: Agent\nmetadata:\n  name: solo\nspec:\n  pattern: react\n"
     )
 
-    class _Explodes:
-        async def get_active(self, *a, **k):
-            raise AssertionError("the manifest store was read under manifest_source=bundled")
+    def _explode(*a, **k):
+        raise AssertionError("a manifest store was constructed under manifest_source=bundled")
 
-        async def get_version(self, *a, **k):
-            raise AssertionError("the manifest store was read under manifest_source=bundled")
-
-        async def get(self, *a, **k):
-            raise AssertionError("the object store was read under manifest_source=bundled")
+    monkeypatch.setattr(runtime_mod, "PostgresManifestStore", _explode)
+    monkeypatch.setattr(runtime_mod, "resolve_manifest", _passthrough_bundled(tmp_path), raising=True)
 
     settings = Settings(database_url="memory://t", manifest_source="bundled")
-    resolved = await resolve_manifest(
-        settings,
-        "default",
-        "solo",
-        manifest_store=_Explodes(),
-        object_store=_Explodes(),
-        bundled_dir=tmp_path,
-    )
+    resolved = await runtime_mod.resolve_tenant_manifest(settings, "default", "solo")
     assert resolved.source == "bundled"
     assert resolved.manifest.metadata.name == "solo"
 
 
-@pytest.mark.asyncio
-async def test_bundled_posture_rejects_a_pinned_version(tmp_path) -> None:
-    """A pin names a stored version, and under this posture there are none."""
-    from felix.config import Settings
-    from felix.manifests.resolver import resolve_manifest
+def _passthrough_bundled(bundled_dir):
+    """Keep the real resolver but point it at a temp bundled dir."""
+    from felix.manifests.resolver import resolve_manifest as real
 
-    (tmp_path / "solo.yaml").write_text(
-        "apiVersion: felix/v1\nkind: Agent\nmetadata:\n  name: solo\nspec:\n  pattern: react\n"
-    )
-    settings = Settings(database_url="memory://t", manifest_source="bundled")
-    with pytest.raises(LookupError):
-        await resolve_manifest(settings, "default", "solo", pin_version=3, bundled_dir=tmp_path)
+    async def _inner(*args, **kwargs):
+        kwargs.setdefault("bundled_dir", bundled_dir)
+        return await real(*args, **kwargs)
+
+    return _inner
+
+
+def test_store_posture_still_builds_one() -> None:
+    """The contrast: without the posture, the store is constructed as before."""
+    from felix.config import Settings
+
+    assert Settings(database_url="memory://t").bundled_only is False
+    assert Settings(database_url="memory://t", manifest_source="bundled").bundled_only is True

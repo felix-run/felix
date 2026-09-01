@@ -228,15 +228,6 @@ async def _read_object(
     return parsed
 
 
-def _bundled_only(settings: Any = None) -> bool:
-    """True when this deployment serves only the manifests baked into the image."""
-    if settings is None:
-        from felix.config import get_settings
-
-        settings = get_settings()
-    return str(getattr(settings, "manifest_source", "store") or "store") == "bundled"
-
-
 async def resolve_manifest(
     tenant_id_or_settings: Any,
     name_or_tenant: str | None = None,
@@ -288,13 +279,6 @@ async def resolve_manifest(
     if opts is None and (thread_id is not None or pin_version is not None):
         options = ResolveOptions(pin_version=pin_version, thread_id=thread_id)
 
-    if _bundled_only(settings):
-        # No Postgres read, no object-store read: under this posture the image is the only
-        # source, so the layers above bundled do not exist rather than being empty.
-        if options.pin_version is not None:
-            raise LookupError(f"Unknown manifest version: {manifest_name}@{options.pin_version}")
-        return _bundled(manifest_name, bundled_dir)
-
     tenant_pg = await _read_tenant_postgres(manifest_store, tenant_id, manifest_name, options)
     if tenant_pg is not None:
         return tenant_pg
@@ -326,10 +310,10 @@ async def resolve_manifest(
             cache_key=f"global_object:{manifest_name}",
         )
 
-    return _bundled(manifest_name, bundled_dir)
+    return _resolve_from_bundled(manifest_name, bundled_dir)
 
 
-def _bundled(manifest_name: str, bundled_dir: str | None) -> ResolvedManifest:
+def _resolve_from_bundled(manifest_name: str, bundled_dir: str | None) -> ResolvedManifest:
     try:
         bundled = load_bundled(manifest_name, bundled_dir=bundled_dir)
     except FileNotFoundError as exc:

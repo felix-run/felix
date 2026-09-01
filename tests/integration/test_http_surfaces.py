@@ -175,16 +175,13 @@ async def test_agent_card_http(settings: Settings) -> None:
 
 
 @pytest.mark.asyncio
-async def test_bundled_posture_refuses_every_manifest_write() -> None:
-    """Under `manifest_source=bundled` the write surface is absent, not guarded.
+async def test_bundled_posture_does_not_mount_the_write_routes() -> None:
+    """Absent, not refused — which is what the docs claim and what an operator can verify.
 
-    Reads keep working — the posture is about where manifests come from, not about hiding
-    them. The refusal is checked before the scope check, so the answer does not depend on
-    who is asking: with `auth_mode=none` every scope check passes and these must still 405.
-
-    Bodies must be valid: FastAPI validates the request model before the handler runs, so a
-    malformed one returns 422 and never reaches the guard. Harmless — no write happens
-    either way — but it means a 422 here would prove nothing.
+    A registered-but-guarded route still appears in `/openapi.json`, still validates request
+    bodies before any guard runs, and returns a 405 with no `Allow` header. Not registering
+    it at all makes the OpenAPI document honest per deployment and lets Starlette answer
+    with a spec-correct `405 Allow: GET`.
     """
     from felix_api.app import create_app
 
@@ -197,44 +194,33 @@ async def test_bundled_posture_refuses_every_manifest_write() -> None:
         manifest_source="bundled",
     )
     app = create_app(settings=settings, plugins=[])
-    body = {
-        "manifest": {
-            "apiVersion": "felix/v1",
-            "kind": "Agent",
-            "metadata": {"name": "quick"},
-            "spec": {"pattern": "react"},
-        }
-    }
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
-        assert (await c.put("/manifests/quick", json=body)).status_code == 405
-        canary = {"canary_version": 1, "canary_weight": 10}
-        assert (await c.post("/manifests/quick/canary", json=canary)).status_code == 405
-        assert (await c.post("/manifests/quick/rollback", json={"version": 1})).status_code == 405
-        assert (await c.delete("/manifests/quick/canary")).status_code == 405
-        # Reading is unaffected.
-        assert (await c.get("/manifests")).status_code == 200
+        spec = (await c.get("/openapi.json")).json()
+        assert "put" not in spec["paths"]["/manifests/{name}"]
+        assert "/manifests/{name}/canary" not in spec["paths"]
+
+        resp = await c.put("/manifests/quick", json={"manifest": {}})
+        assert resp.status_code == 405
+        assert "GET" in resp.headers.get("allow", "")
+
+        # Reads stay open, and report the posture rather than unserved store rows.
+        listed = await c.get("/manifests")
+        assert listed.status_code == 200
+        names = {row["name"] for row in listed.json()["items"]}
+        assert {"quick", "governed"} <= names
+        assert all(row["version"] is None for row in listed.json()["items"])
+
+        # A version names a stored revision, and there are none.
+        assert (await c.get("/manifests/quick?version=1")).status_code == 404
 
 
-def test_store_posture_leaves_the_write_path_open() -> None:
-    """The contrast that makes the 405s above mean something.
+@pytest.mark.asyncio
+async def test_store_posture_mounts_them(settings: Settings) -> None:
+    """The contrast that gives the assertions above their meaning."""
+    from felix_api.app import create_app
 
-    Asserted against the guard rather than through a real `PUT`: writing a manifest lands in
-    a process-global in-memory store, and a minimal one has no `auth.inbound` block — so it
-    shadows bundled `quick` and every later test resolving that name gets a 401. Hermetic
-    here is worth more than end-to-end.
-    """
-    from fastapi import HTTPException
-    from felix_api.routes.manifests import _reject_when_bundled_only
-
-    class _Req:
-        def __init__(self, source: str) -> None:
-            self.app = type(
-                "A",
-                (),
-                {"state": type("S", (), {"settings": type("C", (), {"manifest_source": source})()})()},
-            )()
-
-    assert _reject_when_bundled_only(_Req("store")) is None
-    with pytest.raises(HTTPException) as exc:
-        _reject_when_bundled_only(_Req("bundled"))
-    assert exc.value.status_code == 405
+    app = create_app(settings=settings, plugins=[])
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        spec = (await c.get("/openapi.json")).json()
+        assert "put" in spec["paths"]["/manifests/{name}"]
+        assert "/manifests/{name}/canary" in spec["paths"]

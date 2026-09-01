@@ -32,6 +32,8 @@ config:
   FELIX_OBJECT_STORE: fs
   FELIX_DATA_DIR: /data
   FELIX_DEFAULT_MANIFEST: quick
+  # store = tenant Postgres versions + write API; bundled = image only, no write routes.
+  FELIX_MANIFEST_SOURCE: store
   FELIX_DURABILITY: fibers
   FELIX_HIBERNATE_AFTER_SECONDS: "300"
   FELIX_OTEL_ENABLED: "false"
