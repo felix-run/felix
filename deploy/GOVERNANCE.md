@@ -178,13 +178,21 @@ because an explicit transport disables httpx's environment proxies, `HTTP_PROXY`
 `HTTPS_PROXY` do **not** apply to these calls. A deployment whose egress containment is a
 proxy allowlist needs to know that.
 
-**One exception, and it is the model-facing one.** The browser tool hands its URL to
-Chromium, which resolves independently, so there the check remains advisory: the guard's
-lookup and Chromium's are two lookups, and a hostname that answers them differently gets
-through. Every subresource and redirect hop is checked, but none is pinned. Closing it means
-pinning Chromium's resolver (`--host-resolver-rules`) or running the browser behind an
-egress allowlist; until then, treat `spec.browser_tools` as reaching whatever the name
-resolves to at load time.
+**The browser pins its navigation host too.** Chromium resolves independently, so the
+guard's lookup and Chromium's would otherwise be two lookups — and this is the one outbound
+path where the URL comes from the *model* rather than a manifest, which makes it the
+highest-value rebinding target in the harness. The browser is launched with
+`--host-resolver-rules=MAP <host> <validated address>`, so the name it navigates to can only
+reach the address the guard approved. A hostname is matched against a strict pattern before
+it reaches that flag: the flag takes a comma-separated list, so a host containing a comma
+could otherwise append rules of its own.
+
+**What is still advisory:** cross-host subresources and redirects. Those keep resolving
+normally and are checked per request but not pinned, because denying them outright breaks
+any page that loads assets from a CDN. A page that loads a script from a host which answers
+the check and the load differently can still reach an address the guard would have refused.
+Closing that means launching with `MAP * ~NOTFOUND` as well — verified to work, and to block
+every cross-host subresource — or running the browser behind an egress allowlist.
 
 **Where the check runs matters.** The syntactic half — scheme, `http` outside development,
 internal names and suffixes, and IP literals including the decimal form (`http://2130706433/`

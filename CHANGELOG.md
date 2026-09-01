@@ -181,6 +181,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The browser handed a model-supplied hostname to Chromium, which resolved it again.**
+  Pinning outbound HTTP to a validated address left the browser as the only advisory guard,
+  and the worst-placed one: its URL comes from the model rather than a manifest, so a name
+  answering the guard's lookup and Chromium's differently could reach an address the guard
+  had just refused — cloud metadata being the obvious target, with `op: content` returning
+  the body.
+
+  The browser now launches with `--host-resolver-rules=MAP <host> <validated address>`, so
+  the navigation host can only reach the address the guard approved. Verified end to end
+  against a real Chromium, not only by constructing the flag.
+
+  The hostname is matched against a strict pattern before it reaches that flag. It is a
+  comma-separated list, so a host containing a comma — which `urlparse` will hand back
+  quite happily — could append rules of its own, and `evil.com,MAP * 169.254.169.254` would
+  point every other name at the metadata service.
+
+  Cross-host subresources and redirects remain advisory: they keep resolving normally and
+  are checked per request but not pinned, because denying them breaks any page that loads
+  assets from a CDN. That residual is documented in `deploy/GOVERNANCE.md` rather than left
+  to be discovered, along with the launch rule that would close it.
+
+
 - **The SSRF guard was advisory: it validated one lookup and the connection used another.**
   `assert_safe_outbound_url` resolved a hostname, checked the answers, discarded them, and
   let httpx resolve again independently at connect. Two ways through. A name that resolves
