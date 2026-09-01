@@ -209,6 +209,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it. It was the one open registry with no seam on the registry object and no example, so the
   documented way to add a provider was to read core's source.
 
+- **`scripts/prove-fails.sh`, and a boot gate for every entrypoint.** Four defects shipped or
+  nearly shipped in one session, and three were the same shape: *the branch production takes is
+  the branch nothing covers.* `create_app()` read its optional `settings` parameter instead of the
+  resolved `cfg` and died at boot with a green suite, because every test passes `settings=` and
+  production is the only caller that does not.
+
+  `tests/unit/test_entrypoint_wiring.py` closes that class. It calls each entrypoint the way its
+  console script does — `create_application()` with no arguments — and resolves every `module:attr`
+  string production depends on but no import statement mentions: `[project.scripts]` targets, the
+  string Granian is handed, the Taskiq broker and scheduler paths, and the `felix-*` binary each
+  Dockerfile `CMD` and Compose `command:` names. Those are invisible to ruff and to `ty`, and a
+  rename breaks only the container.
+
+  `scripts/prove-fails.sh <target>` runs a test against pre-change source — a detached worktree on
+  `PYTHONPATH`, working tree untouched — and reports **PROVEN** (failed: evidence), **VACUOUS**
+  (passed: pins nothing), or **BROKEN** (*errored*, which is neither, and means the test itself is
+  wrong). `--base <ref>` picks the comparison point; `--only <dist>` shadows one distribution, for
+  when a distant base makes `tests/conftest.py` error in fixture setup. Two invariants here have
+  been vacuous — one matched `timeout=<Constant>` while every literal it hunted lived inside
+  `httpx.Timeout(...)` — and neither announced itself.
+
+  In `.claude/`: a `structural-test-proof.sh` hook names the command when a tree-scanning test
+  gains a case, `pr-quality-gate.sh` asks for `felix-security-reviewer` when the diff touches a
+  control path, and the `security-review` checklist gains a grammar-crossing section — a hostname
+  validated against a DNS pattern went into `--host-resolver-rules`, whose grammar is a
+  comma-separated list, so `evil.com,MAP * 169.254.169.254` would have reached every name past it.
+  Both new guards are mutation-tested rather than trusted.
+
 ### Changed
 
 - **Removed `args_schema` from `spec.sandboxes`, `spec.containers` and

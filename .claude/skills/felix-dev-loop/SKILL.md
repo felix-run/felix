@@ -41,6 +41,8 @@ environment failure, not a code failure — a `PreToolUse` hook blocks it and pr
 | Tests | `./scripts/test.sh` | 195 tests, 1 skipped |
 | Manifests | `uv run felix bundle-manifests` | loads + validates every file in `manifests/` |
 | Invariants | `./scripts/test.sh tests/unit/test_invariants.py` | env coverage, lean imports, memory twins, wrapper order |
+| Entrypoints | `./scripts/test.sh tests/unit/test_entrypoint_wiring.py` | console scripts, ASGI factory and broker strings, boot with no arguments |
+| Test is real | `./scripts/prove-fails.sh <target>` | runs a test against pre-change source: PROVEN / VACUOUS / BROKEN |
 | Lean imports | `uv sync --locked --no-dev && uv run --no-sync python scripts/lean-import-check.py` | proves the default image can import every module |
 | Toolkit | `python3 scripts/validate-toolkit.py` | `.claude/` hooks, settings, subagents, skills |
 | Eval | `uv run felix eval --dataset smoke --manifest quick --fixture fixtures/eval/smoke.json --mock` | no model calls |

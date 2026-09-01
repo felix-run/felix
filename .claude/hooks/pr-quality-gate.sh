@@ -119,6 +119,22 @@ n=$(printf '%s\n' "$changed" | wc -l | tr -d ' ')
 second="felix-test-quality-reviewer is not needed — no tests changed."
 [ "$tests_changed" -gt 0 ] && second="Tests changed too, so also delegate to felix-test-quality-reviewer on the changed files under tests/."
 
+# A change to a control is not the same kind of change as a change to a feature, and the
+# quality reviewers are not looking for the same things. A security fix carries the specific
+# risk of introducing a second defect while closing the first: hostname validation added to
+# stop SSRF was interpolated straight into `--host-resolver-rules`, whose grammar is a
+# comma-separated list, so `evil.com,MAP * 169.254.169.254` would have pointed every other
+# name at the metadata service — a command-line injection into the flag that existed to
+# prevent exactly that reach. A reviewer caught it. Naming the paths here means the ask is
+# not contingent on the session noticing the change was security-shaped.
+security_changed=$(printf '%s\n' "$changed" | grep -E \
+  '(auth|security|governance|screen|secret|ssrf|egress|sandbox|policy|policies|approval|browser|stdio|transports|rls|tenant|internal)' || true)
+third="felix-security-reviewer is not needed — nothing changed on a control path."
+if [ -n "$security_changed" ]; then
+  m=$(printf '%s\n' "$security_changed" | wc -l | tr -d ' ')
+  third="$m file(s) sit on a control path (auth, screening, secrets, egress, sandbox, tenancy), so also delegate to felix-security-reviewer. Ask it specifically whether this change introduced a *new* weakness while closing the one it targets — a value validated for one grammar and then re-serialized into another is this repo's recurring version of that."
+fi
+
 # Advisory, not a block. This started as `exit 2` and the hard stop cost more than it
 # bought: every amended commit re-armed it mid-flow, and the reviewers it demands are
 # worth running on judgement rather than because the turn will not proceed otherwise.
@@ -131,8 +147,9 @@ $n Python file(s) changed against $base, and the quality reviewers have not run 
 
   1. Delegate to felix-quality-reviewer on: git diff $base...HEAD
   2. $second
-  3. Act on the compounding findings, or say why each one stands.
-  4. Record it so this note stops appearing:
+  3. $third
+  4. Act on the compounding findings, or say why each one stands.
+  5. Record it so this note stops appearing:
        mkdir -p .claude/logs/quality-review && touch .claude/logs/quality-review/\$(git rev-parse HEAD)
 
 The marker is keyed to the commit sha, so amending or adding a commit asks for a fresh review — deliberate, since a review of code you are no longer shipping is worse than none. Nothing here is graded on finding something: "reviewed, nothing compounding" is a normal result.

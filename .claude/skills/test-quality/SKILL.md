@@ -13,9 +13,40 @@ checked. Judge the suite on what it would catch.
 ## The first question
 
 **Would this test fail without the change it accompanies?** Everything else is secondary. Read what
-the assertion actually pins; when it is not obvious, prove it — revert the production hunk in a
-scratch copy, run the test, and watch it go red. A test added alongside a fix that passes on the
-unfixed code is the highest-value finding you can report.
+the assertion actually pins; when it is not obvious, prove it. A test added alongside a fix that
+passes on the unfixed code is the highest-value finding you can report.
+
+In this repo, proving it is one command — it runs the test against the pre-change source, supplied
+by a detached worktree on `PYTHONPATH`, without touching your working tree:
+
+```bash
+./scripts/prove-fails.sh tests/unit/test_x.py::test_y            # against HEAD
+./scripts/prove-fails.sh --base origin/main tests/unit/test_x.py # against the branch point
+./scripts/prove-fails.sh --base <sha> --only api tests/…         # shadow one distribution
+```
+
+Read the verdict carefully, because two of the three are failures of the test:
+
+| Verdict | Meaning |
+|---|---|
+| **PROVEN** | Failed against the old source. The test is evidence. |
+| **VACUOUS** | Passed against the old source. It does not pin the change — report it. |
+| **BROKEN** | *Errored* rather than failed: an import, a missing symbol, a fixture. That is not a pass and not a failure; it says nothing about whether the test would catch the bug. Fix it until it FAILS, then re-run. |
+
+`--only <dist>` exists for the BROKEN case that is not the test's fault: `tests/conftest.py` comes
+from your working tree, so a base far enough back that conftest calls something not yet written
+errors in fixture setup. Narrow the shadow to the distribution the change is in.
+
+Two things it cannot do, both by design: it reverts only Python under the five package `src/` roots,
+so a test asserting on a bundled manifest, a JSON schema, or a Compose file reads the new copy and
+reports VACUOUS; and it cannot help when the rule is *new* rather than a fix, since nothing at the
+base violates it. For a new rule, introduce a violation on purpose, watch the test go red, revert.
+
+**Structural tests need this most.** An AST or `rglob` scan that matches nothing passes, and reads
+exactly like the rule holding. One here matched `timeout=<Constant>` while every literal it hunted
+lived inside `httpx.Timeout(...)`; another checked a hand-written list naming six of nine governance
+wrappers. Both were green the day they were written. Assert that the corpus and the match set are
+non-empty, so the day the scan stops finding anything is the day it fails rather than goes quiet.
 
 ## Assertion strength, weakest to strongest
 

@@ -49,7 +49,8 @@ the supported no-infrastructure test path, not a mock layer.
 Structural gates (fast, no infrastructure):
 
 ```bash
-./scripts/test.sh tests/unit/test_invariants.py   # repo invariants, enforced
+./scripts/test.sh tests/unit/test_invariants.py        # repo invariants, enforced
+./scripts/test.sh tests/unit/test_entrypoint_wiring.py # every console script, factory and broker path
 uv sync --locked --no-dev && uv run --no-sync python scripts/lean-import-check.py
 python3 scripts/validate-toolkit.py               # .claude/ hooks, settings, skills
 uv run python scripts/gen-manifest-schema.py --check   # editor JSON Schema is current
@@ -60,6 +61,21 @@ uv run python scripts/gen-manifest-schema.py --check   # editor JSON Schema is c
 has a `memory://` path, the governance wrapper order is unchanged, `schemas/manifest.schema.json`
 still matches the pydantic models, and the CI test job installs every extra the tests gate on.
 Change a rule deliberately and you update the test with it.
+
+`tests/unit/test_entrypoint_wiring.py` covers the other half: the references production depends on
+that no import statement mentions. Every `[project.scripts]` target, the `module:attr` string Granian
+is handed, the Taskiq broker and scheduler paths, and the `felix-*` binary each container command
+names are resolved; and `create_application()` is called with the argument list production passes,
+which is none. `create_app()` shipped reading its optional `settings` parameter instead of the
+resolved `cfg` and died at boot with a green suite, because every test passes `settings=` and
+production is the only caller that does not.
+
+**Prove a new test can fail.** `./scripts/prove-fails.sh <pytest target>` runs it against the
+pre-change source (a detached worktree on `PYTHONPATH`; your working tree is untouched) and reports
+PROVEN, VACUOUS, or BROKEN. `--base <ref>` picks the comparison point and `--only <dist>` shadows a
+single distribution when a distant base breaks `conftest.py`. Structural tests — AST walks, `rglob`
+corpora — need this most: one matched `timeout=<Constant>` while every literal it hunted lived inside
+`httpx.Timeout(...)`, so it could not fail on any file it named.
 
 A test that needs an optional extra gates on `tests/optional_deps.py:require_optional(module,
 extra)`, never a bare `pytest.importorskip` — an invariant enforces this. A module-level
