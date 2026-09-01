@@ -618,3 +618,63 @@ async def test_the_syntactic_half_runs_on_the_transport(monkeypatch: pytest.Monk
     request = httpx.Request("GET", "http://metadata.google.internal/computeMetadata/v1/")
     with pytest.raises(ValueError):
         await transport.handle_async_request(request)
+
+
+# --- browser: pinning the navigation host --------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_browser_pins_the_navigation_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Chromium resolves for itself, so the validated address must be forced on it.
+
+    Otherwise the guard's lookup and Chromium's are two independent lookups, and this is the
+    one outbound path where the URL comes from the model rather than a manifest.
+    """
+    from felix.security import ssrf
+    from felix.tools.browser import _BrowserExecutor
+
+    monkeypatch.setattr(ssrf, "resolve_host", lambda host: ["93.184.216.34"])
+    ex = _BrowserExecutor(op="content", timeout_ms=1000, path_prefix="", allow_http=False, binding="chromium")
+    assert await ex._pin_args("https://example.com/page") == [
+        "--host-resolver-rules=MAP example.com 93.184.216.34"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_browser_refuses_to_pin_a_host_that_could_inject_rules(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The hostname lands in a comma-separated Chromium flag.
+
+    `--host-resolver-rules` takes a list, so a host containing a comma appends rules of its
+    own — `evil.com,MAP * 169.254.169.254` would redirect every other name at the metadata
+    service. urlparse will hand back such a host quite happily.
+    """
+    from felix.security import ssrf
+    from felix.tools.browser import _BrowserExecutor
+
+    monkeypatch.setattr(ssrf, "resolve_host", lambda host: ["93.184.216.34"])
+    ex = _BrowserExecutor(op="content", timeout_ms=1000, path_prefix="", allow_http=False, binding="chromium")
+    with pytest.raises(ValueError, match="refusing to pin"):
+        await ex._pin_args("https://evil.com,MAP%20*%20169.254.169.254/x".replace("%20", " "))
+
+
+@pytest.mark.asyncio
+async def test_browser_pins_ipv6_with_brackets(monkeypatch: pytest.MonkeyPatch) -> None:
+    from felix.security import ssrf
+    from felix.tools.browser import _BrowserExecutor
+
+    monkeypatch.setattr(ssrf, "resolve_host", lambda host: ["2606:2800:220:1::"])
+    ex = _BrowserExecutor(op="content", timeout_ms=1000, path_prefix="", allow_http=False, binding="chromium")
+    assert await ex._pin_args("https://v6.example.com/") == [
+        "--host-resolver-rules=MAP v6.example.com [2606:2800:220:1::]"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_browser_needs_no_rule_for_a_literal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Chromium does not resolve a literal, and `_check_url` already validated it."""
+    from felix.tools.browser import _BrowserExecutor
+
+    ex = _BrowserExecutor(op="content", timeout_ms=1000, path_prefix="", allow_http=False, binding="chromium")
+    assert await ex._pin_args("https://93.184.216.34/") == []

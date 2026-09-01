@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import base64
+import ipaddress
 import json
 import logging
+import re
 from typing import Any
 from urllib.parse import urlparse
 
@@ -12,7 +14,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from felix.manifests.schema import BrowserToolRef
 from felix.observability.metrics import record_counter
-from felix.security.ssrf import assert_safe_outbound_url_async
+from felix.security.egress import approved_addresses
+from felix.security.ssrf import EgressBlocked, assert_safe_outbound_url_async
 from felix.tools.types import (
     Tool,
     ToolInput,
@@ -36,6 +39,28 @@ def _load_playwright() -> Any:
     from playwright.async_api import async_playwright
 
     return async_playwright
+
+
+# A hostname goes into a Chromium command-line argument, and `--host-resolver-rules` is a
+# comma-separated list. A host containing a comma would append rules of its own — e.g.
+# `evil.com,MAP * 169.254.169.254` — so the value is matched against a strict pattern before
+# it is interpolated, rather than trusted because it came from urlparse.
+_SAFE_HOSTNAME = re.compile(r"^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$")
+
+
+def ipaddress_is_literal(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return True
+
+
+def _resolver_rule(host: str, address: str) -> str:
+    """A single `MAP host address` rule, with IPv6 bracketed as Chromium expects."""
+    literal = ipaddress.ip_address(address)
+    target = f"[{address}]" if literal.version == 6 else address
+    return f"MAP {host} {target}"
 
 
 class _BrowserExecutor:
@@ -109,9 +134,13 @@ class _BrowserExecutor:
             )
         timeout = self._timeout_ms
         try:
+            launch_args = await self._pin_args(url)
+        except (EgressBlocked, ValueError) as exc:
+            return f"browser_error: {exc}"
+        try:
             async with async_playwright() as p:
                 launcher = getattr(p, self._binding, p.chromium)
-                browser = await launcher.launch(headless=True)
+                browser = await launcher.launch(headless=True, args=launch_args)
                 page = await browser.new_page()
                 try:
                     await self._install_egress_guard(page)
@@ -121,6 +150,28 @@ class _BrowserExecutor:
                     await browser.close()
         except Exception as exc:
             return f"browser_error: {exc}"
+
+    async def _pin_args(self, url: str) -> list[str]:
+        """Chromium launch flags pinning the navigation host to a validated address.
+
+        Without this the check and the load are two independent lookups: the guard resolves
+        the model-supplied name, Chromium resolves it again, and a record with a short TTL
+        answers them differently. This is the one outbound path where the URL comes from the
+        model rather than a manifest, so it is the highest-value rebinding target here.
+
+        Only the navigation host is pinned. Cross-host subresources and redirects keep
+        resolving normally and stay covered by the per-request guard, which is advisory —
+        denying them outright would break any page that loads assets from a CDN.
+        """
+        host = (urlparse(url).hostname or "").strip().lower()
+        if not host or ipaddress_is_literal(host):
+            # A literal needs no rule: Chromium does not resolve it, and `_check_url` has
+            # already validated the address itself.
+            return []
+        if not _SAFE_HOSTNAME.match(host):
+            raise ValueError(f"refusing to pin an unexpected hostname: {host!r}")
+        addresses = await approved_addresses(host, allow_http=self._allow_http)
+        return [f"--host-resolver-rules={_resolver_rule(host, addresses[0])}"]
 
     async def _extract(self, page: Any, url: str) -> str:
         op = self._op

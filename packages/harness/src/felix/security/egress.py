@@ -51,53 +51,61 @@ def _refuse(host: str, address: str, reason: str) -> None:
     raise EgressBlocked(_BLOCKED_MESSAGE)
 
 
+async def approved_addresses(
+    host: str,
+    *,
+    allow_http: bool = False,
+    timeout: float | None = None,
+) -> list[str]:
+    """Every address `host` resolves to, once, with each one validated.
+
+    Shared with anything that dials outside httpx — the browser hands these to Chromium as
+    resolver rules, because Chromium does its own lookup and would otherwise be a second,
+    unvalidated one.
+    """
+    literal = ssrf._parse_ip_literal(host)
+    if literal is not None:
+        candidates = [str(literal)]
+    else:
+        # Bounded by the smaller of the resolve budget and the caller's connect timeout, so
+        # resolution cannot stack a second ceiling on top of the dial. asyncio rather than
+        # anyio: `AutoBackend` also selects a trio backend, but Felix is asyncio-only and
+        # this fails closed under trio rather than open.
+        budget = min(ssrf._RESOLVE_BUDGET_S, timeout) if timeout else ssrf._RESOLVE_BUDGET_S
+        try:
+            candidates = await asyncio.wait_for(asyncio.to_thread(ssrf.resolve_host, host), timeout=budget)
+        except TimeoutError:
+            _refuse(host, "", "resolution timed out")
+
+    if not candidates:
+        # Fail closed. The advisory guard deferred here because a lookup failure meant the
+        # connection would fail anyway — but this is the connection, and a resolver that
+        # answers the client while starving the checker is the bypass this exists to remove.
+        _refuse(host, "", "resolution returned no addresses")
+
+    approved: list[str] = []
+    for addr in candidates:
+        try:
+            ip = ipaddress.ip_address(addr)
+        except ValueError:
+            continue
+        reason = ssrf._is_blocked_ip(ip)
+        if reason and not (allow_http and ip.is_loopback):
+            # One bad answer refuses the whole name: a round-robin that includes a private
+            # address must not be reachable by retrying.
+            _refuse(host, addr, reason)
+        approved.append(addr)
+    if not approved:
+        _refuse(host, "", "no usable address")
+    return approved
+
+
 class _PinningBackend(AutoBackend):
     """Resolves, validates, and connects to the address it validated."""
 
     def __init__(self, *, allow_http: bool = False) -> None:
         super().__init__()
         self._allow_http = allow_http
-
-    async def _approved_addresses(self, host: str, timeout: float | None = None) -> list[str]:
-        literal = ssrf._parse_ip_literal(host)
-        if literal is not None:
-            candidates = [str(literal)]
-        else:
-            # `getaddrinfo` is synchronous and this runs on the event loop, so it goes to
-            # a thread on the same budget as the pre-dial check. Without this the fix for
-            # the validator stall would be undone one layer down.
-            # Bounded by the smaller of the resolve budget and the caller's connect
-            # timeout, so resolution cannot stack a second ceiling on top of the dial.
-            # asyncio rather than anyio: `AutoBackend` also selects a trio backend, but
-            # Felix is asyncio-only and this fails closed under trio rather than open.
-            budget = min(ssrf._RESOLVE_BUDGET_S, timeout) if timeout else ssrf._RESOLVE_BUDGET_S
-            candidates = await asyncio.wait_for(asyncio.to_thread(ssrf.resolve_host, host), timeout=budget)
-        if not candidates:
-            # Fail closed. The advisory guard deferred here because a lookup failure meant
-            # the connection would fail anyway — but this *is* the connection, and a
-            # resolver that answers the client while starving the checker is exactly the
-            # bypass this backend exists to remove.
-            _refuse(host, "", "resolution returned no addresses")
-
-        approved: list[str] = []
-        for addr in candidates:
-            try:
-                ip = ipaddress.ip_address(addr)
-            except ValueError:
-                continue
-            reason = ssrf._is_blocked_ip(ip)
-            if reason and not (self._allow_http and ip.is_loopback):
-                # One bad answer refuses the whole name: a round-robin that includes a
-                # private address must not be reachable by retrying.
-                _refuse(host, addr, reason)
-            approved.append(addr)
-        if not approved:
-            _refuse(host, "", "no usable address")
-        # All of them, not just the first. anyio races the addresses a name resolves to —
-        # that is Happy Eyeballs, and it is what lets a host with an AAAA record work from a
-        # container with no IPv6 egress. Pinning one address discards that fallback; every
-        # address here has been validated, so trying them in turn keeps the property.
-        return approved
 
     async def connect_tcp(
         self,
@@ -108,7 +116,7 @@ class _PinningBackend(AutoBackend):
         socket_options: Any = None,
     ) -> httpcore.AsyncNetworkStream:
         try:
-            approved = await self._approved_addresses(host, timeout)
+            approved = await approved_addresses(host, allow_http=self._allow_http, timeout=timeout)
         except TimeoutError:
             _refuse(host, "", "resolution timed out")
 
@@ -208,4 +216,4 @@ def safe_async_client(
     )
 
 
-__all__ = ["GuardedAsyncTransport", "safe_async_client"]
+__all__ = ["GuardedAsyncTransport", "approved_addresses", "safe_async_client"]
