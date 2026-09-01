@@ -163,6 +163,17 @@ bounds each model-provider request the same way.
 
 Every manifest-supplied or model-supplied URL is checked before it is dialled.
 
+**The guard is enforcing, not advisory.** Outbound HTTP goes through a transport that
+resolves the hostname once, validates every returned address, and then connects to one of
+the addresses it validated — so the address that was checked is the address that is used.
+Without that pin the check and the connection are two independent lookups, and a hostname
+that resolves differently the second time (DNS rebinding, TTL 0) or a nameserver that
+answers the client while starving the checker gets through. TLS is unaffected: the
+certificate is still verified against the hostname the caller asked for.
+
+A lookup that fails or times out refuses the dial. That is safe precisely because this is
+the connection: there is no second lookup left to fail.
+
 **Where the check runs matters.** The syntactic half — scheme, `http` outside development,
 internal names and suffixes, and IP literals including the decimal form (`http://2130706433/`
 is 127.0.0.1) — runs when a manifest is parsed. The half that **resolves the hostname** runs

@@ -465,3 +465,78 @@ async def test_a_slow_resolver_is_refused_not_allowed(monkeypatch: pytest.Monkey
 
     with pytest.raises(EgressBlocked):
         await assert_safe_outbound_url_async("https://blackhole.example.com/x")
+
+
+# --- the guard as enforcement, not advice --------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_connection_is_pinned_to_the_validated_address(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The address that was checked must be the address that is dialled.
+
+    The pre-dial guard resolved, validated, discarded the answers, and let httpx resolve
+    again — so a name that resolves differently the second time wins, and so does a
+    nameserver that answers the two lookups differently. Asserting on what reaches
+    `connect_tcp` is what pins this: a hostname arriving there means the check is still
+    advisory.
+    """
+    from felix.security import ssrf
+    from felix.security.egress import _PinningBackend
+
+    monkeypatch.setattr(ssrf, "resolve_host", lambda host: ["93.184.216.34"])
+    backend = _PinningBackend()
+    dialled: list[str] = []
+
+    async def _fake_connect(self, host, port, **kwargs):
+        dialled.append(host)
+        return object()
+
+    monkeypatch.setattr(type(backend).__mro__[1], "connect_tcp", _fake_connect)
+    await backend.connect_tcp("example.com", 443)
+    assert dialled == ["93.184.216.34"], "connected to a name, so a rebind still wins"
+
+
+@pytest.mark.asyncio
+async def test_a_selectively_answering_resolver_cannot_bypass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An empty lookup must refuse the dial, not defer to it.
+
+    `assert_safe_outbound_url` treats an empty resolve as "defer to the connection", which
+    was safe only because the connection was a separate lookup that would fail too. Here the
+    connection *is* this lookup, so deferring would let a nameserver that starves the checker
+    and answers the client through unchallenged.
+    """
+    from felix.security import ssrf
+    from felix.security.egress import _PinningBackend
+    from felix.security.ssrf import EgressBlocked
+
+    monkeypatch.setattr(ssrf, "resolve_host", lambda host: [])
+    with pytest.raises(EgressBlocked):
+        await _PinningBackend().connect_tcp("blackholed.example.com", 443)
+
+
+@pytest.mark.asyncio
+async def test_one_bad_answer_refuses_the_whole_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A round-robin containing a private address must not be reachable by retrying."""
+    from felix.security import ssrf
+    from felix.security.egress import _PinningBackend
+    from felix.security.ssrf import EgressBlocked
+
+    monkeypatch.setattr(ssrf, "resolve_host", lambda host: ["93.184.216.34", "10.0.0.5"])
+    with pytest.raises(EgressBlocked):
+        await _PinningBackend().connect_tcp("mixed.example.com", 443)
+
+
+def test_the_guard_cannot_be_installed_silently_unguarded() -> None:
+    """The backend swap touches a httpcore private attribute, so pin that it still exists.
+
+    If httpcore renames `_network_backend`, the transport must fail loudly rather than
+    returning a client with no egress guard at all.
+    """
+    from felix.security.egress import GuardedAsyncTransport, _PinningBackend
+
+    transport = GuardedAsyncTransport()
+    assert isinstance(transport._pool._network_backend, _PinningBackend)

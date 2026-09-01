@@ -9,7 +9,8 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from felix.security.ssrf import assert_safe_outbound_url, assert_safe_outbound_url_async
+from felix.security.egress import safe_async_client
+from felix.security.ssrf import assert_safe_outbound_url
 from felix.timeouts import DEFAULT_CONNECT_TIMEOUT_S
 from felix.tools.types import ToolInput, ToolInvocationCtx, ToolOutput
 
@@ -41,9 +42,8 @@ class HttpExecutor:
         import httpx
 
         _ = ctx
-        await assert_safe_outbound_url_async(self._url, allow_http=self._allow_http)
         timeout = httpx.Timeout(self._timeout_s, connect=DEFAULT_CONNECT_TIMEOUT_S)
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+        async with safe_async_client(allow_http=self._allow_http, timeout=timeout) as client:
             resp = await client.request(self._method, self._url, json=args)
             resp.raise_for_status()
             return resp.text

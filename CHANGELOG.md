@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The SSRF guard was advisory: it validated one lookup and the connection used another.**
+  `assert_safe_outbound_url` resolved a hostname, checked the answers, discarded them, and
+  let httpx resolve again independently at connect. Two ways through. A name that resolves
+  differently the second time wins — a TTL of zero is free to publish. And a nameserver that
+  simply drops the guard's query while answering the client's wins outright, because an empty
+  `resolve_host` was treated as "defer to the connection": no race, no timing, just two
+  different answers to two different askers.
+
+  Outbound HTTP now goes through a transport that resolves once, validates every returned
+  address, and connects to an address it validated. There is no second lookup to disagree
+  with the first. One bad answer refuses the whole name, so a round-robin containing a
+  private address is not reachable by retrying, and a lookup that fails or times out refuses
+  the dial — safe here precisely because this *is* the connection.
+
+  TLS is unaffected. httpcore passes the origin hostname to `start_tls` regardless of what
+  `connect_tcp` was given, so SNI and certificate verification still run against the name the
+  caller asked for while the socket goes to the pinned address. Verified against a real
+  HTTPS host.
+
+  The pre-dial check stays, reduced to what needs no lookup — scheme, `http` outside
+  development, internal names and suffixes, IP literals — so a bad URL still fails fast and
+  clearly. Doing the resolving check there too would simply reinstate the second lookup.
+
+
+### Fixed
+
 - **A blocking DNS lookup ran inside a pydantic validator, on the API event loop.**
   `assert_safe_outbound_url` resolves hostnames, and three schema validators called it while
   parsing — so every MCP server, peer and container ref cost a synchronous `getaddrinfo` on
