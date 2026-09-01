@@ -44,6 +44,11 @@ def git(repo: Path | str, *args: str, check: bool = True) -> str:
         env=env,
         capture_output=True,
         text=True,
-        check=check,
     )
+    if check and done.returncode != 0:
+        # `check=True` alone raises CalledProcessError, whose str() is "returned non-zero exit
+        # status 128" with stderr only on the exception object — so centralising every git call
+        # behind this function would have hidden the reason for all of them, which is the
+        # failure mode the gpgsign line above exists to avoid.
+        raise RuntimeError(f"git {' '.join(args)} failed in {repo}:\n{done.stderr.strip()}")
     return done.stdout.strip()

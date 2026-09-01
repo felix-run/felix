@@ -45,28 +45,22 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _git(repo: Path, *args: str) -> str:
-    # Via the helper: a bare `git -C` loses to an exported GIT_DIR, and this fixture's
-    # `add -A && commit` then writes into whatever repo that names. See tests/git_fixture.py.
-    return git(repo, *args)
-
-
 def _repo(root: Path, changed: str) -> Path:
     """A repo with `origin/main` behind HEAD by one commit touching `changed`."""
     root.mkdir(parents=True, exist_ok=True)
-    _git(root, "init", "-q", "-b", "main")
-    _git(root, "config", "user.email", "t@example.com")
-    _git(root, "config", "user.name", "t")
+    git(root, "init", "-q", "-b", "main")
+    git(root, "config", "user.email", "t@example.com")
+    git(root, "config", "user.name", "t")
     (root / "seed").write_text("seed\n")
-    _git(root, "add", "-A")
-    _git(root, "commit", "-qm", "seed")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "seed")
     # origin/main pinned here, so the diff below is exactly the one commit.
-    _git(root, "update-ref", "refs/remotes/origin/main", _git(root, "rev-parse", "HEAD"))
+    git(root, "update-ref", "refs/remotes/origin/main", git(root, "rev-parse", "HEAD"))
     path = root / changed
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("x = 1\n")
-    _git(root, "add", "-A")
-    _git(root, "commit", "-qm", "change")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "change")
     return root
 
 
@@ -102,7 +96,7 @@ def test_a_marker_for_this_exact_sha_satisfies_it(tmp_path: Path) -> None:
     project = _repo(tmp_path / "project", "packages/harness/src/felix/x.py")
     markers = project / ".claude" / "logs" / "quality-review"
     markers.mkdir(parents=True)
-    (markers / _git(project, "rev-parse", "HEAD")).touch()
+    (markers / git(project, "rev-parse", "HEAD")).touch()
     assert _run(CREATE, project=project, cwd=project) == QUIET
 
 
@@ -202,7 +196,7 @@ def test_a_worktree_of_this_project_is_still_gated(tmp_path: Path) -> None:
     a fail-open on a legitimate workflow rather than an exotic one."""
     project = _repo(tmp_path / "project", "packages/harness/src/felix/x.py")
     tree = tmp_path / "wt"
-    _git(project, "worktree", "add", "-q", str(tree), "HEAD")
+    git(project, "worktree", "add", "-q", str(tree), "HEAD")
     assert _run(CREATE, project=project, cwd=tree) == FLAGGED
     assert _run(f"cd {tree}; {CREATE}", project=project, cwd=project) == FLAGGED
 
@@ -212,17 +206,17 @@ def test_a_worktree_is_gated_on_its_own_head(tmp_path: Path) -> None:
     commit and does not borrow the main checkout's."""
     project = _repo(tmp_path / "project", "packages/harness/src/felix/x.py")
     tree = tmp_path / "wt"
-    _git(project, "worktree", "add", "-q", str(tree), "HEAD")
+    git(project, "worktree", "add", "-q", str(tree), "HEAD")
     (tree / "packages" / "harness" / "src" / "felix" / "y.py").write_text("y = 2\n")
-    _git(tree, "add", "-A")
-    _git(tree, "commit", "-qm", "worktree change")
+    git(tree, "add", "-A")
+    git(tree, "commit", "-qm", "worktree change")
 
     markers = project / ".claude" / "logs" / "quality-review"
     markers.mkdir(parents=True)
-    (markers / _git(project, "rev-parse", "HEAD")).touch()
+    (markers / git(project, "rev-parse", "HEAD")).touch()
     assert _run(CREATE, project=project, cwd=tree) == FLAGGED, "worktree borrowed the main sha's marker"
 
-    (markers / _git(tree, "rev-parse", "HEAD")).touch()
+    (markers / git(tree, "rev-parse", "HEAD")).touch()
     assert _run(CREATE, project=project, cwd=tree) == QUIET
 
 

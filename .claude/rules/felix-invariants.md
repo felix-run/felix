@@ -22,8 +22,7 @@ from it, and they are cheap:
   is evidence, **VACUOUS** (passed) pins nothing, **BROKEN** (errored) means the test is wrong and
   says nothing either way. It shadows `PYTHONPATH` and changes nothing on disk, so for a test that
   *reads* the tree — every AST or `rglob` invariant here — the method is mutation instead: introduce
-  the violation, watch it go red, revert. (`--base <ref>` sets the comparison point; `--only <dists>`
-  narrows the shadow to named distributions when a distant base breaks `conftest.py`.) An AST invariant here matched `timeout=<Constant>` while
+  the violation, watch it go red, revert. An AST invariant here matched `timeout=<Constant>` while
   every literal it hunted lived inside `httpx.Timeout(...)` — green the day it was written, unable to
   fail on any file it named.
 - **Absence is the claim that rots fastest.** "Nothing reads this field", "this provider is

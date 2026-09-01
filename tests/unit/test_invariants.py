@@ -983,17 +983,25 @@ def test_every_git_call_in_tests_is_environment_scrubbed() -> None:
         "create_subprocess_exec",
         "create_subprocess_shell",
     }
+    # Qualified only — `subprocess.run(...)`, `asyncio.create_subprocess_exec(...)`. A bare
+    # `run(...)` is usually a local helper, and counting those made the corpus floor below
+    # track the spelling of a fixture's alias rather than the number of real spawn sites.
+    SPAWNER_MODULES = {"subprocess", "asyncio", "sp"}
 
     def _heads(call: ast.Call) -> list[str]:
         """Every string this call might be asking a shell or exec to run."""
         callee = call.func
-        name = callee.attr if isinstance(callee, ast.Attribute) else getattr(callee, "id", "")
-        if name not in SPAWNERS:
+        if not isinstance(callee, ast.Attribute) or callee.attr not in SPAWNERS:
+            return []
+        module = getattr(callee.value, "id", "")
+        if module not in SPAWNER_MODULES:
             return []
         found: list[str] = []
         candidates = [*call.args, *(kw.value for kw in call.keywords)]
         for node in candidates:
-            # `subprocess.run(["git", ...])` / `run(args=["git", ...])`
+            # `subprocess.run(["git", ...])` / `run(args=["git", ...])`. Only the *head* is
+            # collected — an earlier version appended every string constant in every argument
+            # position, so `seen` counted `"user.email"` and `"-qm"` as command strings.
             if isinstance(node, ast.List) and node.elts:
                 first = node.elts[0]
                 if isinstance(first, ast.Constant) and isinstance(first.value, str):
@@ -1022,7 +1030,13 @@ def test_every_git_call_in_tests_is_environment_scrubbed() -> None:
                 binary = head.split()[0].rsplit("/", 1)[-1] if head.split() else ""
                 if binary == "git":
                     offenders.append(f"{path.relative_to(ROOT)}:{node.lineno}")
-    assert seen >= 20, f"no command strings found in tests/ — has the scan broken? ({seen})"
+    # A floor on *spawn sites*, not on argument strings. The previous `>= 20` counted the
+    # latter, so tidying one fixture's `run = lambda *a: git(root, *a)` alias into direct
+    # `git(...)` calls — exactly what this test's own failure message asks for — dropped the
+    # count below the floor and failed with "has the scan broken?". A guard that punishes
+    # compliance with its own instruction gets its number lowered, which is how the last
+    # corpus hole was made.
+    assert seen >= 3, f"no subprocess spawn sites found in tests/ — has the scan broken? ({seen})"
     assert offenders == [], (
         "these invoke git directly, so an ambient GIT_DIR/GIT_WORK_TREE points them at a real "
         f"repository — go through tests/git_fixture.py:git instead: {sorted(set(offenders))}"
@@ -1030,25 +1044,10 @@ def test_every_git_call_in_tests_is_environment_scrubbed() -> None:
 
 
 def test_the_suite_runs_without_an_ambient_git_redirect() -> None:
-    """The defense that makes spelling irrelevant, asserted directly.
-
-    `tests/conftest.py` pops these from the parent process at session scope. If that stops
-    happening, every bare `git -C` in the suite becomes able to write to whatever the caller's
-    environment names — which is how this repository acquired two fixture commits.
-    """
+    """A canary for the session fixture in tests/conftest.py being deleted. Nothing more —
+    that fixture pops these before any test runs, so this is true by construction."""
     import os
 
-    # The variables that redirect git to another repository — not every GIT_* name. `GIT_ASKPASS`
-    # and `GIT_EDITOR` are routinely set by a terminal or IDE and cannot point a write anywhere.
-    redirects = {
-        "GIT_DIR",
-        "GIT_WORK_TREE",
-        "GIT_INDEX_FILE",
-        "GIT_COMMON_DIR",
-        "GIT_NAMESPACE",
-        "GIT_OBJECT_DIRECTORY",
-        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-        "GIT_CEILING_DIRECTORIES",
-    }
-    leaked = sorted(redirects & set(os.environ))
-    assert leaked == [], f"the suite is running with an ambient git redirect: {leaked}"
+    from tests.conftest import GIT_REDIRECTS
+
+    assert sorted(GIT_REDIRECTS & set(os.environ)) == [], "ambient git redirect reached the suite"

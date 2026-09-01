@@ -23,6 +23,11 @@ distributions, two entrypoint modules and three worker functions in hand-maintai
 which is the "list naming six of nine governance wrappers" failure this repo already has on
 record, rebuilt inside the guard against it. Adding `apps/gateway` would have silently
 narrowed every check while `>= 5` stayed green.
+
+`EXPECTED_COMMANDS` is the one deliberate exception, and its comment says why: which files
+start Felix is a deployment fact, not something a scan can infer — a Compose file is not
+distinguishable from any other YAML by inspection. It is asserted in both directions, so it
+can neither outlive the files it names nor miss a new one.
 """
 
 from __future__ import annotations
@@ -164,12 +169,10 @@ def _first_token(value: str) -> str:
     if text.startswith("-") and not text.startswith("--"):
         text = text[1:].strip()  # a YAML block-list entry
     token = re.split(r"[,\s]", text, maxsplit=1)[0].strip("[]\"'")
-    # The basename, because a command may be path-qualified — `/app/.venv/bin/felix-api` is
-    # what the Dockerfile's own comment blesses, since that directory is on PATH. An earlier
-    # attempt used `re.match(r"(^|/)felix…")` on the whole token, and `re.match` anchors at
-    # position 0, so `(^|/)` could only ever consume a *leading* slash: it failed the
-    # legitimate absolute form and still passed `/app/.venv/bin/felix-apii`. Wrong in both
-    # directions, and nothing pinned it — which is why it shipped.
+    # The basename. Nothing in `deploy/` is path-qualified today — the Dockerfile puts
+    # `/app/.venv/bin` on PATH and uses the bare name — but writing it out is a legal edit,
+    # and the guard must not fail one. It did: `re.match(r"(^|/)felix…")` anchors at position
+    # 0, so it rejected `/app/.venv/bin/felix-api` and accepted `/felix-api`.
     return token.rsplit("/", 1)[-1]
 
 
@@ -188,22 +191,12 @@ def _container_commands() -> list[tuple[str, int, str]]:
             match = directive.match(line)
             if not match:
                 continue
+            # Single-line flow sequences only (`CMD ["felix-api"]`, `command: ["felix-worker"]`),
+            # which is the one command syntax this tree uses. A multi-line form would yield no
+            # token, drop the file out of `by_file`, and fail the equality assertion below —
+            # loudly, and with a message naming the file. That is a better deal than a
+            # block-scanning branch no assertion reaches.
             value = (match.group(1) or match.group(2) or "").strip()
-            if value in {"[", ""}:
-                # `command:` with the list on the following lines, or `CMD [` with the
-                # bracket alone. Bounded to the contiguous block: scanning to end of file
-                # credited an empty `command:` in one service with a `- data:/d` line from
-                # another service's `volumes:` six lines down, so a command whose list was
-                # deleted or templated away silently borrowed the next one it could find.
-                value = ""
-                for following in lines[i + 1 :]:
-                    stripped = following.strip()
-                    if not stripped or stripped.startswith("#"):
-                        continue
-                    if not stripped.startswith(("-", '"', "'")):
-                        break
-                    value = stripped
-                    break
             token = _first_token(value)
             if FELIX_BINARY.match(token):
                 found.append((str(path.relative_to(ROOT)), i + 1, token))
@@ -344,34 +337,21 @@ def test_the_api_boots_with_the_arguments_production_passes() -> None:
     reviewer showed that rewriting the factory to pass `plugins=[]` left it green. Pinning
     that needs a plugin installed — `tests/unit/test_plugin_entry_point.py` is where it lives.
     """
-    from felix import plugins as felix_plugins
-    from felix.config import get_settings
     from felix_api.main import create_application
 
-    try:
-        app = create_application()
+    # Booting populates two process globals — the `get_settings` lru_cache and the plugin
+    # registry. Resetting them is `_reset_app_globals` in tests/conftest.py, with the rest of
+    # this suite's isolation, rather than a `finally` only this test knows to write.
+    app = create_application()
 
-        paths = {getattr(route, "path", "") for route in app.routes}
-        assert "/health" in paths, f"the app booted without its health route: {sorted(paths)}"
-        # `database_url` has a non-empty default, so asserting it is truthy pins nothing —
-        # it is true of any Settings object, resolved from the environment or not. The
-        # scheme is what shows the resolution actually happened under scripts/test.sh.
-        assert app.state.settings.database_url.startswith("memory://"), (
-            f"create_app() did not resolve settings from the environment: {app.state.settings.database_url}"
-        )
-    finally:
-        # Booting populates two process globals the autouse fixture in tests/conftest.py does
-        # not reset: the `get_settings` lru_cache, and the plugin registry's `_loaded` flag,
-        # which short-circuits entry-point discovery for every later test. Leaving either
-        # behind is the shape that conftest exists to prevent.
-        get_settings.cache_clear()
-        # Not `_loaded = False` on its own: `load_plugins` gates on that flag and every
-        # `register_*` *appends*, so clearing the flag while `_plugins`/`_authenticators`/
-        # `_startup_hooks` stay populated makes the next discovery register everything a second
-        # time — startup hooks included, which then run twice. Inert in the lean CI venv, where
-        # `installed_plugins()` is empty, and not inert under `make install-full`. Replacing the
-        # registry object is the honest reset.
-        felix_plugins._registry = felix_plugins.PluginRegistry()
+    paths = {getattr(route, "path", "") for route in app.routes}
+    assert "/health" in paths, f"the app booted without its health route: {sorted(paths)}"
+    # `database_url` has a non-empty default, so asserting it is truthy pins nothing — it is
+    # true of any Settings object, resolved from the environment or not. The scheme is what
+    # shows the resolution actually happened under scripts/test.sh.
+    assert app.state.settings.database_url.startswith("memory://"), (
+        f"create_app() did not resolve settings from the environment: {app.state.settings.database_url}"
+    )
 
 
 @pytest.mark.parametrize(
@@ -382,9 +362,7 @@ def test_the_api_boots_with_the_arguments_production_passes() -> None:
         ("felix-api", "felix-api"),
         ("- felix-api", "felix-api"),
         ('- "felix-api"', "felix-api"),
-        ("/app/.venv/bin/felix-api", "felix-api"),
         ('["/app/.venv/bin/felix-api"]', "felix-api"),
-        ("./felix-api", "felix-api"),
         ('["python", "-m", "http.server"]', "python"),
         ("server /data --console-address :9001", "server"),
         ('["valkey-server", "--maxmemory", "64mb"]', "valkey-server"),
