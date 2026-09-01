@@ -316,6 +316,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The internal landing path screened four payload keys while the event carried more.**
+  `POST /internal/sessions/{id}/events` screened `content`, `payload.content` and
+  `payload.{text,message,output}`, but `_payload_to_appendable` also lifts `tool_calls` and
+  `metadata` onto the event — and `event_to_chat_message` replays both into model context,
+  `metadata.attachments` as image attachments and `metadata.thinking` as thinking blocks. So
+  an injection placed in either field was stored and replayed unscreened.
+
+  Screening is now derived from the lift rather than from a list of key names, because a
+  list of key names was the defect. `screenable_text` lives next to
+  `_payload_to_appendable`, so a field added there is screened the day it is added rather
+  than the day someone remembers this endpoint.
+
+- **The session export interpolated a thread id into a quoted header.**
+  `Content-Disposition: attachment; filename="{thread_id}.jsonl"`. `effective_thread_id`
+  rejects `:` and `#`, which made header splitting look unreachable — but it permits `"`,
+  and one quote ends the parameter early and starts attacker-controlled header text. The
+  filename is now reduced to an allowlist, since a filename needs nothing outside it.
+
+  These are the last two of the four findings deferred from the August tenant-isolation
+  review.
+
+
 - **The tenant id was validated at the far end, not where it enters.** `effective_thread_id`
   refused a tenant containing `:` or `#`, so such a tenant failed closed on the first write —
   but it authenticated fine, because the id is accepted verbatim from an api-key `tenant_id`
