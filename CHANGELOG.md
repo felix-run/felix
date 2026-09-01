@@ -181,6 +181,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A canary looked benchmarked when nothing had benchmarked it.** `run_continuous_eval`
+  reads `canary_version` from each active canary and passes it to `start_run`, which writes
+  it onto the eval run row — but resolution never used it. So the score belonged to whatever
+  version was active while the row said "canary". The number existed and was wrong, which is
+  worse than not measuring: a rollout gate reported a result it had not earned.
+
+  `resolve_tenant_manifest` now takes `pin_version` and the eval runner passes the version it
+  recorded. A pinned version that cannot be resolved fails the run — `fail_count` equal to
+  the item count, with the error in `scores` — rather than falling back to the active
+  manifest, because falling back is precisely what made the original bug invisible.
+
+
 - **The browser handed a model-supplied hostname to Chromium, which resolved it again.**
   Pinning outbound HTTP to a validated address left the browser as the only advisory guard,
   and the worst-placed one: its URL comes from the model rather than a manifest, so a name
