@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import typer
 from rich import print as rprint
@@ -165,6 +166,21 @@ def bundle_manifests(
         rprint(json.dumps({"manifests": names}, indent=2))
 
 
+def _assert_outbound_hosts_resolve(manifest: Any, settings: Any) -> None:
+    """Resolve every manifest-supplied outbound URL, raising on a blocked address."""
+    from felix.security.ssrf import assert_safe_outbound_url
+
+    allow_http = settings.environment == "development" and settings.allow_insecure
+    spec = manifest.spec
+    urls = [
+        *(ref.url for ref in spec.mcp if ref.url),
+        *(ref.url for ref in spec.peers if ref.url),
+        *(ref.gateway_url for ref in spec.containers if ref.gateway_url),
+    ]
+    for url in urls:
+        assert_safe_outbound_url(url, allow_http=allow_http)
+
+
 @app.command("validate-manifest")
 def validate_manifest_cmd(
     path: Path = typer.Argument(..., help="Path to a felix/v1 Agent YAML or JSON file."),
@@ -173,6 +189,11 @@ def validate_manifest_cmd(
         "--environment",
         "-e",
         help="Assumed FELIX_ENVIRONMENT for governance checks.",
+    ),
+    resolve_egress: bool = typer.Option(
+        True,
+        "--resolve-egress/--no-resolve-egress",
+        help="Resolve every outbound hostname and reject blocked addresses (needs DNS).",
     ),
 ) -> None:
     """Validate a manifest schema + opt-in governance frameworks (GitOps CI)."""
@@ -202,6 +223,13 @@ def validate_manifest_cmd(
             memory_capture=manifest.spec.memory.capture.enabled,
             memory_recall_tools=manifest.spec.memory.recall.tools,
         )
+        # The schema validators are syntactic — resolving there meant a blocking
+        # getaddrinfo on the API event loop for every ref on every read and write, and it
+        # never failed closed anyway. The resolving check belongs here, where an author is
+        # waiting on a CLI rather than a request, and at dial time, where it is
+        # authoritative. `--no-resolve-egress` for an air-gapped CI runner.
+        if resolve_egress:
+            _assert_outbound_hosts_resolve(manifest, settings)
     except GovernanceError as exc:
         rprint(f"[red]governance fail[/red] {path}: {exc}")
         raise SystemExit(1) from exc

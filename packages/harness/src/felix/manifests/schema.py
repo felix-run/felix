@@ -166,7 +166,12 @@ class McpServerRef(_Strict):
     def _safe_url(cls, v: str) -> str:
         if not v:
             return v
-        assert_safe_outbound_url(v)
+        # Syntactic only. Resolving here ran a blocking getaddrinfo inside a pydantic
+        # validator, on the API event loop, for every ref on every manifest read and
+        # write — and it never failed closed anyway (a dropped query is treated as
+        # 'defer to the connection'). The authoritative check is at dial time, which is
+        # also the only place that can catch a name that re-resolves after validation.
+        assert_safe_outbound_url(v, resolve=False)
         return v
 
     @model_validator(mode="after")
@@ -198,7 +203,12 @@ class A2APeerRef(_Strict):
     @field_validator("url")
     @classmethod
     def _safe_url(cls, v: str) -> str:
-        assert_safe_outbound_url(v)
+        # Syntactic only. Resolving here ran a blocking getaddrinfo inside a pydantic
+        # validator, on the API event loop, for every ref on every manifest read and
+        # write — and it never failed closed anyway (a dropped query is treated as
+        # 'defer to the connection'). The authoritative check is at dial time, which is
+        # also the only place that can catch a name that re-resolves after validation.
+        assert_safe_outbound_url(v, resolve=False)
         return v
 
 
@@ -223,7 +233,12 @@ class ContainerRef(_Strict):
     @field_validator("gateway_url")
     @classmethod
     def _safe_url(cls, v: str) -> str:
-        assert_safe_outbound_url(v)
+        # Syntactic only. Resolving here ran a blocking getaddrinfo inside a pydantic
+        # validator, on the API event loop, for every ref on every manifest read and
+        # write — and it never failed closed anyway (a dropped query is treated as
+        # 'defer to the connection'). The authoritative check is at dial time, which is
+        # also the only place that can catch a name that re-resolves after validation.
+        assert_safe_outbound_url(v, resolve=False)
         return v
 
 

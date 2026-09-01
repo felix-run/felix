@@ -110,6 +110,95 @@ def test_scheme_is_still_enforced() -> None:
         chk("http://example.com/")
 
 
+# --- where resolution happens ----------------------------------------------------
+
+
+def test_manifest_parsing_never_resolves(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Validators do the syntactic checks only.
+
+    `resolve_host` is a blocking `getaddrinfo`, and it ran inside a pydantic validator —
+    on the API event loop — once per ref, on every manifest read and every write. With the
+    ref lists capped at 64 that was still seconds of stall from one request, and against a
+    nameserver that drops queries rather than answering, far worse.
+    """
+    from felix.manifests.schema import Spec
+    from felix.security import ssrf
+
+    calls: list[str] = []
+    monkeypatch.setattr(ssrf, "resolve_host", lambda host: calls.append(host) or [])
+
+    spec = Spec(
+        pattern="react",
+        mcp_servers=[{"name": f"m{i}", "url": f"https://mcp-{i}.example.com/x"} for i in range(8)],
+        peers=[{"name": "p", "url": "https://peer.example.com"}],
+        containers=[{"name": "c", "gateway_url": "https://gw.example.com", "image": "i"}],
+    )
+    assert len(spec.mcp) == 8
+    assert calls == [], f"parsing resolved {len(calls)} hostname(s)"
+
+
+def test_parsing_still_rejects_what_needs_no_lookup() -> None:
+    """Dropping resolution must not drop the checks that never needed it."""
+    from felix.manifests.schema import McpServerRef
+    from pydantic import ValidationError
+
+    for bad in (
+        "https://127.0.0.1/mcp",  # literal loopback
+        "https://2130706433/mcp",  # decimal form of the same
+        "https://metadata.google.internal/mcp",  # internal name
+        "https://thing.cluster.local/mcp",  # internal suffix
+        "http://example.com/mcp",  # plain http outside development
+        "ftp://example.com/mcp",  # scheme
+    ):
+        with pytest.raises(ValidationError):
+            McpServerRef(name="x", url=bad)
+
+
+@pytest.mark.asyncio
+async def test_dial_resolves_and_blocks(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The authoritative check moved to dial, so it must actually fire there.
+
+    This is also the only placement that catches a name which re-resolves to private space
+    after the manifest was validated — the check at write time never could.
+    """
+    from felix.security import ssrf
+    from felix.tools.transports import HttpExecutor
+
+    ex = HttpExecutor("https://rebinds.example.com/hook")
+    monkeypatch.setattr(ssrf, "resolve_host", lambda host: ["169.254.169.254"])
+    with pytest.raises(ValueError, match="blocked address"):
+        await ex.execute({"x": 1})
+
+
+@pytest.mark.asyncio
+async def test_dial_resolution_does_not_stall_the_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`getaddrinfo` is synchronous, so the dial-time check has to leave the loop.
+
+    Otherwise the fix just moves the stall from the parse path to the tool-call path.
+    """
+    from felix.security import ssrf
+    from felix.security.ssrf import assert_safe_outbound_url_async
+
+    def _slow(host: str) -> list[str]:
+        time.sleep(0.4)
+        return ["93.184.216.34"]
+
+    monkeypatch.setattr(ssrf, "resolve_host", _slow)
+
+    ticks = 0
+
+    async def _heartbeat() -> None:
+        nonlocal ticks
+        while True:
+            await asyncio.sleep(0.05)
+            ticks += 1
+
+    hb = asyncio.create_task(_heartbeat())
+    await assert_safe_outbound_url_async("https://slow.example.com/x")
+    hb.cancel()
+    assert ticks >= 3, "the event loop was blocked during DNS resolution"
+
+
 # --- browser egress guard -------------------------------------------------------
 
 

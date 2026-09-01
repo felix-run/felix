@@ -10,6 +10,7 @@ started admitting private addresses.
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import logging
 import socket
@@ -146,6 +147,18 @@ def _parse_ip_literal(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Addres
     return None
 
 
+async def assert_safe_outbound_url_async(url: str, *, allow_http: bool = False) -> None:
+    """The resolving check, run off the event loop.
+
+    `resolve_host` is a synchronous `getaddrinfo`. On an async path that blocks every other
+    request on the worker for as long as the resolver takes — which, against a nameserver
+    that drops queries rather than answering, is seconds per name. Use this anywhere the
+    caller can await; use `assert_safe_outbound_url(..., resolve=False)` where it cannot,
+    and let the dial-time check do the resolving.
+    """
+    await asyncio.to_thread(assert_safe_outbound_url, url, allow_http=allow_http)
+
+
 def assert_safe_outbound_url_for_hosts(
     url: str,
     allowed_hosts: set[str] | frozenset[str],
@@ -162,6 +175,7 @@ def assert_safe_outbound_url_for_hosts(
 
 __all__ = [
     "assert_safe_outbound_url",
+    "assert_safe_outbound_url_async",
     "assert_safe_outbound_url_for_hosts",
     "resolve_host",
 ]
