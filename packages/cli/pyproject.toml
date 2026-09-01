@@ -6,7 +6,7 @@ requires-python = ">=3.14"
 license = "Apache-2.0"
 dependencies = [
     "felix-harness",
-    "typer>=0.27.1",
+    "typer>=0.27.2",
     "rich>=15.0.0",
 ]
 
