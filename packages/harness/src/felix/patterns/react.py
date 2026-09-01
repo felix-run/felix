@@ -14,7 +14,13 @@ from felix.config import get_settings
 from felix.hooks import run_before_turn, run_filter_history
 from felix.manifests.schema import ABSOLUTE_LIMITS, ModelSpec
 from felix.observability.metrics import record_counter
-from felix.patterns.model import ModelChatResult, ModelGatewayError, build_model, record_usage
+from felix.patterns.model import (
+    ModelChatResult,
+    ModelGatewayError,
+    build_model,
+    record_usage,
+    wire_model_id,
+)
 from felix.patterns.overflow import is_context_overflow, is_silent_overflow
 from felix.patterns.registry import PatternBuildContext, register_pattern
 from felix.patterns.tool_runner import ToolRunner
@@ -465,7 +471,7 @@ class _ReactAgent:
         try:
             from felix.model_catalog import entry_for
 
-            window = entry_for(getattr(model, "model_id", "") or "").context_window
+            window = entry_for(wire_model_id(model)).context_window
         except Exception:
             window = 0
         return is_silent_overflow(
@@ -843,7 +849,12 @@ class _ReactAgent:
                 if result is None:
                     result = await model.chat(messages, active_tools)
 
-                record_usage(result, manifest_id=self.manifest_id, model_id=model.model_id)
+                record_usage(
+                    result,
+                    manifest_id=self.manifest_id,
+                    model_id=model.model_id,
+                    wire_model_id=wire_model_id(model),
+                )
                 usage_block = None
                 if result.usage:
                     from felix.usage.pricing import usage_with_cost
@@ -970,7 +981,12 @@ class _ReactAgent:
                     await self._append_produced(input.thread_id, [follow_chat])
                     messages.append(follow_chat)
                     result = await model.chat(messages, await self._active_tools(messages))
-                    record_usage(result, manifest_id=self.manifest_id, model_id=model.model_id)
+                    record_usage(
+                        result,
+                        manifest_id=self.manifest_id,
+                        model_id=model.model_id,
+                        wire_model_id=wire_model_id(model),
+                    )
                     assistant = result.message
                     messages.append(assistant)
                     produced.append(assistant)

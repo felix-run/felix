@@ -52,7 +52,9 @@ async def _maybe_llm_judge(
     ok, score, rule = heuristic
     criteria = str(rubric.get("judge_criteria") or rubric.get("criteria") or "relevance")
     threshold = float(rubric.get("judge_threshold") or 0.7)
-    model_id = str(rubric.get("judge_model") or "llama-3-fast")
+    # Defaulting to an Ollama route meant the judge silently degraded to the heuristic
+    # on any deployment without a local model — see MemoryCapture.model.
+    model_id = str(rubric.get("judge_model") or "claude-haiku")
     try:
         from felix.eval.compare import llm_judge_score
         from felix.manifests.schema import ModelSpec

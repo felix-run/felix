@@ -27,7 +27,8 @@ strong, consistent one.
    failure should degrade rather than fail the build. Never add one to a module top-level import.
 4. **Protocols, not vendors.** Storage, secrets, model providers, and the warehouse are swappable
    implementations behind Protocols. New infrastructure follows that shape.
-5. **No Cloudflare Workers / Durable Objects / Hyperdrive / Queues compute.** Felix runs on
+5. **No Cloudflare Workers / Durable Objects / Hyperdrive / Queues compute** — compute, not
+   vendor: `workers_ai` is a model provider and R2 is reachable via S3. Felix runs on
    infrastructure the operator manages.
 6. A new `FELIX_` setting means `felix/config.py` + `.env.example` + the README table, and a
    `validate_runtime()` guard if it creates an unsafe combination.

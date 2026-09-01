@@ -153,6 +153,7 @@ Client → Ingress (Caddy / Traefik / nginx / Cloudflare DNS+CDN)
 | `apps/api` | HTTP: `/chat`, `/v1`, `/a2a`, `/mcp`, management APIs, OpenAPI |
 | `apps/worker` | Audit flush, scheduled jobs, memory consolidation, retention, anomaly scan, continuous eval, fiber resume |
 | `felix-scheduler` | Enqueues labeled Taskiq cron tasks — **required alongside the worker**, or nothing periodic fires |
+| `packages/ai` | Model layer: wire formats, catalog, turn types. Imports nothing from `felix` |
 | `packages/harness` | Manifests, patterns, tools, session, governance, auth, plugins |
 | `packages/cli` | `felix migrate \| eval \| mint-jwt \| bundle-manifests \| validate-manifest \| doctor \| version \| temporal-worker` |
 | `manifests/` | Bundled agents: `quick`, `deep`, `router`, `oss-only`, `hybrid-router`, `support`, `cowork`, `governed`, `contributor` |
@@ -190,6 +191,9 @@ multiplexing you deployed it for, so turn preparation off there.
 Felix runs on infrastructure **you** operate. Cloudflare DNS, CDN, TLS, and WAF in front of your
 origin are fine. There is **no** Cloudflare Workers, Durable Objects, Hyperdrive, R2-as-binding,
 Queues, or Workflows compute in this stack.
+
+The line is **compute**, not vendor. Calling a hosted Cloudflare **API** over HTTPS — Workers AI as a model provider, R2 through its S3 endpoint — is an outbound request like any other and is fine. What Felix will not do
+is *run on* Workers or Durable Objects, or depend on a binding only available inside them.
 
 ### Extending Felix
 
@@ -279,6 +283,49 @@ Outbound integrations carry their own ceilings: `spec.mcp_servers[].timeout_ms` 
 `spec.peers[].timeout_ms` (default 60s), and the existing `timeout_ms` on sandboxes and
 containers.
 
+
+Providers Felix ships, all speaking one of two wire formats:
+
+| Provider | Endpoint | Configured with |
+|---|---|---|
+| `anthropic` | `api.anthropic.com` | `FELIX_ANTHROPIC_API_KEY` |
+| `openai` | `api.openai.com/v1`, or `FELIX_LITELLM_BASE_URL` | `FELIX_OPENAI_API_KEY` |
+| `ollama` | `FELIX_OLLAMA_BASE_URL` | — (local, and billed as free) |
+| `workers_ai` | `api.cloudflare.com/…/accounts/{account_id}/ai/v1` | `api_key`, `account_id`, optional `gateway_id` |
+| `groq` `together` `deepseek` `cerebras` `fireworks` `openrouter` `xai` `mistral` `google` | each vendor's OpenAI-compatible endpoint | `api_key` |
+
+Everything past the first three is configured through `FELIX_MODEL_PROVIDER_OPTIONS` rather
+than a settings field per vendor. Each is also selectable as `FELIX_MEMORY_EMBEDDER`, since
+`/embeddings` is part of the same wire format.
+
+**None of the hosted tier ships with per-token rates, deliberately.** Felix does not invent
+prices: an unpriced model contributes zero to spend and a manifest that *declares*
+`limits.max_cost_usd` on one is refused at compile, pointing at `spec.model.price`. Guessing
+is how every unrecognised model came to be billed at Claude Sonnet's $3/$15 per Mtok.
+Cloudflare bills Workers AI in neurons rather than tokens, so a per-token rate for it would
+be fiction. `ollama` is exempt because a local runtime genuinely costs nothing — that is a
+property of the provider, not of the model's name.
+
+A provider is a descriptor — a wire format, an endpoint, and where its credential lives —
+so adding one is a row rather than a module. Both wire formats and the HTTP transport are
+public in `felix_ai.wire` (`OpenAICompletionsClient`, `AnthropicMessagesClient`,
+`post_with_retry`, `map_stop`, `parse_tool_arguments`), because re-deriving retry-on-429,
+SSE parsing and usage accounting is most of the work of writing a provider — and what a
+provider gets wrong in usage reporting fails *open* on `limits.max_cost_usd`.
+
+`FELIX_MODEL_PROVIDER_OPTIONS` carries a per-provider endpoint and credential as JSON. The
+built-in providers have named settings, but a provider added by a plugin cannot — `Settings`
+ignores unknown env vars — so this is how an installed provider is given a key. An entry
+also overrides the named field, which is how a built-in is pointed at a gateway:
+
+```
+FELIX_MODEL_PROVIDER_OPTIONS={"anthropic":{"base_url":"https://gateway.internal/v1"}}
+```
+
+Values stored under a key/token/secret name are added to the redaction list, so a provider
+credential cannot reach tool output. Providers named in `FELIX_MODEL_ROUTES` are resolved
+against the registry at startup, so a typo fails immediately rather than on the first
+request that happens to take that route.
 
 Manifests reference **logical** model ids, mapped to wire ids by `FELIX_MODEL_ROUTES` (a JSON
 override) or by the built-in defaults:

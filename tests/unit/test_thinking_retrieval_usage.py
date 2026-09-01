@@ -26,8 +26,12 @@ def test_openai_thinking_and_cache() -> None:
     body: dict = {"model": "gpt-4.1", "messages": []}
     apply_openai_thinking_cache(body, spec)
     assert body["reasoning_effort"] == "medium"
-    assert body["thinking"] == {"type": "enabled", "budget_tokens": 8000}
     assert body["prompt_cache_key"] == "felix"
+    # `thinking` is an Anthropic field and used to be sent here too, on the grounds that a
+    # LiteLLM proxy to Anthropic honours it — but the same body goes to api.openai.com and
+    # to every self-hosted gateway, and a server that validates its schema rejects the
+    # unknown key. It now goes only to models whose native wire format is Anthropic's.
+    assert "thinking" not in body
 
 
 @pytest.mark.asyncio

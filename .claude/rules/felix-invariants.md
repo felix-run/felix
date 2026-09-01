@@ -32,6 +32,11 @@ Rules that hold across the whole repo. Violating one is a blocking review findin
   imported lazily inside the function that needs them — never at module top level.
 - **Protocols, not vendors.** Storage, secrets, model providers, and the warehouse are swappable
   implementations behind Protocols.
+- **`packages/ai` never imports `felix`.** The model layer is a separate workspace member so
+  model-agnosticism is structural, not aspirational; `tests/unit/test_invariants.py` walks every
+  import node, so a lazy in-function import is not an escape hatch. What the harness needs to
+  inject goes through a Protocol (`ToolSchema`, `ModelConfig`) or a sink
+  (`felix_ai.observability`, `felix_ai.context`).
 - **`memory://` must keep working.** Every store has an in-memory twin; that is the CI test path.
   Run tests with `./scripts/test.sh` (or `make test`), never a bare `pytest`.
 - **A model change needs an Alembic revision**, and published revisions are never edited.
@@ -39,6 +44,10 @@ Rules that hold across the whole repo. Violating one is a blocking review findin
   `validate_runtime()` guard if it enables an unsafe combination.
 - **No Cloudflare Workers / Durable Objects / Hyperdrive / R2-binding / Queues compute.** Felix runs
   on infrastructure the operator manages; Cloudflare DNS/CDN/TLS/WAF in front of an origin is fine.
+  The line is *compute*, not vendor: `workers_ai` is a registered model provider and `storage/s3.py`
+  reaches R2 through its S3 endpoint, because those are outbound HTTPS calls like any other
+  provider. What is forbidden is Felix *running on* Workers or Durable Objects, or depending on a
+  binding only reachable from inside them.
 - **Postgres is the system of record**; the warehouse is optional append-only spill written after
   the Postgres write.
 - **`felix-scheduler` runs alongside `felix-worker`**, or no periodic job fires.

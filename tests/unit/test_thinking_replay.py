@@ -12,9 +12,9 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from felix.patterns.model import _anthropic_thinking_blocks
 from felix.patterns.types import ChatMessage, ToolCall
 from felix.session.types import SessionEvent, chat_message_to_event, event_to_chat_message
+from felix_ai.wire.anthropic_messages import _anthropic_thinking_blocks
 
 SIGNED = {"type": "thinking", "thinking": "weigh the options", "signature": "sig-abc"}
 REDACTED = {"type": "redacted_thinking", "data": "opaque-payload"}
@@ -119,14 +119,15 @@ class _FakeAsyncClient:
 
 
 def _client(monkeypatch: Any, payload: dict[str, Any]):
+    import httpx
     from felix.config import Settings
-    from felix.patterns import model as model_mod
+    from felix_ai import AnthropicMessagesClient, ModelRoute
 
     fake = _FakeAsyncClient(payload)
-    monkeypatch.setattr(model_mod.httpx, "AsyncClient", fake)
-    return model_mod._AnthropicClient(
+    monkeypatch.setattr(httpx, "AsyncClient", fake)
+    return AnthropicMessagesClient(
         model_id="claude-test",
-        route=model_mod.ModelRoute(provider="anthropic", model="claude-test"),
+        route=ModelRoute(provider="anthropic", model="claude-test"),
         settings=Settings(allow_insecure=True, auth_mode="none", environment="development"),
         spec=None,
         base_url="https://example.invalid",

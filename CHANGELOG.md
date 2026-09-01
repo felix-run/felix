@@ -137,6 +137,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   registered patterns, and `felix validate-manifest` rejects an unknown pattern name
   (nothing validated the pattern before, so a bad name passed CI and failed at build).
 
+
+- **A conformance contract for model providers.** `tests/conformance/test_model_provider.py`
+  runs one contract against three arms — `scripted`, `openai`, `anthropic` — mirroring how
+  the store suite runs one contract across backends. None needs infrastructure, so every arm
+  runs on every CI run and a skip there would be a bug rather than a missing database.
+
+  Twelve test files each built their own model double, and every one re-decided what a
+  provider owes its caller — which is how `stream_turn` stayed off the published Protocol
+  for so long: a double that implemented it and one that did not both looked correct alone.
+  Nothing exercised the chain a third-party provider actually travels, either. The contract
+  pins the *de facto* shape, not just the declared one: `opts` accepted as the **third
+  positional argument** (six side-request call sites pass it that way, so a keyword-only
+  `opts` is a `TypeError`), `model_id` and `route` as bare attributes, usage reported from
+  both `chat` and `stream_turn`, stop reasons in the neutral vocabulary, tool arguments
+  parsed to a dict whatever the wire sent, and a `ModelGatewayError` whose `.status`
+  `_is_provider_error` can read while the upstream body stays out of `str(exc)`.
+
+  The fake transport models the endpoint rather than replaying a tape: OpenAI omits usage
+  from a streamed response unless `stream_options.include_usage` asked for it, so the fake
+  does too. Without that the contract could not see a provider that forgets to ask — the
+  highest-value provider bug there is, because it leaves every streamed run unmetered and
+  the budgets fail open.
+
+- **`felix_ai.providers.scripted`** — the model double, written once. Opt-in rather than
+  registered by default: a fake in the production registry would let a typo in
+  `FELIX_MODEL_ROUTES` succeed silently and answer every prompt with canned text.
+
+
+- **Ten more providers, as table rows.** `workers_ai` (Cloudflare Workers AI), `groq`,
+  `together`, `deepseek`, `cerebras`, `fireworks`, `openrouter`, `xai`, `mistral`, and
+  `google` via its OpenAI-compatible endpoint. All speak OpenAI chat-completions, so each is
+  a `ProviderSpec` row rather than a module, and each is configured through
+  `FELIX_MODEL_PROVIDER_OPTIONS` — no settings field per vendor, which is the pattern that
+  does not scale.
+
+  Two things are not uniform, and both became properties of the row rather than special
+  cases in the factory. `base_url_default` may carry `{option}` placeholders, because
+  Cloudflare puts the account id in the URL path. And `header_options` sends a header only
+  when its option is set, which is how one provider covers both "direct" and "routed through
+  AI Gateway" (`cf-aig-gateway-id`) instead of being two providers. `HttpModelClient` gained
+  `extra_headers`, where an override to the empty string *removes* a header the wire format
+  would otherwise send.
+
+  Every OpenAI-compatible provider is now also selectable as `FELIX_MEMORY_EMBEDDER`, since
+  `/embeddings` is the same wire format — and it resolves through the same descriptor, so the
+  embedder and the model client cannot disagree about the endpoint or the credential.
+
+  **Calling a hosted Cloudflare API is not Cloudflare compute.** The no-Workers/DO/Hyperdrive
+  invariant is unchanged and now says so explicitly across README, CLAUDE.md, CONTRIBUTING,
+  the invariants rule and the reviewer agents: the line is where Felix *runs*, not whose API
+  it calls — the same distinction `storage/s3.py` already relied on for R2.
+
+
+- **A provider is a descriptor, and a plugin can finally be given a credential.** Adding a
+  provider meant a hand-written factory plus a `Settings` field plus a `_HYDRATE_MAP` entry
+  plus a `.env.example` block plus a README row — and the easy one to forget, `_HYDRATE_MAP`,
+  is also what feeds `collected_secret_values()`. Forgetting it did not merely skip secrets
+  hydration; it meant the key was **never masked out of tool output**. `ProviderSpec` in
+  `felix_ai.providers` collapses that to one row and the harness *derives* the secret
+  handling, so adding a provider cannot silently open that hole.
+
+  `FELIX_MODEL_PROVIDER_OPTIONS` is a new JSON setting carrying a per-provider endpoint and
+  credential. The built-in providers have named `Settings` fields; a plugin's provider cannot,
+  because `Settings` is `extra="ignore"` — so `FELIX_MYPROVIDER_API_KEY` never lands anywhere
+  and a registered third-party provider had **no way to be given a key at all**. An entry also
+  overrides the named field, which is how a built-in gets pointed at a gateway. Values under a
+  key/token/secret name are added to the redaction list.
+
+  `PluginRegistry.register_model_provider` now exists, and the reference plugin demonstrates
+  it. It was the one open registry with no seam on the registry object and no example, so the
+  documented way to add a provider was to read core's source.
+
 ### Changed
 
 - **`/docs` is the Scalar API reference, not Swagger UI.** The harness served FastAPI's
@@ -179,7 +251,205 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rather than 10, since the poll is a safety net once wake-ups are being delivered.
   It tightens again on its own when they stop.
 
+
+- **Streaming is implemented once per wire format, not twice.** `_stream` is a text-only
+  view of `_stream_turn` in the base class, and both overrides are gone — 149 lines,
+  including a 32-line block byte-identical to its `stream_turn` sibling. The copies had
+  already drifted (`_body` attaches the `cache_control` breakpoint to the last tool; the
+  hand-built body carried no `tools` key at all), and neither was reachable for a shipped
+  client. SSE framing is one shared `iter_sse_json` rather than four copies.
+
+- **`entry_for` is defined in terms of `known_entry_for`**, so the catalog's "one rule for
+  finding it" is written once. The four transitional aliases in `felix.patterns.model` are
+  deleted — three had no readers and the fourth had one test import that now uses the public
+  name. `parse_model_routes` is cached on the routes string; it went from three call sites
+  to seven in this branch and re-parsed the JSON on each.
+
+
+- **One provider registry, not two.** `felix.patterns.model_registry` re-exports
+  `felix_ai.registry`, so a provider written against `felix_ai` alone — the point of the
+  package boundary — and one written against the harness land in the same dict. Two
+  registries would have meant `build_one_model` finding only half the providers.
+
+
+- **`spec.model.region` is removed.** Declared, never read by anything, and a leftover from
+  a Bedrock-shaped past. Same disposition as the `checkpointer` aliases: `_Strict` forbids
+  extras, so a manifest that sets it now fails validation instead of carrying decorative
+  surface that looks like it configures something.
+
+- **`memory.consolidate.model` and the eval judge default now point at `claude-haiku`.**
+  Both defaulted to `llama-3-fast`, which routes to Ollama — the exact bug already fixed and
+  explained on `memory.capture.model`, which these were the missed siblings of. A deployment
+  holding only an Anthropic key had consolidation fail on every run, and the LLM judge
+  silently degrade to the heuristic, each saying so only in a log.
+
+
+- **The model layer is its own workspace package, and it cannot import the harness.**
+  `packages/ai` (`felix_ai`) now holds the two wire formats, the model catalog, the neutral
+  turn types, and the HTTP transport. `felix.patterns.model` keeps only what genuinely needs
+  the harness: resolving `FELIX_MODEL_ROUTES` against `Settings`, metering a turn through
+  `record_usage`, and the fallback/escalation composites. Every public name it used to export
+  is re-exported, so no call site outside the wire tests changed.
+
+  The point is not tidiness. Felix's provider *seam* was already open — `register_model_provider`
+  is a plain dict and nothing in core enumerates providers — but everything a provider needs in
+  order to be **correct** was private and Anthropic-shaped. `_HttpModelClient`, `_post_with_retry`,
+  the SSE parsers, tool-argument repair and stop-reason mapping were all underscore-prefixed and
+  excluded from `__all__`, so a third-party provider had to re-derive retry-on-429, `Retry-After`
+  handling and usage accounting — and what it got wrong in usage fails *open* on
+  `limits.max_cost_usd`. Those are now public: `HttpModelClient`, `post_with_retry`, `map_stop`,
+  `parse_tool_arguments`, `tool_json_schema`, `OpenAICompletionsClient`, `AnthropicMessagesClient`.
+
+  `felix_ai` may not import `felix`, and `tests/unit/test_invariants.py` walks every import node
+  — a lazy in-function import is not an escape hatch. That is what makes "model-agnostic" a
+  property of the build rather than a claim in a README. The two things the harness genuinely has
+  to inject arrive through Protocols the harness types already satisfy structurally (`ToolSchema`
+  for a tool's name/description/schema, `ModelConfig` for the request timeout) and two explicit
+  sinks (`felix_ai.observability` for counters, `felix_ai.context` for the prompt-cache key),
+  installed once by `patterns/model_sinks.py`.
+
+  Behaviour is unchanged. `felix.model_catalog` and the message types re-export from their new
+  home, so `usage/`, `react.py` and `runtime.py` are untouched. The tool parameter on
+  `ModelProvider` widened from `list[Tool]` to `Sequence[ToolSchema]`, which is what the wire
+  layer always actually needed — it only iterates — and fixes a variance mismatch that made the
+  composites fail to satisfy the Protocol they implement.
+
 ### Fixed
+
+- **The hosted providers' `secret_names` were inert.** `_compat` passed
+  `api_key_config_key=config_key and None`, which is the constant `None`, while declaring
+  `secret_names` anyway — and `_HYDRATE_MAP` is derived with
+  `if spec.api_key_config_key and spec.secret_names`, so all thirty names were unreachable.
+  The descriptor promised a hydration path it did not have, in the same commit as a comment
+  claiming derivation made that impossible. The hosted rows now declare neither (they have
+  no `Settings` field to hydrate *into*), and their credential can be a `secret:NAME` value
+  inside `FELIX_MODEL_PROVIDER_OPTIONS`, resolved at startup through the same backend as
+  MCP and peer refs. The guard test was equally vacuous — it reused the derivation's own
+  predicate — and now asserts that no descriptor declares names it cannot reach.
+
+- **`isolate_cache` was still dropped on the primary streaming path.** The previous fix
+  threaded it into `_stream` — which callers reach only when a provider has no
+  `stream_turn` — while `stream_turn` itself resolved the options and discarded them. The
+  same defect the fix was written to close, one method over. The conformance contract now
+  asserts the flag is *honoured* on both paths, not merely accepted.
+
+- **Embedders were registered for providers that may not serve `/embeddings`.** The whole
+  OpenAI-compatible table was registered, so `FELIX_MEMORY_EMBEDDER=groq` passed startup
+  validation and failed at the first embed. It is a declared capability on the row now.
+  Relatedly, `FELIX_MEMORY_EMBEDDING_MODEL` defaults to `bge-base-en-v1.5`, a
+  sentence-transformers name, and was read unconditionally — so that string went out as a
+  model id to OpenAI, which the old `_build_openai` did too. Only an explicitly set value
+  wins now; otherwise the provider's own default applies.
+
+
+- **A catalog entry that stated no rates was billed as Claude Sonnet.** `ModelPricing()`
+  carries Sonnet's list price in its own field defaults, and it was the `pricing` field
+  default — so `gpt-4.1`, `gpt-4`, `o1`, `o3`, `o4` and `llama`, each of which says in a
+  comment that it has *no bundled rate*, were all priced at $3/$15 per Mtok anyway. An entry
+  that does not state rates now has none.
+
+- **"Free" was nearly made a property of the model's name.** An earlier pass in this cycle
+  priced the `llama` catalog entry at zero to represent a local runtime. `entry_for` matches
+  by substring, and Llama is sold by Workers AI, Groq, Together and Fireworks — so that would
+  have made every hosted Llama free to `limits.max_cost_usd`. Whether tokens cost anything is
+  a property of the provider (`ProviderSpec.bills_per_token`), and only `ollama` sets it
+  false; a local route can still declare a spend cap because zero spend satisfies any cap.
+
+
+- **Cross-provider handoff decided the provider by sniffing the model id.**
+  `provider_family` matched `claude`, `gpt`, `llama`, `mistral` as substrings — the last
+  vendor sniff in the harness — and it gates whether a thread's tool calls and images are
+  flattened to plain text before switching models. It got two things wrong: an operator who
+  routed `claude-flavoured` to OpenAI got the wrong answer, and two *different* unrecognised
+  providers both answered `unknown`, so a genuine cross-provider switch looked like a no-op
+  and replayed content the next model could not read.
+
+  The function already took a `routes` argument and **no caller passed it**, so the clean
+  path existed and was simply unwired. The route table is now the only source; an id missing
+  from it is distinctly unknown, keyed on the id, so two unrecognised models still count as
+  a family change.
+
+
+- **The OpenAI path shaped nothing, and carried an Anthropic field to every endpoint.**
+  `ModelQuirks` had exactly one reader — the Anthropic wire format — and its docstring said
+  so. The OpenAI-compatible path, which is also Ollama and every LiteLLM/vLLM gateway, had
+  no `max_output_tokens` clamp and no sampling suppression, which is why the `o1`/`o3`/`o4`
+  catalog entries could never have worked: those reject `temperature` and require
+  `max_completion_tokens`, and both were sent regardless. Meanwhile it emitted an Anthropic
+  `thinking` block into **every** request whenever `spec.thinking_budget` was set, on the
+  grounds that a LiteLLM proxy to Anthropic honours it — but the same body goes to
+  api.openai.com, to Ollama and to any self-written gateway, and a server that validates its
+  request schema rejects the unknown key outright. `reasoning_effort` went out just as
+  widely, to models that have never accepted it.
+
+  Shaping is now capability-driven on both paths. Crucially it keys on `known_entry_for`,
+  not `entry_for`: an unmatched id yields `_DEFAULT`, whose quirks describe the current
+  Claude generation, so shaping on that would strip `temperature` from an unknown OpenAI
+  endpoint that accepts it. Unknown means shape nothing — on this path omitting an optional
+  parameter is survivable and sending a rejected one is a hard 400. The Anthropic block now
+  keys on a new `ModelCatalogEntry.native_wire`, because `ModelQuirks.budget_tokens` defaults
+  to `True` and so cannot tell an OpenAI entry from a pre-4.6 Claude one — an Anthropic model
+  behind an OpenAI shim still gets its block, and nothing else does.
+
+- **`ModelChatOptions.isolate_cache` was ignored on the text-stream path.** `stream()`
+  resolved the options and then dropped them, so `_stream` could not see the flag: a
+  summariser or screening call still wrote the conversation's `prompt_cache_key`, churning
+  the cached prefix the next real turn would have hit — the exact thing the option exists to
+  prevent. It is threaded through to both wire formats now.
+
+
+- **`limits.max_cost_usd` was enforced against a number nobody chose.** Three faults
+  compounded. The catalog's `_DEFAULT` carried `ModelPricing()`, whose field defaults are
+  Claude Sonnet's list price, so **every model Felix did not recognise billed at $3/$15 per
+  Mtok** — including anything an operator added through `FELIX_MODEL_ROUTES`, and every
+  local Ollama model, which is free. `entry_for` was then fed the *logical* route id rather
+  than the wire model, so a route named `fast` matched nothing in the catalog and fell to
+  that default even when it pointed at a model Felix knows perfectly well. And a turn that
+  reported no usage accumulated nothing and said nothing, leaving the run uncapped.
+
+  Unknown is now unknown: `ModelCatalogEntry.pricing` may be `None`, an unpriced model
+  contributes zero rather than a guess, and `is_priced()` distinguishes "free" from "no
+  idea" — a local model is priced at an explicit zero, which is a fact about the deployment
+  rather than an absence of information. Pricing keys on the wire model
+  (`record_usage(..., wire_model_id=...)`) while reporting keeps the logical name, because
+  that is what an operator configured and recognises.
+
+  A cap that cannot be counted now fails at *compile*: a manifest that explicitly declares
+  `limits.max_cost_usd` on a model with no known rates is refused, with `spec.model.price`
+  named as the way to supply them. Only a declared cap is refused — `effective_limits` fills
+  an unset one from `ABSOLUTE_LIMITS`, and refusing on that would break every local
+  deployment over a ceiling the author never asked for. At runtime, a turn reporting no
+  usage logs a warning and increments `felix_model_unmetered` instead of passing silently;
+  the usual cause is a provider whose streamed response omits usage, which makes the whole
+  run free as far as the budgets are concerned.
+
+- **Compaction sized every manifest against 128K.** `runtime.py` resolved the context window
+  from `spec.model.id`, which is a logical route name, so it matched only the loose
+  `claude-sonnet` family key. A manifest on the default route compacted against 128K instead
+  of the 1M window it pays for — summarising away seven eighths of the context and spending
+  a model call to do it. It now resolves the route first.
+
+
+- **`FELIX_MODEL_ROUTES` provider names are validated at startup.** It was the one
+  registry-backed setting `_validate_registry_backed_settings` skipped, so a typo surfaced
+  mid-request and only on the route actually taken — a bad *fallback* stayed invisible until
+  the primary was already failing, which is the worst moment to find a second misconfiguration.
+
+- **The OpenAI embedder could never be pointed at a gateway.** `_build_openai` read
+  `settings.openai_base_url`, which is not a field on `Settings` and never has been, so the
+  read always fell through to `api.openai.com` — silently, on the inline memory-recall path,
+  while the model client honoured `FELIX_LITELLM_BASE_URL`. Both now resolve through the same
+  provider descriptor and agree by construction.
+
+- **An Ollama base URL ending in `/v1` produced `/v1/v1`.** The factory appended
+  unconditionally; the descriptor appends only when absent.
+
+- **`build_model` no longer lazily re-registers providers.** `if not list_model_providers():
+  register_builtin_providers()` was a sentinel that could only be right while nothing else
+  registered first: after a `reset_model_provider_registry()` it restored the three builtins
+  and dropped every plugin provider, because `load_optional_plugins` had already run and would
+  not run again. `felix.patterns` registers the builtins at import, before anything can call
+  `build_model`.
 
 - **The in-memory manifest store outlived the test that wrote to it.** The `memory://` twins
   are module-level dicts by design, but nothing reset them between tests — so a manifest

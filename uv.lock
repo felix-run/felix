@@ -5,6 +5,7 @@ requires-python = ">=3.14"
 [manifest]
 members = [
     "felix",
+    "felix-ai",
     "felix-api",
     "felix-cli",
     "felix-harness",
@@ -945,6 +946,7 @@ name = "felix"
 version = "0.2.2"
 source = { virtual = "." }
 dependencies = [
+    { name = "felix-ai" },
     { name = "felix-api" },
     { name = "felix-cli" },
     { name = "felix-harness" },
@@ -1017,6 +1019,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "felix-ai", editable = "packages/ai" },
     { name = "felix-api", editable = "apps/api" },
     { name = "felix-cli", editable = "packages/cli" },
     { name = "felix-harness", editable = "packages/harness" },
@@ -1053,6 +1056,17 @@ dev = [
     { name = "ruff", specifier = ">=0.16.4" },
     { name = "ty", specifier = ">=0.0.74" },
 ]
+
+[[package]]
+name = "felix-ai"
+version = "0.2.2"
+source = { editable = "packages/ai" }
+dependencies = [
+    { name = "httpx" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "httpx", specifier = ">=0.28.1" }]
 
 [[package]]
 name = "felix-api"
@@ -1095,6 +1109,7 @@ dependencies = [
     { name = "anthropic" },
     { name = "cryptography" },
     { name = "fastapi", extra = ["standard"] },
+    { name = "felix-ai" },
     { name = "httpx" },
     { name = "joserfc" },
     { name = "openai" },
@@ -1179,6 +1194,7 @@ requires-dist = [
     { name = "docker", marker = "extra == 'sandbox'", specifier = ">=7.1" },
     { name = "duckdb", marker = "extra == 'warehouse'", specifier = ">=1.4" },
     { name = "fastapi", extras = ["standard"], specifier = ">=0.141.1" },
+    { name = "felix-ai", editable = "packages/ai" },
     { name = "google-cloud-secret-manager", marker = "extra == 'gcp'", specifier = ">=2.26" },
     { name = "google-cloud-storage", marker = "extra == 'gcp'", specifier = ">=3.9" },
     { name = "granian", marker = "extra == 'granian'", specifier = ">=2.8.1" },

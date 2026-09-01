@@ -18,7 +18,12 @@ from typing import Any
 # `felix.manifests.schema` is a leaf — it imports only `felix.security.ssrf` — so this is
 # safe at module scope even though `manifests/builder.py` imports `felix.patterns`.
 from felix.manifests.schema import PlanExecuteSpec, ReflectSpec
-from felix.patterns.model import ModelChatResult, build_model, record_usage
+from felix.patterns.model import (
+    ModelChatResult,
+    build_model,
+    record_usage,
+    wire_model_id,
+)
 from felix.patterns.react import build_react_agent
 from felix.patterns.types import (
     Agent,
@@ -178,7 +183,12 @@ async def _yield_model_stream(
     if stream_turn is not None:
         async for item in stream_turn(messages, []):
             if isinstance(item, ModelChatResult):
-                record_usage(item, manifest_id=manifest_id, model_id=model.model_id)
+                record_usage(
+                    item,
+                    manifest_id=manifest_id,
+                    model_id=model.model_id,
+                    wire_model_id=wire_model_id(model),
+                )
                 continue
             if not item.text:
                 continue
@@ -200,7 +210,12 @@ async def _yield_model_stream(
         return
 
     result = await model.chat(messages, [])
-    record_usage(result, manifest_id=manifest_id, model_id=model.model_id)
+    record_usage(
+        result,
+        manifest_id=manifest_id,
+        model_id=model.model_id,
+        wire_model_id=wire_model_id(model),
+    )
     text = result.message.content or ""
     if text:
         collected.append(text)
@@ -368,7 +383,12 @@ class _DelegatingAgent:
         """
         if not emit_events:
             result = await model.chat(messages, [])
-            record_usage(result, manifest_id=self.manifest_id, model_id=model.model_id)
+            record_usage(
+                result,
+                manifest_id=self.manifest_id,
+                model_id=model.model_id,
+                wire_model_id=wire_model_id(model),
+            )
             yield result.message
             return
         collected: list[str] = []
@@ -416,7 +436,12 @@ class _DelegatingAgent:
             ),
         ]
         result = await model.chat(classify, [])
-        record_usage(result, manifest_id=self.manifest_id, model_id=model.model_id)
+        record_usage(
+            result,
+            manifest_id=self.manifest_id,
+            model_id=model.model_id,
+            wire_model_id=wire_model_id(model),
+        )
         choice = result.message.content.strip().split()[0] if result.message.content else names[0]
         return self.sub_agents.get(choice) or self.sub_agents[names[0]]
 
@@ -608,7 +633,12 @@ class _DelegatingAgent:
             return _heuristic_judge_score(answer, criteria)
 
         # The verifier is billed whether or not its reply parses.
-        record_usage(result, manifest_id=self.manifest_id, model_id=model.model_id)
+        record_usage(
+            result,
+            manifest_id=self.manifest_id,
+            model_id=model.model_id,
+            wire_model_id=wire_model_id(model),
+        )
 
         score = _parse_score(result.message.content)
         if score is None:
@@ -642,7 +672,12 @@ class _DelegatingAgent:
             ],
             [],
         )
-        record_usage(plan_result, manifest_id=self.manifest_id, model_id=model.model_id)
+        record_usage(
+            plan_result,
+            manifest_id=self.manifest_id,
+            model_id=model.model_id,
+            wire_model_id=wire_model_id(model),
+        )
         lines = [
             ln.strip().lstrip("0123456789.-) ").strip()
             for ln in plan_result.message.content.splitlines()

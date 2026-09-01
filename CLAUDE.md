@@ -68,7 +68,13 @@ without touching the skip count; that is how six Temporal tests went unexecuted 
 `--extra temporal --extra warehouse` and sets `FELIX_REQUIRE_OPTIONAL_EXTRAS=1`, which turns a
 missing extra into a failure. Locally, without that variable, these still skip as before.
 
-Store conformance (`tests/conformance/`) runs one contract against every backend, because the
+Conformance (`tests/conformance/`) runs one contract against every implementation of a seam.
+`test_model_provider.py` does it for model providers — three arms (`scripted`, `openai`,
+`anthropic`), none needing infrastructure, so a skip there is a bug rather than a missing
+database. It covers the chain nothing else does: registration → `FELIX_MODEL_ROUTES` →
+`build_one_model` → a turn → `record_usage`.
+
+Store conformance runs the same way against every backend, because the
 invariant above only asserts an in-memory twin *exists* — not that it behaves like the Postgres
 store it stands in for. The in-memory arm runs everywhere; the Postgres arm needs a database:
 
@@ -88,6 +94,12 @@ Eval smoke (no model calls): `uv run felix eval --dataset smoke --manifest quick
 
 ### Workspace layout
 
+- `packages/ai` (`felix_ai`) — the model layer: wire formats (`wire/openai_completions.py`,
+  `wire/anthropic_messages.py`), the model catalog, and the neutral turn types. **It may not
+  import `felix`** — `tests/unit/test_invariants.py` enforces that, and it is what makes
+  Felix model-agnostic rather than merely claiming to be. Anything the harness injects
+  arrives as a Protocol (`ToolSchema`, `ModelConfig`) or a sink (`felix_ai.observability`,
+  `felix_ai.context`, installed by `patterns/model_sinks.py`).
 - `packages/harness` (`felix`) — all the logic: manifests, patterns, tools, session,
   governance, auth, memory, eval, durability, storage, plugins.
 - `packages/cli` (`felix`) — `migrate | eval | mint-jwt | bundle-manifests | validate-manifest | doctor | version | temporal-worker`.
@@ -123,13 +135,19 @@ Adding a pattern means `register_pattern(...)` at import time — nothing in cor
 
 The harness talks to Postgres, a cache, an object store, secrets, model providers, and the
 warehouse through Protocols with swappable implementations (`storage/{fs,s3,gcs}.py`,
-`secrets.py`, `patterns/model.py:ModelProvider`, `warehouse.py`). AWS and GCP are optional
+`secrets.py`, `felix_ai.types:ModelProvider`, `warehouse.py`). For models the split is
+physical: `felix.patterns.model` keeps only what needs the harness — route resolution
+against `Settings`, `record_usage`, and the fallback/escalation composites — while every
+wire format lives in `felix_ai` and reaches back through nothing. AWS and GCP are optional
 extras; the default path is `FELIX_OBJECT_STORE=fs` with zero cloud SDKs. Keep it that way —
 heavy deps (Playwright, sentence-transformers, DuckDB, Presidio, Temporal) live behind
 extras and are imported lazily inside functions, never at module top level.
 
 There is deliberately **no** Cloudflare Workers / Durable Objects / Hyperdrive / R2-binding /
-Queues compute in this stack (Cloudflare DNS/CDN/WAF in front of an origin is fine).
+Queues compute in this stack (Cloudflare DNS/CDN/WAF in front of an origin is fine). The line is
+compute, not vendor: `workers_ai` is a registered model provider and `storage/s3.py` speaks to R2
+through its S3 endpoint, because both are outbound HTTPS calls. Felix must not *run on* Workers or
+Durable Objects, or depend on a binding only reachable from inside them.
 
 ### Plugin seam
 

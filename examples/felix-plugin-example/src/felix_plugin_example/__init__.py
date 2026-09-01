@@ -13,6 +13,7 @@ What this demonstrates, one seam per section below:
 * an agent-loop hook
 * a pattern
 * an object-store backend
+* a model provider
 * a session strategy
 * manifest config via ``spec.extensions``
 """
@@ -137,6 +138,47 @@ class ExamplePlugin:
         return (PluginCronTask(name=f"{PLUGIN_NAMESPACE}_heartbeat", run=heartbeat),)
 
 
+# --- a model provider -------------------------------------------------------------
+#
+# Selected by `provider` in FELIX_MODEL_ROUTES:
+#
+#   FELIX_MODEL_ROUTES={"echo-model":{"provider":"example-echo","model":"echo-1"}}
+#
+# and configured — since Settings ignores unknown env vars, so there is no
+# FELIX_EXAMPLE_ECHO_API_KEY field for a plugin to use — through:
+#
+#   FELIX_MODEL_PROVIDER_OPTIONS={"example-echo":{"api_key":"...","base_url":"..."}}
+#
+# A real provider that speaks the OpenAI or Anthropic wire format should reuse
+# `felix_ai.wire`: `OpenAICompletionsClient` and `AnthropicMessagesClient` are public,
+# as are the transport pieces (`post_with_retry`, `map_stop`, `parse_tool_arguments`),
+# so a provider is usually a `ProviderSpec` row rather than a new client. Reporting
+# usage matters: `record_usage` is the only feed for `limits.max_cost_usd` and the
+# token budgets, and a provider that reports nothing leaves a run uncapped.
+
+
+class _EchoModelClient:
+    """Minimum viable provider: an id, a route, and a turn that reports its usage."""
+
+    def __init__(self, model_id: str, route: Any) -> None:
+        self.model_id = model_id
+        self.route = route
+
+    async def chat(self, messages: Any, tools: Any, opts: Any = None) -> Any:
+        from felix_ai.types import ChatMessage, ModelChatResult, TokenUsage
+
+        last = messages[-1].content if messages else ""
+        return ModelChatResult(
+            message=ChatMessage(role="assistant", content=f"echo: {last}"),
+            stop_reason="end_turn",
+            usage=TokenUsage(input=len(str(last)), output=len(str(last))),
+        )
+
+
+def _build_example_model(model_id: str, route: Any, spec: Any, settings: Any) -> Any:
+    return _EchoModelClient(model_id, route)
+
+
 def register(registry: Any) -> None:
     """Entry point. Called once at startup with the process-wide PluginRegistry."""
     from felix.patterns.registry import register_pattern
@@ -145,6 +187,7 @@ def register(registry: Any) -> None:
 
     registry.register_plugin(ExamplePlugin())
     registry.register_before_tool(_before_tool)
+    registry.register_model_provider("example-echo", _build_example_model)
 
     # Open registries live in core, not on the registry object.
     register_pattern("example-echo", _build_example_pattern)

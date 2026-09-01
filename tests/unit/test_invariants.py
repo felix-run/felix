@@ -17,7 +17,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 HARNESS = ROOT / "packages" / "harness" / "src" / "felix"
+AI = ROOT / "packages" / "ai" / "src" / "felix_ai"
 SOURCE_ROOTS = [
+    ROOT / "packages" / "ai" / "src",
     ROOT / "packages" / "harness" / "src",
     ROOT / "packages" / "cli" / "src",
     ROOT / "apps" / "api" / "src",
@@ -820,20 +822,15 @@ def test_no_tenant_scoped_accessor_defaults_to_the_default_tenant() -> None:
 def test_no_outbound_http_client_hardcodes_its_timeout() -> None:
     """Every outbound httpx client takes a timeout something can change.
 
-    Six client sites in `patterns/model.py` shared a hardcoded `timeout=120.0`, so no
-    deployment could raise the ceiling without editing the harness — and a generation that
-    legitimately needed longer failed the whole run.
+    Six client sites in the model layer shared a hardcoded `timeout=120.0`, so no deployment
+    could raise the ceiling without editing the harness — and a generation that legitimately
+    needed longer failed the whole run.
 
-    The first version of this check only matched `timeout=<Constant>`, which made it
-    vacuous: the same commit that added files to it moved every literal inside
-    `httpx.Timeout(...)`, an `ast.Call`, so nothing it named could trigger it. It now
-    resolves the value — a bare constant, a module-level constant by name, an all-constant
-    `httpx.Timeout(...)`, or no `timeout=` at all (httpx then applies its own silent 5s).
-
-    The file set is discovered rather than listed, so a new outbound client is covered on
-    the day it is written and an exemption has to be argued for in `_EXEMPT` below.
+    The check resolves the value rather than pattern-matching it: a bare constant, a
+    module-level constant by name, an all-constant `httpx.Timeout(...)`, or a missing
+    `timeout=` where httpx applies its own silent 5s. An earlier version matched only
+    `timeout=<Constant>` and was vacuous, because every literal lived inside `httpx.Timeout`.
     """
-    # Reason required. A bare hardcode with no entry here fails the build.
     exempt = {
         "auth/jwt.py": "JWKS fetch is a fixed 5s by design; not a per-request budget",
         "sdk.py": "client library — the caller supplies self.timeout",
@@ -861,34 +858,33 @@ def test_no_outbound_http_client_hardcodes_its_timeout() -> None:
                 return bool(args) and all(_is_hardcoded(a, consts) for a in args)
         return False
 
-    harness = ROOT / "packages/harness/src/felix"
     offenders: list[str] = []
-    for path in sorted(harness.rglob("*.py")):
-        rel = str(path.relative_to(harness))
-        if any(rel.endswith(k) for k in exempt):
-            continue
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        consts = _module_constants(tree)
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
+    for root in SOURCE_ROOTS:
+        for path in _python_files(root):
+            rel = str(path.relative_to(ROOT))
+            if any(rel.endswith(k) for k in exempt):
                 continue
-            func = node.func
-            # httpx specifically: a bare `Client(...)` is also google.cloud.storage's.
-            if isinstance(func, ast.Attribute):
-                httpx_client = (
-                    isinstance(func.value, ast.Name)
-                    and func.value.id == "httpx"
-                    and func.attr in {"AsyncClient", "Client"}
-                )
-            else:
-                httpx_client = getattr(func, "id", "") == "AsyncClient"
-            if not httpx_client:
-                continue
-            kw = next((k for k in node.keywords if k.arg == "timeout"), None)
-            if kw is None:
-                offenders.append(f"{rel}:{node.lineno} no timeout= (httpx defaults to 5s)")
-            elif _is_hardcoded(kw.value, consts):
-                offenders.append(f"{rel}:{node.lineno} hardcoded timeout")
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            consts = _module_constants(tree)
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                if isinstance(func, ast.Attribute):
+                    is_client = (
+                        isinstance(func.value, ast.Name)
+                        and func.value.id == "httpx"
+                        and func.attr in {"AsyncClient", "Client"}
+                    )
+                else:
+                    is_client = getattr(func, "id", "") == "AsyncClient"
+                if not is_client:
+                    continue
+                kw = next((k for k in node.keywords if k.arg == "timeout"), None)
+                if kw is None:
+                    offenders.append(f"{rel}:{node.lineno} no timeout= (httpx defaults to 5s)")
+                elif _is_hardcoded(kw.value, consts):
+                    offenders.append(f"{rel}:{node.lineno} hardcoded timeout")
 
     assert offenders == [], (
         "an outbound client hardcodes its timeout; read it from Settings or a per-ref field "
@@ -906,25 +902,30 @@ def test_outbound_clients_go_through_the_egress_guard() -> None:
     """
     exempt = {
         "auth/jwt.py": "JWKS URL comes from FELIX_JWT_VERIFIERS, never from a token claim",
-        "patterns/model.py": "provider base_url is operator config, not manifest input",
         "memory/embedder.py": "embedding base_url is operator config",
         "sdk.py": "client library — dials the caller's own base_url",
         "security/egress.py": "this is the guarded client",
+        # The model layer may not import the harness — that is what makes Felix
+        # model-agnostic — so it cannot reach `safe_async_client`. Safe because a provider
+        # base_url is operator configuration, never a manifest or model value.
+        "wire/openai_completions.py": "provider base_url is operator config; felix_ai cannot import felix",
+        "wire/anthropic_messages.py": "provider base_url is operator config; felix_ai cannot import felix",
+        "wire/transport.py": "provider base_url is operator config; felix_ai cannot import felix",
     }
-    harness = ROOT / "packages/harness/src/felix"
     offenders: list[str] = []
-    for path in sorted(harness.rglob("*.py")):
-        rel = str(path.relative_to(harness))
-        if rel in exempt:
-            continue
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
+    for root in SOURCE_ROOTS:
+        for path in _python_files(root):
+            rel = str(path.relative_to(ROOT))
+            if any(rel.endswith(k) for k in exempt):
                 continue
-            func = node.func
-            if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
-                if func.value.id == "httpx" and func.attr in {"AsyncClient", "Client"}:
-                    offenders.append(f"{rel}:{node.lineno}")
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+                    if func.value.id == "httpx" and func.attr in {"AsyncClient", "Client"}:
+                        offenders.append(f"{rel}:{node.lineno}")
 
     assert offenders == [], (
         "outbound client built directly instead of via felix.security.egress."

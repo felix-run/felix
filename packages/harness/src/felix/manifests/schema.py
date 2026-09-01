@@ -88,7 +88,6 @@ class ModelSpec(_Strict):
     id: str | None = None
     temperature: float = 0.0
     max_tokens: int | None = None
-    region: str | None = None
     cache: bool = False
     thinking_budget: int | None = Field(default=None, ge=128, le=64000)
     # Discrete thinking level; when set, overrides thinking_budget via level map.
@@ -300,7 +299,10 @@ class MemoryCapture(_Strict):
 
 class MemoryConsolidate(_Strict):
     enabled: bool = False
-    model: str = "llama-3-fast"
+    # Same reasoning as MemoryCapture.model above, which this was the missed sibling of:
+    # `llama-3-fast` routes to Ollama, so a deployment holding only an Anthropic key would
+    # have had consolidation fail on every run and say so only in a log.
+    model: str = "claude-haiku"
     after_facts: int = Field(default=50, ge=10)
     max_facts: int = Field(default=200, ge=1, le=500)
 
