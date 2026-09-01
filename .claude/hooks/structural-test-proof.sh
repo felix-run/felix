@@ -31,7 +31,15 @@ rel=$(git -C "$root" ls-files --full-name --cached --others -- "$path" 2>/dev/nu
 [ -n "$rel" ] || exit 0
 
 # Is this a scanning test at all? The three ways this repo builds a corpus.
-grep -qE '(^|[^_[:alnum:]])(ast\.(walk|parse)|\.rglob\(|\.glob\(|os\.walk\()' "$path" || exit 0
+# The `(^|[^_[:alnum:]])` prefix guard belongs only on the arms that start with a bare
+# identifier -- it stops `myast.walk(` and `chaos.walk(`. Applying it to `\.rglob\(` and
+# `\.glob\(` too was wrong and silently disabled both: those already begin with `.`, and the
+# character before that dot is the receiver's last letter, which is alphanumeric. So
+# `ROOT.rglob("*.py")` -- the form every scanning test in this repo actually writes -- never
+# matched, and three real ones were invisible to this hook. The fixtures that were supposed to
+# prove each arm used `Path(".").rglob(...)`, whose `)` satisfies the class, so the test agreed
+# with the bug. Derived coverage in the test file now catches this shape directly.
+grep -qE '((^|[^_[:alnum:]])(ast\.(walk|parse)|os\.walk\()|\.rglob\(|\.glob\()' "$path" || exit 0
 
 # Which cases are new relative to HEAD? A file absent from HEAD is entirely new.
 # This greps text rather than parsing, so a `def test_…` inside a fixture string counts as a
@@ -71,9 +79,9 @@ Prove this one can fail, by mutation — the only method that works for a scan:
 \`import\` resolves and nothing on disk — a test that reads the tree sees your working copy at
 every base. Reach for it when the new case drives code through an import instead.
 
-Either way, check the corpus and the match set are non-empty: assert the file set has members
-and that the check examined candidates, so the day the scan stops finding anything is the day
-it fails rather than the day it goes quiet.
+Then check the corpus and the match set are non-empty: assert the file set has members and
+that the check examined candidates, so the day the scan stops finding anything is the day it
+fails rather than the day it goes quiet.
 EOF
 )" '{hookSpecificOutput:{hookEventName:"PostToolUse",additionalContext:$ctx}}'
 exit 0

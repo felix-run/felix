@@ -944,3 +944,46 @@ def test_outbound_clients_go_through_the_egress_guard() -> None:
         "outbound client built directly instead of via felix.security.egress."
         f"safe_async_client; add an exemption with a reason if that is deliberate: {offenders}"
     )
+
+
+# --------------------------------------------------------------------------
+# A fixture that builds a throwaway git repo must not be able to write to a real one.
+# --------------------------------------------------------------------------
+def test_every_git_call_in_tests_is_environment_scrubbed() -> None:
+    """`git -C <dir>` loses to an exported `GIT_DIR`. The environment wins.
+
+    A review run with `GIT_DIR` exported drove `tests/unit/test_pr_quality_gate_hook.py`, whose
+    fixture built a temp repo with a bare `git -C tmpdir init && add -A && commit`. Both commits
+    landed in *this* repository and moved `refs/heads/<branch>` and `refs/remotes/origin/main`
+    onto them. No file changed, so the only symptom was a `git status` that looked like the
+    entire tree had been deleted.
+
+    The hooks under test already defend against this; the tests driving them did not. Every git
+    subprocess call under `tests/` now goes through `tests/git_fixture.py:git`, which unsets the
+    ambient variables — and this asserts that nothing quietly stops doing so.
+    """
+    offenders: list[str] = []
+    helper = ROOT / "tests" / "git_fixture.py"
+    seen = 0
+    for path in sorted((ROOT / "tests").rglob("*.py")):
+        if path == helper:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            # The command list of a subprocess call: `subprocess.run([...])`, `Popen([...])`.
+            for arg in node.args:
+                if not isinstance(arg, ast.List) or not arg.elts:
+                    continue
+                first = arg.elts[0]
+                if not (isinstance(first, ast.Constant) and isinstance(first.value, str)):
+                    continue
+                seen += 1
+                if first.value == "git":
+                    offenders.append(f"{path.relative_to(ROOT)}:{node.lineno}")
+    assert seen >= 5, f"no subprocess command lists found in tests/ — has the scan broken? ({seen})"
+    assert offenders == [], (
+        "these invoke git directly, so an ambient GIT_DIR/GIT_WORK_TREE points them at a real "
+        f"repository — go through tests/git_fixture.py:git instead: {offenders}"
+    )

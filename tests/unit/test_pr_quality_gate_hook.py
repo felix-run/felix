@@ -28,6 +28,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.git_fixture import git
+
 HOOK = Path(__file__).resolve().parents[2] / ".claude" / "hooks" / "pr-quality-gate.sh"
 CREATE = "gh pr create --title t --body b"
 
@@ -44,8 +46,9 @@ pytestmark = pytest.mark.skipif(
 
 
 def _git(repo: Path, *args: str) -> str:
-    out = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, check=True)
-    return out.stdout.strip()
+    # Via the helper: a bare `git -C` loses to an exported GIT_DIR, and this fixture's
+    # `add -A && commit` then writes into whatever repo that names. See tests/git_fixture.py.
+    return git(repo, *args)
 
 
 def _repo(root: Path, changed: str) -> Path:
