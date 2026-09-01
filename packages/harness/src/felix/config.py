@@ -120,6 +120,17 @@ class Settings(BaseSettings):
     model_timeout_seconds: float = Field(default=120.0, gt=0)
 
     # --- durability ---
+    # Where a manifest may come from. `store` is the full product: Postgres versions with
+    # canary and rollback, tenant and global object-store layers, then the bundled YAML.
+    # `bundled` collapses that to the files baked into the image and refuses every write,
+    # which is the right posture for a single-tenant or self-hosted deployment that has no
+    # use for runtime authoring — it removes the whole write surface rather than guarding it.
+    #
+    # A closed Literal on purpose, unlike the registry-backed settings: these two are not
+    # swappable implementations, they are a posture core itself enforces, and a third value
+    # would have no reader.
+    manifest_source: Literal["store", "bundled"] = "store"
+
     durability: Literal["fibers", "temporal"] = "fibers"
     temporal_host: str = "localhost:7233"
     temporal_namespace: str = "default"

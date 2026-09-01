@@ -249,6 +249,17 @@ def doctor_cmd() -> None:
     detail = mode if mode in BUILTIN_AUTH_MODES else f"{mode} (plugin)" if mode_ok else mode
     check("auth_mode", mode_ok, detail)
 
+    # Posture, not health — but an operator who thinks writes are disabled and finds them
+    # live has a different system than they think they have, so say which one this is.
+    source = str(getattr(settings, "manifest_source", "store"))
+    check(
+        "manifest source",
+        True,
+        "bundled — image only, writes refused"
+        if source == "bundled"
+        else "store — Postgres/object layers, writes enabled",
+    )
+
     # Every open backend setting resolved against its registry, reported rather than
     # raised — doctor's job is to list what is wrong, not to stop at the first thing.
     try:

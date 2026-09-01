@@ -327,6 +327,20 @@ blocks are captured off the response, persisted on the session event, and replay
 `tool_use` blocks on the next request. A block whose signature was not captured is dropped rather
 than sent, because an unverifiable signature rejects the whole turn.
 
+### Where manifests come from
+
+`FELIX_MANIFEST_SOURCE` picks the posture:
+
+| Value | Resolution order | Writes |
+|---|---|---|
+| `store` (default) | Postgres version → tenant object → global object → bundled YAML | `PUT /manifests`, canary, rollback |
+| `bundled` | bundled YAML only | refused with `405` |
+
+`bundled` is for a single-tenant or self-hosted deployment with no use for runtime
+authoring: it does not guard the write surface, it removes it, and the Postgres and
+object-store layers are never consulted. Changing an agent then means shipping an image.
+`felix doctor` reports which posture is active.
+
 ### Manifest capabilities
 
 Sessions and skills:

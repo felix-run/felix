@@ -91,10 +91,25 @@ async def get_manifest(
     }
 
 
+def _reject_when_bundled_only(request: Request) -> None:
+    """Refuse every write when the image is the only manifest source.
+
+    Checked before the scope check so the answer does not depend on who is asking: under
+    this posture the capability is absent, not merely unauthorised. 405 rather than 403 for
+    the same reason — GET on this path still works, the write verb does not exist here.
+    """
+    if str(getattr(request.app.state.settings, "manifest_source", "store")) == "bundled":
+        raise HTTPException(
+            status_code=405,
+            detail="manifest_source=bundled: manifests are read-only; change the image",
+        )
+
+
 @router.put("/{name}")
 async def upsert_manifest(name: str, body: ManifestUpsert, request: Request) -> Any:
     from felix.manifests import store as manifest_store
 
+    _reject_when_bundled_only(request)
     require_mgmt_scopes(request, SCOPE_MANIFESTS_WRITE)
     parsed: Manifest = parse_manifest(body.manifest)
     if parsed.metadata.name != name:
@@ -134,6 +149,7 @@ async def upsert_manifest(name: str, body: ManifestUpsert, request: Request) -> 
 async def set_canary(name: str, body: CanaryRequest, request: Request) -> Any:
     from felix.manifests import store as manifest_store
 
+    _reject_when_bundled_only(request)
     require_mgmt_scopes(request, SCOPE_MANIFESTS_WRITE)
     try:
         row = await manifest_store.set_canary(
@@ -155,6 +171,7 @@ async def set_canary(name: str, body: CanaryRequest, request: Request) -> Any:
 async def rollback_manifest(name: str, body: RollbackRequest, request: Request) -> Any:
     from felix.manifests import store as manifest_store
 
+    _reject_when_bundled_only(request)
     require_mgmt_scopes(request, SCOPE_MANIFESTS_WRITE)
     row = await manifest_store.activate_version(
         request.app.state.settings,
@@ -173,6 +190,7 @@ async def rollback_manifest(name: str, body: RollbackRequest, request: Request) 
 async def clear_canary(name: str, request: Request) -> Any:
     from felix.manifests import store as manifest_store
 
+    _reject_when_bundled_only(request)
     require_mgmt_scopes(request, SCOPE_MANIFESTS_WRITE)
     row = await manifest_store.set_canary(
         request.app.state.settings,

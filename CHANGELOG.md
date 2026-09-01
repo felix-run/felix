@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`FELIX_MANIFEST_SOURCE=store|bundled`.** Nearly every finding in the recent security
+  work traced to a manifest field reaching the harness at runtime — unbounded timeouts and
+  approval TTLs, uncapped ref lists, stdio commands. Those are now bounded, and they had to
+  be: an operator's own bundled manifest can hold the same values.
+
+  But a deployment that never authors a manifest at runtime should not have to guard that
+  path at all. Under `bundled` the resolver collapses from four layers to one — the YAML
+  baked into the image — and Postgres and the object store are never consulted. Every write
+  route (`PUT /manifests`, canary, rollback, clear-canary) refuses with `405`, checked
+  before the scope check so the answer does not depend on who is asking: the capability is
+  absent, not unauthorised. Reads are untouched, and `felix doctor` reports which posture is
+  active.
+
+  The default stays `store`. Runtime manifests, versioning, canary and rollback are the
+  product for multi-tenant deployments, and removing them would dictate a workflow rather
+  than offer one — this makes the smaller surface available to deployments that want it.
+
+
 ### Fixed
 
 - **The last two hardcoded outbound timeouts, and no bound on the configurable ones.**
