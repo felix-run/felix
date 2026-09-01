@@ -7,6 +7,178 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`FELIX_MANIFEST_SOURCE=store|bundled`.** Nearly every finding in the recent security
+  work traced to a manifest field reaching the harness at runtime — unbounded timeouts and
+  approval TTLs, uncapped ref lists, stdio commands. Those are bounded now, and they had to
+  be: an operator's own bundled manifest can hold the same values, so the bounds were never
+  really about who wrote the file.
+
+  But a deployment that never authors a manifest at runtime should not have to guard that
+  path. Under `bundled` the write routes are **not registered** — absent from the app and
+  from `/openapi.json`, with Starlette answering a `PUT` as `405 Allow: GET` — and no
+  manifest store is constructed at all. The posture is expressed by withholding the store at
+  the runtime seam rather than by a branch in the resolver, because `_read_tenant_postgres`
+  already collapses to the bundled file when no store is supplied. The read routes follow
+  the posture too: `GET /manifests` lists the bundled set rather than Postgres rows that
+  will never be served, and a `?version=` read 404s.
+
+  The default stays `store`. Runtime manifests, versioning, canary and rollback are the
+  product for a multi-tenant deployment; removing them would dictate a workflow rather than
+  offer one. Flipping an existing deployment has two consequences worth reading first: every
+  tenant collapses onto the image's file, dropping any per-tenant `auth.inbound` tightening,
+  and `pin_compile` threads see one 409 as the resolved version becomes `null`. Both are
+  documented in the README, and `felix doctor` reports the active posture.
+
+
+- **`spec.mcp_servers[].timeout_ms` and `spec.peers[].timeout_ms`.** `ContainerRef` and
+  `SandboxRef` already carried a per-integration timeout; the MCP and A2A refs did not, so
+  30s and 60s respectively were unraisable and a slow-but-working server produced a tool
+  result that read like a refusal. A peer call runs an entire agent turn on the far side,
+  so it had the tightest ceiling on the longest operation. Both are floored at one second
+  and reach discovery and the call alike, over HTTP and stdio.
+
+- **`manifests/contributor.yaml` — Felix working on the Felix codebase.** Every piece
+  this needs already existed; nothing wired them together. The manifest points the
+  workspace file tools at a Felix checkout, binds the Docker sandbox for snippet
+  checks, declares four developer skills (`felix-architecture`, `felix-conventions`,
+  `felix-testing`, `felix-contributing`, all new under `skills/`), and reaches GitHub
+  over MCP so the agent can open pull requests against the repository it runs on.
+
+  Three limits are structural, not oversights, and the system prompt tells the agent
+  about each so it cannot claim otherwise. The sandbox has no network and no volume
+  mount, so it verifies snippets and cannot run the suite — `make check` and CI do
+  that. `write_file` replaces whole files rather than patching. The local checkout and
+  GitHub are separate worlds: editing one does not touch the other.
+
+  Controls, since this agent can write to its own source: `write_file` and every
+  mutating `github__` tool *in the recorded catalog* require approval, under
+  `eu_ai_act` at `risk_tier: high` so that `allow_unattended: false` is enforced at
+  compile time rather than being an inert field. Content screening is on because MCP
+  output carries an untrusted transport and GitHub issue bodies are written by
+  strangers. No client tool, container, queue, peer, sub-agent, or stdio MCP server is
+  declared, so the isolated container is the only code execution the agent gets.
+
+  One gap is worth naming rather than burying: approval rules match tool names exactly
+  — there are no globs in the governance stack — and `McpServerRef` has no per-server
+  tool allowlist, so the entire remote catalog binds as `github__*`. A write tool that
+  GitHub adds or renames binds ungated, and no unit test can catch it, because the test
+  can only compare the manifest to itself. Closing that needs a tool allowlist on
+  `McpServerRef` or a toolset-scoped MCP URL.
+
+
+
+- **`spec.memory.checkpointer` now selects where session state lives**, having
+  shipped as a closed `Literal` that no code read. Every value silently meant
+  "whatever `FELIX_DATABASE_URL` points at". It is now resolved through an open
+  registry: `postgres` (default, unchanged) and `none` (no session state — every
+  turn starts from the messages it was given), plus anything a plugin adds with
+  `register_checkpointer`.
+
+  There is deliberately no in-process built-in. A thread is not manifest-scoped —
+  fifteen `/chat` routes address one by id with no manifest in hand — so a manifest
+  choosing a different *backend* would split-brain, the agent reading one log while
+  `/history`, `/continue` and `/compact` read another. `none` is exempt because it
+  is a claim about the agent, enforced where the agent reads.
+
+  `agentcore`, `sqlite` and `do` are no longer accepted. They never did anything,
+  and `do` named Cloudflare Durable Objects — compute this stack deliberately does
+  not run. A manifest setting one now fails validation instead of quietly getting
+  Postgres. No bundled manifest used them.
+
+  `checkpointer: none` is refused alongside anything the loop would silently drop
+  for want of a store: a `session.strategy` other than `full_replay`,
+  `session.compact_after_turn`, and `memory.capture.enabled` — the last because
+  `_turn_seq` stamps `origin_seq` from the session head, so with no store every
+  fact lands at genesis and supersession ordering collapses rather than erroring.
+
+  A bad name is now refused at manifest *write* time (`PUT /manifests/{name}`) as
+  well as by the CLI. Opening the field from `Literal` to `str` moved typo-catching
+  out of pydantic, and a stored typo would otherwise have raised inside every
+  build — a 500 per request until someone read a traceback.
+
+- **`FELIX_DB_PREPARED_STATEMENTS`** — set it `false` behind a pooler that does not
+  track prepared statements. psycopg3 prepares after five executions and the sixth
+  lands on a different server connection, so this fails on the sixth query rather
+  than the first. RDS Proxy forces the choice: it pins the session when it sees a
+  prepared statement, defeating the pooling it was deployed for.
+- **`make up-pooled`** — PgBouncer in transaction mode in front of Postgres, for when
+  `WORKERS x (POOL_SIZE + MAX_OVERFLOW)` outgrows your `max_connections`.
+- **`make up-replicas` and `scripts/smoke-replicas.sh`** — two API replicas behind one
+  origin, and a smoke that proves a resume stream on one sees an append made on the
+  other.
+- **Compose passes the resume-pacing settings** (`FELIX_STREAM_RESUME_IDLE_SECONDS`,
+  `..._POLL_SECONDS`, `..._POLL_MAX_SECONDS`). They were documented in `.env.example`
+  and unreachable from Compose.
+- **Open registries for the remaining swappable backends.**
+  `register_object_store`, `register_secrets_backend`, and
+  `register_warehouse_backend` join the pattern, model-provider, and embedder
+  registries. `ObjectStore`, `SecretsProvider`, and `Warehouse` were already
+  Protocols, but each was selected by a hardcoded if/elif, so a third party could
+  implement the interface and had no way to have it chosen.
+- **`FELIX_OBJECT_STORE`, `FELIX_SECRETS_BACKEND`, `FELIX_WAREHOUSE`,
+  `FELIX_MEMORY_EMBEDDER`, and `FELIX_AUTH_MODE` accept registered names.** They were
+  closed `Literal`s, which made a registered backend unreachable — most visibly for
+  the embedder, whose registry had been open all along. An unknown value now fails at
+  startup with the registered names rather than being rejected by the schema.
+- **`register_session_strategy`** — `spec.session.strategy` was an open string parsed
+  by a closed parser.
+- **`spec.extensions`** — the one field exempt from the manifest schema's
+  `extra="forbid"`, namespaced by plugin name and delivered to a pattern builder as
+  `PatternBuildContext["extensions"]`. A plugin previously had no way to carry any
+  manifest configuration at all.
+- **`FELIX_SKILLS_DIR`** — an extra `SKILL.md` directory searched alongside the
+  bundled one. Bundled skills resolved only from `__file__`-relative repo paths, so a
+  pip-installed Felix had none and no way to point at its own.
+- **`examples/felix-plugin-example/`** — a working out-of-tree plugin exercising every
+  seam, including the `[project.entry-points."felix.plugins"]` declaration, for which
+  the repo previously held no example. `felix doctor` now lists discovered plugins and
+  registered patterns, and `felix validate-manifest` rejects an unknown pattern name
+  (nothing validated the pattern before, so a bad name passed CI and failed at build).
+
+### Changed
+
+- **`/docs` is the Scalar API reference, not Swagger UI.** The harness served FastAPI's
+  bundled Swagger UI while the docs site already described `/docs` as Scalar. It now renders
+  the same `/openapi.json` through a pinned Scalar bundle: tag sidebar, curl as the default
+  client, and a `servers` entry taken from the page's own origin — without it the spec has no
+  `servers` block, so every snippet rendered as a bare `curl /health` that could not be
+  pasted anywhere. No new dependency (Swagger UI was a CDN script too, and this is one HTML
+  route). The bundle is pinned and carries an SRI hash, so a public, always-unauthenticated
+  origin cannot be handed a different script than the one this commit reviewed. Swagger UI's
+  `/docs/oauth2-redirect` went with it — the only route ever served under `/docs/` — so the
+  rate limiter's orphaned `/docs/` prefix exemption goes too. The spec path and the curl
+  snippets' base URL both resolve per request against `root_path`, as Swagger UI's did —
+  precomputing them would have left `/redoc` working and `/docs` blank behind a proxy
+  prefix. `/openapi.json` and `/redoc` are unchanged, as is `/docs` being public in every
+  auth mode.
+
+
+- **`tenant_id` no longer defaults on the session-layer accessors** —
+  `get_session_store`, `build_checkpointer`, `PostgresSessionStore` and
+  `InMemorySessionStore`. Omitting it silently meant tenant `"default"`, which is
+  how the `remember` bug above went unnoticed. Source-incompatible for an
+  out-of-repo caller that omitted it; every in-repo call site already passed one.
+  A repo invariant now fails if the default comes back. Note the residual: an
+  explicit `tenant_id="default"` still compiles, so the regression test asserting on
+  the resulting ordinal is the real guard, not the signature.
+
+
+- **A plugin can no longer silently shadow a built-in.** Auth modes already refused
+  it; session strategies did not, so an installed package could replace
+  `compacting` for every manifest using it. `register_session_strategy` now rejects
+  a built-in prefix, and longest-prefix-wins makes resolution independent of
+  registration order.
+- **An audit sink is constructed once, not per event**, and a sink failure logs at
+  `warning` rather than `debug` — it is the compliance-export path, so a broken
+  export was invisible at default log level.
+
+
+- A resume stream that is genuinely being notified now relaxes its poll to 60 seconds
+  rather than 10, since the poll is a safety net once wake-ups are being delivered.
+  It tightens again on its own when they stop.
+
 ### Fixed
 
 - **The SSRF guard was advisory: it validated one lookup and the connection used another.**
@@ -28,12 +200,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   caller asked for while the socket goes to the pinned address. Verified against a real
   HTTPS host.
 
-  The pre-dial check stays, reduced to what needs no lookup — scheme, `http` outside
-  development, internal names and suffixes, IP literals — so a bad URL still fails fast and
-  clearly. Doing the resolving check there too would simply reinstate the second lookup.
+  The syntactic half — scheme, `http` outside development, internal names and suffixes, IP
+  literals — now runs on the transport itself rather than only at each call site, so a new
+  caller cannot get half a guard by forgetting a line, and a redirect target is checked on
+  the same terms as the original URL. `proxy`, `mounts` and `uds` are refused rather than
+  ignored: each chooses a destination the guard never sees. Note that supplying a transport
+  also disables httpx's environment proxies, so `HTTP_PROXY` no longer applies to these
+  calls.
+
+  Every approved address is kept, not just the first. Pinning one would discard the fallback
+  Happy Eyeballs provides, which is what lets a host with an AAAA record work from a
+  container with no IPv6 egress; each address in the list has been validated, so they are
+  tried in turn.
+
+  **The browser is the exception**, and it is the model-facing one: Chromium resolves for
+  itself, so there the check stays advisory. Documented in `deploy/GOVERNANCE.md` rather than
+  quietly covered by the claim above.
 
 
-### Fixed
 
 - **A blocking DNS lookup ran inside a pydantic validator, on the API event loop.**
   `assert_safe_outbound_url` resolves hostnames, and three schema validators called it while
@@ -74,31 +258,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   waiting on it. `--no-resolve-egress` for an air-gapped CI runner.
 
 
-### Added
-
-- **`FELIX_MANIFEST_SOURCE=store|bundled`.** Nearly every finding in the recent security
-  work traced to a manifest field reaching the harness at runtime — unbounded timeouts and
-  approval TTLs, uncapped ref lists, stdio commands. Those are bounded now, and they had to
-  be: an operator's own bundled manifest can hold the same values, so the bounds were never
-  really about who wrote the file.
-
-  But a deployment that never authors a manifest at runtime should not have to guard that
-  path. Under `bundled` the write routes are **not registered** — absent from the app and
-  from `/openapi.json`, with Starlette answering a `PUT` as `405 Allow: GET` — and no
-  manifest store is constructed at all. The posture is expressed by withholding the store at
-  the runtime seam rather than by a branch in the resolver, because `_read_tenant_postgres`
-  already collapses to the bundled file when no store is supplied. The read routes follow
-  the posture too: `GET /manifests` lists the bundled set rather than Postgres rows that
-  will never be served, and a `?version=` read 404s.
-
-  The default stays `store`. Runtime manifests, versioning, canary and rollback are the
-  product for a multi-tenant deployment; removing them would dictate a workflow rather than
-  offer one. Flipping an existing deployment has two consequences worth reading first: every
-  tenant collapses onto the image's file, dropping any per-tenant `auth.inbound` tightening,
-  and `pin_compile` threads see one 409 as the resolved version becomes `null`. Both are
-  documented in the README, and `felix doctor` reports the active posture.
-
-### Fixed
 
 - **The last two hardcoded outbound timeouts, and no bound on the configurable ones.**
   Making the model and MCP ceilings raisable left `memory/embedder.py` on a hardcoded 60s
@@ -173,62 +332,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bet. Connect is pinned at 10s separately, so raising the request ceiling for a long
   generation does not also let an unreachable endpoint hang for that long.
 
-### Changed
-
-- **`/docs` is the Scalar API reference, not Swagger UI.** The harness served FastAPI's
-  bundled Swagger UI while the docs site already described `/docs` as Scalar. It now renders
-  the same `/openapi.json` through a pinned Scalar bundle: tag sidebar, curl as the default
-  client, and a `servers` entry taken from the page's own origin — without it the spec has no
-  `servers` block, so every snippet rendered as a bare `curl /health` that could not be
-  pasted anywhere. No new dependency (Swagger UI was a CDN script too, and this is one HTML
-  route). The bundle is pinned and carries an SRI hash, so a public, always-unauthenticated
-  origin cannot be handed a different script than the one this commit reviewed. Swagger UI's
-  `/docs/oauth2-redirect` went with it — the only route ever served under `/docs/` — so the
-  rate limiter's orphaned `/docs/` prefix exemption goes too. The spec path and the curl
-  snippets' base URL both resolve per request against `root_path`, as Swagger UI's did —
-  precomputing them would have left `/redoc` working and `/docs` blank behind a proxy
-  prefix. `/openapi.json` and `/redoc` are unchanged, as is `/docs` being public in every
-  auth mode.
-
-### Added
-
-- **`spec.mcp_servers[].timeout_ms` and `spec.peers[].timeout_ms`.** `ContainerRef` and
-  `SandboxRef` already carried a per-integration timeout; the MCP and A2A refs did not, so
-  30s and 60s respectively were unraisable and a slow-but-working server produced a tool
-  result that read like a refusal. A peer call runs an entire agent turn on the far side,
-  so it had the tightest ceiling on the longest operation. Both are floored at one second
-  and reach discovery and the call alike, over HTTP and stdio.
-
-- **`manifests/contributor.yaml` — Felix working on the Felix codebase.** Every piece
-  this needs already existed; nothing wired them together. The manifest points the
-  workspace file tools at a Felix checkout, binds the Docker sandbox for snippet
-  checks, declares four developer skills (`felix-architecture`, `felix-conventions`,
-  `felix-testing`, `felix-contributing`, all new under `skills/`), and reaches GitHub
-  over MCP so the agent can open pull requests against the repository it runs on.
-
-  Three limits are structural, not oversights, and the system prompt tells the agent
-  about each so it cannot claim otherwise. The sandbox has no network and no volume
-  mount, so it verifies snippets and cannot run the suite — `make check` and CI do
-  that. `write_file` replaces whole files rather than patching. The local checkout and
-  GitHub are separate worlds: editing one does not touch the other.
-
-  Controls, since this agent can write to its own source: `write_file` and every
-  mutating `github__` tool *in the recorded catalog* require approval, under
-  `eu_ai_act` at `risk_tier: high` so that `allow_unattended: false` is enforced at
-  compile time rather than being an inert field. Content screening is on because MCP
-  output carries an untrusted transport and GitHub issue bodies are written by
-  strangers. No client tool, container, queue, peer, sub-agent, or stdio MCP server is
-  declared, so the isolated container is the only code execution the agent gets.
-
-  One gap is worth naming rather than burying: approval rules match tool names exactly
-  — there are no globs in the governance stack — and `McpServerRef` has no per-server
-  tool allowlist, so the entire remote catalog binds as `github__*`. A write tool that
-  GitHub adds or renames binds ungated, and no unit test can catch it, because the test
-  can only compare the manifest to itself. Closing that needs a tool allowlist on
-  `McpServerRef` or a toolset-scoped MCP URL.
-
-
-### Fixed
 
 - **The anomaly scan and continuous eval only ever ran for tenant `default`.** Both
   take `tenant_id: str = "default"` and the worker cron passed nothing, so on a
@@ -426,104 +529,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend names were validated only in the API process.** The worker learned
   about `FELIX_SECRETS_BACKEND=vualt` from a traceback in the middle of a task;
   it now validates at startup, and `felix doctor` reports the same check.
-
-### Changed
-
-- **`tenant_id` no longer defaults on the session-layer accessors** —
-  `get_session_store`, `build_checkpointer`, `PostgresSessionStore` and
-  `InMemorySessionStore`. Omitting it silently meant tenant `"default"`, which is
-  how the `remember` bug above went unnoticed. Source-incompatible for an
-  out-of-repo caller that omitted it; every in-repo call site already passed one.
-  A repo invariant now fails if the default comes back. Note the residual: an
-  explicit `tenant_id="default"` still compiles, so the regression test asserting on
-  the resulting ordinal is the real guard, not the signature.
-
-### Added
-
-- **`spec.memory.checkpointer` now selects where session state lives**, having
-  shipped as a closed `Literal` that no code read. Every value silently meant
-  "whatever `FELIX_DATABASE_URL` points at". It is now resolved through an open
-  registry: `postgres` (default, unchanged) and `none` (no session state — every
-  turn starts from the messages it was given), plus anything a plugin adds with
-  `register_checkpointer`.
-
-  There is deliberately no in-process built-in. A thread is not manifest-scoped —
-  fifteen `/chat` routes address one by id with no manifest in hand — so a manifest
-  choosing a different *backend* would split-brain, the agent reading one log while
-  `/history`, `/continue` and `/compact` read another. `none` is exempt because it
-  is a claim about the agent, enforced where the agent reads.
-
-  `agentcore`, `sqlite` and `do` are no longer accepted. They never did anything,
-  and `do` named Cloudflare Durable Objects — compute this stack deliberately does
-  not run. A manifest setting one now fails validation instead of quietly getting
-  Postgres. No bundled manifest used them.
-
-  `checkpointer: none` is refused alongside anything the loop would silently drop
-  for want of a store: a `session.strategy` other than `full_replay`,
-  `session.compact_after_turn`, and `memory.capture.enabled` — the last because
-  `_turn_seq` stamps `origin_seq` from the session head, so with no store every
-  fact lands at genesis and supersession ordering collapses rather than erroring.
-
-  A bad name is now refused at manifest *write* time (`PUT /manifests/{name}`) as
-  well as by the CLI. Opening the field from `Literal` to `str` moved typo-catching
-  out of pydantic, and a stored typo would otherwise have raised inside every
-  build — a 500 per request until someone read a traceback.
-
-- **`FELIX_DB_PREPARED_STATEMENTS`** — set it `false` behind a pooler that does not
-  track prepared statements. psycopg3 prepares after five executions and the sixth
-  lands on a different server connection, so this fails on the sixth query rather
-  than the first. RDS Proxy forces the choice: it pins the session when it sees a
-  prepared statement, defeating the pooling it was deployed for.
-- **`make up-pooled`** — PgBouncer in transaction mode in front of Postgres, for when
-  `WORKERS x (POOL_SIZE + MAX_OVERFLOW)` outgrows your `max_connections`.
-- **`make up-replicas` and `scripts/smoke-replicas.sh`** — two API replicas behind one
-  origin, and a smoke that proves a resume stream on one sees an append made on the
-  other.
-- **Compose passes the resume-pacing settings** (`FELIX_STREAM_RESUME_IDLE_SECONDS`,
-  `..._POLL_SECONDS`, `..._POLL_MAX_SECONDS`). They were documented in `.env.example`
-  and unreachable from Compose.
-- **Open registries for the remaining swappable backends.**
-  `register_object_store`, `register_secrets_backend`, and
-  `register_warehouse_backend` join the pattern, model-provider, and embedder
-  registries. `ObjectStore`, `SecretsProvider`, and `Warehouse` were already
-  Protocols, but each was selected by a hardcoded if/elif, so a third party could
-  implement the interface and had no way to have it chosen.
-- **`FELIX_OBJECT_STORE`, `FELIX_SECRETS_BACKEND`, `FELIX_WAREHOUSE`,
-  `FELIX_MEMORY_EMBEDDER`, and `FELIX_AUTH_MODE` accept registered names.** They were
-  closed `Literal`s, which made a registered backend unreachable — most visibly for
-  the embedder, whose registry had been open all along. An unknown value now fails at
-  startup with the registered names rather than being rejected by the schema.
-- **`register_session_strategy`** — `spec.session.strategy` was an open string parsed
-  by a closed parser.
-- **`spec.extensions`** — the one field exempt from the manifest schema's
-  `extra="forbid"`, namespaced by plugin name and delivered to a pattern builder as
-  `PatternBuildContext["extensions"]`. A plugin previously had no way to carry any
-  manifest configuration at all.
-- **`FELIX_SKILLS_DIR`** — an extra `SKILL.md` directory searched alongside the
-  bundled one. Bundled skills resolved only from `__file__`-relative repo paths, so a
-  pip-installed Felix had none and no way to point at its own.
-- **`examples/felix-plugin-example/`** — a working out-of-tree plugin exercising every
-  seam, including the `[project.entry-points."felix.plugins"]` declaration, for which
-  the repo previously held no example. `felix doctor` now lists discovered plugins and
-  registered patterns, and `felix validate-manifest` rejects an unknown pattern name
-  (nothing validated the pattern before, so a bad name passed CI and failed at build).
-
-### Changed
-
-- **A plugin can no longer silently shadow a built-in.** Auth modes already refused
-  it; session strategies did not, so an installed package could replace
-  `compacting` for every manifest using it. `register_session_strategy` now rejects
-  a built-in prefix, and longest-prefix-wins makes resolution independent of
-  registration order.
-- **An audit sink is constructed once, not per event**, and a sink failure logs at
-  `warning` rather than `debug` — it is the compliance-export path, so a broken
-  export was invisible at default log level.
-
-### Changed
-
-- A resume stream that is genuinely being notified now relaxes its poll to 60 seconds
-  rather than 10, since the poll is a safety net once wake-ups are being delivered.
-  It tightens again on its own when they stop.
 
 ## [0.2.2] — 2026-08-25
 

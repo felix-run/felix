@@ -894,3 +894,39 @@ def test_no_outbound_http_client_hardcodes_its_timeout() -> None:
         "an outbound client hardcodes its timeout; read it from Settings or a per-ref field "
         f"so an operator can raise it, or add it to `exempt` with a reason: {offenders}"
     )
+
+
+def test_outbound_clients_go_through_the_egress_guard() -> None:
+    """A raw `httpx.AsyncClient` reaching a manifest- or model-supplied URL is unguarded.
+
+    `felix.security.egress.safe_async_client` pins each connection to an address the guard
+    validated. A new call site that constructs its own client gets none of that, and nothing
+    would fail — the same shape as a tool bound after the governance stack. So the exemption
+    is explicit and carries a reason.
+    """
+    exempt = {
+        "auth/jwt.py": "JWKS URL comes from FELIX_JWT_VERIFIERS, never from a token claim",
+        "patterns/model.py": "provider base_url is operator config, not manifest input",
+        "memory/embedder.py": "embedding base_url is operator config",
+        "sdk.py": "client library — dials the caller's own base_url",
+        "security/egress.py": "this is the guarded client",
+    }
+    harness = ROOT / "packages/harness/src/felix"
+    offenders: list[str] = []
+    for path in sorted(harness.rglob("*.py")):
+        rel = str(path.relative_to(harness))
+        if rel in exempt:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+                if func.value.id == "httpx" and func.attr in {"AsyncClient", "Client"}:
+                    offenders.append(f"{rel}:{node.lineno}")
+
+    assert offenders == [], (
+        "outbound client built directly instead of via felix.security.egress."
+        f"safe_async_client; add an exemption with a reason if that is deliberate: {offenders}"
+    )

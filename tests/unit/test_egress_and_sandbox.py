@@ -15,6 +15,7 @@ import sys
 import time
 import types
 
+import httpx
 import pytest
 from felix.security import ssrf
 from felix.security.ssrf import assert_safe_outbound_url as chk
@@ -540,3 +541,80 @@ def test_the_guard_cannot_be_installed_silently_unguarded() -> None:
 
     transport = GuardedAsyncTransport()
     assert isinstance(transport._pool._network_backend, _PinningBackend)
+
+
+def test_a_guarded_client_cannot_be_asked_to_proxy() -> None:
+    """`mounts` outranks the transport and a proxy chooses its own destination.
+
+    Both would return a client that looks guarded and is not, so they are refused rather
+    than ignored. A unix socket has no address to validate at all.
+    """
+    from felix.security.egress import GuardedAsyncTransport, safe_async_client
+
+    for kwargs in ({"proxy": "http://p:3128"}, {"uds": "/var/run/docker.sock"}):
+        with pytest.raises(TypeError):
+            GuardedAsyncTransport(**kwargs)
+    with pytest.raises(TypeError):
+        safe_async_client(timeout=1.0, proxy="http://p:3128")
+
+
+def test_a_guarded_client_mounts_nothing_unguarded() -> None:
+    """Supplying a transport also disables httpx's environment proxies — assert both.
+
+    `_mounts` is consulted before `_transport`, so a non-empty mounts map is an unguarded
+    path regardless of what the transport does.
+    """
+    from felix.security.egress import GuardedAsyncTransport, safe_async_client
+
+    client = safe_async_client(timeout=1.0)
+    assert client._mounts == {}
+    assert isinstance(client._transport, GuardedAsyncTransport)
+
+
+@pytest.mark.asyncio
+async def test_a_unix_socket_is_refused() -> None:
+    from felix.security.egress import _PinningBackend
+    from felix.security.ssrf import EgressBlocked
+
+    with pytest.raises(EgressBlocked):
+        await _PinningBackend().connect_unix_socket("/var/run/docker.sock")
+
+
+@pytest.mark.asyncio
+async def test_every_approved_address_is_tried(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pinning one address would drop the fallback Happy Eyeballs provides.
+
+    A host with an AAAA record reached from a container with no IPv6 egress fails on the
+    first address and must still connect on the second. Both were validated.
+    """
+    from felix.security import ssrf
+    from felix.security.egress import _PinningBackend
+
+    monkeypatch.setattr(ssrf, "resolve_host", lambda host: ["2606:2800:220:1::", "93.184.216.34"])
+    tried: list[str] = []
+
+    async def _fake_connect(self, host, port, **kwargs):
+        tried.append(host)
+        if ":" in host:
+            raise OSError("no route to host")
+        return object()
+
+    backend = _PinningBackend()
+    monkeypatch.setattr(type(backend).__mro__[1], "connect_tcp", _fake_connect)
+    await backend.connect_tcp("dual.example.com", 443)
+    assert tried == ["2606:2800:220:1::", "93.184.216.34"]
+
+
+@pytest.mark.asyncio
+async def test_the_syntactic_half_runs_on_the_transport(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The backend only sees addresses, so scheme and internal-name checks live above it.
+
+    Otherwise a new call site that forgets the pre-dial line gets the IP check and no
+    cleartext-http or internal-name check at all.
+    """
+    from felix.security.egress import GuardedAsyncTransport
+
+    transport = GuardedAsyncTransport()
+    request = httpx.Request("GET", "http://metadata.google.internal/computeMetadata/v1/")
+    with pytest.raises(ValueError):
+        await transport.handle_async_request(request)
