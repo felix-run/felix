@@ -173,7 +173,7 @@ resolve somewhere else by the time it is dialled. `felix validate-manifest` perf
 resolving check too, so an author still learns about a blocked host without a request
 waiting on it (`--no-resolve-egress` for an air-gapped runner).
 
-The guard **resolves the hostname** and rejects the request if *any* returned address is loopback,
+That resolving check rejects the request if *any* returned address is loopback,
 link-local (cloud metadata), private, carrier-grade NAT, reserved, multicast, or
 unspecified — including IPv4-mapped IPv6 forms and decimal-integer hosts. Internal names
 and suffixes (`.svc`, `.cluster.local`, `.internal`, `metadata.google.internal`,

@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from felix.manifests.schema import BrowserToolRef
 from felix.observability.metrics import record_counter
-from felix.security.ssrf import assert_safe_outbound_url
+from felix.security.ssrf import assert_safe_outbound_url_async
 from felix.tools.types import (
     Tool,
     ToolInput,
@@ -56,13 +56,18 @@ class _BrowserExecutor:
         self._allow_http = allow_http
         self._binding = binding or "chromium"
 
-    def _check_egress(self, url: str) -> None:
-        """SSRF check for any request the page makes, including redirect hops."""
-        assert_safe_outbound_url(url, allow_http=self._allow_http)
+    async def _check_egress(self, url: str) -> None:
+        """SSRF check for any request the page makes, including redirect hops.
 
-    def _check_url(self, url: str) -> None:
+        Async because it resolves: this fires once per subresource on a model-supplied URL,
+        so a host whose nameserver blackholes queries would otherwise block the event loop
+        per request — the same defect as resolving in a pydantic validator, on a hotter path.
+        """
+        await assert_safe_outbound_url_async(url, allow_http=self._allow_http)
+
+    async def _check_url(self, url: str) -> None:
         """Checks for the top-level navigation the model asked for."""
-        self._check_egress(url)
+        await self._check_egress(url)
         if self._path_prefix and not url.startswith(self._path_prefix):
             raise ValueError(f"url must start with {self._path_prefix!r}")
 
@@ -78,7 +83,7 @@ class _BrowserExecutor:
 
         async def _guard(route: Any, request: Any) -> None:
             try:
-                self._check_egress(request.url)
+                await self._check_egress(request.url)
             except ValueError as exc:
                 logger.warning("browser blocked egress to %s (%s)", request.url, exc)
                 record_counter("felix_browser_egress_blocked", {"reason": str(exc)[:40]})
@@ -92,7 +97,7 @@ class _BrowserExecutor:
         _ = ctx
         url = str(args.get("url") or "")
         try:
-            self._check_url(url)
+            await self._check_url(url)
         except ValueError as exc:
             return f"browser_error: {exc}"
         try:

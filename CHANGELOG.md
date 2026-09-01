@@ -25,9 +25,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `assert_safe_outbound_url_async`, which is `asyncio.to_thread` around the same function, so
   the fix does not simply relocate the stall to the tool-call path.
 
-  Dial time is also the only placement that is *correct*: a hostname validated when a
-  manifest is written can resolve somewhere else by the time it is dialled, and the parse-time
-  check never failed closed anyway — a dropped query is treated as "defer to the connection".
+  Dial time is also the better placement: a hostname validated when a manifest is written can
+  resolve somewhere else by the time it is dialled. The honest framing is that parse-time was
+  a *second, independent* observation of the record, so this trades two chances to observe for
+  one — a weak defence, since an attacker can publish a benign record until the manifest is
+  stored, hours before the dial.
+
+  Two hardening changes came out of reviewing it. The lookup now runs on a 3s budget and a
+  timeout **blocks** rather than falling through: `to_thread` uses the loop's shared default
+  executor, a running thread cannot be cancelled, and the guard is advisory — httpx resolves
+  again at connect — so letting a slow resolver pass would hand it the exact bypass the guard
+  exists to close. And a refused dial no longer reports the address it resolved to: that
+  string lands in a tool message the model reads, which turned any peer, container or MCP ref
+  into an internal-DNS oracle. The detail is logged instead.
+
+  The browser was the last resolving check still on the event loop, and the worst placed —
+  once per subresource, on a model-supplied URL. Its route interceptor is `async` and already
+  awaits, so it now awaits the check too.
 
   Authoring feedback moved with it. `felix validate-manifest` now resolves every outbound
   host and rejects blocked addresses, which is where a DNS lookup belongs: no request is

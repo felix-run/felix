@@ -162,12 +162,17 @@ async def test_dial_resolves_and_blocks(monkeypatch: pytest.MonkeyPatch) -> None
     after the manifest was validated — the check at write time never could.
     """
     from felix.security import ssrf
+    from felix.security.ssrf import EgressBlocked
     from felix.tools.transports import HttpExecutor
 
     ex = HttpExecutor("https://rebinds.example.com/hook")
     monkeypatch.setattr(ssrf, "resolve_host", lambda host: ["169.254.169.254"])
-    with pytest.raises(ValueError, match="blocked address"):
+    with pytest.raises(EgressBlocked) as exc:
         await ex.execute({"x": 1})
+    # The reason names the resolved IP, and at dial time it would land in a tool message the
+    # model reads — turning any peer/container/MCP ref into an internal-DNS oracle.
+    assert "169.254.169.254" not in str(exc.value)
+    assert "rebinds.example.com" not in str(exc.value)
 
 
 @pytest.mark.asyncio
@@ -247,9 +252,15 @@ async def test_browser_registers_an_egress_guard() -> None:
     assert continued == [ok.url]
 
 
-def test_path_prefix_applies_to_navigation_not_subresources() -> None:
+@pytest.mark.asyncio
+async def test_path_prefix_applies_to_navigation_not_subresources(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Enforcing the prefix on every asset would break any real page."""
+    from felix.security import ssrf
     from felix.tools.browser import _BrowserExecutor
+
+    monkeypatch.setattr(ssrf, "resolve_host", lambda host: ["93.184.216.34"])
 
     ex = _BrowserExecutor(
         op="content",
@@ -259,9 +270,9 @@ def test_path_prefix_applies_to_navigation_not_subresources() -> None:
         binding="chromium",
     )
     with pytest.raises(ValueError, match="must start with"):
-        ex._check_url("https://other.example.com/x")
+        await ex._check_url("https://other.example.com/x")
     # subresource check is SSRF-only
-    ex._check_egress("https://cdn.example.com/app.js")
+    await ex._check_egress("https://cdn.example.com/app.js")
 
 
 # --- sandbox --------------------------------------------------------------------
@@ -435,3 +446,22 @@ def _settings(**kw):
     }
     base.update(kw)
     return Settings(**base)
+
+
+@pytest.mark.asyncio
+async def test_a_slow_resolver_is_refused_not_allowed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A lookup that outruns its budget blocks, rather than falling through.
+
+    The guard is advisory — httpx resolves again at connect — so letting a timeout pass
+    would hand a selectively-slow nameserver the exact bypass the guard exists to close.
+    """
+    from felix.security import ssrf
+    from felix.security.ssrf import EgressBlocked, assert_safe_outbound_url_async
+
+    monkeypatch.setattr(ssrf, "_RESOLVE_BUDGET_S", 0.1)
+    # Kept short: `wait_for` frees the caller but cannot cancel the thread, so the sleep is
+    # still running at teardown — which is the resource cost the budget exists to bound.
+    monkeypatch.setattr(ssrf, "resolve_host", lambda host: (time.sleep(0.6), ["93.184.216.34"])[1])
+
+    with pytest.raises(EgressBlocked):
+        await assert_safe_outbound_url_async("https://blackhole.example.com/x")

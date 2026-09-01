@@ -166,11 +166,15 @@ def bundle_manifests(
         rprint(json.dumps({"manifests": names}, indent=2))
 
 
-def _assert_outbound_hosts_resolve(manifest: Any, settings: Any) -> None:
+def _assert_outbound_hosts_resolve(manifest: Any, _settings: Any = None) -> None:
     """Resolve every manifest-supplied outbound URL, raising on a blocked address."""
     from felix.security.ssrf import assert_safe_outbound_url
 
-    allow_http = settings.environment == "development" and settings.allow_insecure
+    # Deliberately not inheriting `allow_insecure`. `allow_http=True` skips far more than
+    # the http:// rule — internal names, internal suffixes and loopback literals all pass —
+    # and `.env.example` ships FELIX_ALLOW_INSECURE=true, so on a developer machine this
+    # lint would have accepted http://metadata.google.internal/ while claiming to check it.
+    # This is a lint, not an enforcement point; leniency buys nothing here.
     spec = manifest.spec
     urls = [
         *(ref.url for ref in spec.mcp if ref.url),
@@ -178,7 +182,7 @@ def _assert_outbound_hosts_resolve(manifest: Any, settings: Any) -> None:
         *(ref.gateway_url for ref in spec.containers if ref.gateway_url),
     ]
     for url in urls:
-        assert_safe_outbound_url(url, allow_http=allow_http)
+        assert_safe_outbound_url(url)
 
 
 @app.command("validate-manifest")
@@ -229,7 +233,7 @@ def validate_manifest_cmd(
         # waiting on a CLI rather than a request, and at dial time, where it is
         # authoritative. `--no-resolve-egress` for an air-gapped CI runner.
         if resolve_egress:
-            _assert_outbound_hosts_resolve(manifest, settings)
+            _assert_outbound_hosts_resolve(manifest)
     except GovernanceError as exc:
         rprint(f"[red]governance fail[/red] {path}: {exc}")
         raise SystemExit(1) from exc
