@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A blocking DNS lookup ran inside a pydantic validator, on the API event loop.**
+  `assert_safe_outbound_url` resolves hostnames, and three schema validators called it while
+  parsing — so every MCP server, peer and container ref cost a synchronous `getaddrinfo` on
+  every manifest read *and* write, freezing every other request on the worker for the
+  duration. Measured here at 37.9 ms/ref on a cold cache against a resolver that answers —
+  which is the case that matters, since distinct hostnames are exactly what an attacker
+  supplies — and seconds each against a nameserver that drops queries rather than
+  answering. The same 64 refs now parse in 0.4 ms.
+
+  The validators keep the checks that never needed a lookup: scheme, `http` outside
+  development, internal names and suffixes, and IP literals including the decimal form.
+  Resolution moves to dial time — `mcp_rpc` already did it there; the HTTP tool, container
+  and peer clients were doing it at construction — and runs through
+  `assert_safe_outbound_url_async`, which is `asyncio.to_thread` around the same function, so
+  the fix does not simply relocate the stall to the tool-call path.
+
+  Dial time is also the better placement: a hostname validated when a manifest is written can
+  resolve somewhere else by the time it is dialled. The honest framing is that parse-time was
+  a *second, independent* observation of the record, so this trades two chances to observe for
+  one — a weak defence, since an attacker can publish a benign record until the manifest is
+  stored, hours before the dial.
+
+  Two hardening changes came out of reviewing it. The lookup now runs on a 3s budget and a
+  timeout **blocks** rather than falling through: `to_thread` uses the loop's shared default
+  executor, a running thread cannot be cancelled, and the guard is advisory — httpx resolves
+  again at connect — so letting a slow resolver pass would hand it the exact bypass the guard
+  exists to close. And a refused dial no longer reports the address it resolved to: that
+  string lands in a tool message the model reads, which turned any peer, container or MCP ref
+  into an internal-DNS oracle. The detail is logged instead.
+
+  The browser was the last resolving check still on the event loop, and the worst placed —
+  once per subresource, on a model-supplied URL. Its route interceptor is `async` and already
+  awaits, so it now awaits the check too.
+
+  Authoring feedback moved with it. `felix validate-manifest` now resolves every outbound
+  host and rejects blocked addresses, which is where a DNS lookup belongs: no request is
+  waiting on it. `--no-resolve-egress` for an air-gapped CI runner.
+
+
 ### Added
 
 - **`FELIX_MANIFEST_SOURCE=store|bundled`.** Nearly every finding in the recent security

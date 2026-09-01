@@ -38,11 +38,11 @@ ABSOLUTE_LIMITS = {
 MAX_INTEGRATION_TIMEOUT_S = ABSOLUTE_LIMITS["max_wall_clock_seconds"]
 MAX_INTEGRATION_TIMEOUT_MS = MAX_INTEGRATION_TIMEOUT_S * 1000
 
-# Outbound ref lists are capped because validating one resolves its hostname through a
-# synchronous getaddrinfo inside a pydantic validator, on the API event loop. Length is
-# therefore an amplification factor on a blocking call: an uncapped list in a single
-# PUT /manifests can stall every other request on the worker for minutes. The cap
-# contains the blast radius; moving resolution off the validator is the actual fix.
+# Outbound ref lists are capped because binding them is not free: compiling a manifest opens
+# a live HTTP round trip per MCP server to list its tools, and every ref costs a tool slot in
+# the model's context. (This cap was introduced when validating a ref also meant a blocking
+# getaddrinfo inside a pydantic validator; that resolution has since moved to dial time, but
+# the per-ref compile cost stands on its own.)
 MAX_REFS = 64
 
 
@@ -166,7 +166,12 @@ class McpServerRef(_Strict):
     def _safe_url(cls, v: str) -> str:
         if not v:
             return v
-        assert_safe_outbound_url(v)
+        # Syntactic only. Resolving here ran a blocking getaddrinfo inside a pydantic
+        # validator, on the API event loop, for every ref on every manifest read and
+        # write — and it never failed closed anyway (a dropped query is treated as
+        # 'defer to the connection'). The authoritative check is at dial time, which is
+        # also the only place that can catch a name that re-resolves after validation.
+        assert_safe_outbound_url(v, resolve=False)
         return v
 
     @model_validator(mode="after")
@@ -198,7 +203,12 @@ class A2APeerRef(_Strict):
     @field_validator("url")
     @classmethod
     def _safe_url(cls, v: str) -> str:
-        assert_safe_outbound_url(v)
+        # Syntactic only. Resolving here ran a blocking getaddrinfo inside a pydantic
+        # validator, on the API event loop, for every ref on every manifest read and
+        # write — and it never failed closed anyway (a dropped query is treated as
+        # 'defer to the connection'). The authoritative check is at dial time, which is
+        # also the only place that can catch a name that re-resolves after validation.
+        assert_safe_outbound_url(v, resolve=False)
         return v
 
 
@@ -223,7 +233,12 @@ class ContainerRef(_Strict):
     @field_validator("gateway_url")
     @classmethod
     def _safe_url(cls, v: str) -> str:
-        assert_safe_outbound_url(v)
+        # Syntactic only. Resolving here ran a blocking getaddrinfo inside a pydantic
+        # validator, on the API event loop, for every ref on every manifest read and
+        # write — and it never failed closed anyway (a dropped query is treated as
+        # 'defer to the connection'). The authoritative check is at dial time, which is
+        # also the only place that can catch a name that re-resolves after validation.
+        assert_safe_outbound_url(v, resolve=False)
         return v
 
 

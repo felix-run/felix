@@ -8,7 +8,7 @@ from typing import Any
 import httpx
 
 from felix.manifests.schema import McpServerRef
-from felix.security.ssrf import assert_safe_outbound_url
+from felix.security.ssrf import assert_safe_outbound_url_async
 from felix.timeouts import DEFAULT_CONNECT_TIMEOUT_S, timeout_seconds
 from felix.tools.types import Tool, ToolInvocationCtx, define_tool
 
@@ -55,7 +55,7 @@ async def mcp_rpc(
     wait_s: float = DEFAULT_MCP_TIMEOUT_S,
 ) -> dict[str, Any]:
     """POST a JSON-RPC request to an MCP HTTP endpoint."""
-    assert_safe_outbound_url(url, allow_http=allow_http)
+    await assert_safe_outbound_url_async(url, allow_http=allow_http)
     payload = {
         "jsonrpc": "2.0",
         "id": _next_id(),

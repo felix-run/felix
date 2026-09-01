@@ -10,6 +10,7 @@ started admitting private addresses.
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import logging
 import socket
@@ -146,6 +147,48 @@ def _parse_ip_literal(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Addres
     return None
 
 
+class EgressBlocked(ValueError):
+    """A dial refused by the egress guard.
+
+    Deliberately carries no resolved address. The detailed reason names the IP a hostname
+    resolved to, and at dial time that string lands in a tool message the model reads —
+    which turns any peer, container or MCP ref into an internal-DNS oracle. The detail is
+    logged instead. Subclasses `ValueError` so existing handlers still catch it.
+    """
+
+
+# `getaddrinfo` inherits resolv.conf, so a blackholed nameserver can hold a thread for tens
+# of seconds. A running thread cannot be cancelled, and `to_thread` uses the loop's shared
+# default executor — the same pool as GCS, embeddings and the Docker sandbox — so an
+# unbounded lookup does not just delay this dial, it starves every other offloaded call.
+_RESOLVE_BUDGET_S = 3.0
+
+
+async def assert_safe_outbound_url_async(url: str, *, allow_http: bool = False) -> None:
+    """The resolving check, run off the event loop and on a deadline.
+
+    `resolve_host` is a synchronous `getaddrinfo`. On an async path that blocks every other
+    request on the worker for as long as the resolver takes. Use this anywhere the caller
+    can await; use `assert_safe_outbound_url(..., resolve=False)` where it cannot, and let
+    the dial-time check do the resolving.
+
+    A lookup that exceeds the budget is refused rather than allowed through. The guard is
+    advisory — httpx resolves again at connect — so letting a timeout fall through would
+    hand a selectively-slow nameserver exactly the bypass the guard exists to close.
+    """
+    try:
+        await asyncio.wait_for(
+            asyncio.to_thread(assert_safe_outbound_url, url, allow_http=allow_http),
+            timeout=_RESOLVE_BUDGET_S,
+        )
+    except TimeoutError:
+        logger.warning("ssrf: resolution exceeded %.0fs for %s; refusing", _RESOLVE_BUDGET_S, url)
+        raise EgressBlocked("egress_blocked: destination could not be verified") from None
+    except ValueError as exc:
+        logger.warning("ssrf: refused %s (%s)", url, exc)
+        raise EgressBlocked("egress_blocked: destination not permitted") from None
+
+
 def assert_safe_outbound_url_for_hosts(
     url: str,
     allowed_hosts: set[str] | frozenset[str],
@@ -161,7 +204,9 @@ def assert_safe_outbound_url_for_hosts(
 
 
 __all__ = [
+    "EgressBlocked",
     "assert_safe_outbound_url",
+    "assert_safe_outbound_url_async",
     "assert_safe_outbound_url_for_hosts",
     "resolve_host",
 ]

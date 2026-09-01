@@ -161,8 +161,19 @@ also let an unreachable host park a socket. `FELIX_MODEL_TIMEOUT_SECONDS` (defau
 bounds each model-provider request the same way.
 
 
-Every manifest-supplied or model-supplied URL is checked before it is dialled. The guard
-**resolves the hostname** and rejects the request if *any* returned address is loopback,
+Every manifest-supplied or model-supplied URL is checked before it is dialled.
+
+**Where the check runs matters.** The syntactic half — scheme, `http` outside development,
+internal names and suffixes, and IP literals including the decimal form (`http://2130706433/`
+is 127.0.0.1) — runs when a manifest is parsed. The half that **resolves the hostname** runs
+at dial time, off the event loop. Resolving at parse time was both a liveness problem and a
+security gap: it put a blocking `getaddrinfo` inside a pydantic validator on the API event
+loop, once per ref on every manifest read and write, and a name validated at write time can
+resolve somewhere else by the time it is dialled. `felix validate-manifest` performs the
+resolving check too, so an author still learns about a blocked host without a request
+waiting on it (`--no-resolve-egress` for an air-gapped runner).
+
+That resolving check rejects the request if *any* returned address is loopback,
 link-local (cloud metadata), private, carrier-grade NAT, reserved, multicast, or
 unspecified — including IPv4-mapped IPv6 forms and decimal-integer hosts. Internal names
 and suffixes (`.svc`, `.cluster.local`, `.internal`, `metadata.google.internal`,
