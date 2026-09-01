@@ -224,3 +224,19 @@ async def test_store_posture_mounts_them(settings: Settings) -> None:
         spec = (await c.get("/openapi.json")).json()
         assert "put" in spec["paths"]["/manifests/{name}"]
         assert "/manifests/{name}/canary" in spec["paths"]
+
+
+def test_create_app_boots_without_being_handed_settings() -> None:
+    """`create_app()` takes settings as an *optional* parameter, and production omits it.
+
+    `felix_api.main:create_application` calls `create_app()` with no arguments, so the
+    resolved config is `cfg = settings or get_settings()` and `settings` itself is None on
+    that path. A line reading `settings.` rather than `cfg.` therefore crashed the shipped
+    image on boot while the entire suite stayed green, because every test passes settings
+    explicitly. This test is the one that does not.
+    """
+    from felix_api.app import create_app
+
+    app = create_app(plugins=[])
+    assert app is not None
+    assert any(getattr(r, "path", "") == "/health" for r in app.routes)

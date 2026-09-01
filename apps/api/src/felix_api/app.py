@@ -255,7 +255,7 @@ def create_app(
     app.include_router(plans.router, prefix="/plans")
     app.include_router(jobs.router, prefix="/jobs")
     app.include_router(manifests.router, prefix="/manifests")
-    if not settings.bundled_only:
+    if not cfg.bundled_only:
         # Absent rather than refused: under `manifest_source=bundled` the write verbs are
         # never registered, so they do not appear in the OpenAPI document either.
         app.include_router(manifests.write_router, prefix="/manifests")

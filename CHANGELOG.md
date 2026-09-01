@@ -181,6 +181,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`create_app()` crashed on boot when it was not handed settings.** The manifest-source
+  posture added `if not settings.bundled_only:`, but `settings` is the *optional* parameter
+  — the resolved config is `cfg = settings or get_settings()`. Production calls
+  `create_app()` with no arguments, so the shipped image raised `AttributeError: 'NoneType'
+  object has no attribute 'bundled_only'` before serving a request.
+
+  The whole suite stayed green because every test passes `settings=` explicitly. There is now
+  a test that does not, which is the only kind that could have caught it.
+
+
 - **A canary looked benchmarked when nothing had benchmarked it.** `run_continuous_eval`
   reads `canary_version` from each active canary and passes it to `start_run`, which writes
   it onto the eval run row — but resolution never used it. So the score belonged to whatever
