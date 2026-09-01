@@ -9,7 +9,8 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
 from felix.manifests.schema import ContainerRef, SandboxRef
-from felix.security.ssrf import assert_safe_outbound_url, assert_safe_outbound_url_async
+from felix.security.egress import safe_async_client
+from felix.security.ssrf import assert_safe_outbound_url
 from felix.timeouts import DEFAULT_CONNECT_TIMEOUT_S, timeout_seconds
 from felix.tools.transports import SandboxExecutor
 from felix.tools.types import (
@@ -135,10 +136,9 @@ class _ContainerExecutor:
             "image": self._image,
             "payload": args.get("payload") if "payload" in args else args,
         }
-        await assert_safe_outbound_url_async(self._url, allow_http=self._allow_http)
         timeout = httpx.Timeout(self._timeout_s, connect=DEFAULT_CONNECT_TIMEOUT_S)
         try:
-            async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+            async with safe_async_client(allow_http=self._allow_http, timeout=timeout) as client:
                 resp = await client.post(self._url, json=body, headers=self._headers())
                 resp.raise_for_status()
                 return resp.text

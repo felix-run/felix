@@ -172,9 +172,13 @@ async def assert_safe_outbound_url_async(url: str, *, allow_http: bool = False) 
     can await; use `assert_safe_outbound_url(..., resolve=False)` where it cannot, and let
     the dial-time check do the resolving.
 
-    A lookup that exceeds the budget is refused rather than allowed through. The guard is
-    advisory — httpx resolves again at connect — so letting a timeout fall through would
-    hand a selectively-slow nameserver exactly the bypass the guard exists to close.
+    A lookup that exceeds the budget is refused rather than allowed through: this check is
+    advisory — whoever dials resolves again — so letting a timeout fall through would hand
+    a selectively-slow nameserver exactly the bypass it exists to close.
+
+    Outbound HTTP no longer needs this: `felix.security.egress` pins the connection to an
+    address it validated, which is enforcement rather than advice. The remaining caller is
+    the browser, where Chromium does its own resolving and cannot be pinned from here.
     """
     try:
         await asyncio.wait_for(

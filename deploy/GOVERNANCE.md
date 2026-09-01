@@ -163,6 +163,29 @@ bounds each model-provider request the same way.
 
 Every manifest-supplied or model-supplied URL is checked before it is dialled.
 
+**The guard is enforcing, not advisory.** Outbound HTTP goes through a transport that
+resolves the hostname once, validates every returned address, and then connects to one of
+the addresses it validated — so the address that was checked is the address that is used.
+Without that pin the check and the connection are two independent lookups, and a hostname
+that resolves differently the second time (DNS rebinding, TTL 0) or a nameserver that
+answers the client while starving the checker gets through. TLS is unaffected: the
+certificate is still verified against the hostname the caller asked for.
+
+A lookup that fails or times out refuses the dial. That is safe precisely because this is
+the connection: there is no second lookup left to fail. A proxy or unix socket is refused
+rather than ignored, because both choose a destination the guard never validates — and
+because an explicit transport disables httpx's environment proxies, `HTTP_PROXY` and
+`HTTPS_PROXY` do **not** apply to these calls. A deployment whose egress containment is a
+proxy allowlist needs to know that.
+
+**One exception, and it is the model-facing one.** The browser tool hands its URL to
+Chromium, which resolves independently, so there the check remains advisory: the guard's
+lookup and Chromium's are two lookups, and a hostname that answers them differently gets
+through. Every subresource and redirect hop is checked, but none is pinned. Closing it means
+pinning Chromium's resolver (`--host-resolver-rules`) or running the browser behind an
+egress allowlist; until then, treat `spec.browser_tools` as reaching whatever the name
+resolves to at load time.
+
 **Where the check runs matters.** The syntactic half — scheme, `http` outside development,
 internal names and suffixes, and IP literals including the decimal form (`http://2130706433/`
 is 127.0.0.1) — runs when a manifest is parsed. The half that **resolves the hostname** runs
