@@ -20,6 +20,18 @@ _memory_manifests: dict[tuple[str, str, int], dict[str, Any]] = {}
 _memory_active: dict[tuple[str, str], dict[str, Any]] = {}
 
 
+def reset_memory_store() -> None:
+    """Drop every manifest held by the in-memory twin.
+
+    Process-global, so without this a manifest written by one test is served to the next.
+    A minimal stored manifest has no `auth.inbound` block, so writing one named `quick`
+    shadows the bundled file and every later test resolving that name gets a 401 — which is
+    how eleven unrelated tests failed at once.
+    """
+    _memory_manifests.clear()
+    _memory_active.clear()
+
+
 def _version_dict(row: ManifestRow | dict[str, Any]) -> dict[str, Any]:
     if isinstance(row, dict):
         return {

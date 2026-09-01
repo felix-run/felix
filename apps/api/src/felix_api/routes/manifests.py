@@ -63,7 +63,15 @@ async def list_manifests(request: Request) -> dict[str, Any]:
 
         rows = [{"name": name, "version": None, "source": "bundled"} for name in list_bundled()]
         return {"items": rows, "manifests": rows}
-    rows = await manifest_store.list_active(settings, tenant_id_from_request(request))
+    rows = [
+        # Tagged for the same reason the bundled rows are: the two postures return different
+        # shapes, and a client should not have to infer which one it got. Note this is the
+        # *configured* view — version plus any canary — and is deliberately not the same
+        # question as "what would my next request resolve to", which `GET /manifests/{name}`
+        # answers.
+        {**row, "source": "store"}
+        for row in await manifest_store.list_active(settings, tenant_id_from_request(request))
+    ]
     return {"items": rows, "manifests": rows}
 
 
