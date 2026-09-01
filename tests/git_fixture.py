@@ -23,28 +23,25 @@ every git subprocess call under `tests/` to come through here.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
 
 def git(repo: Path | str, *args: str, check: bool = True) -> str:
     """Run `git <args>` against `repo`, immune to an ambient git environment."""
+    # Positively, not by unsetting a list. Naming variables to remove is a denylist, and this
+    # repo's own rule is that trust is an allowlist — `GIT_OBJECT_DIRECTORY`,
+    # `GIT_ALTERNATE_OBJECT_DIRECTORIES` and friends would still be inherited. Setting
+    # `GIT_DIR` and `GIT_WORK_TREE` to this repo makes the answer independent of what else is
+    # in the environment, and `env -i`-style scrubbing is handled once in tests/conftest.py.
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env["GIT_DIR"] = str(Path(repo) / ".git")
+    env["GIT_WORK_TREE"] = str(repo)
     done = subprocess.run(
-        [
-            "env",
-            "-u",
-            "GIT_DIR",
-            "-u",
-            "GIT_WORK_TREE",
-            "-u",
-            "GIT_INDEX_FILE",
-            "git",
-            "-C",
-            str(repo),
-            "-c",
-            "commit.gpgsign=false",
-            *args,
-        ],
+        ["git", "-c", "commit.gpgsign=false", *args],
+        cwd=str(repo),
+        env=env,
         capture_output=True,
         text=True,
         check=check,

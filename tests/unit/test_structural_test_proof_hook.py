@@ -53,6 +53,7 @@ CORPUS_IDIOMS = {
     "rglob": 'from pathlib import Path\n\nROOT = Path(".")\n\n\ndef test_alpha() -> None:\n    assert list(ROOT.rglob("*.py"))\n',
     "glob": 'from pathlib import Path\n\nROOT = Path(".")\n\n\ndef test_alpha() -> None:\n    assert list(ROOT.glob("*.py"))\n',
     "os.walk": 'import os\n\n\ndef test_alpha() -> None:\n    assert list(os.walk("."))\n',
+    "iterdir": 'from pathlib import Path\n\nROOT = Path(".")\n\n\ndef test_alpha() -> None:\n    assert list(ROOT.iterdir())\n',
     "ast.parse": 'import ast\n\n\ndef test_alpha() -> None:\n    assert ast.parse("x = 1")\n',
     "ast.walk": 'import ast\n\n\ndef test_alpha() -> None:\n    assert list(ast.walk(ast.parse("x = 1")))\n',
 }
@@ -137,10 +138,11 @@ def _scans_the_tree(path: Path) -> bool:
         if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
             continue
         attr, value = node.func.attr, node.func.value
-        if attr in {"rglob", "glob"}:
+        if attr in {"rglob", "glob", "iterdir"}:
             return True
-        if attr in {"walk", "parse"} and isinstance(value, ast.Name) and value.id in {"ast", "os"}:
-            return True
+        if attr in {"walk", "parse", "scandir", "listdir"} and isinstance(value, ast.Name):
+            if value.id in {"ast", "os"}:
+                return True
     return False
 
 
@@ -154,7 +156,10 @@ def test_the_trigger_matches_every_scanning_test_in_this_repo() -> None:
     """
     pattern = _hook_trigger()
     scanning = sorted(p for p in (ROOT / "tests" / "unit").glob("test_*.py") if _scans_the_tree(p))
-    assert len(scanning) >= 8, f"only {len(scanning)} scanning tests found — has the suite moved?"
+    # A tight floor. At 8 against a real 13 this had 62% headroom: five files could stop being
+    # recognised — by an `_scans_the_tree` regression, a rename, a refactor to `iterdir` — before
+    # the corpus guard said anything, silently weakening the `missed == []` assertion below.
+    assert len(scanning) >= 12, f"only {len(scanning)} scanning tests found — has the suite moved?"
 
     missed = [
         str(p.relative_to(ROOT))
@@ -176,7 +181,9 @@ def test_a_new_case_in_a_scanning_test_is_flagged(tmp_path: Path) -> None:
     note = _note(repo)
     assert "test_beta" in note, "the added case was not named"
     assert "test_alpha" not in note, "an unchanged case was reported as new"
-    assert "Introduce a real violation" in note, "the note no longer carries the mutation procedure"
+    # The load-bearing tokens, not the sentence: the note is the product, so its content is
+    # worth pinning, but pinning its capitalisation makes a reword a failure.
+    assert "violation" in note and "revert" in note, "the note no longer carries the mutation procedure"
 
 
 def test_a_brand_new_scanning_file_is_flagged(tmp_path: Path) -> None:

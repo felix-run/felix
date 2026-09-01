@@ -958,13 +958,56 @@ def test_every_git_call_in_tests_is_environment_scrubbed() -> None:
     onto them. No file changed, so the only symptom was a `git status` that looked like the
     entire tree had been deleted.
 
-    The hooks under test already defend against this; the tests driving them did not. Every git
-    subprocess call under `tests/` now goes through `tests/git_fixture.py:git`, which unsets the
-    ambient variables — and this asserts that nothing quietly stops doing so.
+    This is the second line of defense, not the first. `tests/conftest.py` scrubs the redirect
+    variables from the parent process, so every child inherits a clean environment however it
+    spells its git call — which is what actually makes the hazard impossible. A first version
+    of *this* test matched only `["git", ...]` and missed seven other spellings of the same
+    call, including `cmd = ["git", ...]; subprocess.run(cmd)`, a one-line refactor of the very
+    fixture that corrupted the repo. It now reads command heads from several shapes; it is
+    still a detector, and detectors have holes.
     """
     offenders: list[str] = []
     helper = ROOT / "tests" / "git_fixture.py"
     seen = 0
+
+    # Only calls that actually start a process. Without this scope the check flagged
+    # `shutil.which("git")`, and — worse — `_run("git status", ...)`, which is a git command
+    # passed to a *hook under test* as data. Reporting test data as a hazard is how a guard
+    # gets switched off.
+    SPAWNERS = {
+        "run",
+        "Popen",
+        "call",
+        "check_call",
+        "check_output",
+        "create_subprocess_exec",
+        "create_subprocess_shell",
+    }
+
+    def _heads(call: ast.Call) -> list[str]:
+        """Every string this call might be asking a shell or exec to run."""
+        callee = call.func
+        name = callee.attr if isinstance(callee, ast.Attribute) else getattr(callee, "id", "")
+        if name not in SPAWNERS:
+            return []
+        found: list[str] = []
+        candidates = [*call.args, *(kw.value for kw in call.keywords)]
+        for node in candidates:
+            # `subprocess.run(["git", ...])` / `run(args=["git", ...])`
+            if isinstance(node, ast.List) and node.elts:
+                first = node.elts[0]
+                if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                    found.append(first.value)
+            # `create_subprocess_exec("git", "-C", ...)` — varargs, no list at all
+            elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+                found.append(node.value)
+            # `run(f"git -C {d} status", shell=True)`
+            elif isinstance(node, ast.JoinedStr):
+                lead = next((v for v in node.values if isinstance(v, ast.Constant)), None)
+                if lead is not None and isinstance(lead.value, str):
+                    found.append(lead.value)
+        return found
+
     for path in sorted((ROOT / "tests").rglob("*.py")):
         if path == helper:
             continue
@@ -972,18 +1015,40 @@ def test_every_git_call_in_tests_is_environment_scrubbed() -> None:
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
-            # The command list of a subprocess call: `subprocess.run([...])`, `Popen([...])`.
-            for arg in node.args:
-                if not isinstance(arg, ast.List) or not arg.elts:
-                    continue
-                first = arg.elts[0]
-                if not (isinstance(first, ast.Constant) and isinstance(first.value, str)):
-                    continue
+            for head in _heads(node):
                 seen += 1
-                if first.value == "git":
+                # The basename, so `/usr/bin/git` counts; the first word, so a shell string
+                # `"git -C … status"` counts.
+                binary = head.split()[0].rsplit("/", 1)[-1] if head.split() else ""
+                if binary == "git":
                     offenders.append(f"{path.relative_to(ROOT)}:{node.lineno}")
-    assert seen >= 5, f"no subprocess command lists found in tests/ — has the scan broken? ({seen})"
+    assert seen >= 20, f"no command strings found in tests/ — has the scan broken? ({seen})"
     assert offenders == [], (
         "these invoke git directly, so an ambient GIT_DIR/GIT_WORK_TREE points them at a real "
-        f"repository — go through tests/git_fixture.py:git instead: {offenders}"
+        f"repository — go through tests/git_fixture.py:git instead: {sorted(set(offenders))}"
     )
+
+
+def test_the_suite_runs_without_an_ambient_git_redirect() -> None:
+    """The defense that makes spelling irrelevant, asserted directly.
+
+    `tests/conftest.py` pops these from the parent process at session scope. If that stops
+    happening, every bare `git -C` in the suite becomes able to write to whatever the caller's
+    environment names — which is how this repository acquired two fixture commits.
+    """
+    import os
+
+    # The variables that redirect git to another repository — not every GIT_* name. `GIT_ASKPASS`
+    # and `GIT_EDITOR` are routinely set by a terminal or IDE and cannot point a write anywhere.
+    redirects = {
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_COMMON_DIR",
+        "GIT_NAMESPACE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_CEILING_DIRECTORIES",
+    }
+    leaked = sorted(redirects & set(os.environ))
+    assert leaked == [], f"the suite is running with an ambient git redirect: {leaked}"

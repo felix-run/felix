@@ -39,7 +39,7 @@ rel=$(git -C "$root" ls-files --full-name --cached --others -- "$path" 2>/dev/nu
 # matched, and three real ones were invisible to this hook. The fixtures that were supposed to
 # prove each arm used `Path(".").rglob(...)`, whose `)` satisfies the class, so the test agreed
 # with the bug. Derived coverage in the test file now catches this shape directly.
-grep -qE '((^|[^_[:alnum:]])(ast\.(walk|parse)|os\.walk\()|\.rglob\(|\.glob\()' "$path" || exit 0
+grep -qE '((^|[^_[:alnum:]])(ast\.(walk|parse)|os\.(walk|scandir|listdir)\()|\.rglob\(|\.glob\(|\.iterdir\()' "$path" || exit 0
 
 # Which cases are new relative to HEAD? A file absent from HEAD is entirely new.
 # This greps text rather than parsing, so a `def test_…` inside a fixture string counts as a

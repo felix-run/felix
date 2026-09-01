@@ -259,3 +259,86 @@ def test_an_assertion_mentioning_errors_is_not_mistaken_for_one(tmp_path: Path) 
     assert "PROVEN" in out, out
     assert "BROKEN" not in out
     assert code == 0
+
+
+def test_collecting_nothing_is_broken_not_proven(tmp_path: Path) -> None:
+    """The worst verdict the script can produce, and the easiest to reach.
+
+    A mistyped `-k` or a renamed test path collects nothing. pytest exits 5, and reporting that
+    as PROVEN would be a confident "this test is evidence" about a run where no test executed.
+    """
+    repo = _workspace(
+        tmp_path / "r",
+        before="def answer():\n    return 0\n",
+        after="def answer():\n    return 42\n",
+        test_body=IMPORT_TEST,
+    )
+    _install(repo)
+    code, out = _run(repo, "tests/test_thing.py", "-k", "no_such_test_name")
+    assert "BROKEN" in out, out
+    assert "PROVEN" not in out
+    assert code == 1
+
+
+def test_only_narrows_the_shadow_to_the_named_distribution(tmp_path: Path) -> None:
+    """Both directions, because a narrowing that silently does nothing is the failure mode.
+
+    The fixture has one distribution, `packages/harness/src`. Naming it must still shadow (the
+    test fails against old source); naming a distribution the fixture does not have must leave
+    nothing to shadow and be refused, rather than quietly falling back to shadowing everything.
+    """
+    repo = _workspace(
+        tmp_path / "r",
+        before="def answer():\n    return 0\n",
+        after="def answer():\n    return 42\n",
+        test_body=IMPORT_TEST,
+    )
+    _install(repo)
+
+    code, out = _run(repo, "--only", "harness", "tests/test_thing.py")
+    assert "PROVEN" in out, out
+    assert code == 0
+
+    code, out = _run(repo, "--only", "ai", "tests/test_thing.py")
+    assert code == 64, out
+    assert "no package source roots" in out
+
+
+def test_the_worktree_is_detached(tmp_path: Path) -> None:
+    """`git worktree add --detach` — the script's own comment calls this load-bearing.
+
+    Without `--detach`, `--base <branch>` takes git's DWIM branch-checkout path and the run
+    moves a branch. On a branch whose subject is a tool that moved refs in a real repository,
+    an untested `--detach` is the same hazard one layer down.
+    """
+    repo = _workspace(
+        tmp_path / "r",
+        before="def answer():\n    return 0\n",
+        after="def answer():\n    return 42\n",
+        test_body=IMPORT_TEST,
+    )
+    _install(repo)
+    before = git(repo, "rev-parse", "main")
+    _, out = _run(repo, "--base", "main", "tests/test_thing.py")
+
+    # The run has to *complete*, not merely leave the branch alone. `main` is already checked
+    # out in the fixture's main worktree, so without `--detach` git refuses the worktree
+    # outright ("already used by worktree at ...") and the script dies before touching
+    # anything — which satisfies a refs-unchanged assertion for the wrong reason. Asserting a
+    # verdict was reached is what makes this test discriminate.
+    assert "PROVEN" in out or "VACUOUS" in out, f"the run never reached a verdict: {out}"
+    assert git(repo, "rev-parse", "main") == before, "the run moved the branch it compared against"
+    assert git(repo, "rev-parse", "--abbrev-ref", "HEAD") == "main", "the run left HEAD elsewhere"
+
+
+def test_an_invalid_base_is_refused(tmp_path: Path) -> None:
+    repo = _workspace(
+        tmp_path / "r",
+        before="def answer():\n    return 0\n",
+        after="def answer():\n    return 42\n",
+        test_body=IMPORT_TEST,
+    )
+    _install(repo)
+    code, out = _run(repo, "--base", "no-such-ref", "tests/test_thing.py")
+    assert code == 64
+    assert "is not a commit" in out
