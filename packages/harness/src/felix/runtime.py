@@ -25,12 +25,17 @@ async def resolve_tenant_manifest(
     name: str,
     *,
     thread_id: str | None = None,
+    pin_version: int | None = None,
 ) -> ResolvedManifest:
     return await resolve_manifest(
         settings,
         tenant_id,
         name,
         thread_id=thread_id,
+        # A caller that names a version means it: evaluation scoring a canary has to load
+        # that canary, not whatever is active. Unknown versions raise rather than falling
+        # back, because a silent fall-back is what made a canary look benchmarked.
+        pin_version=pin_version,
         # Under `bundled` the layers above the image do not exist, so they are not supplied.
         # `_read_tenant_postgres` and `_read_object` already return None for a missing store,
         # which is the same collapse a branch in the resolver would produce — expressed by
