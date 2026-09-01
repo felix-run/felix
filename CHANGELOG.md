@@ -316,6 +316,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The tenant id was validated at the far end, not where it enters.** `effective_thread_id`
+  refused a tenant containing `:` or `#`, so such a tenant failed closed on the first write —
+  but it authenticated fine, because the id is accepted verbatim from an api-key `tenant_id`
+  field or a JWT claim, and on Cognito `custom:*` claims are frequently user-writable. A late
+  refusal is not a partition: `acme` and `acme:sub` would both "own" the thread `acme:sub:x`.
+
+  The rule now lives in one place, is enforced at both doors as a 401, and runs in
+  `Principal.__post_init__` — so an unusable tenant is unrepresentable rather than merely
+  rejected on the paths someone remembered. `_usable_tenant` in the HTTP layer delegates to
+  it, so the two cannot drift apart.
+
+- **A lease could be taken on a thread id with no tenant prefix.** `session/lease.py` keys a
+  lease as `felix:lease:{thread_id}`, so the tenant segment of `{tenant}:{suffix}` is the
+  only thing separating one tenant's lease from another's. Every id reaching it came from
+  `effective_thread_id`, which prefixes — but that was convention, and a route, job or plugin
+  building an id without the prefix would have shared one namespace across every tenant with
+  nothing failing. All three entry points now refuse an unscoped id.
+
+  These are two of the four findings deferred from the August tenant-isolation review, taken
+  together because they are the same fact: the prefix is load-bearing and was enforced only
+  where someone happened to look.
+
+
 - **The hosted providers' `secret_names` were inert.** `_compat` passed
   `api_key_config_key=config_key and None`, which is the constant `None`, while declaring
   `secret_names` anyway — and `_HYDRATE_MAP` is derived with

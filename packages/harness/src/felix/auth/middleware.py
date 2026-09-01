@@ -17,6 +17,7 @@ from felix.auth.context import (
     BUILTIN_AUTH_MODES,
     AuthContext,
     Principal,
+    assert_valid_tenant_id,
     require_scope,
 )
 from felix.auth.jwt import parse_verifiers, verify_jwt
@@ -161,10 +162,22 @@ async def authenticate_request(
             )
         scopes_raw = matched.get("scopes") or []
         scopes = frozenset(str(s) for s in scopes_raw)
+        claimed_tenant = str(matched.get("tenant_id") or "default")
+        try:
+            # The key's tenant_id is operator-supplied config, but it is still the ownership
+            # boundary — refuse it at the door so it is a 401 rather than a later failure on
+            # the first write.
+            assert_valid_tenant_id(claimed_tenant)
+        except ValueError as exc:
+            logger.warning("api_key rejected: %s", exc)
+            return JSONResponse(
+                {"error": "unauthorized", "reason": "invalid_tenant"},
+                status_code=401,
+            )
         return AuthContext(
             principal=Principal(
                 subject=str(matched.get("sub") or "api_key"),
-                tenant_id=str(matched.get("tenant_id") or "default"),
+                tenant_id=claimed_tenant,
                 scopes=scopes,
                 issuer="api_key",
                 scheme="api_key",
