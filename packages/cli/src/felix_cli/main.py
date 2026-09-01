@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import typer
 from rich import print as rprint
@@ -165,6 +166,25 @@ def bundle_manifests(
         rprint(json.dumps({"manifests": names}, indent=2))
 
 
+def _assert_outbound_hosts_resolve(manifest: Any, _settings: Any = None) -> None:
+    """Resolve every manifest-supplied outbound URL, raising on a blocked address."""
+    from felix.security.ssrf import assert_safe_outbound_url
+
+    # Deliberately not inheriting `allow_insecure`. `allow_http=True` skips far more than
+    # the http:// rule — internal names, internal suffixes and loopback literals all pass —
+    # and `.env.example` ships FELIX_ALLOW_INSECURE=true, so on a developer machine this
+    # lint would have accepted http://metadata.google.internal/ while claiming to check it.
+    # This is a lint, not an enforcement point; leniency buys nothing here.
+    spec = manifest.spec
+    urls = [
+        *(ref.url for ref in spec.mcp if ref.url),
+        *(ref.url for ref in spec.peers if ref.url),
+        *(ref.gateway_url for ref in spec.containers if ref.gateway_url),
+    ]
+    for url in urls:
+        assert_safe_outbound_url(url)
+
+
 @app.command("validate-manifest")
 def validate_manifest_cmd(
     path: Path = typer.Argument(..., help="Path to a felix/v1 Agent YAML or JSON file."),
@@ -173,6 +193,11 @@ def validate_manifest_cmd(
         "--environment",
         "-e",
         help="Assumed FELIX_ENVIRONMENT for governance checks.",
+    ),
+    resolve_egress: bool = typer.Option(
+        True,
+        "--resolve-egress/--no-resolve-egress",
+        help="Resolve every outbound hostname and reject blocked addresses (needs DNS).",
     ),
 ) -> None:
     """Validate a manifest schema + opt-in governance frameworks (GitOps CI)."""
@@ -202,6 +227,13 @@ def validate_manifest_cmd(
             memory_capture=manifest.spec.memory.capture.enabled,
             memory_recall_tools=manifest.spec.memory.recall.tools,
         )
+        # The schema validators are syntactic — resolving there meant a blocking
+        # getaddrinfo on the API event loop for every ref on every read and write, and it
+        # never failed closed anyway. The resolving check belongs here, where an author is
+        # waiting on a CLI rather than a request, and at dial time, where it is
+        # authoritative. `--no-resolve-egress` for an air-gapped CI runner.
+        if resolve_egress:
+            _assert_outbound_hosts_resolve(manifest)
     except GovernanceError as exc:
         rprint(f"[red]governance fail[/red] {path}: {exc}")
         raise SystemExit(1) from exc
@@ -248,6 +280,13 @@ def doctor_cmd() -> None:
     mode_ok = mode in BUILTIN_AUTH_MODES or get_registry().authenticator_builder(mode) is not None
     detail = mode if mode in BUILTIN_AUTH_MODES else f"{mode} (plugin)" if mode_ok else mode
     check("auth_mode", mode_ok, detail)
+
+    # Posture, not health: reported through the same channel as `patterns` and the mcp-stdio
+    # line, because a green "ok" that can never be red trains the eye to skip it.
+    if settings.bundled_only:
+        rprint("  [dim]manifest source[/dim] bundled — image only, write routes not mounted")
+    else:
+        rprint("  [dim]manifest source[/dim] store — tenant Postgres version, then bundled")
 
     # Every open backend setting resolved against its registry, reported rather than
     # raised — doctor's job is to list what is wrong, not to stop at the first thing.

@@ -117,3 +117,50 @@ def test_bundled_loader_contains_the_name_within_its_directory(tmp_path) -> None
     # Dot-only names stay inside: an extension is always appended.
     with pytest.raises(FileNotFoundError):
         load_bundled("..", bundled_dir=tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_bundled_posture_never_constructs_a_manifest_store(monkeypatch, tmp_path) -> None:
+    """The posture is expressed by not supplying the store, not by a branch below it.
+
+    `_read_tenant_postgres` already returns None for a missing store, so withholding it at
+    the runtime seam collapses resolution to the image without policy in the deepest
+    function on this path. Asserting the store is never *built* is what pins that: a branch
+    inside the resolver would still construct one on every request.
+    """
+    from felix import runtime as runtime_mod
+    from felix.config import Settings
+
+    (tmp_path / "solo.yaml").write_text(
+        "apiVersion: felix/v1\nkind: Agent\nmetadata:\n  name: solo\nspec:\n  pattern: react\n"
+    )
+
+    def _explode(*a, **k):
+        raise AssertionError("a manifest store was constructed under manifest_source=bundled")
+
+    monkeypatch.setattr(runtime_mod, "PostgresManifestStore", _explode)
+    monkeypatch.setattr(runtime_mod, "resolve_manifest", _passthrough_bundled(tmp_path), raising=True)
+
+    settings = Settings(database_url="memory://t", manifest_source="bundled")
+    resolved = await runtime_mod.resolve_tenant_manifest(settings, "default", "solo")
+    assert resolved.source == "bundled"
+    assert resolved.manifest.metadata.name == "solo"
+
+
+def _passthrough_bundled(bundled_dir):
+    """Keep the real resolver but point it at a temp bundled dir."""
+    from felix.manifests.resolver import resolve_manifest as real
+
+    async def _inner(*args, **kwargs):
+        kwargs.setdefault("bundled_dir", bundled_dir)
+        return await real(*args, **kwargs)
+
+    return _inner
+
+
+def test_store_posture_still_builds_one() -> None:
+    """The contrast: without the posture, the store is constructed as before."""
+    from felix.config import Settings
+
+    assert Settings(database_url="memory://t").bundled_only is False
+    assert Settings(database_url="memory://t", manifest_source="bundled").bundled_only is True

@@ -15,6 +15,7 @@ import sys
 import time
 import types
 
+import httpx
 import pytest
 from felix.security import ssrf
 from felix.security.ssrf import assert_safe_outbound_url as chk
@@ -110,6 +111,100 @@ def test_scheme_is_still_enforced() -> None:
         chk("http://example.com/")
 
 
+# --- where resolution happens ----------------------------------------------------
+
+
+def test_manifest_parsing_never_resolves(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Validators do the syntactic checks only.
+
+    `resolve_host` is a blocking `getaddrinfo`, and it ran inside a pydantic validator —
+    on the API event loop — once per ref, on every manifest read and every write. With the
+    ref lists capped at 64 that was still seconds of stall from one request, and against a
+    nameserver that drops queries rather than answering, far worse.
+    """
+    from felix.manifests.schema import Spec
+    from felix.security import ssrf
+
+    calls: list[str] = []
+    monkeypatch.setattr(ssrf, "resolve_host", lambda host: calls.append(host) or [])
+
+    spec = Spec(
+        pattern="react",
+        mcp_servers=[{"name": f"m{i}", "url": f"https://mcp-{i}.example.com/x"} for i in range(8)],
+        peers=[{"name": "p", "url": "https://peer.example.com"}],
+        containers=[{"name": "c", "gateway_url": "https://gw.example.com", "image": "i"}],
+    )
+    assert len(spec.mcp) == 8
+    assert calls == [], f"parsing resolved {len(calls)} hostname(s)"
+
+
+def test_parsing_still_rejects_what_needs_no_lookup() -> None:
+    """Dropping resolution must not drop the checks that never needed it."""
+    from felix.manifests.schema import McpServerRef
+    from pydantic import ValidationError
+
+    for bad in (
+        "https://127.0.0.1/mcp",  # literal loopback
+        "https://2130706433/mcp",  # decimal form of the same
+        "https://metadata.google.internal/mcp",  # internal name
+        "https://thing.cluster.local/mcp",  # internal suffix
+        "http://example.com/mcp",  # plain http outside development
+        "ftp://example.com/mcp",  # scheme
+    ):
+        with pytest.raises(ValidationError):
+            McpServerRef(name="x", url=bad)
+
+
+@pytest.mark.asyncio
+async def test_dial_resolves_and_blocks(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The authoritative check moved to dial, so it must actually fire there.
+
+    This is also the only placement that catches a name which re-resolves to private space
+    after the manifest was validated — the check at write time never could.
+    """
+    from felix.security import ssrf
+    from felix.security.ssrf import EgressBlocked
+    from felix.tools.transports import HttpExecutor
+
+    ex = HttpExecutor("https://rebinds.example.com/hook")
+    monkeypatch.setattr(ssrf, "resolve_host", lambda host: ["169.254.169.254"])
+    with pytest.raises(EgressBlocked) as exc:
+        await ex.execute({"x": 1})
+    # The reason names the resolved IP, and at dial time it would land in a tool message the
+    # model reads — turning any peer/container/MCP ref into an internal-DNS oracle.
+    assert "169.254.169.254" not in str(exc.value)
+    assert "rebinds.example.com" not in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_dial_resolution_does_not_stall_the_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`getaddrinfo` is synchronous, so the dial-time check has to leave the loop.
+
+    Otherwise the fix just moves the stall from the parse path to the tool-call path.
+    """
+    from felix.security import ssrf
+    from felix.security.ssrf import assert_safe_outbound_url_async
+
+    def _slow(host: str) -> list[str]:
+        time.sleep(0.4)
+        return ["93.184.216.34"]
+
+    monkeypatch.setattr(ssrf, "resolve_host", _slow)
+
+    ticks = 0
+
+    async def _heartbeat() -> None:
+        nonlocal ticks
+        while True:
+            await asyncio.sleep(0.05)
+            ticks += 1
+
+    hb = asyncio.create_task(_heartbeat())
+    await assert_safe_outbound_url_async("https://slow.example.com/x")
+    hb.cancel()
+    assert ticks >= 3, "the event loop was blocked during DNS resolution"
+
+
 # --- browser egress guard -------------------------------------------------------
 
 
@@ -158,9 +253,15 @@ async def test_browser_registers_an_egress_guard() -> None:
     assert continued == [ok.url]
 
 
-def test_path_prefix_applies_to_navigation_not_subresources() -> None:
+@pytest.mark.asyncio
+async def test_path_prefix_applies_to_navigation_not_subresources(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Enforcing the prefix on every asset would break any real page."""
+    from felix.security import ssrf
     from felix.tools.browser import _BrowserExecutor
+
+    monkeypatch.setattr(ssrf, "resolve_host", lambda host: ["93.184.216.34"])
 
     ex = _BrowserExecutor(
         op="content",
@@ -170,9 +271,9 @@ def test_path_prefix_applies_to_navigation_not_subresources() -> None:
         binding="chromium",
     )
     with pytest.raises(ValueError, match="must start with"):
-        ex._check_url("https://other.example.com/x")
+        await ex._check_url("https://other.example.com/x")
     # subresource check is SSRF-only
-    ex._check_egress("https://cdn.example.com/app.js")
+    await ex._check_egress("https://cdn.example.com/app.js")
 
 
 # --- sandbox --------------------------------------------------------------------
@@ -346,3 +447,234 @@ def _settings(**kw):
     }
     base.update(kw)
     return Settings(**base)
+
+
+@pytest.mark.asyncio
+async def test_a_slow_resolver_is_refused_not_allowed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A lookup that outruns its budget blocks, rather than falling through.
+
+    The guard is advisory — httpx resolves again at connect — so letting a timeout pass
+    would hand a selectively-slow nameserver the exact bypass the guard exists to close.
+    """
+    from felix.security import ssrf
+    from felix.security.ssrf import EgressBlocked, assert_safe_outbound_url_async
+
+    monkeypatch.setattr(ssrf, "_RESOLVE_BUDGET_S", 0.1)
+    # Kept short: `wait_for` frees the caller but cannot cancel the thread, so the sleep is
+    # still running at teardown — which is the resource cost the budget exists to bound.
+    monkeypatch.setattr(ssrf, "resolve_host", lambda host: (time.sleep(0.6), ["93.184.216.34"])[1])
+
+    with pytest.raises(EgressBlocked):
+        await assert_safe_outbound_url_async("https://blackhole.example.com/x")
+
+
+# --- the guard as enforcement, not advice --------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_connection_is_pinned_to_the_validated_address(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The address that was checked must be the address that is dialled.
+
+    The pre-dial guard resolved, validated, discarded the answers, and let httpx resolve
+    again — so a name that resolves differently the second time wins, and so does a
+    nameserver that answers the two lookups differently. Asserting on what reaches
+    `connect_tcp` is what pins this: a hostname arriving there means the check is still
+    advisory.
+    """
+    from felix.security import ssrf
+    from felix.security.egress import _PinningBackend
+
+    monkeypatch.setattr(ssrf, "resolve_host", lambda host: ["93.184.216.34"])
+    backend = _PinningBackend()
+    dialled: list[str] = []
+
+    async def _fake_connect(self, host, port, **kwargs):
+        dialled.append(host)
+        return object()
+
+    monkeypatch.setattr(type(backend).__mro__[1], "connect_tcp", _fake_connect)
+    await backend.connect_tcp("example.com", 443)
+    assert dialled == ["93.184.216.34"], "connected to a name, so a rebind still wins"
+
+
+@pytest.mark.asyncio
+async def test_a_selectively_answering_resolver_cannot_bypass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An empty lookup must refuse the dial, not defer to it.
+
+    `assert_safe_outbound_url` treats an empty resolve as "defer to the connection", which
+    was safe only because the connection was a separate lookup that would fail too. Here the
+    connection *is* this lookup, so deferring would let a nameserver that starves the checker
+    and answers the client through unchallenged.
+    """
+    from felix.security import ssrf
+    from felix.security.egress import _PinningBackend
+    from felix.security.ssrf import EgressBlocked
+
+    monkeypatch.setattr(ssrf, "resolve_host", lambda host: [])
+    with pytest.raises(EgressBlocked):
+        await _PinningBackend().connect_tcp("blackholed.example.com", 443)
+
+
+@pytest.mark.asyncio
+async def test_one_bad_answer_refuses_the_whole_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A round-robin containing a private address must not be reachable by retrying."""
+    from felix.security import ssrf
+    from felix.security.egress import _PinningBackend
+    from felix.security.ssrf import EgressBlocked
+
+    monkeypatch.setattr(ssrf, "resolve_host", lambda host: ["93.184.216.34", "10.0.0.5"])
+    with pytest.raises(EgressBlocked):
+        await _PinningBackend().connect_tcp("mixed.example.com", 443)
+
+
+def test_the_guard_cannot_be_installed_silently_unguarded() -> None:
+    """The backend swap touches a httpcore private attribute, so pin that it still exists.
+
+    If httpcore renames `_network_backend`, the transport must fail loudly rather than
+    returning a client with no egress guard at all.
+    """
+    from felix.security.egress import GuardedAsyncTransport, _PinningBackend
+
+    transport = GuardedAsyncTransport()
+    assert isinstance(transport._pool._network_backend, _PinningBackend)
+
+
+def test_a_guarded_client_cannot_be_asked_to_proxy() -> None:
+    """`mounts` outranks the transport and a proxy chooses its own destination.
+
+    Both would return a client that looks guarded and is not, so they are refused rather
+    than ignored. A unix socket has no address to validate at all.
+    """
+    from felix.security.egress import GuardedAsyncTransport, safe_async_client
+
+    for kwargs in ({"proxy": "http://p:3128"}, {"uds": "/var/run/docker.sock"}):
+        with pytest.raises(TypeError):
+            GuardedAsyncTransport(**kwargs)
+    with pytest.raises(TypeError):
+        safe_async_client(timeout=1.0, proxy="http://p:3128")
+
+
+def test_a_guarded_client_mounts_nothing_unguarded() -> None:
+    """Supplying a transport also disables httpx's environment proxies — assert both.
+
+    `_mounts` is consulted before `_transport`, so a non-empty mounts map is an unguarded
+    path regardless of what the transport does.
+    """
+    from felix.security.egress import GuardedAsyncTransport, safe_async_client
+
+    client = safe_async_client(timeout=1.0)
+    assert client._mounts == {}
+    assert isinstance(client._transport, GuardedAsyncTransport)
+
+
+@pytest.mark.asyncio
+async def test_a_unix_socket_is_refused() -> None:
+    from felix.security.egress import _PinningBackend
+    from felix.security.ssrf import EgressBlocked
+
+    with pytest.raises(EgressBlocked):
+        await _PinningBackend().connect_unix_socket("/var/run/docker.sock")
+
+
+@pytest.mark.asyncio
+async def test_every_approved_address_is_tried(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pinning one address would drop the fallback Happy Eyeballs provides.
+
+    A host with an AAAA record reached from a container with no IPv6 egress fails on the
+    first address and must still connect on the second. Both were validated.
+    """
+    from felix.security import ssrf
+    from felix.security.egress import _PinningBackend
+
+    monkeypatch.setattr(ssrf, "resolve_host", lambda host: ["2606:2800:220:1::", "93.184.216.34"])
+    tried: list[str] = []
+
+    async def _fake_connect(self, host, port, **kwargs):
+        tried.append(host)
+        if ":" in host:
+            raise OSError("no route to host")
+        return object()
+
+    backend = _PinningBackend()
+    monkeypatch.setattr(type(backend).__mro__[1], "connect_tcp", _fake_connect)
+    await backend.connect_tcp("dual.example.com", 443)
+    assert tried == ["2606:2800:220:1::", "93.184.216.34"]
+
+
+@pytest.mark.asyncio
+async def test_the_syntactic_half_runs_on_the_transport(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The backend only sees addresses, so scheme and internal-name checks live above it.
+
+    Otherwise a new call site that forgets the pre-dial line gets the IP check and no
+    cleartext-http or internal-name check at all.
+    """
+    from felix.security.egress import GuardedAsyncTransport
+
+    transport = GuardedAsyncTransport()
+    request = httpx.Request("GET", "http://metadata.google.internal/computeMetadata/v1/")
+    with pytest.raises(ValueError):
+        await transport.handle_async_request(request)
+
+
+# --- browser: pinning the navigation host --------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_browser_pins_the_navigation_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Chromium resolves for itself, so the validated address must be forced on it.
+
+    Otherwise the guard's lookup and Chromium's are two independent lookups, and this is the
+    one outbound path where the URL comes from the model rather than a manifest.
+    """
+    from felix.security import ssrf
+    from felix.tools.browser import _BrowserExecutor
+
+    monkeypatch.setattr(ssrf, "resolve_host", lambda host: ["93.184.216.34"])
+    ex = _BrowserExecutor(op="content", timeout_ms=1000, path_prefix="", allow_http=False, binding="chromium")
+    assert await ex._pin_args("https://example.com/page") == [
+        "--host-resolver-rules=MAP example.com 93.184.216.34"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_browser_refuses_to_pin_a_host_that_could_inject_rules(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The hostname lands in a comma-separated Chromium flag.
+
+    `--host-resolver-rules` takes a list, so a host containing a comma appends rules of its
+    own — `evil.com,MAP * 169.254.169.254` would redirect every other name at the metadata
+    service. urlparse will hand back such a host quite happily.
+    """
+    from felix.security import ssrf
+    from felix.tools.browser import _BrowserExecutor
+
+    monkeypatch.setattr(ssrf, "resolve_host", lambda host: ["93.184.216.34"])
+    ex = _BrowserExecutor(op="content", timeout_ms=1000, path_prefix="", allow_http=False, binding="chromium")
+    with pytest.raises(ValueError, match="refusing to pin"):
+        await ex._pin_args("https://evil.com,MAP%20*%20169.254.169.254/x".replace("%20", " "))
+
+
+@pytest.mark.asyncio
+async def test_browser_pins_ipv6_with_brackets(monkeypatch: pytest.MonkeyPatch) -> None:
+    from felix.security import ssrf
+    from felix.tools.browser import _BrowserExecutor
+
+    monkeypatch.setattr(ssrf, "resolve_host", lambda host: ["2606:2800:220:1::"])
+    ex = _BrowserExecutor(op="content", timeout_ms=1000, path_prefix="", allow_http=False, binding="chromium")
+    assert await ex._pin_args("https://v6.example.com/") == [
+        "--host-resolver-rules=MAP v6.example.com [2606:2800:220:1::]"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_browser_needs_no_rule_for_a_literal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Chromium does not resolve a literal, and `_check_url` already validated it."""
+    from felix.tools.browser import _BrowserExecutor
+
+    ex = _BrowserExecutor(op="content", timeout_ms=1000, path_prefix="", allow_http=False, binding="chromium")
+    assert await ex._pin_args("https://93.184.216.34/") == []

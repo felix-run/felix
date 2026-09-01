@@ -21,6 +21,11 @@ from pydantic import BaseModel, Field
 from felix_api.threads import effective_thread_id
 
 router = APIRouter(tags=["Manifests"])
+# Mounted only when manifests are writable. Under `manifest_source=bundled` these are
+# never registered, so the verbs are absent from the app and from the OpenAPI document
+# rather than being present and refusing — and Starlette answers a PUT with a spec-correct
+# 405 carrying `Allow: GET`.
+write_router = APIRouter(tags=["Manifests"])
 
 
 class ManifestUpsert(BaseModel):
@@ -50,7 +55,23 @@ async def list_manifests(request: Request) -> dict[str, Any]:
     from felix.manifests import store as manifest_store
 
     require_mgmt_scopes(request, SCOPE_MANIFESTS_READ)
-    rows = await manifest_store.list_active(request.app.state.settings, tenant_id_from_request(request))
+    settings = request.app.state.settings
+    if settings.bundled_only:
+        # This is the endpoint an operator checks after flipping the posture, so it must not
+        # report Postgres rows the resolver will never serve.
+        from felix.manifests.loader import list_bundled
+
+        rows = [{"name": name, "version": None, "source": "bundled"} for name in list_bundled()]
+        return {"items": rows, "manifests": rows}
+    rows = [
+        # Tagged for the same reason the bundled rows are: the two postures return different
+        # shapes, and a client should not have to infer which one it got. Note this is the
+        # *configured* view — version plus any canary — and is deliberately not the same
+        # question as "what would my next request resolve to", which `GET /manifests/{name}`
+        # answers.
+        {**row, "source": "store"}
+        for row in await manifest_store.list_active(settings, tenant_id_from_request(request))
+    ]
     return {"items": rows, "manifests": rows}
 
 
@@ -75,6 +96,10 @@ async def get_manifest(
     settings = request.app.state.settings
     tenant = tenant_id_from_request(request)
     if version is not None:
+        if settings.bundled_only:
+            # A version names a stored revision, and under this posture there are none —
+            # returning one would hand back a manifest the resolver is built to refuse.
+            raise HTTPException(status_code=404, detail="not_found")
         row = await manifest_store.get_version(settings, tenant, name, version)
         if row is None:
             raise HTTPException(status_code=404, detail="not_found")
@@ -91,7 +116,7 @@ async def get_manifest(
     }
 
 
-@router.put("/{name}")
+@write_router.put("/{name}")
 async def upsert_manifest(name: str, body: ManifestUpsert, request: Request) -> Any:
     from felix.manifests import store as manifest_store
 
@@ -130,7 +155,7 @@ async def upsert_manifest(name: str, body: ManifestUpsert, request: Request) -> 
     return row
 
 
-@router.post("/{name}/canary")
+@write_router.post("/{name}/canary")
 async def set_canary(name: str, body: CanaryRequest, request: Request) -> Any:
     from felix.manifests import store as manifest_store
 
@@ -151,7 +176,7 @@ async def set_canary(name: str, body: CanaryRequest, request: Request) -> Any:
     return row
 
 
-@router.post("/{name}/rollback")
+@write_router.post("/{name}/rollback")
 async def rollback_manifest(name: str, body: RollbackRequest, request: Request) -> Any:
     from felix.manifests import store as manifest_store
 
@@ -169,7 +194,7 @@ async def rollback_manifest(name: str, body: RollbackRequest, request: Request) 
     return row
 
 
-@router.delete("/{name}/canary")
+@write_router.delete("/{name}/canary")
 async def clear_canary(name: str, request: Request) -> Any:
     from felix.manifests import store as manifest_store
 

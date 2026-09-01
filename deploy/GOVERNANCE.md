@@ -161,8 +161,50 @@ also let an unreachable host park a socket. `FELIX_MODEL_TIMEOUT_SECONDS` (defau
 bounds each model-provider request the same way.
 
 
-Every manifest-supplied or model-supplied URL is checked before it is dialled. The guard
-**resolves the hostname** and rejects the request if *any* returned address is loopback,
+Every manifest-supplied or model-supplied URL is checked before it is dialled.
+
+**The guard is enforcing, not advisory.** Outbound HTTP goes through a transport that
+resolves the hostname once, validates every returned address, and then connects to one of
+the addresses it validated — so the address that was checked is the address that is used.
+Without that pin the check and the connection are two independent lookups, and a hostname
+that resolves differently the second time (DNS rebinding, TTL 0) or a nameserver that
+answers the client while starving the checker gets through. TLS is unaffected: the
+certificate is still verified against the hostname the caller asked for.
+
+A lookup that fails or times out refuses the dial. That is safe precisely because this is
+the connection: there is no second lookup left to fail. A proxy or unix socket is refused
+rather than ignored, because both choose a destination the guard never validates — and
+because an explicit transport disables httpx's environment proxies, `HTTP_PROXY` and
+`HTTPS_PROXY` do **not** apply to these calls. A deployment whose egress containment is a
+proxy allowlist needs to know that.
+
+**The browser pins its navigation host too.** Chromium resolves independently, so the
+guard's lookup and Chromium's would otherwise be two lookups — and this is the one outbound
+path where the URL comes from the *model* rather than a manifest, which makes it the
+highest-value rebinding target in the harness. The browser is launched with
+`--host-resolver-rules=MAP <host> <validated address>`, so the name it navigates to can only
+reach the address the guard approved. A hostname is matched against a strict pattern before
+it reaches that flag: the flag takes a comma-separated list, so a host containing a comma
+could otherwise append rules of its own.
+
+**What is still advisory:** cross-host subresources and redirects. Those keep resolving
+normally and are checked per request but not pinned, because denying them outright breaks
+any page that loads assets from a CDN. A page that loads a script from a host which answers
+the check and the load differently can still reach an address the guard would have refused.
+Closing that means launching with `MAP * ~NOTFOUND` as well — verified to work, and to block
+every cross-host subresource — or running the browser behind an egress allowlist.
+
+**Where the check runs matters.** The syntactic half — scheme, `http` outside development,
+internal names and suffixes, and IP literals including the decimal form (`http://2130706433/`
+is 127.0.0.1) — runs when a manifest is parsed. The half that **resolves the hostname** runs
+at dial time, off the event loop. Resolving at parse time was both a liveness problem and a
+security gap: it put a blocking `getaddrinfo` inside a pydantic validator on the API event
+loop, once per ref on every manifest read and write, and a name validated at write time can
+resolve somewhere else by the time it is dialled. `felix validate-manifest` performs the
+resolving check too, so an author still learns about a blocked host without a request
+waiting on it (`--no-resolve-egress` for an air-gapped runner).
+
+That resolving check rejects the request if *any* returned address is loopback,
 link-local (cloud metadata), private, carrier-grade NAT, reserved, multicast, or
 unspecified — including IPv4-mapped IPv6 forms and decimal-integer hosts. Internal names
 and suffixes (`.svc`, `.cluster.local`, `.internal`, `metadata.google.internal`,

@@ -11,12 +11,19 @@ from felix.security.rate_limit import (
     check_rate_limit,
     should_skip_rate_limit,
 )
-from felix.security.ssrf import assert_safe_outbound_url, assert_safe_outbound_url_for_hosts
+from felix.security.ssrf import (
+    EgressBlocked,
+    assert_safe_outbound_url,
+    assert_safe_outbound_url_async,
+    assert_safe_outbound_url_for_hosts,
+)
 
 __all__ = [
+    "EgressBlocked",
     "InMemoryRateLimiter",
     "RateLimitConfig",
     "assert_safe_outbound_url",
+    "assert_safe_outbound_url_async",
     "assert_safe_outbound_url_for_hosts",
     "check_rate_limit",
     "constant_time_equal",

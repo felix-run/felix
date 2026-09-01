@@ -7,49 +7,136 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- **The hosted providers' `secret_names` were inert.** `_compat` passed
-  `api_key_config_key=config_key and None`, which is the constant `None`, while declaring
-  `secret_names` anyway — and `_HYDRATE_MAP` is derived with
-  `if spec.api_key_config_key and spec.secret_names`, so all thirty names were unreachable.
-  The descriptor promised a hydration path it did not have, in the same commit as a comment
-  claiming derivation made that impossible. The hosted rows now declare neither (they have
-  no `Settings` field to hydrate *into*), and their credential can be a `secret:NAME` value
-  inside `FELIX_MODEL_PROVIDER_OPTIONS`, resolved at startup through the same backend as
-  MCP and peer refs. The guard test was equally vacuous — it reused the derivation's own
-  predicate — and now asserts that no descriptor declares names it cannot reach.
-
-- **`isolate_cache` was still dropped on the primary streaming path.** The previous fix
-  threaded it into `_stream` — which callers reach only when a provider has no
-  `stream_turn` — while `stream_turn` itself resolved the options and discarded them. The
-  same defect the fix was written to close, one method over. The conformance contract now
-  asserts the flag is *honoured* on both paths, not merely accepted.
-
-- **Embedders were registered for providers that may not serve `/embeddings`.** The whole
-  OpenAI-compatible table was registered, so `FELIX_MEMORY_EMBEDDER=groq` passed startup
-  validation and failed at the first embed. It is a declared capability on the row now.
-  Relatedly, `FELIX_MEMORY_EMBEDDING_MODEL` defaults to `bge-base-en-v1.5`, a
-  sentence-transformers name, and was read unconditionally — so that string went out as a
-  model id to OpenAI, which the old `_build_openai` did too. Only an explicitly set value
-  wins now; otherwise the provider's own default applies.
-
-### Changed
-
-- **Streaming is implemented once per wire format, not twice.** `_stream` is a text-only
-  view of `_stream_turn` in the base class, and both overrides are gone — 149 lines,
-  including a 32-line block byte-identical to its `stream_turn` sibling. The copies had
-  already drifted (`_body` attaches the `cache_control` breakpoint to the last tool; the
-  hand-built body carried no `tools` key at all), and neither was reachable for a shipped
-  client. SSE framing is one shared `iter_sse_json` rather than four copies.
-
-- **`entry_for` is defined in terms of `known_entry_for`**, so the catalog's "one rule for
-  finding it" is written once. The four transitional aliases in `felix.patterns.model` are
-  deleted — three had no readers and the fourth had one test import that now uses the public
-  name. `parse_model_routes` is cached on the routes string; it went from three call sites
-  to seven in this branch and re-parsed the JSON on each.
-
 ### Added
+
+- **`FELIX_MANIFEST_SOURCE=store|bundled`.** Nearly every finding in the recent security
+  work traced to a manifest field reaching the harness at runtime — unbounded timeouts and
+  approval TTLs, uncapped ref lists, stdio commands. Those are bounded now, and they had to
+  be: an operator's own bundled manifest can hold the same values, so the bounds were never
+  really about who wrote the file.
+
+  But a deployment that never authors a manifest at runtime should not have to guard that
+  path. Under `bundled` the write routes are **not registered** — absent from the app and
+  from `/openapi.json`, with Starlette answering a `PUT` as `405 Allow: GET` — and no
+  manifest store is constructed at all. The posture is expressed by withholding the store at
+  the runtime seam rather than by a branch in the resolver, because `_read_tenant_postgres`
+  already collapses to the bundled file when no store is supplied. The read routes follow
+  the posture too: `GET /manifests` lists the bundled set rather than Postgres rows that
+  will never be served, and a `?version=` read 404s.
+
+  The default stays `store`. Runtime manifests, versioning, canary and rollback are the
+  product for a multi-tenant deployment; removing them would dictate a workflow rather than
+  offer one. Flipping an existing deployment has two consequences worth reading first: every
+  tenant collapses onto the image's file, dropping any per-tenant `auth.inbound` tightening,
+  and `pin_compile` threads see one 409 as the resolved version becomes `null`. Both are
+  documented in the README, and `felix doctor` reports the active posture.
+
+
+- **`spec.mcp_servers[].timeout_ms` and `spec.peers[].timeout_ms`.** `ContainerRef` and
+  `SandboxRef` already carried a per-integration timeout; the MCP and A2A refs did not, so
+  30s and 60s respectively were unraisable and a slow-but-working server produced a tool
+  result that read like a refusal. A peer call runs an entire agent turn on the far side,
+  so it had the tightest ceiling on the longest operation. Both are floored at one second
+  and reach discovery and the call alike, over HTTP and stdio.
+
+- **`manifests/contributor.yaml` — Felix working on the Felix codebase.** Every piece
+  this needs already existed; nothing wired them together. The manifest points the
+  workspace file tools at a Felix checkout, binds the Docker sandbox for snippet
+  checks, declares four developer skills (`felix-architecture`, `felix-conventions`,
+  `felix-testing`, `felix-contributing`, all new under `skills/`), and reaches GitHub
+  over MCP so the agent can open pull requests against the repository it runs on.
+
+  Three limits are structural, not oversights, and the system prompt tells the agent
+  about each so it cannot claim otherwise. The sandbox has no network and no volume
+  mount, so it verifies snippets and cannot run the suite — `make check` and CI do
+  that. `write_file` replaces whole files rather than patching. The local checkout and
+  GitHub are separate worlds: editing one does not touch the other.
+
+  Controls, since this agent can write to its own source: `write_file` and every
+  mutating `github__` tool *in the recorded catalog* require approval, under
+  `eu_ai_act` at `risk_tier: high` so that `allow_unattended: false` is enforced at
+  compile time rather than being an inert field. Content screening is on because MCP
+  output carries an untrusted transport and GitHub issue bodies are written by
+  strangers. No client tool, container, queue, peer, sub-agent, or stdio MCP server is
+  declared, so the isolated container is the only code execution the agent gets.
+
+  One gap is worth naming rather than burying: approval rules match tool names exactly
+  — there are no globs in the governance stack — and `McpServerRef` has no per-server
+  tool allowlist, so the entire remote catalog binds as `github__*`. A write tool that
+  GitHub adds or renames binds ungated, and no unit test can catch it, because the test
+  can only compare the manifest to itself. Closing that needs a tool allowlist on
+  `McpServerRef` or a toolset-scoped MCP URL.
+
+
+
+- **`spec.memory.checkpointer` now selects where session state lives**, having
+  shipped as a closed `Literal` that no code read. Every value silently meant
+  "whatever `FELIX_DATABASE_URL` points at". It is now resolved through an open
+  registry: `postgres` (default, unchanged) and `none` (no session state — every
+  turn starts from the messages it was given), plus anything a plugin adds with
+  `register_checkpointer`.
+
+  There is deliberately no in-process built-in. A thread is not manifest-scoped —
+  fifteen `/chat` routes address one by id with no manifest in hand — so a manifest
+  choosing a different *backend* would split-brain, the agent reading one log while
+  `/history`, `/continue` and `/compact` read another. `none` is exempt because it
+  is a claim about the agent, enforced where the agent reads.
+
+  `agentcore`, `sqlite` and `do` are no longer accepted. They never did anything,
+  and `do` named Cloudflare Durable Objects — compute this stack deliberately does
+  not run. A manifest setting one now fails validation instead of quietly getting
+  Postgres. No bundled manifest used them.
+
+  `checkpointer: none` is refused alongside anything the loop would silently drop
+  for want of a store: a `session.strategy` other than `full_replay`,
+  `session.compact_after_turn`, and `memory.capture.enabled` — the last because
+  `_turn_seq` stamps `origin_seq` from the session head, so with no store every
+  fact lands at genesis and supersession ordering collapses rather than erroring.
+
+  A bad name is now refused at manifest *write* time (`PUT /manifests/{name}`) as
+  well as by the CLI. Opening the field from `Literal` to `str` moved typo-catching
+  out of pydantic, and a stored typo would otherwise have raised inside every
+  build — a 500 per request until someone read a traceback.
+
+- **`FELIX_DB_PREPARED_STATEMENTS`** — set it `false` behind a pooler that does not
+  track prepared statements. psycopg3 prepares after five executions and the sixth
+  lands on a different server connection, so this fails on the sixth query rather
+  than the first. RDS Proxy forces the choice: it pins the session when it sees a
+  prepared statement, defeating the pooling it was deployed for.
+- **`make up-pooled`** — PgBouncer in transaction mode in front of Postgres, for when
+  `WORKERS x (POOL_SIZE + MAX_OVERFLOW)` outgrows your `max_connections`.
+- **`make up-replicas` and `scripts/smoke-replicas.sh`** — two API replicas behind one
+  origin, and a smoke that proves a resume stream on one sees an append made on the
+  other.
+- **Compose passes the resume-pacing settings** (`FELIX_STREAM_RESUME_IDLE_SECONDS`,
+  `..._POLL_SECONDS`, `..._POLL_MAX_SECONDS`). They were documented in `.env.example`
+  and unreachable from Compose.
+- **Open registries for the remaining swappable backends.**
+  `register_object_store`, `register_secrets_backend`, and
+  `register_warehouse_backend` join the pattern, model-provider, and embedder
+  registries. `ObjectStore`, `SecretsProvider`, and `Warehouse` were already
+  Protocols, but each was selected by a hardcoded if/elif, so a third party could
+  implement the interface and had no way to have it chosen.
+- **`FELIX_OBJECT_STORE`, `FELIX_SECRETS_BACKEND`, `FELIX_WAREHOUSE`,
+  `FELIX_MEMORY_EMBEDDER`, and `FELIX_AUTH_MODE` accept registered names.** They were
+  closed `Literal`s, which made a registered backend unreachable — most visibly for
+  the embedder, whose registry had been open all along. An unknown value now fails at
+  startup with the registered names rather than being rejected by the schema.
+- **`register_session_strategy`** — `spec.session.strategy` was an open string parsed
+  by a closed parser.
+- **`spec.extensions`** — the one field exempt from the manifest schema's
+  `extra="forbid"`, namespaced by plugin name and delivered to a pattern builder as
+  `PatternBuildContext["extensions"]`. A plugin previously had no way to carry any
+  manifest configuration at all.
+- **`FELIX_SKILLS_DIR`** — an extra `SKILL.md` directory searched alongside the
+  bundled one. Bundled skills resolved only from `__file__`-relative repo paths, so a
+  pip-installed Felix had none and no way to point at its own.
+- **`examples/felix-plugin-example/`** — a working out-of-tree plugin exercising every
+  seam, including the `[project.entry-points."felix.plugins"]` declaration, for which
+  the repo previously held no example. `felix doctor` now lists discovered plugins and
+  registered patterns, and `felix validate-manifest` rejects an unknown pattern name
+  (nothing validated the pattern before, so a bad name passed CI and failed at build).
+
 
 - **A conformance contract for model providers.** `tests/conformance/test_model_provider.py`
   runs one contract against three arms — `scripted`, `openai`, `anthropic` — mirroring how
@@ -77,14 +164,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   registered by default: a fake in the production registry would let a typo in
   `FELIX_MODEL_ROUTES` succeed silently and answer every prompt with canned text.
 
-### Changed
-
-- **One provider registry, not two.** `felix.patterns.model_registry` re-exports
-  `felix_ai.registry`, so a provider written against `felix_ai` alone — the point of the
-  package boundary — and one written against the harness land in the same dict. Two
-  registries would have meant `build_one_model` finding only half the providers.
-
-### Added
 
 - **Ten more providers, as table rows.** `workers_ai` (Cloudflare Workers AI), `groq`,
   `together`, `deepseek`, `cerebras`, `fireworks`, `openrouter`, `xai`, `mistral`, and
@@ -110,112 +189,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the invariants rule and the reviewer agents: the line is where Felix *runs*, not whose API
   it calls — the same distinction `storage/s3.py` already relied on for R2.
 
-### Fixed
-
-- **A catalog entry that stated no rates was billed as Claude Sonnet.** `ModelPricing()`
-  carries Sonnet's list price in its own field defaults, and it was the `pricing` field
-  default — so `gpt-4.1`, `gpt-4`, `o1`, `o3`, `o4` and `llama`, each of which says in a
-  comment that it has *no bundled rate*, were all priced at $3/$15 per Mtok anyway. An entry
-  that does not state rates now has none.
-
-- **"Free" was nearly made a property of the model's name.** An earlier pass in this cycle
-  priced the `llama` catalog entry at zero to represent a local runtime. `entry_for` matches
-  by substring, and Llama is sold by Workers AI, Groq, Together and Fireworks — so that would
-  have made every hosted Llama free to `limits.max_cost_usd`. Whether tokens cost anything is
-  a property of the provider (`ProviderSpec.bills_per_token`), and only `ollama` sets it
-  false; a local route can still declare a spend cap because zero spend satisfies any cap.
-
-### Changed
-
-- **`spec.model.region` is removed.** Declared, never read by anything, and a leftover from
-  a Bedrock-shaped past. Same disposition as the `checkpointer` aliases: `_Strict` forbids
-  extras, so a manifest that sets it now fails validation instead of carrying decorative
-  surface that looks like it configures something.
-
-- **`memory.consolidate.model` and the eval judge default now point at `claude-haiku`.**
-  Both defaulted to `llama-3-fast`, which routes to Ollama — the exact bug already fixed and
-  explained on `memory.capture.model`, which these were the missed siblings of. A deployment
-  holding only an Anthropic key had consolidation fail on every run, and the LLM judge
-  silently degrade to the heuristic, each saying so only in a log.
-
-### Fixed
-
-- **Cross-provider handoff decided the provider by sniffing the model id.**
-  `provider_family` matched `claude`, `gpt`, `llama`, `mistral` as substrings — the last
-  vendor sniff in the harness — and it gates whether a thread's tool calls and images are
-  flattened to plain text before switching models. It got two things wrong: an operator who
-  routed `claude-flavoured` to OpenAI got the wrong answer, and two *different* unrecognised
-  providers both answered `unknown`, so a genuine cross-provider switch looked like a no-op
-  and replayed content the next model could not read.
-
-  The function already took a `routes` argument and **no caller passed it**, so the clean
-  path existed and was simply unwired. The route table is now the only source; an id missing
-  from it is distinctly unknown, keyed on the id, so two unrecognised models still count as
-  a family change.
-
-### Fixed
-
-- **The OpenAI path shaped nothing, and carried an Anthropic field to every endpoint.**
-  `ModelQuirks` had exactly one reader — the Anthropic wire format — and its docstring said
-  so. The OpenAI-compatible path, which is also Ollama and every LiteLLM/vLLM gateway, had
-  no `max_output_tokens` clamp and no sampling suppression, which is why the `o1`/`o3`/`o4`
-  catalog entries could never have worked: those reject `temperature` and require
-  `max_completion_tokens`, and both were sent regardless. Meanwhile it emitted an Anthropic
-  `thinking` block into **every** request whenever `spec.thinking_budget` was set, on the
-  grounds that a LiteLLM proxy to Anthropic honours it — but the same body goes to
-  api.openai.com, to Ollama and to any self-written gateway, and a server that validates its
-  request schema rejects the unknown key outright. `reasoning_effort` went out just as
-  widely, to models that have never accepted it.
-
-  Shaping is now capability-driven on both paths. Crucially it keys on `known_entry_for`,
-  not `entry_for`: an unmatched id yields `_DEFAULT`, whose quirks describe the current
-  Claude generation, so shaping on that would strip `temperature` from an unknown OpenAI
-  endpoint that accepts it. Unknown means shape nothing — on this path omitting an optional
-  parameter is survivable and sending a rejected one is a hard 400. The Anthropic block now
-  keys on a new `ModelCatalogEntry.native_wire`, because `ModelQuirks.budget_tokens` defaults
-  to `True` and so cannot tell an OpenAI entry from a pre-4.6 Claude one — an Anthropic model
-  behind an OpenAI shim still gets its block, and nothing else does.
-
-- **`ModelChatOptions.isolate_cache` was ignored on the text-stream path.** `stream()`
-  resolved the options and then dropped them, so `_stream` could not see the flag: a
-  summariser or screening call still wrote the conversation's `prompt_cache_key`, churning
-  the cached prefix the next real turn would have hit — the exact thing the option exists to
-  prevent. It is threaded through to both wire formats now.
-
-### Fixed
-
-- **`limits.max_cost_usd` was enforced against a number nobody chose.** Three faults
-  compounded. The catalog's `_DEFAULT` carried `ModelPricing()`, whose field defaults are
-  Claude Sonnet's list price, so **every model Felix did not recognise billed at $3/$15 per
-  Mtok** — including anything an operator added through `FELIX_MODEL_ROUTES`, and every
-  local Ollama model, which is free. `entry_for` was then fed the *logical* route id rather
-  than the wire model, so a route named `fast` matched nothing in the catalog and fell to
-  that default even when it pointed at a model Felix knows perfectly well. And a turn that
-  reported no usage accumulated nothing and said nothing, leaving the run uncapped.
-
-  Unknown is now unknown: `ModelCatalogEntry.pricing` may be `None`, an unpriced model
-  contributes zero rather than a guess, and `is_priced()` distinguishes "free" from "no
-  idea" — a local model is priced at an explicit zero, which is a fact about the deployment
-  rather than an absence of information. Pricing keys on the wire model
-  (`record_usage(..., wire_model_id=...)`) while reporting keeps the logical name, because
-  that is what an operator configured and recognises.
-
-  A cap that cannot be counted now fails at *compile*: a manifest that explicitly declares
-  `limits.max_cost_usd` on a model with no known rates is refused, with `spec.model.price`
-  named as the way to supply them. Only a declared cap is refused — `effective_limits` fills
-  an unset one from `ABSOLUTE_LIMITS`, and refusing on that would break every local
-  deployment over a ceiling the author never asked for. At runtime, a turn reporting no
-  usage logs a warning and increments `felix_model_unmetered` instead of passing silently;
-  the usual cause is a provider whose streamed response omits usage, which makes the whole
-  run free as far as the budgets are concerned.
-
-- **Compaction sized every manifest against 128K.** `runtime.py` resolved the context window
-  from `spec.model.id`, which is a logical route name, so it matched only the loose
-  `claude-sonnet` family key. A manifest on the default route compacted against 128K instead
-  of the 1M window it pays for — summarising away seven eighths of the context and spending
-  a model call to do it. It now resolves the route first.
-
-### Added
 
 - **A provider is a descriptor, and a plugin can finally be given a credential.** Adding a
   provider meant a hand-written factory plus a `Settings` field plus a `_HYDRATE_MAP` entry
@@ -236,30 +209,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it. It was the one open registry with no seam on the registry object and no example, so the
   documented way to add a provider was to read core's source.
 
-### Fixed
-
-- **`FELIX_MODEL_ROUTES` provider names are validated at startup.** It was the one
-  registry-backed setting `_validate_registry_backed_settings` skipped, so a typo surfaced
-  mid-request and only on the route actually taken — a bad *fallback* stayed invisible until
-  the primary was already failing, which is the worst moment to find a second misconfiguration.
-
-- **The OpenAI embedder could never be pointed at a gateway.** `_build_openai` read
-  `settings.openai_base_url`, which is not a field on `Settings` and never has been, so the
-  read always fell through to `api.openai.com` — silently, on the inline memory-recall path,
-  while the model client honoured `FELIX_LITELLM_BASE_URL`. Both now resolve through the same
-  provider descriptor and agree by construction.
-
-- **An Ollama base URL ending in `/v1` produced `/v1/v1`.** The factory appended
-  unconditionally; the descriptor appends only when absent.
-
-- **`build_model` no longer lazily re-registers providers.** `if not list_model_providers():
-  register_builtin_providers()` was a sentinel that could only be right while nothing else
-  registered first: after a `reset_model_provider_registry()` it restored the three builtins
-  and dropped every plugin provider, because `load_optional_plugins` had already run and would
-  not run again. `felix.patterns` registers the builtins at import, before anything can call
-  `build_model`.
-
 ### Changed
+
+- **`/docs` is the Scalar API reference, not Swagger UI.** The harness served FastAPI's
+  bundled Swagger UI while the docs site already described `/docs` as Scalar. It now renders
+  the same `/openapi.json` through a pinned Scalar bundle: tag sidebar, curl as the default
+  client, and a `servers` entry taken from the page's own origin — without it the spec has no
+  `servers` block, so every snippet rendered as a bare `curl /health` that could not be
+  pasted anywhere. No new dependency (Swagger UI was a CDN script too, and this is one HTML
+  route). The bundle is pinned and carries an SRI hash, so a public, always-unauthenticated
+  origin cannot be handed a different script than the one this commit reviewed. Swagger UI's
+  `/docs/oauth2-redirect` went with it — the only route ever served under `/docs/` — so the
+  rate limiter's orphaned `/docs/` prefix exemption goes too. The spec path and the curl
+  snippets' base URL both resolve per request against `root_path`, as Swagger UI's did —
+  precomputing them would have left `/redoc` working and `/docs` blank behind a proxy
+  prefix. `/openapi.json` and `/redoc` are unchanged, as is `/docs` being public in every
+  auth mode.
+
+
+- **`tenant_id` no longer defaults on the session-layer accessors** —
+  `get_session_store`, `build_checkpointer`, `PostgresSessionStore` and
+  `InMemorySessionStore`. Omitting it silently meant tenant `"default"`, which is
+  how the `remember` bug above went unnoticed. Source-incompatible for an
+  out-of-repo caller that omitted it; every in-repo call site already passed one.
+  A repo invariant now fails if the default comes back. Note the residual: an
+  explicit `tenant_id="default"` still compiles, so the regression test asserting on
+  the resulting ordinal is the real guard, not the signature.
+
+
+- **A plugin can no longer silently shadow a built-in.** Auth modes already refused
+  it; session strategies did not, so an installed package could replace
+  `compacting` for every manifest using it. `register_session_strategy` now rejects
+  a built-in prefix, and longest-prefix-wins makes resolution independent of
+  registration order.
+- **An audit sink is constructed once, not per event**, and a sink failure logs at
+  `warning` rather than `debug` — it is the compliance-export path, so a broken
+  export was invisible at default log level.
+
+
+- A resume stream that is genuinely being notified now relaxes its poll to 60 seconds
+  rather than 10, since the poll is a safety net once wake-ups are being delivered.
+  It tightens again on its own when they stop.
+
+
+- **Streaming is implemented once per wire format, not twice.** `_stream` is a text-only
+  view of `_stream_turn` in the base class, and both overrides are gone — 149 lines,
+  including a 32-line block byte-identical to its `stream_turn` sibling. The copies had
+  already drifted (`_body` attaches the `cache_control` breakpoint to the last tool; the
+  hand-built body carried no `tools` key at all), and neither was reachable for a shipped
+  client. SSE framing is one shared `iter_sse_json` rather than four copies.
+
+- **`entry_for` is defined in terms of `known_entry_for`**, so the catalog's "one rule for
+  finding it" is written once. The four transitional aliases in `felix.patterns.model` are
+  deleted — three had no readers and the fourth had one test import that now uses the public
+  name. `parse_model_routes` is cached on the routes string; it went from three call sites
+  to seven in this branch and re-parsed the JSON on each.
+
+
+- **One provider registry, not two.** `felix.patterns.model_registry` re-exports
+  `felix_ai.registry`, so a provider written against `felix_ai` alone — the point of the
+  package boundary — and one written against the harness land in the same dict. Two
+  registries would have meant `build_one_model` finding only half the providers.
+
+
+- **`spec.model.region` is removed.** Declared, never read by anything, and a leftover from
+  a Bedrock-shaped past. Same disposition as the `checkpointer` aliases: `_Strict` forbids
+  extras, so a manifest that sets it now fails validation instead of carrying decorative
+  surface that looks like it configures something.
+
+- **`memory.consolidate.model` and the eval judge default now point at `claude-haiku`.**
+  Both defaulted to `llama-3-fast`, which routes to Ollama — the exact bug already fixed and
+  explained on `memory.capture.model`, which these were the missed siblings of. A deployment
+  holding only an Anthropic key had consolidation fail on every run, and the LLM judge
+  silently degrade to the heuristic, each saying so only in a log.
+
 
 - **The model layer is its own workspace package, and it cannot import the harness.**
   `packages/ai` (`felix_ai`) now holds the two wire formats, the model catalog, the neutral
@@ -292,6 +315,276 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   composites fail to satisfy the Protocol they implement.
 
 ### Fixed
+
+- **The hosted providers' `secret_names` were inert.** `_compat` passed
+  `api_key_config_key=config_key and None`, which is the constant `None`, while declaring
+  `secret_names` anyway — and `_HYDRATE_MAP` is derived with
+  `if spec.api_key_config_key and spec.secret_names`, so all thirty names were unreachable.
+  The descriptor promised a hydration path it did not have, in the same commit as a comment
+  claiming derivation made that impossible. The hosted rows now declare neither (they have
+  no `Settings` field to hydrate *into*), and their credential can be a `secret:NAME` value
+  inside `FELIX_MODEL_PROVIDER_OPTIONS`, resolved at startup through the same backend as
+  MCP and peer refs. The guard test was equally vacuous — it reused the derivation's own
+  predicate — and now asserts that no descriptor declares names it cannot reach.
+
+- **`isolate_cache` was still dropped on the primary streaming path.** The previous fix
+  threaded it into `_stream` — which callers reach only when a provider has no
+  `stream_turn` — while `stream_turn` itself resolved the options and discarded them. The
+  same defect the fix was written to close, one method over. The conformance contract now
+  asserts the flag is *honoured* on both paths, not merely accepted.
+
+- **Embedders were registered for providers that may not serve `/embeddings`.** The whole
+  OpenAI-compatible table was registered, so `FELIX_MEMORY_EMBEDDER=groq` passed startup
+  validation and failed at the first embed. It is a declared capability on the row now.
+  Relatedly, `FELIX_MEMORY_EMBEDDING_MODEL` defaults to `bge-base-en-v1.5`, a
+  sentence-transformers name, and was read unconditionally — so that string went out as a
+  model id to OpenAI, which the old `_build_openai` did too. Only an explicitly set value
+  wins now; otherwise the provider's own default applies.
+
+
+- **A catalog entry that stated no rates was billed as Claude Sonnet.** `ModelPricing()`
+  carries Sonnet's list price in its own field defaults, and it was the `pricing` field
+  default — so `gpt-4.1`, `gpt-4`, `o1`, `o3`, `o4` and `llama`, each of which says in a
+  comment that it has *no bundled rate*, were all priced at $3/$15 per Mtok anyway. An entry
+  that does not state rates now has none.
+
+- **"Free" was nearly made a property of the model's name.** An earlier pass in this cycle
+  priced the `llama` catalog entry at zero to represent a local runtime. `entry_for` matches
+  by substring, and Llama is sold by Workers AI, Groq, Together and Fireworks — so that would
+  have made every hosted Llama free to `limits.max_cost_usd`. Whether tokens cost anything is
+  a property of the provider (`ProviderSpec.bills_per_token`), and only `ollama` sets it
+  false; a local route can still declare a spend cap because zero spend satisfies any cap.
+
+
+- **Cross-provider handoff decided the provider by sniffing the model id.**
+  `provider_family` matched `claude`, `gpt`, `llama`, `mistral` as substrings — the last
+  vendor sniff in the harness — and it gates whether a thread's tool calls and images are
+  flattened to plain text before switching models. It got two things wrong: an operator who
+  routed `claude-flavoured` to OpenAI got the wrong answer, and two *different* unrecognised
+  providers both answered `unknown`, so a genuine cross-provider switch looked like a no-op
+  and replayed content the next model could not read.
+
+  The function already took a `routes` argument and **no caller passed it**, so the clean
+  path existed and was simply unwired. The route table is now the only source; an id missing
+  from it is distinctly unknown, keyed on the id, so two unrecognised models still count as
+  a family change.
+
+
+- **The OpenAI path shaped nothing, and carried an Anthropic field to every endpoint.**
+  `ModelQuirks` had exactly one reader — the Anthropic wire format — and its docstring said
+  so. The OpenAI-compatible path, which is also Ollama and every LiteLLM/vLLM gateway, had
+  no `max_output_tokens` clamp and no sampling suppression, which is why the `o1`/`o3`/`o4`
+  catalog entries could never have worked: those reject `temperature` and require
+  `max_completion_tokens`, and both were sent regardless. Meanwhile it emitted an Anthropic
+  `thinking` block into **every** request whenever `spec.thinking_budget` was set, on the
+  grounds that a LiteLLM proxy to Anthropic honours it — but the same body goes to
+  api.openai.com, to Ollama and to any self-written gateway, and a server that validates its
+  request schema rejects the unknown key outright. `reasoning_effort` went out just as
+  widely, to models that have never accepted it.
+
+  Shaping is now capability-driven on both paths. Crucially it keys on `known_entry_for`,
+  not `entry_for`: an unmatched id yields `_DEFAULT`, whose quirks describe the current
+  Claude generation, so shaping on that would strip `temperature` from an unknown OpenAI
+  endpoint that accepts it. Unknown means shape nothing — on this path omitting an optional
+  parameter is survivable and sending a rejected one is a hard 400. The Anthropic block now
+  keys on a new `ModelCatalogEntry.native_wire`, because `ModelQuirks.budget_tokens` defaults
+  to `True` and so cannot tell an OpenAI entry from a pre-4.6 Claude one — an Anthropic model
+  behind an OpenAI shim still gets its block, and nothing else does.
+
+- **`ModelChatOptions.isolate_cache` was ignored on the text-stream path.** `stream()`
+  resolved the options and then dropped them, so `_stream` could not see the flag: a
+  summariser or screening call still wrote the conversation's `prompt_cache_key`, churning
+  the cached prefix the next real turn would have hit — the exact thing the option exists to
+  prevent. It is threaded through to both wire formats now.
+
+
+- **`limits.max_cost_usd` was enforced against a number nobody chose.** Three faults
+  compounded. The catalog's `_DEFAULT` carried `ModelPricing()`, whose field defaults are
+  Claude Sonnet's list price, so **every model Felix did not recognise billed at $3/$15 per
+  Mtok** — including anything an operator added through `FELIX_MODEL_ROUTES`, and every
+  local Ollama model, which is free. `entry_for` was then fed the *logical* route id rather
+  than the wire model, so a route named `fast` matched nothing in the catalog and fell to
+  that default even when it pointed at a model Felix knows perfectly well. And a turn that
+  reported no usage accumulated nothing and said nothing, leaving the run uncapped.
+
+  Unknown is now unknown: `ModelCatalogEntry.pricing` may be `None`, an unpriced model
+  contributes zero rather than a guess, and `is_priced()` distinguishes "free" from "no
+  idea" — a local model is priced at an explicit zero, which is a fact about the deployment
+  rather than an absence of information. Pricing keys on the wire model
+  (`record_usage(..., wire_model_id=...)`) while reporting keeps the logical name, because
+  that is what an operator configured and recognises.
+
+  A cap that cannot be counted now fails at *compile*: a manifest that explicitly declares
+  `limits.max_cost_usd` on a model with no known rates is refused, with `spec.model.price`
+  named as the way to supply them. Only a declared cap is refused — `effective_limits` fills
+  an unset one from `ABSOLUTE_LIMITS`, and refusing on that would break every local
+  deployment over a ceiling the author never asked for. At runtime, a turn reporting no
+  usage logs a warning and increments `felix_model_unmetered` instead of passing silently;
+  the usual cause is a provider whose streamed response omits usage, which makes the whole
+  run free as far as the budgets are concerned.
+
+- **Compaction sized every manifest against 128K.** `runtime.py` resolved the context window
+  from `spec.model.id`, which is a logical route name, so it matched only the loose
+  `claude-sonnet` family key. A manifest on the default route compacted against 128K instead
+  of the 1M window it pays for — summarising away seven eighths of the context and spending
+  a model call to do it. It now resolves the route first.
+
+
+- **`FELIX_MODEL_ROUTES` provider names are validated at startup.** It was the one
+  registry-backed setting `_validate_registry_backed_settings` skipped, so a typo surfaced
+  mid-request and only on the route actually taken — a bad *fallback* stayed invisible until
+  the primary was already failing, which is the worst moment to find a second misconfiguration.
+
+- **The OpenAI embedder could never be pointed at a gateway.** `_build_openai` read
+  `settings.openai_base_url`, which is not a field on `Settings` and never has been, so the
+  read always fell through to `api.openai.com` — silently, on the inline memory-recall path,
+  while the model client honoured `FELIX_LITELLM_BASE_URL`. Both now resolve through the same
+  provider descriptor and agree by construction.
+
+- **An Ollama base URL ending in `/v1` produced `/v1/v1`.** The factory appended
+  unconditionally; the descriptor appends only when absent.
+
+- **`build_model` no longer lazily re-registers providers.** `if not list_model_providers():
+  register_builtin_providers()` was a sentinel that could only be right while nothing else
+  registered first: after a `reset_model_provider_registry()` it restored the three builtins
+  and dropped every plugin provider, because `load_optional_plugins` had already run and would
+  not run again. `felix.patterns` registers the builtins at import, before anything can call
+  `build_model`.
+
+- **The in-memory manifest store outlived the test that wrote to it.** The `memory://` twins
+  are module-level dicts by design, but nothing reset them between tests — so a manifest
+  stored as `quick` shadowed the bundled file for the rest of the session, and a minimal one
+  has no `auth.inbound` block, which 401'd everything downstream. That surfaced once as
+  eleven unrelated tests failing together, and the response at the time was to avoid the
+  assertion rather than fix the isolation.
+
+  `tests/conftest.py` now resets the store and the resolver caches around every test, and
+  the end-to-end write test that caused it is restored. `clear_resolver_cache()` also clears
+  the bundled cache, which it never did — under `manifest_source=bundled` that is the only
+  manifest cache in the system, so "clear the resolver cache" was not clearing it.
+
+
+- **`create_app()` crashed on boot when it was not handed settings.** The manifest-source
+  posture added `if not settings.bundled_only:`, but `settings` is the *optional* parameter
+  — the resolved config is `cfg = settings or get_settings()`. Production calls
+  `create_app()` with no arguments, so the shipped image raised `AttributeError: 'NoneType'
+  object has no attribute 'bundled_only'` before serving a request.
+
+  The whole suite stayed green because every test passes `settings=` explicitly. There is now
+  a test that does not, which is the only kind that could have caught it.
+
+
+- **A canary looked benchmarked when nothing had benchmarked it.** `run_continuous_eval`
+  reads `canary_version` from each active canary and passes it to `start_run`, which writes
+  it onto the eval run row — but resolution never used it. So the score belonged to whatever
+  version was active while the row said "canary". The number existed and was wrong, which is
+  worse than not measuring: a rollout gate reported a result it had not earned.
+
+  `resolve_tenant_manifest` now takes `pin_version` and the eval runner passes the version it
+  recorded. A pinned version that cannot be resolved fails the run — `fail_count` equal to
+  the item count, with the error in `scores` — rather than falling back to the active
+  manifest, because falling back is precisely what made the original bug invisible.
+
+
+- **The browser handed a model-supplied hostname to Chromium, which resolved it again.**
+  Pinning outbound HTTP to a validated address left the browser as the only advisory guard,
+  and the worst-placed one: its URL comes from the model rather than a manifest, so a name
+  answering the guard's lookup and Chromium's differently could reach an address the guard
+  had just refused — cloud metadata being the obvious target, with `op: content` returning
+  the body.
+
+  The browser now launches with `--host-resolver-rules=MAP <host> <validated address>`, so
+  the navigation host can only reach the address the guard approved. Verified end to end
+  against a real Chromium, not only by constructing the flag.
+
+  The hostname is matched against a strict pattern before it reaches that flag. It is a
+  comma-separated list, so a host containing a comma — which `urlparse` will hand back
+  quite happily — could append rules of its own, and `evil.com,MAP * 169.254.169.254` would
+  point every other name at the metadata service.
+
+  Cross-host subresources and redirects remain advisory: they keep resolving normally and
+  are checked per request but not pinned, because denying them breaks any page that loads
+  assets from a CDN. That residual is documented in `deploy/GOVERNANCE.md` rather than left
+  to be discovered, along with the launch rule that would close it.
+
+
+- **The SSRF guard was advisory: it validated one lookup and the connection used another.**
+  `assert_safe_outbound_url` resolved a hostname, checked the answers, discarded them, and
+  let httpx resolve again independently at connect. Two ways through. A name that resolves
+  differently the second time wins — a TTL of zero is free to publish. And a nameserver that
+  simply drops the guard's query while answering the client's wins outright, because an empty
+  `resolve_host` was treated as "defer to the connection": no race, no timing, just two
+  different answers to two different askers.
+
+  Outbound HTTP now goes through a transport that resolves once, validates every returned
+  address, and connects to an address it validated. There is no second lookup to disagree
+  with the first. One bad answer refuses the whole name, so a round-robin containing a
+  private address is not reachable by retrying, and a lookup that fails or times out refuses
+  the dial — safe here precisely because this *is* the connection.
+
+  TLS is unaffected. httpcore passes the origin hostname to `start_tls` regardless of what
+  `connect_tcp` was given, so SNI and certificate verification still run against the name the
+  caller asked for while the socket goes to the pinned address. Verified against a real
+  HTTPS host.
+
+  The syntactic half — scheme, `http` outside development, internal names and suffixes, IP
+  literals — now runs on the transport itself rather than only at each call site, so a new
+  caller cannot get half a guard by forgetting a line, and a redirect target is checked on
+  the same terms as the original URL. `proxy`, `mounts` and `uds` are refused rather than
+  ignored: each chooses a destination the guard never sees. Note that supplying a transport
+  also disables httpx's environment proxies, so `HTTP_PROXY` no longer applies to these
+  calls.
+
+  Every approved address is kept, not just the first. Pinning one would discard the fallback
+  Happy Eyeballs provides, which is what lets a host with an AAAA record work from a
+  container with no IPv6 egress; each address in the list has been validated, so they are
+  tried in turn.
+
+  **The browser is the exception**, and it is the model-facing one: Chromium resolves for
+  itself, so there the check stays advisory. Documented in `deploy/GOVERNANCE.md` rather than
+  quietly covered by the claim above.
+
+
+
+- **A blocking DNS lookup ran inside a pydantic validator, on the API event loop.**
+  `assert_safe_outbound_url` resolves hostnames, and three schema validators called it while
+  parsing — so every MCP server, peer and container ref cost a synchronous `getaddrinfo` on
+  every manifest read *and* write, freezing every other request on the worker for the
+  duration. Measured here at 37.9 ms/ref on a cold cache against a resolver that answers —
+  which is the case that matters, since distinct hostnames are exactly what an attacker
+  supplies — and seconds each against a nameserver that drops queries rather than
+  answering. The same 64 refs now parse in 0.4 ms.
+
+  The validators keep the checks that never needed a lookup: scheme, `http` outside
+  development, internal names and suffixes, and IP literals including the decimal form.
+  Resolution moves to dial time — `mcp_rpc` already did it there; the HTTP tool, container
+  and peer clients were doing it at construction — and runs through
+  `assert_safe_outbound_url_async`, which is `asyncio.to_thread` around the same function, so
+  the fix does not simply relocate the stall to the tool-call path.
+
+  Dial time is also the better placement: a hostname validated when a manifest is written can
+  resolve somewhere else by the time it is dialled. The honest framing is that parse-time was
+  a *second, independent* observation of the record, so this trades two chances to observe for
+  one — a weak defence, since an attacker can publish a benign record until the manifest is
+  stored, hours before the dial.
+
+  Two hardening changes came out of reviewing it. The lookup now runs on a 3s budget and a
+  timeout **blocks** rather than falling through: `to_thread` uses the loop's shared default
+  executor, a running thread cannot be cancelled, and the guard is advisory — httpx resolves
+  again at connect — so letting a slow resolver pass would hand it the exact bypass the guard
+  exists to close. And a refused dial no longer reports the address it resolved to: that
+  string lands in a tool message the model reads, which turned any peer, container or MCP ref
+  into an internal-DNS oracle. The detail is logged instead.
+
+  The browser was the last resolving check still on the event loop, and the worst placed —
+  once per subresource, on a model-supplied URL. Its route interceptor is `async` and already
+  awaits, so it now awaits the check too.
+
+  Authoring feedback moved with it. `felix validate-manifest` now resolves every outbound
+  host and rejects blocked addresses, which is where a DNS lookup belongs: no request is
+  waiting on it. `--no-resolve-egress` for an air-gapped CI runner.
+
+
 
 - **The last two hardcoded outbound timeouts, and no bound on the configurable ones.**
   Making the model and MCP ceilings raisable left `memory/embedder.py` on a hardcoded 60s
@@ -366,62 +659,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bet. Connect is pinned at 10s separately, so raising the request ceiling for a long
   generation does not also let an unreachable endpoint hang for that long.
 
-### Changed
-
-- **`/docs` is the Scalar API reference, not Swagger UI.** The harness served FastAPI's
-  bundled Swagger UI while the docs site already described `/docs` as Scalar. It now renders
-  the same `/openapi.json` through a pinned Scalar bundle: tag sidebar, curl as the default
-  client, and a `servers` entry taken from the page's own origin — without it the spec has no
-  `servers` block, so every snippet rendered as a bare `curl /health` that could not be
-  pasted anywhere. No new dependency (Swagger UI was a CDN script too, and this is one HTML
-  route). The bundle is pinned and carries an SRI hash, so a public, always-unauthenticated
-  origin cannot be handed a different script than the one this commit reviewed. Swagger UI's
-  `/docs/oauth2-redirect` went with it — the only route ever served under `/docs/` — so the
-  rate limiter's orphaned `/docs/` prefix exemption goes too. The spec path and the curl
-  snippets' base URL both resolve per request against `root_path`, as Swagger UI's did —
-  precomputing them would have left `/redoc` working and `/docs` blank behind a proxy
-  prefix. `/openapi.json` and `/redoc` are unchanged, as is `/docs` being public in every
-  auth mode.
-
-### Added
-
-- **`spec.mcp_servers[].timeout_ms` and `spec.peers[].timeout_ms`.** `ContainerRef` and
-  `SandboxRef` already carried a per-integration timeout; the MCP and A2A refs did not, so
-  30s and 60s respectively were unraisable and a slow-but-working server produced a tool
-  result that read like a refusal. A peer call runs an entire agent turn on the far side,
-  so it had the tightest ceiling on the longest operation. Both are floored at one second
-  and reach discovery and the call alike, over HTTP and stdio.
-
-- **`manifests/contributor.yaml` — Felix working on the Felix codebase.** Every piece
-  this needs already existed; nothing wired them together. The manifest points the
-  workspace file tools at a Felix checkout, binds the Docker sandbox for snippet
-  checks, declares four developer skills (`felix-architecture`, `felix-conventions`,
-  `felix-testing`, `felix-contributing`, all new under `skills/`), and reaches GitHub
-  over MCP so the agent can open pull requests against the repository it runs on.
-
-  Three limits are structural, not oversights, and the system prompt tells the agent
-  about each so it cannot claim otherwise. The sandbox has no network and no volume
-  mount, so it verifies snippets and cannot run the suite — `make check` and CI do
-  that. `write_file` replaces whole files rather than patching. The local checkout and
-  GitHub are separate worlds: editing one does not touch the other.
-
-  Controls, since this agent can write to its own source: `write_file` and every
-  mutating `github__` tool *in the recorded catalog* require approval, under
-  `eu_ai_act` at `risk_tier: high` so that `allow_unattended: false` is enforced at
-  compile time rather than being an inert field. Content screening is on because MCP
-  output carries an untrusted transport and GitHub issue bodies are written by
-  strangers. No client tool, container, queue, peer, sub-agent, or stdio MCP server is
-  declared, so the isolated container is the only code execution the agent gets.
-
-  One gap is worth naming rather than burying: approval rules match tool names exactly
-  — there are no globs in the governance stack — and `McpServerRef` has no per-server
-  tool allowlist, so the entire remote catalog binds as `github__*`. A write tool that
-  GitHub adds or renames binds ungated, and no unit test can catch it, because the test
-  can only compare the manifest to itself. Closing that needs a tool allowlist on
-  `McpServerRef` or a toolset-scoped MCP URL.
-
-
-### Fixed
 
 - **The anomaly scan and continuous eval only ever ran for tenant `default`.** Both
   take `tenant_id: str = "default"` and the worker cron passed nothing, so on a
@@ -619,104 +856,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend names were validated only in the API process.** The worker learned
   about `FELIX_SECRETS_BACKEND=vualt` from a traceback in the middle of a task;
   it now validates at startup, and `felix doctor` reports the same check.
-
-### Changed
-
-- **`tenant_id` no longer defaults on the session-layer accessors** —
-  `get_session_store`, `build_checkpointer`, `PostgresSessionStore` and
-  `InMemorySessionStore`. Omitting it silently meant tenant `"default"`, which is
-  how the `remember` bug above went unnoticed. Source-incompatible for an
-  out-of-repo caller that omitted it; every in-repo call site already passed one.
-  A repo invariant now fails if the default comes back. Note the residual: an
-  explicit `tenant_id="default"` still compiles, so the regression test asserting on
-  the resulting ordinal is the real guard, not the signature.
-
-### Added
-
-- **`spec.memory.checkpointer` now selects where session state lives**, having
-  shipped as a closed `Literal` that no code read. Every value silently meant
-  "whatever `FELIX_DATABASE_URL` points at". It is now resolved through an open
-  registry: `postgres` (default, unchanged) and `none` (no session state — every
-  turn starts from the messages it was given), plus anything a plugin adds with
-  `register_checkpointer`.
-
-  There is deliberately no in-process built-in. A thread is not manifest-scoped —
-  fifteen `/chat` routes address one by id with no manifest in hand — so a manifest
-  choosing a different *backend* would split-brain, the agent reading one log while
-  `/history`, `/continue` and `/compact` read another. `none` is exempt because it
-  is a claim about the agent, enforced where the agent reads.
-
-  `agentcore`, `sqlite` and `do` are no longer accepted. They never did anything,
-  and `do` named Cloudflare Durable Objects — compute this stack deliberately does
-  not run. A manifest setting one now fails validation instead of quietly getting
-  Postgres. No bundled manifest used them.
-
-  `checkpointer: none` is refused alongside anything the loop would silently drop
-  for want of a store: a `session.strategy` other than `full_replay`,
-  `session.compact_after_turn`, and `memory.capture.enabled` — the last because
-  `_turn_seq` stamps `origin_seq` from the session head, so with no store every
-  fact lands at genesis and supersession ordering collapses rather than erroring.
-
-  A bad name is now refused at manifest *write* time (`PUT /manifests/{name}`) as
-  well as by the CLI. Opening the field from `Literal` to `str` moved typo-catching
-  out of pydantic, and a stored typo would otherwise have raised inside every
-  build — a 500 per request until someone read a traceback.
-
-- **`FELIX_DB_PREPARED_STATEMENTS`** — set it `false` behind a pooler that does not
-  track prepared statements. psycopg3 prepares after five executions and the sixth
-  lands on a different server connection, so this fails on the sixth query rather
-  than the first. RDS Proxy forces the choice: it pins the session when it sees a
-  prepared statement, defeating the pooling it was deployed for.
-- **`make up-pooled`** — PgBouncer in transaction mode in front of Postgres, for when
-  `WORKERS x (POOL_SIZE + MAX_OVERFLOW)` outgrows your `max_connections`.
-- **`make up-replicas` and `scripts/smoke-replicas.sh`** — two API replicas behind one
-  origin, and a smoke that proves a resume stream on one sees an append made on the
-  other.
-- **Compose passes the resume-pacing settings** (`FELIX_STREAM_RESUME_IDLE_SECONDS`,
-  `..._POLL_SECONDS`, `..._POLL_MAX_SECONDS`). They were documented in `.env.example`
-  and unreachable from Compose.
-- **Open registries for the remaining swappable backends.**
-  `register_object_store`, `register_secrets_backend`, and
-  `register_warehouse_backend` join the pattern, model-provider, and embedder
-  registries. `ObjectStore`, `SecretsProvider`, and `Warehouse` were already
-  Protocols, but each was selected by a hardcoded if/elif, so a third party could
-  implement the interface and had no way to have it chosen.
-- **`FELIX_OBJECT_STORE`, `FELIX_SECRETS_BACKEND`, `FELIX_WAREHOUSE`,
-  `FELIX_MEMORY_EMBEDDER`, and `FELIX_AUTH_MODE` accept registered names.** They were
-  closed `Literal`s, which made a registered backend unreachable — most visibly for
-  the embedder, whose registry had been open all along. An unknown value now fails at
-  startup with the registered names rather than being rejected by the schema.
-- **`register_session_strategy`** — `spec.session.strategy` was an open string parsed
-  by a closed parser.
-- **`spec.extensions`** — the one field exempt from the manifest schema's
-  `extra="forbid"`, namespaced by plugin name and delivered to a pattern builder as
-  `PatternBuildContext["extensions"]`. A plugin previously had no way to carry any
-  manifest configuration at all.
-- **`FELIX_SKILLS_DIR`** — an extra `SKILL.md` directory searched alongside the
-  bundled one. Bundled skills resolved only from `__file__`-relative repo paths, so a
-  pip-installed Felix had none and no way to point at its own.
-- **`examples/felix-plugin-example/`** — a working out-of-tree plugin exercising every
-  seam, including the `[project.entry-points."felix.plugins"]` declaration, for which
-  the repo previously held no example. `felix doctor` now lists discovered plugins and
-  registered patterns, and `felix validate-manifest` rejects an unknown pattern name
-  (nothing validated the pattern before, so a bad name passed CI and failed at build).
-
-### Changed
-
-- **A plugin can no longer silently shadow a built-in.** Auth modes already refused
-  it; session strategies did not, so an installed package could replace
-  `compacting` for every manifest using it. `register_session_strategy` now rejects
-  a built-in prefix, and longest-prefix-wins makes resolution independent of
-  registration order.
-- **An audit sink is constructed once, not per event**, and a sink failure logs at
-  `warning` rather than `debug` — it is the compliance-export path, so a broken
-  export was invisible at default log level.
-
-### Changed
-
-- A resume stream that is genuinely being notified now relaxes its poll to 60 seconds
-  rather than 10, since the poll is a safety net once wake-ups are being delivered.
-  It tightens again on its own when they stop.
 
 ## [0.2.2] — 2026-08-25
 
