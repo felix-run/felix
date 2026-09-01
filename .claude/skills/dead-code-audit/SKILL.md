@@ -29,6 +29,23 @@ Clear all seven before calling anything dead. One uncleared channel is one produ
 Two more that look like liveness but are not: a name referenced only in a commented-out block, and a
 name referenced only in a docstring or changelog. Those are documentation debt, not callers.
 
+## A note is not evidence
+
+**Absence is the claim that rots fastest.** "Nothing reads this field" was true when it was written
+and false by the time it was acted on, twice here: `SkillRef.description` was nearly deleted as
+unread after `a2a/card.py` had started reading it, and a set of model providers was judged fictional
+while sitting in an open PR.
+
+So the freshness of the evidence is part of the evidence. In a long session, in a plan file, in a
+roadmap entry, in your own earlier message — a recorded absence is a lead, never a verdict.
+Re-run the channel table against the tree **as it is now** immediately before the deletion, and if
+anything has been merged, rebased, or written since the note, re-run it again. The check costs
+seconds; the failure mode is deleting a live field.
+
+The same applies in reverse to inert code: `tests/unit/test_inert_manifest_fields.py` is the
+ratchet that decides whether a manifest field has a reader. Consult it rather than re-deriving the
+answer by hand, and add the field to it when you prove one either way.
+
 ## Procedure
 
 1. **Establish the entry points.** Console scripts, ASGI/WSGI app factories, worker task modules,

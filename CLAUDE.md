@@ -49,7 +49,8 @@ the supported no-infrastructure test path, not a mock layer.
 Structural gates (fast, no infrastructure):
 
 ```bash
-./scripts/test.sh tests/unit/test_invariants.py   # repo invariants, enforced
+./scripts/test.sh tests/unit/test_invariants.py        # repo invariants, enforced
+./scripts/test.sh tests/unit/test_entrypoint_wiring.py # every console script, factory and broker path
 uv sync --locked --no-dev && uv run --no-sync python scripts/lean-import-check.py
 python3 scripts/validate-toolkit.py               # .claude/ hooks, settings, skills
 uv run python scripts/gen-manifest-schema.py --check   # editor JSON Schema is current
@@ -60,6 +61,16 @@ uv run python scripts/gen-manifest-schema.py --check   # editor JSON Schema is c
 has a `memory://` path, the governance wrapper order is unchanged, `schemas/manifest.schema.json`
 still matches the pydantic models, and the CI test job installs every extra the tests gate on.
 Change a rule deliberately and you update the test with it.
+
+`tests/unit/test_entrypoint_wiring.py` covers the references production depends on that no import
+statement mentions: every `[project.scripts]` target, the `module:attr` string Granian is handed, the
+Taskiq broker/scheduler/module paths, and the `felix-*` binary each Compose, Dockerfile and Helm
+command names — plus `create_application()` called the way production calls it, with no arguments.
+
+`./scripts/prove-fails.sh <target> [--base <ref>] [--only <dists>]` runs a test against pre-change
+source and reports PROVEN / VACUOUS / BROKEN. It shadows `PYTHONPATH` only, so it cannot help a test
+that reads the tree from disk; for those the method is mutation. Why both exist, and what they are
+guarding against: `.claude/rules/felix-invariants.md`.
 
 A test that needs an optional extra gates on `tests/optional_deps.py:require_optional(module,
 extra)`, never a bare `pytest.importorskip` — an invariant enforces this. A module-level

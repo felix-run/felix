@@ -9,7 +9,7 @@ separate **felix-web** repo.
 ├── settings.json     hook registration, permission allow/ask/deny, status line
 ├── agents/           11 subagents (delegated, isolated context)
 ├── skills/           14 Agent Skills (agentskills.io format, loaded on demand)
-├── hooks/            15 lifecycle hooks (deterministic enforcement)
+├── hooks/            16 lifecycle hooks (deterministic enforcement)
 ├── rules/            always-loaded invariants
 └── logs/             subagent audit trail (gitignored)
 ```
@@ -67,13 +67,14 @@ skill or subagent.
 | `SessionStart(compact)` | `compact-reminder.sh` | Re-injects the invariants most likely lost in a summary |
 | `PreToolUse(Edit\|Write)` | `protect-files.sh` | **Blocks** edits to `.env`, `secrets/`, `uv.lock`, generated dirs, and published migrations |
 | `PreToolUse(Bash)` | `pytest-env-guard.sh` | **Blocks** a bare `pytest` that would hit the `.env` Postgres, and points at `./scripts/test.sh` |
-| `PreToolUse(Bash)` | `pr-quality-gate.sh` | **Blocks** `gh pr create` until the quality reviewers have run on this commit |
+| `PreToolUse(Bash)` | `pr-quality-gate.sh` | Before `gh pr create`, names the reviewers that have not run on this commit — plus `felix-security-reviewer` when the diff touches a control path |
 | `PreToolUse(Bash)` | `git-guard.sh` | **Blocks** force-push, `--no-verify`, `reset --hard`; warns when committing on `main` |
 | `PostToolUse(Edit\|Write)` | `ruff-format.sh` | Formats + autofixes the edited `.py`, reports what ruff could not fix |
 | `PostToolUse(Edit\|Write)` | `manifest-validate.sh` | Runs `felix validate-manifest` on a changed manifest |
 | `PostToolUse(Edit\|Write)` | `settings-sync-reminder.sh` | Names the in-repo companion file a change requires |
 | `PostToolUse(Edit\|Write)` | `doc-sync-reminder.sh` | Names the public MDX page a changed surface must update |
 | `PostToolUse(Edit\|Write)` | `quality-ratchet.sh` | Reports a `.py` whose function/module metrics got worse than at `HEAD` |
+| `PostToolUse(Edit\|Write)` | `structural-test-proof.sh` | A tree-scanning test gained a case — names the `prove-fails.sh` command for it |
 | `PostToolUseFailure(Bash)` | `test-failure-hint.sh` | Translates this repo's recurring failures into the actual fix |
 | `Stop` | `doc-drift-stop.sh` | Blocks the turn once per drift-set when documented surfaces changed with no doc update |
 | `SubagentStop` | `subagent-log.sh` | Appends a delegation audit line to `.claude/logs/` |
@@ -100,6 +101,20 @@ python3 -c "import json;json.load(open('.claude/settings.json'))"
 
 Exit 2 blocks and feeds stderr back to Claude; exit 0 plus
 `{"hookSpecificOutput":{"hookEventName":"…","additionalContext":"…"}}` injects context.
+
+## The defect shape these guard against
+
+Nearly every real defect in this repo is a control that looks present and does nothing, and the
+usual cause is that **the branch production takes is the branch nothing covers**. Four artifacts
+target it directly, and `.claude/rules/felix-invariants.md` states the rule so it survives a
+compaction:
+
+| Failure | Guard |
+|---|---|
+| A defaulted parameter every test supplies, so production's own call is uncovered — `create_app()` shipped reading `settings.x` instead of `cfg.x` and died at boot with a green suite | `tests/unit/test_entrypoint_wiring.py` calls each entrypoint the way its console script does, and resolves every `module:attr` string production depends on |
+| A test that cannot fail — an AST invariant matched `timeout=<Constant>` while every literal it hunted lived inside `httpx.Timeout(...)` | `scripts/prove-fails.sh` runs a test against pre-change source: **PROVEN** / **VACUOUS** / **BROKEN**. `structural-test-proof.sh` names the command when a scanning test gains a case |
+| A security fix that opens a second hole — a validated hostname interpolated into `--host-resolver-rules`, whose grammar is a comma-separated list | `pr-quality-gate.sh` asks for `felix-security-reviewer` when the diff touches a control path; the **security-review** checklist has a grammar-crossing section |
+| Deleting live code on a stale note — `SkillRef.description` was nearly removed as unread after `a2a/card.py` started reading it | The **dead-code-audit** skill: absence is the claim that rots fastest, so re-derive it against the tree at HEAD, never from an earlier note |
 
 ## Permissions
 

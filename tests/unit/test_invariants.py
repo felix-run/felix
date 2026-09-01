@@ -80,6 +80,14 @@ def test_an_extra_only_module_is_never_imported_eagerly() -> None:
     module that does it at *its* module scope. The moment something does, a lean
     install breaks at import time — which is exactly what the rule below exists to
     prevent, so the exception has to carry its own guard.
+
+    Every import form is checked, because an earlier version read only `ImportFrom.module`
+    and so saw `from felix.durability._temporal_workflow import X` while missing
+    `from felix.durability import _temporal_workflow` — where the module is named in
+    `names`, not in `module`. That is the more idiomatic of the two, and the relative form
+    a sibling inside `durability/` would naturally write (`from . import _temporal_workflow`)
+    has no `module` at all. Found by mutation-testing this invariant rather than by a
+    failure: it was green against the violation it exists to catch.
     """
     targets = {Path(rel).stem for rel in EXTRA_ONLY_MODULES}
     offenders: list[str] = []
@@ -89,13 +97,18 @@ def test_an_extra_only_module_is_never_imported_eagerly() -> None:
                 continue
             tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
             for node in tree.body:  # module scope only
-                mod = ""
-                if isinstance(node, ast.ImportFrom) and node.module:
-                    mod = node.module
-                elif isinstance(node, ast.Import):
-                    mod = ",".join(a.name for a in node.names)
-                if any(t in mod.split(".") or t in mod.split(",") for t in targets):
-                    offenders.append(f"{path.relative_to(ROOT)}:{node.lineno} imports {mod}")
+                # Every dotted segment the statement names, from wherever it names it.
+                segments: set[str] = set()
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        segments.update(alias.name.split("."))
+                elif isinstance(node, ast.ImportFrom):
+                    segments.update((node.module or "").split("."))
+                    segments.update(alias.name for alias in node.names)
+                hit = sorted(segments & targets)
+                if hit:
+                    rel = path.relative_to(ROOT)
+                    offenders.append(f"{rel}:{node.lineno} imports {', '.join(hit)}")
     assert offenders == [], (
         "An extra-only module must be imported inside the function that needs it, or a "
         "lean install fails at import:\n  " + "\n  ".join(offenders)
