@@ -7,7 +7,9 @@ enforced or its default corrected to match the behaviour it actually had.
 
 from __future__ import annotations
 
+import ast
 import re
+from pathlib import Path
 
 import pytest
 from felix.config import Settings
@@ -15,6 +17,8 @@ from felix.context import AuthContext
 from felix.manifests.governance import GovernanceError, assert_outbound_providers_allowed
 from felix.manifests.inbound_auth import InboundAuthError, enforce_inbound_auth
 from felix.manifests.loader import parse_manifest
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def _manifest(spec: dict) -> object:
@@ -222,3 +226,72 @@ async def test_anomaly_disabled_manifest_is_skipped(monkeypatch: pytest.MonkeyPa
 
     monkeypatch.setattr(anomaly.audit_store, "list_events", _list_events)
     assert await anomaly.run_anomaly_scan(_settings()) == []
+
+
+# --- the class, not just the instances ------------------------------------------
+
+# Declared in `schema.py` and read nowhere. Each is a promise the schema makes and the
+# harness does not keep: `felix validate-manifest` accepts it, the editor completes it, and
+# it changes nothing. Left in place only because deciding wire-or-remove is a separate call
+# per field — but the set may not grow, and shrinking it is the point.
+KNOWN_INERT_FIELDS = {
+    "after_facts",  # MemoryConsolidate
+    "consolidate",  # MemorySpec
+    "default_window_chars",  # ArtifactsSpec
+    "max_window_chars",  # ArtifactsSpec
+    "executor_model",  # PlanExecuteSpec
+    "max_replans",  # PlanExecuteSpec
+    "planner_few_shots",  # PlanExecuteSpec
+    "planner_model",  # PlanExecuteSpec
+    "replan_on_failure",  # PlanExecuteSpec
+    "min_rate",  # AnomalySpec
+    "precount",  # Limits
+    "retention_days",  # GovernanceSpec
+}
+
+
+def test_the_set_of_fields_that_do_nothing_does_not_grow() -> None:
+    """Every field the manifest schema declares should be read by something.
+
+    A field that validates and does nothing is worse than a missing feature: it reads as a
+    control, `validate-manifest` blesses it, and the only way to discover the truth is to
+    grep the harness. This repo has shipped that shape repeatedly — `spec.a2a.capabilities`,
+    `spec.anomaly`, `spec.auth.inbound.schemes`, `spec.observability.metrics`, all fixed
+    above — so the useful guard is on the class rather than on each instance.
+
+    A ratchet, deliberately: adding an unread field fails, and *fixing* one also fails until
+    the name is removed from the set. Both edits should be conscious.
+
+    Name-based, so it cannot see a field whose name is read on a different class —
+    `SandboxRef.args_schema` was inert while `QueueRef.args_schema` was live. Those were
+    removed by inspection; this catches the rest.
+    """
+    schema_path = ROOT / "packages/harness/src/felix/manifests/schema.py"
+    tree = ast.parse(schema_path.read_text(encoding="utf-8"))
+    declared: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            for item in node.body:
+                if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name):
+                    declared.add(item.target.id)
+
+    corpus: list[str] = []
+    for base in ("packages", "apps"):
+        for path in (ROOT / base).rglob("*.py"):
+            if path == schema_path or "test" in path.parts:
+                continue
+            corpus.append(path.read_text(encoding="utf-8", errors="ignore"))
+    blob = "\n".join(corpus)
+
+    unread = {f for f in declared if not re.search(rf"\b{re.escape(f)}\b", blob)}
+
+    new = sorted(unread - KNOWN_INERT_FIELDS)
+    assert not new, (
+        "new manifest field with no reader in packages/ or apps/ — wire it or drop it "
+        f"rather than shipping a field that validates and does nothing: {new}"
+    )
+    fixed = sorted(KNOWN_INERT_FIELDS - unread)
+    assert not fixed, (
+        "these fields now have readers; remove them from KNOWN_INERT_FIELDS so the ratchet "
+        f"keeps its meaning: {fixed}"
+    )
