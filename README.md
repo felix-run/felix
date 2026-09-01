@@ -327,6 +327,28 @@ blocks are captured off the response, persisted on the session event, and replay
 `tool_use` blocks on the next request. A block whose signature was not captured is dropped rather
 than sent, because an unverifiable signature rejects the whole turn.
 
+### Where manifests come from
+
+`FELIX_MANIFEST_SOURCE` picks the posture:
+
+| Value | Resolution order | Writes |
+|---|---|---|
+| `store` (default) | tenant Postgres version → bundled YAML | `PUT /manifests`, canary, rollback |
+| `bundled` | bundled YAML only | routes not mounted |
+
+`bundled` is for a single-tenant or self-hosted deployment with no use for runtime
+authoring. The write routes are never registered, so the verbs are absent from the app and
+from `/openapi.json` rather than present and refusing, and no manifest store is constructed
+at all. `felix doctor` reports which posture is active.
+
+Two things to know before flipping an existing deployment:
+
+- **Stored manifests stop being served.** Every tenant collapses onto the image's file, so
+  any per-tenant `spec.auth.inbound` tightening — `required_scopes` in particular — is
+  dropped. Eight of the nine bundled manifests are `allow_anonymous: true`.
+- **`pin_compile` threads will 409 once.** The resolved version becomes `null` and the
+  content hash becomes the bundled YAML's, which is drift by design.
+
 ### Manifest capabilities
 
 Sessions and skills:

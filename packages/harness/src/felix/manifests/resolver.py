@@ -310,6 +310,10 @@ async def resolve_manifest(
             cache_key=f"global_object:{manifest_name}",
         )
 
+    return _resolve_from_bundled(manifest_name, bundled_dir)
+
+
+def _resolve_from_bundled(manifest_name: str, bundled_dir: str | None) -> ResolvedManifest:
     try:
         bundled = load_bundled(manifest_name, bundled_dir=bundled_dir)
     except FileNotFoundError as exc:

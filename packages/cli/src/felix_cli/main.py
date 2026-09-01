@@ -249,6 +249,13 @@ def doctor_cmd() -> None:
     detail = mode if mode in BUILTIN_AUTH_MODES else f"{mode} (plugin)" if mode_ok else mode
     check("auth_mode", mode_ok, detail)
 
+    # Posture, not health: reported through the same channel as `patterns` and the mcp-stdio
+    # line, because a green "ok" that can never be red trains the eye to skip it.
+    if settings.bundled_only:
+        rprint("  [dim]manifest source[/dim] bundled — image only, write routes not mounted")
+    else:
+        rprint("  [dim]manifest source[/dim] store — tenant Postgres version, then bundled")
+
     # Every open backend setting resolved against its registry, reported rather than
     # raised — doctor's job is to list what is wrong, not to stop at the first thing.
     try:

@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`FELIX_MANIFEST_SOURCE=store|bundled`.** Nearly every finding in the recent security
+  work traced to a manifest field reaching the harness at runtime — unbounded timeouts and
+  approval TTLs, uncapped ref lists, stdio commands. Those are bounded now, and they had to
+  be: an operator's own bundled manifest can hold the same values, so the bounds were never
+  really about who wrote the file.
+
+  But a deployment that never authors a manifest at runtime should not have to guard that
+  path. Under `bundled` the write routes are **not registered** — absent from the app and
+  from `/openapi.json`, with Starlette answering a `PUT` as `405 Allow: GET` — and no
+  manifest store is constructed at all. The posture is expressed by withholding the store at
+  the runtime seam rather than by a branch in the resolver, because `_read_tenant_postgres`
+  already collapses to the bundled file when no store is supplied. The read routes follow
+  the posture too: `GET /manifests` lists the bundled set rather than Postgres rows that
+  will never be served, and a `?version=` read 404s.
+
+  The default stays `store`. Runtime manifests, versioning, canary and rollback are the
+  product for a multi-tenant deployment; removing them would dictate a workflow rather than
+  offer one. Flipping an existing deployment has two consequences worth reading first: every
+  tenant collapses onto the image's file, dropping any per-tenant `auth.inbound` tightening,
+  and `pin_compile` threads see one 409 as the resolved version becomes `null`. Both are
+  documented in the README, and `felix doctor` reports the active posture.
+
 ### Fixed
 
 - **The last two hardcoded outbound timeouts, and no bound on the configurable ones.**
