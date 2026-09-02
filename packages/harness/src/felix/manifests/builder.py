@@ -9,6 +9,7 @@ from typing import Any, Literal
 
 from felix.auth.context import AuthContext
 from felix.context import try_get_context
+from felix.governance.content_screening import _INJECTION
 from felix.limits import EffectiveLimits, effective_limits
 from felix.manifests.loader import load_bundled, parse_manifest
 from felix.manifests.schema import (
@@ -283,12 +284,21 @@ _DEFAULT_COMMAND_RULES: tuple[tuple[str, Literal["allow", "deny", "require_appro
 )
 
 
-_INJECTION_MARKERS = (
-    "ignore previous instructions",
-    "ignore your previous instructions",
-    "disregard your instructions",
-    "system prompt",
-)
+# The marker scan reuses `governance/content_screening.py:_INJECTION` rather than keeping its
+# own list. There were two, and this one held the less careful copy: a bare `"system prompt"`
+# substring, where the other module already had `system\s+prompt\s*:` and `<\s*/?\s*system\s*>`.
+#
+# That mattered once `cowork.yaml` enabled screening over its client tools. `"system prompt"`
+# matches any *mention* of the phrase, so `cat CLAUDE.md` on this very repository — 23 of its
+# files contain it — had its entire output replaced by `[quarantined]`; `_replace_content`
+# swaps the whole string, it does not redact the match. A control that eats a developer's
+# `git log -p` is a control someone turns off, and turning it off would have removed screening
+# from `local_shell` too.
+#
+# Not a sensitivity trade invented here: the anchored patterns still flag
+# "ignore previous instructions ..." and "System prompt: you are now ...", and they are the
+# ones this repo had already thought about. A second partial copy of a rule is the shape
+# `tests/unit/test_invariants.py` was written to catch.
 
 # Trust is an allowlist, not a denylist. `Tool.executor.transport` is an open `str`
 # (tools/types.py) — a plugin may mint its own — so an untrusted-denylist silently fails
@@ -353,8 +363,7 @@ def apply_content_screening(
             if is_wrapper_deny(out):
                 return out
             content = tool_output_content(out)
-            lower = content.lower()
-            flagged = any(m in lower for m in _INJECTION_MARKERS)
+            flagged = any(rx.search(content) for rx in _INJECTION)
             unavailable = False
             if not flagged and model_id:
                 from felix.config import get_settings
@@ -1018,11 +1027,19 @@ def _warn_unmatched_tool_patterns(m: Manifest, bound: list[str]) -> None:
             )
 
 
+def _summarise(names: list[str], limit: int = 8) -> str:
+    """Name a few and say how many more, so a truncated list does not read as complete."""
+    shown = ", ".join(repr(n) for n in names[:limit])
+    extra = len(names) - limit
+    return f"{shown} and {extra} more" if extra > 0 else shown
+
+
 def _warn_untrusted_tools_are_unscreened(m: Manifest, untrusted: list[str]) -> None:
     """Say so when untrusted tool output reaches the model with nothing looking at it.
 
-    `content_screening.enabled` defaults to False, and `validate_governance` only requires it
-    under the `soc2` / `eu_ai_act` framework opt-in. So a manifest that binds an MCP server, an
+    `content_screening.enabled` defaults to False, and `validate_governance` requires it only under
+    `eu_ai_act` — `soc2` does not, and its data-governance check is satisfiable by guardrails
+    instead. So a manifest that binds an MCP server, an
     A2A peer, a browser, a sandbox, a container or a queue and never enables screening is a
     normal, valid manifest in which attacker-controlled text reaches the model with the whole
     governed toolset behind it — the last remaining path of that shape after the additive-
@@ -1033,19 +1050,20 @@ def _warn_untrusted_tools_are_unscreened(m: Manifest, untrusted: list[str]) -> N
     which is not a thing to do silently in a patch; refusing would break them outright. What
     was missing is anything saying it at the moment the manifest is compiled.
 
-    Silent across every bundled manifest: `contributor.yaml` is the only one that binds
-    untrusted tools and it enables screening.
+    Silent across every bundled manifest, which is the bar for shipping it — a warning that
+    fires on what we ship is noise on arrival. `contributor.yaml` and `cowork.yaml` are the
+    two that bind untrusted tools, and both enable screening.
     """
     if not untrusted:
         return
-    screening = m.spec.content_screening
-    if screening is not None and screening.enabled:
+    # `content_screening` has a default_factory, so it is never None — only disabled.
+    if m.spec.content_screening.enabled:
         return
     logger.warning(
         "manifest %r binds untrusted tool(s) %s with content_screening disabled, so their "
         "output reaches the model unscreened",
         m.metadata.name,
-        ", ".join(repr(x) for x in sorted(untrusted)[:8]),
+        _summarise(sorted(untrusted)),
         extra={"manifest_id": m.metadata.name},
     )
     record_counter("felix_untrusted_tools_unscreened", {"manifest_id": m.metadata.name})

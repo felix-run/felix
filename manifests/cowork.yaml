@@ -80,6 +80,17 @@ spec:
   content_screening:
     enabled: true
     on_flag: quarantine
+    # `read_file`, `search_files` and `list_dir` are `transport: local`, so the untrusted-tool
+    # default does not cover them — but they read the same filesystem `local_shell` does, and
+    # they are the route an agent prefers over `cat`. Naming them here adds screening; the
+    # list cannot narrow it away from the client tools.
+    # `read_file`, `search_files` and `list_dir` are `transport: local`, so the untrusted-tool
+    # default does not cover them — but they read the same filesystem `local_shell` does, and
+    # they are the route an agent prefers over `cat`. `recall` and `list_memories` are here for
+    # the re-entry path: capture runs over turns that include client-tool output, so a string
+    # quarantined on the way in can be recalled later as a plain fact. The list only ever adds;
+    # it cannot narrow screening away from the client tools.
+    tools: [read_file, search_files, list_dir, recall, list_memories]
 
   limits:
     max_tool_calls: 200
@@ -109,8 +120,10 @@ spec:
       max_facts: 3
       min_chars: 200
     recall:
-      # Governed recall. The tools are bound above the wrapper stack, so a recalled
-      # memory passes through content screening; the automatic fact prelude does not.
+      # Governed recall. Memory tools are `transport: local` with `source: memory`, which is
+      # not an untrusted prefix, so the screening default does not cover them — they are named
+      # in `content_screening.tools` above, which is what makes a recalled memory screened.
+      # The automatic fact prelude is not a tool call and is not screened either way.
       tools: true
       limit: 5
 
