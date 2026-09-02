@@ -67,9 +67,6 @@ statement mentions: every `[project.scripts]` target, the `module:attr` string G
 Taskiq broker/scheduler/module paths, and the `felix-*` binary each Compose, Dockerfile and Helm
 command names — plus `create_application()` called the way production calls it, with no arguments.
 
-`./scripts/prove-fails.sh --help`-style usage lives in the script header; when a new test needs
-proving, read the rule and the method in `.claude/rules/felix-invariants.md`.
-
 A test that needs an optional extra gates on `tests/optional_deps.py:require_optional(module,
 extra)`, never a bare `pytest.importorskip` — an invariant enforces this. A module-level
 `importorskip` collapses a whole file into one collect-time skip, so it vanishes from the run
