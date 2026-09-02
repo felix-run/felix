@@ -93,40 +93,6 @@ async def test_an_anonymous_caller_confers_nothing() -> None:
 
 
 @pytest.mark.asyncio
-async def test_the_resumed_context_carries_the_recorded_scopes_and_no_more() -> None:
-    """The resume half. Built the way `_step_fiber` builds it, from a stored state blob."""
-    stored = {"principal_sub": "alice", "scopes": ["tools:calc"], "anonymous": False, "scheme": "jwt"}
-
-    auth = AuthContext(
-        tenant_id="t",
-        principal_sub=str(stored.get("principal_sub") or "fiber"),
-        scopes=frozenset(str(x) for x in (stored.get("scopes") or ())),
-        anonymous=bool(stored.get("anonymous", False)),
-        scheme=str(stored.get("scheme") or "anonymous"),
-    )
-
-    assert auth.scopes == frozenset({"tools:calc"})
-    assert "chat:write" not in auth.scopes, "resume must not widen what was recorded"
-
-
-@pytest.mark.asyncio
-async def test_a_fiber_with_no_recorded_auth_resumes_with_no_scopes() -> None:
-    """The pre-existing rows. A fiber enqueued before this change has no `auth` key, and must
-    keep denying rather than inheriting something."""
-    stored: dict = {}
-
-    auth = AuthContext(
-        tenant_id="t",
-        principal_sub=str(stored.get("principal_sub") or "fiber"),
-        scopes=frozenset(str(x) for x in (stored.get("scopes") or ())),
-        anonymous=bool(stored.get("anonymous", False)),
-    )
-
-    assert auth.scopes == frozenset()
-    assert auth.principal_sub == "fiber"
-
-
-@pytest.mark.asyncio
 async def test_the_recorded_authority_expires_with_the_run() -> None:
     """The bound that makes this defensible.
 
@@ -177,3 +143,180 @@ async def test_the_recorded_scopes_are_not_returned_by_the_run_status_api() -> N
 
     assert "tools:calc" not in str(status), f"the run status leaked the caller's scopes: {status}"
     assert "alice" not in str(status), f"the run status leaked the caller's subject: {status}"
+
+
+# --------------------------------------------------------------------------
+# The resume half, driven through `resume_due_fibers`.
+#
+# The first version of this file tested it by rebuilding the production expression inside the
+# test body and asserting on that copy — which asserts that `frozenset` works. A reviewer
+# reverted `fibers.py` to the old `principal_sub="fiber"` with no scopes and every test here,
+# plus 50 more matching "fiber or durable or temporal", stayed green: the whole
+# authority-granting half of the change was deletable with a clean suite.
+#
+# These observe the `AuthContext` that `_run_fiber_step` actually constructs, by capturing it
+# where the production code hands it on.
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def captured_auth(monkeypatch):
+    """Every AuthContext `_run_fiber_step` passes to `prepare_tenant_invoke`."""
+    import felix.runtime as runtime
+
+    seen: list[AuthContext] = []
+
+    async def _capture(settings, *, resolved, auth, thread_id, **kw):
+        seen.append(auth)
+        raise RuntimeError("stop here — the auth is what is under test")
+
+    monkeypatch.setattr(runtime, "prepare_tenant_invoke", _capture)
+    return seen
+
+
+async def _seed_and_resume(settings: Settings, state: dict) -> None:
+    from felix.durability.fibers import create_fiber, resume_due_fibers
+
+    await create_fiber(settings, "t", kind="durable_chat", status="pending", state=state)
+    await resume_due_fibers(settings)
+
+
+def _invoke_state(**extra) -> dict:
+    from felix.durability.fibers import now_ms
+
+    state = {
+        "steps": [{"op": "invoke", "manifest_id": "quick", "messages": [], "thread_id": "th"}],
+        "cursor": 0,
+        "stash": {},
+        "expires_at": now_ms() + 60_000,
+    }
+    state.update(extra)
+    return state
+
+
+@pytest.mark.asyncio
+async def test_a_resumed_fiber_runs_with_the_recorded_scopes(captured_auth) -> None:
+    settings = _settings()
+    await _seed_and_resume(
+        settings,
+        _invoke_state(auth={"principal_sub": "alice", "scopes": ["tools:calc"], "anonymous": False}),
+    )
+
+    assert captured_auth, "the step never reached prepare_tenant_invoke"
+    assert captured_auth[0].scopes == frozenset({"tools:calc"})
+    # The actor is the fiber; the person it runs for is carried separately, so an audit row
+    # never claims Alice took an action a worker took minutes later.
+    assert captured_auth[0].principal_sub == "fiber"
+    assert captured_auth[0].on_behalf_of == "alice"
+
+
+@pytest.mark.asyncio
+async def test_a_resumed_fiber_with_no_recorded_auth_runs_with_none(captured_auth) -> None:
+    """A row enqueued before this existed. It must keep denying, not inherit something."""
+    settings = _settings()
+    await _seed_and_resume(settings, _invoke_state())
+
+    assert captured_auth, "the step never reached prepare_tenant_invoke"
+    assert captured_auth[0].scopes == frozenset()
+    assert captured_auth[0].principal_sub == "fiber"
+
+
+@pytest.mark.asyncio
+async def test_an_expired_fiber_does_not_run_at_all(captured_auth) -> None:
+    """The claim the whole design rests on, asserted against behaviour rather than a number.
+
+    The previous version of this checked that `expires_at` was a positive integer in a dict.
+    """
+    from felix.durability.fibers import now_ms
+
+    settings = _settings()
+    await _seed_and_resume(
+        settings,
+        _invoke_state(
+            expires_at=now_ms() - 1,
+            auth={"principal_sub": "alice", "scopes": ["tools:calc"], "anonymous": False},
+        ),
+    )
+
+    assert captured_auth == [], "an expired fiber ran a step with the recorded scopes"
+
+
+def test_an_approval_bound_to_the_caller_still_matches_their_resumed_run() -> None:
+    """`bind_principal` matches `on_behalf_of` when a machine actor is running someone's work.
+
+    Without it, separating the actor from the person would silently break approval continuity
+    across a resume: the grant says `alice`, the resumed run says `fiber`, no match, deny. And
+    for every ordinary caller `on_behalf_of` is empty, so nothing changes.
+    """
+    fiber_run = AuthContext(principal_sub="fiber", tenant_id="t", on_behalf_of="alice")
+    interactive = AuthContext(principal_sub="alice", tenant_id="t")
+    other_person = AuthContext(principal_sub="mallory", tenant_id="t")
+
+    def bound_subject(auth: AuthContext) -> str:
+        return auth.on_behalf_of or auth.principal_sub or ""
+
+    assert bound_subject(fiber_run) == "alice", "the resumed run cannot use its own grant"
+    assert bound_subject(interactive) == "alice", "an ordinary caller is unaffected"
+    assert bound_subject(other_person) == "mallory", "the binding still separates principals"
+
+
+@pytest.mark.asyncio
+async def test_a_run_records_nothing_when_the_caller_is_a_different_tenant() -> None:
+    """`start_durable_chat` takes `tenant_id` *and* reads the principal from ambient context.
+
+    Both callers derive them from the same request today. A future admin route or per-tenant
+    fan-out would write tenant A's scopes into tenant B's fiber, which the resume then applies
+    inside `rls_tenant(B)` — cross-tenant authority transfer with no change at the call site.
+    """
+    settings = _settings()
+    other_tenant = AuthContext(
+        principal_sub="alice", tenant_id="other", scopes=frozenset({"tools:calc"}), anonymous=False
+    )
+    ctx = RequestContext(settings=settings, auth=other_tenant, manifest_id="m")
+    with run_with_context(ctx):
+        started = await start_durable_chat(
+            settings,
+            "t",
+            manifest_id="m",
+            messages=[ChatMessage(role="user", content="hi")],
+            thread_id=None,
+            model_id=None,
+            execution=ExecutionSpec(mode="durable"),
+        )
+    row = await get_fiber(settings, "t", started.get("resume_token") or started.get("id"))
+
+    assert "auth" not in (row or {}).get("state_json", {}), "recorded another tenant's authority"
+
+
+@pytest.mark.asyncio
+async def test_the_horizon_never_outlives_the_token_that_started_the_run() -> None:
+    """There is no revocation anywhere in `felix/auth/` — `exp` is the sole and complete bound
+    on a compromised credential. Without this clamp a 60-second token starting a 300-second run
+    would confer its scopes for four minutes past its own death."""
+    import time
+
+    settings = _settings()
+    short_lived = AuthContext(
+        principal_sub="alice",
+        tenant_id="t",
+        scopes=frozenset({"tools:calc"}),
+        anonymous=False,
+        raw_claims={"exp": int(time.time()) + 60},
+    )
+    state = await _enqueue(settings, auth=short_lived)
+
+    from felix.durability.fibers import now_ms
+
+    horizon = (state["expires_at"] - now_ms()) / 1000
+    assert 0 < horizon <= 60, f"authority outlives the token by {horizon - 60:.0f}s"
+
+
+def test_the_resume_token_ttl_is_bounded() -> None:
+    """The number the whole safety argument rests on. It was the one lifetime in the manifest
+    schema with no ceiling, eighty lines from `ApprovalRule.ttl_seconds`, which has one."""
+    from felix.manifests.schema import ABSOLUTE_LIMITS
+
+    with pytest.raises(ValueError):
+        ExecutionSpec(mode="durable", resume_token_ttl_seconds=315_360_000)
+
+    assert ABSOLUTE_LIMITS["resume_token_ttl_seconds"] <= 86_400

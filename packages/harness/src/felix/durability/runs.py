@@ -8,16 +8,23 @@ from typing import Any
 from felix.config import Settings
 from felix.context import try_get_context
 from felix.durability.fibers import create_fiber, get_fiber, now_ms, save_fiber
-from felix.manifests.schema import ExecutionSpec
+from felix.manifests.schema import ABSOLUTE_LIMITS, ExecutionSpec
 from felix.patterns.types import ChatMessage
 
 logger = logging.getLogger("felix.durability.runs")
 
 
 def _ttl_seconds(settings: Settings, execution: ExecutionSpec) -> int:
+    """How long the run — and so the authority it records — stays usable.
+
+    Clamped here as well as in the schema. The schema bound only applies at parse; a manifest
+    row stored before the cap existed still resolves, and this is the value that becomes
+    `expires_at`.
+    """
+    ceiling = ABSOLUTE_LIMITS["resume_token_ttl_seconds"]
     if execution.resume_token_ttl_seconds is not None:
-        return max(1, int(execution.resume_token_ttl_seconds))
-    return max(1, int(getattr(settings, "hibernate_after_seconds", 300) or 300))
+        return max(1, min(int(execution.resume_token_ttl_seconds), ceiling))
+    return max(1, min(int(getattr(settings, "hibernate_after_seconds", 300) or 300), ceiling))
 
 
 def _dump_messages(messages: list[ChatMessage]) -> list[dict[str, Any]]:
@@ -80,13 +87,28 @@ async def start_durable_chat(
     # Absent (enqueued with no request context), resume falls back to no scopes, which is what
     # it did before. Fail closed on the way in, not just on the way out.
     caller = try_get_context()
-    if caller is not None:
+    if caller is not None and caller.auth.tenant_id == tenant_id:
+        # The tenant guard is not decoration. This function takes `tenant_id` as a parameter
+        # *and* reads the principal from ambient context, and reconciles them nowhere else.
+        # Both callers today derive both from the same request, but an admin route or a
+        # per-tenant fan-out job would write tenant A's scopes into tenant B's fiber, which
+        # `_run_fiber_step` would then apply inside `rls_tenant(B)`.
         state["auth"] = {
             "principal_sub": caller.auth.principal_sub,
             "scopes": sorted(caller.auth.scopes),
             "anonymous": bool(caller.auth.anonymous),
             "scheme": caller.auth.scheme,
         }
+        # The token's own expiry, as a single integer — not the claims. Without it this would
+        # be the first path in Felix where authority survives `exp`: there is no revocation
+        # anywhere in `felix/auth/`, so `exp` is the sole and complete bound on a compromised
+        # credential, and a 60-second JWT starting a 300-second run would confer its scopes for
+        # four minutes past its own death. Clamping here makes "a fiber cannot outlive the
+        # token that started it" true rather than nearly true.
+        token_exp = caller.auth.raw_claims.get("exp")
+        if isinstance(token_exp, (int, float)):
+            expires_at = min(expires_at, int(token_exp) * 1000)
+            state["expires_at"] = expires_at
     fiber = await create_fiber(
         settings,
         tenant_id,
