@@ -347,6 +347,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   measured 0.24s of synchronous CPU on the event loop, which stalls every other tenant sharing
   that worker and is reachable by any principal holding `manifests:write` for one tenant.
 
+- **One model tool call could execute a tool twice.** Both dispatch sites decided how to call a
+  function by *calling it* with the wider signature and catching `TypeError`:
+
+      try:    return await execute(args, ctx, inner)
+      except TypeError: return await execute(args, ctx)
+
+  That cannot distinguish "wrong arity" from "a `TypeError` raised inside a body that already
+  ran". Any tool whose body raises `TypeError` on attacker-shaped input — an MCP server
+  returning a list where a dict was expected, a JSON field that is null — ran twice, past every
+  governance wrapper, with no interrupted-call marker, while the model saw one call.
+
+  `wrap_executor` is benign for the eight wrappers in `manifests/builder.py`, whose `execute`
+  takes two parameters so the three-argument call always raises before the body runs. It is not
+  benign for `apply_artifact_spill`, whose `execute` is `(args, ctx=None, _inner=inner)` and
+  dispatches on the first call. `define_tool` had the same shape in `handler(parsed, ctx)`
+  falling back to `handler(parsed)`. Both measured at 2 executions per call.
+
+  Arity is now decided by `tools/types.py:accepts_positional` — introspection, once, before
+  anything runs. An unintrospectable callable selects the narrower call, because a genuine
+  mismatch raising once and loudly beats running a side effect a second time.
+
+  `apply_artifact_spill` no longer takes `inner` as a defaulted third parameter — it closes
+  over it like the eight wrappers do. That parameter existed only to satisfy the old probe and
+  was the sole reason `wrap_executor` ever took the wide branch, so removing it deletes the
+  shape rather than only the symptom.
+
+  Found by `felix-security-reviewer` during the governance mutation audit. The one remaining
+  `except TypeError` probe, in `security/rate_limit.py`, is left alone deliberately — but not
+  for the reason first given here. Its `try` spans `pipe.execute()` and `int(results[0])` as
+  well as the queueing calls, so a nil pipeline element would fire the handler *after* the
+  INCR landed and issue a second one. It stays because the direction is safe: double-counting
+  makes the limiter stricter, never more permissive.
+
 ### Changed
 
 - **Removed `args_schema` from `spec.sandboxes`, `spec.containers` and
