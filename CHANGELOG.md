@@ -312,6 +312,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   Found by `felix-security-reviewer` during the governance mutation audit.
 
+- **Governance rules target tools by glob, as the docs have always said they did.**
+  `internals/governance.mdx` promised *"Tool targeting for policies, approvals, and judges
+  matches by glob so MCP tools named `server__*` stay gated even if the remote renames
+  suffixes"*, and every one of them matched literally. So `{tools: ["github__*"],
+  required_scopes: [repo:write]}` — the shape MCP's `server__tool` prefixing makes natural, and
+  the one the docs told operators to write — matched no bound tool and gated nothing.
+
+  `manifests/tool_match.py` now backs policies, approvals, judge `target_tools` and
+  `content_screening.tools`. Screening is not in the docs' list but is included anyway: leaving
+  one of the four literal is the surprise, since `server__*` would then gate under a policy and
+  not under screening. Matching is `fnmatchcase` and works in any position — `github__*`,
+  `*__search`, `mcp__*__write`, `*`.
+
+  A pattern matching no bound tool is logged at WARNING and counted as
+  `felix_rule_targets_nothing` at compile time. Not refused: an MCP server whose discovery
+  failed binds no tools, and refusing would let a remote outage take the agent down with it.
+  Globs make an inert rule easier to write by hand, so the counter is the thing to watch after
+  adding one.
+
 ### Changed
 
 - **Removed `args_schema` from `spec.sandboxes`, `spec.containers` and

@@ -408,3 +408,59 @@ def test_a_refusal_message_never_carries_the_offending_value() -> None:
 
     assert "sk-live-SUPERSECRET" not in str(caught.value), str(caught.value)
     assert "api_key" in str(caught.value), "the message should still name the offending field"
+
+
+# --------------------------------------------------------------------------
+# Glob tool targeting. The public docs promised it — "so MCP tools named
+# `server__*` stay gated even if the remote renames suffixes" — and every
+# control matched literally, so a rule written the documented way gated nothing.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_policy_glob_gates_the_tools_it_names() -> None:
+    """`github__*` is the shape MCP prefixing makes natural, and the docs told operators
+    to write it. Before this it matched no bound tool and the policy wrapped nothing."""
+    rule = Policy(id="gh", required_scopes=["repo:write"], tools=["github__*"])
+    create = _tool("side effect happened", name="github__create_issue")
+    unrelated = _tool("ok", name="calculator")
+
+    wrapped = apply_policies([create, unrelated], [rule], "m")
+    by_name = {t.name: t for t in wrapped}
+
+    assert by_name["calculator"] is unrelated, "the glob gated a tool it does not name"
+    with _with_scopes("something:else"):
+        out = await by_name["github__create_issue"].executor.execute({})
+    assert "policy denied" in str(out), f"the glob did not gate the tool: {out}"
+    assert create.executor.calls == 0
+
+
+@pytest.mark.parametrize(
+    ("pattern", "name", "expected"),
+    [
+        ("calculator", "calculator", True),
+        ("calculator", "calculator_v2", False),
+        ("github__*", "github__create_issue", True),
+        ("github__*", "gitlab__create_issue", False),
+        ("*", "anything", True),
+        ("*__search", "brave__search", True),  # suffix: the subset syntax would miss this
+        ("mcp__*__write", "mcp__gh__write", True),
+        # Not lowercased. `os.path.normcase` is a no-op on POSIX, so this does not
+        # distinguish `fnmatch` from `fnmatchcase` — it pins that nothing case-folds by hand.
+        ("Calculator", "calculator", False),
+    ],
+)
+def test_the_matcher_is_case_sensitive_and_handles_every_position(
+    pattern: str, name: str, expected: bool
+) -> None:
+    from felix.manifests.tool_match import matches_any
+
+    assert matches_any([pattern], name) is expected
+
+
+def test_a_pattern_matching_no_bound_tool_is_reported() -> None:
+    """The inert-control shape, which globs make easier to write by hand."""
+    from felix.manifests.tool_match import unmatched_patterns
+
+    assert unmatched_patterns(["github__*", "calculator"], ["calculator"]) == ["github__*"]
+    assert unmatched_patterns(["github__*"], ["github__create_issue"]) == []

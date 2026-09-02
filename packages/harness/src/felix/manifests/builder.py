@@ -23,6 +23,7 @@ from felix.manifests.schema import (
     guardrails_enabled,
     judges_enabled,
 )
+from felix.manifests.tool_match import matches_any, unmatched_patterns
 from felix.observability.metrics import record_counter
 from felix.observability.tracing import manifest_span
 from felix.patterns.registry import get_pattern, list_patterns
@@ -130,13 +131,11 @@ def _clone_tool(tool: Tool, executor: Any) -> Tool:
 
 
 def apply_policies(tools: list[Tool], policies: list[Policy], manifest_id: str) -> list[Tool]:
-    by_tool: dict[str, list[Policy]] = {}
-    for p in policies:
-        for name in p.tools:
-            by_tool.setdefault(name, []).append(p)
-
     def wrap_one(tool: Tool) -> Tool:
-        rules = by_tool.get(tool.name)
+        # Matched per tool rather than through a dict keyed by literal name, which cannot
+        # express a pattern. Order is the manifest's, so a denial names the first rule that
+        # refuses, as it did before.
+        rules = [p for p in policies if matches_any(p.tools, tool.name)]
         if not rules:
             return tool
         inner = tool.executor
@@ -328,11 +327,11 @@ def apply_content_screening(
     if screening is None or not screening.enabled:
         return tools
     on_flag = screening.on_flag
-    named = set(screening.tools)
+    named = list(screening.tools)
     model_id = screening.model.strip()
 
     def wrap_one(tool: Tool) -> Tool:
-        if named and tool.name not in named:
+        if named and not matches_any(named, tool.name):
             return tool
         if not named and not _is_untrusted_tool(tool):
             return tool
@@ -644,7 +643,7 @@ def apply_judges(tools: list[Tool], guardrails: Guardrails | None, manifest_id: 
         return tools
 
     def wrap_one(tool: Tool) -> Tool:
-        applicable = [j for j in judges if not j.target_tools or tool.name in j.target_tools]
+        applicable = [j for j in judges if not j.target_tools or matches_any(j.target_tools, tool.name)]
         if not applicable:
             return tool
         inner = tool.executor
@@ -756,15 +755,13 @@ def _arg_present(args: ToolInput, name: str) -> bool:
 
 
 def apply_approvals(tools: list[Tool], rules: list[ApprovalRule], manifest_id: str) -> list[Tool]:
-    gated: dict[str, ApprovalRule] = {}
-    for r in rules:
-        for name in r.tools:
-            gated[name] = r
-    if not gated:
+    if not any(r.tools for r in rules):
         return tools
 
     def wrap_one(tool: Tool) -> Tool:
-        rule = gated.get(tool.name)
+        # Last match wins, preserving the previous `gated[name] = r` behaviour where a later
+        # rule naming the same tool replaced an earlier one.
+        rule = next((r for r in reversed(rules) if matches_any(r.tools, tool.name)), None)
         if rule is None:
             return tool
         inner = tool.executor
@@ -948,6 +945,35 @@ def _collect_secrets(deps: BuildDeps) -> list[str]:
     if settings is None:
         return collected_secret_values()
     return collected_secret_values(settings)
+
+
+def _warn_unmatched_tool_patterns(m: Manifest, bound: list[str]) -> None:
+    """Say so when a governance rule targets tools that are not there."""
+    targets: list[tuple[str, str, list[str]]] = []
+    for policy in m.spec.policies:
+        targets.append(("policy", policy.id, list(policy.tools)))
+    for rule in m.spec.approvals:
+        targets.append(("approval", rule.id, list(rule.tools)))
+    if m.spec.guardrails:
+        for judge in m.spec.guardrails.judges:
+            targets.append(("judge", judge.name, list(judge.target_tools)))
+    if m.spec.content_screening:
+        targets.append(("content_screening", "content_screening", list(m.spec.content_screening.tools)))
+
+    for kind, rule_id, patterns in targets:
+        missing = unmatched_patterns(patterns, bound)
+        if missing:
+            logger.warning(
+                "%s %r targets %s, which match no bound tool — it gates nothing",
+                kind,
+                rule_id,
+                ", ".join(repr(x) for x in missing),
+                extra={"manifest_id": m.metadata.name},
+            )
+            record_counter(
+                "felix_rule_targets_nothing",
+                {"manifest_id": m.metadata.name, "kind": kind, "rule": rule_id},
+            )
 
 
 async def build_agent(
@@ -1210,6 +1236,14 @@ async def build_agent(
                 )
             except Exception:
                 logger.debug("active facts inject failed", exc_info=True)
+
+        # A pattern that matches no bound tool gates nothing — a typo, a renamed MCP server,
+        # or a glob written before its target existed. Logged rather than refused: the bound
+        # set legitimately varies (an MCP server whose discovery failed binds no tools), so
+        # refusing would let a remote outage take the agent down with it. Silent was not an
+        # option either — an inert control that validates is the defect this repo keeps
+        # shipping, and globs make one easier to write by hand.
+        _warn_unmatched_tool_patterns(m, [t.name for t in resolved])
 
         # Governance pipeline (order matters — matches TS builder).
         resolved = apply_secret_masking(resolved, _collect_secrets(deps), m.metadata.name)

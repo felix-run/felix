@@ -333,7 +333,7 @@ pass; the first missing scope denies the call, and the denial names it.
 
 | Field | Behaviour |
 |-------|-----------|
-| `tools` | The tool names this rule gates, matched **exactly** — there is no glob or prefix matching anywhere in the governance stack. A rule naming no tools gates nothing and is rejected: it would otherwise satisfy the `soc2` profile's "policies **or** approvals **or** limits" requirement while enforcing nothing. |
+| `tools` | The tools this rule gates, matched by glob (`fnmatch`, case-sensitive): `calculator`, `github__*`, `*__search`, `*`. Applies equally to `spec.approvals`, judge `target_tools` and `content_screening.tools`. A pattern matching no bound tool is logged and counted (`felix_rule_targets_nothing`) rather than refused, since the bound set varies — an MCP server whose discovery failed binds nothing. A rule naming no tools at all gates nothing and is rejected: it would otherwise satisfy the `soc2` profile's "policies **or** approvals **or** limits" requirement while enforcing nothing. |
 | `required_scopes` | Scopes the caller must hold. **Required**: a rule that lists tools but no scopes permits every caller while appearing to govern them, so it is rejected rather than accepted as a no-op. |
 
 Two things to know before relying on it:
