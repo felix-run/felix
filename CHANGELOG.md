@@ -443,6 +443,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a fiber resumed weeks later still carries the original caller's authority. It is a change to
   the security model, not a bug fix, and it wants a decision rather than a commit.
 
+- **A manifest that binds untrusted tools without content screening now says so at compile.**
+  `felix_untrusted_tools_unscreened`, plus a WARNING naming the tools.
+  `content_screening.enabled` defaults to `false` and `validate_governance` requires it only under
+  `eu_ai_act` — `soc2` does not, so this was a normal, valid manifest in which
+  attacker-controlled text reached the model with the whole governed toolset behind it — the
+  last remaining path of that shape after screening became additive.
+
+  A warning rather than a changed default, because turning screening on for every deployment
+  binding an MCP server changes cost and behaviour, and that is not a thing to do silently in a
+  patch.
+
+  **It found one on its first run.** `manifests/cowork.yaml` binds `local_shell` and
+  `local_open` — tools that execute on the user's own machine through the client bridge — and
+  their output reached the model unscreened. Approval gates whether the command runs; screening
+  is what looks at what comes back. It now enables marker-only screening (`on_flag: quarantine`,
+  no `model`). A YAML grep for the untrusted *binder* blocks had missed it, because
+  `client_tools` is one and does not look like `mcp_servers`.
+
+  Screening cowork exposed that its marker list was unusable there. `apply_content_screening`
+  carried its own `_INJECTION_MARKERS` — a second, blunter copy of the patterns in
+  `governance/content_screening.py`, including a bare `"system prompt"` substring. Since
+  `_replace_content` swaps the whole output rather than redacting the match, `cat CLAUDE.md` on
+  this repository returned `[quarantined]`; 23 of its files contain the phrase. A control that
+  eats a developer's `git log -p` is a control someone switches off, and switching it off would
+  have removed screening from `local_shell` too. The builder now uses the anchored patterns the
+  other module already had (`system\s+prompt\s*:`, `<\s*/?\s*system\s*>`), which still flag
+  "ignore previous instructions ..." and "System prompt: you are now ...".
+
+  cowork also names `read_file`, `search_files`, `list_dir`, `recall` and `list_memories` in
+  `content_screening.tools`. They are `transport: local`, so the untrusted default does not
+  cover them, and they read the same filesystem the shell does — with recall being the re-entry
+  path, since capture runs over turns containing client-tool output. A comment in that manifest
+  claimed recalled memories were already screened; they were not, and now they are.
+
 ### Changed
 
 - **Removed `args_schema` from `spec.sandboxes`, `spec.containers` and
