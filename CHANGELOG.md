@@ -380,6 +380,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   INCR landed and issue a second one. It stays because the direction is safe: double-counting
   makes the limiter stricter, never more permissive.
 
+- **A failure in post-call bookkeeping told the model a successful tool call had failed, and
+  ran the after-tool hook twice.** `ToolRunner.dispatch` executed the tool and then did its
+  metering, audit and `run_after_tool` inside the *same* `try`, so a failure in any of that
+  fell into the handler written for "the tool call failed" — which invokes `run_after_tool`
+  again with `result=None, is_error=True` and returns `[error/...]` to the model. A model told
+  a side-effecting tool failed may run it again.
+
+  Not reachable by the obvious route: `run_after_tool` isolates each hook and
+  `emit_agent_audit` swallows its own failures, so neither can raise. What can is the handling
+  of a hook's *return* — an after-tool hook replacing `content` with an object whose `__str__`
+  raises produced two hook invocations, `[False, True]`, and an `[error/internal]` message for
+  a tool that had succeeded. Measured before and after.
+
+  The `try` now covers only the call. Everything after it moved to
+  `_record_and_postprocess`, which cannot undo the call and so degrades — logging and
+  `felix_control_degraded{control=after_tool}` — instead of rewriting the outcome.
+
 ### Changed
 
 - **Removed `args_schema` from `spec.sandboxes`, `spec.containers` and
