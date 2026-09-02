@@ -358,7 +358,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   returning a list where a dict was expected, a JSON field that is null — ran twice, past every
   governance wrapper, with no interrupted-call marker, while the model saw one call.
 
-  `wrap_executor` is benign for the seven wrappers in `manifests/builder.py`, whose `execute`
+  `wrap_executor` is benign for the eight wrappers in `manifests/builder.py`, whose `execute`
   takes two parameters so the three-argument call always raises before the body runs. It is not
   benign for `apply_artifact_spill`, whose `execute` is `(args, ctx=None, _inner=inner)` and
   dispatches on the first call. `define_tool` had the same shape in `handler(parsed, ctx)`
@@ -368,10 +368,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   anything runs. An unintrospectable callable selects the narrower call, because a genuine
   mismatch raising once and loudly beats running a side effect a second time.
 
+  `apply_artifact_spill` no longer takes `inner` as a defaulted third parameter — it closes
+  over it like the eight wrappers do. That parameter existed only to satisfy the old probe and
+  was the sole reason `wrap_executor` ever took the wide branch, so removing it deletes the
+  shape rather than only the symptom.
+
   Found by `felix-security-reviewer` during the governance mutation audit. The one remaining
-  `except TypeError` probe, in `security/rate_limit.py`, is left alone deliberately: it probes
-  a redis-py keyword at *queue* time, before `pipe.execute()`, and its fallback over-counts,
-  which makes the limiter stricter rather than weaker.
+  `except TypeError` probe, in `security/rate_limit.py`, is left alone deliberately — but not
+  for the reason first given here. Its `try` spans `pipe.execute()` and `int(results[0])` as
+  well as the queueing calls, so a nil pipeline element would fire the handler *after* the
+  INCR landed and issue a second one. It stays because the direction is safe: double-counting
+  makes the limiter stricter, never more permissive.
 
 ### Changed
 

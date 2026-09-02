@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
@@ -25,7 +26,6 @@ def accepts_positional(fn: Callable[..., Any], count: int) -> bool:
     call. Guessing narrow is safe: a genuine arity mismatch raises once, loudly, instead of
     running a side effect a second time.
     """
-    import inspect
 
     try:
         sig = inspect.signature(fn)
@@ -33,14 +33,24 @@ def accepts_positional(fn: Callable[..., Any], count: int) -> bool:
         return False
     required = 0
     allowed = 0
+    var_positional = False
     for param in sig.parameters.values():
         if param.kind is param.VAR_POSITIONAL:
-            return True
+            # `*args` removes the upper bound. It does not remove the lower one: an earlier
+            # version returned True here, so `f(a, b, c, *rest)` answered yes at count=2 —
+            # which a real call rejects with "missing a required argument". The parametrized
+            # case covering this branch used `lambda *a: None`, the one shape that cannot
+            # expose it, which is why the table below is now checked against
+            # `signature().bind` rather than against hand-written expectations.
+            var_positional = True
+            continue
         if param.kind not in (param.POSITIONAL_ONLY, param.POSITIONAL_OR_KEYWORD):
             continue
         allowed += 1
         if param.default is param.empty:
             required += 1
+    if var_positional:
+        return required <= count
     return required <= count <= allowed
 
 
@@ -235,6 +245,7 @@ __all__ = [
     "ToolOutput",
     "ToolOutputDict",
     "WrapperSource",
+    "accepts_positional",
     "define_tool",
     "define_tool_with_executor",
     "deny_output",

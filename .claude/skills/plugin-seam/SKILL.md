@@ -93,3 +93,21 @@ The default install and the default Docker image must stay small enough for a 2�
    ```
    The lean check imports every module with no extras installed — the same thing CI's `lean`
    job does, and the only way a module-scope optional import is caught before an operator hits it.
+
+## A tool handler decorator must use `functools.wraps`
+
+`define_tool` and `wrap_executor` decide how to call your function by reading its signature
+once, at definition time (`felix/tools/types.py:accepts_positional`). A decorator that forwards
+`*args, **kwargs` without `@functools.wraps` reports *its own* signature, so a one-argument
+handler behind it is called with two and raises.
+
+```python
+@functools.wraps(fn)  # required: signature() follows __wrapped__
+async def wrapper(*a, **k):
+    return await fn(*a, **k)
+```
+
+This used to "work" by accident: the harness called wide, caught the `TypeError`, and retried
+narrow — running the decorator's body twice for one tool call. That probe is gone, because it
+could not tell a wrong arity from a `TypeError` raised inside a handler that had already run.
+The failure is now loud and once.
