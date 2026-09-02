@@ -1051,3 +1051,50 @@ def test_the_suite_runs_without_an_ambient_git_redirect() -> None:
     from tests.conftest import GIT_REDIRECTS
 
     assert sorted(GIT_REDIRECTS & set(os.environ)) == [], "ambient git redirect reached the suite"
+
+
+# --------------------------------------------------------------------------
+# A tool is cloned, never rebuilt field by field.
+# --------------------------------------------------------------------------
+def test_no_governance_wrapper_rebuilds_a_tool_by_hand() -> None:
+    """Every wrapper carries the whole tool forward, or a field resets to its default.
+
+    Seven wrappers in `manifests/builder.py` and `wrap_tool` in `tools/executor.py` each
+    constructed `Tool(...)` from eight of its ten fields. The two they omitted were `peer`,
+    which `__post_init__` restores from `is_peer`, and `replay_safe`, which nothing restores.
+    `apply_limits` wraps *every* tool unconditionally, so `replay_safe` read `False` on every
+    tool in every manifest — the five builtins that declare `replay_safe=True` included — and
+    the one place that reads it (`patterns/react.py`, deciding whether to tell the model an
+    interrupted tool is safe to call again) had never once seen a `True`.
+
+    `_clone_tool`'s own docstring predicted this: "a field that the rebuild forgot would be
+    silently reset to its default on every wrapped tool ... `replay_safe` was added and very
+    nearly lost exactly that way." It was lost, in the seven wrappers that did not call it.
+
+    So the rule is structural: clone with `dataclasses.replace`, never enumerate the fields.
+    """
+    import dataclasses
+
+    from felix.tools.types import Tool
+
+    fields = {f.name for f in dataclasses.fields(Tool)}
+    offenders: list[str] = []
+    seen = 0
+    for path in sorted((HARNESS).rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and getattr(node.func, "id", "") == "Tool"):
+                continue
+            rendered = ast.unparse(node)
+            # A *rebuild* copies from an existing tool; a fresh construction does not.
+            if not re.search(r"\b(tool|base|t)\.(name|description|executor)\b", rendered):
+                continue
+            seen += 1
+            dropped = sorted(fields - {kw.arg for kw in node.keywords if kw.arg})
+            if dropped:
+                offenders.append(f"{path.relative_to(ROOT)}:{node.lineno} drops {dropped}")
+
+    assert offenders == [], (
+        "these rebuild a Tool field by field, so the fields they omit silently reset to their "
+        f"defaults on every tool they wrap — use dataclasses.replace instead: {offenders}"
+    )

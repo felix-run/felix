@@ -239,6 +239,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   comma-separated list, so `evil.com,MAP * 169.254.169.254` would have reached every name past it.
   Both new guards are mutation-tested rather than trusted.
 
+### Fixed
+
+- **`replay_safe` had never worked in any release.** Five builtin tools declare
+  `replay_safe=True` — `calculator`, `list_skills`, `list_dir`, `read_file`, `search_files` — and
+  `patterns/react.py` reads it to decide what to tell the model about a tool call that was
+  interrupted: replay-safe tools are "safe to call again", everything else is "do not assume it
+  succeeded or failed". The flag was `False` on every tool in every manifest, so that branch had
+  never once been taken.
+
+  Seven wrappers in `manifests/builder.py` and `wrap_tool` in `tools/executor.py` each built the
+  wrapped tool with `Tool(name=..., description=..., ...)` from eight of its ten fields. `peer` is
+  restored by `__post_init__` from `is_peer`; `replay_safe` is restored by nothing. `apply_limits`
+  wraps every tool unconditionally, so the loss was universal rather than conditional on a manifest
+  declaring policies or screening.
+
+  `_clone_tool` — which uses `dataclasses.replace` and was already correct — carries the docstring
+  that predicted this: *"a field that the rebuild forgot would be silently reset to its default on
+  every wrapped tool ... `replay_safe` was added and very nearly lost exactly that way."* It was
+  lost, in the seven wrappers that did not call it. All eight sites now clone, and
+  `test_no_governance_wrapper_rebuilds_a_tool_by_hand` fails if a ninth is written by hand.
+
+  Found by disabling each governance control in turn and re-running the suite, which is also how
+  the two gaps below surfaced. No security impact: the failure was conservative, telling the model
+  not to retry something it safely could.
+
+- **`apply_secret_masking` and `apply_policies` had no behavioural coverage.** Either could be
+  reduced to `return tools` with the full suite green — the innermost control, which redacts
+  resolved `secret:` values from tool output before the transcript or the audit log sees them, and
+  the control enforcing `spec.policies` scope requirements. The suite's only mention of either was
+  the `EXPECTED_WRAPPER_ORDER` list, which asserts the stack's order and calls nothing.
+  `tests/unit/test_governance_controls_enforce.py` covers both, including the fail-closed case
+  where a run has no request context and "no scopes" must not read as "all scopes".
+
 ### Changed
 
 - **Removed `args_schema` from `spec.sandboxes`, `spec.containers` and
