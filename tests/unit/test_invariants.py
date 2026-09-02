@@ -944,3 +944,110 @@ def test_outbound_clients_go_through_the_egress_guard() -> None:
         "outbound client built directly instead of via felix.security.egress."
         f"safe_async_client; add an exemption with a reason if that is deliberate: {offenders}"
     )
+
+
+# --------------------------------------------------------------------------
+# A fixture that builds a throwaway git repo must not be able to write to a real one.
+# --------------------------------------------------------------------------
+def test_every_git_call_in_tests_is_environment_scrubbed() -> None:
+    """`git -C <dir>` loses to an exported `GIT_DIR`. The environment wins.
+
+    A review run with `GIT_DIR` exported drove `tests/unit/test_pr_quality_gate_hook.py`, whose
+    fixture built a temp repo with a bare `git -C tmpdir init && add -A && commit`. Both commits
+    landed in *this* repository and moved `refs/heads/<branch>` and `refs/remotes/origin/main`
+    onto them. No file changed, so the only symptom was a `git status` that looked like the
+    entire tree had been deleted.
+
+    This is the second line of defense, not the first. `tests/conftest.py` scrubs the redirect
+    variables from the parent process, so every child inherits a clean environment however it
+    spells its git call — which is what actually makes the hazard impossible. A first version
+    of *this* test matched only `["git", ...]` and missed seven other spellings of the same
+    call, including `cmd = ["git", ...]; subprocess.run(cmd)`, a one-line refactor of the very
+    fixture that corrupted the repo. It now reads command heads from several shapes; it is
+    still a detector, and detectors have holes.
+    """
+    offenders: list[str] = []
+    helper = ROOT / "tests" / "git_fixture.py"
+    seen = 0
+
+    # Only calls that actually start a process. Without this scope the check flagged
+    # `shutil.which("git")`, and — worse — `_run("git status", ...)`, which is a git command
+    # passed to a *hook under test* as data. Reporting test data as a hazard is how a guard
+    # gets switched off.
+    SPAWNERS = {
+        "run",
+        "Popen",
+        "call",
+        "check_call",
+        "check_output",
+        "create_subprocess_exec",
+        "create_subprocess_shell",
+    }
+    # Qualified only — `subprocess.run(...)`, `asyncio.create_subprocess_exec(...)`. A bare
+    # `run(...)` is usually a local helper, and counting those made the corpus floor below
+    # track the spelling of a fixture's alias rather than the number of real spawn sites.
+    SPAWNER_MODULES = {"subprocess", "asyncio", "sp"}
+
+    def _heads(call: ast.Call) -> list[str]:
+        """Every string this call might be asking a shell or exec to run."""
+        callee = call.func
+        if not isinstance(callee, ast.Attribute) or callee.attr not in SPAWNERS:
+            return []
+        module = getattr(callee.value, "id", "")
+        if module not in SPAWNER_MODULES:
+            return []
+        found: list[str] = []
+        candidates = [*call.args, *(kw.value for kw in call.keywords)]
+        for node in candidates:
+            # `subprocess.run(["git", ...])` / `run(args=["git", ...])`. Only the *head* is
+            # collected — an earlier version appended every string constant in every argument
+            # position, so `seen` counted `"user.email"` and `"-qm"` as command strings.
+            if isinstance(node, ast.List) and node.elts:
+                first = node.elts[0]
+                if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                    found.append(first.value)
+            # `create_subprocess_exec("git", "-C", ...)` — varargs, no list at all
+            elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+                found.append(node.value)
+            # `run(f"git -C {d} status", shell=True)`
+            elif isinstance(node, ast.JoinedStr):
+                lead = next((v for v in node.values if isinstance(v, ast.Constant)), None)
+                if lead is not None and isinstance(lead.value, str):
+                    found.append(lead.value)
+        return found
+
+    for path in sorted((ROOT / "tests").rglob("*.py")):
+        if path == helper:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            for head in _heads(node):
+                seen += 1
+                # The basename, so `/usr/bin/git` counts; the first word, so a shell string
+                # `"git -C … status"` counts.
+                binary = head.split()[0].rsplit("/", 1)[-1] if head.split() else ""
+                if binary == "git":
+                    offenders.append(f"{path.relative_to(ROOT)}:{node.lineno}")
+    # A floor on *spawn sites*, not on argument strings. The previous `>= 20` counted the
+    # latter, so tidying one fixture's `run = lambda *a: git(root, *a)` alias into direct
+    # `git(...)` calls — exactly what this test's own failure message asks for — dropped the
+    # count below the floor and failed with "has the scan broken?". A guard that punishes
+    # compliance with its own instruction gets its number lowered, which is how the last
+    # corpus hole was made.
+    assert seen >= 3, f"no subprocess spawn sites found in tests/ — has the scan broken? ({seen})"
+    assert offenders == [], (
+        "these invoke git directly, so an ambient GIT_DIR/GIT_WORK_TREE points them at a real "
+        f"repository — go through tests/git_fixture.py:git instead: {sorted(set(offenders))}"
+    )
+
+
+def test_the_suite_runs_without_an_ambient_git_redirect() -> None:
+    """A canary for the session fixture in tests/conftest.py being deleted. Nothing more —
+    that fixture pops these before any test runs, so this is true by construction."""
+    import os
+
+    from tests.conftest import GIT_REDIRECTS
+
+    assert sorted(GIT_REDIRECTS & set(os.environ)) == [], "ambient git redirect reached the suite"

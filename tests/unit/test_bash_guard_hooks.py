@@ -29,6 +29,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.git_fixture import git
+
 HOOKS = Path(__file__).resolve().parents[2] / ".claude" / "hooks"
 
 # The guard watches for this word, so spelling it out in a command below would once
@@ -95,7 +97,7 @@ def _repo_on(tmp_path: pathlib.Path, branch: str) -> pathlib.Path:
     """
     root = tmp_path / f"repo-{branch.replace('/', '-')}"
     root.mkdir(parents=True)
-    run = lambda *a: subprocess.run(["git", "-C", str(root), *a], capture_output=True, check=True)
+    run = lambda *a: git(root, *a)  # env-scrubbed: see tests/git_fixture.py
     run("init", "-q", "-b", branch)
     run("config", "user.email", "t@example.com")
     run("config", "user.name", "t")

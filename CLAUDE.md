@@ -67,10 +67,8 @@ statement mentions: every `[project.scripts]` target, the `module:attr` string G
 Taskiq broker/scheduler/module paths, and the `felix-*` binary each Compose, Dockerfile and Helm
 command names — plus `create_application()` called the way production calls it, with no arguments.
 
-`./scripts/prove-fails.sh <target> [--base <ref>] [--only <dists>]` runs a test against pre-change
-source and reports PROVEN / VACUOUS / BROKEN. It shadows `PYTHONPATH` only, so it cannot help a test
-that reads the tree from disk; for those the method is mutation. Why both exist, and what they are
-guarding against: `.claude/rules/felix-invariants.md`.
+`./scripts/prove-fails.sh --help`-style usage lives in the script header; when a new test needs
+proving, read the rule and the method in `.claude/rules/felix-invariants.md`.
 
 A test that needs an optional extra gates on `tests/optional_deps.py:require_optional(module,
 extra)`, never a bare `pytest.importorskip` — an invariant enforces this. A module-level

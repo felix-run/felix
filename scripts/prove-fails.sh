@@ -56,7 +56,7 @@ while :; do
   esac
 done
 if [ $# -eq 0 ]; then
-  echo "usage: $0 [--base <ref>] <pytest target> [pytest args...]" >&2
+  echo "usage: $0 [--base <ref>] [--only <dists>] <pytest target> [pytest args...]" >&2
   exit 64
 fi
 
@@ -106,12 +106,19 @@ echo "prove-fails: shadowing ${only:-all packages}"
 # every verdict below is about the wrong thing. Saying so up front is the difference between
 # a limitation and a trap: the first target aimed at this was a scanning test, and it got a
 # confident PROVEN on a comparison that never happened.
+#
+# Narrow on purpose. `read_text(` and `open(` were in this list for one commit and fired on 14
+# test files, none of which read the tree — thirteen on `store.open(thread_id)`, the session
+# layer's central method, and one on a *test function name* containing "open". They caught
+# nothing the four patterns below miss, so all they did was warn that a correct verdict was
+# untrustworthy, roughly half the times this fired. A guard that cries wolf on the common case
+# trains the reader past the cases where it is right.
 target=""
 for arg in "$@"; do
   case "$arg" in -*) continue ;; *) target=${arg%%::*}; break ;; esac
 done
 if [ -n "$target" ] && [ -f "$target" ] &&
-   grep -qE '(Path\(__file__\)|\.rglob\(|\.glob\(|os\.walk\(|read_text\(|open\()' "$target"; then
+   grep -qE '(Path\(__file__\)|\.rglob\(|\.glob\(|os\.walk\()' "$target"; then
   cat <<WARN
 
   !! $target reads files from the tree.
@@ -155,8 +162,8 @@ Fix the test so it FAILS against the old source, then re-run this.
 
 If the errors are in fixture setup rather than in the test body, this is probably not your
 test: tests/conftest.py comes from your working tree and is running against ${base} source, so
-it can call something that does not exist yet there. Retry with --only <dist> to shadow just
-the distribution you changed."
+it can call something that does not exist yet there. Retry with --only <dists> (comma-separated:
+ai, harness, cli, api, worker) to shadow just the distributions you changed."
       exit 1
     fi
     verdict "PROVEN — failed against the pre-change source. This test is evidence."

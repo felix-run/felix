@@ -16,6 +16,7 @@ of the hook itself, and each arm is exercised by driving the real script.
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import re
@@ -23,6 +24,8 @@ import subprocess
 from pathlib import Path
 
 import pytest
+
+from tests.git_fixture import git
 
 ROOT = Path(__file__).resolve().parents[2]
 HOOK = ROOT / ".claude" / "hooks" / "structural-test-proof.sh"
@@ -38,12 +41,19 @@ pytestmark = pytest.mark.skipif(
     not _HAS_JQ, reason="the hook no-ops without jq, so there is nothing to assert"
 )
 
-# One corpus idiom per arm of the hook's trigger. A repo where `.glob(` stopped being
-# recognised would go quiet on `test_entrypoint_wiring.py`, which uses it.
+# One corpus idiom per arm of the hook's trigger, each written the way this repo writes it:
+# a named receiver, `ROOT.rglob(...)`, not `Path(".").rglob(...)`. That distinction is not
+# cosmetic — it is the bug this file failed to catch. The old prefix class required a
+# non-alphanumeric character before `.rglob(`, which the `)` of `Path(".")` supplies and the
+# `T` of `ROOT` does not, so both glob arms were dead against real code while these fixtures
+# reported them healthy.
 CORPUS_IDIOMS = {
-    "rglob": 'from pathlib import Path\n\n\ndef test_alpha() -> None:\n    assert list(Path(".").rglob("*.py"))\n',
-    "glob": 'from pathlib import Path\n\n\ndef test_alpha() -> None:\n    assert list(Path(".").glob("*.py"))\n',
+    "rglob": 'from pathlib import Path\n\nROOT = Path(".")\n\n\ndef test_alpha() -> None:\n    assert list(ROOT.rglob("*.py"))\n',
+    "glob": 'from pathlib import Path\n\nROOT = Path(".")\n\n\ndef test_alpha() -> None:\n    assert list(ROOT.glob("*.py"))\n',
     "os.walk": 'import os\n\n\ndef test_alpha() -> None:\n    assert list(os.walk("."))\n',
+    "iterdir": 'from pathlib import Path\n\nROOT = Path(".")\n\n\ndef test_alpha() -> None:\n    assert list(ROOT.iterdir())\n',
+    "os.scandir": 'import os\n\n\ndef test_alpha() -> None:\n    assert list(os.scandir("."))\n',
+    "os.listdir": 'import os\n\n\ndef test_alpha() -> None:\n    assert os.listdir(".")\n',
     "ast.parse": 'import ast\n\n\ndef test_alpha() -> None:\n    assert ast.parse("x = 1")\n',
     "ast.walk": 'import ast\n\n\ndef test_alpha() -> None:\n    assert list(ast.walk(ast.parse("x = 1")))\n',
 }
@@ -60,48 +70,23 @@ def _hook_trigger() -> str:
     pytest.fail("no `grep -qE '<pattern>' \"$path\"` line in the hook — has its trigger moved?")
 
 
-def _git(repo: Path, *args: str) -> str:
-    # `-u GIT_DIR`/`-u GIT_WORK_TREE` and gpgsign off: an ambient git environment or a global
-    # signing config would turn fixture setup into a CalledProcessError whose message says
-    # nothing about the hook.
-    out = subprocess.run(
-        [
-            "env",
-            "-u",
-            "GIT_DIR",
-            "-u",
-            "GIT_WORK_TREE",
-            "git",
-            "-C",
-            str(repo),
-            "-c",
-            "commit.gpgsign=false",
-            *args,
-        ],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return out.stdout.strip()
-
-
 def _repo(root: Path, *, committed: str | None, working: str, name: str = "test_thing.py") -> Path:
     """A repo whose `tests/unit/<name>` is `working`, and was `committed` at HEAD.
 
     `committed=None` leaves the file untracked, which is how a brand-new test file looks.
     """
     root.mkdir(parents=True, exist_ok=True)
-    _git(root, "init", "-q", "-b", "main")
-    _git(root, "config", "user.email", "t@example.com")
-    _git(root, "config", "user.name", "t")
+    git(root, "init", "-q", "-b", "main")
+    git(root, "config", "user.email", "t@example.com")
+    git(root, "config", "user.name", "t")
     target = root / "tests" / "unit" / name
     target.parent.mkdir(parents=True, exist_ok=True)
 
     (root / "seed").write_text("seed\n")
     if committed is not None:
         target.write_text(committed)
-    _git(root, "add", "-A")
-    _git(root, "commit", "-qm", "seed")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "seed")
 
     target.write_text(working)
     return root
@@ -135,22 +120,56 @@ def test_every_corpus_idiom_trips_the_trigger(tmp_path: Path, idiom: str) -> Non
     assert "test_alpha" in _note(repo), f"the hook did not fire on a test using {idiom}"
 
 
-def test_the_hooks_own_trigger_still_matches_this_repos_scanning_tests() -> None:
-    """The pattern is read from the hook and run by grep, not re-implemented here.
+def _scans_the_tree(path: Path) -> bool:
+    """Does this file actually walk the tree? Decided by AST, independently of the hook.
 
-    This is the direction that rots: someone edits the hook's regex and the scanning tests it
-    is meant to cover stop matching. Transcribing the pattern into this file could not see
-    that — the test compared the repo against its own copy and passed with the hook's every
-    arm broken.
+    A second opinion has to be arrived at differently or it is not a second opinion. Naming
+    two files and grepping them was the previous version, and both happened to match on the
+    `ast.` arms — so the two glob arms could be, and were, dead with this green. Reading calls
+    rather than text also keeps a docstring that merely mentions `rglob("SKILL.md")` from
+    counting as a scan, which grep cannot do.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+            continue
+        attr, value = node.func.attr, node.func.value
+        if attr in {"rglob", "glob", "iterdir"}:
+            return True
+        if attr in {"walk", "parse", "scandir", "listdir"} and isinstance(value, ast.Name):
+            if value.id in {"ast", "os"}:
+                return True
+    return False
+
+
+def test_the_trigger_matches_every_scanning_test_in_this_repo() -> None:
+    """Derived from the tree, not from a list of files someone remembered to update.
+
+    This is the direction that rots, and it rotted: the hook's two glob arms required a
+    non-alphanumeric character before `.rglob(`, so `ROOT.rglob(...)` never matched and three
+    real scanning tests were invisible. The previous version of this test named two files,
+    both of which matched on a different arm, and passed throughout.
     """
     pattern = _hook_trigger()
-    covered = ["tests/unit/test_invariants.py", "tests/unit/test_entrypoint_wiring.py"]
-    for rel in covered:
-        found = subprocess.run(["grep", "-qE", pattern, str(ROOT / rel)])
-        assert found.returncode == 0, (
-            f"the hook's trigger no longer matches {rel}, which scans the tree — the hook "
-            "would stay silent on exactly the tests it exists for"
-        )
+    scanning = sorted(p for p in (ROOT / "tests" / "unit").glob("test_*.py") if _scans_the_tree(p))
+    # Named, not counted. A floor at 8 against a real 13 left five files able to drop out
+    # silently; raising it to 12 put a tripwire on thirteen unrelated files, so an ordinary
+    # refactor of test_memory_tools.py would turn *this* file red with "has the suite moved?".
+    # Both are the wrong axis. These three are the structural invariants the hook exists for,
+    # and the assertion below covers everything else the AST finds.
+    anchors = {"test_invariants.py", "test_entrypoint_wiring.py", "test_plugin_boundary.py"}
+    found = {p.name for p in scanning}
+    assert anchors <= found, f"the AST scan no longer sees {sorted(anchors - found)}"
+
+    missed = [
+        str(p.relative_to(ROOT))
+        for p in scanning
+        if subprocess.run(["grep", "-qE", pattern, str(p)]).returncode != 0
+    ]
+    assert missed == [], (
+        "the hook's trigger does not match these tests, which do scan the tree — it would "
+        f"stay silent on exactly the files it exists for: {missed}"
+    )
 
 
 def test_a_new_case_in_a_scanning_test_is_flagged(tmp_path: Path) -> None:
@@ -162,7 +181,9 @@ def test_a_new_case_in_a_scanning_test_is_flagged(tmp_path: Path) -> None:
     note = _note(repo)
     assert "test_beta" in note, "the added case was not named"
     assert "test_alpha" not in note, "an unchanged case was reported as new"
-    assert "prove-fails.sh" in note or "violation on purpose" in note
+    # The load-bearing tokens, not the sentence: the note is the product, so its content is
+    # worth pinning, but pinning its capitalisation makes a reword a failure.
+    assert "violation" in note and "revert" in note, "the note no longer carries the mutation procedure"
 
 
 def test_a_brand_new_scanning_file_is_flagged(tmp_path: Path) -> None:

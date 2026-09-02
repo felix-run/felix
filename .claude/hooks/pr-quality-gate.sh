@@ -129,9 +129,10 @@ tests_note="felix-test-quality-reviewer is not needed — no tests changed."
 # prevent exactly that reach. A reviewer caught it. Naming the paths here means the ask is
 # not contingent on the session noticing the change was security-shaped.
 # Anchored to the start of a path component, not matched as a bare substring: `rls` hit
-# inside `urls.py`, which is a false positive that trains people to ignore the note, and the
-# unanchored list still missed `manifests/builder.py`, where the load-bearing governance
-# wrapper order lives. Prefixes rather than whole words, so `screen` reaches `screening.py`
+# inside `urls.py`, which is a false positive that trains people to ignore the note. Separately,
+# `builder` was simply absent from the list, so `manifests/builder.py` — where the load-bearing
+# governance wrapper order lives — matched nothing; anchoring did not cause that and does not fix
+# it, adding the token does. Prefixes rather than whole words, so `screen` reaches `screening.py`
 # and `polic` reaches both `policy.py` and `policies.py`.
 security_changed=$(printf '%s\n' "$changed" | grep -E \
   '(^|[/_])(auth|security|governance|screen|secret|ssrf|egress|sandbox|polic|approval|browser|stdio|transport|rls|tenant|internal|builder)' || true)
