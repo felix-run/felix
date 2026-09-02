@@ -527,21 +527,6 @@ def test_a_literal_tool_name_containing_a_character_class_matches_itself() -> No
     assert matches_any(["gh__*"], "gh__anything"), "a real glob still globs"
 
 
-def test_content_screening_reports_an_untrusted_tool_its_list_excludes() -> None:
-    """`content_screening.tools` is substitutive: a non-empty list turns screening *off* for
-    every untrusted tool it does not name. A pattern that matches something keeps the
-    unmatched-pattern warning quiet, so this shape needs its own check."""
-    from felix.manifests.tool_match import matches_any
-
-    untrusted = ["github__read_issue", "browser__fetch"]
-    excluded = [n for n in untrusted if not matches_any(["github__*"], n)]
-
-    assert excluded == ["browser__fetch"], (
-        "screening github__* leaves browser output unscreened, and that is the case the "
-        "compile-time warning has to name"
-    )
-
-
 @pytest.mark.parametrize("field", ["policies", "approvals"])
 def test_the_governance_rule_lists_are_bounded(field: str) -> None:
     """Matching is O(rules x tools) per compile and `build_agent` runs per request. Unbounded,

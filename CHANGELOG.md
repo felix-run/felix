@@ -337,10 +337,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `felix_rule_targets_nothing` at compile time. Not refused: an MCP server whose discovery
   failed binds no tools, and refusing would let a remote outage take the agent down with it.
   Globs make an inert rule easier to write by hand, so the counter is the thing to watch after
-  adding one. A second warning, `felix_untrusted_tool_unscreened`, names untrusted tools that
-  a non-empty `content_screening.tools` list excludes — that list is substitutive, so naming
-  one tool turns screening off for every other untrusted one, and a pattern that matches
-  *something* keeps the first warning quiet.
+  adding one.
 
 - **`spec.policies` and `spec.approvals` are capped at 64 rules**, like every integration list.
   Matching is O(rules × tools) and `build_agent` compiles per request; unbounded, 8000 policies
@@ -411,10 +408,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sets `tools` is unaffected — `matches_any([], name)` is False, so that path is unchanged.
 
   There is deliberately no replacement escape hatch. Narrowing screening away from untrusted
-  output is the thing screening exists to prevent, so it was removed rather than renamed; for
-  cost, the levers are `content_screening.model` and `on_flag`. The
-  `felix_untrusted_tool_unscreened` warning added alongside globbing is gone with it — nothing
-  excludes an untrusted tool any more.
+  output is the thing screening exists to prevent, so it was removed rather than renamed.
+
+  Being straight about the cost, because "use `model` and `on_flag` instead" would not be:
+  neither is per-tool, so this removes the only per-tool cost lever there was. It is free in
+  the default configuration — both bundled manifests that enable screening leave `model` empty,
+  and the marker path is a substring scan — and it costs one model call per untrusted tool per
+  turn where `model` *is* set. A manifest binding twenty MCP tools and naming three went from
+  three screener calls to twenty. If that bites, the shape to add is a knob orthogonal to trust
+  — which tools get the *expensive* screener, with marker screening unconditional — rather than
+  a way to exempt an untrusted tool from screening at all.
+
+  Two things to re-measure if you set `model` and previously narrowed `tools`: `on_flag: block`
+  plus a screener outage now denies output from every untrusted tool rather than the named
+  subset, and the marker scan's substring match (`"system prompt"` included) can quarantine a
+  docs server or an issue tracker that was previously exempt.
 
   Found by `felix-security-reviewer` during the governance mutation audit.
 

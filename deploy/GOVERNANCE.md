@@ -352,8 +352,9 @@ Two things to know before relying on it:
 ## Content screening targets
 
 `content_screening.tools` is **additive**. Screening covers every untrusted tool — anything
-whose transport is not `local`, plus anything sourced from `mcp:`, `peer:`, `a2a:`, `queue:` —
-and, in addition, whatever `tools` names. Naming a trusted local tool extends screening to it;
+whose transport is not `local`, plus anything whose `source` starts with `mcp`, `peer`, `a2a`,
+`queue`, `browser`, `client`, `sandbox` or `container` — and, in addition, whatever `tools`
+names. Naming a trusted local tool extends screening to it;
 it does not narrow screening away from anything.
 
 There is deliberately no way to turn screening off for an untrusted tool while leaving it on
@@ -361,8 +362,21 @@ elsewhere. The two used to be alternatives, so a non-empty `tools` list *replace
 untrusted-tool default: naming one local tool silently unscreened every MCP, peer, browser,
 sandbox, container and queue tool while the manifest still read as a working control. Turning
 screening off for untrusted output is the thing screening exists to prevent, so the narrowing
-was removed rather than renamed. If screening cost is the concern, the levers are
-`content_screening.model` and `on_flag`.
+was removed rather than renamed. On cost: neither `content_screening.model` nor `on_flag` is a per-tool lever, so this removes
+the only one there was. It is free in the default configuration — both bundled manifests that
+enable screening leave `model` empty, and the marker path is a substring scan — and it costs a
+model call per untrusted tool per turn where `model` *is* set. If that bites, the shape to add
+is a knob orthogonal to trust (which tools get the *expensive* screener, with marker screening
+unconditional), not a way to exempt an untrusted tool from screening altogether.
+
+Two things to re-measure if you set `model` and previously narrowed `tools`:
+
+- **Availability.** `on_flag: block` plus a screener outage now denies output from every
+  untrusted tool rather than the named subset. Right direction, wider radius — watch
+  `felix_content_screening{action=unavailable}`.
+- **False positives.** The marker scan is a substring match, `"system prompt"` included, so a
+  docs server, a code-search tool or an issue tracker quoting a jailbreak can now be
+  quarantined where it was exempt. Watch `{action=quarantine}`.
 
 ## Approval semantics
 
