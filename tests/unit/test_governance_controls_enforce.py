@@ -602,3 +602,74 @@ def test_screening_with_no_tools_list_still_covers_exactly_the_untrusted_ones() 
     screened = {orig.name for orig, new in zip(tools, wrapped, strict=True) if new is not orig}
 
     assert screened == {"github__read_issue", "browser__fetch"}
+
+
+# A policy nothing in this configuration can satisfy.
+# --------------------------------------------------------------------------
+
+
+def _manifest_with_policies(**spec_extra):
+    from felix.manifests.loader import parse_manifest
+
+    spec = {
+        "pattern": "react",
+        "policies": [{"id": "calc", "required_scopes": ["tools:calc"], "tools": ["calculator"]}],
+    }
+    spec.update(spec_extra)
+    return parse_manifest(
+        {"apiVersion": "felix/v1", "kind": "Agent", "metadata": {"name": "m"}, "spec": spec}
+    )
+
+
+@pytest.mark.parametrize(
+    ("spec_extra", "auth_mode", "expected"),
+    [
+        ({"execution": {"mode": "durable"}}, "jwt", "durable"),
+        ({}, "none", "AUTH_MODE=none"),
+        ({}, "jwt", None),
+        ({"execution": {"mode": "transient"}}, "jwt", None),
+    ],
+    ids=["durable", "auth-none", "neither", "transient"],
+)
+def test_a_policy_nothing_can_satisfy_is_named_at_compile(caplog, spec_extra, auth_mode, expected) -> None:
+    """`apply_policies` denying on an empty scope set is right — "no scopes" must not read as
+    "all scopes". But fibers, cron and eval carry one by construction, as does
+    `auth_mode=none`, so `spec.policies` plus any of them denies *every* policied tool. Safe,
+    and baffling without this: `manifests/governed.yaml` policies `calculator`, and `make dev`
+    sets `FELIX_AUTH_MODE=none`, so the bundled reference manifest denies its own calculator
+    under the documented dev command.
+    """
+    import logging
+
+    from felix.manifests.builder import _warn_policies_cannot_be_satisfied
+
+    settings = Settings(database_url="memory://ci", object_store="memory", auth_mode=auth_mode)
+    with caplog.at_level(logging.WARNING):
+        _warn_policies_cannot_be_satisfied(_manifest_with_policies(**spec_extra), settings)
+
+    if expected is None:
+        assert not caplog.text, f"warned about a satisfiable configuration: {caplog.text}"
+    else:
+        assert expected in caplog.text, f"did not name {expected}: {caplog.text}"
+
+
+def test_a_manifest_without_policies_is_never_warned_about(caplog) -> None:
+    """A warning that fires without policies is noise on every manifest in the repo."""
+    import logging
+
+    from felix.manifests.builder import _warn_policies_cannot_be_satisfied
+    from felix.manifests.loader import parse_manifest
+
+    plain = parse_manifest(
+        {
+            "apiVersion": "felix/v1",
+            "kind": "Agent",
+            "metadata": {"name": "m"},
+            "spec": {"pattern": "react", "execution": {"mode": "durable"}},
+        }
+    )
+    settings = Settings(database_url="memory://ci", object_store="memory", auth_mode="none")
+    with caplog.at_level(logging.WARNING):
+        _warn_policies_cannot_be_satisfied(plain, settings)
+
+    assert not caplog.text

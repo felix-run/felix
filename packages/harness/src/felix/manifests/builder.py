@@ -1018,6 +1018,38 @@ def _warn_unmatched_tool_patterns(m: Manifest, bound: list[str]) -> None:
             )
 
 
+def _warn_policies_cannot_be_satisfied(m: Manifest, settings: Any) -> None:
+    """Say so at compile when nothing in this configuration can hold a scope.
+
+    `apply_policies` denies when a required scope is absent, and it is right to: "no scopes"
+    must not read as "all scopes". But several contexts carry an empty scope set by
+    construction, so `spec.policies` plus one of them denies *every* policied tool — safe, and
+    baffling if you have not read `deploy/GOVERNANCE.md`.
+
+    A warning rather than a refusal. The combination is legitimate — a manifest can be served
+    over HTTP to a scoped caller *and* resumed as a fiber — so refusing it would break a
+    working deployment to prevent a surprise. Naming it at compile is what turns "my calculator
+    stopped working" into a one-line answer.
+    """
+    if not m.spec.policies:
+        return
+    reasons: list[str] = []
+    if m.spec.execution.mode == "durable":
+        reasons.append("execution.mode: durable — a resumed fiber runs as principal 'fiber' with no scopes")
+    if str(getattr(settings, "auth_mode", "")) == "none":
+        reasons.append("FELIX_AUTH_MODE=none — every caller is anonymous with no scopes")
+    if not reasons:
+        return
+    logger.warning(
+        "manifest %r declares policies that nothing in this configuration can satisfy, so every "
+        "policied tool will deny: %s",
+        m.metadata.name,
+        "; ".join(reasons),
+        extra={"manifest_id": m.metadata.name},
+    )
+    record_counter("felix_policy_unsatisfiable", {"manifest_id": m.metadata.name})
+
+
 async def build_agent(
     manifest: Manifest | str | dict[str, Any],
     tools: ToolProvider | None = None,
@@ -1286,6 +1318,7 @@ async def build_agent(
         # option either — an inert control that validates is the defect this repo keeps
         # shipping, and globs make one easier to write by hand.
         _warn_unmatched_tool_patterns(m, [t.name for t in resolved])
+        _warn_policies_cannot_be_satisfied(m, deps.settings)
 
         # Governance pipeline (order matters — matches TS builder).
         resolved = apply_secret_masking(resolved, _collect_secrets(deps), m.metadata.name)
