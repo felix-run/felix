@@ -502,6 +502,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fiber store was the one `memory://` twin with no reset, so fibers leaked between tests and any
   assertion on how many came back passed alone and failed in the suite.
 
+- **A durable run resumes as the caller who started it.** `spec.policies` and
+  `execution.mode: durable` were mutually exclusive and nothing said so: `_step_fiber` built
+  `AuthContext(principal_sub="fiber")` with the default empty scope set, so every policied tool
+  denied on resume and `auth.inbound.required_scopes` refused the resume outright. A manifest
+  that worked over HTTP stopped working the moment it was made durable.
+
+  The fiber now records the caller's `principal_sub`, `scopes`, `anonymous` and `scheme` at
+  enqueue, and resumes with them.
+
+  This is authority living in durable state, so the bounds are the point. The scopes recorded
+  are exactly the caller's and are never widened. A run enqueued with no request context — or
+  before this existed — records nothing and resumes with none, as every fiber did before. And
+  it dies with the run: `state.expires_at` is written from the run's TTL at enqueue and was
+  already checked before every step, defaulting to `hibernate_after_seconds` (300s) rather than
+  anything open-ended. A fiber cannot outlive the token that started it by more than the run's
+  own TTL, which is what makes this a different proposition from persisting a credential.
+
+  Not recorded, deliberately: nothing from the token itself. No JWT, no raw claims, no
+  expiry-bearing material — only the decisions the auth layer already made from it.
+
 ### Changed
 
 - **Removed `args_schema` from `spec.sandboxes`, `spec.containers` and

@@ -6,6 +6,7 @@ import logging
 from typing import Any
 
 from felix.config import Settings
+from felix.context import try_get_context
 from felix.durability.fibers import create_fiber, get_fiber, now_ms, save_fiber
 from felix.manifests.schema import ExecutionSpec
 from felix.patterns.types import ChatMessage
@@ -66,6 +67,26 @@ async def start_durable_chat(
     }
     if pin:
         state["pin"] = pin
+
+    # Who asked for this run. Without it a resumed fiber runs with an empty scope set, so
+    # `spec.policies` denies every policied tool and `auth.inbound.required_scopes` refuses the
+    # resume — a manifest that works over HTTP stops working the moment it is made durable.
+    #
+    # This is authority in durable state, so the bound matters: it is exactly the caller's own
+    # scopes, never widened, and it dies with the run. `state["expires_at"]` above is enforced
+    # at resume (`fibers.py`), and its default is `hibernate_after_seconds` — five minutes, not
+    # five weeks. A fiber cannot outlive the token that started it by more than its own TTL.
+    #
+    # Absent (enqueued with no request context), resume falls back to no scopes, which is what
+    # it did before. Fail closed on the way in, not just on the way out.
+    caller = try_get_context()
+    if caller is not None:
+        state["auth"] = {
+            "principal_sub": caller.auth.principal_sub,
+            "scopes": sorted(caller.auth.scopes),
+            "anonymous": bool(caller.auth.anonymous),
+            "scheme": caller.auth.scheme,
+        }
     fiber = await create_fiber(
         settings,
         tenant_id,

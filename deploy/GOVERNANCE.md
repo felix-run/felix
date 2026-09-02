@@ -348,6 +348,13 @@ Two things to know before relying on it:
 - `manifests/governed.yaml` policies `calculator` on `tools:calc`, so it will deny its own
   calculator under `make dev` (which sets `FELIX_AUTH_MODE=none`). Mint a token with the
   scope — see the `felix mint-jwt` line above — rather than removing the policy.
+- **Durable runs are the exception.** A fiber records the scopes and principal of the caller
+  who started it and resumes as them, so `spec.policies` and `execution.mode: durable` work
+  together. What makes carrying authority in durable state acceptable is that it dies with the
+  run: `expires_at` is written from the run's TTL at enqueue and checked before every step, and
+  the default is `hibernate_after_seconds` (300s) unless `execution.resume_token_ttl_seconds`
+  says otherwise. The scopes recorded are exactly the caller's, never widened; a fiber enqueued
+  with no request context, or before this existed, records nothing and resumes with none.
 
 ## Content screening targets
 

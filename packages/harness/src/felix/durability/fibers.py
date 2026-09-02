@@ -236,7 +236,23 @@ async def _run_fiber_step(settings: Settings, row: dict[str, Any]) -> dict[str, 
 
                 provider = default_tool_provider()
                 tenant_id = row["tenant_id"]
-                auth = AuthContext(tenant_id=tenant_id, principal_sub="fiber", anonymous=False)
+                # Resume as the caller who started the run, bounded by the run's own TTL
+                # (checked above). Before this, a fiber resumed with an empty scope set, so
+                # `spec.policies` denied every policied tool and inbound `required_scopes`
+                # refused the resume — making `execution.mode: durable` and `spec.policies`
+                # mutually exclusive without either saying so.
+                #
+                # A fiber with no recorded caller — enqueued before this, or with no request
+                # context — keeps the old behaviour: principal "fiber", no scopes, everything
+                # policied denies. That is the fail-closed direction.
+                stored_auth = state.get("auth") if isinstance(state.get("auth"), dict) else {}
+                auth = AuthContext(
+                    tenant_id=tenant_id,
+                    principal_sub=str(stored_auth.get("principal_sub") or "fiber"),
+                    scopes=frozenset(str(x) for x in (stored_auth.get("scopes") or ())),
+                    anonymous=bool(stored_auth.get("anonymous", False)),
+                    scheme=str(stored_auth.get("scheme") or "anonymous"),
+                )
                 thread = thread_id or f"{tenant_id}:fiber:{row['id']}"
                 req_ctx = RequestContext(
                     settings=settings,
