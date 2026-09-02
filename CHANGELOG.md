@@ -397,6 +397,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `_record_and_postprocess`, which cannot undo the call and so degrades — logging and
   `felix_control_degraded{control=after_tool}` — instead of rewriting the outcome.
 
+- **`content_screening.tools` is additive, not substitutive.** `BREAKING` in the safe
+  direction: a manifest that sets it will now screen more than it did.
+
+  The list and the untrusted-tool default used to be alternatives, so a non-empty `tools`
+  *replaced* the default rather than adding to it. Naming one trusted local tool — the natural
+  way to *extend* screening — silently turned it off for every `mcp__*`, `peer__*`, browser,
+  sandbox, container and queue tool, while the manifest still read as a working control and
+  `felix validate-manifest` blessed it. Injected content on a fetched page then reached the
+  model with the whole governed toolset behind it.
+
+  Screening now covers every untrusted tool plus whatever `tools` names. A manifest that never
+  sets `tools` is unaffected — `matches_any([], name)` is False, so that path is unchanged.
+
+  There is deliberately no replacement escape hatch. Narrowing screening away from untrusted
+  output is the thing screening exists to prevent, so it was removed rather than renamed; for
+  cost, the levers are `content_screening.model` and `on_flag`. The
+  `felix_untrusted_tool_unscreened` warning added alongside globbing is gone with it — nothing
+  excludes an untrusted tool any more.
+
+  Found by `felix-security-reviewer` during the governance mutation audit.
+
 ### Changed
 
 - **Removed `args_schema` from `spec.sandboxes`, `spec.containers` and

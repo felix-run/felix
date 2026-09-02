@@ -552,3 +552,68 @@ def test_the_governance_rule_lists_are_bounded(field: str) -> None:
     assert Spec.model_fields[field].metadata, f"spec.{field} carries no length bound"
     caps = [getattr(m, "max_length", None) for m in Spec.model_fields[field].metadata]
     assert any(c == 64 for c in caps), f"spec.{field} is not capped at MAX_REFS: {caps}"
+
+
+# --------------------------------------------------------------------------
+# content_screening.tools is additive, not substitutive.
+# --------------------------------------------------------------------------
+
+
+def _screening_tools():
+    from felix.tools.types import Tool
+
+    class _Mcp:
+        transport = "mcp"
+
+        async def execute(self, args, ctx=None):
+            return "x"
+
+    class _Local:
+        # `local` is the only member of `_TRUSTED_TRANSPORTS`; anything else, `builtin`
+        # included, is untrusted by default.
+        transport = "local"
+
+        async def execute(self, args, ctx=None):
+            return "x"
+
+    return [
+        Tool(
+            name="github__read_issue", description="d", args_schema=None, executor=_Mcp(), source="mcp:github"
+        ),
+        Tool(
+            name="browser__fetch", description="d", args_schema=None, executor=_Mcp(), source="browser:main"
+        ),
+        Tool(name="calculator", description="d", args_schema=None, executor=_Local()),
+    ]
+
+
+def test_naming_a_tool_for_screening_does_not_unscreen_the_untrusted_ones() -> None:
+    """The hole: `tools` used to *replace* the untrusted-tool default rather than add to it.
+
+    So the natural way to extend screening to one trusted local tool silently turned it off
+    for every `mcp__*`, `peer__*`, browser, sandbox and queue tool — while the manifest still
+    read as a working control. Injected content on a fetched page then reached the model with
+    the whole governed toolset behind it.
+    """
+    from felix.manifests.builder import apply_content_screening
+    from felix.manifests.schema import ContentScreening
+
+    tools = _screening_tools()
+    wrapped = apply_content_screening(tools, ContentScreening(enabled=True, tools=["calculator"]), "m")
+    screened = {orig.name for orig, new in zip(tools, wrapped, strict=True) if new is not orig}
+
+    assert "browser__fetch" in screened, "naming a trusted tool unscreened an untrusted one"
+    assert "github__read_issue" in screened
+    assert "calculator" in screened, "the named tool is screened too — that is what naming it does"
+
+
+def test_screening_with_no_tools_list_still_covers_exactly_the_untrusted_ones() -> None:
+    """The default path must be unchanged: `matches_any([], name)` is False."""
+    from felix.manifests.builder import apply_content_screening
+    from felix.manifests.schema import ContentScreening
+
+    tools = _screening_tools()
+    wrapped = apply_content_screening(tools, ContentScreening(enabled=True), "m")
+    screened = {orig.name for orig, new in zip(tools, wrapped, strict=True) if new is not orig}
+
+    assert screened == {"github__read_issue", "browser__fetch"}

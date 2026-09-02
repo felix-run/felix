@@ -349,6 +349,21 @@ Two things to know before relying on it:
   calculator under `make dev` (which sets `FELIX_AUTH_MODE=none`). Mint a token with the
   scope — see the `felix mint-jwt` line above — rather than removing the policy.
 
+## Content screening targets
+
+`content_screening.tools` is **additive**. Screening covers every untrusted tool — anything
+whose transport is not `local`, plus anything sourced from `mcp:`, `peer:`, `a2a:`, `queue:` —
+and, in addition, whatever `tools` names. Naming a trusted local tool extends screening to it;
+it does not narrow screening away from anything.
+
+There is deliberately no way to turn screening off for an untrusted tool while leaving it on
+elsewhere. The two used to be alternatives, so a non-empty `tools` list *replaced* the
+untrusted-tool default: naming one local tool silently unscreened every MCP, peer, browser,
+sandbox, container and queue tool while the manifest still read as a working control. Turning
+screening off for untrusted output is the thing screening exists to prevent, so the narrowing
+was removed rather than renamed. If screening cost is the concern, the levers are
+`content_screening.model` and `on_flag`.
+
 ## Approval semantics
 
 **Precedence.** Approvals is the only control that selects *one* rule — policies and judges
