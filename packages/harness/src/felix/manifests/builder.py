@@ -143,8 +143,27 @@ def apply_policies(tools: list[Tool], policies: list[Policy], manifest_id: str) 
 
         async def execute(args: ToolInput, ctx: ToolInvocationCtx | None = None) -> ToolOutput:
             req_ctx = try_get_context()
-            scopes = req_ctx.auth.scopes if req_ctx else frozenset()
+            # `frozenset(...)`, not the attribute as-is. `AuthContext.scopes` is an unvalidated
+            # dataclass field, and the plugin authenticator seam adopts whatever `Principal` a
+            # plugin returns — a plugin doing `scopes=" ".join(claims["scope"])` yields a `str`,
+            # for which `s not in scopes` is a *substring* test: `tools:calc` is "held" by a
+            # caller with `tools:calculator`, and `admin` by one with `no-admin`. Coercing here
+            # makes the check a membership test whatever the caller layer produced.
+            scopes = frozenset(req_ctx.auth.scopes) if req_ctx else frozenset()
             for rule in rules:
+                # Fail closed on a rule that requires nothing. The schema rejects this shape,
+                # so reaching it means a Policy was built in code or parsed by an older path —
+                # and `[s for s in [] if ...]` is empty, which would read as "every scope
+                # satisfied" and permit the call. Same stance as apply_limits with no context.
+                if not rule.required_scopes:
+                    record_counter(
+                        "felix_policy_deny",
+                        {"manifest_id": manifest_id, "tool": tool.name, "policy": rule.id},
+                    )
+                    return deny_output(
+                        f"[policy denied] {rule.id} requires no scopes, so it cannot authorise {tool.name}",
+                        "policy",
+                    )
                 missing = [s for s in rule.required_scopes if s not in scopes]
                 if missing:
                     record_counter(

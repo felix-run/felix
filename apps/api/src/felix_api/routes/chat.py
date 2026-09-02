@@ -43,6 +43,7 @@ router = APIRouter(tags=["Threads"])
 def _http_from_invoke_prep(exc: Exception) -> HTTPException | None:
     from felix.governance.inbound import InboundScreeningError
     from felix.manifests.inbound_auth import InboundAuthError
+    from felix.manifests.loader import ManifestParseError
     from felix.manifests.pin import ManifestDriftError
 
     # This decides the status code; `client_safe_message` decides the wording. They
@@ -63,6 +64,12 @@ def _http_from_invoke_prep(exc: Exception) -> HTTPException | None:
         # `PUT /manifests` refuses new ones, but existing rows only fail here, and
         # unmapped that is a 500 with a traceback on every request for the manifest.
         return HTTPException(status_code=422, detail=client_safe_message(exc, authored_for_clients=True))
+    if isinstance(exc, ManifestParseError):
+        # Same shape one step earlier: a row stored before a schema tightening no longer
+        # validates. `PUT /manifests` refuses new ones with a 400; without this the existing
+        # rows answer 500 "internal error" on every request, which is indistinguishable from
+        # an outage and sends the operator looking for one.
+        return HTTPException(status_code=422, detail=client_safe_message(exc))
     return None
 
 

@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError as PydanticValidationError
 from ruamel.yaml import YAML
 
 from felix.manifests.schema import Manifest, assert_valid_manifest_name
@@ -31,8 +32,40 @@ def _default_bundled_dir() -> Path:
     return here / "bundled"
 
 
+class ManifestParseError(ValueError):
+    """A manifest that does not validate, rendered for an operator to read.
+
+    Pydantic's own `ValidationError` reaches an HTTP client as "internal error": it is not in
+    `felix_api.errors._relayable`, and `PUT /manifests` raised it outside its own try/except.
+    So a manifest refused for a *stated* reason — `spec.policies` naming tools but no scopes,
+    say — answered 500 with no explanation, and a stored manifest carrying that shape answered
+    500 on every read. A refusal nobody can read is an outage, which is the shape the refusal
+    existed to remove.
+
+    A `ValueError` subclass so the `except ValueError` paths that already exist keep working.
+    """
+
+
+def _render(exc: PydanticValidationError) -> str:
+    """Location and reason, never the offending value.
+
+    `str(ValidationError)` embeds `input_value=`, and this message travels into HTTP bodies,
+    `jobs_store.record_run(error=...)` and a fiber's `state_json`. A manifest carries inline
+    credentials often enough — `extra_forbidden` on an `api_key` renders the key — that
+    rendering the input here would be a new way for one to reach a management surface.
+    """
+    parts = []
+    for err in exc.errors():
+        loc = ".".join(str(p) for p in err.get("loc", ())) or "manifest"
+        parts.append(f"{loc}: {err.get('msg', 'invalid')}")
+    return "; ".join(parts) or "manifest failed validation"
+
+
 def parse_manifest(raw: Any) -> Manifest:
-    return Manifest.model_validate(raw)
+    try:
+        return Manifest.model_validate(raw)
+    except PydanticValidationError as exc:
+        raise ManifestParseError(_render(exc)) from exc
 
 
 def load_manifest_data(data: str | bytes, *, source: str = "inline") -> Manifest:

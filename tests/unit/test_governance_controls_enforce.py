@@ -277,3 +277,134 @@ async def test_a_declared_flag_survives_the_whole_compile() -> None:
         "replay_safe was lost somewhere in the governance stack; patterns/react.py reads it to "
         "decide whether to tell the model an interrupted call is safe to retry"
     )
+
+
+# --------------------------------------------------------------------------
+# A policy that requires nothing. The shape a security review found reachable:
+# it validated, compiled, wrapped the tool, and permitted every caller.
+# --------------------------------------------------------------------------
+
+
+def test_a_policy_that_lists_tools_but_no_scopes_is_rejected() -> None:
+    """`policies: [{id: finance-only, tools: [wire_transfer]}]` used to validate.
+
+    `required_scopes` is the only enforcement `apply_policies` has, and an empty list makes
+    its check vacuously true — so the tool was wrapped, looked governed in the compiled stack
+    and in `felix validate-manifest`, and ran for anonymous callers.
+    """
+    with pytest.raises(ValueError, match="permits every caller"):
+        Policy(id="finance-only", tools=["wire_transfer"])
+
+
+def test_a_policy_that_names_no_tools_is_rejected() -> None:
+    """The mirror case: `by_tool` stays empty, so no tool is ever wrapped."""
+    with pytest.raises(ValueError, match="gates nothing"):
+        Policy(id="orphan", required_scopes=["tools:calc"])
+
+
+@pytest.mark.asyncio
+async def test_a_scopeless_rule_reaching_the_wrapper_denies_rather_than_permits() -> None:
+    """Defense in depth, for a `Policy` built in code rather than parsed.
+
+    The schema rejects this shape now, so the only way here is constructing the model
+    directly — which `model_construct` does, skipping validation the way an older parse path
+    or a plugin might. `[s for s in [] if s not in scopes]` is empty, and an empty `missing`
+    list reads as "every requirement satisfied" unless the wrapper says otherwise.
+    """
+    scopeless = Policy.model_construct(id="x", description="", required_scopes=[], tools=["fetch"])
+    inner = _tool("side effect happened")
+    tool = apply_policies([inner], [scopeless], "m")[0]
+
+    with _with_scopes("anything"):
+        out = await tool.executor.execute({})
+
+    assert "policy denied" in str(out), f"a rule requiring nothing authorised the call: {out}"
+    assert inner.executor.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_a_str_scope_set_cannot_satisfy_a_policy_by_substring() -> None:
+    """`s not in scopes` is a substring test when `scopes` is a `str`, not a set.
+
+    `AuthContext.scopes` is an unvalidated dataclass field, and the plugin authenticator seam
+    adopts whatever `Principal` a plugin returns — a plugin doing `" ".join(claims["scope"])`
+    produces a `str`. Then `tools:calc` is "held" by a caller with only `tools:calculator`,
+    and `admin` by one with `no-admin`. Total policy bypass on any prefix collision.
+    """
+    inner = _tool("side effect happened")
+    tool = apply_policies([inner], [POLICY], "m")[0]
+
+    settings = Settings(database_url="memory://ci", object_store="memory")
+    auth = AuthContext(principal_sub="s", tenant_id="t", anonymous=False)
+    auth.scopes = "reader tools:calculator"  # type: ignore[assignment]
+    with run_with_context(RequestContext(settings=settings, auth=auth, manifest_id="m")):
+        out = await tool.executor.execute({})
+
+    assert "policy denied" in str(out), f"a substring satisfied the scope check: {out}"
+    assert inner.executor.calls == 0
+
+
+def test_a_policy_requiring_a_blank_scope_is_rejected() -> None:
+    """No caller holds `""` deliberately — but a token whose `scopes` array carries an empty
+    entry does, because the list branch of `_scopes_from_payload` does not filter."""
+    with pytest.raises(ValueError, match="blank scope"):
+        Policy(id="blank", tools=["fetch"], required_scopes=[""])
+
+
+def test_a_refused_manifest_answers_400_with_the_reason(monkeypatch) -> None:
+    """A refusal nobody can read is an outage.
+
+    `parse_manifest` raised pydantic's `ValidationError` outside both try blocks in
+    `PUT /manifests/{name}`, so a manifest refused for a stated reason answered
+    `500 Internal Server Error` and the validator's message never left the server log. The
+    operator's most available diagnosis is then "roll back Felix", which restores the
+    permissive policy.
+    """
+    from felix.config import Settings as S
+    from felix_api.app import create_app
+    from starlette.testclient import TestClient
+
+    monkeypatch.setenv("FELIX_AUTH_MODE", "none")
+    settings = S(
+        database_url="memory://ci",
+        object_store="memory",
+        auth_mode="none",
+        allow_insecure=True,
+        host="127.0.0.1",
+    )
+    app = create_app(settings=settings, plugins=[])
+    body = {
+        "manifest": {
+            "apiVersion": "felix/v1",
+            "kind": "Agent",
+            "metadata": {"name": "finance"},
+            "spec": {
+                "pattern": "react",
+                "policies": [{"id": "finance-only", "tools": ["wire_transfer"]}],
+            },
+        }
+    }
+    with TestClient(app) as client:
+        res = client.put("/manifests/finance", json=body)
+
+    assert res.status_code == 400, f"expected a readable refusal, got {res.status_code}"
+    assert "required_scopes" in res.text, f"the reason did not reach the client: {res.text}"
+
+
+def test_a_refusal_message_never_carries_the_offending_value() -> None:
+    """`str(ValidationError)` embeds `input_value=`, and this message travels — into HTTP
+    bodies, `jobs_store.record_run(error=...)` and a fiber's `state_json`. A manifest with an
+    inline credential renders it in the `extra_forbidden` error."""
+    from felix.manifests.loader import ManifestParseError, parse_manifest
+
+    raw = {
+        "apiVersion": "felix/v1",
+        "kind": "Agent",
+        "metadata": {"name": "leaky"},
+        "spec": {"pattern": "react", "api_key": "sk-live-SUPERSECRET"},
+    }
+    with pytest.raises(ManifestParseError) as caught:
+        parse_manifest(raw)
+
+    assert "sk-live-SUPERSECRET" not in str(caught.value), str(caught.value)
+    assert "api_key" in str(caught.value), "the message should still name the offending field"
