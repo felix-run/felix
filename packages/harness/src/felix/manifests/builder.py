@@ -331,9 +331,20 @@ def apply_content_screening(
     model_id = screening.model.strip()
 
     def wrap_one(tool: Tool) -> Tool:
-        if named and not matches_any(named, tool.name):
-            return tool
-        if not named and not _is_untrusted_tool(tool):
+        # Additive: what `tools` names, *plus* every untrusted tool, always.
+        #
+        # These used to be alternatives — a non-empty `tools` list replaced the untrusted-tool
+        # default rather than adding to it. So the natural way to *extend* screening to one
+        # trusted local tool silently turned it off for every `mcp__*`, `peer__*`, browser,
+        # sandbox, container and queue tool, while the manifest still read as a working
+        # control. Injected content on a fetched page then reached the model with the whole
+        # governed toolset behind it.
+        #
+        # There is no safe narrowing here, which is why the escape hatch is gone rather than
+        # renamed: turning screening off for untrusted output is the thing screening exists to
+        # prevent. `matches_any([], name)` is False, so a manifest that never sets `tools`
+        # behaves exactly as before.
+        if not (matches_any(named, tool.name) or _is_untrusted_tool(tool)):
             return tool
         inner = tool.executor
 
@@ -963,7 +974,7 @@ def _collect_secrets(deps: BuildDeps) -> list[str]:
     return collected_secret_values(settings)
 
 
-def _warn_unmatched_tool_patterns(m: Manifest, bound: list[str], untrusted: list[str]) -> None:
+def _warn_unmatched_tool_patterns(m: Manifest, bound: list[str]) -> None:
     """Say so when a governance rule targets tools that are not there."""
     targets: list[tuple[str, str, list[str]]] = []
     for policy in m.spec.policies:
@@ -990,25 +1001,6 @@ def _warn_unmatched_tool_patterns(m: Manifest, bound: list[str], untrusted: list
         targets.append(
             ("command_screening", "command_screening", list(m.spec.command_screening.target_tools))
         )
-
-    # `content_screening.tools` is substitutive, not additive: a non-empty list turns
-    # screening *off* for every untrusted tool it does not name. A pattern that matches
-    # something keeps the warning below quiet, so the dangerous shape — screening `github__*`
-    # while `browser__fetch` goes unscreened — needs its own check.
-    screening = m.spec.content_screening
-    if screening and screening.enabled and screening.tools:
-        unscreened = [n for n in untrusted if not matches_any(screening.tools, n)]
-        if unscreened:
-            logger.warning(
-                "content_screening.tools excludes untrusted tool(s) %s — their output reaches "
-                "the model unscreened",
-                ", ".join(repr(x) for x in sorted(unscreened)),
-                extra={"manifest_id": m.metadata.name},
-            )
-            record_counter(
-                "felix_untrusted_tool_unscreened",
-                {"manifest_id": m.metadata.name},
-            )
 
     for kind, rule_id, patterns in targets:
         missing = unmatched_patterns(patterns, bound)
@@ -1293,9 +1285,7 @@ async def build_agent(
         # refusing would let a remote outage take the agent down with it. Silent was not an
         # option either — an inert control that validates is the defect this repo keeps
         # shipping, and globs make one easier to write by hand.
-        _warn_unmatched_tool_patterns(
-            m, [t.name for t in resolved], [t.name for t in resolved if _is_untrusted_tool(t)]
-        )
+        _warn_unmatched_tool_patterns(m, [t.name for t in resolved])
 
         # Governance pipeline (order matters — matches TS builder).
         resolved = apply_secret_masking(resolved, _collect_secrets(deps), m.metadata.name)

@@ -337,10 +337,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `felix_rule_targets_nothing` at compile time. Not refused: an MCP server whose discovery
   failed binds no tools, and refusing would let a remote outage take the agent down with it.
   Globs make an inert rule easier to write by hand, so the counter is the thing to watch after
-  adding one. A second warning, `felix_untrusted_tool_unscreened`, names untrusted tools that
-  a non-empty `content_screening.tools` list excludes — that list is substitutive, so naming
-  one tool turns screening off for every other untrusted one, and a pattern that matches
-  *something* keeps the first warning quiet.
+  adding one.
 
 - **`spec.policies` and `spec.approvals` are capped at 64 rules**, like every integration list.
   Matching is O(rules × tools) and `build_agent` compiles per request; unbounded, 8000 policies
@@ -396,6 +393,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The `try` now covers only the call. Everything after it moved to
   `_record_and_postprocess`, which cannot undo the call and so degrades — logging and
   `felix_control_degraded{control=after_tool}` — instead of rewriting the outcome.
+
+- **`content_screening.tools` is additive, not substitutive.** `BREAKING` in the safe
+  direction: a manifest that sets it will now screen more than it did.
+
+  The list and the untrusted-tool default used to be alternatives, so a non-empty `tools`
+  *replaced* the default rather than adding to it. Naming one trusted local tool — the natural
+  way to *extend* screening — silently turned it off for every `mcp__*`, `peer__*`, browser,
+  sandbox, container and queue tool, while the manifest still read as a working control and
+  `felix validate-manifest` blessed it. Injected content on a fetched page then reached the
+  model with the whole governed toolset behind it.
+
+  Screening now covers every untrusted tool plus whatever `tools` names. A manifest that never
+  sets `tools` is unaffected — `matches_any([], name)` is False, so that path is unchanged.
+
+  There is deliberately no replacement escape hatch. Narrowing screening away from untrusted
+  output is the thing screening exists to prevent, so it was removed rather than renamed.
+
+  Being straight about the cost, because "use `model` and `on_flag` instead" would not be:
+  neither is per-tool, so this removes the only per-tool cost lever there was. It is free in
+  the default configuration — both bundled manifests that enable screening leave `model` empty,
+  and the marker path is a substring scan — and it costs one model call per untrusted tool per
+  turn where `model` *is* set. A manifest binding twenty MCP tools and naming three went from
+  three screener calls to twenty. If that bites, the shape to add is a knob orthogonal to trust
+  — which tools get the *expensive* screener, with marker screening unconditional — rather than
+  a way to exempt an untrusted tool from screening at all.
+
+  Two things to re-measure if you set `model` and previously narrowed `tools`: `on_flag: block`
+  plus a screener outage now denies output from every untrusted tool rather than the named
+  subset, and the marker scan's substring match (`"system prompt"` included) can quarantine a
+  docs server or an issue tracker that was previously exempt.
+
+  Found by `felix-security-reviewer` during the governance mutation audit.
 
 ### Changed
 
