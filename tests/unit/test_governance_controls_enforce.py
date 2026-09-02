@@ -464,3 +464,91 @@ def test_a_pattern_matching_no_bound_tool_is_reported() -> None:
 
     assert unmatched_patterns(["github__*", "calculator"], ["calculator"]) == ["github__*"]
     assert unmatched_patterns(["github__*"], ["github__create_issue"]) == []
+
+
+# --------------------------------------------------------------------------
+# Approvals selects one rule, so with globs "which rule matched" is the gate.
+# --------------------------------------------------------------------------
+
+
+def _gated_tool(rules, name="github__delete_repo"):
+    from felix.manifests.builder import apply_approvals
+
+    inner = _tool("DID THE THING", name=name)
+    return inner, apply_approvals([inner], rules, "m")[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("order", ["literal-then-glob", "glob-then-literal"], ids=lambda o: o)
+async def test_a_broad_glob_rule_cannot_displace_a_strict_literal_one(order: str) -> None:
+    """The regression globbing introduced, in the order that triggered it.
+
+    A strict literal rule followed by a broad `github__*` audit rule carrying
+    `when_args: [force]`: under plain last-match-wins the pattern won, and every call without
+    `force` ran ungated — a one-shot, principal-bound gate on a destructive tool, removed by
+    *adding* a rule. That shape is expected in the wild, because the docs told operators to
+    write the glob that never worked, so a strict literal rule beside it is the workaround.
+    """
+    from felix.manifests.schema import ApprovalRule
+
+    strict = ApprovalRule(id="strict", tools=["github__delete_repo"], one_shot=True, bind_principal=True)
+    lax = ApprovalRule(id="lax-audit", tools=["github__*"], when_args=["force"], ttl_seconds=3600)
+    rules = [strict, lax] if order == "literal-then-glob" else [lax, strict]
+
+    inner, tool = _gated_tool(rules)
+    out = await tool.executor.execute({})
+
+    assert "approval required" in tool_output_content(out), f"the gate was removed: {out}"
+    assert inner.executor.calls == 0
+    assert "strict" in tool_output_content(out), "the broad rule displaced the strict one"
+
+
+@pytest.mark.asyncio
+async def test_a_glob_gates_a_tool_no_literal_rule_names() -> None:
+    """The widening globs exist for: gated where nothing gated before."""
+    from felix.manifests.schema import ApprovalRule
+
+    inner, tool = _gated_tool([ApprovalRule(id="all-github", tools=["github__*"])])
+    out = await tool.executor.execute({})
+
+    assert "approval required" in tool_output_content(out)
+    assert inner.executor.calls == 0
+
+
+def test_a_literal_tool_name_containing_a_character_class_matches_itself() -> None:
+    """`fnmatch` reads `[2024]` as a character class, so `gh__report[2024]` did not match
+    itself — and `mcp/client.py` builds `f"{ref.name}__{remote_name}"` from an unsanitised
+    remote name, so a remote can produce one. Globbing must not be able to *un*-gate a tool
+    that is listed literally."""
+    from felix.manifests.tool_match import matches_any
+
+    assert matches_any(["gh__report[2024]"], "gh__report[2024]")
+    assert matches_any(["gh__a?b"], "gh__a?b"), "a literal ? is a name, not a wildcard"
+    assert matches_any(["gh__*"], "gh__anything"), "a real glob still globs"
+
+
+def test_content_screening_reports_an_untrusted_tool_its_list_excludes() -> None:
+    """`content_screening.tools` is substitutive: a non-empty list turns screening *off* for
+    every untrusted tool it does not name. A pattern that matches something keeps the
+    unmatched-pattern warning quiet, so this shape needs its own check."""
+    from felix.manifests.tool_match import matches_any
+
+    untrusted = ["github__read_issue", "browser__fetch"]
+    excluded = [n for n in untrusted if not matches_any(["github__*"], n)]
+
+    assert excluded == ["browser__fetch"], (
+        "screening github__* leaves browser output unscreened, and that is the case the "
+        "compile-time warning has to name"
+    )
+
+
+@pytest.mark.parametrize("field", ["policies", "approvals"])
+def test_the_governance_rule_lists_are_bounded(field: str) -> None:
+    """Matching is O(rules x tools) per compile and `build_agent` runs per request. Unbounded,
+    8000 policies measured 0.24s of synchronous CPU on the event loop — which stalls every
+    other tenant sharing that worker, from one tenant's `manifests:write`."""
+    from felix.manifests.schema import Spec
+
+    assert Spec.model_fields[field].metadata, f"spec.{field} carries no length bound"
+    caps = [getattr(m, "max_length", None) for m in Spec.model_fields[field].metadata]
+    assert any(c == 64 for c in caps), f"spec.{field} is not capped at MAX_REFS: {caps}"

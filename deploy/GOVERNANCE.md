@@ -333,7 +333,7 @@ pass; the first missing scope denies the call, and the denial names it.
 
 | Field | Behaviour |
 |-------|-----------|
-| `tools` | The tools this rule gates, matched by glob (`fnmatch`, case-sensitive): `calculator`, `github__*`, `*__search`, `*`. Applies equally to `spec.approvals`, judge `target_tools` and `content_screening.tools`. A pattern matching no bound tool is logged and counted (`felix_rule_targets_nothing`) rather than refused, since the bound set varies — an MCP server whose discovery failed binds nothing. A rule naming no tools at all gates nothing and is rejected: it would otherwise satisfy the `soc2` profile's "policies **or** approvals **or** limits" requirement while enforcing nothing. |
+| `tools` | The tools this rule gates, matched by glob (`fnmatch`, case-sensitive): `calculator`, `github__*`, `*__search`, `*`. Applies equally to `spec.approvals`, judge `target_tools`, `content_screening.tools` and `command_screening.target_tools`. A pattern with no `*` or `?` is a literal name, so a tool whose name contains `[...]` still matches itself. A pattern matching no bound tool is logged and counted (`felix_rule_targets_nothing`) rather than refused, since the bound set varies — an MCP server whose discovery failed binds nothing. A rule naming no tools at all gates nothing and is rejected: it would otherwise satisfy the `soc2` profile's "policies **or** approvals **or** limits" requirement while enforcing nothing. |
 | `required_scopes` | Scopes the caller must hold. **Required**: a rule that lists tools but no scopes permits every caller while appearing to govern them, so it is rejected rather than accepted as a no-op. |
 
 Two things to know before relying on it:
@@ -351,12 +351,22 @@ Two things to know before relying on it:
 
 ## Approval semantics
 
+**Precedence.** Approvals is the only control that selects *one* rule — policies and judges
+apply every match, so for them more matches only tighten. When several approval rules match a
+tool, a rule naming it **literally** wins over one matching by pattern, and among equals the
+last declared wins. That makes globbing non-weakening: a pattern can only gate a tool nothing
+gated before, and never displaces a stricter literal rule.
+
+
 | Field | Behaviour |
 |-------|-----------|
 | `ttl_seconds` | How long the run waits for a decision before failing closed. |
 | `one_shot` | The grant is marked consumed on use; a replay of the same call needs a new approval. |
 | `bind_principal` | Only the principal who was approved may use the grant. Without it, any principal in the tenant can reuse it. |
 | `allow_unattended` | EU AI Act high-risk manifests must set this to `false`. |
+
+`spec.policies` and `spec.approvals` are capped at 64 rules each: matching is O(rules × tools)
+and a manifest is compiled per request.
 
 Approvals are matched on `(tenant, manifest, tool, sha256(args))` and stored in Postgres
 — never in model-visible state, so the model cannot forge one. Every failure path

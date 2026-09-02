@@ -28,9 +28,19 @@ from fnmatch import fnmatchcase
 __all__ = ["matches_any", "select", "unmatched_patterns"]
 
 
+def _matches(pattern: str, name: str) -> bool:
+    # A pattern carrying no `*` or `?` is a name, compared literally. Without this,
+    # `gh__report[2024]` is a character class that does not match itself — and MCP builds
+    # `local_name = f"{ref.name}__{remote_name}"` from an unsanitised remote name, so a remote
+    # can produce one. Globbing must not be able to *un*-gate a literally listed tool.
+    if "*" not in pattern and "?" not in pattern:
+        return pattern == name
+    return fnmatchcase(name, pattern)
+
+
 def matches_any(patterns: Iterable[str], name: str) -> bool:
     """Does `name` match at least one pattern? A plain name matches itself."""
-    return any(fnmatchcase(name, p) for p in patterns)
+    return any(_matches(p, name) for p in patterns)
 
 
 def select(patterns: Iterable[str], names: Iterable[str]) -> set[str]:
@@ -48,4 +58,4 @@ def unmatched_patterns(patterns: Iterable[str], names: Iterable[str]) -> list[st
     at compile time would otherwise take the whole agent down with it.
     """
     known = list(names)
-    return [p for p in patterns if not any(fnmatchcase(n, p) for n in known)]
+    return [p for p in patterns if not any(_matches(p, n) for n in known)]

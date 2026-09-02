@@ -1721,6 +1721,7 @@
           "items": {
             "$ref": "#/$defs/Policy"
           },
+          "maxItems": 64,
           "title": "Policies",
           "type": "array"
         },
@@ -1743,6 +1744,7 @@
           "items": {
             "$ref": "#/$defs/ApprovalRule"
           },
+          "maxItems": 64,
           "title": "Approvals",
           "type": "array"
         },

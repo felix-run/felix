@@ -469,8 +469,8 @@ class Policy(_Strict):
         in the manifest and in `felix validate-manifest` while enforcing nothing is worse than
         a missing one, which is why this raises rather than warns.
 
-        The mirror case, scopes with no tools, gates nothing at all: `by_tool` stays empty and
-        no tool is wrapped. Also inert, also rejected here.
+        The mirror case, scopes with no tools, gates nothing at all: no tool matches, so none is
+        wrapped. Also inert, also rejected here — and it counts toward the `soc2` profile.
         """
         if not self.tools:
             raise ValueError(f"policy {self.id!r} names no tools, so it gates nothing")
@@ -617,13 +617,17 @@ class Spec(_Strict):
     reflect: ReflectSpec = Field(default_factory=ReflectSpec)
     plan_execute: PlanExecuteSpec = Field(default_factory=PlanExecuteSpec)
     procedural_memory: ProceduralSpec = Field(default_factory=ProceduralSpec)
-    policies: list[Policy] = Field(default_factory=list)
+    # Bounded like every integration list above. Matching became O(rules x tools) per
+    # compile when tool targeting went glob, and `build_agent` runs per request — 8000
+    # policies measured 0.24s of synchronous CPU on the event loop, which stalls every
+    # other tenant in that worker. A manifest body of 1 MiB fits far more than 64.
+    policies: list[Policy] = Field(default_factory=list, max_length=MAX_REFS)
     limits: Limits = Field(default_factory=Limits)
     guardrails: Guardrails = Field(default_factory=Guardrails)
     content_screening: ContentScreening = Field(default_factory=ContentScreening)
     command_screening: CommandScreening = Field(default_factory=CommandScreening)
     anomaly: AnomalySpec = Field(default_factory=AnomalySpec)
-    approvals: list[ApprovalRule] = Field(default_factory=list)
+    approvals: list[ApprovalRule] = Field(default_factory=list, max_length=MAX_REFS)
     governance: GovernanceSpec = Field(default_factory=GovernanceSpec)
     recursion_limit: int | None = Field(default=None, ge=1, le=ABSOLUTE_LIMITS["recursion_limit"])
     # The one relaxation of `extra="forbid"`. A plugin that registers a pattern or

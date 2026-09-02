@@ -224,10 +224,10 @@ def apply_command_screening(
                 rules.append(CommandRule(pattern=pattern, decision=decision, reason=reason))
 
     compiled = [(re.compile(r.pattern, re.I), r.decision, r.reason or r.pattern) for r in rules]
-    targets = set(screening.target_tools)
+    targets = list(screening.target_tools)
 
     def wrap_one(tool: Tool) -> Tool:
-        if targets and tool.name not in targets:
+        if targets and not matches_any(targets, tool.name):
             if tool.executor.transport not in {"sandbox", "container"}:
                 return tool
         if not compiled and tool.executor.transport not in {"sandbox", "container"}:
@@ -759,9 +759,25 @@ def apply_approvals(tools: list[Tool], rules: list[ApprovalRule], manifest_id: s
         return tools
 
     def wrap_one(tool: Tool) -> Tool:
-        # Last match wins, preserving the previous `gated[name] = r` behaviour where a later
-        # rule naming the same tool replaced an earlier one.
-        rule = next((r for r in reversed(rules) if matches_any(r.tools, tool.name)), None)
+        # Approvals is the only control in the stack that selects *one* rule — policies and
+        # judges apply every match conjunctively, so for them more matches can only tighten.
+        # Here the chosen rule decides `ttl_seconds`, `one_shot`, `bind_principal` and
+        # `when_args`, so "which rule matched" is the whole gate.
+        #
+        # A literal name therefore beats a pattern, and among literals the last still wins —
+        # which is exactly what the previous `gated[name] = r` dict did, since a glob rule
+        # contributed nothing to it. That makes globbing here provably non-weakening: every
+        # tool gated before is gated by the same rule as before, and a pattern can only gate
+        # a tool that nothing gated.
+        #
+        # Plain last-match-wins was not that. With a strict literal rule followed by a broad
+        # `github__*` audit rule carrying `when_args: [force]`, the pattern won and every call
+        # without `force` ran ungated: a one-shot, principal-bound gate on a destructive tool,
+        # removed by adding a rule. That shape is expected in the wild precisely because the
+        # docs told operators to write the glob that never worked.
+        literal = [r for r in rules if tool.name in r.tools]
+        matched = literal or [r for r in rules if matches_any(r.tools, tool.name)]
+        rule = matched[-1] if matched else None
         if rule is None:
             return tool
         inner = tool.executor
@@ -947,7 +963,7 @@ def _collect_secrets(deps: BuildDeps) -> list[str]:
     return collected_secret_values(settings)
 
 
-def _warn_unmatched_tool_patterns(m: Manifest, bound: list[str]) -> None:
+def _warn_unmatched_tool_patterns(m: Manifest, bound: list[str], untrusted: list[str]) -> None:
     """Say so when a governance rule targets tools that are not there."""
     targets: list[tuple[str, str, list[str]]] = []
     for policy in m.spec.policies:
@@ -956,9 +972,43 @@ def _warn_unmatched_tool_patterns(m: Manifest, bound: list[str]) -> None:
         targets.append(("approval", rule.id, list(rule.tools)))
     if m.spec.guardrails:
         for judge in m.spec.guardrails.judges:
+            if judge.final_response:
+                # `wrap_final_response_judges` never reads target_tools, so any value here is
+                # ignored. Warning about *unmatched* patterns would be right by accident and
+                # silent when they match — say the real thing instead.
+                if judge.target_tools:
+                    logger.warning(
+                        "judge %r sets final_response, so its target_tools are ignored",
+                        judge.name,
+                        extra={"manifest_id": m.metadata.name},
+                    )
+                continue
             targets.append(("judge", judge.name, list(judge.target_tools)))
-    if m.spec.content_screening:
+    if m.spec.content_screening and m.spec.content_screening.enabled:
         targets.append(("content_screening", "content_screening", list(m.spec.content_screening.tools)))
+    if m.spec.command_screening and m.spec.command_screening.enabled:
+        targets.append(
+            ("command_screening", "command_screening", list(m.spec.command_screening.target_tools))
+        )
+
+    # `content_screening.tools` is substitutive, not additive: a non-empty list turns
+    # screening *off* for every untrusted tool it does not name. A pattern that matches
+    # something keeps the warning below quiet, so the dangerous shape — screening `github__*`
+    # while `browser__fetch` goes unscreened — needs its own check.
+    screening = m.spec.content_screening
+    if screening and screening.enabled and screening.tools:
+        unscreened = [n for n in untrusted if not matches_any(screening.tools, n)]
+        if unscreened:
+            logger.warning(
+                "content_screening.tools excludes untrusted tool(s) %s — their output reaches "
+                "the model unscreened",
+                ", ".join(repr(x) for x in sorted(unscreened)),
+                extra={"manifest_id": m.metadata.name},
+            )
+            record_counter(
+                "felix_untrusted_tool_unscreened",
+                {"manifest_id": m.metadata.name},
+            )
 
     for kind, rule_id, patterns in targets:
         missing = unmatched_patterns(patterns, bound)
@@ -1243,7 +1293,9 @@ async def build_agent(
         # refusing would let a remote outage take the agent down with it. Silent was not an
         # option either — an inert control that validates is the defect this repo keeps
         # shipping, and globs make one easier to write by hand.
-        _warn_unmatched_tool_patterns(m, [t.name for t in resolved])
+        _warn_unmatched_tool_patterns(
+            m, [t.name for t in resolved], [t.name for t in resolved if _is_untrusted_tool(t)]
+        )
 
         # Governance pipeline (order matters — matches TS builder).
         resolved = apply_secret_masking(resolved, _collect_secrets(deps), m.metadata.name)

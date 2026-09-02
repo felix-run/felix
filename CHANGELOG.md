@@ -325,11 +325,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not under screening. Matching is `fnmatchcase` and works in any position — `github__*`,
   `*__search`, `mcp__*__write`, `*`.
 
+  **Approvals is the only control that selects one rule**, so with globs "which rule matched"
+  became the whole gate. A rule naming a tool literally now wins over one matching by pattern,
+  and among equals the last declared wins — which is what the previous name-keyed dict did,
+  since a glob contributed nothing to it. Globbing is therefore non-weakening: a pattern can
+  only gate a tool nothing gated before. Plain last-match-wins was not that, and a strict
+  literal rule followed by a broad `github__*` audit rule carrying `when_args` lost its gate
+  entirely.
+
   A pattern matching no bound tool is logged at WARNING and counted as
   `felix_rule_targets_nothing` at compile time. Not refused: an MCP server whose discovery
   failed binds no tools, and refusing would let a remote outage take the agent down with it.
   Globs make an inert rule easier to write by hand, so the counter is the thing to watch after
-  adding one.
+  adding one. A second warning, `felix_untrusted_tool_unscreened`, names untrusted tools that
+  a non-empty `content_screening.tools` list excludes — that list is substitutive, so naming
+  one tool turns screening off for every other untrusted one, and a pattern that matches
+  *something* keeps the first warning quiet.
+
+- **`spec.policies` and `spec.approvals` are capped at 64 rules**, like every integration list.
+  Matching is O(rules × tools) and `build_agent` compiles per request; unbounded, 8000 policies
+  measured 0.24s of synchronous CPU on the event loop, which stalls every other tenant sharing
+  that worker and is reachable by any principal holding `manifests:write` for one tenant.
 
 ### Changed
 
