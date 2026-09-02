@@ -425,6 +425,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   docs server or an issue tracker that was previously exempt.
 
   Found by `felix-security-reviewer` during the governance mutation audit.
+- **A manifest whose policies nothing can satisfy now says so at compile.**
+  `felix_policy_unsatisfiable`, plus a WARNING naming the reason. `apply_policies` denies when
+  a required scope is absent — "no scopes" must not read as "all scopes" — but durable fibers
+  (principal `fiber`), scheduled jobs (`cron`), `felix eval`, and `FELIX_AUTH_MODE=none` all
+  carry an empty scope set by construction. So `spec.policies` plus any of them denies *every*
+  policied tool. Safe, and baffling: `manifests/governed.yaml` policies `calculator`, and
+  `make dev` sets `FELIX_AUTH_MODE=none`, so the bundled reference manifest denies its own
+  calculator under the documented dev command.
+
+  A warning, not a refusal. The combination is legitimate — the same manifest can be served
+  over HTTP to a scoped caller *and* resumed as a fiber — so refusing would break a working
+  deployment to prevent a surprise.
+
+  Deliberately **not** done: persisting the originating caller's scopes on the fiber row so a
+  resumed run inherits them. That puts a credential-shaped thing into durable state and means
+  a fiber resumed weeks later still carries the original caller's authority. It is a change to
+  the security model, not a bug fix, and it wants a decision rather than a commit.
 
 ### Changed
 
