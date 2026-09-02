@@ -9,9 +9,9 @@ commits into this repo and left `refs/heads/<branch>` and `refs/remotes/origin/m
 at them. No file was touched, so `git status` was the only symptom, and it looked like the
 whole tree had been deleted.
 
-The hooks under test defend themselves against exactly this (`env -u GIT_DIR -u GIT_WORK_TREE
-git "$@"` in `pr-quality-gate.sh` and `structural-test-proof.sh`). The tests that drive them
-have to do the same, or the test harness is the least hermetic thing in the room.
+The hook under test defends itself against exactly this (`env -u GIT_DIR -u GIT_WORK_TREE git
+"$@"` in `pr-quality-gate.sh`). The tests that drive it have to do the same, or the test
+harness is the least hermetic thing in the room.
 
 `commit.gpgsign=false` is here for a different reason: a contributor with global commit signing
 would otherwise get a `CalledProcessError` out of fixture setup, with a message about gpg and

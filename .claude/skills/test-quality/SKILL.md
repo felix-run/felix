@@ -16,37 +16,23 @@ checked. Judge the suite on what it would catch.
 the assertion actually pins; when it is not obvious, prove it. A test added alongside a fix that
 passes on the unfixed code is the highest-value finding you can report.
 
-In this repo, proving it is one command — it runs the test against the pre-change source, supplied
-by a detached worktree on `PYTHONPATH`, without touching your working tree:
+In this repo, proving it means **mutation**: introduce a real violation of the thing the test
+claims to pin, run the test, watch it go red, revert, and confirm the tree is clean. A probe file
+under the scanned root is usually enough and leaves nothing to undo but one `unlink`.
 
-```bash
-./scripts/prove-fails.sh tests/unit/test_x.py::test_y            # against HEAD
-./scripts/prove-fails.sh --base origin/main tests/unit/test_x.py # against the branch point
-./scripts/prove-fails.sh --base <sha> --only api,harness tests/… # shadow named dists
-```
+Read the outcome carefully, because two of the three are failures of the test:
 
-Read the verdict carefully, because two of the three are failures of the test:
-
-| Verdict | Meaning |
+| Outcome | Meaning |
 |---|---|
-| **PROVEN** | Failed against the old source. The test is evidence. |
-| **VACUOUS** | Passed against the old source. It does not pin the change — report it. |
-| **BROKEN** | *Errored* rather than failed: an import, a missing symbol, a fixture. That is not a pass and not a failure; it says nothing about whether the test would catch the bug. Fix it until it FAILS, then re-run. |
+| **RED** | It failed on the violation. The test is evidence. |
+| **GREEN** | It passed on a real violation. It pins nothing — report it. |
+| **ERROR** | It errored rather than failed: an import, a missing symbol, a fixture. That is not a pass and not a failure; it says nothing about whether the test would catch the bug. Fix it until it FAILS, then re-run. |
 
-`--only <dists>` (comma-separated: `ai`, `harness`, `cli`, `api`, `worker`) exists for the BROKEN
-case that is not the test's fault: `tests/conftest.py` comes from your working tree, so a base far
-enough back that conftest calls something not yet written errors in fixture setup. Narrow the shadow
-to the distribution the change is in.
-
-**It changes what `import` resolves, and nothing on disk.** So it cannot serve a test that *reads*
-the tree — an `rglob` corpus, an AST walk, an assertion about a bundled manifest or a Compose file
-— because those see your working copy at every base. The script warns when the target looks like
-that; the verdict it prints is then about the import-driven parts only. It also cannot help when the
-rule is *new* rather than a fix, since nothing at the base violates it.
-
-For both of those, the method is **mutation**: introduce a real violation, run the test, watch it go
-red, revert, confirm the tree is clean. That is what found the one vacuous invariant in this repo's
-last audit — 30 structural tests mutated, 29 red.
+Mutation is the only method that works for a test that *reads* the tree, which is most structural
+invariants here — reverting source through `PYTHONPATH` changes what `import` resolves and nothing
+on disk, so a scanning test sees the working copy whatever you do. A tool that automated the
+import-driven case existed briefly and was deleted: it could not serve the tests that most needed
+it, and it cost more to keep honest than doing the mutation by hand.
 
 **Structural tests need this most.** An AST or `rglob` scan that matches nothing passes, and reads
 exactly like the rule holding. One here matched `timeout=<Constant>` while every literal it hunted

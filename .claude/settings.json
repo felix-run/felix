@@ -86,11 +86,6 @@
             "type": "command",
             "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/quality-ratchet.sh\"",
             "timeout": 15
-          },
-          {
-            "type": "command",
-            "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/structural-test-proof.sh\"",
-            "timeout": 15
           }
         ]
       }
@@ -149,7 +144,6 @@
       "Bash(make doctor)",
       "Bash(make help)",
       "Bash(./scripts/test.sh*)",
-      "Bash(./scripts/prove-fails.sh*)",
       "Bash(docker compose -f deploy/docker/compose.yml*)",
       "Bash(docker compose*ps)",
       "Bash(docker compose*logs*)",

@@ -9,7 +9,7 @@ separate **felix-web** repo.
 ├── settings.json     hook registration, permission allow/ask/deny, status line
 ├── agents/           11 subagents (delegated, isolated context)
 ├── skills/           14 Agent Skills (agentskills.io format, loaded on demand)
-├── hooks/            16 lifecycle hooks (deterministic enforcement)
+├── hooks/            15 lifecycle hooks (deterministic enforcement)
 ├── rules/            always-loaded invariants
 └── logs/             subagent audit trail (gitignored)
 ```
@@ -74,7 +74,6 @@ skill or subagent.
 | `PostToolUse(Edit\|Write)` | `settings-sync-reminder.sh` | Names the in-repo companion file a change requires |
 | `PostToolUse(Edit\|Write)` | `doc-sync-reminder.sh` | Names the public MDX page a changed surface must update |
 | `PostToolUse(Edit\|Write)` | `quality-ratchet.sh` | Reports a `.py` whose function/module metrics got worse than at `HEAD` |
-| `PostToolUse(Edit\|Write)` | `structural-test-proof.sh` | A tree-scanning test gained a case — spells out the mutation procedure that can prove it fails |
 | `PostToolUseFailure(Bash)` | `test-failure-hint.sh` | Translates this repo's recurring failures into the actual fix |
 | `Stop` | `doc-drift-stop.sh` | Blocks the turn once per drift-set when documented surfaces changed with no doc update |
 | `SubagentStop` | `subagent-log.sh` | Appends a delegation audit line to `.claude/logs/` |
@@ -112,7 +111,8 @@ compaction:
 | Failure | Guard |
 |---|---|
 | A defaulted parameter every test supplies, so production's own call is uncovered — `create_app()` shipped reading `settings.x` instead of `cfg.x` and died at boot with a green suite | `tests/unit/test_entrypoint_wiring.py` calls each entrypoint the way its console script does, and resolves every `module:attr` string production depends on |
-| A test that cannot fail — an AST invariant matched `timeout=<Constant>` while every literal it hunted lived inside `httpx.Timeout(...)` | `scripts/prove-fails.sh` runs an import-driven test against pre-change source: **PROVEN** / **VACUOUS** / **BROKEN**. It changes no files, so a tree-scanning test is proven by mutation instead — which is what `structural-test-proof.sh` spells out when one gains a case |
+| A test that cannot fail — an AST invariant matched `timeout=<Constant>` while every literal it hunted lived inside `httpx.Timeout(...)` | Mutation: break the rule on purpose and watch the test go red. The **test-quality** skill has the procedure and the three outcomes |
+| A control that looks present and does nothing — `replay_safe` was dropped by seven wrappers and had never been `True` on any tool in any manifest | Disable each control in turn and re-run the suite; `tests/unit/test_governance_controls_enforce.py` and `test_no_governance_wrapper_rebuilds_a_tool_by_hand` came out of doing that |
 | A security fix that opens a second hole — a validated hostname interpolated into `--host-resolver-rules`, whose grammar is a comma-separated list | `pr-quality-gate.sh` asks for `felix-security-reviewer` when the diff touches a control path; the **security-review** checklist has a grammar-crossing section |
 | Deleting live code on a stale note — `SkillRef.description` was nearly removed as unread after `a2a/card.py` started reading it | The **dead-code-audit** skill: absence is the claim that rots fastest, so re-derive it against the tree at HEAD, never from an earlier note |
 

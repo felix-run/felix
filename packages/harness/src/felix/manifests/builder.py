@@ -157,16 +157,7 @@ def apply_policies(tools: list[Tool], policies: list[Policy], manifest_id: str) 
                     )
             return await inner.execute(args, ctx)
 
-        return Tool(
-            name=tool.name,
-            description=tool.description,
-            args_schema=tool.args_schema,
-            executor=wrap_executor(inner, execute),
-            raw_input_schema=tool.raw_input_schema,
-            is_peer=tool.is_peer,
-            source=tool.source,
-            fatal=tool.fatal,
-        )
+        return _clone_tool(tool, wrap_executor(inner, execute))
 
     return _wrap_tools(tools, wrap_one)
 
@@ -258,16 +249,7 @@ def apply_command_screening(
                         break
             return await inner.execute(args, ctx)
 
-        return Tool(
-            name=tool.name,
-            description=tool.description,
-            args_schema=tool.args_schema,
-            executor=wrap_executor(inner, execute),
-            raw_input_schema=tool.raw_input_schema,
-            is_peer=tool.is_peer,
-            source=tool.source,
-            fatal=tool.fatal,
-        )
+        return _clone_tool(tool, wrap_executor(inner, execute))
 
     return _wrap_tools(tools, wrap_one)
 
@@ -378,16 +360,7 @@ def apply_content_screening(
                 return _replace_content(out, notice)
             return out
 
-        return Tool(
-            name=tool.name,
-            description=tool.description,
-            args_schema=tool.args_schema,
-            executor=wrap_executor(inner, execute),
-            raw_input_schema=tool.raw_input_schema,
-            is_peer=tool.is_peer,
-            source=tool.source,
-            fatal=tool.fatal,
-        )
+        return _clone_tool(tool, wrap_executor(inner, execute))
 
     return _wrap_tools(tools, wrap_one)
 
@@ -506,16 +479,7 @@ def apply_limits(tools: list[Tool], limits: Limits | EffectiveLimits, manifest_i
                 ls.peer_hops += 1
             return await inner.execute(args, ctx)
 
-        return Tool(
-            name=tool.name,
-            description=tool.description,
-            args_schema=tool.args_schema,
-            executor=wrap_executor(inner, execute),
-            raw_input_schema=tool.raw_input_schema,
-            is_peer=tool.is_peer,
-            source=tool.source,
-            fatal=tool.fatal,
-        )
+        return _clone_tool(tool, wrap_executor(inner, execute))
 
     return _wrap_tools(tools, wrap_one)
 
@@ -547,16 +511,7 @@ def apply_guardrails(tools: list[Tool], guardrails: Guardrails | None, manifest_
                 return deny_output("[guardrails] PII blocked", "guardrails")
             return _replace_content(out, result.text)
 
-        return Tool(
-            name=tool.name,
-            description=tool.description,
-            args_schema=tool.args_schema,
-            executor=wrap_executor(inner, execute),
-            raw_input_schema=tool.raw_input_schema,
-            is_peer=tool.is_peer,
-            source=tool.source,
-            fatal=tool.fatal,
-        )
+        return _clone_tool(tool, wrap_executor(inner, execute))
 
     return _wrap_tools(tools, wrap_one)
 
@@ -693,16 +648,7 @@ def apply_judges(tools: list[Tool], guardrails: Guardrails | None, manifest_id: 
                     )
             return out
 
-        return Tool(
-            name=tool.name,
-            description=tool.description,
-            args_schema=tool.args_schema,
-            executor=wrap_executor(inner, execute),
-            raw_input_schema=tool.raw_input_schema,
-            is_peer=tool.is_peer,
-            source=tool.source,
-            fatal=tool.fatal,
-        )
+        return _clone_tool(tool, wrap_executor(inner, execute))
 
     return _wrap_tools(tools, wrap_one)
 
@@ -904,16 +850,7 @@ def apply_approvals(tools: list[Tool], rules: list[ApprovalRule], manifest_id: s
                 return await inner.execute(args, ctx)
             return await inner.execute(args, ctx)
 
-        return Tool(
-            name=tool.name,
-            description=tool.description,
-            args_schema=tool.args_schema,
-            executor=wrap_executor(inner, execute),
-            raw_input_schema=tool.raw_input_schema,
-            is_peer=tool.is_peer,
-            source=tool.source,
-            fatal=tool.fatal,
-        )
+        return _clone_tool(tool, wrap_executor(inner, execute))
 
     return _wrap_tools(tools, wrap_one)
 
