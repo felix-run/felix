@@ -6,7 +6,14 @@ from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from typing import Any
 
-from felix.tools.types import Tool, ToolExecutor, ToolInput, ToolInvocationCtx, ToolOutput
+from felix.tools.types import (
+    Tool,
+    ToolExecutor,
+    ToolInput,
+    ToolInvocationCtx,
+    ToolOutput,
+    accepts_positional,
+)
 
 ExecuteFn = Callable[[ToolInput, ToolInvocationCtx | None], Awaitable[ToolOutput]]
 
@@ -33,11 +40,16 @@ def local_executor(execute: ExecuteFn, *, transport: str = "local") -> ToolExecu
 def wrap_executor(inner: Any, execute: Callable[..., Awaitable[ToolOutput]]) -> ToolExecutor:
     """Wrap an executor while preserving its transport label."""
 
+    # Decided once, here, rather than by calling and catching. `except TypeError` around the
+    # call could not distinguish wrong arity from a `TypeError` raised inside a body that had
+    # already run, so a tool whose body raises on attacker-shaped input executed twice for one
+    # model tool call — past every wrapper, with no interrupted-call marker.
+    takes_inner = accepts_positional(execute, 3)
+
     async def _run(args: ToolInput, ctx: ToolInvocationCtx | None = None) -> ToolOutput:
-        try:
+        if takes_inner:
             return await execute(args, ctx, inner)
-        except TypeError:
-            return await execute(args, ctx)
+        return await execute(args, ctx)
 
     return _FnExecutor(getattr(inner, "transport", "local"), _run)
 
