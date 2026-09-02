@@ -272,6 +272,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `tests/unit/test_governance_controls_enforce.py` covers both, including the fail-closed case
   where a run has no request context and "no scopes" must not read as "all scopes".
 
+- **A `spec.policies` rule with `tools` but no `required_scopes` is now rejected.** `BREAKING`
+  for a manifest that has one. `required_scopes` is the only enforcement `apply_policies` has,
+  and an empty list makes its check vacuously true — so
+  `policies: [{id: finance-only, tools: [wire_transfer]}]` validated, compiled, and *wrapped the
+  tool*, which is what made it hard to see: the compiled stack looked correct, `felix
+  validate-manifest` blessed it, and every anonymous caller reached the tool.
+
+  Rejected at parse rather than accepted as a no-op, because a control that appears in the
+  manifest while enforcing nothing is worse than a missing one. A rule naming no tools is
+  rejected for the same reason, one step earlier: it gates nothing at all. Note that neither
+  shape is expressible in JSON Schema, so the editor integration will not flag it — the error
+  arrives from `felix validate-manifest` or at request time. A stored manifest carrying either
+  shape will fail to resolve until it is fixed; that is deliberate, since the alternative is a
+  security control that silently does nothing.
+
+  `apply_policies` also fails closed on such a rule now, for a `Policy` built in code rather
+  than parsed. Found by `felix-security-reviewer` during the governance mutation audit.
+
 ### Changed
 
 - **Removed `args_schema` from `spec.sandboxes`, `spec.containers` and

@@ -277,3 +277,46 @@ async def test_a_declared_flag_survives_the_whole_compile() -> None:
         "replay_safe was lost somewhere in the governance stack; patterns/react.py reads it to "
         "decide whether to tell the model an interrupted call is safe to retry"
     )
+
+
+# --------------------------------------------------------------------------
+# A policy that requires nothing. The shape a security review found reachable:
+# it validated, compiled, wrapped the tool, and permitted every caller.
+# --------------------------------------------------------------------------
+
+
+def test_a_policy_that_lists_tools_but_no_scopes_is_rejected() -> None:
+    """`policies: [{id: finance-only, tools: [wire_transfer]}]` used to validate.
+
+    `required_scopes` is the only enforcement `apply_policies` has, and an empty list makes
+    its check vacuously true — so the tool was wrapped, looked governed in the compiled stack
+    and in `felix validate-manifest`, and ran for anonymous callers.
+    """
+    with pytest.raises(ValueError, match="permits every caller"):
+        Policy(id="finance-only", tools=["wire_transfer"])
+
+
+def test_a_policy_that_names_no_tools_is_rejected() -> None:
+    """The mirror case: `by_tool` stays empty, so no tool is ever wrapped."""
+    with pytest.raises(ValueError, match="gates nothing"):
+        Policy(id="orphan", required_scopes=["tools:calc"])
+
+
+@pytest.mark.asyncio
+async def test_a_scopeless_rule_reaching_the_wrapper_denies_rather_than_permits() -> None:
+    """Defense in depth, for a `Policy` built in code rather than parsed.
+
+    The schema rejects this shape now, so the only way here is constructing the model
+    directly — which `model_construct` does, skipping validation the way an older parse path
+    or a plugin might. `[s for s in [] if s not in scopes]` is empty, and an empty `missing`
+    list reads as "every requirement satisfied" unless the wrapper says otherwise.
+    """
+    scopeless = Policy.model_construct(id="x", description="", required_scopes=[], tools=["fetch"])
+    inner = _tool("side effect happened")
+    tool = apply_policies([inner], [scopeless], "m")[0]
+
+    with _with_scopes("anything"):
+        out = await tool.executor.execute({})
+
+    assert "policy denied" in str(out), f"a rule requiring nothing authorised the call: {out}"
+    assert inner.executor.calls == 0

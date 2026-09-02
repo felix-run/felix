@@ -326,6 +326,26 @@ $1000). Declared values may only tighten those; the schema rejects anything larg
 
 A tool invoked with no request context is **denied** rather than run unbudgeted.
 
+## Policy semantics
+
+`spec.policies` gates named tools on the caller's scopes. Every rule matching a tool must
+pass; the first missing scope denies the call, and the denial names it.
+
+| Field | Behaviour |
+|-------|-----------|
+| `tools` | The tool names this rule gates. A rule naming none gates nothing and is rejected. |
+| `required_scopes` | Scopes the caller must hold. **Required**: a rule that lists tools but no scopes permits every caller while appearing to govern them, so it is rejected rather than accepted as a no-op. |
+
+Two things to know before relying on it:
+
+- **A run with no scopes is denied, not permitted.** That includes any request under
+  `auth_mode=none`, and it includes durable fibers, scheduled jobs and `felix eval`, whose
+  contexts carry an empty scope set. `spec.policies` and `execution.mode: durable` are
+  therefore not usable together today — every policied tool denies.
+- Policy scopes are matched literally. The `admin` / `*` bypass and the `x:write` implies
+  `x:read` rule that `require_mgmt_scopes` applies to the management API deliberately do
+  **not** apply here.
+
 ## Approval semantics
 
 | Field | Behaviour |

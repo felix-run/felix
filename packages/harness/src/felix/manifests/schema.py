@@ -457,6 +457,30 @@ class Policy(_Strict):
     required_scopes: list[str] = Field(default_factory=list)
     tools: list[str] = Field(default_factory=list)
 
+    @model_validator(mode="after")
+    def _enforces_something(self) -> Policy:
+        """A policy names tools *and* the scopes they require, or it enforces nothing.
+
+        `required_scopes` is the only enforcement `apply_policies` has: it denies when a
+        listed scope is absent from the caller's set. An empty list makes that check
+        vacuously true, so `policies: [{id: finance-only, tools: [wire_transfer]}]` validated,
+        compiled, wrapped the tool — `wrapped is not tool`, so it looked correct in the
+        compiled stack — and then let every anonymous caller through. A control that appears
+        in the manifest and in `felix validate-manifest` while enforcing nothing is worse than
+        a missing one, which is why this raises rather than warns.
+
+        The mirror case, scopes with no tools, gates nothing at all: `by_tool` stays empty and
+        no tool is wrapped. Also inert, also rejected here.
+        """
+        if not self.tools:
+            raise ValueError(f"policy {self.id!r} names no tools, so it gates nothing")
+        if not self.required_scopes:
+            raise ValueError(
+                f"policy {self.id!r} lists tools but no required_scopes, so it permits every "
+                "caller while appearing to govern them. Name the scopes it requires, or drop it."
+            )
+        return self
+
 
 class Limits(_Strict):
     max_tool_calls: int | None = Field(default=None, ge=1, le=ABSOLUTE_LIMITS["max_tool_calls"])
