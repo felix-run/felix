@@ -143,7 +143,13 @@ def apply_policies(tools: list[Tool], policies: list[Policy], manifest_id: str) 
 
         async def execute(args: ToolInput, ctx: ToolInvocationCtx | None = None) -> ToolOutput:
             req_ctx = try_get_context()
-            scopes = req_ctx.auth.scopes if req_ctx else frozenset()
+            # `frozenset(...)`, not the attribute as-is. `AuthContext.scopes` is an unvalidated
+            # dataclass field, and the plugin authenticator seam adopts whatever `Principal` a
+            # plugin returns — a plugin doing `scopes=" ".join(claims["scope"])` yields a `str`,
+            # for which `s not in scopes` is a *substring* test: `tools:calc` is "held" by a
+            # caller with `tools:calculator`, and `admin` by one with `no-admin`. Coercing here
+            # makes the check a membership test whatever the caller layer produced.
+            scopes = frozenset(req_ctx.auth.scopes) if req_ctx else frozenset()
             for rule in rules:
                 # Fail closed on a rule that requires nothing. The schema rejects this shape,
                 # so reaching it means a Policy was built in code or parsed by an older path —

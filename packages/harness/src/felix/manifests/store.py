@@ -11,6 +11,7 @@ from sqlalchemy.dialects.postgresql import insert
 from felix.config import Settings
 from felix.db.models import ManifestActive, ManifestRow
 from felix.db.session import _use_memory, get_session_factory
+from felix.manifests.loader import parse_manifest
 from felix.manifests.resolver import ActivePointer
 from felix.manifests.schema import Manifest
 
@@ -298,7 +299,9 @@ class PostgresManifestStore:
         row = await get_version(self._settings, tenant_id, name, version)
         if row is None:
             return None
-        return Manifest.model_validate(row["manifest"])
+        # Through the loader, so a row stored before a schema tightening fails with the
+        # operator-readable message rather than a raw ValidationError.
+        return parse_manifest(row["manifest"])
 
 
 __all__ = [

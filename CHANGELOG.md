@@ -287,8 +287,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shape will fail to resolve until it is fixed; that is deliberate, since the alternative is a
   security control that silently does nothing.
 
-  `apply_policies` also fails closed on such a rule now, for a `Policy` built in code rather
-  than parsed. Found by `felix-security-reviewer` during the governance mutation audit.
+  A rule naming no tools is rejected too. That one is not merely inert: `governance.py:43`
+  counts a non-empty `spec.policies` toward the `soc2` profile's "policies **or** approvals
+  **or** limits" requirement, so a policy with scopes and no tools satisfied the compliance
+  posture while gating nothing.
+
+  `apply_policies` fails closed on a scopeless rule reaching it, for a `Policy` built in code
+  rather than parsed. Two related holes closed with it: `required_scopes` entries that are
+  blank or whitespace are rejected, because the list branch of `_scopes_from_payload` does not
+  filter and a token carrying an empty `scopes` entry would satisfy them; and the wrapper now
+  coerces the caller's scopes to a `frozenset` before testing membership, since
+  `AuthContext.scopes` is an unvalidated dataclass field and a plugin authenticator returning
+  a `str` turned `s not in scopes` into a substring test — under which `tools:calc` is
+  satisfied by `tools:calculator`, and `admin` by `no-admin`.
+
+- **A manifest refused for a stated reason now says so.** `parse_manifest` raised pydantic's
+  `ValidationError`, which is not relayable and was raised outside both `try` blocks in
+  `PUT /manifests/{name}` — so a refusal answered `500 Internal Server Error` with the reason
+  only in the server log, and a stored manifest carrying a since-rejected shape answered 500 on
+  every read. It now raises `ManifestParseError`: `400` with the reason at write, `422` at read
+  (the same trade `memory.checkpointer` already makes one line above), and the message is
+  rendered from the error locations rather than `str(exc)`, which embeds `input_value=` and
+  would have carried an inline credential into HTTP bodies, job rows and fiber state.
+
+  Found by `felix-security-reviewer` during the governance mutation audit.
 
 ### Changed
 

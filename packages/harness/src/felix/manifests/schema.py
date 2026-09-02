@@ -479,6 +479,12 @@ class Policy(_Strict):
                 f"policy {self.id!r} lists tools but no required_scopes, so it permits every "
                 "caller while appearing to govern them. Name the scopes it requires, or drop it."
             )
+        blank = [s for s in self.required_scopes if not s.strip()]
+        if blank:
+            raise ValueError(
+                f"policy {self.id!r} requires a blank scope name, which no caller can hold "
+                "deliberately — and which a token carrying an empty scope entry satisfies"
+            )
         return self
 
 

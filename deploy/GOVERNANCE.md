@@ -333,7 +333,7 @@ pass; the first missing scope denies the call, and the denial names it.
 
 | Field | Behaviour |
 |-------|-----------|
-| `tools` | The tool names this rule gates. A rule naming none gates nothing and is rejected. |
+| `tools` | The tool names this rule gates, matched **exactly** — there is no glob or prefix matching anywhere in the governance stack. A rule naming no tools gates nothing and is rejected: it would otherwise satisfy the `soc2` profile's "policies **or** approvals **or** limits" requirement while enforcing nothing. |
 | `required_scopes` | Scopes the caller must hold. **Required**: a rule that lists tools but no scopes permits every caller while appearing to govern them, so it is rejected rather than accepted as a no-op. |
 
 Two things to know before relying on it:
@@ -345,6 +345,9 @@ Two things to know before relying on it:
 - Policy scopes are matched literally. The `admin` / `*` bypass and the `x:write` implies
   `x:read` rule that `require_mgmt_scopes` applies to the management API deliberately do
   **not** apply here.
+- `manifests/governed.yaml` policies `calculator` on `tools:calc`, so it will deny its own
+  calculator under `make dev` (which sets `FELIX_AUTH_MODE=none`). Mint a token with the
+  scope — see the `felix mint-jwt` line above — rather than removing the policy.
 
 ## Approval semantics
 
