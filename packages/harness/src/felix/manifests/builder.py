@@ -23,6 +23,7 @@ from felix.manifests.schema import (
     guardrails_enabled,
     judges_enabled,
 )
+from felix.manifests.tool_match import matches_any, unmatched_patterns
 from felix.observability.metrics import record_counter
 from felix.observability.tracing import manifest_span
 from felix.patterns.registry import get_pattern, list_patterns
@@ -130,13 +131,11 @@ def _clone_tool(tool: Tool, executor: Any) -> Tool:
 
 
 def apply_policies(tools: list[Tool], policies: list[Policy], manifest_id: str) -> list[Tool]:
-    by_tool: dict[str, list[Policy]] = {}
-    for p in policies:
-        for name in p.tools:
-            by_tool.setdefault(name, []).append(p)
-
     def wrap_one(tool: Tool) -> Tool:
-        rules = by_tool.get(tool.name)
+        # Matched per tool rather than through a dict keyed by literal name, which cannot
+        # express a pattern. Order is the manifest's, so a denial names the first rule that
+        # refuses, as it did before.
+        rules = [p for p in policies if matches_any(p.tools, tool.name)]
         if not rules:
             return tool
         inner = tool.executor
@@ -225,10 +224,10 @@ def apply_command_screening(
                 rules.append(CommandRule(pattern=pattern, decision=decision, reason=reason))
 
     compiled = [(re.compile(r.pattern, re.I), r.decision, r.reason or r.pattern) for r in rules]
-    targets = set(screening.target_tools)
+    targets = list(screening.target_tools)
 
     def wrap_one(tool: Tool) -> Tool:
-        if targets and tool.name not in targets:
+        if targets and not matches_any(targets, tool.name):
             if tool.executor.transport not in {"sandbox", "container"}:
                 return tool
         if not compiled and tool.executor.transport not in {"sandbox", "container"}:
@@ -328,11 +327,11 @@ def apply_content_screening(
     if screening is None or not screening.enabled:
         return tools
     on_flag = screening.on_flag
-    named = set(screening.tools)
+    named = list(screening.tools)
     model_id = screening.model.strip()
 
     def wrap_one(tool: Tool) -> Tool:
-        if named and tool.name not in named:
+        if named and not matches_any(named, tool.name):
             return tool
         if not named and not _is_untrusted_tool(tool):
             return tool
@@ -644,7 +643,7 @@ def apply_judges(tools: list[Tool], guardrails: Guardrails | None, manifest_id: 
         return tools
 
     def wrap_one(tool: Tool) -> Tool:
-        applicable = [j for j in judges if not j.target_tools or tool.name in j.target_tools]
+        applicable = [j for j in judges if not j.target_tools or matches_any(j.target_tools, tool.name)]
         if not applicable:
             return tool
         inner = tool.executor
@@ -756,15 +755,29 @@ def _arg_present(args: ToolInput, name: str) -> bool:
 
 
 def apply_approvals(tools: list[Tool], rules: list[ApprovalRule], manifest_id: str) -> list[Tool]:
-    gated: dict[str, ApprovalRule] = {}
-    for r in rules:
-        for name in r.tools:
-            gated[name] = r
-    if not gated:
+    if not any(r.tools for r in rules):
         return tools
 
     def wrap_one(tool: Tool) -> Tool:
-        rule = gated.get(tool.name)
+        # Approvals is the only control in the stack that selects *one* rule — policies and
+        # judges apply every match conjunctively, so for them more matches can only tighten.
+        # Here the chosen rule decides `ttl_seconds`, `one_shot`, `bind_principal` and
+        # `when_args`, so "which rule matched" is the whole gate.
+        #
+        # A literal name therefore beats a pattern, and among literals the last still wins —
+        # which is exactly what the previous `gated[name] = r` dict did, since a glob rule
+        # contributed nothing to it. That makes globbing here provably non-weakening: every
+        # tool gated before is gated by the same rule as before, and a pattern can only gate
+        # a tool that nothing gated.
+        #
+        # Plain last-match-wins was not that. With a strict literal rule followed by a broad
+        # `github__*` audit rule carrying `when_args: [force]`, the pattern won and every call
+        # without `force` ran ungated: a one-shot, principal-bound gate on a destructive tool,
+        # removed by adding a rule. That shape is expected in the wild precisely because the
+        # docs told operators to write the glob that never worked.
+        literal = [r for r in rules if tool.name in r.tools]
+        matched = literal or [r for r in rules if matches_any(r.tools, tool.name)]
+        rule = matched[-1] if matched else None
         if rule is None:
             return tool
         inner = tool.executor
@@ -948,6 +961,69 @@ def _collect_secrets(deps: BuildDeps) -> list[str]:
     if settings is None:
         return collected_secret_values()
     return collected_secret_values(settings)
+
+
+def _warn_unmatched_tool_patterns(m: Manifest, bound: list[str], untrusted: list[str]) -> None:
+    """Say so when a governance rule targets tools that are not there."""
+    targets: list[tuple[str, str, list[str]]] = []
+    for policy in m.spec.policies:
+        targets.append(("policy", policy.id, list(policy.tools)))
+    for rule in m.spec.approvals:
+        targets.append(("approval", rule.id, list(rule.tools)))
+    if m.spec.guardrails:
+        for judge in m.spec.guardrails.judges:
+            if judge.final_response:
+                # `wrap_final_response_judges` never reads target_tools, so any value here is
+                # ignored. Warning about *unmatched* patterns would be right by accident and
+                # silent when they match — say the real thing instead.
+                if judge.target_tools:
+                    logger.warning(
+                        "judge %r sets final_response, so its target_tools are ignored",
+                        judge.name,
+                        extra={"manifest_id": m.metadata.name},
+                    )
+                continue
+            targets.append(("judge", judge.name, list(judge.target_tools)))
+    if m.spec.content_screening and m.spec.content_screening.enabled:
+        targets.append(("content_screening", "content_screening", list(m.spec.content_screening.tools)))
+    if m.spec.command_screening and m.spec.command_screening.enabled:
+        targets.append(
+            ("command_screening", "command_screening", list(m.spec.command_screening.target_tools))
+        )
+
+    # `content_screening.tools` is substitutive, not additive: a non-empty list turns
+    # screening *off* for every untrusted tool it does not name. A pattern that matches
+    # something keeps the warning below quiet, so the dangerous shape — screening `github__*`
+    # while `browser__fetch` goes unscreened — needs its own check.
+    screening = m.spec.content_screening
+    if screening and screening.enabled and screening.tools:
+        unscreened = [n for n in untrusted if not matches_any(screening.tools, n)]
+        if unscreened:
+            logger.warning(
+                "content_screening.tools excludes untrusted tool(s) %s — their output reaches "
+                "the model unscreened",
+                ", ".join(repr(x) for x in sorted(unscreened)),
+                extra={"manifest_id": m.metadata.name},
+            )
+            record_counter(
+                "felix_untrusted_tool_unscreened",
+                {"manifest_id": m.metadata.name},
+            )
+
+    for kind, rule_id, patterns in targets:
+        missing = unmatched_patterns(patterns, bound)
+        if missing:
+            logger.warning(
+                "%s %r targets %s, which match no bound tool — it gates nothing",
+                kind,
+                rule_id,
+                ", ".join(repr(x) for x in missing),
+                extra={"manifest_id": m.metadata.name},
+            )
+            record_counter(
+                "felix_rule_targets_nothing",
+                {"manifest_id": m.metadata.name, "kind": kind, "rule": rule_id},
+            )
 
 
 async def build_agent(
@@ -1210,6 +1286,16 @@ async def build_agent(
                 )
             except Exception:
                 logger.debug("active facts inject failed", exc_info=True)
+
+        # A pattern that matches no bound tool gates nothing — a typo, a renamed MCP server,
+        # or a glob written before its target existed. Logged rather than refused: the bound
+        # set legitimately varies (an MCP server whose discovery failed binds no tools), so
+        # refusing would let a remote outage take the agent down with it. Silent was not an
+        # option either — an inert control that validates is the defect this repo keeps
+        # shipping, and globs make one easier to write by hand.
+        _warn_unmatched_tool_patterns(
+            m, [t.name for t in resolved], [t.name for t in resolved if _is_untrusted_tool(t)]
+        )
 
         # Governance pipeline (order matters — matches TS builder).
         resolved = apply_secret_masking(resolved, _collect_secrets(deps), m.metadata.name)
