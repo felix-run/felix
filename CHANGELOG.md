@@ -443,6 +443,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a fiber resumed weeks later still carries the original caller's authority. It is a change to
   the security model, not a bug fix, and it wants a decision rather than a commit.
 
+- **A manifest that binds untrusted tools without content screening now says so at compile.**
+  `felix_untrusted_tools_unscreened`, plus a WARNING naming the tools.
+  `content_screening.enabled` defaults to `false` and `validate_governance` only requires it
+  under the `soc2` / `eu_ai_act` opt-in, so this was a normal, valid manifest in which
+  attacker-controlled text reached the model with the whole governed toolset behind it — the
+  last remaining path of that shape after screening became additive.
+
+  A warning rather than a changed default, because turning screening on for every deployment
+  binding an MCP server changes cost and behaviour, and that is not a thing to do silently in a
+  patch.
+
+  **It found one on its first run.** `manifests/cowork.yaml` binds `local_shell` and
+  `local_open` — tools that execute on the user's own machine through the client bridge — and
+  their output reached the model unscreened. Approval gates whether the command runs; screening
+  is what looks at what comes back. It now enables marker-only screening (`on_flag: quarantine`,
+  no `model`, so a substring scan that costs nothing per call). A YAML grep for the untrusted
+  *binder* blocks had missed it, because `client_tools` is one and does not look like
+  `mcp_servers` — which is why the test guarding this reads the compiled tool list.
+
 ### Changed
 
 - **Removed `args_schema` from `spec.sandboxes`, `spec.containers` and

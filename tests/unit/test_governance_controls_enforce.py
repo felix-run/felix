@@ -18,6 +18,8 @@ confirming it goes red.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from felix.config import Settings
 from felix.context import AuthContext, RequestContext, run_with_context
@@ -132,6 +134,8 @@ async def test_masking_survives_the_whole_governance_stack() -> None:
 # --------------------------------------------------------------------------
 # apply_policies — manifest `spec.policies`, the scope check on a named tool.
 # --------------------------------------------------------------------------
+
+ROOT = Path(__file__).resolve().parents[2]
 
 POLICY = Policy(id="calc-scope", required_scopes=["tools:calc"], tools=["fetch"])
 
@@ -673,3 +677,81 @@ def test_a_manifest_without_policies_is_never_warned_about(caplog) -> None:
         _warn_policies_cannot_be_satisfied(plain, settings)
 
     assert not caplog.text
+
+
+# --------------------------------------------------------------------------
+# Untrusted tools bound with screening off — the last path of that shape.
+# --------------------------------------------------------------------------
+
+
+def _bare_manifest(**spec_extra):
+    from felix.manifests.loader import parse_manifest
+
+    spec = {"pattern": "react"}
+    spec.update(spec_extra)
+    return parse_manifest(
+        {"apiVersion": "felix/v1", "kind": "Agent", "metadata": {"name": "m"}, "spec": spec}
+    )
+
+
+@pytest.mark.parametrize(
+    ("spec_extra", "untrusted", "should_warn"),
+    [
+        ({}, ["github__read_issue"], True),
+        ({"content_screening": {"enabled": False}}, ["github__read_issue"], True),
+        ({"content_screening": {"enabled": True}}, ["github__read_issue"], False),
+        ({}, [], False),
+    ],
+    ids=["default-off", "explicitly-off", "enabled", "no-untrusted-tools"],
+)
+def test_untrusted_tools_bound_without_screening_are_named(caplog, spec_extra, untrusted, should_warn):
+    """`content_screening.enabled` defaults to False and `validate_governance` only requires it
+    under the `soc2` / `eu_ai_act` opt-in. So a manifest binding an MCP server, peer, browser,
+    sandbox, container or queue and never enabling screening is a normal, valid manifest in
+    which attacker-controlled text reaches the model with the whole governed toolset behind it.
+    """
+    import logging
+
+    from felix.manifests.builder import _warn_untrusted_tools_are_unscreened
+
+    with caplog.at_level(logging.WARNING):
+        _warn_untrusted_tools_are_unscreened(_bare_manifest(**spec_extra), untrusted)
+
+    assert bool(caplog.text) is should_warn, caplog.text
+    if should_warn:
+        assert "github__read_issue" in caplog.text, "the warning does not name the tool"
+
+
+def test_no_bundled_manifest_binds_untrusted_tools_without_screening() -> None:
+    """A warning that fires on the manifests we ship is noise on arrival.
+
+    It also found something on its first run: `cowork.yaml` binds `local_shell` and
+    `local_open`, which execute on the user's own machine through the client bridge, and their
+    output reached the model unscreened. Approval gates whether the command runs; screening is
+    what looks at what comes back. A YAML grep for the untrusted *binder* blocks missed it,
+    because `client_tools` is one and does not look like `mcp_servers`.
+    """
+    import yaml
+
+    offenders = []
+    for path in sorted((ROOT / "manifests").glob("*.yaml")):
+        spec = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get("spec") or {}
+        binds_untrusted = any(
+            spec.get(key)
+            for key in (
+                "mcp_servers",
+                "peers",
+                "browser_tools",
+                "sandboxes",
+                "containers",
+                "queues",
+                "client_tools",
+            )
+        )
+        enabled = bool((spec.get("content_screening") or {}).get("enabled"))
+        if binds_untrusted and not enabled:
+            offenders.append(path.name)
+
+    assert offenders == [], (
+        f"these bundled manifests bind untrusted tools with content_screening off: {offenders}"
+    )

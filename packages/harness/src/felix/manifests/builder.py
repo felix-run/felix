@@ -1018,6 +1018,39 @@ def _warn_unmatched_tool_patterns(m: Manifest, bound: list[str]) -> None:
             )
 
 
+def _warn_untrusted_tools_are_unscreened(m: Manifest, untrusted: list[str]) -> None:
+    """Say so when untrusted tool output reaches the model with nothing looking at it.
+
+    `content_screening.enabled` defaults to False, and `validate_governance` only requires it
+    under the `soc2` / `eu_ai_act` framework opt-in. So a manifest that binds an MCP server, an
+    A2A peer, a browser, a sandbox, a container or a queue and never enables screening is a
+    normal, valid manifest in which attacker-controlled text reaches the model with the whole
+    governed toolset behind it — the last remaining path of that shape after the additive-
+    screening change.
+
+    A warning, not a default flip and not a refusal. Turning screening on by default would
+    change the cost and the behaviour of every existing deployment binding an MCP server,
+    which is not a thing to do silently in a patch; refusing would break them outright. What
+    was missing is anything saying it at the moment the manifest is compiled.
+
+    Silent across every bundled manifest: `contributor.yaml` is the only one that binds
+    untrusted tools and it enables screening.
+    """
+    if not untrusted:
+        return
+    screening = m.spec.content_screening
+    if screening is not None and screening.enabled:
+        return
+    logger.warning(
+        "manifest %r binds untrusted tool(s) %s with content_screening disabled, so their "
+        "output reaches the model unscreened",
+        m.metadata.name,
+        ", ".join(repr(x) for x in sorted(untrusted)[:8]),
+        extra={"manifest_id": m.metadata.name},
+    )
+    record_counter("felix_untrusted_tools_unscreened", {"manifest_id": m.metadata.name})
+
+
 def _warn_policies_cannot_be_satisfied(m: Manifest, settings: Any) -> None:
     """Say so at compile when nothing in this configuration can hold a scope.
 
@@ -1319,6 +1352,7 @@ async def build_agent(
         # shipping, and globs make one easier to write by hand.
         _warn_unmatched_tool_patterns(m, [t.name for t in resolved])
         _warn_policies_cannot_be_satisfied(m, deps.settings)
+        _warn_untrusted_tools_are_unscreened(m, [t.name for t in resolved if _is_untrusted_tool(t)])
 
         # Governance pipeline (order matters — matches TS builder).
         resolved = apply_secret_masking(resolved, _collect_secrets(deps), m.metadata.name)

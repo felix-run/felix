@@ -72,6 +72,15 @@ spec:
       tools: [local_shell]
       ttl_seconds: 600
 
+  # `local_shell` and `local_open` run on the user's own machine through the client bridge,
+  # so their output is attacker-reachable in the ordinary way: a file, a page or a command
+  # result can carry injected instructions back into the transcript. Approval gates whether
+  # the command runs; screening is what looks at what comes back. Marker-only — no `model`,
+  # so this is a substring scan and costs nothing per call.
+  content_screening:
+    enabled: true
+    on_flag: quarantine
+
   limits:
     max_tool_calls: 200
     max_wall_clock_seconds: 3600

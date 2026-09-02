@@ -378,6 +378,19 @@ Two things to re-measure if you set `model` and previously narrowed `tools`:
   docs server, a code-search tool or an issue tracker quoting a jailbreak can now be
   quarantined where it was exempt. Watch `{action=quarantine}`.
 
+### Screening is opt-in, and says so when it is off
+
+`content_screening.enabled` defaults to `false`, and the governance frameworks only require it
+under `soc2` / `eu_ai_act`. A manifest that binds an MCP server, an A2A peer, a browser,
+sandbox, container, queue or client tool without enabling it is valid, and its untrusted output
+reaches the model with the whole governed toolset behind it. That case is now named at compile
+with a WARNING and `felix_untrusted_tools_unscreened`.
+
+A warning rather than a changed default: turning screening on for every existing deployment
+binding an MCP server changes cost and behaviour, which is not a thing to do silently. Enabling
+it without a `model` is the cheap option — a substring marker scan, no model call — and is what
+`manifests/cowork.yaml` does for its client tools.
+
 ## Approval semantics
 
 **Precedence.** Approvals is the only control that selects *one* rule — policies and judges
