@@ -23,7 +23,14 @@ from felix.config import Settings
 from felix.context import AuthContext, RequestContext, run_with_context
 from felix.manifests.builder import apply_policies, apply_secret_masking
 from felix.manifests.schema import Policy
-from felix.tools.types import Tool, ToolInput, ToolInvocationCtx, ToolOutput, tool_output_content
+from felix.tools.types import (
+    Tool,
+    ToolInput,
+    ToolInvocationCtx,
+    ToolOutput,
+    ToolOutputDict,
+    tool_output_content,
+)
 
 
 class _Echo:
@@ -76,8 +83,9 @@ async def test_every_configured_secret_is_redacted_not_just_the_first() -> None:
     [
         ("plain s3cret", lambda o: o),
         ({"content": "dict s3cret", "ok": True}, lambda o: o["content"]),
+        (ToolOutputDict(content="typed s3cret"), lambda o: o.content),
     ],
-    ids=["str", "dict"],
+    ids=["str", "dict", "ToolOutputDict"],
 )
 async def test_masking_handles_each_tool_output_shape(payload: ToolOutput, read) -> None:
     """`_replace_content` branches on the output type; a shape it does not handle leaks."""

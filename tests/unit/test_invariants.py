@@ -1071,29 +1071,79 @@ def test_no_governance_wrapper_rebuilds_a_tool_by_hand() -> None:
     silently reset to its default on every wrapped tool ... `replay_safe` was added and very
     nearly lost exactly that way." It was lost, in the seven wrappers that did not call it.
 
-    So the rule is structural: clone with `dataclasses.replace`, never enumerate the fields.
+    A first version of this test matched `Tool(` by `node.func.id` and gated on a regex for
+    the literal names `tool`, `base` and `t` followed by a dot — the exact spelling of the
+    lines it had just replaced. It missed
+    `types.Tool(...)` (an Attribute, not a Name), missed any rebuild whose local was called
+    something else, false-positived on a `**carried` splat, and never asserted that its corpus
+    was non-empty, so a rename would have made it pass forever on nothing. Recognising a
+    rebuild structurally — several keyword values reading attributes off one common object —
+    is what makes it independent of how the next one is spelled.
     """
     import dataclasses
 
     from felix.tools.types import Tool
 
     fields = {f.name for f in dataclasses.fields(Tool)}
+
+    def _rebuild_source(call: ast.Call) -> str | None:
+        """The object a call copies from, when it is copying rather than constructing."""
+        owners: dict[str, int] = {}
+        for kw in call.keywords:
+            if kw.arg is None:  # **splat carries whatever it holds; not a field-by-field rebuild
+                return None
+            if isinstance(kw.value, ast.Attribute) and isinstance(kw.value.value, ast.Name):
+                owners[kw.value.value.id] = owners.get(kw.value.value.id, 0) + 1
+        if not owners:
+            return None
+        name, count = max(owners.items(), key=lambda kv: kv[1])
+        return name if count >= 3 else None
+
     offenders: list[str] = []
-    seen = 0
-    for path in sorted((HARNESS).rglob("*.py")):
+    rebuilds = 0
+    for path in sorted(HARNESS.rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
         for node in ast.walk(tree):
-            if not (isinstance(node, ast.Call) and getattr(node.func, "id", "") == "Tool"):
+            if not isinstance(node, ast.Call):
                 continue
-            rendered = ast.unparse(node)
-            # A *rebuild* copies from an existing tool; a fresh construction does not.
-            if not re.search(r"\b(tool|base|t)\.(name|description|executor)\b", rendered):
+            func = node.func
+            # `Tool(...)` and `types.Tool(...)` alike.
+            called = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+            if called != "Tool" or _rebuild_source(node) is None:
                 continue
-            seen += 1
+            rebuilds += 1
             dropped = sorted(fields - {kw.arg for kw in node.keywords if kw.arg})
             if dropped:
                 offenders.append(f"{path.relative_to(ROOT)}:{node.lineno} drops {dropped}")
 
+    # A healthy tree has *no* rebuilds, so `offenders == []` is true of an empty corpus too —
+    # including one emptied by a rename this scan no longer recognises. The subject that must
+    # stay present is therefore the clone helpers themselves: both exist, and both delegate to
+    # `dataclasses.replace` rather than enumerating fields. Rewrite either to enumerate and it
+    # becomes a rebuild the scan above catches; delete or rename either and this fails here.
+    for rel, name in (
+        ("manifests/builder.py", "_clone_tool"),
+        ("tools/executor.py", "wrap_tool"),
+    ):
+        tree = ast.parse((HARNESS / rel).read_text(encoding="utf-8"))
+        fn = next(
+            (
+                n
+                for n in ast.walk(tree)
+                if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef) and n.name == name
+            ),
+            None,
+        )
+        assert fn is not None, f"{rel} no longer defines {name}; this invariant has no subject"
+        calls = {
+            c.func.attr if isinstance(c.func, ast.Attribute) else getattr(c.func, "id", "")
+            for c in ast.walk(fn)
+            if isinstance(c, ast.Call)
+        }
+        assert "replace" in calls, (
+            f"{rel}:{name} no longer clones with dataclasses.replace — every field it does not "
+            "name will reset to its default on every tool it wraps"
+        )
     assert offenders == [], (
         "these rebuild a Tool field by field, so the fields they omit silently reset to their "
         f"defaults on every tool they wrap — use dataclasses.replace instead: {offenders}"
