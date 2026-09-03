@@ -238,10 +238,18 @@ async def _hydrate_provider_options(settings: Any, provider: SecretsProvider) ->
             try:
                 resolved = await resolve_secret_value(provider, value, register=False)
             except Exception:
+                # Drop it rather than leave the reference in place. `resolve_provider_config`
+                # would otherwise read `"secret:GROQ_API_KEY"` as the api_key and ship the
+                # internal secret *name* to the third-party endpoint and into any log of
+                # that request. Removing it lets the settings-field fallback apply, or the
+                # missing-credential path fire.
                 logger.warning(
-                    "provider option %s could not be resolved from the secrets backend",
+                    "provider option %s could not be resolved from the secrets backend; "
+                    "dropping it rather than sending the reference upstream",
                     loggable(name, limit=60),
                 )
+                opts.pop(name, None)
+                changed = True
                 continue
             if resolved:
                 opts[name] = resolved
@@ -325,6 +333,23 @@ def collected_secret_values(settings: object | None = None) -> list[str]:
     return out
 
 
+def _leaf_strings(value: object, *, _depth: int = 0) -> list[str]:
+    """Every string ≥8 chars inside a nested option value.
+
+    Bounded depth because this walks operator-supplied JSON; a cycle is impossible through
+    `json.loads`, but a deeply nested blob should not cost unbounded recursion.
+    """
+    if _depth > 6:
+        return []
+    if isinstance(value, str):
+        return [value] if len(value) >= 8 else []
+    if isinstance(value, dict):
+        return [s for v in value.values() for s in _leaf_strings(v, _depth=_depth + 1)]
+    if isinstance(value, list):
+        return [s for v in value for s in _leaf_strings(v, _depth=_depth + 1)]
+    return []
+
+
 def _provider_option_secrets(settings: object) -> list[str]:
     """Credentials configured through `FELIX_MODEL_PROVIDER_OPTIONS`.
 
@@ -392,9 +417,16 @@ def _provider_option_secrets(settings: object) -> list[str]:
             # An unresolved `secret:NAME` is a reference, not a credential. Masking it
             # redacts the one diagnostic that names what failed to resolve, out of exactly
             # the logs someone is reading to find out why.
-            if secret_ref_name(text) is not None:
+            # `value`, not `text`: the object form `{"secret": "NAME"}` coerces to
+            # `"{'secret': 'NAME'}"`, which `secret_ref_name` does not recognise, so the
+            # unresolved-ref diagnostic was being masked after all.
+            if secret_ref_name(value) is not None:
                 continue
             found.append(text)
+            # A nested value is registered as its Python repr, which is single-quoted.
+            # Re-render the same data as JSON, or pull out the leaf, and `redact_text` no
+            # longer matches — so register the leaves too.
+            found.extend(_leaf_strings(value))
     return found
 
 

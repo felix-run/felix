@@ -378,3 +378,30 @@ def test_a_command_value_yields_the_binary_it_would_exec(value: str, expected: s
     is about.
     """
     assert _first_token(value) == expected
+
+
+def test_every_process_that_runs_a_turn_hydrates_secrets() -> None:
+    """`hydrate_secrets` populates the process-global redaction list, and three of the four
+    sinks — fiber state, audit payloads, session events — redact through
+    `collected_secret_values()` with no settings, so they see nothing else.
+
+    The API and the Taskiq worker always called it. `felix temporal-worker` did not, and it
+    registers the `fiber_step` activity, which runs a full agent turn in that process — so a
+    credential echoed into a tool result was persisted verbatim there and served back
+    through session export and fiber resume. An entrypoint that runs turns is the unit that
+    has to hydrate.
+    """
+    sources = {
+        "apps/api/src/felix_api/app.py": "the API lifespan",
+        "apps/worker/src/felix_worker/tasks.py": "the Taskiq worker startup",
+        "packages/harness/src/felix/durability/temporal.py": "the Temporal worker",
+    }
+    missing = [
+        f"{path} ({what})"
+        for path, what in sources.items()
+        if "hydrate_secrets" not in (ROOT / path).read_text(encoding="utf-8")
+    ]
+    assert missing == [], (
+        "a process that runs agent turns does not hydrate secrets, so its audit, session "
+        "and fiber redaction see an empty list:\n  " + "\n  ".join(missing)
+    )

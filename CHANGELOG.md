@@ -32,6 +32,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a long low-entropy value wrongly treated as secret rewrites unrelated text wherever it
   appears. That is the cost being traded against leaking a credential.
 
+- **`felix temporal-worker` never hydrated secrets, so three of its four redaction sinks
+  were inert.** That process registers the `fiber_step` activity, which runs a full agent
+  turn — and fiber state, audit payloads and session events all redact through
+  `collected_secret_values()` with no settings, seeing only the process-global list that
+  hydration populates. A credential echoed into a tool result was persisted verbatim there
+  and served back through session export and fiber resume, and this was true of *every*
+  secret, not only provider options. `deploy/GOVERNANCE.md` promised all four sinks. An
+  entrypoint-wiring test now asserts every process that runs turns hydrates.
+
 - **Options-blob credentials were masked in tool output and nowhere else.** Audit rows,
   session events and fiber state redact through `collected_secret_values()` with no
   settings, so they see only the process-global list — and hydration registered a value
@@ -46,12 +55,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **An unresolvable `secret:NAME` provider option was left in place and sent upstream**,
+  shipping the internal secret *name* to the third-party endpoint and into any log of that
+  request. It is dropped now, so the settings-field fallback applies or the
+  missing-credential path fires.
+
+- **A nested option value was registered for redaction only as its Python repr**, so the
+  same data re-rendered as JSON, or its leaf pulled out, no longer matched. Leaves are
+  registered too. And a `null` option coerced to the string `"None"` — truthy — which
+  suppressed both the settings fallback and the missing-credential warning and went out as
+  `Bearer None`; `None` and booleans are dropped rather than stringified.
+
 - **A provider with no credential sent `Authorization: Bearer ` rather than no header** — a
   malformed credential that proxies and gateways treat inconsistently and that diagnoses
   nothing. The Anthropic path was already correct, since it sends the key unwrapped and
   `_headers` drops empty values. Because omitting the header turns a 401 into a request a
   permissive upstream may accept anonymously, an empty credential now logs a warning naming
-  the provider and the setting to fix.
+  the provider and the setting to fix — once per provider, since `resolve_provider_config`
+  runs on the per-request path (including the inbound injection screener, on every turn) and
+  an unconditional warning there is unbounded log volume for a legitimate keyless local
+  gateway.
 
 - **An unresolved `secret:NAME` provider option was added to the redaction list**, redacting
   the one diagnostic that names what failed to resolve out of the logs someone is reading to

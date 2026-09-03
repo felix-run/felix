@@ -65,6 +65,12 @@ class ProviderSpec:
     # This cannot be read off the model: Llama runs on a laptop and is also sold by four
     # hosted providers, and the catalog matches model ids by substring.
     bills_per_token: bool = True
+    # Option names this provider reads as a credential beyond `api_key`. Header options are
+    # exempt from redaction because they are addressing — but a header is exactly where a
+    # second credential goes (Cloudflare AI Gateway's `cf-aig-authorization`, an Azure-style
+    # `api-key`), and adding such a row would otherwise exempt it silently. Naming it here
+    # keeps the exemption honest; an invariant asserts the two never overlap.
+    credential_option_names: tuple[str, ...] = field(default_factory=tuple)
     # Whether this endpoint serves `/embeddings` as well as `/chat/completions`. Not an
     # inference from the wire format: several hosted providers implement chat only, and
     # registering them as selectable embedders made `FELIX_MEMORY_EMBEDDER=groq` pass
