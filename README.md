@@ -224,6 +224,7 @@ Core also exposes open registries, callable at import time, each selected by ord
 | `register_secrets_backend` | `FELIX_SECRETS_BACKEND` |
 | `register_warehouse_backend` | `FELIX_WAREHOUSE` |
 | `register_embedder_backend` | `FELIX_MEMORY_EMBEDDER` |
+| `register_search_backend` | `FELIX_SEARCH_BACKEND` |
 | `register_session_strategy` | `spec.session.strategy` |
 | `register_checkpointer` | `spec.memory.checkpointer` |
 
