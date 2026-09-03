@@ -48,3 +48,22 @@
 - [ ] Retention (`governance.retention_days`, `jobs/retention.py`) covers new stored data.
 - [ ] Audit events emitted for every control that fires and for state-changing management calls.
 - [ ] Exported/forked sessions do not leak another tenant's or another user's content.
+
+## Grammar crossing (a fix that opens a second hole)
+A value validated for one grammar is not validated for the next one. This is where security
+*fixes* here have introduced fresh defects, so check it on every control change.
+- [ ] A validated value re-serialized into a **command line** is re-checked against that flag's
+      separators. `--host-resolver-rules` takes a comma-separated list, and `urlparse` returns a
+      host containing a comma quite happily: `evil.com,MAP * 169.254.169.254` pointed every other
+      name at the metadata service, through the flag added to prevent exactly that.
+- [ ] Rule/precedence order in that flag is deliberate — a leading `MAP *` shadows everything after.
+- [ ] A value crossing into an **HTTP header** cannot carry CR/LF or a header separator (a thread id
+      reached a response header unescaped).
+- [ ] A value crossing into a **URL** is re-encoded per component; a validated host is not
+      concatenated into a path or query.
+- [ ] A value crossing into a **log line, audit row, or SSE frame** cannot forge a field or a frame
+      boundary.
+- [ ] The check is an allowlist pattern for the target grammar (anchored `^...$`), not a denylist of
+      the characters that came to mind.
+- [ ] The fix is verified against the real component — a browser actually launched, a request
+      actually issued — not only by asserting the argument was constructed.

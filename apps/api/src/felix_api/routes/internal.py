@@ -59,7 +59,7 @@ def _require_consumer_secret(request: Request) -> None:
 async def append_session_event(session_id: str, body: SessionEventWrite, request: Request) -> dict[str, Any]:
     """Append a queue write-back event after content screening."""
     from felix.governance.content_screening import screen_content
-    from felix.session.store import append_event
+    from felix.session.store import append_event, screenable_text
 
     _require_consumer_secret(request)
 
@@ -80,19 +80,28 @@ async def append_session_event(session_id: str, body: SessionEventWrite, request
         )
         raise HTTPException(status_code=403, detail="thread_not_in_tenant")
 
-    # Always screen text content on the landing path (TS hole fix).
+    # Always screen on the landing path. `text` is what gets normalised onto the event's
+    # `content`; the screened string is wider than that on purpose.
     text = body.content
     if text is None and isinstance(body.payload.get("content"), str):
         text = body.payload["content"]
-    # Also screen common nested text fields used by queue transports.
+    # Also accept the common nested text fields used by queue transports.
     if text is None:
         for key in ("text", "message", "output"):
             val = body.payload.get(key)
             if isinstance(val, str) and val:
                 text = val
                 break
-    if text:
-        verdict = await screen_content(text, settings=settings)
+
+    # Screen everything the payload will actually contribute to the event, not the four
+    # keys this endpoint used to enumerate. `_payload_to_appendable` also lifts `tool_calls`
+    # and `metadata`, and `event_to_chat_message` replays both into model context —
+    # `metadata.attachments` as image attachments, `metadata.thinking` as thinking blocks.
+    # Deriving the screened text from the lift means a field added there is covered the day
+    # it is added, rather than the day someone remembers this list.
+    screened = screenable_text(body.type, {**body.payload, **({"content": text} if text else {})})
+    if screened:
+        verdict = await screen_content(screened, settings=settings)
         if getattr(verdict, "denied", False) or (isinstance(verdict, dict) and verdict.get("denied")):
             raise HTTPException(status_code=422, detail="content_screening_denied")
 

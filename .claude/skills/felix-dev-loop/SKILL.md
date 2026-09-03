@@ -38,9 +38,10 @@ environment failure, not a code failure — a `PreToolUse` hook blocks it and pr
 | Lint | `uv run ruff check .` | line-length 110, `py314` target |
 | Format | `uv run ruff format .` / `--check .` | CI runs the check separately |
 | Types | `uv run ty check packages apps` | `make type`; needs `make install-full` (unresolved imports are errors, and a lean venv cannot resolve the extras); CI excludes `tests/` deliberately |
-| Tests | `./scripts/test.sh` | 195 tests, 1 skipped |
+| Tests | `./scripts/test.sh` | ~1560 tests, ~115 skipped (optional extras) |
 | Manifests | `uv run felix bundle-manifests` | loads + validates every file in `manifests/` |
 | Invariants | `./scripts/test.sh tests/unit/test_invariants.py` | env coverage, lean imports, memory twins, wrapper order |
+| Entrypoints | `./scripts/test.sh tests/unit/test_entrypoint_wiring.py` | console scripts, ASGI factory and broker strings, boot with no arguments |
 | Lean imports | `uv sync --locked --no-dev && uv run --no-sync python scripts/lean-import-check.py` | proves the default image can import every module |
 | Toolkit | `python3 scripts/validate-toolkit.py` | `.claude/` hooks, settings, subagents, skills |
 | Eval | `uv run felix eval --dataset smoke --manifest quick --fixture fixtures/eval/smoke.json --mock` | no model calls |

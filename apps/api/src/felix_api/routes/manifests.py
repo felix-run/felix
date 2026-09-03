@@ -13,7 +13,7 @@ from felix.auth.mgmt import (
     tenant_id_from_request,
 )
 from felix.manifests.governance import GovernanceError, assert_stdio_allowed
-from felix.manifests.loader import parse_manifest
+from felix.manifests.loader import ManifestParseError, parse_manifest
 from felix.manifests.schema import Manifest
 from felix.session.store import validate_checkpointer_config
 from pydantic import BaseModel, Field
@@ -121,7 +121,13 @@ async def upsert_manifest(name: str, body: ManifestUpsert, request: Request) -> 
     from felix.manifests import store as manifest_store
 
     require_mgmt_scopes(request, SCOPE_MANIFESTS_WRITE)
-    parsed: Manifest = parse_manifest(body.manifest)
+    # Same trade as the two refusals below: a manifest refused for a stated reason should say
+    # so. Unmapped this raised outside both try blocks and answered 500 "Internal Server
+    # Error", so the validator's message never left the server log.
+    try:
+        parsed: Manifest = parse_manifest(body.manifest)
+    except ManifestParseError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     if parsed.metadata.name != name:
         raise HTTPException(status_code=400, detail="name_mismatch")
     # Refuse at write time: compiling this manifest would spawn the command.

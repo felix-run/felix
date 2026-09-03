@@ -24,6 +24,12 @@ class AuthContext:
     # How the caller authenticated, carried from felix.auth.context.Principal so
     # manifest `auth.inbound.schemes` can be enforced on the request path.
     scheme: str = "anonymous"
+    # Set only when a machine actor is running work a human started — today, a resumed durable
+    # fiber. `principal_sub` stays the machine (`fiber`, `cron`, `eval`, `a2a`) so an audit row
+    # never claims a person took an action a worker took minutes later; `on_behalf_of` carries
+    # who it is for, which is what `bind_principal` needs to keep an approval valid across a
+    # resume. Authorization reads it deliberately and in one place; audit does not.
+    on_behalf_of: str = ""
 
 
 @dataclass

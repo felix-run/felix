@@ -25,6 +25,25 @@ spec:
     - calculator
     - list_skills
 
+  # A support agent's whole job is answering from the documentation, and until this existed
+  # it could only do arithmetic. Confined to the docs site: the model chooses the URL, so
+  # `path_prefix` is what keeps "read a page" from meaning "read any page".
+  http_tools:
+    - name: fetch_docs
+      description: >-
+        Read a page from the Felix documentation site. Use this before answering a
+        how-to or troubleshooting question, and quote what the page actually says.
+      path_prefix: https://docs.felix.run/
+      max_bytes: 60000
+      timeout_ms: 10000
+
+  # Required by the tool above, not decoration: a fetched page is attacker-controlled input,
+  # and compiling this manifest without it logs `untrusted tool(s) ... unscreened`. Marker
+  # screening only (no `model:`), so it costs nothing per call.
+  content_screening:
+    enabled: true
+    on_flag: quarantine
+
   memory:
     checkpointer: postgres
     store: pgvector

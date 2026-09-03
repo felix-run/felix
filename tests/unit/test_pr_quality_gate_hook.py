@@ -28,36 +28,39 @@ from pathlib import Path
 
 import pytest
 
+from tests.git_fixture import git
+
 HOOK = Path(__file__).resolve().parents[2] / ".claude" / "hooks" / "pr-quality-gate.sh"
 CREATE = "gh pr create --title t --body b"
 
+_HAS_JQ = subprocess.run(["which", "jq"], capture_output=True).returncode == 0
+# A silently skipped file looks exactly like a passing one — the reason CI sets
+# FELIX_REQUIRE_OPTIONAL_EXTRAS=1 for the extras gates. The same flag applies here: locally a
+# missing jq is a fair skip, in CI it means these tests stopped running and nobody was told.
+if not _HAS_JQ and os.environ.get("FELIX_REQUIRE_OPTIONAL_EXTRAS") == "1":
+    raise RuntimeError("jq is required in CI: without it this whole file skips and reads as a pass")
+
 pytestmark = pytest.mark.skipif(
-    subprocess.run(["which", "jq"], capture_output=True).returncode != 0,
-    reason="the hook no-ops without jq, so there is nothing to assert",
+    not _HAS_JQ, reason="the hook no-ops without jq, so there is nothing to assert"
 )
-
-
-def _git(repo: Path, *args: str) -> str:
-    out = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, check=True)
-    return out.stdout.strip()
 
 
 def _repo(root: Path, changed: str) -> Path:
     """A repo with `origin/main` behind HEAD by one commit touching `changed`."""
     root.mkdir(parents=True, exist_ok=True)
-    _git(root, "init", "-q", "-b", "main")
-    _git(root, "config", "user.email", "t@example.com")
-    _git(root, "config", "user.name", "t")
+    git(root, "init", "-q", "-b", "main")
+    git(root, "config", "user.email", "t@example.com")
+    git(root, "config", "user.name", "t")
     (root / "seed").write_text("seed\n")
-    _git(root, "add", "-A")
-    _git(root, "commit", "-qm", "seed")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "seed")
     # origin/main pinned here, so the diff below is exactly the one commit.
-    _git(root, "update-ref", "refs/remotes/origin/main", _git(root, "rev-parse", "HEAD"))
+    git(root, "update-ref", "refs/remotes/origin/main", git(root, "rev-parse", "HEAD"))
     path = root / changed
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("x = 1\n")
-    _git(root, "add", "-A")
-    _git(root, "commit", "-qm", "change")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "change")
     return root
 
 
@@ -93,7 +96,7 @@ def test_a_marker_for_this_exact_sha_satisfies_it(tmp_path: Path) -> None:
     project = _repo(tmp_path / "project", "packages/harness/src/felix/x.py")
     markers = project / ".claude" / "logs" / "quality-review"
     markers.mkdir(parents=True)
-    (markers / _git(project, "rev-parse", "HEAD")).touch()
+    (markers / git(project, "rev-parse", "HEAD")).touch()
     assert _run(CREATE, project=project, cwd=project) == QUIET
 
 
@@ -193,7 +196,7 @@ def test_a_worktree_of_this_project_is_still_gated(tmp_path: Path) -> None:
     a fail-open on a legitimate workflow rather than an exotic one."""
     project = _repo(tmp_path / "project", "packages/harness/src/felix/x.py")
     tree = tmp_path / "wt"
-    _git(project, "worktree", "add", "-q", str(tree), "HEAD")
+    git(project, "worktree", "add", "-q", str(tree), "HEAD")
     assert _run(CREATE, project=project, cwd=tree) == FLAGGED
     assert _run(f"cd {tree}; {CREATE}", project=project, cwd=project) == FLAGGED
 
@@ -203,17 +206,17 @@ def test_a_worktree_is_gated_on_its_own_head(tmp_path: Path) -> None:
     commit and does not borrow the main checkout's."""
     project = _repo(tmp_path / "project", "packages/harness/src/felix/x.py")
     tree = tmp_path / "wt"
-    _git(project, "worktree", "add", "-q", str(tree), "HEAD")
+    git(project, "worktree", "add", "-q", str(tree), "HEAD")
     (tree / "packages" / "harness" / "src" / "felix" / "y.py").write_text("y = 2\n")
-    _git(tree, "add", "-A")
-    _git(tree, "commit", "-qm", "worktree change")
+    git(tree, "add", "-A")
+    git(tree, "commit", "-qm", "worktree change")
 
     markers = project / ".claude" / "logs" / "quality-review"
     markers.mkdir(parents=True)
-    (markers / _git(project, "rev-parse", "HEAD")).touch()
+    (markers / git(project, "rev-parse", "HEAD")).touch()
     assert _run(CREATE, project=project, cwd=tree) == FLAGGED, "worktree borrowed the main sha's marker"
 
-    (markers / _git(tree, "rev-parse", "HEAD")).touch()
+    (markers / git(tree, "rev-parse", "HEAD")).touch()
     assert _run(CREATE, project=project, cwd=tree) == QUIET
 
 
@@ -283,3 +286,73 @@ def test_an_ambient_git_work_tree_does_not_open_a_way_out(tmp_path: Path) -> Non
         assert _run(CREATE, project=project, cwd=project, env={var: value}) == FLAGGED, (
             f"{var} pointed the gate out of the project"
         )
+
+
+# --- the security-reviewer branch ----------------------------------------------------
+#
+# A security fix carries a risk a feature change does not: closing one hole while opening
+# another. Hostname validation added to stop SSRF was interpolated straight into
+# `--host-resolver-rules`, whose grammar is a comma-separated list, so a host containing a
+# comma would have redirected every other name to the metadata service. A reviewer caught
+# it. The ask should not depend on the session noticing the change was security-shaped, so
+# the hook decides from the paths — and that decision is asserted here rather than trusted.
+
+
+def _context(command: str, *, project: Path, cwd: Path) -> str:
+    """The note the hook emitted, or an empty string when it stayed quiet."""
+    payload = json.dumps({"tool_input": {"command": command}, "cwd": str(cwd)})
+    done = subprocess.run(
+        ["bash", str(HOOK)],
+        input=payload,
+        capture_output=True,
+        text=True,
+        cwd=str(cwd),
+        env={"PATH": os.environ["PATH"], "CLAUDE_PROJECT_DIR": str(project)},
+    )
+    assert done.returncode == 0, f"an advisory hook must never block: {done.stderr}"
+    if not done.stdout.strip():
+        return ""
+    return json.loads(done.stdout)["hookSpecificOutput"]["additionalContext"]
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        "packages/harness/src/felix/security/ssrf.py",
+        "packages/harness/src/felix/auth/middleware.py",
+        "packages/harness/src/felix/tools/browser.py",
+        "packages/harness/src/felix/governance/inbound.py",
+        "apps/api/src/felix_api/routes/internal.py",  # tenant/internal surface
+        "packages/harness/src/felix/governance/screening.py",  # `screen` as a prefix
+        "packages/harness/src/felix/manifests/policies.py",  # `polic` covers policy + policies
+        "packages/harness/src/felix/tools/transports.py",
+        "packages/harness/src/felix/db/rls_gucs.py",  # `rls` as a real path component
+        "packages/harness/src/felix/approvals.py",
+        # The governance wrapper order lives here and `.claude/rules/` calls it load-bearing;
+        # the unanchored pattern matched none of this path.
+        "packages/harness/src/felix/manifests/builder.py",
+    ],
+)
+def test_a_control_path_change_also_asks_for_the_security_reviewer(tmp_path: Path, changed: str) -> None:
+    project = _repo(tmp_path / "project", changed)
+    note = _context(CREATE, project=project, cwd=project)
+    assert "sit on a control path" in note, "the security reviewer was not asked for"
+    assert "felix-security-reviewer" in note
+    assert "felix-security-reviewer is not needed" not in note
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        "packages/harness/src/felix/eval/runner.py",
+        # `rls` inside `urls`. Matched as a bare substring, this asked for a security review
+        # of a URL helper — and a false positive is how a note gets trained into noise.
+        "apps/api/src/felix_api/urls.py",
+    ],
+)
+def test_an_ordinary_change_does_not_ask_for_the_security_reviewer(tmp_path: Path, changed: str) -> None:
+    """Asking every time is the same as never asking — the note has to mean something."""
+    project = _repo(tmp_path / "project", changed)
+    note = _context(CREATE, project=project, cwd=project)
+    assert "felix-quality-reviewer" in note, "the note should still be emitted"
+    assert "felix-security-reviewer is not needed" in note

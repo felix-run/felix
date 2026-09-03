@@ -149,3 +149,23 @@ async def test_session_append_event(memory_settings: Settings) -> None:
     events = await session.get_events()
     assert len(events) == 1
     assert events[0].content == "hello"
+
+
+@pytest.mark.asyncio
+async def test_a_lease_requires_a_tenant_scoped_thread_id() -> None:
+    """The lease key is the thread id alone, so the tenant prefix is the whole partition.
+
+    Every id reaching the lease came from `effective_thread_id`, which prefixes — but that
+    was convention, not a boundary. A route or job building an id without the prefix would
+    have shared one lease namespace across every tenant, silently.
+    """
+    from felix.session.lease import acquire_lease, lease_status, release_lease
+
+    assert (await acquire_lease("acme:t1", holder_id="h"))["ok"] is True
+
+    with pytest.raises(ValueError):
+        await lease_status("unscoped")
+    with pytest.raises(ValueError):
+        await acquire_lease("unscoped", holder_id="h")
+    with pytest.raises(ValueError):
+        await release_lease("unscoped", holder_id="h")

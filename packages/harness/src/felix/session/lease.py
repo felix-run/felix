@@ -44,6 +44,24 @@ def _redis_key(thread_id: str) -> str:
     return f"felix:lease:{thread_id}"
 
 
+def _assert_tenant_scoped(thread_id: str) -> None:
+    """Refuse a lease on a thread id that carries no tenant prefix.
+
+    The lease key is the thread id alone, so the tenant segment of `{tenant}:{suffix}` is
+    the only thing keeping one tenant's lease out of another's namespace. That held by
+    convention: every id reaching here came from `effective_thread_id`, which prefixes.
+
+    Convention is not a boundary. A caller that builds an id without the prefix — a new
+    route, a job, a plugin — would silently share a lease namespace across tenants, and
+    nothing would fail. The tenant id itself can no longer contain the delimiter, so a
+    prefix present here is unambiguous.
+    """
+    if not thread_id or ":" not in thread_id:
+        raise ValueError(
+            f"lease requires a tenant-scoped thread id ('{{tenant}}:{{suffix}}'), got {thread_id!r}"
+        )
+
+
 async def _get_redis() -> Any | None:
     global _redis, _redis_loop, _redis_failed
     if _force_memory:
@@ -236,6 +254,7 @@ async def _store_remote(client: Any, thread_id: str, data: dict[str, Any], ttl: 
 
 
 async def lease_status(thread_id: str) -> dict[str, Any]:
+    _assert_tenant_scoped(thread_id)
     client = await _get_redis()
     if client is None:
         return _memory_status(thread_id)
@@ -255,6 +274,7 @@ async def acquire_lease(
     ttl_seconds: float = 300.0,
     token: str | None = None,
 ) -> dict[str, Any]:
+    _assert_tenant_scoped(thread_id)
     """Acquire or renew a lease. Exclusive fails if another holder owns it."""
     client = await _get_redis()
     if client is None:
@@ -354,6 +374,7 @@ async def release_lease(
     holder_id: str | None = None,
     token: str | None = None,
 ) -> dict[str, Any]:
+    _assert_tenant_scoped(thread_id)
     client = await _get_redis()
     if client is None:
         return _memory_release(thread_id, holder_id=holder_id, token=token)

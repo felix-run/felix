@@ -276,19 +276,6 @@
           "title": "Path Prefix",
           "type": "string"
         },
-        "args_schema": {
-          "anyOf": [
-            {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Args Schema"
-        },
         "fatal": {
           "default": false,
           "title": "Fatal",
@@ -507,19 +494,6 @@
           "title": "Auth",
           "type": "string"
         },
-        "args_schema": {
-          "anyOf": [
-            {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Args Schema"
-        },
         "fatal": {
           "default": false,
           "title": "Fatal",
@@ -582,6 +556,8 @@
         "resume_token_ttl_seconds": {
           "anyOf": [
             {
+              "exclusiveMinimum": 0,
+              "maximum": 86400,
               "type": "integer"
             },
             {
@@ -698,6 +674,79 @@
         }
       },
       "title": "Guardrails",
+      "type": "object"
+    },
+    "HttpFetchToolRef": {
+      "additionalProperties": false,
+      "description": "Read a model-supplied URL over HTTP(S).\n\nThe inverse of `McpServerRef`-style integrations and of `HttpExecutor`: the destination\nis chosen by the model, not the manifest, so `path_prefix` is how an author narrows it\nback down. Bounded here rather than at the tool because a manifest is the only place\nthat knows what this agent should be allowed to read.",
+      "properties": {
+        "name": {
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "path_prefix": {
+          "default": "",
+          "title": "Path Prefix",
+          "type": "string"
+        },
+        "timeout_ms": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "maximum": 3600000,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timeout Ms"
+        },
+        "max_bytes": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "maximum": 5000000,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Bytes"
+        },
+        "format": {
+          "default": "text",
+          "enum": [
+            "text",
+            "raw"
+          ],
+          "title": "Format",
+          "type": "string"
+        },
+        "fatal": {
+          "default": false,
+          "title": "Fatal",
+          "type": "boolean"
+        },
+        "allow_any_host": {
+          "default": false,
+          "title": "Allow Any Host",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "HttpFetchToolRef",
       "type": "object"
     },
     "InboundAuth": {
@@ -1486,19 +1535,6 @@
           "title": "Path Prefix",
           "type": "string"
         },
-        "args_schema": {
-          "anyOf": [
-            {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Args Schema"
-        },
         "fatal": {
           "default": false,
           "title": "Fatal",
@@ -1582,18 +1618,6 @@
           "title": "Name",
           "type": "string"
         },
-        "version": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Version"
-        },
         "description": {
           "anyOf": [
             {
@@ -1605,6 +1629,18 @@
           ],
           "default": null,
           "title": "Description"
+        },
+        "version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Version"
         }
       },
       "required": [
@@ -1696,6 +1732,14 @@
           "title": "Browser Tools",
           "type": "array"
         },
+        "http_tools": {
+          "items": {
+            "$ref": "#/$defs/HttpFetchToolRef"
+          },
+          "maxItems": 64,
+          "title": "Http Tools",
+          "type": "array"
+        },
         "client_tools": {
           "items": {
             "$ref": "#/$defs/ClientToolRef"
@@ -1760,6 +1804,7 @@
           "items": {
             "$ref": "#/$defs/Policy"
           },
+          "maxItems": 64,
           "title": "Policies",
           "type": "array"
         },
@@ -1782,6 +1827,7 @@
           "items": {
             "$ref": "#/$defs/ApprovalRule"
           },
+          "maxItems": 64,
           "title": "Approvals",
           "type": "array"
         },

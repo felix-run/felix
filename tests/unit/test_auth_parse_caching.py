@@ -146,3 +146,37 @@ def test_the_cached_table_is_shared_so_nothing_may_mutate_it() -> None:
         if getattr(node.func, "attr", "") in {"pop", "setdefault", "update", "clear"}:
             owner = getattr(node.func.value, "id", "") or getattr(node.func.value, "attr", "")
             assert "key" not in owner.lower(), f"line {node.lineno} mutates the credential table"
+
+
+def test_a_tenant_id_that_cannot_partition_is_refused_at_issuance() -> None:
+    """The tenant prefix is the ownership boundary, so it must be validated where it enters.
+
+    `effective_thread_id` already refused `:` and `#`, but only when a thread id was being
+    built — so a bad tenant authenticated fine and failed later at the first write. That is a
+    late refusal, not a partition: `acme` and `acme:sub` would both "own" the thread
+    `acme:sub:x`, and `session/lease.py` keys a lease on that prefix alone.
+    """
+    import pytest
+    from felix.auth.context import Principal, assert_valid_tenant_id
+
+    assert_valid_tenant_id("acme")
+    for bad in ("acme:sub", "acme#1", "", "   ", " acme", "x" * 129):
+        with pytest.raises(ValueError):
+            assert_valid_tenant_id(bad)
+        # Unrepresentable, not merely rejected at the doors.
+        with pytest.raises(ValueError):
+            Principal(subject="s", tenant_id=bad)
+
+
+def test_the_http_layer_and_the_auth_layer_cannot_disagree() -> None:
+    """`_usable_tenant` and `assert_valid_tenant_id` are the same rule, not two copies."""
+    from felix.auth.context import assert_valid_tenant_id
+    from felix_api.threads import _usable_tenant
+
+    for value in ("acme", "acme:sub", "acme#1", "", "x" * 129, "ok-tenant_1"):
+        expected = True
+        try:
+            assert_valid_tenant_id(value)
+        except ValueError:
+            expected = False
+        assert _usable_tenant(value) is expected, value

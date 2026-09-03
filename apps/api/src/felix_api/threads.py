@@ -7,6 +7,8 @@ place rather than being restated per router.
 
 from __future__ import annotations
 
+from felix.auth.context import assert_valid_tenant_id
+
 # A suffix carrying either delimiter could forge a tenant prefix or a reserved
 # thread namespace, so it is rejected rather than escaped.
 SUFFIX_DELIMS = frozenset(":#")
@@ -27,7 +29,14 @@ def _usable_tenant(tenant_id: str) -> bool:
     a cross-tenant write — but `session/lease.py` keys a lease by thread id alone,
     which is only safe while that prefix is unambiguous.
     """
-    return bool(tenant_id) and not any(c in tenant_id for c in SUFFIX_DELIMS)
+    # One definition of the rule. It is now enforced at issuance too — an unusable tenant
+    # cannot reach a `Principal` — so this is the second line of defence rather than the
+    # only one, and it must not be able to disagree with the first.
+    try:
+        assert_valid_tenant_id(tenant_id)
+    except ValueError:
+        return False
+    return True
 
 
 def effective_thread_id(tenant_id: str, suffix: str | None) -> str | None:

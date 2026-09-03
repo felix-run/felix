@@ -7,6 +7,33 @@ paths:
 
 Rules that hold across the whole repo. Violating one is a blocking review finding, not a style note.
 
+## The defect shape this repo produces
+
+Nearly every real defect here is **a control that looks present and does nothing**, and its most
+common cause is that *the branch production takes is the branch nothing covers*. Three rules follow
+from it, and they are cheap:
+
+- **Exercise the production call, not a convenient one.** A parameter with a default that every
+  test supplies is untested. `create_app()` shipped reading `settings.x` instead of `cfg.x` and died
+  at boot, green suite and all, because production is the only caller that passes nothing.
+  `tests/unit/test_entrypoint_wiring.py` now calls each entrypoint the way its console script does.
+- **A test that cannot fail is worse than no test.** Prove a new one by mutation: introduce a real
+  violation of the rule, watch the test go red, revert, confirm the tree is clean. An ERROR is not a
+  failure — it means the test is wrong and says nothing either way. An AST invariant here matched
+  `timeout=<Constant>` while every literal it hunted lived inside `httpx.Timeout(...)`: green the day
+  it was written, unable to fail on any file it named.
+- **Absence is the claim that rots fastest.** "Nothing reads this field", "this provider is
+  fictional", "that has no caller" — re-derive it against the tree at HEAD before acting, never from
+  an earlier note in the same session. `SkillRef.description` was nearly deleted as unread after
+  `a2a/card.py` had started reading it. Grep first; the **dead-code-audit** skill lists the
+  reachability channels grep alone misses.
+
+A fourth, for changes to controls: **validating a value for one grammar does not validate it for the
+next one.** A hostname checked against a DNS-name pattern was interpolated into
+`--host-resolver-rules`, which is a comma-separated list, so a comma in the host reached every name
+past it. When a validated value crosses into a command line, a header, a URL, a query, or a log
+line, re-validate it against *that* grammar's separators. Details: the **security-review** skill.
+
 - **Wrapper order in `manifests/builder.py` is load-bearing.** secret masking → policies → command
   screening → content screening → limits → guardrails → judges → approvals → artifact spill. Each
   wrapper clones the tool with a new executor, so order defines precedence. Never reorder to make a
@@ -52,3 +79,21 @@ Rules that hold across the whole repo. Violating one is a blocking review findin
   the Postgres write.
 - **`felix-scheduler` runs alongside `felix-worker`**, or no periodic job fires.
 - Commit and push only when the user asks; branch first. Details: the **branch-pr-workflow** skill.
+
+## What the work is for
+
+Two rules on the *balance* of work, added 2026-09-02 after an audit found that roughly forty
+consecutive commits were remediation of defects found by reading the tree rather than by running
+it. Both are budget rules, not quality rules — the self-audit work was good, and there was too
+much of it relative to everything else.
+
+- **A control may not be added for a capability that does not exist.** `manifests/builder.py`
+  reached 1,401 lines governing a built-in tool registry of `calculator` plus three skill stubs
+  and four file tools, while `support.yaml` — the support agent — shipped with
+  `tools: [calculator, list_skills]` and no way to look anything up. Governance is the best-built
+  part of this harness and it was guarding almost nothing. Before hardening a wrapper, check that
+  something reaches it.
+- **One hardening / invariant / audit item per cycle; everything else adds user-visible
+  capability.** A defect found in a *real run* is exempt — that is the feedback loop working, and
+  it is the loop this rule exists to protect. A defect found by re-reading a file you already
+  audited is the thing being budgeted. `docs/ROADMAP.md` carries the current cycle's items.

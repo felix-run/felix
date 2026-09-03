@@ -14,6 +14,29 @@ from typing import Any
 BUILTIN_AUTH_MODES = frozenset({"none", "api_key", "jwt"})
 
 
+# The tenant id is the ownership boundary, and it arrives from outside: an api-key
+# `tenant_id` field or a JWT claim, and on Cognito `custom:*` claims are frequently
+# user-writable. The prefix rule (`{tenant}:{suffix}` thread ids) only partitions while the
+# delimiter cannot appear in the tenant itself — `acme` and `acme:sub` would otherwise both
+# "own" the thread `acme:sub:x`.
+#
+# This was previously enforced only at the far end, when a thread id was built, so a bad
+# tenant authenticated fine and failed later at a write. Validating at construction makes an
+# unusable tenant unrepresentable instead.
+TENANT_DELIMS = frozenset(":#")
+MAX_TENANT_ID = 128
+
+
+def assert_valid_tenant_id(tenant_id: str) -> None:
+    """Raise `ValueError` unless `tenant_id` is a single delimiter-free segment."""
+    if not tenant_id or tenant_id.strip() != tenant_id:
+        raise ValueError("tenant_id must be a non-empty, unpadded string")
+    if any(c in tenant_id for c in TENANT_DELIMS):
+        raise ValueError(f"tenant_id may not contain {''.join(sorted(TENANT_DELIMS))!r}")
+    if len(tenant_id) > MAX_TENANT_ID:
+        raise ValueError(f"tenant_id exceeds {MAX_TENANT_ID} characters")
+
+
 @dataclass(slots=True)
 class Principal:
     subject: str
@@ -23,6 +46,11 @@ class Principal:
     # How the caller authenticated: "api_key", a JWT verifier scheme ("access",
     # "cognito", "self"), or "anonymous". Enforced by manifest `auth.inbound.schemes`.
     scheme: str = "anonymous"
+
+    def __post_init__(self) -> None:
+        # Backstop for every construction path, including ones added later. The doors
+        # validate too, so a caller gets a 401 rather than this exception.
+        assert_valid_tenant_id(self.tenant_id)
 
 
 OutboundTokenFn = Callable[[dict[str, str | None]], Awaitable[str]]
