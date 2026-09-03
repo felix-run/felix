@@ -9,6 +9,81 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`spec.http_tools` — an agent can read a URL.** Until now it could not, except through
+  `spec.browser_tools`, which launches a headless Chromium per call. The built-in registry was
+  `calculator`, four workspace file tools, and three skill tools, so `manifests/support.yaml`
+  shipped as a support agent that could only do arithmetic and `deep.yaml` as a research agent
+  that could not retrieve. Roughly 620 lines of governance enforcement were wrapping that.
+
+  Deliberately *not* the existing `HttpExecutor`, which is the other direction: that posts a
+  tool's arguments to a URL the manifest fixed, so the operator picks the destination. Here the
+  model picks it, which is the higher-risk shape, and it is why every knob is bounded by the
+  manifest — `path_prefix` confines the URL, `max_bytes` caps the response, `timeout_ms` the
+  call, all with schema ceilings.
+
+  Egress is not re-implemented: `safe_async_client` already resolves once, validates every
+  answer, and dials one of the approved addresses, and each redirect hop re-enters the same
+  guarded transport. So the roadmap's stated prerequisite — pin the connection to the validated
+  address — was already met by `#128`–`#130`, and this needed no separate resolving pre-check.
+
+  The transport is `http`, absent from `_TRUSTED_TRANSPORTS`, and `http` was added to
+  `_UNTRUSTED_SOURCE_PREFIXES` alongside it: a fetched page is attacker-controlled input and
+  must reach content screening. Both layers are pinned by tests, separately — asserting only
+  their combination let either regress in silence, which mutation testing showed.
+
+  The body is streamed to the cap rather than read whole, because the far end chooses the
+  length; a non-textual response is described rather than decoded; a non-2xx keeps its body,
+  since a 404's message is usually the useful part and a model told only "it failed" retries the
+  same URL. HTML becomes readable text through `html.parser` — no new dependency, and script and
+  style bodies are dropped, `script` being the likeliest place for a page to address the model.
+
+  `path_prefix` is enforced on **every redirect hop**, not just the first. Redirects are driven
+  by hand rather than by httpx for two reasons: the egress guard re-checks each hop but knows
+  nothing about `path_prefix`, so one `302` from an allowed page walked the agent out of its only
+  confinement — the exfiltration shape the prefix exists to prevent; and httpx `aread()`s each
+  interim body before building the next request, so a 40 MB redirect body cost 80 MB resident on
+  a fetch capped at one kilobyte. `timeout_ms` is now a whole-call deadline (`asyncio.timeout`)
+  rather than four per-operation ones, so a server dribbling a byte just inside the read timeout
+  can no longer hold a worker open indefinitely — nothing upstream catches that, since
+  `check_budgets` never runs *during* a call.
+
+  A fetch tool must declare a boundary: `path_prefix`, or an explicit `allow_any_host: true`
+  that is logged at bind time. Every other outbound ref names an operator-fixed destination, so
+  defaulting this one to the whole public internet would have made the harness's first
+  general-purpose exfiltration primitive the path of least resistance. `path_prefix` is validated
+  as an absolute http(s) URL and normalised to end in `/` — without the slash
+  `https://docs.felix.run` matched `https://docs.felix.run.evil.com/` — and matched by parsed
+  origin rather than by `str.startswith`.
+
+  Defects caught by review and mutation testing before this shipped, recorded because none were
+  found by the tests written alongside the code:
+  - The refusal path echoed `assert_safe_outbound_url`'s detailed message to the model, turning
+    a block into a one-bit oracle for internal addressing. Every refusal now returns one fixed
+    line, with the detail logged.
+  - The per-hop guard raises a *detailed* `ValueError`, not `EgressBlocked`. Uncaught it left the
+    executor entirely — past secret masking, content screening, guardrails and artifact spill,
+    none of which wrap a raise — and `fatal: true` would have ended the run on a bad redirect.
+  - `html_to_text` fell back to returning the **raw document** when a page had no visible text,
+    handing back exactly the script bodies it had just suppressed. An SPA shell is the ordinary
+    case. It returns `(no readable text)` now, and `<script/>` no longer re-opens as
+    start-then-end — a browser treats the slash as an open tag and hides what follows, so the
+    difference let one page read one way to a human and another to the model.
+  - `replay_safe` was `True` on the reasoning that a GET is read-only. That holds for the
+    workspace read tools because the operator sets the root; here the model names the endpoint,
+    so it is `False`.
+  - Thirteen mutations survived the first test suite, including the entire SSRF section — with
+    `_is_blocked_ip` stubbed to permit everything, those tests passed in 30s instead of 0.5s,
+    having really dialled private space. `http_fetch_error:` prefixes every error return, so the
+    substring they asserted also matched a connect timeout. Refusals are asserted by equality
+    now, and every manifest knob is exercised through the binder rather than on a hand-built
+    executor.
+
+  `manifests/support.yaml` binds it as `fetch_docs`, confined to `https://docs.felix.run/`, and
+  enables marker-based content screening. Compiling it without that screening logs
+  `untrusted tool(s) ... unscreened`, which is how the gap was noticed — the warning added in the
+  Sep 2026 audit wave earning its place on the first capability that needed it. The support agent
+  can now read the documentation it supports.
+
 - **`FELIX_MANIFEST_SOURCE=store|bundled`.** Nearly every finding in the recent security
   work traced to a manifest field reaching the harness at runtime — unbounded timeouts and
   approval TTLs, uncapped ref lists, stdio commands. Those are bounded now, and they had to

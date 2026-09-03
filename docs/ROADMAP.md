@@ -83,12 +83,15 @@ nothing. Everything in **Now** follows from that.
 
 First, because everything else governs it.
 
-- [ ] **`http_fetch`** — bind the existing `HttpExecutor` (`tools/transports.py:20`) through a
-      new `spec.http_tools` binder in `builder.py`, beside the browser/sandbox binders. Two
-      non-negotiables: pin the connection to the address the guard validated rather than letting
-      httpx re-resolve (precedent: `#129` / `#130`), and keep `http` **out of**
-      `_TRUSTED_TRANSPORTS` so a fetched page — attacker-controlled input — hits content
-      screening. As a tool it inherits all nine wrappers; a capability bridge would bypass them.
+- [x] **`http_fetch`** — `spec.http_tools` binds a fetch tool per ref; `support` uses it as
+      `fetch_docs`, confined to the docs site. Two corrections to this entry as written, both
+      found by reading the code rather than the note: the existing `HttpExecutor` was the wrong
+      starting point (it posts tool *arguments* to a manifest-fixed URL — operator picks the
+      destination; here the model does, which is the whole risk), and the "pin the connection"
+      prerequisite was **already met** by `#128`–`#130`, so `safe_async_client` gave it for free
+      including on redirect hops. `http` stays out of `_TRUSTED_TRANSPORTS` and was added to
+      `_UNTRUSTED_SOURCE_PREFIXES`; both layers are pinned separately, because asserting only
+      their combination left either free to regress.
 - [ ] **Web search** behind a `SearchBackend` Protocol and a `register_search_backend` open
       registry. The invariant: a list selecting a swappable implementation is a registry, never a
       closed `Literal`. Default `none`; one bundled HTTPS backend behind an extra.
