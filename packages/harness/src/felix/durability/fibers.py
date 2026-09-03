@@ -236,7 +236,35 @@ async def _run_fiber_step(settings: Settings, row: dict[str, Any]) -> dict[str, 
 
                 provider = default_tool_provider()
                 tenant_id = row["tenant_id"]
-                auth = AuthContext(tenant_id=tenant_id, principal_sub="fiber", anonymous=False)
+                stored_auth = state.get("auth") if isinstance(state.get("auth"), dict) else {}
+                # Resume as the caller who started the run, bounded by the run's own TTL
+                # (checked above). Before this, a fiber resumed with an empty scope set, so
+                # `spec.policies` denied every policied tool and inbound `required_scopes`
+                # refused the resume — making `execution.mode: durable` and `spec.policies`
+                # mutually exclusive without either saying so.
+                #
+                # A fiber with no recorded caller — enqueued before this, or with no request
+                # context — keeps the old behaviour: principal "fiber", no scopes, everything
+                # policied denies. That is the fail-closed direction.
+                auth = AuthContext(
+                    tenant_id=tenant_id,
+                    # The actor is the fiber, not the person. Every other machine actor in
+                    # this codebase does the same — `cron`, `eval`, `a2a` — and making the
+                    # resumed run claim to *be* the caller would put `principal_subj=alice,
+                    # scheme=jwt` in an audit row for work a worker did against a manifest
+                    # that may have changed underneath it.
+                    principal_sub="fiber",
+                    on_behalf_of=str(stored_auth.get("principal_sub") or ""),
+                    # A list, or nothing. `frozenset("admin")` is {"a","d","m","i","n"} —
+                    # the one spot where the surrounding defensiveness was decorative.
+                    scopes=frozenset(
+                        str(x)
+                        for x in (stored_auth.get("scopes") or [])
+                        if isinstance(stored_auth.get("scopes"), list)
+                    ),
+                    anonymous=bool(stored_auth.get("anonymous", False)),
+                    scheme=str(stored_auth.get("scheme") or "anonymous"),
+                )
                 thread = thread_id or f"{tenant_id}:fiber:{row['id']}"
                 req_ctx = RequestContext(
                     settings=settings,
@@ -266,6 +294,19 @@ async def _run_fiber_step(settings: Settings, row: dict[str, Any]) -> dict[str, 
                     )
                     pinned = state.get("pin") if isinstance(state.get("pin"), dict) else None
                     if pinned:
+                        # `pin_compile` is forced when the run carries recorded authority. The
+                        # manifest is *re-resolved* here, not carried, and `pin_compile`
+                        # defaults to false — so a holder of `manifests:write` could publish a
+                        # new active version between the 202 and the scheduler tick, and the
+                        # fiber would run their manifest with the original caller's scopes.
+                        # Carrying authority and re-resolving the code that authority runs are
+                        # not separable decisions.
+                        #
+                        # A fiber with no recorded auth keeps the manifest's own setting: it
+                        # has nothing to escalate with, and forcing drift refusal there would
+                        # break runs that work today.
+                        if stored_auth:
+                            pinned = {**pinned, "pin_compile": True}
                         assert_pin_matches(pinned, resolved.manifest, version=resolved.version)
                     await prepare_tenant_invoke(settings, resolved=resolved, auth=auth, thread_id=thread)
                     agent = await build_tenant_agent(

@@ -502,6 +502,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fiber store was the one `memory://` twin with no reset, so fibers leaked between tests and any
   assertion on how many came back passed alone and failed in the suite.
 
+- **A durable run resumes as the caller who started it.** `spec.policies` and
+  `execution.mode: durable` were mutually exclusive and nothing said so: `_step_fiber` built
+  `AuthContext(principal_sub="fiber")` with the default empty scope set, so every policied tool
+  denied on resume and `auth.inbound.required_scopes` refused the resume outright. A manifest
+  that worked over HTTP stopped working the moment it was made durable.
+
+  The fiber now records the caller's `principal_sub`, `scopes`, `anonymous` and `scheme` at
+  enqueue, and resumes with them.
+
+  This is authority living in durable state, so the bounds are the point: never wider than the
+  caller's own scope set, never longer than the run, and never longer than the token. The last
+  two needed work that the first version of this entry claimed was already done —
+  `resume_token_ttl_seconds` had no ceiling, so "it dies with the run" was a promise a manifest
+  author could set to ten years, and the token's `exp` was never consulted at all. It is now
+  capped at `ABSOLUTE_LIMITS["resume_token_ttl_seconds"]` (24h, clamped at the read site too so
+  a row stored before the cap cannot exceed it) and `expires_at` is clamped to the token's
+  `exp`. Felix has no revocation anywhere in `felix/auth/`, so `exp` is the sole bound on a
+  compromised credential, and this would otherwise have been the first path where authority
+  survived it.
+
+  The resumed principal is `fiber`, not the caller. Every other machine actor here does the
+  same — `cron`, `eval`, `a2a` — and impersonating the human would put `principal_subj=alice,
+  scheme=jwt` in an audit row for work a worker did minutes later. A new `AuthContext
+  .on_behalf_of` carries who the run is for, and `bind_principal` reads it, so an approval
+  granted interactively still matches its own resumed run.
+
+  `pin_compile` is forced when a fiber carries recorded authority. The manifest is re-resolved
+  at resume, and `pin_compile` defaults to false — so a holder of `manifests:write` could
+  publish a new active version between the 202 and the scheduler tick and have it run with the
+  original caller's scopes. Carrying authority and re-resolving the code that authority runs
+  are not separable decisions.
+
+  Recording is refused when the ambient caller's tenant is not the run's. Both callers derive
+  both from the same request today; the guard is for the admin route or per-tenant fan-out that
+  would otherwise write tenant A's scopes into tenant B's fiber.
+
+  Not recorded, deliberately: no JWT, no raw claims. Only the decisions the auth layer already
+  made, plus `exp` as a single integer because it is a bound rather than a credential.
+
+  Two things this does not bound, both documented in `deploy/GOVERNANCE.md`: `expires_at` gates
+  step *entry*, so a step starting just inside the horizon runs to completion; and the fiber
+  row is not swept by retention, so the record outlives the run's usability.
+
 ### Changed
 
 - **Removed `args_schema` from `spec.sandboxes`, `spec.containers` and

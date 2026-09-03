@@ -556,6 +556,8 @@
         "resume_token_ttl_seconds": {
           "anyOf": [
             {
+              "exclusiveMinimum": 0,
+              "maximum": 86400,
               "type": "integer"
             },
             {

@@ -833,7 +833,15 @@ def apply_approvals(tools: list[Tool], rules: list[ApprovalRule], manifest_id: s
                         tool_name=tool.name,
                         call_signature=sig,
                         # bind_principal: A's approval must not authorize B's call.
-                        principal_subj=(req.auth.principal_sub or "") if rule.bind_principal else None,
+                        # `on_behalf_of` when a machine actor is running A's work — a resumed
+                        # durable fiber is principal `fiber`, and without this A's grant would
+                        # not match its own run. Empty for every ordinary caller, so this
+                        # changes nothing outside that case.
+                        principal_subj=(
+                            (req.auth.on_behalf_of or req.auth.principal_sub or "")
+                            if rule.bind_principal
+                            else None
+                        ),
                         # one_shot: a spent grant must not authorize a replay.
                         unconsumed_only=bool(rule.one_shot),
                     )

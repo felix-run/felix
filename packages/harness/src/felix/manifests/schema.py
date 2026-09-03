@@ -22,6 +22,10 @@ ABSOLUTE_LIMITS = {
     "max_input_tokens": 1_000_000,
     "max_output_tokens": 100_000,
     "max_cost_usd": 1_000.0,
+    # A durable run's resume token, and therefore the lifetime of the caller scopes the fiber
+    # records. It was the one lifetime in this file with no ceiling, which made "inherited
+    # authority dies with the run" a promise the manifest author could set to ten years.
+    "resume_token_ttl_seconds": 86_400,
 }
 
 
@@ -444,7 +448,9 @@ class PlanExecuteSpec(_Strict):
 
 class ExecutionSpec(_Strict):
     mode: Literal["durable", "transient"] = "transient"
-    resume_token_ttl_seconds: int | None = None
+    resume_token_ttl_seconds: int | None = Field(
+        default=None, gt=0, le=ABSOLUTE_LIMITS["resume_token_ttl_seconds"]
+    )
     # Tool batch execution. "sequential" preserves steer-cancel mid-batch.
     # "parallel" runs local tools concurrently (falls back to sequential for
     # client/approval tools or when any tool forces sequential).

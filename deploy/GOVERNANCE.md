@@ -348,6 +348,29 @@ Two things to know before relying on it:
 - `manifests/governed.yaml` policies `calculator` on `tools:calc`, so it will deny its own
   calculator under `make dev` (which sets `FELIX_AUTH_MODE=none`). Mint a token with the
   scope — see the `felix mint-jwt` line above — rather than removing the policy.
+- **Durable runs are the exception.** A fiber records the caller's scopes and resumes with
+  them, so `spec.policies` and `execution.mode: durable` work together. The resumed run's
+  principal is `fiber`, not the person — `on_behalf_of` carries who it is for, which is what
+  keeps a `bind_principal` approval valid across a resume without an audit row claiming a human
+  took an action a worker took.
+
+  Carrying authority in durable state is bounded three ways, and the bounds are the design:
+
+  | | |
+  |---|---|
+  | Never wider | Exactly the caller's scope set. A caller with none confers none. |
+  | Never longer than the run | `expires_at`, checked before every step, on both the fiber scheduler and the Temporal activity. `hibernate_after_seconds` (300s) by default, `execution.resume_token_ttl_seconds` if set, capped at `ABSOLUTE_LIMITS["resume_token_ttl_seconds"]` (24h). |
+  | Never longer than the token | Clamped to the token's `exp` when it has one. Felix has no revocation, so `exp` is the only bound on a compromised credential and a durable run must not outlive it. |
+
+  Two things this does **not** bound. `expires_at` gates step *entry*, so a step that starts
+  just inside the horizon runs to completion — cap it with `limits.max_wall_clock_seconds`.
+  And the fiber *row* is not swept by `jobs/retention.py`, so the record of who started a run
+  outlives the run's usability; only its usability expires.
+
+  A fiber enqueued with no request context, from a different tenant than the run, or before
+  this existed, records nothing and resumes with no scopes. When it *does* carry authority,
+  `pin_compile` is forced: the manifest is re-resolved at resume, and running a rewritten
+  manifest with the original caller's scopes is exactly what a pin is for.
 
 ## Content screening targets
 
