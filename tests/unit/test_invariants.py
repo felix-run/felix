@@ -1170,3 +1170,33 @@ def test_no_provider_header_option_is_also_a_credential() -> None:
         "a header option key is exempt from redaction, so it must not carry a credential — "
         "declare it in `credential_option_names`:\n  " + "\n  ".join(offenders)
     )
+
+
+def test_every_record_usage_call_prices_by_the_wire_model() -> None:
+    """`record_usage(..., wire_model_id=...)` at every call site, not just most of them.
+
+    `model_id` is the *logical* route name and matches nothing in the catalog, so a call
+    that omits `wire_model_id` prices at the catalog default — which is now `None`, so the
+    turn accrues zero and `limits.max_cost_usd` never trips. The parameter defaults to
+    `None` precisely so old callers keep working, which means dropping it from a call site
+    is silent: deleting it from both `react.py` call sites left the whole suite green.
+
+    Every unit test for this exercises `record_usage` directly, so nothing held the eight
+    production call sites to it. This does.
+    """
+    offenders: list[str] = []
+    for root in SOURCE_ROOTS:
+        for path in _python_files(root):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                name = node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", "")
+                if name != "record_usage":
+                    continue
+                if not any(kw.arg == "wire_model_id" for kw in node.keywords):
+                    offenders.append(f"{path.relative_to(ROOT)}:{node.lineno}")
+    assert offenders == [], (
+        "record_usage must be told the wire model, or the turn prices against a logical "
+        "route id that matches no catalog entry and accrues nothing:\n  " + "\n  ".join(offenders)
+    )
