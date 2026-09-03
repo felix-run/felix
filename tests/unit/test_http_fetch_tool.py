@@ -521,9 +521,19 @@ def test_unconfined_egress_is_announced_at_bind_time(caplog: pytest.LogCaptureFi
 
 
 def test_path_prefix_is_advertised_to_the_model() -> None:
-    """A confined tool whose confinement the model cannot see just fails repeatedly."""
-    (tool,) = tools_from_http_fetch_refs([_ref(path_prefix="https://docs.felix.run/")])
-    assert "https://docs.felix.run/" in tool.description
+    """A confined tool whose confinement the model cannot see just fails repeatedly.
+
+    Asserted by equality on the whole description rather than by `"<url>" in description`.
+    That is the stronger assertion — it also pins that the base sentence survives — and it
+    avoids `py/incomplete-url-substring-sanitization`, which pattern-matches any URL literal
+    on the left of an `in` and reads this as a sanitiser. It is not one; nothing here filters
+    a URL, and the real check is `_within_prefix`, which parses rather than matches text.
+    """
+    prefix = "https://docs.felix.run/"
+    (tool,) = tools_from_http_fetch_refs([_ref(path_prefix=prefix)])
+    assert tool.description == (
+        f"Fetch a URL over HTTP(S) and return its contents. Only URLs starting with {prefix} are permitted."
+    )
 
 
 # --- schema bounds --------------------------------------------------------------
