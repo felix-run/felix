@@ -130,8 +130,10 @@ grep -rnE '^(version|appVersion):|^  tag:' deploy/helm/felix/Chart.yaml deploy/h
    `awk` rather than `sed -n '/.../,/## \[/p'`: a `sed` range is inclusive of its end, so that
    version published the *next* release's heading as the last line of the body.
 
-9. **Update `docs/ROADMAP.md`** — fold the shipped items into **Shipped** and refresh the
-   *Last reviewed* line.
+9. **Update `docs/ROADMAP.md`** — mark the shipped items `[x]`, refresh the *Last reviewed* line,
+   and fold the completed work into [`docs/HISTORY.md`](HISTORY.md) as a wave entry. The roadmap
+   no longer carries a **Shipped** section; a wave entry that lists only wins is not worth
+   writing, so record what the wave taught alongside what it delivered.
 
 ## After the tag
 

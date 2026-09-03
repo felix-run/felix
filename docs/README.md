@@ -13,6 +13,7 @@ site at **[docs.felix.run](https://docs.felix.run)**, authored in the separate
 | File | Purpose |
 |---|---|
 | [`ROADMAP.md`](ROADMAP.md) | Living tracker of what to build next; status updated in place |
+| [`HISTORY.md`](HISTORY.md) | Wave-by-wave record of what shipped and what each wave taught, including the conclusions that did not survive being measured |
 | [`RELEASING.md`](RELEASING.md) | Cutting a release: version, changelog, tag, and what CI does |
 | [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) | Local failure modes and the actual fix for each |
 | [`UPGRADING.md`](UPGRADING.md) | Moving a deployment between versions: migrations, the settings that must move with them, verification, rollback |
