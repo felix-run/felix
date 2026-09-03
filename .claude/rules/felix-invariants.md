@@ -79,3 +79,21 @@ line, re-validate it against *that* grammar's separators. Details: the **securit
   the Postgres write.
 - **`felix-scheduler` runs alongside `felix-worker`**, or no periodic job fires.
 - Commit and push only when the user asks; branch first. Details: the **branch-pr-workflow** skill.
+
+## What the work is for
+
+Two rules on the *balance* of work, added 2026-09-02 after an audit found that roughly forty
+consecutive commits were remediation of defects found by reading the tree rather than by running
+it. Both are budget rules, not quality rules — the self-audit work was good, and there was too
+much of it relative to everything else.
+
+- **A control may not be added for a capability that does not exist.** `manifests/builder.py`
+  reached 1,401 lines governing a built-in tool registry of `calculator` plus three skill stubs
+  and four file tools, while `support.yaml` — the support agent — shipped with
+  `tools: [calculator, list_skills]` and no way to look anything up. Governance is the best-built
+  part of this harness and it was guarding almost nothing. Before hardening a wrapper, check that
+  something reaches it.
+- **One hardening / invariant / audit item per cycle; everything else adds user-visible
+  capability.** A defect found in a *real run* is exempt — that is the feedback loop working, and
+  it is the loop this rule exists to protect. A defect found by re-reading a file you already
+  audited is the thing being budgeted. `docs/ROADMAP.md` carries the current cycle's items.
