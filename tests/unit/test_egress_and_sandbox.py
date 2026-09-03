@@ -558,16 +558,26 @@ def test_a_guarded_client_cannot_be_asked_to_proxy() -> None:
         safe_async_client(timeout=1.0, proxy="http://p:3128")
 
 
-def test_a_guarded_client_mounts_nothing_unguarded() -> None:
+def test_a_guarded_client_mounts_nothing_unguarded(monkeypatch: pytest.MonkeyPatch) -> None:
     """Supplying a transport also disables httpx's environment proxies — assert both.
 
     `_mounts` is consulted before `_transport`, so a non-empty mounts map is an unguarded
     path regardless of what the transport does.
+
+    The proxy variables are *set* here rather than assumed absent. Without them this asserted
+    `{} == {}` on any developer machine that happens to have no proxy configured, so it would
+    have stayed green even if httpx started reading the environment — which is the whole
+    failure it exists to catch. httpx gates env proxies on `transport is None`, a behaviour of
+    a pinned dependency rather than a promise to us, so this is the test that fails on the
+    upgrade that changes it.
     """
     from felix.security.egress import GuardedAsyncTransport, safe_async_client
 
+    for var in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy"):
+        monkeypatch.setenv(var, "http://127.0.0.1:9999")
+
     client = safe_async_client(timeout=1.0)
-    assert client._mounts == {}
+    assert client._mounts == {}, f"an ambient proxy reached the client: {client._mounts}"
     assert isinstance(client._transport, GuardedAsyncTransport)
 
 

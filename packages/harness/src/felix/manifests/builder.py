@@ -320,6 +320,9 @@ _UNTRUSTED_SOURCE_PREFIXES = (
     "client",
     "sandbox",
     "container",
+    # A fetched page is attacker-controlled input in the same way a browser page is: the
+    # model chose the URL, and whatever answers gets to write into the transcript.
+    "http",
 )
 
 
@@ -1218,6 +1221,18 @@ async def build_agent(
                 )
             except Exception:
                 logger.warning("browser tool binding failed", exc_info=True)
+
+        # Fetch tools: the model names the URL, the egress guard pins the address.
+        if m.spec.http_tools:
+            try:
+                from felix.tools.http_fetch import tools_from_http_fetch_refs
+
+                _append_unique_tools(
+                    resolved,
+                    tools_from_http_fetch_refs(list(m.spec.http_tools), allow_http=allow_http),
+                )
+            except Exception:
+                logger.warning("http fetch tool binding failed", exc_info=True)
 
         # Client-executed tools (browser/desktop float posts results back).
         if m.spec.client_tools:
