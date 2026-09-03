@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 import time
 import uuid
@@ -19,9 +21,29 @@ now_ms = lambda: int(time.time() * 1000)
 
 _memory_fibers: dict[tuple[str, str], dict[str, Any]] = {}
 
+
+def reset_memory_fibers() -> None:
+    """Test helper — clear the in-memory fiber store.
+
+    Every other `memory://` twin has one and `tests/conftest.py` calls it. This did not, so
+    fibers leaked between tests: `_claim_due_memory` returns *every* due row, so a test that
+    asserted on how many fibers came back passed alone and failed in the suite.
+    """
+    _memory_fibers.clear()
+
+
 # How long a claim is held. Longer than any realistic single step, short enough that a
 # worker killed mid-step frees the fiber within a few scheduler ticks.
 FIBER_LEASE_MS = 5 * 60 * 1000
+# The lease is renewed while a step is in flight, so it bounds "how long after a worker dies
+# is its fiber stranded", not "how long may a step take". Those were the same number, and it
+# was the wrong one: `FIBER_LEASE_MS` was exactly `approvals/interrupt.py`'s 300s default
+# wait, and an approval rule may set `ttl_seconds` up to 3600. A run parked on an approval
+# therefore outlived its own claim and was re-claimed by the next sweep — up to twelve times —
+# re-running an invoke whose tool side effects had already happened, and then losing the write
+# to the CAS check on `version`. Renewing at a third of the lease leaves two missed renewals
+# of slack before another worker may take over.
+FIBER_LEASE_RENEW_MS = FIBER_LEASE_MS // 3
 # Bound the sweep: an unbounded SELECT loads a whole backlog into memory every minute.
 FIBER_BATCH = 50
 
@@ -216,11 +238,6 @@ async def _run_fiber_step(settings: Settings, row: dict[str, Any]) -> dict[str, 
                 tenant_id = row["tenant_id"]
                 auth = AuthContext(tenant_id=tenant_id, principal_sub="fiber", anonymous=False)
                 thread = thread_id or f"{tenant_id}:fiber:{row['id']}"
-                resolved = await resolve_tenant_manifest(settings, tenant_id, manifest_id, thread_id=thread)
-                pinned = state.get("pin") if isinstance(state.get("pin"), dict) else None
-                if pinned:
-                    assert_pin_matches(pinned, resolved.manifest, version=resolved.version)
-                await prepare_tenant_invoke(settings, resolved=resolved, auth=auth, thread_id=thread)
                 req_ctx = RequestContext(
                     settings=settings,
                     auth=auth,
@@ -234,7 +251,23 @@ async def _run_fiber_step(settings: Settings, row: dict[str, Any]) -> dict[str, 
                     ]
                 else:
                     messages = [ChatMessage(role="user", content=prompt)]
+                # Resolution happens *inside* the context, because that is what sets the
+                # `app.tenant_id` GUC. The worker installs no ambient RequestContext, so with
+                # these three calls above the `async with` they ran with no tenant: under
+                # `FELIX_DATABASE_RLS=true` the FORCE'd policy filtered every row,
+                # `get_active` returned None, and `_read_tenant_postgres` fell through to the
+                # *bundled* manifest of the same name. Operators are told to fork `governed`,
+                # so a durable run could silently execute a different, ungoverned manifest —
+                # and `ensure_thread_pin` was equally blind, so the drift check that exists to
+                # catch exactly that could not see the stored pin either.
                 async with async_run_with_context(req_ctx):
+                    resolved = await resolve_tenant_manifest(
+                        settings, tenant_id, manifest_id, thread_id=thread
+                    )
+                    pinned = state.get("pin") if isinstance(state.get("pin"), dict) else None
+                    if pinned:
+                        assert_pin_matches(pinned, resolved.manifest, version=resolved.version)
+                    await prepare_tenant_invoke(settings, resolved=resolved, auth=auth, thread_id=thread)
                     agent = await build_tenant_agent(
                         settings,
                         manifest=resolved.manifest,
@@ -358,12 +391,62 @@ async def resume_due_fibers(settings: Settings) -> int:
     ran = 0
     for row in due:
         try:
-            await _run_fiber_step(settings, row)
+            await _step_with_lease(settings, row)
         except Exception:
             logger.warning("fiber step failed id=%s", row.get("id"), exc_info=True)
             await _release_fiber(settings, row)
         ran += 1
     return ran
+
+
+async def _renew_lease(settings: Settings, row: dict[str, Any]) -> None:
+    """Push this worker's claim out by another lease window."""
+    until = now_ms() + FIBER_LEASE_MS
+    owner = str(getattr(settings, "replica_id", "local") or "local")
+    if _use_memory(settings):
+        stored = _memory_fibers.get((row["tenant_id"], row["id"]))
+        # Only if we still hold it: a lease we already lost must not be stolen back mid-step.
+        if stored is not None and stored.get("lease_owner") == owner:
+            stored["lease_until"] = until
+        return
+    from sqlalchemy import update
+
+    from felix.db.session import rls_bypass
+
+    with rls_bypass():
+        factory = get_session_factory(settings=settings)
+        async with factory() as db:
+            await db.execute(
+                update(Fiber)
+                .where(
+                    Fiber.tenant_id == row["tenant_id"],
+                    Fiber.id == row["id"],
+                    Fiber.lease_owner == owner,
+                )
+                .values(lease_until=until)
+            )
+            await db.commit()
+
+
+async def _step_with_lease(settings: Settings, row: dict[str, Any]) -> None:
+    """Run one step, renewing the claim for as long as it is actually running."""
+
+    async def _heartbeat() -> None:
+        while True:
+            await asyncio.sleep(FIBER_LEASE_RENEW_MS / 1000)
+            try:
+                await _renew_lease(settings, row)
+            except Exception:  # pragma: no cover - a failed renewal just lets the lease lapse
+                logger.warning("fiber lease renewal failed id=%s", row.get("id"), exc_info=True)
+                return
+
+    beat = asyncio.create_task(_heartbeat())
+    try:
+        await _run_fiber_step(settings, row)
+    finally:
+        beat.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await beat
 
 
 async def _release_fiber(settings: Settings, row: dict[str, Any]) -> None:

@@ -477,6 +477,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   path, since capture runs over turns containing client-tool output. A comment in that manifest
   claimed recalled memories were already screened; they were not, and now they are.
 
+- **A durable run parked on an approval was re-claimed and re-executed.** `FIBER_LEASE_MS` was
+  `5 * 60 * 1000` and `approvals/interrupt.py:DEFAULT_TIMEOUT_SECONDS` is `300.0` — the same
+  number, arrived at independently. An approval rule may set `ttl_seconds` up to 3600, so a run
+  waiting on a decision outlived its own claim and the next sweep re-claimed it, re-running an
+  invoke whose tool side effects had already happened and then losing the write to the `version`
+  CAS. Up to twelve times for one model tool call.
+
+  The lease is now renewed while a step is in flight, at a third of its length. That makes it
+  bound the right thing: how long after a worker dies its fiber stays stranded, not how long a
+  step may take. A renewal is refused if the lease has already been taken by another replica, so
+  a worker cannot steal its claim back mid-step.
+
+- **Under `FELIX_DATABASE_RLS=true`, a durable resume could run the wrong manifest.**
+  `resolve_tenant_manifest`, `assert_pin_matches` and `prepare_tenant_invoke` ran *above* the
+  `async_run_with_context` block that sets the `app.tenant_id` GUC, and the worker installs no
+  ambient context. So the FORCE'd policy filtered every row, `get_active` returned `None`, and
+  `_read_tenant_postgres` fell through to the **bundled** manifest of the same name — and
+  operators are told to fork `governed`. `ensure_thread_pin` was equally blind, so the drift
+  check that exists to catch exactly this could not see the stored pin either. All three now run
+  inside the context.
+
+- `felix.durability.fibers.reset_memory_fibers()`, called by `tests/conftest.py`. The in-memory
+  fiber store was the one `memory://` twin with no reset, so fibers leaked between tests and any
+  assertion on how many came back passed alone and failed in the suite.
+
 ### Changed
 
 - **Removed `args_schema` from `spec.sandboxes`, `spec.containers` and

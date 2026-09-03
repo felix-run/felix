@@ -58,14 +58,17 @@ def _scrub_ambient_git_environment():
 @pytest.fixture(autouse=True)
 def _isolate_process_global_stores():
     """Clear the in-memory manifest store and the resolver caches around every test."""
+    from felix.durability.fibers import reset_memory_fibers
     from felix.manifests import store as manifest_store
     from felix.manifests.resolver import clear_resolver_cache
 
     manifest_store.reset_memory_store()
     clear_resolver_cache()
+    reset_memory_fibers()
     yield
     manifest_store.reset_memory_store()
     clear_resolver_cache()
+    reset_memory_fibers()
 
 
 @pytest.fixture(autouse=True)
