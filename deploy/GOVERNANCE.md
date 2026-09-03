@@ -153,6 +153,7 @@ validate.
 | `spec.containers[].timeout_ms` | 30s |
 | `spec.sandboxes[].timeout_ms` | 30s |
 | `spec.browser_tools[].timeout_ms` | 15s, and it bounds `page.goto` only |
+| `spec.http_tools[].timeout_ms` | 15s, and it is a **whole-call deadline** — the redirect chain and every read together, not each read separately |
 | `spec.client_tools[].timeout_seconds` | 120s |
 
 Connect is pinned separately at 10s on every outbound client and does **not** scale with
@@ -178,17 +179,47 @@ because an explicit transport disables httpx's environment proxies, `HTTP_PROXY`
 `HTTPS_PROXY` do **not** apply to these calls. A deployment whose egress containment is a
 proxy allowlist needs to know that.
 
+**Two outbound paths take the URL from the *model* rather than from a manifest** —
+`spec.browser_tools` and `spec.http_tools` — which makes them the highest-value rebinding
+targets in the harness. They are pinned differently because they dial differently.
+
+`spec.http_tools` goes through `safe_async_client` like every other outbound call, so it
+inherits the pin for free, on the first request and on each redirect hop: the fetch tool
+drives redirects by hand rather than letting httpx follow them, so every hop re-enters the
+guarded transport and is re-checked against the tool's `path_prefix` as well. httpx's own
+`follow_redirects` would have re-validated egress but not the prefix, and one `302` from an
+allowed page is enough to leave it.
+
 **The browser pins its navigation host too.** Chromium resolves independently, so the
-guard's lookup and Chromium's would otherwise be two lookups — and this is the one outbound
-path where the URL comes from the *model* rather than a manifest, which makes it the
-highest-value rebinding target in the harness. The browser is launched with
+guard's lookup and Chromium's would otherwise be two lookups. The browser is launched with
 `--host-resolver-rules=MAP <host> <validated address>`, so the name it navigates to can only
 reach the address the guard approved. A hostname is matched against a strict pattern before
 it reaches that flag: the flag takes a comma-separated list, so a host containing a comma
 could otherwise append rules of its own.
 
-**What is still advisory:** cross-host subresources and redirects. Those keep resolving
-normally and are checked per request but not pinned, because denying them outright breaks
+**A fetch tool must declare a boundary.** `spec.http_tools` is the one ref where the model
+chooses the destination, so a manifest that says nothing must not get the whole public
+internet: an entry needs either a `path_prefix` confining it, or an explicit
+`allow_any_host: true`, and validation fails otherwise. `allow_any_host` is logged at bind
+time — a review question, not a silent default. What to check when reviewing one:
+
+- **Is `path_prefix` set, and to a whole origin you meant?** It is validated as an absolute
+  http(s) URL and normalised to end in `/`. That slash is load-bearing: without it
+  `https://docs.felix.run` also matches `https://docs.felix.run.evil.com/`. Matching is on
+  parsed scheme, host and port, not on text, and it is re-applied to every redirect hop.
+- **Is `content_screening` on?** A fetched page is attacker-controlled input, so the tool's
+  transport is untrusted and screening applies — but only if enabled. Compiling a manifest
+  that binds one without it logs `untrusted tool(s) … unscreened`.
+- **Is `max_bytes` sized for your context window?** The far end chooses the length; the body
+  is streamed and truncated, counted **after** decompression, so a gzip bomb is capped at
+  what the model would actually see.
+
+A fetch tool is **not** replay-safe. A resumed run will not re-issue it, because the model
+names the endpoint and a GET that mutates is ordinary on the open web.
+
+**What is still advisory:** cross-host subresources and redirects *in the browser tool*.
+Those keep resolving normally and are checked per request but not pinned, because denying
+them outright breaks
 any page that loads assets from a CDN. A page that loads a script from a host which answers
 the check and the load differently can still reach an address the guard would have refused.
 Closing that means launching with `MAP * ~NOTFOUND` as well — verified to work, and to block
