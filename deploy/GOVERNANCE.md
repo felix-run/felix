@@ -161,8 +161,50 @@ also let an unreachable host park a socket. `FELIX_MODEL_TIMEOUT_SECONDS` (defau
 bounds each model-provider request the same way.
 
 
-Every manifest-supplied or model-supplied URL is checked before it is dialled. The guard
-**resolves the hostname** and rejects the request if *any* returned address is loopback,
+Every manifest-supplied or model-supplied URL is checked before it is dialled.
+
+**The guard is enforcing, not advisory.** Outbound HTTP goes through a transport that
+resolves the hostname once, validates every returned address, and then connects to one of
+the addresses it validated — so the address that was checked is the address that is used.
+Without that pin the check and the connection are two independent lookups, and a hostname
+that resolves differently the second time (DNS rebinding, TTL 0) or a nameserver that
+answers the client while starving the checker gets through. TLS is unaffected: the
+certificate is still verified against the hostname the caller asked for.
+
+A lookup that fails or times out refuses the dial. That is safe precisely because this is
+the connection: there is no second lookup left to fail. A proxy or unix socket is refused
+rather than ignored, because both choose a destination the guard never validates — and
+because an explicit transport disables httpx's environment proxies, `HTTP_PROXY` and
+`HTTPS_PROXY` do **not** apply to these calls. A deployment whose egress containment is a
+proxy allowlist needs to know that.
+
+**The browser pins its navigation host too.** Chromium resolves independently, so the
+guard's lookup and Chromium's would otherwise be two lookups — and this is the one outbound
+path where the URL comes from the *model* rather than a manifest, which makes it the
+highest-value rebinding target in the harness. The browser is launched with
+`--host-resolver-rules=MAP <host> <validated address>`, so the name it navigates to can only
+reach the address the guard approved. A hostname is matched against a strict pattern before
+it reaches that flag: the flag takes a comma-separated list, so a host containing a comma
+could otherwise append rules of its own.
+
+**What is still advisory:** cross-host subresources and redirects. Those keep resolving
+normally and are checked per request but not pinned, because denying them outright breaks
+any page that loads assets from a CDN. A page that loads a script from a host which answers
+the check and the load differently can still reach an address the guard would have refused.
+Closing that means launching with `MAP * ~NOTFOUND` as well — verified to work, and to block
+every cross-host subresource — or running the browser behind an egress allowlist.
+
+**Where the check runs matters.** The syntactic half — scheme, `http` outside development,
+internal names and suffixes, and IP literals including the decimal form (`http://2130706433/`
+is 127.0.0.1) — runs when a manifest is parsed. The half that **resolves the hostname** runs
+at dial time, off the event loop. Resolving at parse time was both a liveness problem and a
+security gap: it put a blocking `getaddrinfo` inside a pydantic validator on the API event
+loop, once per ref on every manifest read and write, and a name validated at write time can
+resolve somewhere else by the time it is dialled. `felix validate-manifest` performs the
+resolving check too, so an author still learns about a blocked host without a request
+waiting on it (`--no-resolve-egress` for an air-gapped runner).
+
+That resolving check rejects the request if *any* returned address is loopback,
 link-local (cloud metadata), private, carrier-grade NAT, reserved, multicast, or
 unspecified — including IPv4-mapped IPv6 forms and decimal-integer hosts. Internal names
 and suffixes (`.svc`, `.cluster.local`, `.internal`, `metadata.google.internal`,
@@ -284,7 +326,106 @@ $1000). Declared values may only tighten those; the schema rejects anything larg
 
 A tool invoked with no request context is **denied** rather than run unbudgeted.
 
+## Policy semantics
+
+`spec.policies` gates named tools on the caller's scopes. Every rule matching a tool must
+pass; the first missing scope denies the call, and the denial names it.
+
+| Field | Behaviour |
+|-------|-----------|
+| `tools` | The tools this rule gates, matched by glob (`fnmatch`, case-sensitive): `calculator`, `github__*`, `*__search`, `*`. Applies equally to `spec.approvals`, judge `target_tools`, `content_screening.tools` and `command_screening.target_tools`. A pattern with no `*` or `?` is a literal name, so a tool whose name contains `[...]` still matches itself. A pattern matching no bound tool is logged and counted (`felix_rule_targets_nothing`) rather than refused, since the bound set varies — an MCP server whose discovery failed binds nothing. A rule naming no tools at all gates nothing and is rejected: it would otherwise satisfy the `soc2` profile's "policies **or** approvals **or** limits" requirement while enforcing nothing. |
+| `required_scopes` | Scopes the caller must hold. **Required**: a rule that lists tools but no scopes permits every caller while appearing to govern them, so it is rejected rather than accepted as a no-op. |
+
+Two things to know before relying on it:
+
+- **A run with no scopes is denied, not permitted.** That includes any request under
+  `auth_mode=none`, and it includes durable fibers, scheduled jobs and `felix eval`, whose
+  contexts carry an empty scope set. `spec.policies` and `execution.mode: durable` are
+  therefore not usable together today — every policied tool denies.
+- Policy scopes are matched literally. The `admin` / `*` bypass and the `x:write` implies
+  `x:read` rule that `require_mgmt_scopes` applies to the management API deliberately do
+  **not** apply here.
+- `manifests/governed.yaml` policies `calculator` on `tools:calc`, so it will deny its own
+  calculator under `make dev` (which sets `FELIX_AUTH_MODE=none`). Mint a token with the
+  scope — see the `felix mint-jwt` line above — rather than removing the policy.
+- **Durable runs are the exception.** A fiber records the caller's scopes and resumes with
+  them, so `spec.policies` and `execution.mode: durable` work together. The resumed run's
+  principal is `fiber`, not the person — `on_behalf_of` carries who it is for, which is what
+  keeps a `bind_principal` approval valid across a resume without an audit row claiming a human
+  took an action a worker took.
+
+  Carrying authority in durable state is bounded three ways, and the bounds are the design:
+
+  | | |
+  |---|---|
+  | Never wider | Exactly the caller's scope set. A caller with none confers none. |
+  | Never longer than the run | `expires_at`, checked before every step, on both the fiber scheduler and the Temporal activity. `hibernate_after_seconds` (300s) by default, `execution.resume_token_ttl_seconds` if set, capped at `ABSOLUTE_LIMITS["resume_token_ttl_seconds"]` (24h). |
+  | Never longer than the token | Clamped to the token's `exp` when it has one. Felix has no revocation, so `exp` is the only bound on a compromised credential and a durable run must not outlive it. |
+
+  Two things this does **not** bound. `expires_at` gates step *entry*, so a step that starts
+  just inside the horizon runs to completion — cap it with `limits.max_wall_clock_seconds`.
+  And the fiber *row* is not swept by `jobs/retention.py`, so the record of who started a run
+  outlives the run's usability; only its usability expires.
+
+  A fiber enqueued with no request context, from a different tenant than the run, or before
+  this existed, records nothing and resumes with no scopes. When it *does* carry authority,
+  `pin_compile` is forced: the manifest is re-resolved at resume, and running a rewritten
+  manifest with the original caller's scopes is exactly what a pin is for.
+
+## Content screening targets
+
+`content_screening.tools` is **additive**. Screening covers every untrusted tool — anything
+whose transport is not `local`, plus anything whose `source` starts with `mcp`, `peer`, `a2a`,
+`queue`, `browser`, `client`, `sandbox` or `container` — and, in addition, whatever `tools`
+names. Naming a trusted local tool extends screening to it;
+it does not narrow screening away from anything.
+
+There is deliberately no way to turn screening off for an untrusted tool while leaving it on
+elsewhere. The two used to be alternatives, so a non-empty `tools` list *replaced* the
+untrusted-tool default: naming one local tool silently unscreened every MCP, peer, browser,
+sandbox, container and queue tool while the manifest still read as a working control. Turning
+screening off for untrusted output is the thing screening exists to prevent, so the narrowing
+was removed rather than renamed. On cost: neither `content_screening.model` nor `on_flag` is a per-tool lever, so this removes
+the only one there was. It is free in the default configuration — both bundled manifests that
+enable screening leave `model` empty, and the marker path is a substring scan — and it costs a
+model call per untrusted tool per turn where `model` *is* set. If that bites, the shape to add
+is a knob orthogonal to trust (which tools get the *expensive* screener, with marker screening
+unconditional), not a way to exempt an untrusted tool from screening altogether.
+
+Two things to re-measure if you set `model` and previously narrowed `tools`:
+
+- **Availability.** `on_flag: block` plus a screener outage now denies output from every
+  untrusted tool rather than the named subset. Right direction, wider radius — watch
+  `felix_content_screening{action=unavailable}`.
+- **False positives.** The marker scan is a substring match, `"system prompt"` included, so a
+  docs server, a code-search tool or an issue tracker quoting a jailbreak can now be
+  quarantined where it was exempt. Watch `{action=quarantine}`.
+
+### Screening is opt-in, and says so when it is off
+
+`content_screening.enabled` defaults to `false`, and of the governance frameworks only
+`eu_ai_act` requires it — `soc2` does not, and its data-governance check is satisfiable by
+guardrails instead. A manifest that binds an MCP server, an A2A peer, a browser,
+sandbox, container, queue or client tool without enabling it is valid, and its untrusted output
+reaches the model with the whole governed toolset behind it. That case is now named at compile
+with a WARNING and `felix_untrusted_tools_unscreened`.
+
+A warning rather than a changed default: turning screening on for every existing deployment
+binding an MCP server changes cost and behaviour, which is not a thing to do silently. Enabling it without a `model` is the cheap option — an anchored regex scan, no model call — and
+is what `manifests/cowork.yaml` does for its client tools.
+
+The warning reports what **compiled**, not what was declared: every outbound binder catches its
+own failure, so an unreachable MCP server binds zero tools and produces no warning. In staging,
+CI and `felix validate-manifest` that means a manifest declaring five MCP servers can be silent.
+
 ## Approval semantics
+
+**Precedence.** Approvals is the only control that selects *one* rule — policies and judges
+apply every match, so for them more matches only tighten. When several approval rules match a
+tool, a rule naming it **literally** wins over one matching by pattern, and among equals the
+last declared wins. That makes globbing non-weakening: a pattern can only gate a tool nothing
+gated before, and never displaces a stricter literal rule.
+
 
 | Field | Behaviour |
 |-------|-----------|
@@ -292,6 +433,9 @@ A tool invoked with no request context is **denied** rather than run unbudgeted.
 | `one_shot` | The grant is marked consumed on use; a replay of the same call needs a new approval. |
 | `bind_principal` | Only the principal who was approved may use the grant. Without it, any principal in the tenant can reuse it. |
 | `allow_unattended` | EU AI Act high-risk manifests must set this to `false`. |
+
+`spec.policies` and `spec.approvals` are capped at 64 rules each: matching is O(rules × tools)
+and a manifest is compiled per request.
 
 Approvals are matched on `(tenant, manifest, tool, sha256(args))` and stored in Postgres
 — never in model-visible state, so the model cannot forge one. Every failure path

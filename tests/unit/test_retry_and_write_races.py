@@ -14,8 +14,9 @@ import asyncio
 from pathlib import Path
 
 import pytest
-from felix.patterns.model import _is_exhausted_quota, _post_with_retry
 from felix.tools.workspace import _write_lock, resolve_under_root
+from felix_ai.wire.transport import _is_exhausted_quota
+from felix_ai.wire.transport import post_with_retry as _post_with_retry
 
 
 class _Resp:

@@ -86,3 +86,39 @@ def test_doctor_reports_plugins_and_patterns() -> None:
     assert "plugins" in result.output
     assert "patterns" in result.output
     assert "react" in result.output
+
+
+def test_validate_manifest_resolves_outbound_hosts(tmp_path, monkeypatch) -> None:
+    """Authoring feedback moved here when the schema validators stopped resolving.
+
+    The validators had to stop: a blocking `getaddrinfo` inside a pydantic validator ran on
+    the API event loop for every ref on every read and write. But an author still needs to
+    learn that a URL is blocked, and a CLI is the right place to spend a DNS lookup — no
+    request is waiting on it.
+    """
+    from felix.manifests.loader import load_manifest_file
+    from felix.security import ssrf
+    from felix_cli.main import _assert_outbound_hosts_resolve
+
+    path = tmp_path / "m.yaml"
+    path.write_text(
+        "apiVersion: felix/v1\n"
+        "kind: Agent\n"
+        "metadata:\n  name: m\n"
+        "spec:\n"
+        "  pattern: react\n"
+        "  mcp_servers:\n"
+        "    - name: evil\n      url: https://rebinds.example.com/mcp\n"
+    )
+    manifest = load_manifest_file(path)
+
+    class _Settings:
+        environment = "production"
+        allow_insecure = False
+
+    monkeypatch.setattr(ssrf, "resolve_host", lambda host: ["10.0.0.5"])
+    with pytest.raises(ValueError, match="blocked address"):
+        _assert_outbound_hosts_resolve(manifest, _Settings())
+
+    monkeypatch.setattr(ssrf, "resolve_host", lambda host: ["93.184.216.34"])
+    _assert_outbound_hosts_resolve(manifest, _Settings())

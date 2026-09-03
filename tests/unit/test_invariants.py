@@ -17,7 +17,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 HARNESS = ROOT / "packages" / "harness" / "src" / "felix"
+AI = ROOT / "packages" / "ai" / "src" / "felix_ai"
 SOURCE_ROOTS = [
+    ROOT / "packages" / "ai" / "src",
     ROOT / "packages" / "harness" / "src",
     ROOT / "packages" / "cli" / "src",
     ROOT / "apps" / "api" / "src",
@@ -78,6 +80,14 @@ def test_an_extra_only_module_is_never_imported_eagerly() -> None:
     module that does it at *its* module scope. The moment something does, a lean
     install breaks at import time — which is exactly what the rule below exists to
     prevent, so the exception has to carry its own guard.
+
+    Every import form is checked, because an earlier version read only `ImportFrom.module`
+    and so saw `from felix.durability._temporal_workflow import X` while missing
+    `from felix.durability import _temporal_workflow` — where the module is named in
+    `names`, not in `module`. That is the more idiomatic of the two, and the relative form
+    a sibling inside `durability/` would naturally write (`from . import _temporal_workflow`)
+    has no `module` at all. Found by mutation-testing this invariant rather than by a
+    failure: it was green against the violation it exists to catch.
     """
     targets = {Path(rel).stem for rel in EXTRA_ONLY_MODULES}
     offenders: list[str] = []
@@ -87,13 +97,18 @@ def test_an_extra_only_module_is_never_imported_eagerly() -> None:
                 continue
             tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
             for node in tree.body:  # module scope only
-                mod = ""
-                if isinstance(node, ast.ImportFrom) and node.module:
-                    mod = node.module
-                elif isinstance(node, ast.Import):
-                    mod = ",".join(a.name for a in node.names)
-                if any(t in mod.split(".") or t in mod.split(",") for t in targets):
-                    offenders.append(f"{path.relative_to(ROOT)}:{node.lineno} imports {mod}")
+                # Every dotted segment the statement names, from wherever it names it.
+                segments: set[str] = set()
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        segments.update(alias.name.split("."))
+                elif isinstance(node, ast.ImportFrom):
+                    segments.update((node.module or "").split("."))
+                    segments.update(alias.name for alias in node.names)
+                hit = sorted(segments & targets)
+                if hit:
+                    rel = path.relative_to(ROOT)
+                    offenders.append(f"{rel}:{node.lineno} imports {', '.join(hit)}")
     assert offenders == [], (
         "An extra-only module must be imported inside the function that needs it, or a "
         "lean install fails at import:\n  " + "\n  ".join(offenders)
@@ -820,20 +835,15 @@ def test_no_tenant_scoped_accessor_defaults_to_the_default_tenant() -> None:
 def test_no_outbound_http_client_hardcodes_its_timeout() -> None:
     """Every outbound httpx client takes a timeout something can change.
 
-    Six client sites in `patterns/model.py` shared a hardcoded `timeout=120.0`, so no
-    deployment could raise the ceiling without editing the harness — and a generation that
-    legitimately needed longer failed the whole run.
+    Six client sites in the model layer shared a hardcoded `timeout=120.0`, so no deployment
+    could raise the ceiling without editing the harness — and a generation that legitimately
+    needed longer failed the whole run.
 
-    The first version of this check only matched `timeout=<Constant>`, which made it
-    vacuous: the same commit that added files to it moved every literal inside
-    `httpx.Timeout(...)`, an `ast.Call`, so nothing it named could trigger it. It now
-    resolves the value — a bare constant, a module-level constant by name, an all-constant
-    `httpx.Timeout(...)`, or no `timeout=` at all (httpx then applies its own silent 5s).
-
-    The file set is discovered rather than listed, so a new outbound client is covered on
-    the day it is written and an exemption has to be argued for in `_EXEMPT` below.
+    The check resolves the value rather than pattern-matching it: a bare constant, a
+    module-level constant by name, an all-constant `httpx.Timeout(...)`, or a missing
+    `timeout=` where httpx applies its own silent 5s. An earlier version matched only
+    `timeout=<Constant>` and was vacuous, because every literal lived inside `httpx.Timeout`.
     """
-    # Reason required. A bare hardcode with no entry here fails the build.
     exempt = {
         "auth/jwt.py": "JWKS fetch is a fixed 5s by design; not a per-request budget",
         "sdk.py": "client library — the caller supplies self.timeout",
@@ -861,36 +871,332 @@ def test_no_outbound_http_client_hardcodes_its_timeout() -> None:
                 return bool(args) and all(_is_hardcoded(a, consts) for a in args)
         return False
 
-    harness = ROOT / "packages/harness/src/felix"
     offenders: list[str] = []
-    for path in sorted(harness.rglob("*.py")):
-        rel = str(path.relative_to(harness))
-        if any(rel.endswith(k) for k in exempt):
-            continue
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        consts = _module_constants(tree)
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
+    for root in SOURCE_ROOTS:
+        for path in _python_files(root):
+            rel = str(path.relative_to(ROOT))
+            if any(rel.endswith(k) for k in exempt):
                 continue
-            func = node.func
-            # httpx specifically: a bare `Client(...)` is also google.cloud.storage's.
-            if isinstance(func, ast.Attribute):
-                httpx_client = (
-                    isinstance(func.value, ast.Name)
-                    and func.value.id == "httpx"
-                    and func.attr in {"AsyncClient", "Client"}
-                )
-            else:
-                httpx_client = getattr(func, "id", "") == "AsyncClient"
-            if not httpx_client:
-                continue
-            kw = next((k for k in node.keywords if k.arg == "timeout"), None)
-            if kw is None:
-                offenders.append(f"{rel}:{node.lineno} no timeout= (httpx defaults to 5s)")
-            elif _is_hardcoded(kw.value, consts):
-                offenders.append(f"{rel}:{node.lineno} hardcoded timeout")
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            consts = _module_constants(tree)
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                if isinstance(func, ast.Attribute):
+                    is_client = (
+                        isinstance(func.value, ast.Name)
+                        and func.value.id == "httpx"
+                        and func.attr in {"AsyncClient", "Client"}
+                    )
+                else:
+                    is_client = getattr(func, "id", "") == "AsyncClient"
+                if not is_client:
+                    continue
+                kw = next((k for k in node.keywords if k.arg == "timeout"), None)
+                if kw is None:
+                    offenders.append(f"{rel}:{node.lineno} no timeout= (httpx defaults to 5s)")
+                elif _is_hardcoded(kw.value, consts):
+                    offenders.append(f"{rel}:{node.lineno} hardcoded timeout")
 
     assert offenders == [], (
         "an outbound client hardcodes its timeout; read it from Settings or a per-ref field "
         f"so an operator can raise it, or add it to `exempt` with a reason: {offenders}"
+    )
+
+
+def test_outbound_clients_go_through_the_egress_guard() -> None:
+    """A raw `httpx.AsyncClient` reaching a manifest- or model-supplied URL is unguarded.
+
+    `felix.security.egress.safe_async_client` pins each connection to an address the guard
+    validated. A new call site that constructs its own client gets none of that, and nothing
+    would fail — the same shape as a tool bound after the governance stack. So the exemption
+    is explicit and carries a reason.
+    """
+    exempt = {
+        "auth/jwt.py": "JWKS URL comes from FELIX_JWT_VERIFIERS, never from a token claim",
+        "memory/embedder.py": "embedding base_url is operator config",
+        "sdk.py": "client library — dials the caller's own base_url",
+        "security/egress.py": "this is the guarded client",
+        # The model layer may not import the harness — that is what makes Felix
+        # model-agnostic — so it cannot reach `safe_async_client`. Safe because a provider
+        # base_url is operator configuration, never a manifest or model value.
+        "wire/openai_completions.py": "provider base_url is operator config; felix_ai cannot import felix",
+        "wire/anthropic_messages.py": "provider base_url is operator config; felix_ai cannot import felix",
+        "wire/transport.py": "provider base_url is operator config; felix_ai cannot import felix",
+    }
+    offenders: list[str] = []
+    for root in SOURCE_ROOTS:
+        for path in _python_files(root):
+            rel = str(path.relative_to(ROOT))
+            if any(rel.endswith(k) for k in exempt):
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+                    if func.value.id == "httpx" and func.attr in {"AsyncClient", "Client"}:
+                        offenders.append(f"{rel}:{node.lineno}")
+
+    assert offenders == [], (
+        "outbound client built directly instead of via felix.security.egress."
+        f"safe_async_client; add an exemption with a reason if that is deliberate: {offenders}"
+    )
+
+
+# --------------------------------------------------------------------------
+# A fixture that builds a throwaway git repo must not be able to write to a real one.
+# --------------------------------------------------------------------------
+def test_every_git_call_in_tests_is_environment_scrubbed() -> None:
+    """`git -C <dir>` loses to an exported `GIT_DIR`. The environment wins.
+
+    A review run with `GIT_DIR` exported drove `tests/unit/test_pr_quality_gate_hook.py`, whose
+    fixture built a temp repo with a bare `git -C tmpdir init && add -A && commit`. Both commits
+    landed in *this* repository and moved `refs/heads/<branch>` and `refs/remotes/origin/main`
+    onto them. No file changed, so the only symptom was a `git status` that looked like the
+    entire tree had been deleted.
+
+    This is the second line of defense, not the first. `tests/conftest.py` scrubs the redirect
+    variables from the parent process, so every child inherits a clean environment however it
+    spells its git call — which is what actually makes the hazard impossible. A first version
+    of *this* test matched only `["git", ...]` and missed seven other spellings of the same
+    call, including `cmd = ["git", ...]; subprocess.run(cmd)`, a one-line refactor of the very
+    fixture that corrupted the repo. It now reads command heads from several shapes; it is
+    still a detector, and detectors have holes.
+    """
+    offenders: list[str] = []
+    helper = ROOT / "tests" / "git_fixture.py"
+    seen = 0
+
+    # Only calls that actually start a process. Without this scope the check flagged
+    # `shutil.which("git")`, and — worse — `_run("git status", ...)`, which is a git command
+    # passed to a *hook under test* as data. Reporting test data as a hazard is how a guard
+    # gets switched off.
+    SPAWNERS = {
+        "run",
+        "Popen",
+        "call",
+        "check_call",
+        "check_output",
+        "create_subprocess_exec",
+        "create_subprocess_shell",
+    }
+    # Qualified only — `subprocess.run(...)`, `asyncio.create_subprocess_exec(...)`. A bare
+    # `run(...)` is usually a local helper, and counting those made the corpus floor below
+    # track the spelling of a fixture's alias rather than the number of real spawn sites.
+    SPAWNER_MODULES = {"subprocess", "asyncio", "sp"}
+
+    def _heads(call: ast.Call) -> list[str]:
+        """Every string this call might be asking a shell or exec to run."""
+        callee = call.func
+        if not isinstance(callee, ast.Attribute) or callee.attr not in SPAWNERS:
+            return []
+        module = getattr(callee.value, "id", "")
+        if module not in SPAWNER_MODULES:
+            return []
+        found: list[str] = []
+        candidates = [*call.args, *(kw.value for kw in call.keywords)]
+        for node in candidates:
+            # `subprocess.run(["git", ...])` / `run(args=["git", ...])`. Only the *head* is
+            # collected — an earlier version appended every string constant in every argument
+            # position, so `seen` counted `"user.email"` and `"-qm"` as command strings.
+            if isinstance(node, ast.List) and node.elts:
+                first = node.elts[0]
+                if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                    found.append(first.value)
+            # `create_subprocess_exec("git", "-C", ...)` — varargs, no list at all
+            elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+                found.append(node.value)
+            # `run(f"git -C {d} status", shell=True)`
+            elif isinstance(node, ast.JoinedStr):
+                lead = next((v for v in node.values if isinstance(v, ast.Constant)), None)
+                if lead is not None and isinstance(lead.value, str):
+                    found.append(lead.value)
+        return found
+
+    for path in sorted((ROOT / "tests").rglob("*.py")):
+        if path == helper:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            for head in _heads(node):
+                seen += 1
+                # The basename, so `/usr/bin/git` counts; the first word, so a shell string
+                # `"git -C … status"` counts.
+                binary = head.split()[0].rsplit("/", 1)[-1] if head.split() else ""
+                if binary == "git":
+                    offenders.append(f"{path.relative_to(ROOT)}:{node.lineno}")
+    # A floor on *spawn sites*, not on argument strings. The previous `>= 20` counted the
+    # latter, so tidying one fixture's `run = lambda *a: git(root, *a)` alias into direct
+    # `git(...)` calls — exactly what this test's own failure message asks for — dropped the
+    # count below the floor and failed with "has the scan broken?". A guard that punishes
+    # compliance with its own instruction gets its number lowered, which is how the last
+    # corpus hole was made.
+    assert seen >= 3, f"no subprocess spawn sites found in tests/ — has the scan broken? ({seen})"
+    assert offenders == [], (
+        "these invoke git directly, so an ambient GIT_DIR/GIT_WORK_TREE points them at a real "
+        f"repository — go through tests/git_fixture.py:git instead: {sorted(set(offenders))}"
+    )
+
+
+def test_the_suite_runs_without_an_ambient_git_redirect() -> None:
+    """A canary for the session fixture in tests/conftest.py being deleted. Nothing more —
+    that fixture pops these before any test runs, so this is true by construction."""
+    import os
+
+    from tests.conftest import GIT_REDIRECTS
+
+    assert sorted(GIT_REDIRECTS & set(os.environ)) == [], "ambient git redirect reached the suite"
+
+
+# --------------------------------------------------------------------------
+# A tool is cloned, never rebuilt field by field.
+# --------------------------------------------------------------------------
+def test_no_governance_wrapper_rebuilds_a_tool_by_hand() -> None:
+    """Every wrapper carries the whole tool forward, or a field resets to its default.
+
+    Seven wrappers in `manifests/builder.py` and `wrap_tool` in `tools/executor.py` each
+    constructed `Tool(...)` from eight of its ten fields. The two they omitted were `peer`,
+    which `__post_init__` restores from `is_peer`, and `replay_safe`, which nothing restores.
+    `apply_limits` wraps *every* tool unconditionally, so `replay_safe` read `False` on every
+    tool in every manifest — the five builtins that declare `replay_safe=True` included — and
+    the one place that reads it (`patterns/react.py`, deciding whether to tell the model an
+    interrupted tool is safe to call again) had never once seen a `True`.
+
+    `_clone_tool`'s own docstring predicted this: "a field that the rebuild forgot would be
+    silently reset to its default on every wrapped tool ... `replay_safe` was added and very
+    nearly lost exactly that way." It was lost, in the seven wrappers that did not call it.
+
+    A first version of this test matched `Tool(` by `node.func.id` and gated on a regex for
+    the literal names `tool`, `base` and `t` followed by a dot — the exact spelling of the
+    lines it had just replaced. It missed
+    `types.Tool(...)` (an Attribute, not a Name), missed any rebuild whose local was called
+    something else, false-positived on a `**carried` splat, and never asserted that its corpus
+    was non-empty, so a rename would have made it pass forever on nothing. Recognising a
+    rebuild structurally — several keyword values reading attributes off one common object —
+    is what makes it independent of how the next one is spelled.
+    """
+    import dataclasses
+
+    from felix.tools.types import Tool
+
+    fields = {f.name for f in dataclasses.fields(Tool)}
+
+    def _rebuild_source(call: ast.Call) -> str | None:
+        """The object a call copies from, when it is copying rather than constructing."""
+        owners: dict[str, int] = {}
+        for kw in call.keywords:
+            if kw.arg is None:  # **splat carries whatever it holds; not a field-by-field rebuild
+                return None
+            if isinstance(kw.value, ast.Attribute) and isinstance(kw.value.value, ast.Name):
+                owners[kw.value.value.id] = owners.get(kw.value.value.id, 0) + 1
+        if not owners:
+            return None
+        name, count = max(owners.items(), key=lambda kv: kv[1])
+        return name if count >= 3 else None
+
+    offenders: list[str] = []
+    rebuilds = 0
+    for path in sorted(HARNESS.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            # `Tool(...)` and `types.Tool(...)` alike.
+            called = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+            if called != "Tool" or _rebuild_source(node) is None:
+                continue
+            rebuilds += 1
+            dropped = sorted(fields - {kw.arg for kw in node.keywords if kw.arg})
+            if dropped:
+                offenders.append(f"{path.relative_to(ROOT)}:{node.lineno} drops {dropped}")
+
+    # A healthy tree has *no* rebuilds, so `offenders == []` is true of an empty corpus too —
+    # including one emptied by a rename this scan no longer recognises. The subject that must
+    # stay present is therefore the clone helpers themselves: both exist, and both delegate to
+    # `dataclasses.replace` rather than enumerating fields. Rewrite either to enumerate and it
+    # becomes a rebuild the scan above catches; delete or rename either and this fails here.
+    for rel, name in (
+        ("manifests/builder.py", "_clone_tool"),
+        ("tools/executor.py", "wrap_tool"),
+    ):
+        tree = ast.parse((HARNESS / rel).read_text(encoding="utf-8"))
+        fn = next(
+            (
+                n
+                for n in ast.walk(tree)
+                if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef) and n.name == name
+            ),
+            None,
+        )
+        assert fn is not None, f"{rel} no longer defines {name}; this invariant has no subject"
+        calls = {
+            c.func.attr if isinstance(c.func, ast.Attribute) else getattr(c.func, "id", "")
+            for c in ast.walk(fn)
+            if isinstance(c, ast.Call)
+        }
+        assert "replace" in calls, (
+            f"{rel}:{name} no longer clones with dataclasses.replace — every field it does not "
+            "name will reset to its default on every tool it wraps"
+        )
+    assert offenders == [], (
+        "these rebuild a Tool field by field, so the fields they omit silently reset to their "
+        f"defaults on every tool they wrap — use dataclasses.replace instead: {offenders}"
+    )
+
+
+def test_no_provider_header_option_is_also_a_credential() -> None:
+    """`addressing_option_names` exempts every header option key from redaction, on the
+    grounds that a header is addressing. That holds for `cf-aig-gateway-id` and would stop
+    holding the moment someone adds Cloudflare AI Gateway's `cf-aig-authorization` or an
+    Azure-style `api-key` header — the credential would be exempted silently and no test
+    would fail. A provider that reads an option as a credential must say so, and then the
+    two sets must not overlap.
+    """
+    from felix_ai.providers import CREDENTIAL_OPTION_NAMES, builtin_provider_specs
+
+    offenders: list[str] = []
+    for spec in builtin_provider_specs():
+        declared = CREDENTIAL_OPTION_NAMES | set(spec.credential_option_names)
+        for header, key in spec.header_options:
+            if key in declared:
+                offenders.append(f"{spec.name}: header {header!r} reads credential option {key!r}")
+    assert offenders == [], (
+        "a header option key is exempt from redaction, so it must not carry a credential — "
+        "declare it in `credential_option_names`:\n  " + "\n  ".join(offenders)
+    )
+
+
+def test_every_record_usage_call_prices_by_the_wire_model() -> None:
+    """`record_usage(..., wire_model_id=...)` at every call site, not just most of them.
+
+    `model_id` is the *logical* route name and matches nothing in the catalog, so a call
+    that omits `wire_model_id` prices at the catalog default — which is now `None`, so the
+    turn accrues zero and `limits.max_cost_usd` never trips. The parameter defaults to
+    `None` precisely so old callers keep working, which means dropping it from a call site
+    is silent: deleting it from both `react.py` call sites left the whole suite green.
+
+    Every unit test for this exercises `record_usage` directly, so nothing held the eight
+    production call sites to it. This does.
+    """
+    offenders: list[str] = []
+    for root in SOURCE_ROOTS:
+        for path in _python_files(root):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                name = node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", "")
+                if name != "record_usage":
+                    continue
+                if not any(kw.arg == "wire_model_id" for kw in node.keywords):
+                    offenders.append(f"{path.relative_to(ROOT)}:{node.lineno}")
+    assert offenders == [], (
+        "record_usage must be told the wire model, or the turn prices against a logical "
+        "route id that matches no catalog entry and accrues nothing:\n  " + "\n  ".join(offenders)
     )

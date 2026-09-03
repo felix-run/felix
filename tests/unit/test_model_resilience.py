@@ -15,12 +15,12 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from felix.patterns.model import (
+from felix_ai.wire.transport import (
     MODEL_MAX_RETRIES,
     _backoff_delay,
-    _post_with_retry,
     _retry_after_seconds,
 )
+from felix_ai.wire.transport import post_with_retry as _post_with_retry
 
 
 class _Resp:
@@ -178,10 +178,11 @@ def test_model_timeout_comes_from_the_clients_own_settings() -> None:
     divergence is invisible until someone's configured value quietly fails to take effect.
     """
     from felix.config import Settings
-    from felix.patterns.model import _make_anthropic
+    from felix.patterns.model import provider_factory
     from felix.timeouts import DEFAULT_CONNECT_TIMEOUT_S
+    from felix_ai.providers import ANTHROPIC
 
-    client = _make_anthropic(
+    client = provider_factory(ANTHROPIC)(
         "claude-sonnet",
         {"provider": "anthropic", "model": "claude-sonnet-5"},
         None,
@@ -359,9 +360,7 @@ def test_backoff_does_not_block_the_loop() -> None:
     """Sanity: the retry sleep is awaited, not time.sleep()."""
     import inspect
 
-    from felix.patterns import model
-
-    src = inspect.getsource(model._post_with_retry)
+    src = inspect.getsource(_post_with_retry)
     assert "await asyncio.sleep" in src
     assert "time.sleep" not in src
 

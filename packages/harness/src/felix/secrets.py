@@ -28,15 +28,25 @@ _PLAINTEXT_AUTH_RE = re.compile(
     re.IGNORECASE,
 )
 
+
+# The model-provider half of the map below is derived from the provider descriptors rather
+# than listed by hand.
+# This map is also what feeds `collected_secret_values()`, so a provider missing from it is
+# not merely un-hydrated — its key is never masked out of tool output. Deriving it means
+# adding a provider cannot silently create that hole.
+def _provider_secret_entries() -> dict[str, tuple[str, ...]]:
+    from felix_ai.providers import builtin_provider_specs
+
+    return {
+        spec.api_key_config_key: spec.secret_names
+        for spec in builtin_provider_specs()
+        if spec.api_key_config_key and spec.secret_names
+    }
+
+
 # Settings attrs that may hold secrets, and candidate names in the secrets backend.
 _HYDRATE_MAP: dict[str, tuple[str, ...]] = {
-    "anthropic_api_key": (
-        "ANTHROPIC_API_KEY",
-        "anthropic_api_key",
-        "felix-anthropic-api-key",
-        "felix/anthropic_api_key",
-    ),
-    "openai_api_key": ("OPENAI_API_KEY", "openai_api_key", "felix/openai_api_key"),
+    **_provider_secret_entries(),
     "consumer_shared_secret": (
         "CONSUMER_SHARED_SECRET",
         "consumer_shared_secret",
@@ -191,6 +201,71 @@ def build_secrets(settings: object) -> SecretsProvider:
     return factory(settings)
 
 
+async def _hydrate_provider_options(settings: Any, provider: SecretsProvider) -> list[str]:
+    """Resolve `secret:NAME` values inside `FELIX_MODEL_PROVIDER_OPTIONS`, in place.
+
+    The hosted providers have no `Settings` field, so there is no attribute for the loop
+    above to hydrate into — which is why their descriptors declare no `secret_names`. Their
+    credential arrives through the options map instead, and a `secret:NAME` value there is
+    resolved through the same backend, the same way MCP and peer refs already work:
+
+        FELIX_MODEL_PROVIDER_OPTIONS={"groq": {"api_key": "secret:GROQ_API_KEY"}}
+
+    Rewriting the setting in place keeps `resolve_provider_config` synchronous — it runs per
+    agent build, and secret lookups are not something to do on that path.
+    """
+    raw = (getattr(settings, "model_provider_options", "") or "").strip()
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, dict):
+        return []
+
+    found: list[str] = []
+    changed = False
+    for opts in parsed.values():
+        if not isinstance(opts, dict):
+            continue
+        for name, value in list(opts.items()):
+            # Both spellings, since `normalize_secret_ref` accepts both everywhere else:
+            # the object form was stringified into `"{'secret': 'NAME'}"` and sent as a
+            # bearer token.
+            if secret_ref_name(value) is None:
+                continue
+            try:
+                resolved = await resolve_secret_value(provider, value, register=False)
+            except Exception:
+                # Drop it rather than leave the reference in place. `resolve_provider_config`
+                # would otherwise read `"secret:GROQ_API_KEY"` as the api_key and ship the
+                # internal secret *name* to the third-party endpoint and into any log of
+                # that request. Removing it lets the settings-field fallback apply, or the
+                # missing-credential path fire.
+                logger.warning(
+                    "provider option %s could not be resolved from the secrets backend; "
+                    "dropping it rather than sending the reference upstream",
+                    loggable(name, limit=60),
+                )
+                opts.pop(name, None)
+                changed = True
+                continue
+            if resolved:
+                opts[name] = resolved
+                changed = True
+    if changed:
+        settings.model_provider_options = json.dumps(parsed)
+    # Register every credential in the blob, not just the refs resolved above — and after
+    # the rewrite, so a resolved ref is registered as its *value* rather than skipped as a
+    # reference. Audit rows, session events and fiber state redact through
+    # `collected_secret_values()` with no settings, so they only ever see this process-global
+    # list: a literal `{"groq": {"api_key": "gsk_..."}}`, the form `.env.example` documents,
+    # was masked in tool output and nowhere else. `deploy/GOVERNANCE.md` promises all four.
+    found.extend(_provider_option_secrets(settings))
+    return found
+
+
 async def hydrate_secrets(settings: object) -> list[str]:
     """Fill empty settings attrs from FELIX_SECRETS_BACKEND; cache values for masking.
 
@@ -221,6 +296,8 @@ async def hydrate_secrets(settings: object) -> list[str]:
                     found.append(val)
                 break
 
+    found.extend(await _hydrate_provider_options(settings, provider))
+
     extra = getattr(settings, "secret_names", "") or ""
     for name in (n.strip() for n in extra.split(",") if n.strip()):
         try:
@@ -250,7 +327,107 @@ def collected_secret_values(settings: object | None = None) -> list[str]:
             val = getattr(settings, attr, "") or ""
             if val and len(val) >= 8 and val not in out:
                 out.append(val)
+        for val in _provider_option_secrets(settings):
+            if val not in out:
+                out.append(val)
     return out
+
+
+def _leaf_strings(value: object, *, _depth: int = 0) -> list[str]:
+    """Every string ≥8 chars inside a nested option value.
+
+    Bounded depth because this walks operator-supplied JSON; a cycle is impossible through
+    `json.loads`, but a deeply nested blob should not cost unbounded recursion.
+    """
+    if _depth > 6:
+        return []
+    if isinstance(value, str):
+        return [value] if len(value) >= 8 else []
+    if isinstance(value, dict):
+        return [s for v in value.values() for s in _leaf_strings(v, _depth=_depth + 1)]
+    if isinstance(value, list):
+        return [s for v in value for s in _leaf_strings(v, _depth=_depth + 1)]
+    return []
+
+
+def _provider_option_secrets(settings: object) -> list[str]:
+    """Credentials configured through `FELIX_MODEL_PROVIDER_OPTIONS`.
+
+    A key supplied there is not a `Settings` attribute, so the hydrate loop cannot see it —
+    and a provider credential that never reaches this list is never masked out of tool
+    output.
+
+    Which values are secret is decided by allowlisting the option names that are
+    *addressing*, per provider, from that provider's own descriptor. The previous version
+    matched names containing key/token/secret/password, which is a denylist and failed open
+    for exactly the third-party providers this options map exists to serve: a credential
+    option called `credential`, `authorization` or `bearer` was published verbatim.
+    `_TRUSTED_TRANSPORTS` records the same reasoning for tool transports.
+
+    Erring toward masking is deliberate, but it is not free: `redact_text` is an
+    unconditional string replacement over session events, audit payloads and fiber state, so
+    a long low-entropy value wrongly treated as secret rewrites unrelated text everywhere it
+    appears. That is the cost being traded against leaking a credential, and it is why the
+    exemption is derived from what each provider actually consumes rather than guessed at.
+    """
+    raw = (getattr(settings, "model_provider_options", "") or "").strip()
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, dict):
+        return []
+
+    from felix_ai.providers import (
+        CREDENTIAL_OPTION_NAMES,
+        builtin_provider_specs,
+        placeholder_names,
+    )
+
+    specs = {spec.name: spec for spec in builtin_provider_specs()}
+    found: list[str] = []
+    for provider_name, opts in parsed.items():
+        if not isinstance(opts, dict):
+            continue
+        configured = opts.get("base_url") if isinstance(opts.get("base_url"), str) else None
+        spec = specs.get(str(provider_name))
+        if spec is not None:
+            # Per provider, not a union across all of them: `account_id` is addressing for
+            # Cloudflare and means nothing to Groq, and exempting it everywhere would be the
+            # same name-based over-reach this function exists to remove.
+            addressing = spec.addressing_option_names(configured)
+        else:
+            # A plugin registers a bare factory, not a descriptor, so there is nothing to
+            # ask. What it templates into its own endpoint is still derivable from it.
+            addressing = (frozenset({"base_url"}) | placeholder_names(configured)) - CREDENTIAL_OPTION_NAMES
+        for name, value in opts.items():
+            # Mask the coerced form, because that is what actually goes on the wire:
+            # `parse_provider_options` does `str(v)` on every value, so an integer or a
+            # nested dict becomes a live credential while `isinstance(value, str)` skipped
+            # it here. The masker and the parser have to agree on what a value *is*.
+            text = value if isinstance(value, str) else str(value)
+            # Below 8 characters a redaction does more harm than good — it would rewrite
+            # incidental matches throughout tool output. `hydrate_secrets` uses the same floor.
+            if len(text) < 8:
+                continue
+            if name in addressing:
+                continue
+            # An unresolved `secret:NAME` is a reference, not a credential. Masking it
+            # redacts the one diagnostic that names what failed to resolve, out of exactly
+            # the logs someone is reading to find out why.
+            # `value`, not `text`: the object form `{"secret": "NAME"}` coerces to
+            # `"{'secret': 'NAME'}"`, which `secret_ref_name` does not recognise, so the
+            # unresolved-ref diagnostic was being masked after all.
+            if secret_ref_name(value) is not None:
+                continue
+            found.append(text)
+            # A nested value is registered as its Python repr, which is single-quoted.
+            # Re-render the same data as JSON, or pull out the leaf, and `redact_text` no
+            # longer matches — so register the leaves too.
+            found.extend(_leaf_strings(value))
+    return found
 
 
 def register_resolved_secret(value: str) -> None:

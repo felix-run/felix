@@ -43,6 +43,7 @@ router = APIRouter(tags=["Threads"])
 def _http_from_invoke_prep(exc: Exception) -> HTTPException | None:
     from felix.governance.inbound import InboundScreeningError
     from felix.manifests.inbound_auth import InboundAuthError
+    from felix.manifests.loader import ManifestParseError
     from felix.manifests.pin import ManifestDriftError
 
     # This decides the status code; `client_safe_message` decides the wording. They
@@ -63,6 +64,12 @@ def _http_from_invoke_prep(exc: Exception) -> HTTPException | None:
         # `PUT /manifests` refuses new ones, but existing rows only fail here, and
         # unmapped that is a 500 with a traceback on every request for the manifest.
         return HTTPException(status_code=422, detail=client_safe_message(exc, authored_for_clients=True))
+    if isinstance(exc, ManifestParseError):
+        # Same shape one step earlier: a row stored before a schema tightening no longer
+        # validates. `PUT /manifests` refuses new ones with a 400; without this the existing
+        # rows answer 500 "internal error" on every request, which is indistinguishable from
+        # an outage and sends the operator looking for one.
+        return HTTPException(status_code=422, detail=client_safe_message(exc))
     return None
 
 
@@ -377,6 +384,17 @@ async def chat(body: ChatRequest, request: Request) -> Any:
         "model": model_id,
         "leaf_id": get_leaf(thread) if thread else None,
     }
+
+
+def _safe_filename(thread_id: str) -> str:
+    """A thread id reduced to characters that cannot escape a quoted header parameter.
+
+    The id is interpolated into `filename="..."`. `effective_thread_id` rejects `:` and `#`,
+    which makes header splitting look unreachable — but it permits `"`, and one quote ends
+    the parameter early and starts attacker-controlled header text. Allowlist rather than
+    escape: a filename has no need of anything outside this set.
+    """
+    return "".join(c if (c.isalnum() or c in "-_.") else "_" for c in thread_id)[:128] or "session"
 
 
 @router.get("/runs/{resume_token}")
@@ -1158,7 +1176,7 @@ async def export_session(thread_id: str, request: Request) -> Any:
     return PlainTextResponse(
         body,
         media_type="application/x-ndjson",
-        headers={"Content-Disposition": f'attachment; filename="{thread_id}.jsonl"'},
+        headers={"Content-Disposition": f'attachment; filename="{_safe_filename(thread_id)}.jsonl"'},
     )
 
 

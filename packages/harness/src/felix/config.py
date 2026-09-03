@@ -112,6 +112,10 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     litellm_base_url: str = ""
     model_routes: str = ""  # JSON override of logical id -> {provider, model}
+    # JSON: provider name -> {"base_url": ..., "api_key": ...}. The built-in providers
+    # have named fields above; a plugin's provider cannot, because Settings ignores
+    # extras, so without this an installed provider had no way to be given a key.
+    model_provider_options: str = ""
     # Bounds each HTTP request to a model provider. A large tool call — a file's contents
     # as an argument, say — can legitimately take longer than two minutes to generate, and
     # when it does the request fails and takes the whole run with it. On a streaming call
@@ -211,6 +215,16 @@ class Settings(BaseSettings):
 
     # --- misc ---
     default_manifest: str = "quick"
+    # Where a manifest may come from. `store` is the full product: Postgres versions with
+    # canary and rollback, then the bundled YAML. `bundled` serves only the files baked into
+    # the image — the write routes are not registered at all, so the capability is absent
+    # rather than refused, and nothing above bundled is consulted.
+    #
+    # A closed Literal on purpose, unlike the registry-backed settings: this names a policy
+    # core itself enforces, not a component core loads, so there is nothing for a third
+    # value to select.
+    manifest_source: Literal["store", "bundled"] = "store"
+
     hibernate_after_seconds: int = 300
     # How often each emitting process drains its audit/usage buffers. The agent
     # loop runs in the API, so the API must flush too — the worker cron alone only
@@ -230,6 +244,11 @@ class Settings(BaseSettings):
     @classmethod
     def _strip_keys(cls, v: Any) -> Any:
         return v if v is not None else ""
+
+    @property
+    def bundled_only(self) -> bool:
+        """True when the image is the only manifest source."""
+        return self.manifest_source == "bundled"
 
     def _validate_registry_backed_settings(self) -> None:
         """Fail fast on a backend name nothing registered.
@@ -266,6 +285,32 @@ class Settings(BaseSettings):
                 names = ", ".join(known)
                 raise RuntimeError(f"Unknown {env_name}={value!r} (registered: {names})")
 
+        self._validate_model_route_providers()
+
+    def _validate_model_route_providers(self) -> None:
+        """Every provider named in FELIX_MODEL_ROUTES must be registered.
+
+        This was the one registry-backed setting with no startup check. A typo surfaced
+        only when a request happened to take that route — so a bad *fallback* stayed
+        invisible until the primary was already failing, which is the worst possible moment
+        to discover a second misconfiguration.
+        """
+        import felix.patterns  # noqa: F401  — importing registers the built-in providers
+        from felix.patterns.model import parse_model_routes
+        from felix.patterns.model_registry import list_model_providers
+
+        known = set(list_model_providers())
+        if not known:
+            return
+        unknown = sorted(
+            {route.provider for route in parse_model_routes(self).values() if route.provider not in known}
+        )
+        if unknown:
+            raise RuntimeError(
+                f"Unknown model provider(s) in FELIX_MODEL_ROUTES: {', '.join(unknown)} "
+                f"(registered: {', '.join(sorted(known))})"
+            )
+
     def validate_runtime(self) -> None:
         """Fail fast on unsafe or incomplete configuration."""
         self._validate_registry_backed_settings()
@@ -297,7 +342,8 @@ def get_settings() -> Settings:
     return Settings()
 
 
-# Logical model routes — Workers AI dropped; Ollama / LiteLLM fill the OSS slot.
+# Logical model routes. Providers are registered descriptors (see felix_ai.providers);
+# these are just the ids Felix ships pre-mapped. Anything else is FELIX_MODEL_ROUTES.
 DEFAULT_MODEL_ROUTES: dict[str, dict[str, str]] = {
     # Current generation. Wire ids are complete as written — no date suffixes.
     "claude-opus": {"provider": "anthropic", "model": "claude-opus-5"},

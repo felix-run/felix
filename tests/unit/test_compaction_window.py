@@ -60,3 +60,17 @@ def test_manifest_without_a_model_falls_back_to_the_default() -> None:
 
 def test_missing_session_spec_is_not_an_error() -> None:
     assert _context_window_for_manifest(_Manifest("claude-opus-5"), None) == 1_000_000
+
+
+def test_a_logical_route_id_resolves_to_the_wire_models_window() -> None:
+    """`spec.model.id` is a *logical* route name in every bundled manifest, and feeding
+    that to the catalog matched only the loose `claude-sonnet` family key, whose entry is
+    200K — so a manifest on the default route compacted against 200K instead of the 1M it
+    pays for. (128K is what an id matching *nothing* would have got.)"""
+    from felix.config import Settings
+    from felix.patterns.model import parse_model_routes
+
+    # `claude-sonnet` is a route key, not a wire id; it resolves to claude-sonnet-5 (1M).
+    route = parse_model_routes(Settings(database_url="memory://cw")).get("claude-sonnet")
+    assert route is not None and route.model == "claude-sonnet-5"
+    assert _context_window_for_manifest(_Manifest("claude-sonnet"), SessionSpec()) == 1_000_000

@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 
 from felix.manifests.schema import McpServerRef
+from felix.security.egress import safe_async_client
 from felix.security.ssrf import assert_safe_outbound_url
 from felix.timeouts import DEFAULT_CONNECT_TIMEOUT_S, timeout_seconds
 from felix.tools.types import Tool, ToolInvocationCtx, define_tool
@@ -55,7 +56,10 @@ async def mcp_rpc(
     wait_s: float = DEFAULT_MCP_TIMEOUT_S,
 ) -> dict[str, Any]:
     """POST a JSON-RPC request to an MCP HTTP endpoint."""
-    assert_safe_outbound_url(url, allow_http=allow_http)
+    # Syntactic only — scheme, internal names, IP literals. The resolving check is the
+    # transport's, which connects to the address it validated; doing it here as well
+    # would mean two independent lookups again, which is the gap being closed.
+    assert_safe_outbound_url(url, allow_http=allow_http, resolve=False)
     payload = {
         "jsonrpc": "2.0",
         "id": _next_id(),
@@ -63,7 +67,7 @@ async def mcp_rpc(
         "params": params or {},
     }
     timeout = httpx.Timeout(wait_s, connect=DEFAULT_CONNECT_TIMEOUT_S)
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+    async with safe_async_client(allow_http=allow_http, timeout=timeout) as client:
         resp = await client.post(url, json=payload, headers=_headers(auth))
         resp.raise_for_status()
         # Some MCP HTTP servers return SSE; take the first JSON data line if needed.

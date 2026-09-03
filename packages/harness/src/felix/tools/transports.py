@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from felix.security.egress import safe_async_client
 from felix.security.ssrf import assert_safe_outbound_url
 from felix.timeouts import DEFAULT_CONNECT_TIMEOUT_S
 from felix.tools.types import ToolInput, ToolInvocationCtx, ToolOutput
@@ -29,7 +30,9 @@ class HttpExecutor:
         allow_http: bool = False,
         timeout_s: float = DEFAULT_HTTP_TOOL_TIMEOUT_S,
     ) -> None:
-        assert_safe_outbound_url(url, allow_http=allow_http)
+        # Cheap checks now — scheme, internal names, IP literals — so an obviously bad
+        # URL fails at bind. The resolving check happens at dial, below.
+        assert_safe_outbound_url(url, allow_http=allow_http, resolve=False)
         self._url = url
         self._method = method.upper()
         self._allow_http = allow_http
@@ -40,7 +43,7 @@ class HttpExecutor:
 
         _ = ctx
         timeout = httpx.Timeout(self._timeout_s, connect=DEFAULT_CONNECT_TIMEOUT_S)
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+        async with safe_async_client(allow_http=self._allow_http, timeout=timeout) as client:
             resp = await client.request(self._method, self._url, json=args)
             resp.raise_for_status()
             return resp.text

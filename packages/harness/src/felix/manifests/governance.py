@@ -108,6 +108,61 @@ def assert_outbound_providers_allowed(manifest: Manifest, settings: Any | None =
         raise GovernanceError("; ".join(errors))
 
 
+def assert_cost_limit_is_measurable(manifest: Manifest, settings: Any | None = None) -> None:
+    """Refuse a declared `limits.max_cost_usd` on a model Felix cannot price.
+
+    A spend cap is a governance control, and an uncountable one fails *open*: the run
+    proceeds with `cost_usd` stuck at zero and the cap never trips. Previously it failed
+    open in a worse way — the catalog's default rates are Claude Sonnet's, so an
+    unrecognised model was metered at $3/$15 per Mtok, which is enforcement against a
+    number nobody chose.
+
+    Only an *explicitly declared* cap is refused. `effective_limits` fills an unset
+    `max_cost_usd` from `ABSOLUTE_LIMITS`, and refusing on that would break every local
+    Ollama deployment for a ceiling the author never asked for. Declaring one is a
+    statement that spend matters here, and that is the statement Felix must not fake.
+
+    The escape hatch is `spec.model.price`, which is the documented way to supply rates
+    per deployment.
+    """
+    limits = getattr(manifest.spec, "limits", None)
+    declared = getattr(limits, "max_cost_usd", None) if limits is not None else None
+    if declared is None:
+        return
+    spec = manifest.spec.model
+    if getattr(spec, "price", None):
+        return  # rates supplied by the manifest itself
+
+    from felix_ai.providers import builtin_provider_specs
+
+    from felix.config import get_settings
+    from felix.model_catalog import is_priced
+    from felix.patterns.model import parse_model_routes
+
+    settings = settings or get_settings()
+    routes = parse_model_routes(settings)
+    wanted = [getattr(spec, "id", None) or settings.default_model_id]
+    wanted += list(getattr(spec, "fallbacks", None) or [])
+
+    free = {s.name for s in builtin_provider_specs() if not s.bills_per_token}
+
+    unpriced: list[str] = []
+    for logical_id in wanted:
+        route = routes.get(str(logical_id))
+        if route is None:
+            continue  # unknown ids are reported by the model layer, not here
+        if route.provider in free:
+            continue  # spend on a local runtime is zero, so any cap holds
+        if not is_priced(route.model):
+            unpriced.append(f"{logical_id} -> {route.model}")
+    if unpriced:
+        raise GovernanceError(
+            f"limits.max_cost_usd is declared but Felix has no rates for {', '.join(unpriced)}, "
+            "so the cap could not be enforced. Supply rates with spec.model.price, or drop "
+            "the limit."
+        )
+
+
 def validate_governance(manifest: Manifest, settings: Any | None = None) -> None:
     """Fail closed when ``spec.governance.frameworks`` require missing controls.
 

@@ -52,7 +52,9 @@ async def _maybe_llm_judge(
     ok, score, rule = heuristic
     criteria = str(rubric.get("judge_criteria") or rubric.get("criteria") or "relevance")
     threshold = float(rubric.get("judge_threshold") or 0.7)
-    model_id = str(rubric.get("judge_model") or "llama-3-fast")
+    # Defaulting to an Ollama route meant the judge silently degraded to the heuristic
+    # on any deployment without a local model — see MemoryCapture.model.
+    model_id = str(rubric.get("judge_model") or "claude-haiku")
     try:
         from felix.eval.compare import llm_judge_score
         from felix.manifests.schema import ModelSpec
@@ -132,7 +134,11 @@ async def start_run(
     resolved = None
     if not mock:
         try:
-            resolved = await resolve_tenant_manifest(settings, tenant_id, candidate_manifest)
+            # The version is recorded on the run row, so it has to be the version scored.
+            # Without this the run reported a canary and measured whatever was active.
+            resolved = await resolve_tenant_manifest(
+                settings, tenant_id, candidate_manifest, pin_version=manifest_version
+            )
         except Exception as exc:
             logger.exception("eval_resolve_failed")
             completed = await eval_store.complete_run(

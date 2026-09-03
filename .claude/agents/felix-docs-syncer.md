@@ -49,7 +49,8 @@ commit there without the user asking; when you edit it, say so explicitly and ke
 3. Write in the existing voice: dense, factual, present tense, identifiers in backticks, no
    marketing. Tables for surfaces and settings.
 4. Stale-truth traps in Felix docs specifically:
-   - Cloudflare Workers/DO/Hyperdrive as runtime — the harness is self-hosted Python.
+   - Cloudflare Workers/DO/Hyperdrive as *runtime* — the harness is self-hosted Python.
+     (Cloudflare as an *API* is fine: `workers_ai` is a model provider, R2 via S3.)
    - Default object store is `fs`, not S3/MinIO.
    - Postgres is the system of record; the warehouse is optional spill (default `none`).
    - `felix-scheduler` is required alongside the worker.

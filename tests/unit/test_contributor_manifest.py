@@ -12,8 +12,10 @@ green run than it earns:
   this file to the manifest and not to what GitHub actually serves. A write tool that GitHub
   adds or renames binds ungated and this suite stays green. The structural fix is a tool
   allowlist on `McpServerRef`, which does not exist yet.
-* Approval rules, policies, and screening all match tool names exactly — there are no globs
-  in the governance stack — so every list below is an enumeration, not a pattern.
+* Approval rules, policies, judges and screening match tool names by glob (`fnmatch`,
+  case-sensitive). The lists below stay enumerations anyway: this file's point is that the
+  set of mutating GitHub tools is pinned by name, and `github__*` would gate the read-only
+  ones too. A pattern here would hide the drift it exists to catch.
 """
 
 from __future__ import annotations

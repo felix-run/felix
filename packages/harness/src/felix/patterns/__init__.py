@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from felix.patterns.delegating import _DelegatingAgent
 from felix.patterns.model import register_builtin_providers
+from felix.patterns.model_sinks import install_felix_ai_sinks
 from felix.patterns.plan_tools import _plan_tools
 from felix.patterns.react import build_react_agent
 from felix.patterns.registry import (
@@ -31,6 +32,7 @@ from felix.patterns.types import (
     ToolCall,
 )
 
+install_felix_ai_sinks()
 register_builtin_providers()
 
 

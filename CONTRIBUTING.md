@@ -31,7 +31,9 @@ make install-full        # all extras
 - Prefer small, focused PRs.
 - Match existing patterns in `packages/harness` (Protocols, `FELIX_` settings).
 - Keep the default Docker/Compose path **lean** (no heavy extras unless gated).
-- Do not add Cloudflare Workers / Durable Objects / Hyperdrive compute.
+- Do not add Cloudflare Workers / Durable Objects / Hyperdrive compute. Calling a hosted
+  Cloudflare API over HTTPS is not that — Workers AI is a model provider and R2 is reachable
+  through its S3 endpoint. The rule is about where Felix runs, not whose API it calls.
 - Optional features stay out of core — register via the plugin registry /
   `felix.plugins` entry points (see `felix.plugins`).
 - `make type` (and CI's typecheck job) needs the optional extras: unresolved

@@ -42,6 +42,18 @@ async def run_worker(settings: Settings) -> None:
             "Temporal durability requires felix-harness[temporal] (uv sync --extra temporal)"
         ) from exc
 
+    # The activity this worker registers is `fiber_step`, which runs a full agent turn in
+    # this process — so every redaction sink runs here too. Three of the four
+    # (`fibers.py`, `audit/store.py`, `session/store.py`) redact through
+    # `collected_secret_values()` with no settings and therefore see only the process-global
+    # list, which is empty until this call. Without it a credential echoed into a tool
+    # result was persisted verbatim in fiber state, audit payloads and session events, and
+    # served back through session export and fiber resume. The API and the Taskiq worker
+    # have always done this; this entrypoint was missed.
+    from felix.secrets import hydrate_secrets
+
+    await hydrate_secrets(settings)
+
     workflow_cls, activity = _defs()
     client = await Client.connect(
         settings.temporal_host,
