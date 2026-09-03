@@ -233,7 +233,15 @@ class OpenAICompletionsClient(HttpModelClient):
     ) -> ModelChatResult:
         body = self._body(messages, tools, temperature, max_tokens, isolate_cache=isolate_cache)
         headers = self._headers(
-            {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+            {
+                # No credential means *no* Authorization header, not `Bearer `. An empty
+                # bearer is a malformed credential that proxies and gateways treat
+                # inconsistently, and it diagnoses nothing. `_headers` drops empty values,
+                # which is why the Anthropic path — which sends the key unwrapped — was
+                # already correct.
+                "Authorization": f"Bearer {self.api_key}" if self.api_key else "",
+                "Content-Type": "application/json",
+            }
         )
         async with httpx.AsyncClient(timeout=self._timeout()) as client:
             resp = await post_with_retry(
@@ -276,7 +284,15 @@ class OpenAICompletionsClient(HttpModelClient):
         # it a streaming turn would meter as zero tokens.
         body["stream_options"] = {"include_usage": True}
         headers = self._headers(
-            {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+            {
+                # No credential means *no* Authorization header, not `Bearer `. An empty
+                # bearer is a malformed credential that proxies and gateways treat
+                # inconsistently, and it diagnoses nothing. `_headers` drops empty values,
+                # which is why the Anthropic path — which sends the key unwrapped — was
+                # already correct.
+                "Authorization": f"Bearer {self.api_key}" if self.api_key else "",
+                "Content-Type": "application/json",
+            }
         )
 
         text_parts: list[str] = []

@@ -317,12 +317,39 @@ def collected_secret_values(settings: object | None = None) -> list[str]:
     return out
 
 
+def _structural_option_names() -> set[str]:
+    """Provider option names that are addressing, not credentials.
+
+    Derived from the descriptors: the endpoint override, every `{placeholder}` a base-URL
+    template consumes, and every header option key. Anything else in a provider's options
+    bag is treated as a secret, so a provider added later cannot quietly fall outside the
+    rule by naming its credential something new.
+    """
+    from felix_ai.providers import builtin_provider_specs
+
+    names = {"base_url"}
+    for spec in builtin_provider_specs():
+        names.update(spec.placeholders())
+        names.update(key for _header, key in spec.header_options)
+    return names
+
+
 def _provider_option_secrets(settings: object) -> list[str]:
     """Credentials configured through `FELIX_MODEL_PROVIDER_OPTIONS`.
 
-    A key supplied there is not a `Settings` attribute, so the loop above cannot see it —
-    and a provider credential that is never added to this list is never masked out of tool
-    output. That is the whole reason the map above is derived rather than hand-listed.
+    A key supplied there is not a `Settings` attribute, so the hydrate loop cannot see it —
+    and a provider credential that never reaches this list is never masked out of tool
+    output.
+
+    Which values are secret is decided by an **allowlist of the names that are not**. The
+    previous version matched names containing key/token/secret/password, which is a
+    denylist, and it failed open for exactly the third-party providers the options map
+    exists to serve: a provider whose credential option is called `credential`,
+    `authorization` or `bearer` had its value published verbatim. `_TRUSTED_TRANSPORTS`
+    records the same reasoning for tool transports.
+
+    Over-masking an option costs a redacted string in tool output; under-masking one leaks
+    a credential. That asymmetry decides which way the default fails.
     """
     raw = (getattr(settings, "model_provider_options", "") or "").strip()
     if not raw:
@@ -333,15 +360,19 @@ def _provider_option_secrets(settings: object) -> list[str]:
         return []
     if not isinstance(parsed, dict):
         return []
+    structural = _structural_option_names()
     found: list[str] = []
     for opts in parsed.values():
         if not isinstance(opts, dict):
             continue
-        for key, value in opts.items():
+        for name, value in opts.items():
+            # Below 8 characters a redaction does more harm than good — it would rewrite
+            # incidental matches throughout tool output. `hydrate_secrets` uses the same floor.
             if not isinstance(value, str) or len(value) < 8:
                 continue
-            if any(marker in str(key).lower() for marker in ("key", "token", "secret", "password")):
-                found.append(value)
+            if str(name).lower() in structural:
+                continue
+            found.append(value)
     return found
 
 

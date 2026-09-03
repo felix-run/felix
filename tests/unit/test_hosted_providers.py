@@ -85,6 +85,51 @@ def test_every_hosted_provider_key_is_masked(name: str) -> None:
     assert "sk-leaky-credential" in collected_secret_values(settings)
 
 
+def test_a_credential_is_masked_whatever_the_option_is_called() -> None:
+    """Secrecy is decided by allowlisting the option names that are *not* credentials.
+
+    Matching names containing key/token/secret/password is a denylist, and it failed open
+    for exactly the third-party providers the options map exists to serve: a provider whose
+    credential option is called `credential`, `authorization` or `bearer` had its value
+    published verbatim in tool output. `_TRUSTED_TRANSPORTS` decides trust the same way and
+    for the same reason.
+    """
+    from felix.secrets import collected_secret_values
+
+    settings = _settings(
+        model_provider_options=(
+            '{"acme":{"credential":"cred-must-be-masked",'
+            '"authorization":"Bearer must-be-masked",'
+            '"bearer":"tok-must-be-masked",'
+            '"api_key":"sk-must-be-masked",'
+            '"base_url":"https://acme.invalid/v1",'
+            '"account_id":"acct-1234567",'
+            '"gateway_id":"gw-1234567"}}'
+        )
+    )
+    masked = collected_secret_values(settings)
+    for secret in (
+        "cred-must-be-masked",
+        "Bearer must-be-masked",
+        "tok-must-be-masked",
+        "sk-must-be-masked",
+    ):
+        assert secret in masked, secret
+    # Addressing, not credentials — redacting these would corrupt legitimate tool output.
+    assert "https://acme.invalid/v1" not in masked
+    assert "acct-1234567" not in masked
+    assert "gw-1234567" not in masked
+
+
+def test_an_unknown_provider_option_is_masked_by_default() -> None:
+    """The point of the allowlist: a provider Felix has never heard of, whose credential
+    option is named something nobody anticipated, is still redacted."""
+    from felix.secrets import collected_secret_values
+
+    settings = _settings(model_provider_options='{"newthing":{"handshake_blob":"opaque-credential-x"}}')
+    assert "opaque-credential-x" in collected_secret_values(settings)
+
+
 # --- the path variable ------------------------------------------------------------------
 
 

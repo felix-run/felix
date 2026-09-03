@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **A provider credential was masked only if its option was *named* like one.**
+  `_provider_option_secrets` decided which `FELIX_MODEL_PROVIDER_OPTIONS` values to redact
+  by matching option names containing key/token/secret/password, so a provider whose
+  credential option is called `credential`, `authorization` or `bearer` had its value
+  published verbatim in tool output. That is a denylist, and it failed open for exactly the
+  third-party providers the options map exists to serve — the reasoning `_TRUSTED_TRANSPORTS`
+  already records for tool transports.
+
+  Secrecy is now decided by allowlisting the option names that are *addressing* rather than
+  credentials: `base_url`, every `{placeholder}` a base-URL template consumes, and every
+  header option key, all derived from the descriptors. An option a provider invents is
+  masked by default. Over-masking costs a redacted string in tool output; under-masking
+  leaks a credential, and that asymmetry decides which way the default fails.
+
+### Fixed
+
+- **A provider with no credential sent `Authorization: Bearer ` rather than no header** — a
+  malformed credential that proxies and gateways treat inconsistently and that diagnoses
+  nothing. The Anthropic path was already correct, since it sends the key unwrapped and
+  `_headers` drops empty values.
+
 ### Added
 
 - **`FELIX_MANIFEST_SOURCE=store|bundled`.** Nearly every finding in the recent security
