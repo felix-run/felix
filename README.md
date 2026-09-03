@@ -322,8 +322,12 @@ also overrides the named field, which is how a built-in is pointed at a gateway:
 FELIX_MODEL_PROVIDER_OPTIONS={"anthropic":{"base_url":"https://gateway.internal/v1"}}
 ```
 
-Values stored under a key/token/secret name are added to the redaction list, so a provider
-credential cannot reach tool output. Providers named in `FELIX_MODEL_ROUTES` are resolved
+Every option value is added to the redaction list **except** the ones the provider consumes
+as addressing — `base_url`, any `{placeholder}` its endpoint templates, and its header
+options — so a credential cannot reach tool output whatever the option is called. The
+converse is worth knowing: an unrecognised option is redacted, so a long, non-secret value
+there will be masked out of tool results. Keep credentials out of `base_url`, which is
+exempt by definition and also reaches server logs through connection errors. Providers named in `FELIX_MODEL_ROUTES` are resolved
 against the registry at startup, so a typo fails immediately rather than on the first
 request that happens to take that route.
 

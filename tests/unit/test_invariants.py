@@ -1148,3 +1148,25 @@ def test_no_governance_wrapper_rebuilds_a_tool_by_hand() -> None:
         "these rebuild a Tool field by field, so the fields they omit silently reset to their "
         f"defaults on every tool they wrap — use dataclasses.replace instead: {offenders}"
     )
+
+
+def test_no_provider_header_option_is_also_a_credential() -> None:
+    """`addressing_option_names` exempts every header option key from redaction, on the
+    grounds that a header is addressing. That holds for `cf-aig-gateway-id` and would stop
+    holding the moment someone adds Cloudflare AI Gateway's `cf-aig-authorization` or an
+    Azure-style `api-key` header — the credential would be exempted silently and no test
+    would fail. A provider that reads an option as a credential must say so, and then the
+    two sets must not overlap.
+    """
+    from felix_ai.providers import CREDENTIAL_OPTION_NAMES, builtin_provider_specs
+
+    offenders: list[str] = []
+    for spec in builtin_provider_specs():
+        declared = CREDENTIAL_OPTION_NAMES | set(spec.credential_option_names)
+        for header, key in spec.header_options:
+            if key in declared:
+                offenders.append(f"{spec.name}: header {header!r} reads credential option {key!r}")
+    assert offenders == [], (
+        "a header option key is exempt from redaction, so it must not carry a credential — "
+        "declare it in `credential_option_names`:\n  " + "\n  ".join(offenders)
+    )

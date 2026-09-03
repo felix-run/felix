@@ -407,8 +407,18 @@ def parse_provider_options(settings: Settings | None = None) -> dict[str, dict[s
     out: dict[str, dict[str, str]] = {}
     for name, opts in parsed.items():
         if isinstance(opts, dict):
-            out[str(name)] = {str(k): str(v) for k, v in opts.items()}
+            # `None` and booleans are dropped rather than stringified: `str(None)` is
+            # `"None"`, which is truthy, so a `null` api_key suppressed the settings-field
+            # fallback and the missing-credential warning and went out as `Bearer None`.
+            out[str(name)] = {
+                str(k): str(v) for k, v in opts.items() if v is not None and not isinstance(v, bool)
+            }
     return out
+
+
+# Providers already warned about a missing credential, so the notice is a startup-ish fact
+# rather than per-turn noise.
+_WARNED_NO_CREDENTIAL: set[str] = set()
 
 
 def resolve_provider_config(spec: ProviderSpec, settings: Settings) -> tuple[str, str, dict[str, str]]:
@@ -431,6 +441,20 @@ def resolve_provider_config(spec: ProviderSpec, settings: Settings) -> tuple[str
         api_key = str(getattr(settings, spec.api_key_config_key, "") or "")
     if not api_key and spec.api_key_literal:
         api_key = spec.api_key_literal
+    if not api_key and spec.name not in _WARNED_NO_CREDENTIAL:
+        # Once per provider, not once per turn. `resolve_provider_config` runs on the
+        # per-request path — `build_model` from the react loop, from each sub-agent, and
+        # from the inbound injection screener on every turn — so an unconditional warning
+        # is unbounded log volume for a configuration that is legitimate (a local gateway
+        # with no key), keyed to whatever rate a caller chooses. A guard that fires on every
+        # request for a supported setup carries no signal.
+        _WARNED_NO_CREDENTIAL.add(spec.name)
+        logger.warning(
+            "provider %r has no credential; requests will be sent unauthenticated. Set it "
+            'in FELIX_MODEL_PROVIDER_OPTIONS, e.g. {"%s": {"api_key": "..."}}',
+            spec.name,
+            spec.name,
+        )
     return base_url, api_key, spec.resolve_headers(options)
 
 
