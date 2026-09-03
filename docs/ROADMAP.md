@@ -5,7 +5,7 @@ concrete enough to pick up in a single session.
 
 **Repos:** `felix-run/felix` (harness) · `felix-run/web` (chat-ui + float + docs)
 **Live:** [api.felix.run](https://api.felix.run) · [chat.felix.run](https://chat.felix.run) · [float.felix.run](https://float.felix.run) · [docs.felix.run](https://docs.felix.run)
-**Last reviewed:** 2026-08-28 (extensibility audit: the seams that were open, the ones that only looked open, and the two that were bugs)
+**Last reviewed:** 2026-09-02 (governance mutation audit: disabled each control in turn and re-ran the suite; PRs #141–#150)
 
 ---
 
@@ -43,6 +43,77 @@ poll landed in #76 and #78, and `v0.2.0` is tagged.
 When in doubt: **dogfood float → fix what breaks → write it down here.**
 
 ---
+
+## Decisions waiting on a human
+
+Each of these came out of the governance audit (#141–#150) with the code deliberately left
+alone, because the right answer is a product call rather than a bug fix. Ordered by how much a
+wrong default costs.
+
+- [ ] **Governance-gap counters vs the tenant metric allowlist.** `runtime.py`'s
+      `_apply_metric_allowlist` runs before `build_agent`, and `observability/metrics.py` drops
+      any counter not in `spec.observability.metrics`. So a tenant-authored manifest that sets
+      that field for any reason silently suppresses `felix_untrusted_tools_unscreened`,
+      `felix_policy_unsatisfiable` and `felix_rule_targets_nothing` — the exact signals
+      `deploy/GOVERNANCE.md` now tells operators to watch. The WARNING still fires, so this is
+      partial. **Decide:** should governance-gap counters be exempt from the manifest allowlist?
+- [ ] **Keep growing the fiber scheduler, or make Temporal the documented multi-step path.**
+      Temporal already wraps the same `advance_fiber`; what fibers duplicates is the scheduling
+      envelope, and that is where this audit's durability bugs were — a lease that equalled the
+      approval timeout (#150), resolution outside the tenant context (#150). "Fiber engine
+      ergonomics" below proposes step memoization and an append-only `fiber_steps` table, which
+      is an activity model by another name. **Decide before starting that item.**
+- [ ] **`cowork.yaml` sets `auth.inbound.allow_anonymous: true` on a manifest that binds a
+      local shell.** The `client-shell` approval rule and the `thread_id`/`tool_call_id`
+      requirement are what stand between an anonymous caller and command execution on a
+      developer's machine. Untouched by the audit; wants a conscious yes or no.
+- [ ] **A per-tool screener cost lever.** `content_screening.tools` became additive in #146, so
+      the only per-tool cost control is gone. Free in the default configuration (no `model`
+      set), and a manifest binding twenty MCP tools that named three now pays twenty screener
+      calls per turn where it does. If that shows up: add `model_tools:` — *which tools get the
+      expensive screener*, marker screening unconditional — never a way to exempt an untrusted
+      tool from screening.
+- [ ] **Should `felix validate-manifest` hard-fail on a pattern matching no declared
+      integration?** Compile-time tolerance exists for the dynamic tool set (a failed MCP
+      discovery binds nothing). At author time the builtins plus declared refs are statically
+      known, so `github__*` against a builtin-only agent is a typo with no runtime excuse.
+      Author-friction call.
+
+## Known gaps, recorded rather than fixed
+
+Found during the audit, deliberately out of scope for the PR that found them.
+
+- [ ] **`expires_at` bounds step *entry*, not duration.** A durable step that starts just inside
+      the horizon runs to completion with the recorded scopes; `limits.max_wall_clock_seconds`
+      is the only ceiling and defaults to `None`. Documented in `deploy/GOVERNANCE.md`.
+- [ ] **Fiber rows are never swept.** `jobs/retention.py` covers `audit_events`, `plans` and
+      `memory_vectors`, not `fibers`. So `state.auth` — principal, scopes, scheme — accumulates
+      indefinitely, outliving both the run's usability and the 30-day audit TTL that motivated
+      it. Retention for `fibers` is the fix.
+- [ ] **Temporal carries `state["auth"]` into workflow history.** `start_fiber_workflow` passes
+      the whole fiber dict as the workflow argument, and the activity re-passes it per step, so
+      `{principal_sub, scopes, scheme}` for every tenant accumulates in one namespace outside
+      the RLS boundary and outside the run's TTL. User message content already went there; a
+      scope inventory is new.
+- [ ] **The Temporal path trusts the fiber row wholesale.** `fiber_step` calls `advance_fiber`
+      with the row straight from the workflow argument, never re-read from Postgres, and
+      `_save_fiber` writes under `rls_bypass()`. Anyone who can start a workflow on the
+      `felix-fibers` task queue therefore chooses `tenant_id`, `expires_at` and now
+      `state["auth"]`. Temporal access is privileged; this should be a documented assumption.
+- [ ] **Memory tools are not untrusted.** `recall` and `list_memories` are `transport: local`
+      with `source: memory`, which is not in `_UNTRUSTED_SOURCE_PREFIXES`, so recall is not
+      screened by default — `cowork.yaml` names them explicitly instead. Capture runs over turns
+      containing untrusted tool output, so recall is a re-entry path for content quarantined on
+      the way in. Either add `memory` to the untrusted prefixes or keep it a per-manifest choice.
+- [ ] **`scheme` replay on resume.** A resumed fiber presents the recorded scheme without
+      holding a credential, so `auth.inbound.schemes` can only ever agree with the enqueue-side
+      check. Defence in depth lost, not a hole; worth a sentence in GOVERNANCE.md.
+- [ ] **`pr-quality-gate.sh` does not treat `durability/` as a control path.** It reported
+      "felix-security-reviewer is not needed" on #149, the most security-relevant change of the
+      session — a resumed run's authority comes from there. Add `durability` to the token list.
+- [ ] **felix-web docs lag #148–#150.** `internals/governance.mdx` covers screening and glob
+      targeting; the durable-run authority model, the lease semantics and the RLS ordering are
+      only in `deploy/GOVERNANCE.md`.
 
 ## Now (next 1–2 sessions)
 
@@ -519,6 +590,49 @@ remainder, none of it blocking.
 ---
 
 ## Shipped (recent)
+
+### Governance mutation audit (Sep 2026, #141–#150)
+
+Method: disable each of the nine governance controls in turn — `return tools`, the shape a
+control takes when it is silently absent — and re-run the whole suite against each. Seven were
+noticed by tests written for them; two were not. Everything below came from that, or from the
+security reviews of the fixes.
+
+- **`replay_safe` had never worked in any release.** Seven wrappers and `wrap_tool` rebuilt the
+  tool from eight of its ten fields; `apply_limits` wraps every tool unconditionally, so the
+  flag read `False` on every tool in every manifest and `patterns/react.py`'s "safe to call
+  again" branch had never executed (#141).
+- **A `spec.policies` rule with `tools` and no `required_scopes` permitted everyone** while
+  appearing governed — the tool *was* wrapped, so the compiled stack looked correct (#142).
+- **Glob tool targeting**, which the docs had promised for months and no control implemented,
+  across all five tool-targeting lists. Approvals needed literal-beats-pattern precedence to
+  stay non-weakening (#143).
+- **One model tool call could execute a tool twice** — both dispatch sites probed arity by
+  calling and catching `TypeError`, which cannot tell wrong arity from a `TypeError` raised
+  inside a body that already ran (#144).
+- **Post-call bookkeeping told the model a successful tool call had failed**, and ran the
+  after-tool hook twice (#145).
+- **`content_screening.tools` was substitutive**, so naming one trusted tool silently unscreened
+  every MCP, peer, browser, sandbox and queue tool (#146).
+- **Policies nothing in the configuration can satisfy** are named at compile (#147).
+- **Untrusted tools bound with screening off** are named at compile; found `cowork.yaml` running
+  `local_shell` on the user's machine unscreened (#148).
+- **A durable run resumes as the caller who started it**, bounded three ways: never wider than
+  the caller, never longer than the run (TTL now capped), never longer than the token's `exp`
+  (#149).
+- **The fiber lease equalled the approval timeout**, so a run parked on a decision was
+  re-claimed and re-executed with side effects already committed; and manifest resolution ran
+  outside the tenant context, so under RLS a durable resume could execute the *bundled*
+  manifest (#150).
+
+Also deleted: `scripts/prove-fails.sh` and `.claude/hooks/structural-test-proof.sh`. Measured —
+the two PRs that built them changed zero production files and their tests were 28% of suite
+runtime. The method survived the tools; the `test-quality` skill describes mutation directly.
+
+The recurring failure in the *fixes*, worth remembering: testing the helper instead of the call
+site. It happened five or six times, and a mutation is only evidence when the test **fails** —
+two runs reported red with zero failed tests, which were collection errors.
+
 
 ### RLS opt-out coherence (Aug 2026, v0.2.1)
 
