@@ -20,6 +20,12 @@ from dataclasses import dataclass, field
 
 from felix_ai.wire.base import HttpModelClient
 
+# Option names the harness itself reads as the credential. These can never be addressing,
+# whatever a template says: `base_url` is operator-supplied, and deriving exemptions from
+# placeholders *in it* means a URL containing `{api_key}` would otherwise exempt the very
+# option `resolve_provider_config` sends as the bearer token.
+CREDENTIAL_OPTION_NAMES = frozenset({"api_key"})
+
 
 class ProviderConfigError(ValueError):
     """A provider is registered but cannot be addressed with what it was given."""
@@ -103,12 +109,15 @@ class ProviderSpec:
         Pass the configured URL when there is one, or a `{region}`-style gateway template
         has its region masked out of every tool result.
         """
-        return frozenset(
-            {
-                "base_url",
-                *self.placeholders(configured_base_url or self.base_url_default),
-                *(key for _header, key in self.header_options),
-            }
+        return (
+            frozenset(
+                {
+                    "base_url",
+                    *self.placeholders(configured_base_url or self.base_url_default),
+                    *(key for _header, key in self.header_options),
+                }
+            )
+            - CREDENTIAL_OPTION_NAMES
         )
 
     def resolve_headers(self, options: Mapping[str, str] | None = None) -> dict[str, str]:
@@ -127,4 +136,9 @@ def placeholder_names(base_url: str | None) -> frozenset[str]:
     return frozenset(_PLACEHOLDER.findall(base_url or ""))
 
 
-__all__ = ["ProviderConfigError", "ProviderSpec", "placeholder_names"]
+__all__ = [
+    "CREDENTIAL_OPTION_NAMES",
+    "ProviderConfigError",
+    "ProviderSpec",
+    "placeholder_names",
+]

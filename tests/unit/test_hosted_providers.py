@@ -312,3 +312,56 @@ def test_a_plugin_provider_gets_the_same_exemption_from_its_own_url() -> None:
     masked = _provider_option_secrets(settings)
     assert "opaque-credential-x" in masked, "an option nobody anticipated is masked"
     assert "acme-corp-1" not in masked, "but one its own URL consumes is not"
+
+
+@pytest.mark.parametrize("provider", ["openai", "acme-plugin-with-no-descriptor"])
+def test_a_crafted_base_url_cannot_exempt_the_credential(provider: str) -> None:
+    """A weakness introduced by deriving exemptions from the *configured* URL.
+
+    Placeholders in an operator-supplied `base_url` are addressing, which is what makes a
+    `{region}` gateway template work. But it also meant a URL containing `{api_key}` made
+    the credential itself look like a placeholder and exempted it from redaction. `api_key`
+    is the name `resolve_provider_config` reads as the bearer token, so it can never be
+    addressing whatever a template says — on the descriptor path or the plugin fallback.
+    """
+    from felix.secrets import _provider_option_secrets
+
+    settings = _settings(
+        model_provider_options=(
+            f'{{"{provider}":{{"base_url":"https://x.invalid/{{api_key}}/v1",'
+            '"api_key":"sk-must-still-be-masked"}}'
+        )
+    )
+    assert "sk-must-still-be-masked" in _provider_option_secrets(settings)
+
+
+def test_a_legitimate_placeholder_is_still_exempt() -> None:
+    """The counterpart, so the guard above cannot pass by exempting nothing."""
+    from felix.secrets import _provider_option_secrets
+
+    settings = _settings(
+        model_provider_options=(
+            '{"openai":{"base_url":"https://{region}.gw.invalid/v1",'
+            '"region":"us-east-1","api_key":"sk-long-enough-key"}}'
+        )
+    )
+    masked = _provider_option_secrets(settings)
+    assert "sk-long-enough-key" in masked
+    assert "us-east-1" not in masked
+
+
+@pytest.mark.parametrize(
+    "options,expected",
+    [
+        ('{"groq":{"api_key":123456789012345}}', "123456789012345"),
+        ('{"groq":{"headers":{"Authorization":"Bearer nested-secret"}}}', "Bearer nested-secret"),
+    ],
+)
+def test_a_non_string_option_is_masked_on_the_form_that_goes_on_the_wire(options: str, expected: str) -> None:
+    """`parse_provider_options` coerces every value with `str()`, so an integer or a nested
+    dict is sent as a live bearer token. Skipping anything that was not already a string
+    meant the masker and the parser disagreed about what a credential is."""
+    from felix.secrets import _provider_option_secrets
+
+    masked = _provider_option_secrets(_settings(model_provider_options=options))
+    assert any(expected in m for m in masked), masked

@@ -355,7 +355,11 @@ def _provider_option_secrets(settings: object) -> list[str]:
     if not isinstance(parsed, dict):
         return []
 
-    from felix_ai.providers import builtin_provider_specs, placeholder_names
+    from felix_ai.providers import (
+        CREDENTIAL_OPTION_NAMES,
+        builtin_provider_specs,
+        placeholder_names,
+    )
 
     specs = {spec.name: spec for spec in builtin_provider_specs()}
     found: list[str] = []
@@ -372,7 +376,7 @@ def _provider_option_secrets(settings: object) -> list[str]:
         else:
             # A plugin registers a bare factory, not a descriptor, so there is nothing to
             # ask. What it templates into its own endpoint is still derivable from it.
-            addressing = frozenset({"base_url"}) | placeholder_names(configured)
+            addressing = (frozenset({"base_url"}) | placeholder_names(configured)) - CREDENTIAL_OPTION_NAMES
         for name, value in opts.items():
             # Mask the coerced form, because that is what actually goes on the wire:
             # `parse_provider_options` does `str(v)` on every value, so an integer or a

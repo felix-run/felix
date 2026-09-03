@@ -19,7 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   Secrecy is now decided by allowlisting the option names a provider consumes as
   *addressing* — `base_url`, every `{placeholder}` its endpoint templates, and its header
-  option keys — asked of that provider's own descriptor. Per provider, not a union:
+  option keys — asked of that provider's own descriptor, minus the names the harness itself
+  reads as the credential. That last part matters: exemptions are derived from placeholders
+  in the operator-supplied `base_url`, so without it a URL containing `{api_key}` would have
+  made the credential look like addressing and exempted it. Per provider, not a union:
   `account_id` is addressing for Cloudflare and meaningless to Groq, and exempting it
   everywhere would repeat the over-reach being removed. A plugin registers a bare factory
   rather than a descriptor, so its exemption is derived from its own configured URL.
