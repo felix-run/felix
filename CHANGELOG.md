@@ -14,21 +14,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   by matching option names containing key/token/secret/password, so a provider whose
   credential option is called `credential`, `authorization` or `bearer` had its value
   published verbatim in tool output. That is a denylist, and it failed open for exactly the
-  third-party providers the options map exists to serve — the reasoning `_TRUSTED_TRANSPORTS`
-  already records for tool transports.
+  third-party providers the options map exists to serve — the reasoning
+  `_TRUSTED_TRANSPORTS` already records for tool transports.
 
-  Secrecy is now decided by allowlisting the option names that are *addressing* rather than
-  credentials: `base_url`, every `{placeholder}` a base-URL template consumes, and every
-  header option key, all derived from the descriptors. An option a provider invents is
-  masked by default. Over-masking costs a redacted string in tool output; under-masking
-  leaks a credential, and that asymmetry decides which way the default fails.
+  Secrecy is now decided by allowlisting the option names a provider consumes as
+  *addressing* — `base_url`, every `{placeholder}` its endpoint templates, and its header
+  option keys — asked of that provider's own descriptor. Per provider, not a union:
+  `account_id` is addressing for Cloudflare and meaningless to Groq, and exempting it
+  everywhere would repeat the over-reach being removed. A plugin registers a bare factory
+  rather than a descriptor, so its exemption is derived from its own configured URL.
+
+  Erring toward masking is deliberate, and it is not free: `redact_text` is an
+  unconditional string replacement over session events, audit payloads and fiber state, so
+  a long low-entropy value wrongly treated as secret rewrites unrelated text wherever it
+  appears. That is the cost being traded against leaking a credential.
+
+- **Options-blob credentials were masked in tool output and nowhere else.** Audit rows,
+  session events and fiber state redact through `collected_secret_values()` with no
+  settings, so they see only the process-global list — and hydration registered a value
+  only when it arrived as a `secret:NAME` ref. A literal `{"groq": {"api_key": "gsk_..."}}`,
+  the form `.env.example` documents, never reached three of the four sinks
+  `deploy/GOVERNANCE.md` promises. Startup now registers every credential in the blob.
+
+- **A non-string option value was a live credential the masker could not see.**
+  `parse_provider_options` coerces every value with `str()`, so an integer or a nested dict
+  is sent as a bearer token, while the masker skipped anything that was not already a
+  string. Both now agree on the coerced form.
 
 ### Fixed
 
 - **A provider with no credential sent `Authorization: Bearer ` rather than no header** — a
   malformed credential that proxies and gateways treat inconsistently and that diagnoses
   nothing. The Anthropic path was already correct, since it sends the key unwrapped and
-  `_headers` drops empty values.
+  `_headers` drops empty values. Because omitting the header turns a 401 into a request a
+  permissive upstream may accept anonymously, an empty credential now logs a warning naming
+  the provider and the setting to fix.
+
+- **An unresolved `secret:NAME` provider option was added to the redaction list**, redacting
+  the one diagnostic that names what failed to resolve out of the logs someone is reading to
+  find out why. The `{"secret": "NAME"}` object form — valid everywhere else — is now
+  resolved too, rather than stringified into `"{'secret': 'NAME'}"` and sent as a token.
 
 ### Added
 

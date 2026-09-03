@@ -431,6 +431,16 @@ def resolve_provider_config(spec: ProviderSpec, settings: Settings) -> tuple[str
         api_key = str(getattr(settings, spec.api_key_config_key, "") or "")
     if not api_key and spec.api_key_literal:
         api_key = spec.api_key_literal
+    if not api_key:
+        # Omitting the Authorization header is right — an empty `Bearer ` is a malformed
+        # credential — but it turns a 401 into a request an upstream may accept
+        # anonymously, so the misconfiguration has to say so somewhere.
+        logger.warning(
+            "provider %r has no credential; requests will be sent unauthenticated. Set it "
+            'in FELIX_MODEL_PROVIDER_OPTIONS, e.g. {"%s": {"api_key": "..."}}',
+            spec.name,
+            spec.name,
+        )
     return base_url, api_key, spec.resolve_headers(options)
 
 

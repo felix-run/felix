@@ -102,9 +102,7 @@ def test_a_credential_is_masked_whatever_the_option_is_called() -> None:
             '"authorization":"Bearer must-be-masked",'
             '"bearer":"tok-must-be-masked",'
             '"api_key":"sk-must-be-masked",'
-            '"base_url":"https://acme.invalid/v1",'
-            '"account_id":"acct-1234567",'
-            '"gateway_id":"gw-1234567"}}'
+            '"base_url":"https://acme.invalid/v1"}}'
         )
     )
     masked = collected_secret_values(settings)
@@ -115,10 +113,10 @@ def test_a_credential_is_masked_whatever_the_option_is_called() -> None:
         "sk-must-be-masked",
     ):
         assert secret in masked, secret
-    # Addressing, not credentials — redacting these would corrupt legitimate tool output.
+    # Addressing, not a credential — redacting it would corrupt legitimate tool output.
+    # `account_id` and `gateway_id` are exempt only for the provider that consumes them;
+    # `test_addressing_names_are_per_provider_not_a_union` covers that.
     assert "https://acme.invalid/v1" not in masked
-    assert "acct-1234567" not in masked
-    assert "gw-1234567" not in masked
 
 
 def test_an_unknown_provider_option_is_masked_by_default() -> None:
@@ -251,3 +249,66 @@ def test_an_explicit_embedding_model_still_wins() -> None:
         model_provider_options='{"google":{"api_key":"k"}}',
     )
     assert _build_compat("google")(settings).model == "text-embedding-3-large"
+
+
+def test_a_placeholder_in_a_configured_gateway_url_is_not_a_secret() -> None:
+    """`placeholders()` used to read the provider's *default* template while
+    `resolve_base_url` reads the configured one, so a `{region}` gateway URL had its region
+    masked — and `redact_text` is an unconditional replacement, so `us-east-1` would then be
+    rewritten out of every tool result that mentioned it."""
+    from felix.secrets import _provider_option_secrets
+
+    settings = _settings(
+        model_provider_options=(
+            '{"openai":{"base_url":"https://{region}.gw.example.com/v1",'
+            '"region":"us-east-1","api_key":"sk-realsecret"}}'
+        )
+    )
+    masked = _provider_option_secrets(settings)
+    assert "sk-realsecret" in masked
+    assert "us-east-1" not in masked, "a placeholder the endpoint consumes is addressing"
+
+
+def test_addressing_names_are_per_provider_not_a_union() -> None:
+    """`account_id` is addressing for Cloudflare and meaningless to Groq. Exempting it
+    everywhere because one provider declares it is the same name-based over-reach this
+    function exists to remove."""
+    from felix.secrets import _provider_option_secrets
+
+    exempt = _provider_option_secrets(
+        _settings(
+            model_provider_options=('{"workers_ai":{"account_id":"acct-1234567","gateway_id":"gw-1234567"}}')
+        )
+    )
+    assert exempt == [], "Cloudflare genuinely consumes both"
+
+    masked = _provider_option_secrets(
+        _settings(model_provider_options='{"groq":{"account_id":"anything-goes"}}')
+    )
+    assert "anything-goes" in masked, "Groq consumes no account_id, so it is not addressing"
+
+
+def test_an_unresolved_secret_reference_is_not_masked() -> None:
+    """`secret:NAME` survives here only when resolution *failed*. Masking it redacts the one
+    diagnostic naming what could not be resolved, out of the logs someone is reading to find
+    out why."""
+    from felix.secrets import _provider_option_secrets
+
+    settings = _settings(model_provider_options='{"acme":{"api_key":"secret:ACME_KEY"}}')
+    assert _provider_option_secrets(settings) == []
+
+
+def test_a_plugin_provider_gets_the_same_exemption_from_its_own_url() -> None:
+    """A plugin registers a bare factory, not a descriptor, so there is nothing to ask —
+    but what it templates into its own endpoint is still derivable from the endpoint."""
+    from felix.secrets import _provider_option_secrets
+
+    settings = _settings(
+        model_provider_options=(
+            '{"newthing":{"base_url":"https://{tenant}.plugin.invalid/v1",'
+            '"tenant":"acme-corp-1","handshake_blob":"opaque-credential-x"}}'
+        )
+    )
+    masked = _provider_option_secrets(settings)
+    assert "opaque-credential-x" in masked, "an option nobody anticipated is masked"
+    assert "acme-corp-1" not in masked, "but one its own URL consumes is not"

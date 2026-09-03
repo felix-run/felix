@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from felix_ai.providers.anthropic import ANTHROPIC
-from felix_ai.providers.base import ProviderSpec
+from felix_ai.providers.base import ProviderSpec, placeholder_names
 from felix_ai.providers.compat import OPENAI_COMPATIBLE
 
 
@@ -12,4 +12,4 @@ def builtin_provider_specs() -> tuple[ProviderSpec, ...]:
     return (ANTHROPIC, *OPENAI_COMPATIBLE)
 
 
-__all__ = ["ANTHROPIC", "OPENAI_COMPATIBLE", "ProviderSpec", "builtin_provider_specs"]
+__all__ = ["ANTHROPIC", "OPENAI_COMPATIBLE", "ProviderSpec", "builtin_provider_specs", "placeholder_names"]

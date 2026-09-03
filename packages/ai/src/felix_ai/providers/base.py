@@ -92,10 +92,39 @@ class ProviderSpec:
             base = base.rstrip("/") + "/v1"
         return base
 
+    def addressing_option_names(self, configured_base_url: str | None = None) -> frozenset[str]:
+        """Option names this provider consumes as *addressing* rather than as a credential.
+
+        The authority for this is `resolve_base_url` and `resolve_headers` right here, which
+        is why it lives beside them: `felix.secrets` needs the same answer to decide what to
+        redact, and re-deriving it there meant the two could disagree — and did, because a
+        placeholder in an operator-*configured* base URL is not in the default template.
+
+        Pass the configured URL when there is one, or a `{region}`-style gateway template
+        has its region masked out of every tool result.
+        """
+        return frozenset(
+            {
+                "base_url",
+                *self.placeholders(configured_base_url or self.base_url_default),
+                *(key for _header, key in self.header_options),
+            }
+        )
+
     def resolve_headers(self, options: Mapping[str, str] | None = None) -> dict[str, str]:
         """Provider headers for this configuration; absent options contribute nothing."""
         opts = options or {}
         return {header: opts[key] for header, key in self.header_options if opts.get(key)}
 
 
-__all__ = ["ProviderConfigError", "ProviderSpec"]
+def placeholder_names(base_url: str | None) -> frozenset[str]:
+    """Placeholders in a URL template, for a provider with no descriptor to ask.
+
+    A plugin registers a bare factory, not a `ProviderSpec`, so there is nothing to consult
+    when deciding whether one of its options is addressing. What it templates into its own
+    endpoint is still derivable from the endpoint.
+    """
+    return frozenset(_PLACEHOLDER.findall(base_url or ""))
+
+
+__all__ = ["ProviderConfigError", "ProviderSpec", "placeholder_names"]

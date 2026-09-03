@@ -230,7 +230,10 @@ async def _hydrate_provider_options(settings: Any, provider: SecretsProvider) ->
         if not isinstance(opts, dict):
             continue
         for name, value in list(opts.items()):
-            if not isinstance(value, str) or secret_ref_name(value) is None:
+            # Both spellings, since `normalize_secret_ref` accepts both everywhere else:
+            # the object form was stringified into `"{'secret': 'NAME'}"` and sent as a
+            # bearer token.
+            if secret_ref_name(value) is None:
                 continue
             try:
                 resolved = await resolve_secret_value(provider, value, register=False)
@@ -243,10 +246,15 @@ async def _hydrate_provider_options(settings: Any, provider: SecretsProvider) ->
             if resolved:
                 opts[name] = resolved
                 changed = True
-                if len(resolved) >= 8:
-                    found.append(resolved)
     if changed:
         settings.model_provider_options = json.dumps(parsed)
+    # Register every credential in the blob, not just the refs resolved above — and after
+    # the rewrite, so a resolved ref is registered as its *value* rather than skipped as a
+    # reference. Audit rows, session events and fiber state redact through
+    # `collected_secret_values()` with no settings, so they only ever see this process-global
+    # list: a literal `{"groq": {"api_key": "gsk_..."}}`, the form `.env.example` documents,
+    # was masked in tool output and nowhere else. `deploy/GOVERNANCE.md` promises all four.
+    found.extend(_provider_option_secrets(settings))
     return found
 
 
@@ -317,23 +325,6 @@ def collected_secret_values(settings: object | None = None) -> list[str]:
     return out
 
 
-def _structural_option_names() -> set[str]:
-    """Provider option names that are addressing, not credentials.
-
-    Derived from the descriptors: the endpoint override, every `{placeholder}` a base-URL
-    template consumes, and every header option key. Anything else in a provider's options
-    bag is treated as a secret, so a provider added later cannot quietly fall outside the
-    rule by naming its credential something new.
-    """
-    from felix_ai.providers import builtin_provider_specs
-
-    names = {"base_url"}
-    for spec in builtin_provider_specs():
-        names.update(spec.placeholders())
-        names.update(key for _header, key in spec.header_options)
-    return names
-
-
 def _provider_option_secrets(settings: object) -> list[str]:
     """Credentials configured through `FELIX_MODEL_PROVIDER_OPTIONS`.
 
@@ -341,15 +332,18 @@ def _provider_option_secrets(settings: object) -> list[str]:
     and a provider credential that never reaches this list is never masked out of tool
     output.
 
-    Which values are secret is decided by an **allowlist of the names that are not**. The
-    previous version matched names containing key/token/secret/password, which is a
-    denylist, and it failed open for exactly the third-party providers the options map
-    exists to serve: a provider whose credential option is called `credential`,
-    `authorization` or `bearer` had its value published verbatim. `_TRUSTED_TRANSPORTS`
-    records the same reasoning for tool transports.
+    Which values are secret is decided by allowlisting the option names that are
+    *addressing*, per provider, from that provider's own descriptor. The previous version
+    matched names containing key/token/secret/password, which is a denylist and failed open
+    for exactly the third-party providers this options map exists to serve: a credential
+    option called `credential`, `authorization` or `bearer` was published verbatim.
+    `_TRUSTED_TRANSPORTS` records the same reasoning for tool transports.
 
-    Over-masking an option costs a redacted string in tool output; under-masking one leaks
-    a credential. That asymmetry decides which way the default fails.
+    Erring toward masking is deliberate, but it is not free: `redact_text` is an
+    unconditional string replacement over session events, audit payloads and fiber state, so
+    a long low-entropy value wrongly treated as secret rewrites unrelated text everywhere it
+    appears. That is the cost being traded against leaking a credential, and it is why the
+    exemption is derived from what each provider actually consumes rather than guessed at.
     """
     raw = (getattr(settings, "model_provider_options", "") or "").strip()
     if not raw:
@@ -360,19 +354,43 @@ def _provider_option_secrets(settings: object) -> list[str]:
         return []
     if not isinstance(parsed, dict):
         return []
-    structural = _structural_option_names()
+
+    from felix_ai.providers import builtin_provider_specs, placeholder_names
+
+    specs = {spec.name: spec for spec in builtin_provider_specs()}
     found: list[str] = []
-    for opts in parsed.values():
+    for provider_name, opts in parsed.items():
         if not isinstance(opts, dict):
             continue
+        configured = opts.get("base_url") if isinstance(opts.get("base_url"), str) else None
+        spec = specs.get(str(provider_name))
+        if spec is not None:
+            # Per provider, not a union across all of them: `account_id` is addressing for
+            # Cloudflare and means nothing to Groq, and exempting it everywhere would be the
+            # same name-based over-reach this function exists to remove.
+            addressing = spec.addressing_option_names(configured)
+        else:
+            # A plugin registers a bare factory, not a descriptor, so there is nothing to
+            # ask. What it templates into its own endpoint is still derivable from it.
+            addressing = frozenset({"base_url"}) | placeholder_names(configured)
         for name, value in opts.items():
+            # Mask the coerced form, because that is what actually goes on the wire:
+            # `parse_provider_options` does `str(v)` on every value, so an integer or a
+            # nested dict becomes a live credential while `isinstance(value, str)` skipped
+            # it here. The masker and the parser have to agree on what a value *is*.
+            text = value if isinstance(value, str) else str(value)
             # Below 8 characters a redaction does more harm than good — it would rewrite
             # incidental matches throughout tool output. `hydrate_secrets` uses the same floor.
-            if not isinstance(value, str) or len(value) < 8:
+            if len(text) < 8:
                 continue
-            if str(name).lower() in structural:
+            if name in addressing:
                 continue
-            found.append(value)
+            # An unresolved `secret:NAME` is a reference, not a credential. Masking it
+            # redacts the one diagnostic that names what failed to resolve, out of exactly
+            # the logs someone is reading to find out why.
+            if secret_ref_name(text) is not None:
+                continue
+            found.append(text)
     return found
 
 
