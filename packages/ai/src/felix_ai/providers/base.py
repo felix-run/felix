@@ -20,6 +20,12 @@ from dataclasses import dataclass, field
 
 from felix_ai.wire.base import HttpModelClient
 
+# Option names the harness itself reads as the credential. These can never be addressing,
+# whatever a template says: `base_url` is operator-supplied, and deriving exemptions from
+# placeholders *in it* means a URL containing `{api_key}` would otherwise exempt the very
+# option `resolve_provider_config` sends as the bearer token.
+CREDENTIAL_OPTION_NAMES = frozenset({"api_key"})
+
 
 class ProviderConfigError(ValueError):
     """A provider is registered but cannot be addressed with what it was given."""
@@ -59,6 +65,12 @@ class ProviderSpec:
     # This cannot be read off the model: Llama runs on a laptop and is also sold by four
     # hosted providers, and the catalog matches model ids by substring.
     bills_per_token: bool = True
+    # Option names this provider reads as a credential beyond `api_key`. Header options are
+    # exempt from redaction because they are addressing — but a header is exactly where a
+    # second credential goes (Cloudflare AI Gateway's `cf-aig-authorization`, an Azure-style
+    # `api-key`), and adding such a row would otherwise exempt it silently. Naming it here
+    # keeps the exemption honest; an invariant asserts the two never overlap.
+    credential_option_names: tuple[str, ...] = field(default_factory=tuple)
     # Whether this endpoint serves `/embeddings` as well as `/chat/completions`. Not an
     # inference from the wire format: several hosted providers implement chat only, and
     # registering them as selectable embedders made `FELIX_MEMORY_EMBEDDER=groq` pass
@@ -92,10 +104,47 @@ class ProviderSpec:
             base = base.rstrip("/") + "/v1"
         return base
 
+    def addressing_option_names(self, configured_base_url: str | None = None) -> frozenset[str]:
+        """Option names this provider consumes as *addressing* rather than as a credential.
+
+        The authority for this is `resolve_base_url` and `resolve_headers` right here, which
+        is why it lives beside them: `felix.secrets` needs the same answer to decide what to
+        redact, and re-deriving it there meant the two could disagree — and did, because a
+        placeholder in an operator-*configured* base URL is not in the default template.
+
+        Pass the configured URL when there is one, or a `{region}`-style gateway template
+        has its region masked out of every tool result.
+        """
+        return (
+            frozenset(
+                {
+                    "base_url",
+                    *self.placeholders(configured_base_url or self.base_url_default),
+                    *(key for _header, key in self.header_options),
+                }
+            )
+            - CREDENTIAL_OPTION_NAMES
+        )
+
     def resolve_headers(self, options: Mapping[str, str] | None = None) -> dict[str, str]:
         """Provider headers for this configuration; absent options contribute nothing."""
         opts = options or {}
         return {header: opts[key] for header, key in self.header_options if opts.get(key)}
 
 
-__all__ = ["ProviderConfigError", "ProviderSpec"]
+def placeholder_names(base_url: str | None) -> frozenset[str]:
+    """Placeholders in a URL template, for a provider with no descriptor to ask.
+
+    A plugin registers a bare factory, not a `ProviderSpec`, so there is nothing to consult
+    when deciding whether one of its options is addressing. What it templates into its own
+    endpoint is still derivable from the endpoint.
+    """
+    return frozenset(_PLACEHOLDER.findall(base_url or ""))
+
+
+__all__ = [
+    "CREDENTIAL_OPTION_NAMES",
+    "ProviderConfigError",
+    "ProviderSpec",
+    "placeholder_names",
+]

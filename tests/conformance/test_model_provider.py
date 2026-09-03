@@ -716,3 +716,21 @@ async def test_stream_yields_text_for_a_provider_that_only_streams(arm: _Arm) ->
     arm.program_stream(content="hello")
     chunks = [c async for c in arm.client.stream(_user(), [])]
     assert "".join(chunks) == "hello"
+
+
+@pytest.mark.parametrize("arm", ["openai", "anthropic"], indirect=True)
+@pytest.mark.asyncio
+async def test_no_credential_means_no_auth_header(arm: _Arm) -> None:
+    """A provider configured without a key must send no `Authorization` header rather than
+    an empty `Bearer `, which is a malformed credential that proxies and gateways treat
+    inconsistently and which diagnoses nothing. The Anthropic path was already right, since
+    it sends the key unwrapped and `_headers` drops empty values."""
+    assert arm.transport is not None
+    arm.client.api_key = ""
+    arm.program_turn()
+    await arm.client.chat(_user(), [])
+
+    headers = arm.transport.headers[-1]
+    assert "Authorization" not in headers
+    assert "x-api-key" not in headers
+    assert headers["Content-Type"] == "application/json"

@@ -7,6 +7,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **A provider credential was masked only if its option was *named* like one.**
+  `_provider_option_secrets` decided which `FELIX_MODEL_PROVIDER_OPTIONS` values to redact
+  by matching option names containing key/token/secret/password, so a provider whose
+  credential option is called `credential`, `authorization` or `bearer` had its value
+  published verbatim in tool output. That is a denylist, and it failed open for exactly the
+  third-party providers the options map exists to serve — the reasoning
+  `_TRUSTED_TRANSPORTS` already records for tool transports.
+
+  Secrecy is now decided by allowlisting the option names a provider consumes as
+  *addressing* — `base_url`, every `{placeholder}` its endpoint templates, and its header
+  option keys — asked of that provider's own descriptor, minus the names the harness itself
+  reads as the credential. That last part matters: exemptions are derived from placeholders
+  in the operator-supplied `base_url`, so without it a URL containing `{api_key}` would have
+  made the credential look like addressing and exempted it. Per provider, not a union:
+  `account_id` is addressing for Cloudflare and meaningless to Groq, and exempting it
+  everywhere would repeat the over-reach being removed. A plugin registers a bare factory
+  rather than a descriptor, so its exemption is derived from its own configured URL.
+
+  Erring toward masking is deliberate, and it is not free: `redact_text` is an
+  unconditional string replacement over session events, audit payloads and fiber state, so
+  a long low-entropy value wrongly treated as secret rewrites unrelated text wherever it
+  appears. That is the cost being traded against leaking a credential.
+
+- **`felix temporal-worker` never hydrated secrets, so three of its four redaction sinks
+  were inert.** That process registers the `fiber_step` activity, which runs a full agent
+  turn — and fiber state, audit payloads and session events all redact through
+  `collected_secret_values()` with no settings, seeing only the process-global list that
+  hydration populates. A credential echoed into a tool result was persisted verbatim there
+  and served back through session export and fiber resume, and this was true of *every*
+  secret, not only provider options. `deploy/GOVERNANCE.md` promised all four sinks. An
+  entrypoint-wiring test now asserts every process that runs turns hydrates.
+
+- **Options-blob credentials were masked in tool output and nowhere else.** Audit rows,
+  session events and fiber state redact through `collected_secret_values()` with no
+  settings, so they see only the process-global list — and hydration registered a value
+  only when it arrived as a `secret:NAME` ref. A literal `{"groq": {"api_key": "gsk_..."}}`,
+  the form `.env.example` documents, never reached three of the four sinks
+  `deploy/GOVERNANCE.md` promises. Startup now registers every credential in the blob.
+
+- **A non-string option value was a live credential the masker could not see.**
+  `parse_provider_options` coerces every value with `str()`, so an integer or a nested dict
+  is sent as a bearer token, while the masker skipped anything that was not already a
+  string. Both now agree on the coerced form.
+
+### Fixed
+
+- **An unresolvable `secret:NAME` provider option was left in place and sent upstream**,
+  shipping the internal secret *name* to the third-party endpoint and into any log of that
+  request. It is dropped now, so the settings-field fallback applies or the
+  missing-credential path fires.
+
+- **A nested option value was registered for redaction only as its Python repr**, so the
+  same data re-rendered as JSON, or its leaf pulled out, no longer matched. Leaves are
+  registered too. And a `null` option coerced to the string `"None"` — truthy — which
+  suppressed both the settings fallback and the missing-credential warning and went out as
+  `Bearer None`; `None` and booleans are dropped rather than stringified.
+
+- **A provider with no credential sent `Authorization: Bearer ` rather than no header** — a
+  malformed credential that proxies and gateways treat inconsistently and that diagnoses
+  nothing. The Anthropic path was already correct, since it sends the key unwrapped and
+  `_headers` drops empty values. Because omitting the header turns a 401 into a request a
+  permissive upstream may accept anonymously, an empty credential now logs a warning naming
+  the provider and the setting to fix — once per provider, since `resolve_provider_config`
+  runs on the per-request path (including the inbound injection screener, on every turn) and
+  an unconditional warning there is unbounded log volume for a legitimate keyless local
+  gateway.
+
+- **An unresolved `secret:NAME` provider option was added to the redaction list**, redacting
+  the one diagnostic that names what failed to resolve out of the logs someone is reading to
+  find out why. The `{"secret": "NAME"}` object form — valid everywhere else — is now
+  resolved too, rather than stringified into `"{'secret': 'NAME'}"` and sent as a token.
+
 ### Added
 
 - **`spec.http_tools` — an agent can read a URL.** Until now it could not, except through

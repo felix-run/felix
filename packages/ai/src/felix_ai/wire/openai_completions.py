@@ -201,6 +201,19 @@ def _parse_openai_tool_calls(raw: list[dict[str, Any]] | None) -> list[ToolCall]
 class OpenAICompletionsClient(HttpModelClient):
     """The OpenAI chat-completions wire format — also Ollama and any LiteLLM gateway."""
 
+    def _auth_headers(self) -> dict[str, str]:
+        """Auth and content type for this wire format.
+
+        No credential means *no* Authorization header, not `Bearer `. An empty bearer is a
+        malformed credential that proxies and gateways treat inconsistently, and it
+        diagnoses nothing; `_headers` drops empty values, which is why the Anthropic path —
+        which sends the key unwrapped — was already correct.
+        """
+        return {
+            "Authorization": f"Bearer {self.api_key}" if self.api_key else "",
+            "Content-Type": "application/json",
+        }
+
     def _body(
         self,
         messages: list[ChatMessage],
@@ -232,9 +245,7 @@ class OpenAICompletionsClient(HttpModelClient):
         isolate_cache: bool = False,
     ) -> ModelChatResult:
         body = self._body(messages, tools, temperature, max_tokens, isolate_cache=isolate_cache)
-        headers = self._headers(
-            {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
-        )
+        headers = self._headers(self._auth_headers())
         async with httpx.AsyncClient(timeout=self._timeout()) as client:
             resp = await post_with_retry(
                 client,
@@ -275,9 +286,7 @@ class OpenAICompletionsClient(HttpModelClient):
         # Usage is omitted from a streamed response unless it is asked for, and without
         # it a streaming turn would meter as zero tokens.
         body["stream_options"] = {"include_usage": True}
-        headers = self._headers(
-            {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
-        )
+        headers = self._headers(self._auth_headers())
 
         text_parts: list[str] = []
         tools_by_index: dict[int, dict[str, Any]] = {}

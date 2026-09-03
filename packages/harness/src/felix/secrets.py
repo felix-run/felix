@@ -230,23 +230,39 @@ async def _hydrate_provider_options(settings: Any, provider: SecretsProvider) ->
         if not isinstance(opts, dict):
             continue
         for name, value in list(opts.items()):
-            if not isinstance(value, str) or secret_ref_name(value) is None:
+            # Both spellings, since `normalize_secret_ref` accepts both everywhere else:
+            # the object form was stringified into `"{'secret': 'NAME'}"` and sent as a
+            # bearer token.
+            if secret_ref_name(value) is None:
                 continue
             try:
                 resolved = await resolve_secret_value(provider, value, register=False)
             except Exception:
+                # Drop it rather than leave the reference in place. `resolve_provider_config`
+                # would otherwise read `"secret:GROQ_API_KEY"` as the api_key and ship the
+                # internal secret *name* to the third-party endpoint and into any log of
+                # that request. Removing it lets the settings-field fallback apply, or the
+                # missing-credential path fire.
                 logger.warning(
-                    "provider option %s could not be resolved from the secrets backend",
+                    "provider option %s could not be resolved from the secrets backend; "
+                    "dropping it rather than sending the reference upstream",
                     loggable(name, limit=60),
                 )
+                opts.pop(name, None)
+                changed = True
                 continue
             if resolved:
                 opts[name] = resolved
                 changed = True
-                if len(resolved) >= 8:
-                    found.append(resolved)
     if changed:
         settings.model_provider_options = json.dumps(parsed)
+    # Register every credential in the blob, not just the refs resolved above — and after
+    # the rewrite, so a resolved ref is registered as its *value* rather than skipped as a
+    # reference. Audit rows, session events and fiber state redact through
+    # `collected_secret_values()` with no settings, so they only ever see this process-global
+    # list: a literal `{"groq": {"api_key": "gsk_..."}}`, the form `.env.example` documents,
+    # was masked in tool output and nowhere else. `deploy/GOVERNANCE.md` promises all four.
+    found.extend(_provider_option_secrets(settings))
     return found
 
 
@@ -317,12 +333,42 @@ def collected_secret_values(settings: object | None = None) -> list[str]:
     return out
 
 
+def _leaf_strings(value: object, *, _depth: int = 0) -> list[str]:
+    """Every string ≥8 chars inside a nested option value.
+
+    Bounded depth because this walks operator-supplied JSON; a cycle is impossible through
+    `json.loads`, but a deeply nested blob should not cost unbounded recursion.
+    """
+    if _depth > 6:
+        return []
+    if isinstance(value, str):
+        return [value] if len(value) >= 8 else []
+    if isinstance(value, dict):
+        return [s for v in value.values() for s in _leaf_strings(v, _depth=_depth + 1)]
+    if isinstance(value, list):
+        return [s for v in value for s in _leaf_strings(v, _depth=_depth + 1)]
+    return []
+
+
 def _provider_option_secrets(settings: object) -> list[str]:
     """Credentials configured through `FELIX_MODEL_PROVIDER_OPTIONS`.
 
-    A key supplied there is not a `Settings` attribute, so the loop above cannot see it —
-    and a provider credential that is never added to this list is never masked out of tool
-    output. That is the whole reason the map above is derived rather than hand-listed.
+    A key supplied there is not a `Settings` attribute, so the hydrate loop cannot see it —
+    and a provider credential that never reaches this list is never masked out of tool
+    output.
+
+    Which values are secret is decided by allowlisting the option names that are
+    *addressing*, per provider, from that provider's own descriptor. The previous version
+    matched names containing key/token/secret/password, which is a denylist and failed open
+    for exactly the third-party providers this options map exists to serve: a credential
+    option called `credential`, `authorization` or `bearer` was published verbatim.
+    `_TRUSTED_TRANSPORTS` records the same reasoning for tool transports.
+
+    Erring toward masking is deliberate, but it is not free: `redact_text` is an
+    unconditional string replacement over session events, audit payloads and fiber state, so
+    a long low-entropy value wrongly treated as secret rewrites unrelated text everywhere it
+    appears. That is the cost being traded against leaking a credential, and it is why the
+    exemption is derived from what each provider actually consumes rather than guessed at.
     """
     raw = (getattr(settings, "model_provider_options", "") or "").strip()
     if not raw:
@@ -333,15 +379,54 @@ def _provider_option_secrets(settings: object) -> list[str]:
         return []
     if not isinstance(parsed, dict):
         return []
+
+    from felix_ai.providers import (
+        CREDENTIAL_OPTION_NAMES,
+        builtin_provider_specs,
+        placeholder_names,
+    )
+
+    specs = {spec.name: spec for spec in builtin_provider_specs()}
     found: list[str] = []
-    for opts in parsed.values():
+    for provider_name, opts in parsed.items():
         if not isinstance(opts, dict):
             continue
-        for key, value in opts.items():
-            if not isinstance(value, str) or len(value) < 8:
+        configured = opts.get("base_url") if isinstance(opts.get("base_url"), str) else None
+        spec = specs.get(str(provider_name))
+        if spec is not None:
+            # Per provider, not a union across all of them: `account_id` is addressing for
+            # Cloudflare and means nothing to Groq, and exempting it everywhere would be the
+            # same name-based over-reach this function exists to remove.
+            addressing = spec.addressing_option_names(configured)
+        else:
+            # A plugin registers a bare factory, not a descriptor, so there is nothing to
+            # ask. What it templates into its own endpoint is still derivable from it.
+            addressing = (frozenset({"base_url"}) | placeholder_names(configured)) - CREDENTIAL_OPTION_NAMES
+        for name, value in opts.items():
+            # Mask the coerced form, because that is what actually goes on the wire:
+            # `parse_provider_options` does `str(v)` on every value, so an integer or a
+            # nested dict becomes a live credential while `isinstance(value, str)` skipped
+            # it here. The masker and the parser have to agree on what a value *is*.
+            text = value if isinstance(value, str) else str(value)
+            # Below 8 characters a redaction does more harm than good — it would rewrite
+            # incidental matches throughout tool output. `hydrate_secrets` uses the same floor.
+            if len(text) < 8:
                 continue
-            if any(marker in str(key).lower() for marker in ("key", "token", "secret", "password")):
-                found.append(value)
+            if name in addressing:
+                continue
+            # An unresolved `secret:NAME` is a reference, not a credential. Masking it
+            # redacts the one diagnostic that names what failed to resolve, out of exactly
+            # the logs someone is reading to find out why.
+            # `value`, not `text`: the object form `{"secret": "NAME"}` coerces to
+            # `"{'secret': 'NAME'}"`, which `secret_ref_name` does not recognise, so the
+            # unresolved-ref diagnostic was being masked after all.
+            if secret_ref_name(value) is not None:
+                continue
+            found.append(text)
+            # A nested value is registered as its Python repr, which is single-quoted.
+            # Re-render the same data as JSON, or pull out the leaf, and `redact_text` no
+            # longer matches — so register the leaves too.
+            found.extend(_leaf_strings(value))
     return found
 
 
