@@ -1,10 +1,14 @@
 """Model client — the harness half of the model layer.
 
 The wire formats, the catalog and the neutral types moved to `felix_ai`, which may not
-import `felix`. What stays here is everything that needs the harness: resolving
-`FELIX_MODEL_ROUTES` against `Settings`, metering a turn against `ctx.limit_state` and the
-usage store, the fallback/escalation composites, and the factories that adapt `Settings`
-into the explicit configuration a wire client takes.
+import `felix`. What stays here is what needs the harness: resolving `FELIX_MODEL_ROUTES`
+against `Settings`, metering a turn against `ctx.limit_state` and the usage store, the
+traced client wrappers, and the factories that adapt `Settings` into the explicit
+configuration a wire client takes.
+
+The fallback and escalation composites are in `patterns/model_composites.py` — what to do
+when an answer is unavailable or not good enough is a policy, not routing. The GenAI span
+shaping is in `observability/genai.py`.
 
 Every public name this module used to export is re-exported below, so existing imports of
 `felix.patterns.model` keep working.
@@ -30,9 +34,11 @@ from felix_ai.types import (
     ModelRoute,
     StopReason,
     StreamDelta,
+    StreamingModelProvider,
     TokenUsage,
     ToolCall,
     ToolSchema,
+    supports_stream_turn,
 )
 from felix_ai.wire import (
     MODEL_MAX_RETRIES,
@@ -48,7 +54,16 @@ from felix_ai.wire import (
 
 from felix.config import DEFAULT_MODEL_ROUTES, Settings, get_settings
 from felix.context import try_get_context
+from felix.observability.genai import (
+    record_input_on_span,
+    record_result_on_span,
+)
 from felix.observability.metrics import record_counter
+from felix.observability.tracing import timed_span
+from felix.patterns.model_composites import (
+    _EscalationClient,
+    _FallbackClient,
+)
 from felix.patterns.model_registry import (
     get_model_provider,
     list_model_providers,
@@ -198,11 +213,43 @@ def record_usage(
 
 
 @dataclass
-class _FallbackClient:
-    primary: ModelClient
-    fallbacks: list[ModelClient]
+class _TracedClient:
+    """One span and one latency sample per provider call.
+
+    Wrapped around the leaf client in `build_one_model`, which every model the harness
+    builds passes through — primary, each fallback, and an escalation target alike. That
+    placement is deliberate: a fallback chain that tries two providers produces two spans,
+    which is what a trace should show. Wrapping the composite instead would have collapsed
+    them into one and hidden the retry.
+
+    Only `chat` and `stream_turn` are instrumented, because they are the two that report
+    usage. `stream` cannot report any, so it is passed through untouched rather than
+    given a span that would claim a generation with no tokens.
+    """
+
+    inner: ModelClient
     model_id: str
     route: ModelRoute
+
+    def _span_attrs(self) -> dict[str, Any]:
+        wire_model = self._wire_model()
+        ctx = try_get_context()
+        attrs: dict[str, Any] = {
+            "gen_ai.operation.name": "chat",
+            "gen_ai.system": str(getattr(self.route, "provider", "") or "unknown"),
+            "gen_ai.request.model": wire_model,
+            # The logical route name, which is what operators configure and what the
+            # `felix_tokens` counter reports. Not the same string as the wire model.
+            "felix.model.route": self.model_id,
+        }
+        if ctx is not None:
+            manifest_id = getattr(ctx, "manifest_id", None)
+            if manifest_id:
+                attrs["felix.manifest.id"] = str(manifest_id)
+        return attrs
+
+    def _wire_model(self) -> str:
+        return str(getattr(self.route, "model", "") or self.model_id)
 
     async def chat(
         self,
@@ -210,134 +257,51 @@ class _FallbackClient:
         tools: Sequence[ToolSchema],
         opts: ModelChatOptions | None = None,
     ) -> ModelChatResult:
-        chain = [self.primary, *self.fallbacks]
-        last_err: Exception | None = None
-        for i, client in enumerate(chain):
-            try:
-                result = await client.chat(messages, tools, opts)
-                if i > 0:
-                    record_counter(
-                        "felix_model_switch",
-                        {
-                            "from": self.primary.model_id,
-                            "to": client.model_id,
-                            "reason": "provider_error",
-                        },
-                    )
-                return result
-            except Exception as exc:
-                if not _is_provider_error(exc):
-                    raise
-                last_err = exc
-                continue
-        assert last_err is not None
-        raise last_err
+        async with timed_span(
+            f"chat {self._wire_model()}",
+            self._span_attrs(),
+            metric="felix_model_call_seconds",
+            labels={"model": self.model_id},
+        ) as span:
+            record_input_on_span(span, messages)
+            result = await self.inner.chat(messages, tools, opts)
+            record_result_on_span(span, result, self._wire_model())
+            return result
 
-    async def stream_turn(
-        self,
-        messages: list[ChatMessage],
-        tools: Sequence[ToolSchema],
-        opts: ModelChatOptions | None = None,
-    ) -> AsyncIterator[StreamDelta | ModelChatResult]:
-        """Advance to the next model on a provider error, but only before anything shipped.
-
-        Once a delta has been yielded the caller has already rendered it, so switching
-        models mid-stream would splice two different answers together. After that point
-        the error propagates instead.
-        """
-        chain = [self.primary, *self.fallbacks]
-        last_err: Exception | None = None
-        for i, client in enumerate(chain):
-            emitted = False
-            turn = getattr(client, "stream_turn", None)
-            if turn is None:
-                continue
-            try:
-                async for item in turn(messages, tools, opts):
-                    emitted = True
-                    yield item
-                if i > 0:
-                    record_counter(
-                        "felix_model_switch",
-                        {
-                            "from": self.primary.model_id,
-                            "to": client.model_id,
-                            "reason": "provider_error",
-                        },
-                    )
-                return
-            except Exception as exc:
-                if emitted or not _is_provider_error(exc):
-                    raise
-                last_err = exc
-                continue
-        if last_err is not None:
-            raise last_err
-
-    async def stream(
+    def stream(
         self,
         messages: list[ChatMessage],
         tools: Sequence[ToolSchema],
         opts: ModelChatOptions | None = None,
     ) -> AsyncIterator[str]:
-        chain = [self.primary, *self.fallbacks]
-        last_err: Exception | None = None
-        for i, client in enumerate(chain):
-            try:
-                async for chunk in client.stream(messages, tools, opts):
-                    yield chunk
-                if i > 0:
-                    record_counter(
-                        "felix_model_switch",
-                        {
-                            "from": self.primary.model_id,
-                            "to": client.model_id,
-                            "reason": "provider_error",
-                        },
-                    )
-                return
-            except Exception as exc:
-                if not _is_provider_error(exc):
-                    raise
-                last_err = exc
-                continue
-        assert last_err is not None
-        raise last_err
+        return self.inner.stream(messages, tools, opts)
+
+    def __getattr__(self, name: str) -> Any:
+        # Providers carry extra attributes the harness reads by name (`wire_model_id`
+        # walks `route`/`model_id`). Forward anything this wrapper does not define — but
+        # `stream_turn` must NOT be forwarded, or `supports_stream_turn` would answer True
+        # for every wrapped client and push non-streaming providers into the streamed
+        # path, where `record_usage` is never reached and the turn escapes every limit.
+        # `inner` guards against infinite recursion when it is unset (an instance built
+        # by copy/pickle before __init__ runs); without it the forward looks itself up.
+        if name in ("inner", "stream_turn"):
+            raise AttributeError(name)
+        return getattr(self.inner, name)
 
 
 @dataclass
-class _EscalationClient:
-    primary: ModelClient
-    escalate_to: ModelClient
-    markers: list[str]
-    min_response_chars: int
-    model_id: str
-    route: ModelRoute
+class _TracedStreamingClient(_TracedClient):
+    """`_TracedClient` for providers that implement `stream_turn`.
 
-    def _low_confidence(self, text: str) -> bool:
-        lower = text.lower()
-        if len(text.strip()) < self.min_response_chars:
-            return True
-        return any(m.lower() in lower for m in self.markers)
+    `supports_stream_turn` answers on the attribute, so the capability has to be absent on
+    the wrapper when it is absent on the client — a wrapper that always defined it would
+    push every non-streaming provider into the streamed path.
+    """
 
-    async def chat(
-        self,
-        messages: list[ChatMessage],
-        tools: Sequence[ToolSchema],
-        opts: ModelChatOptions | None = None,
-    ) -> ModelChatResult:
-        result = await self.primary.chat(messages, tools, opts)
-        if result.message.tool_calls or not self._low_confidence(result.message.content):
-            return result
-        record_counter(
-            "felix_model_switch",
-            {
-                "from": self.primary.model_id,
-                "to": self.escalate_to.model_id,
-                "reason": "low_confidence",
-            },
-        )
-        return await self.escalate_to.chat(messages, tools, opts)
+    # Narrowed from `ModelClient`: `_traced` only builds this class for a client that
+    # `supports_stream_turn` accepted, and saying so is what lets a type checker follow
+    # the `self.inner.stream_turn` call below.
+    inner: StreamingModelProvider
 
     async def stream_turn(
         self,
@@ -345,40 +309,31 @@ class _EscalationClient:
         tools: Sequence[ToolSchema],
         opts: ModelChatOptions | None = None,
     ) -> AsyncIterator[StreamDelta | ModelChatResult]:
-        """Escalation needs the finished reply to judge confidence, so it cannot stream.
-
-        The answer is settled first and then chunked for a smooth SSE render. That is one
-        model call, not two, so the metering and divergence problems do not apply — only
-        the time-to-first-token, which escalation trades away by design.
-        """
-        result = await self.chat(messages, tools, opts)
-        text = result.message.content or ""
-        step = 48
-        for i in range(0, len(text), step):
-            yield StreamDelta(kind="text", text=text[i : i + step])
-        yield result
-
-    async def stream(
-        self,
-        messages: list[ChatMessage],
-        tools: Sequence[ToolSchema],
-        opts: ModelChatOptions | None = None,
-    ) -> AsyncIterator[str]:
-        # Confidence check needs the full reply; stream escalate path when needed.
-        result = await self.chat(messages, tools, opts)
-        if result.message.content:
-            # Chunk for smoother SSE when escalation used the chat path.
-            text = result.message.content
-            step = 48
-            for i in range(0, len(text), step):
-                yield text[i : i + step]
+        async with timed_span(
+            f"chat {self._wire_model()}",
+            {**self._span_attrs(), "felix.streamed": True},
+            metric="felix_model_call_seconds",
+            labels={"model": self.model_id},
+        ) as span:
+            record_input_on_span(span, messages)
+            async for item in self.inner.stream_turn(messages, tools, opts):
+                # Usage rides on the terminal ModelChatResult, not on the deltas.
+                if isinstance(item, ModelChatResult):
+                    record_result_on_span(span, item, self._wire_model())
+                yield item
 
 
-def _is_provider_error(err: object) -> bool:
-    if isinstance(err, ModelGatewayError):
-        return err.status >= 500 or err.status == 429
-    status = getattr(err, "status", None) or getattr(err, "status_code", None)
-    return bool(isinstance(status, int) and (status >= 500 or status == 429))
+def _traced(client: ModelClient) -> ModelClient:
+    """Wrap a leaf client so each provider call emits a span and a latency observation.
+
+    Branching rather than picking a class into a variable: `supports_stream_turn` is a
+    `TypeGuard`, so an `if` narrows `client` to `StreamingModelProvider` inside the branch
+    and the streaming wrapper's `inner` field can say what it actually requires. A ternary
+    collapses both classes into a union before the narrowing applies.
+    """
+    if supports_stream_turn(client):
+        return _TracedStreamingClient(inner=client, model_id=client.model_id, route=client.route)
+    return _TracedClient(inner=client, model_id=client.model_id, route=client.route)
 
 
 def parse_provider_options(settings: Settings | None = None) -> dict[str, dict[str, str]]:
@@ -502,7 +457,10 @@ def build_one_model(settings: Settings, spec: Any, logical_id: str) -> ModelClie
             f"Unknown model provider '{route.provider}' — registered: "
             f"{', '.join(list_model_providers()) or '(none)'}"
         )
-    return factory(logical_id, route, spec, settings)
+    # Every model the harness builds comes through here — primary, fallbacks and
+    # escalation targets alike — so this is the one place a span per provider call can be
+    # added without touching each of the eight `record_usage` call sites.
+    return _traced(factory(logical_id, route, spec, settings))
 
 
 def build_model(settings: Settings | None, spec: Any) -> ModelClient:
@@ -547,6 +505,7 @@ __all__ = [
     "OpenAICompletionsClient",
     "StopReason",
     "StreamDelta",
+    "StreamingModelProvider",
     "TokenUsage",
     "ToolCall",
     "ToolSchema",
@@ -562,5 +521,6 @@ __all__ = [
     "record_usage",
     "register_builtin_providers",
     "resolve_provider_config",
+    "supports_stream_turn",
     "wire_model_id",
 ]

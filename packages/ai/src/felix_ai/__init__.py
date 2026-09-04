@@ -38,9 +38,11 @@ from felix_ai.types import (
     Role,
     StopReason,
     StreamDelta,
+    StreamingModelProvider,
     TokenUsage,
     ToolCall,
     ToolSchema,
+    supports_stream_turn,
 )
 from felix_ai.wire import (
     DEFAULT_CONNECT_TIMEOUT_S,
@@ -82,6 +84,7 @@ __all__ = [
     "Role",
     "StopReason",
     "StreamDelta",
+    "StreamingModelProvider",
     "TokenUsage",
     "ToolCall",
     "ToolSchema",
@@ -100,5 +103,6 @@ __all__ = [
     "post_with_retry",
     "reasoning_effort_from_budget",
     "register_model_provider",
+    "supports_stream_turn",
     "tool_json_schema",
 ]

@@ -1,0 +1,53 @@
+# Prometheus for the Felix local stack.
+#
+# The Felix API scrape carries a credential. `/metrics` is deliberately not public — its
+# label values include tenant-supplied manifest ids and remote MCP tool names, so an
+# anonymous scrape would disclose every tenant's manifests and tools. scripts/metrics-token.sh
+# mints a zero-scope API key and writes it to the file referenced below.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    stack: felix
+
+scrape_configs:
+  - job_name: felix-api
+    metrics_path: /metrics
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/metrics-token
+    static_configs:
+      - targets: ["api:8080"]
+
+  # The worker has no auth middleware, so this port is unauthenticated and must stay on
+  # the compose network. It is where fibers, flushes and every cron sweep report.
+  - job_name: felix-worker
+    static_configs:
+      - targets: ["worker:9100"]
+
+  - job_name: postgres
+    static_configs:
+      - targets: ["postgres-exporter:9187"]
+
+  - job_name: valkey
+    static_configs:
+      - targets: ["valkey-exporter:9121"]
+
+  # The collector's own health — how you tell "no traces" from "traces are being dropped".
+  - job_name: otel-collector
+    static_configs:
+      - targets: ["otel-collector:8888"]
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # Targets contributed by optional overlays, discovered from files rather than listed
+  # here. A static entry for a service that is usually not running is a target that is
+  # permanently down, which trains an operator to ignore a red target list. An empty
+  # directory yields zero targets instead. Each file sets its own `job` label.
+  - job_name: overlays
+    file_sd_configs:
+      - files: ["/etc/prometheus/targets/*.yml"]
+        refresh_interval: 30s

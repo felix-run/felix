@@ -234,7 +234,10 @@ comment explaining exactly that. It is conditional, not inert.
       thing to evidence in the system), or rename the field so `frameworks: [soc2]` stops
       inviting a reading it cannot support. The schema disclaimer is right and is in the file
       nobody reads.
-- [ ] **Temporal: decide.** The arm is a 152-line driver loop using none of Temporal's durability
+- [ ] **Temporal: decide.** (`make up-temporal` now runs it end to end, and the backend's
+      writes actually persist — see CHANGELOG — so the decision can be made against something
+      that works. Still no TLS/API-key on `Client.connect`, so Temporal Cloud is unreachable.)
+      Original note: The arm is a 152-line driver loop using none of Temporal's durability
       primitives — no signals, no queries, no child workflows, no `continue_as_new`, no activity
       retry policy. State still lives in the Postgres `Fiber` row, so an operator choosing it for
       Temporal's guarantees gets Felix's. Four of its six tests assert only that the classes can
@@ -277,12 +280,17 @@ comment explaining exactly that. It is conditional, not inert.
 - [ ] **Tools carry their own prompt copy** — a `prompt_line` / `prompt_guidance` on `Tool`,
       assembled in `builder.py`, so the system prompt is derived from the active tool set instead
       of hand-maintained. Removes a drift class; more valuable once **A** multiplies the tool set.
-- [ ] **Telemetry vocabulary** — no span/attribute schema, and no metric catalog anywhere, so an
-      operator cannot know what to graph without grepping call sites. `metrics.py` also silently
-      degrades to `logger.info` when a name is reused under a second label set.
-- [ ] **Ship one dashboard** — zero matches for grafana / servicemonitor / prometheus config under
-      `deploy/`. A Grafana JSON and a ServiceMonitor turn four emitted signal types into something
-      an operator sees.
+- [x] **Telemetry vocabulary** — `docs/OBSERVABILITY.md` carries the metric catalog and the span
+      schema, and `tests/unit/test_metric_catalog.py` re-derives it from the source so it cannot
+      drift. Spans now follow the OTel GenAI semantic conventions, and a model call is a span at
+      all (it was not). The `metrics.py` silent degrade on a reused label set is unchanged and is
+      documented as a known limitation rather than fixed.
+- [x] **Ship one dashboard** — `deploy/docker/compose.observability.yml` (`make up-observability`)
+      brings up an OTel Collector, Prometheus, Grafana, Jaeger, Loki and Postgres/Valkey exporters,
+      with a provisioned `Felix — harness overview` dashboard whose governance row surfaces the
+      counters GOVERNANCE.md tells operators to watch. A gated `serviceMonitor` template covers the
+      Kubernetes side. The scrape credential is a zero-scope API key, because `/metrics` is
+      authenticated on purpose.
 - [ ] **Sandbox ladder extras** — capability-bridge / gVisor as documented extras, not the default
       lean image.
 - [ ] **OAuth / dynamic provider keys** — secrets backends cover static keys; refresh /

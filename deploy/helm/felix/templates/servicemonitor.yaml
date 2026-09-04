@@ -1,0 +1,44 @@
+{{- if .Values.serviceMonitor.enabled }}
+{{- /*
+  The production analogue of scripts/metrics-token.sh. /metrics is authenticated — its
+  label values include tenant-supplied manifest ids and remote MCP tool names — so the
+  scrape needs a credential, and Prometheus Operator reads it from a Secret rather than
+  from the chart's values. Create it with a key whose value is a Felix API key that has
+  an empty `scopes` array: /metrics has no scope gate, so an unscoped key can read
+  metrics and nothing else.
+
+    kubectl create secret generic felix-metrics-scrape --from-literal=token=<api-key>
+*/}}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "felix.fullname" . }}
+  {{- with .Values.serviceMonitor.namespace }}
+  namespace: {{ . }}
+  {{- end }}
+  labels:
+    {{- include "felix.labels" . | nindent 4 }}
+    {{- with .Values.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "felix.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.serviceMonitor.scrapeTimeout }}
+      {{- if .Values.serviceMonitor.bearerTokenSecret.name }}
+      authorization:
+        type: Bearer
+        credentials:
+          name: {{ .Values.serviceMonitor.bearerTokenSecret.name }}
+          key: {{ .Values.serviceMonitor.bearerTokenSecret.key }}
+      {{- end }}
+      {{- with .Values.serviceMonitor.metricRelabelings }}
+      metricRelabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

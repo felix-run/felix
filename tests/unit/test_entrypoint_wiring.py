@@ -74,6 +74,9 @@ FELIX_BINARY = re.compile(r"^felix[\w-]*$")
 EXPECTED_COMMANDS = {
     "deploy/docker/Dockerfile": ["felix-api"],
     "deploy/docker/compose.yml": ["felix-api", "felix-worker", "felix-scheduler"],
+    # The Temporal overlay is the only deploy surface that runs the fourth binary. It has
+    # no `felix-api` of its own — it layers onto compose.yml, which supplies the rest.
+    "deploy/docker/compose.temporal.yml": ["felix-temporal-worker"],
     "deploy/helm/felix/templates/deployment.yaml": ["felix-api", "felix-worker", "felix-scheduler"],
     "deploy/helm/felix/templates/migrate-job.yaml": ["felix"],
 }

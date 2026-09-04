@@ -123,4 +123,8 @@ jobs:
         run: |
           docker run --rm -v "$PWD:/repo" \
             zricethezav/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
-            git /repo --redact --verbose --exit-code 1
+            git /repo --redact --verbose --exit-code 1 --ignore-gitleaks-allow
+        # `--ignore-gitleaks-allow`: without it a `# gitleaks:allow` comment on the same
+        # line as a secret suppresses it — any contributor, any file, one comment. Verified:
+        # a committed key with that comment takes this from exit 1 to exit 0, and the flag
+        # takes it back. No occurrences in the tree today; the flag means it never grows one.

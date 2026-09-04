@@ -7,6 +7,253 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The fallback and escalation composites moved to `patterns/model_composites.py`.** They
+  are private, so nothing outside the repo is affected; tests that reached for
+  `_FallbackClient` or `_is_provider_error` import from the new module.
+
+  Failing over to another model and escalating to a stronger one are a policy about what to
+  do when an answer is unavailable or not good enough — a different subject from resolving a
+  route and metering a turn. `patterns/model.py` is **522 lines, under the 600 budget for the
+  first time**, and holds route resolution, `record_usage`, the traced wrappers and the
+  provider factories.
+
+
+- **`stream_turn` is a separate Protocol, not a required member of `ModelProvider`.** This
+  reverses a published contract, so it matters to anyone implementing a provider:
+  `felix_ai.types.ModelProvider` no longer requires `stream_turn`, and
+  `StreamingModelProvider` plus the `supports_stream_turn` predicate are new public exports.
+
+  Requiring it claimed every provider must stream, while the scripted provider, the wire
+  clients, four call sites and the traced wrapper all treated it as optional. It also had a
+  consequence nobody had noticed: `ModelProvider` is `runtime_checkable`, so a provider
+  implementing the whole documented contract **failed `isinstance` against its own
+  Protocol**. Nothing to change in a provider that already worked — this only stops the
+  type system contradicting the docs.
+
+  Probe with `supports_stream_turn(client)` rather than
+  `getattr(client, "stream_turn", None)`. It is a `TypeIs`, so it narrows in both
+  directions, and it tests `callable` — a wrapper that forwards attributes can answer to
+  the name without implementing it.
+
+### Fixed
+
+- **An escalating turn was billed twice and metered once.** `confidence_escalation` calls the
+  primary, judges the answer, then calls the stronger model — two billed turns for one reply —
+  and returned only the second. Callers meter what they are handed (`record_usage(result, …)`
+  sees the returned result and nothing else), so the discarded turn reached neither
+  `ctx.limit_state` nor the usage table and `limits.max_cost_usd` under-counted the run by
+  whatever it cost. Measured on a plausible pair: **2,100 tokens billed, 100 metered**.
+
+  The composite folds the discarded usage into the result it returns, because it is the only
+  thing that can see both turns. Both turns are summed under the returned model's id, so a
+  two-model escalation prices the primary's tokens at the target's rate — wrong in the third
+  decimal, right about the budget counting every token spent.
+
+  `confidence_escalation` is a published manifest field that had no behavioural test at all;
+  `tests/unit/test_confidence_escalation.py` is its first.
+
+
+- **A fallback chain that could not stream produced an empty answer and made no model
+  call.** `_FallbackClient` skips members without `stream_turn`, so a chain of chat-only
+  providers streamed from none of them and fell out of the loop having yielded nothing —
+  and it could not warn the caller off, because the composite defines `stream_turn`
+  unconditionally and so answers `supports_stream_turn` with True whatever its members do.
+
+  `react` happened to recover (`if result is None: result = await model.chat(...)`).
+  `delegating` did not: its return sits inside the streaming branch, so a `plan_execute` or
+  `parallel` run with `spec.model.fallbacks` and a chat-only provider synthesised an empty
+  answer — unlogged, and unmetered because no inference occurred. The composite settles it
+  now the way `_EscalationClient` already did: resolve with `chat()`, chunk for display. One
+  inference, correctly metered, and the contract is true of the composite rather than of one
+  of its two callers.
+
+
+### Added
+
+- **A model call is a span, and spans are one trace.** Felix emitted exactly two spans —
+  `tool.call` and `manifest` — and both were orphan roots, because `tracer.start_span` does
+  not touch the active context and nothing established a request-level one. A single chat
+  therefore produced two or three unrelated single-span traces. Worse, the one operation
+  carrying token usage, model name, provider and cost — the model call — had no span at all,
+  so the thing a tracing backend most wants was the thing it could not see.
+
+  Spans now attach to the OTel context, so they nest; `opentelemetry-instrumentation-fastapi`
+  (declared in the `otel` extra since it was added, and never imported) opens the request root
+  and honours an inbound `traceparent`; and every model client built through `build_one_model`
+  is wrapped so each provider call emits a `chat {model}` span carrying the OTel **GenAI
+  semantic conventions** (`gen_ai.system`, `gen_ai.request.model`, `gen_ai.usage.*`) plus
+  Felix's cache and cost attributes. Borrowed rather than invented names, so any OTLP consumer
+  renders these as generations rather than anonymous timing bars.
+
+  The wrapper sits on the leaf client, not the composite, so a fallback chain that tries two
+  providers shows two spans instead of hiding the retry inside one. It also does **not**
+  define `stream_turn` unconditionally: that capability is detected with
+  `supports_stream_turn`, and a wrapper that always had it would push every
+  non-streaming provider into the streamed path — where `record_usage` is never reached and
+  the turn escapes every token and cost limit.
+
+- **The worker reports something.** It never called `configure_logging` or
+  `setup_observability`, and it has no HTTP server, so every fiber resume, audit/usage flush,
+  retention sweep, anomaly scan and continuous-eval run was invisible: one log line each, no
+  counter, no span, nothing to scrape. A sweep that had stopped firing looked exactly like a
+  sweep that ran and found nothing — the confusion `deploy/GOVERNANCE.md` warns about for the
+  per-tenant detection controls.
+
+  All eight scheduled tasks now emit `felix_worker_task{task,status}` and
+  `felix_worker_task_seconds`, the worker configures logging and tracing at startup and flushes
+  spans at shutdown, and `FELIX_METRICS_PORT` (default `0`, off) exposes its counters.
+  That endpoint is unauthenticated — the worker has no auth middleware — and carries the same
+  tenant-supplied label values as the API's `/metrics`, so it must stay on an internal network.
+
+- **`docs/OBSERVABILITY.md`** — the metric catalog and span/attribute schema, including which
+  counters to watch and why `/metrics` is authenticated and rate-limited.
+  `tests/unit/test_metric_catalog.py` re-derives both tables from the source, so a metric
+  added without a row fails, and so does a row describing a metric nothing emits.
+
+- **Latency exists.** `record_histogram` had been exported, documented and unit-tested with
+  zero call sites, so there was no latency data anywhere. `felix_model_call_seconds`,
+  `felix_tool_call_seconds` and `felix_worker_task_seconds` are its first three. Tool latency
+  is labelled by transport and manifest and deliberately *not* by tool name: MCP tool names
+  arrive from a remote server and are unbounded label values.
+
+- **`felix_buffer_dropped`** — `DurableBuffer` counted and logged dropped audit/usage rows but
+  exported nothing, so silent data loss could only be found by reading logs afterwards.
+
+- **OTLP can reach an authenticated collector.** The exporter was hardcoded to gRPC with
+  `insecure=True` and no header support, which meant no hosted or TLS-terminated OTLP endpoint
+  was reachable at all. `FELIX_OTEL_PROTOCOL` (`grpc`/`http`), `FELIX_OTEL_HEADERS`,
+  `FELIX_OTEL_INSECURE`, `FELIX_OTEL_SERVICE_NAME` and `FELIX_OTEL_SAMPLE_RATIO` are new;
+  header parsing splits once so base64 credentials survive their `=` padding.
+
+- **`FELIX_OTEL_CAPTURE_CONTENT`** (default `false`) — prompts and completions stay off spans.
+  A tracing backend is an egress destination, and span attributes are not covered by the
+  governance content screening that guards tool output.
+
+- **`make up-observability`** — `deploy/docker/compose.observability.yml` brings up an OTel
+  Collector, Prometheus, Grafana, Jaeger, Loki and Postgres/Valkey exporters against the base
+  stack, with datasources and one dashboard provisioned. The dashboard is built from counters
+  that actually exist, and its governance row surfaces the controls `deploy/GOVERNANCE.md`
+  tells operators to watch — `felix_control_unavailable`, `felix_untrusted_tools_unscreened`,
+  `felix_policy_unsatisfiable`, `felix_rule_targets_nothing` — which nothing previously showed.
+
+  Three decisions the files explain in place, each found by running the stack rather than
+  reading it. The overlay rebuilds the image with the `otel` extra, because the lean default
+  omits it and OTLP export then degrades to a single warning line while everything else looks
+  healthy. Logs arrive over OTLP rather than from a `filelog` receiver over
+  `/var/lib/docker/containers`, which needs the collector to run as root, hands it every
+  container's logs, and opens zero files without saying so. And optional-overlay scrape targets
+  are file-discovered, so a service that is not running is absent rather than permanently down.
+
+- **`scripts/metrics-token.sh`** — mints a *second* API key with an empty `scopes` array and
+  merges it into `FELIX_AUTH_API_KEYS` beside the operator key. `/metrics` has no scope gate,
+  so the result reads metrics and is refused everywhere else; leaking it does not leak write
+  access to `PUT /manifests`. Prometheus has no env expansion in scrape configs, so the bare
+  token is written to a gitignored `deploy/docker/.metrics-token` (mode 600).
+
+- **`serviceMonitor` Helm template** (gated, off by default) — the Kubernetes analogue, reading
+  the same kind of unscoped key from a Secret.
+
+- **`FELIX_OTEL_LOGS`** — ships the log stream over OTLP with `trace_id`/`span_id` stamped from
+  the active context, so a log line joins to the span that produced it and Felix's `request_id`
+  rides along. Off by default; log volume is the operator's cost to choose.
+
+- **`make up-temporal`** — `deploy/docker/compose.temporal.yml` runs the Temporal server, its
+  UI on :8233, and `felix-temporal-worker` on task queue `felix-fibers`. `auto-setup` creates
+  its two databases inside Felix's existing Postgres rather than standing up a second one, so
+  the overlay stays within reach of a small VM. `FELIX_DURABILITY=temporal` is set for api,
+  worker and temporal-worker together — they must agree, or a durable chat is enqueued for one
+  driver and executed by the other.
+
+- **`make up-memoturn`** — runs [Memoturn](https://memoturn.com) locally and points Felix's
+  OTLP export at it. Felix gains **no dependency**: Memoturn ingests OTLP natively and maps
+  spans carrying `gen_ai.*` attributes to generations, which is what `patterns/model.py`
+  already emits, so the whole integration is an endpoint plus a Basic auth header expressed
+  as `FELIX_OTEL_PROTOCOL=http` and `FELIX_OTEL_HEADERS`. Nothing in Felix knows the vendor
+  exists — "Protocols, not vendors" applied to telemetry.
+
+  It borrows Felix's Postgres (own database), Valkey (own index) and MinIO (own bucket)
+  instead of the Postgres + Valkey + MinIO + Caddy + Apache Doris its own compose stands up,
+  and `TELEMETRY_ENGINE=postgres` drops Doris — a 4 GB floor, more than the whole Felix
+  stack. Verified end to end: a chat arrives as 6 `GENERATION` rows carrying model and real
+  token counts, 3 `TOOL` rows, and the rest `SPAN` — the classification that proves the
+  `gen_ai.*` attribute names are right.
+
+- **Session and caller identity on spans.** `session.id` / `gen_ai.conversation.id` carry the
+  thread (namespaced `{tenant}:{thread_id}`, so threads cannot collide across tenants), which
+  is what makes a multi-turn conversation one session in a backend instead of N unrelated
+  traces. `FELIX_OTEL_CAPTURE_IDENTITY` (default true) adds `user.id` / `gen_ai.user.id` from
+  the auth principal and `felix.tenant.id`; set it false when principal subjects are personal
+  identifiers. The anonymous principal is never recorded — it is a default, not a person.
+
+### Fixed
+
+- **`FELIX_OTEL_CAPTURE_CONTENT` did nothing.** It was declared in `config.py` and documented
+  in `.env.example`, the Helm values, `docs/OBSERVABILITY.md` and this changelog, and read by
+  no code — a setting that reads as a control and was not one, found only by looking for its
+  effect in a backend and not finding it. It now writes `gen_ai.input.messages` and
+  `gen_ai.output.messages` (32k cap) through `redact_json`, the audit path's masking.
+
+  That masking replaces values Felix *knows* are secrets, by substring match; it is not
+  pattern detection, so a credential a user types into a chat is exported verbatim. The docs
+  now say so, because the previous wording implied more than the code does.
+
+  `tests/unit/test_span_enrichment.py` also adds the guard that would have caught this: every
+  `otel_*` / `metrics_*` setting must be read somewhere outside `config.py`.
+
+- **Cache tokens never reached any backend.** They went out as `felix.usage.*` only, while
+  backends read `gen_ai.usage.cache_creation_input_tokens` / `..._cache_read_input_tokens`.
+  Not cosmetic: `usage_with_cost` counts them, so a backend computing cost from input/output
+  alone silently disagrees with Felix's own number as soon as prompt caching is on.
+
+- **Probe endpoints and ASGI plumbing were traced.** `/health`, `/live`, `/ready` and
+  `/metrics` are excluded now, as are the per-request `http send` / `http receive` child
+  spans. Docker healthchecks and a Prometheus scrape run every 10-15s forever: in the first
+  real export, 270 of 372 traces were probes against 3 actual chats, and 552 of 936
+  observations were ASGI plumbing. Agent activity was under 1% of what was being exported.
+
+- **The Memoturn console rendered "Something went wrong".** Its image serves static files
+  only — `/api/*` and `/auth/*` routing lives in Memoturn's production front proxy, which
+  this overlay omits because TLS is the only other thing that proxy does. The bundle is
+  built with `VITE_API_BASE=/api`, so every call the SPA made 404'd on the static server
+  while the API itself stayed healthy and answered ingest. The console's own Caddy now
+  forwards both prefixes, same-origin, using the routing from Memoturn's `infra/Caddyfile`.
+
+- **OTLP/HTTP export sent every span to a 404.** The Python OTLP/HTTP exporters treat
+  `endpoint` as the complete URL for their signal and append nothing, but
+  `FELIX_OTEL_ENDPOINT` is a single base shared by traces and logs — so it was POSTed
+  verbatim and rejected by every collector and backend alike. The per-signal path is now
+  derived (`/v1/traces`, `/v1/logs`), and an endpoint that already carries one is left alone.
+  Only the receiving end ever logged the 404, which is why `grpc` looked fine and `http` was
+  quietly inert.
+
+- **`FELIX_DURABILITY=temporal` completed durable chats and persisted none of them.** The
+  workflow ran, `tctl workflow show` reported `"status":"completed"`, and
+  `GET /chat/runs/{resume_token}` stayed `pending` forever. Two defects compounding, both
+  invisible to the Postgres backend because it re-reads every row it claims:
+
+  `create_fiber` returned a row dict with no `version` key, so `_save_fiber`'s compare-and-set
+  read `int(row.get("version") or 0)` — zero — for a row the database had already written. And
+  `start_durable_chat` started the workflow *before* the save that stamps `backend: temporal`,
+  so that save bumped the stored version behind the running workflow's back and its snapshot
+  could never match again. Every write the activity made was discarded with
+  `fiber version conflict ... expected=0; discarding stale write`, which only the worker's own
+  log ever saw.
+
+  The row now carries the version it was stored with, and the workflow is started only after
+  the row is final. A durable chat that finishes invisibly is worse than one that fails.
+
+- **FastAPI was instrumented from the lifespan, where it does nothing.** `instrument_app`
+  installs ASGI middleware and Starlette finalises its stack before the lifespan runs, so the
+  call was accepted, reported success, and added no request span. The symptom looked like
+  tracing *working*: every span still exported, each as its own single-span trace. It now runs
+  at construction time, and a test pins the call out of the lifespan — a unit test of the span
+  helpers cannot see this, only where the call sits can.
+
+- **Every span claimed `service.version` `0.1.0`**, hardcoded, while the packages shipped
+  0.2.2. It now reports the real harness version.
+
 ### Security
 
 - **A provider credential was masked only if its option was *named* like one.**
