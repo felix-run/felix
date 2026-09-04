@@ -96,7 +96,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the active context, so a log line joins to the span that produced it and Felix's `request_id`
   rides along. Off by default; log volume is the operator's cost to choose.
 
+- **`make up-temporal`** — `deploy/docker/compose.temporal.yml` runs the Temporal server, its
+  UI on :8233, and `felix-temporal-worker` on task queue `felix-fibers`. `auto-setup` creates
+  its two databases inside Felix's existing Postgres rather than standing up a second one, so
+  the overlay stays within reach of a small VM. `FELIX_DURABILITY=temporal` is set for api,
+  worker and temporal-worker together — they must agree, or a durable chat is enqueued for one
+  driver and executed by the other.
+
 ### Fixed
+
+- **`FELIX_DURABILITY=temporal` completed durable chats and persisted none of them.** The
+  workflow ran, `tctl workflow show` reported `"status":"completed"`, and
+  `GET /chat/runs/{resume_token}` stayed `pending` forever. Two defects compounding, both
+  invisible to the Postgres backend because it re-reads every row it claims:
+
+  `create_fiber` returned a row dict with no `version` key, so `_save_fiber`'s compare-and-set
+  read `int(row.get("version") or 0)` — zero — for a row the database had already written. And
+  `start_durable_chat` started the workflow *before* the save that stamps `backend: temporal`,
+  so that save bumped the stored version behind the running workflow's back and its snapshot
+  could never match again. Every write the activity made was discarded with
+  `fiber version conflict ... expected=0; discarding stale write`, which only the worker's own
+  log ever saw.
+
+  The row now carries the version it was stored with, and the workflow is started only after
+  the row is final. A durable chat that finishes invisibly is worse than one that fails.
 
 - **FastAPI was instrumented from the lifespan, where it does nothing.** `instrument_app`
   installs ASGI middleware and Starlette finalises its stack before the lifespan runs, so the

@@ -319,6 +319,8 @@ jobs:
           check -f deploy/docker/compose.pgbouncer.yml
           check -f deploy/docker/compose.replicas.yml
           check -f deploy/docker/compose.observability.yml
+          check -f deploy/docker/compose.temporal.yml
+          check -f deploy/docker/compose.observability.yml -f deploy/docker/compose.temporal.yml
         env:
           POSTGRES_PASSWORD: ci-compose-check-not-a-secret
           MINIO_ROOT_PASSWORD: ci-compose-check-not-a-secret

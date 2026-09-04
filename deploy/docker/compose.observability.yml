@@ -164,12 +164,10 @@ services:
     volumes:
       - ./deploy/docker/config/loki.yaml:/etc/loki/config.yaml:ro
       - loki-data:/loki
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:3100/ready || exit 1"]
-      interval: 15s
-      timeout: 5s
-      retries: 10
-      start_period: 30s
+    # No healthcheck: the Loki image is distroless — no shell, no wget, no curl — so every
+    # probe form Compose offers fails with "exec: /bin/sh: no such file", marking a
+    # perfectly healthy container unhealthy forever. Dependents wait on `service_started`
+    # instead, and the collector's export queue covers the seconds before Loki is ready.
     mem_limit: ${FELIX_LOKI_MEM_LIMIT:-256m}
     cpus: ${FELIX_LOKI_CPUS:-0.5}
     restart: unless-stopped

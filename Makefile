@@ -1,4 +1,4 @@
-.PHONY: help schema install install-full install-warehouse lint fmt type test check check-ci conformance dev dev-key up up-lite up-gcp up-full up-pooled up-replicas up-observability metrics-token down cli seed migrate doctor docker-build
+.PHONY: help schema install install-full install-warehouse lint fmt type test check check-ci conformance dev dev-key up up-lite up-gcp up-full up-pooled up-replicas up-observability up-temporal metrics-token down cli seed migrate doctor docker-build
 
 COMPOSE := docker compose -f deploy/docker/compose.yml --project-directory .
 COMPOSE_LITE := $(COMPOSE) -f deploy/docker/compose.lite.yml
@@ -6,6 +6,7 @@ COMPOSE_GCP := $(COMPOSE) -f deploy/docker/compose.gcp.yml -f deploy/docker/comp
 COMPOSE_PGB := $(COMPOSE) -f deploy/docker/compose.pgbouncer.yml
 COMPOSE_REPLICAS := $(COMPOSE) -f deploy/docker/compose.replicas.yml
 COMPOSE_OBS := $(COMPOSE) -f deploy/docker/compose.observability.yml
+COMPOSE_TEMPORAL := $(COMPOSE) -f deploy/docker/compose.temporal.yml
 
 help:
 	@echo "Felix dev targets:"
@@ -24,6 +25,7 @@ help:
 	@echo "  up-pooled         + PgBouncer in transaction mode (many workers, few connections)"
 	@echo "  up-replicas       + two API replicas behind one origin (cross-replica proof)"
 	@echo "  up-observability  + OTel Collector, Prometheus, Grafana, Jaeger, Loki, exporters"
+	@echo "  up-temporal       + Temporal server, UI :8233, and felix-temporal-worker"
 	@echo "  schema            regenerate schemas/manifest.schema.json"
 	@echo "  down / cli / seed / migrate / doctor"
 	@echo "  Warehouse: FELIX_WAREHOUSE=duckdb + FELIX_DOCKER_EXTRAS=warehouse"
@@ -127,6 +129,12 @@ up-observability: dev-key metrics-token
 
 metrics-token:
 	@./scripts/metrics-token.sh
+
+# FELIX_DURABILITY=temporal is set inside the overlay for every process that has to
+# agree about it — api, worker and the temporal-worker. The extra is appended to the
+# image build there too, since durability/temporal.py raises without temporalio.
+up-temporal: dev-key
+	$(COMPOSE_TEMPORAL) up --build
 
 up-full: dev-key
 	FELIX_DOCKER_EXTRAS=$${FELIX_DOCKER_EXTRAS:-aws} FELIX_OBJECT_STORE=s3 \

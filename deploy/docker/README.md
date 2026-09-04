@@ -20,6 +20,7 @@
 | `compose.pgbouncer.yml` | PgBouncer in transaction mode in front of Postgres |
 | `compose.replicas.yml` | Two API replicas behind one nginx origin |
 | `compose.observability.yml` | OTel Collector, Prometheus, Grafana, Jaeger, Loki, Postgres/Valkey exporters |
+| `compose.temporal.yml` | Temporal server + UI + `felix-temporal-worker`, on the existing Postgres |
 | `config/` | Config mounted read-only by the overlays above |
 
 ## Connection pooling
@@ -175,3 +176,26 @@ leak write access to `PUT /manifests`.
   not running is a permanently-down target, which teaches operators to ignore a red target list.
 
 See [docs/OBSERVABILITY.md](../../docs/OBSERVABILITY.md) for the metric catalog and span schema.
+
+## Temporal
+
+`make up-temporal` swaps durable execution from the Postgres fiber sweeper to Temporal, and
+brings up the server, its UI on <http://localhost:8233>, and `felix-temporal-worker` on task
+queue `felix-fibers`.
+
+It reuses the existing Postgres rather than standing up a second one: `auto-setup` creates
+`temporal` and `temporal_visibility` inside it on first boot, which keeps the overlay within
+reach of a small VM. `auto-setup` is a development convenience and is not a production shape.
+
+`FELIX_DURABILITY=temporal` is set in the overlay for **every** process that has to agree
+about it — api, worker and the temporal-worker. They must agree, or a durable chat is
+enqueued for one driver and executed by the other. The image is built with the `temporal`
+extra there too, since `durability/temporal.py` raises without `temporalio` rather than
+degrading — which is correct: a durable chat that quietly ran transiently would be worse.
+
+Known gap, unchanged by this overlay: `Client.connect` takes no TLS or API-key options, so
+**Temporal Cloud is not reachable** as configured. `docs/ROADMAP.md` carries the open
+"Temporal: decide" item.
+
+To scrape Temporal's own metrics alongside the observability overlay, add a target file —
+see `config/prometheus-targets/README.md`.

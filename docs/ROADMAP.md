@@ -234,7 +234,10 @@ comment explaining exactly that. It is conditional, not inert.
       thing to evidence in the system), or rename the field so `frameworks: [soc2]` stops
       inviting a reading it cannot support. The schema disclaimer is right and is in the file
       nobody reads.
-- [ ] **Temporal: decide.** The arm is a 152-line driver loop using none of Temporal's durability
+- [ ] **Temporal: decide.** (`make up-temporal` now runs it end to end, and the backend's
+      writes actually persist — see CHANGELOG — so the decision can be made against something
+      that works. Still no TLS/API-key on `Client.connect`, so Temporal Cloud is unreachable.)
+      Original note: The arm is a 152-line driver loop using none of Temporal's durability
       primitives — no signals, no queries, no child workflows, no `continue_as_new`, no activity
       retry policy. State still lives in the Postgres `Fiber` row, so an operator choosing it for
       Temporal's guarantees gets Felix's. Four of its six tests assert only that the classes can

@@ -89,6 +89,13 @@ async def create_fiber(
         "wake_at": wake_at,
         "created_at": ts,
         "updated_at": ts,
+        # Explicit, and matching the column's own default. Omitting it made the returned
+        # dict disagree with the row that was just written: `_save_fiber` reads
+        # `int(row.get("version") or 0)` for its compare-and-set, so any caller that keeps
+        # this dict rather than re-reading the row wrote against a version the database
+        # never had. The Postgres sweeper always re-reads and so never saw it; the Temporal
+        # backend uses this dict directly, and every one of its writes was discarded.
+        "version": 0,
     }
     if _use_memory(settings):
         _memory_fibers[(tenant_id, fiber_id)] = row
