@@ -91,9 +91,12 @@ def test_nothing_probes_stream_turn_by_hand_any_more() -> None:
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[2]
+    # Only the predicate's own module is exempt. Matching on the basename skipped five
+    # different `types.py` files across the workspace.
+    predicate_module = (root / "packages/ai/src/felix_ai/types.py").resolve()
     offenders: list[str] = []
     for path in (root / "packages").rglob("*.py"):
-        if path.name == "types.py":  # the predicate itself
+        if path.resolve() == predicate_module:
             continue
         for node in ast.walk(ast.parse(path.read_text())):
             if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
@@ -104,3 +107,37 @@ def test_nothing_probes_stream_turn_by_hand_any_more() -> None:
             if isinstance(arg, ast.Constant) and arg.value == "stream_turn":
                 offenders.append(f"{path.relative_to(root)}:{node.lineno}")
     assert not offenders, f"hand-rolled stream_turn probes: {offenders} — use supports_stream_turn"
+
+
+@pytest.mark.asyncio
+async def test_a_fallback_chain_that_cannot_stream_still_answers() -> None:
+    """The composite is the one wrapper `supports_stream_turn` cannot judge.
+
+    `_FallbackClient` defines `stream_turn` unconditionally, so the predicate answers True
+    for a chain whose every member answers False. Before this was settled inside the
+    composite, such a chain yielded nothing and made no call — and `delegating`'s streaming
+    branch returns without reaching its `chat()` path, so a `plan_execute` or `parallel`
+    run with `spec.model.fallbacks` and a chat-only provider produced an empty answer with
+    no log line and no metering, because no inference had happened.
+    """
+    from felix.patterns.model import _FallbackClient
+    from felix_ai.types import StreamDelta
+
+    leaf = _NonStreaming()
+    calls: list[str] = []
+
+    async def _chat(messages: Any, tools: Any, opts: Any = None) -> ModelChatResult:
+        calls.append("chat")
+        return ModelChatResult(message=ChatMessage(role="assistant", content="the answer"))
+
+    leaf.chat = _chat  # type: ignore[method-assign]
+    chain = _FallbackClient(primary=leaf, fallbacks=[], model_id=leaf.model_id, route=ROUTE)
+
+    assert supports_stream_turn(chain), "the composite always claims the capability"
+    assert not supports_stream_turn(leaf), "while its only member does not have it"
+
+    emitted = [item async for item in chain.stream_turn([], [])]
+    text = "".join(i.text for i in emitted if isinstance(i, StreamDelta))
+    assert text == "the answer", "a caller that trusts the predicate must still get an answer"
+    assert any(isinstance(i, ModelChatResult) for i in emitted), "and something to meter"
+    assert calls == ["chat"], "settled with exactly one inference"

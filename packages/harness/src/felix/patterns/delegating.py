@@ -20,6 +20,7 @@ from typing import Any
 from felix.manifests.schema import PlanExecuteSpec, ReflectSpec
 from felix.patterns.model import (
     ModelChatResult,
+    ModelClient,
     build_model,
     record_usage,
     supports_stream_turn,
@@ -159,7 +160,7 @@ def _terminal_events(result: InvokeOutput) -> list[Event]:
 
 
 async def _yield_model_stream(
-    model: Any, messages: list[ChatMessage], collected: list[str], *, manifest_id: str
+    model: ModelClient, messages: list[ChatMessage], collected: list[str], *, manifest_id: str
 ) -> AsyncIterator[Event]:
     """Stream a text-only model call as display events, and meter it.
 
@@ -367,7 +368,7 @@ class _DelegatingAgent:
         yield tap.output if tap.output is not None else _empty_output(input)
 
     async def _generate(
-        self, model: Any, messages: list[ChatMessage], *, emit_events: bool
+        self, model: ModelClient, messages: list[ChatMessage], *, emit_events: bool
     ) -> AsyncIterator[Event | ChatMessage]:
         """Produce an assistant message from `model`, ending with the complete one.
 

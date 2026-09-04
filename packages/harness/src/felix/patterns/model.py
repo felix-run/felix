@@ -405,6 +405,25 @@ class _FallbackClient:
         if last_err is not None:
             raise last_err
 
+        # Nothing in the chain could stream, and nothing failed — every member implements
+        # only `chat`/`stream`. Falling through here would end the generator having yielded
+        # nothing and having made no model call at all, and `supports_stream_turn` cannot
+        # warn a caller off: this composite defines `stream_turn` unconditionally, so it
+        # answers True for a chain of members that all answer False.
+        #
+        # `react` happened to survive that (`if result is None: result = await model.chat`),
+        # `delegating` did not — its `return` sits inside the streaming branch, so a
+        # plan_execute or parallel run with `spec.model.fallbacks` and a chat-only provider
+        # synthesised an empty answer, unlogged and unmetered because no call occurred.
+        # Settling it here rather than in each caller matches `_EscalationClient`, which
+        # already resolves the answer with `chat()` and chunks it for display.
+        result = await self.chat(messages, tools, opts)
+        text = result.message.content or ""
+        step = 48
+        for i in range(0, len(text), step):
+            yield StreamDelta(kind="text", text=text[i : i + step])
+        yield result
+
     async def stream(
         self,
         messages: list[ChatMessage],

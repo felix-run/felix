@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`stream_turn` is a separate Protocol, not a required member of `ModelProvider`.** This
+  reverses a published contract, so it matters to anyone implementing a provider:
+  `felix_ai.types.ModelProvider` no longer requires `stream_turn`, and
+  `StreamingModelProvider` plus the `supports_stream_turn` predicate are new public exports.
+
+  Requiring it claimed every provider must stream, while the scripted provider, the wire
+  clients, four call sites and the traced wrapper all treated it as optional. It also had a
+  consequence nobody had noticed: `ModelProvider` is `runtime_checkable`, so a provider
+  implementing the whole documented contract **failed `isinstance` against its own
+  Protocol**. Nothing to change in a provider that already worked — this only stops the
+  type system contradicting the docs.
+
+  Probe with `supports_stream_turn(client)` rather than
+  `getattr(client, "stream_turn", None)`. It is a `TypeIs`, so it narrows in both
+  directions, and it tests `callable` — a wrapper that forwards attributes can answer to
+  the name without implementing it.
+
+### Fixed
+
+- **A fallback chain that could not stream produced an empty answer and made no model
+  call.** `_FallbackClient` skips members without `stream_turn`, so a chain of chat-only
+  providers streamed from none of them and fell out of the loop having yielded nothing —
+  and it could not warn the caller off, because the composite defines `stream_turn`
+  unconditionally and so answers `supports_stream_turn` with True whatever its members do.
+
+  `react` happened to recover (`if result is None: result = await model.chat(...)`).
+  `delegating` did not: its return sits inside the streaming branch, so a `plan_execute` or
+  `parallel` run with `spec.model.fallbacks` and a chat-only provider synthesised an empty
+  answer — unlogged, and unmetered because no inference occurred. The composite settles it
+  now the way `_EscalationClient` already did: resolve with `chat()`, chunk for display. One
+  inference, correctly metered, and the contract is true of the composite rather than of one
+  of its two callers.
+
+
 ### Added
 
 - **A model call is a span, and spans are one trace.** Felix emitted exactly two spans —
@@ -27,7 +63,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The wrapper sits on the leaf client, not the composite, so a fallback chain that tries two
   providers shows two spans instead of hiding the retry inside one. It also does **not**
   define `stream_turn` unconditionally: that capability is detected with
-  `getattr(model, "stream_turn", None)`, and a wrapper that always had it would push every
+  `supports_stream_turn`, and a wrapper that always had it would push every
   non-streaming provider into the streamed path — where `record_usage` is never reached and
   the turn escapes every token and cost limit.
 

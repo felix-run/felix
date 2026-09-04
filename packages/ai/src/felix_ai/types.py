@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol, TypeGuard, runtime_checkable
+from typing import Any, Literal, Protocol, TypeIs, runtime_checkable
 
 Role = Literal["user", "assistant", "system", "tool"]
 
@@ -331,13 +331,19 @@ class StreamingModelProvider(ModelProvider, Protocol):
     ) -> AsyncIterator[StreamDelta | ModelChatResult]: ...
 
 
-def supports_stream_turn(client: object) -> TypeGuard[StreamingModelProvider]:
+def supports_stream_turn(client: object) -> TypeIs[StreamingModelProvider]:
     """True when `client` can stream a metered turn.
 
     One predicate rather than four hand-rolled `getattr(model, "stream_turn", None)`
     checks, so "does this provider stream" has a single answer and the narrowing is a type
     the checker understands. `callable` rather than a plain attribute test: a wrapper that
     forwards attributes can answer to the name without implementing it.
+
+    `TypeIs` rather than `TypeGuard` because callers narrow in both directions —
+    `if not supports_stream_turn(client): continue` and then use `client.stream_turn`.
+    PEP 647's `TypeGuard` narrows only the positive branch, so that reads as unnarrowed to
+    a checker following the spec; `ty` is lenient about it, pyright and mypy are not, and a
+    third-party provider author is more likely to run those against `felix_ai`.
     """
     return callable(getattr(client, "stream_turn", None))
 

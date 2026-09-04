@@ -16,6 +16,7 @@ from felix.manifests.schema import ABSOLUTE_LIMITS, ModelSpec
 from felix.observability.metrics import record_counter
 from felix.patterns.model import (
     ModelChatResult,
+    ModelClient,
     ModelGatewayError,
     build_model,
     record_usage,
@@ -241,7 +242,7 @@ class _ReactAgent:
         messages: list[ChatMessage],
         *,
         thread_id: str | None,
-        model: Any,
+        model: ModelClient,
     ) -> list[ChatMessage]:
         """Compact mid-run when over budget, then continue without aborting."""
         if not self.compact_after_turn:
@@ -355,7 +356,7 @@ class _ReactAgent:
 
     async def _stream_one_turn(
         self,
-        model: Any,
+        model: ModelClient,
         messages: list[ChatMessage],
         active_tools: list[Tool],
         thread_id: str | None,
@@ -422,7 +423,7 @@ class _ReactAgent:
     async def _recover_from_overflow(
         self,
         thread_id: str | None,
-        model: Any,
+        model: ModelClient,
         *,
         reason: str,
     ) -> list[ChatMessage] | None:
@@ -463,7 +464,7 @@ class _ReactAgent:
         )
         return list(rebuilt)
 
-    def _overflowed(self, result: ModelChatResult, model: Any) -> bool:
+    def _overflowed(self, result: ModelChatResult, model: ModelClient) -> bool:
         """True when a turn that did not raise nonetheless did not fit."""
         usage = getattr(result, "usage", None)
         if usage is None:
@@ -520,7 +521,7 @@ class _ReactAgent:
             logger.debug("turn seq lookup failed; storing memory without provenance", exc_info=True)
             return None
 
-    def _capture_model(self, turn_model: Any) -> Any:
+    def _capture_model(self, turn_model: ModelClient) -> Any:
         """The model fact extraction runs on.
 
         `spec.memory.capture.model` exists precisely so extraction does not run on the
@@ -543,7 +544,7 @@ class _ReactAgent:
             logger.debug("capture model %r unavailable; using the turn model", wanted, exc_info=True)
             return turn_model
 
-    async def _maybe_capture_memory(self, input: InvokeInput, final: ChatMessage, model: Any) -> None:
+    async def _maybe_capture_memory(self, input: InvokeInput, final: ChatMessage, model: ModelClient) -> None:
         capture = self.memory_capture
         if capture is None or not getattr(capture, "enabled", False):
             return
@@ -642,7 +643,9 @@ class _ReactAgent:
             head += 1
         return [*messages[:head], *prelude, *messages[head:]]
 
-    async def _assemble_messages(self, input: InvokeInput, model: Any, tenant_id: str) -> list[ChatMessage]:
+    async def _assemble_messages(
+        self, input: InvokeInput, model: ModelClient, tenant_id: str
+    ) -> list[ChatMessage]:
         """Build the message list a turn starts from.
 
         The session's own rendering of history if there is one, then the per-run prelude,

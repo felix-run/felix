@@ -73,7 +73,7 @@ def record_input_on_span(span: SpanContext, messages: list[ChatMessage]) -> None
         span.set_attribute("gen_ai.input.messages", payload)
 
 
-def record_output_on_span(span: SpanContext, result: ModelChatResult) -> None:
+def _record_output_on_span(span: SpanContext, result: ModelChatResult) -> None:
     if not _content_capture_enabled():
         return
     payload = _redacted_json([_message_dict(result.message)])
@@ -97,7 +97,7 @@ def record_result_on_span(span: SpanContext, result: ModelChatResult, wire_model
     """Attach the response half of a generation: stop reason, tokens, cost."""
     span.set_attribute("gen_ai.response.model", wire_model)
     span.set_attribute("gen_ai.response.finish_reasons", str(result.stop_reason))
-    record_output_on_span(span, result)
+    _record_output_on_span(span, result)
     usage = result.usage
     if usage is None:
         # Same failure `_metered_usage` warns about — a turn that cannot be capped.
@@ -123,9 +123,10 @@ def record_result_on_span(span: SpanContext, result: ModelChatResult, wire_model
         logger.debug("span pricing unavailable", exc_info=True)
 
 
+# Only what `patterns/model.py` calls. `_record_output_on_span` is reached through
+# `record_result_on_span` and stays private; moving a helper between modules is not a
+# reason to widen its audience.
 __all__ = [
-    "MAX_SPAN_CONTENT_CHARS",
     "record_input_on_span",
-    "record_output_on_span",
     "record_result_on_span",
 ]

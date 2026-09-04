@@ -462,20 +462,27 @@ async def test_the_scripted_provider_is_not_registered_by_default() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_fallback_skips_a_provider_that_cannot_stream_a_turn() -> None:
+async def test_a_fallback_settles_a_turn_no_member_can_stream() -> None:
     """What omitting `stream_turn` actually costs, asserted against production code.
 
-    The previous version of this test defined a `_ChatOnly` class and then asserted only
-    about that class — every claim in its docstring (`_FallbackClient` skips such a client,
-    the loop pays for a second inference) was unreachable from the test body, so no
-    production change could have made it fail.
+    `_FallbackClient` skips members that cannot stream a turn, so a chain of only such
+    clients streams from none of them. It used to end there, yielding nothing and making no
+    call — and it could not warn the caller off, because the composite defines
+    `stream_turn` unconditionally and so answers `supports_stream_turn` with True whatever
+    its members do.
 
-    `_FallbackClient.stream_turn` probes each client with `getattr(..., "stream_turn")` and
-    skips those without one. A chain of only such clients therefore yields nothing at all —
-    the caller falls back to `chat()`, correct but two inferences for one turn.
+    That cost one caller a wrong answer rather than a slow one: `react` recovered via
+    `if result is None: result = await model.chat(...)`, but `delegating`'s return sits
+    inside its streaming branch, so a `plan_execute` or `parallel` run with
+    `spec.model.fallbacks` and a chat-only provider produced an empty answer — unlogged,
+    and unmetered because no inference happened.
+
+    The composite settles it now, the way `_EscalationClient` already did: resolve with
+    `chat()` and chunk the text for display. One inference, correctly metered, and the
+    contract is true of the composite rather than of one of its two callers.
     """
     from felix.patterns.model import _FallbackClient
-    from felix_ai.types import ModelChatResult
+    from felix_ai.types import ModelChatResult, StreamDelta
 
     class _ChatOnly:
         def __init__(self, name: str) -> None:
@@ -503,13 +510,17 @@ async def test_a_fallback_skips_a_provider_that_cannot_stream_a_turn() -> None:
     )
 
     emitted = [item async for item in chain.stream_turn(_user(), [])]
-    assert emitted == [], "a chain with no stream_turn anywhere yields nothing"
-    assert primary.calls == [], "and does not silently fall back to chat() inside the composite"
 
-    # The turn still completes; it just costs the second inference the Protocol warns about.
-    result = await chain.chat(_user(), [])
-    assert result.usage is not None and result.usage.input == EXPECT_INPUT
-    assert primary.calls == ["chat"]
+    text = "".join(item.text for item in emitted if isinstance(item, StreamDelta))
+    assert text == "done", "the caller must receive the answer, not an empty stream"
+
+    finals = [item for item in emitted if isinstance(item, ModelChatResult)]
+    assert len(finals) == 1, "exactly one terminal result, or the turn cannot be metered"
+    assert finals[0].usage is not None and finals[0].usage.input == EXPECT_INPUT
+
+    # One inference, on the primary. The fallback is never reached and nothing is billed twice.
+    assert primary.calls == ["chat"], "the turn must cost exactly one call"
+    assert chain.fallbacks[0].calls == [], "the fallback is for failure, not for streaming"
 
 
 @parametrized
