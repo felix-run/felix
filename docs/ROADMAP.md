@@ -410,9 +410,17 @@ rather than from re-reading a file. The wave itself is written up in [HISTORY.md
 
 ### Repo / release hygiene
 
-- [ ] **Required status checks + `CODEOWNERS`** — CI runs 14 jobs and nothing blocks a merge on
-      them, so the review gate is convention rather than mechanism. Make the `changes` job report
-      success so doc-only PRs stay mergeable.
+- [~] **Required status checks + `CODEOWNERS`** — the status-check half is **done** and this
+      entry was wrong: `main` requires 13 contexts, all bound to the Actions app, and the
+      `changes` job does report success so doc-only PRs stay mergeable. Found by hitting it —
+      renaming a job for the CodeQL matrix broke `CodeQL` with "not set by the expected GitHub
+      app", which only happens when protection is real. Two things follow. **`CODEOWNERS` still
+      does not exist**, so review remains convention. And a required context is now coupled to a
+      *job name*: rename one and merges block repo-wide with an error that names GitHub apps
+      rather than the rename. `security.yml` pins its own name with an aggregate gate job;
+      nothing stops the next rename elsewhere, and an invariant comparing required contexts
+      against the names the workflows actually produce is ~20 lines
+      (`.github/workflows/*.yml` → job `name`, matrix expanded).
 - [ ] **Tag-driven release** — build, push to GHCR, attach an SBOM, sign with cosign via OIDC,
       then point `deploy/` at the published image. CI already builds and scans the image and
       throws it away.
