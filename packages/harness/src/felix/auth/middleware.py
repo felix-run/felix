@@ -25,6 +25,7 @@ from felix.config import Settings, get_settings
 from felix.context import AuthContext as CtxAuth
 from felix.context import LimitState, RequestContext, async_run_with_context
 from felix.security.constant_time import constant_time_equal
+from felix.security.rate_limit import PROBE_PATHS
 
 logger = logging.getLogger("felix.auth.middleware")
 
@@ -53,10 +54,12 @@ async def _call_authenticator(
 
 
 # Unauthenticated access allowed even when auth_mode is jwt/api_key (probes + discovery).
+# Probe paths come from one shared set, because kubelet sends no credential and the
+# rate limiter has to skip the same paths — see `PROBE_PATHS` for the incident.
 # /metrics is NOT public: its counters carry tenant-supplied manifest ids and remote
 # MCP tool names as label values, so an anonymous scrape discloses every tenant's
 # manifest and tool names.
-_PUBLIC_EXACT = frozenset({"/health", "/docs", "/openapi.json", "/redoc"})
+_PUBLIC_EXACT = PROBE_PATHS | {"/docs", "/openapi.json", "/redoc"}
 _PUBLIC_PREFIX = ("/.well-known/",)
 
 

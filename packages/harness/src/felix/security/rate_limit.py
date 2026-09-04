@@ -124,9 +124,17 @@ class RedisRateLimiter:
         return count <= limit
 
 
+# The paths a deploy artefact may probe. kubelet sends no credential and treats a 429 as
+# a failed probe, so every one of these is public in `felix.auth.middleware` and skipped
+# here — one set feeds both, because the two lists drifted once: the chart moved to
+# /ready and /live while only /health was public, and no pod ever became Ready.
+# `tests/unit/test_operability.py` reads the probe paths out of the chart, the Dockerfile
+# and the Compose files and asserts each is in this set.
+PROBE_PATHS = frozenset({"/health", "/live", "/ready"})
+
 # /metrics is deliberately NOT skipped: it is a scrape target with unbounded label
 # cardinality, so an unauthenticated caller polling it is a real amplification path.
-SKIP_EXACT = frozenset({"/health", "/docs", "/openapi.json", "/redoc"})
+SKIP_EXACT = PROBE_PATHS | {"/docs", "/openapi.json", "/redoc"}
 # `/docs/` was here for Swagger UI's /docs/oauth2-redirect, which went with it; the
 # Scalar reference is the single exact path above.
 SKIP_PREFIX = ("/.well-known/",)
@@ -231,6 +239,7 @@ def client_key(request: Any, settings: Any) -> str:
 
 
 __all__ = [
+    "PROBE_PATHS",
     "InMemoryRateLimiter",
     "RateLimitConfig",
     "RateLimiterBackend",

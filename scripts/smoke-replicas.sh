@@ -72,7 +72,8 @@ EFFECTIVE="default:$THREAD"
 
 say "3. Does the origin actually use both replicas?"
 for _ in $(seq 1 20); do
-  curl -fsS -o /dev/null --max-time 10 -H "Authorization: Bearer $KEY" "http://127.0.0.1:${FELIX_PORT}/ready"
+  # No credential on purpose: /ready is a probe path and kubelet sends none.
+  curl -fsS -o /dev/null --max-time 10 "http://127.0.0.1:${FELIX_PORT}/ready"
 done
 ORIGIN="$(docker ps --filter "label=com.docker.compose.project=$PROJECT" --filter "label=com.docker.compose.service=origin" --format '{{.Names}}' | head -1)"
 docker logs "$ORIGIN" 2>&1 | grep -oE 'upstream=[0-9.]+:[0-9]+' | sort | uniq -c | sed 's/^/   /'

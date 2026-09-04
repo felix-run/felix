@@ -29,6 +29,11 @@ Two properties of `/metrics` are deliberate and easy to undo by accident:
 authentication, because the worker has no auth middleware. Bind it to an internal network;
 never publish it.
 
+The probe paths are the opposite case: `/health`, `/live` and `/ready` are public and
+unthrottled (`PROBE_PATHS` in `felix/security/rate_limit.py`), because kubelet sends no
+credential. `/ready` answers with up/down per dependency and no detail; the exception
+text is logged.
+
 ## Metrics
 
 ### Model and cost
