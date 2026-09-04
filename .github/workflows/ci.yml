@@ -9,6 +9,15 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Least privilege, stated in the file rather than inherited from a repo setting.
+# `default_workflow_permissions` is `read` today, so this changes nothing at runtime —
+# but that lives in Settings, is invisible to anyone reading this workflow, and flipping
+# it would silently grant write to every job below. `security.yml` already declares this;
+# CodeQL's `actions/missing-workflow-permissions` flagged the workflows that did not.
+# A job needing more overrides it locally, as `changes` and the review job already do.
+permissions:
+  contents: read
+
 jobs:
   changes:
     runs-on: ubuntu-latest
