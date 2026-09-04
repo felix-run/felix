@@ -83,6 +83,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`/documents` and `felix/documents/` — an operator-owned corpus an agent can retrieve from.**
+  The harness had no document retrieval at all: `felix/memory/` stores *facts an agent wrote*,
+  and `tools/retrieval.py` is tool selection. Neither is a corpus.
+
+  Ingest chunks the text, embeds it when an embedder is configured, and stores chunks; search
+  is hybrid, fusing a lexical channel and a vector one with the same Reciprocal Rank Fusion
+  long-term memory uses — `rrf_fuse` is reused rather than reimplemented. A channel that cannot
+  run is skipped and *said so*: `FELIX_MEMORY_EMBEDDER` is `none` by default, so the out-of-the-
+  box path is full-text only, and every hit carries the channels that surfaced it. Reuses the
+  memory embedder setting rather than adding a second one — one embedder per deployment, one
+  vector dimension.
+
+  Migration `0010_documents` adds `document_chunks` with a generated `content_tsv` (GIN) and a
+  **nullable** pgvector column (HNSW). Nullable is the load-bearing half: `memory_vectors`
+  shipped `NOT NULL` with no default and every insert failed silently for months, so the
+  conformance arm here asserts a document stores without an embedder. The table joins the RLS
+  policy set in the same migration rather than a follow-up — a tenant table added outside it is
+  one the isolation policy silently does not cover.
+
+  Routes are scoped `documents:read` / `documents:write`, and the tenant always comes from the
+  authenticated principal, never the request body. Re-ingesting the same `(source, title)`
+  replaces rather than duplicates, so re-syncing a corpus is idempotent; replacement is
+  delete-then-insert in one transaction, so a shortened document does not keep its old tail.
+
+  Conformance runs the one contract against both backends — the two arms are *different
+  rankers*, Python cosine against pgvector's `<=>`, so they can disagree about which chunk is
+  best while each looks right alone. Verified against a real pgvector Postgres, not only the
+  skip path.
+
+  Two defects the tests caught while writing them:
+  - The runt-tail fold used a flat 64-character floor, so at `max_chars=45` it folded every
+    time and returned an 80-character chunk — a budget repealed by the tidying rule meant to
+    serve it. The floor now scales with the budget and the merge is bounded.
+  - Chunk overlap was taken literally, so an overlapped chunk began mid-word — `"ss guard
+    resolves"`. That costs twice: the lexical channel tokenises `"ss"` as a term matching
+    nothing, and a model reads a truncated first word as if it were the text.
+
+  The agent-facing `search_documents` tool is deliberately a follow-up rather than part of this
+  change.
+
+  Found by review before this shipped, and worth recording because the first round of tests
+  caught none of it:
+  - **Ingest reported success and stored nothing.** A dimension mismatch made
+    `_write_embedding` raise; the `except` swallowed it but left the *transaction* aborted, so
+    the commit discarded the chunk inserts too — `put_document` returned `(doc_id, 1)` against
+    an empty table. The `memory_vectors` failure one level down, reachable by pointing
+    `FELIX_MEMORY_EMBEDDER` at a model of another size. The write is inside a savepoint now,
+    and the contract asserts the stored count matches the reported one.
+  - **Metadata was a 1,700× storage amplifier**: unbounded in the request model *and* copied
+    onto every chunk, so one request inside the 1 MiB body limit stored 1.7 GB. Bounded at
+    16 KB and written to chunk 0 only — either fix alone leaves the other shape available.
+  - **The lexical channel was unguarded** while the vector one was, so a pod running ahead of
+    the migration lost the request instead of a channel — and took the vector channel with it.
+  - **A NUL byte was an uncaught 500** (psycopg raises `DataError`, not `ValueError`), accepted
+    on the in-memory arm, so the contract could not see the divergence.
+  - **`count_documents` was dead** — exported, tested, called by nothing. It now enforces
+    `FELIX_DOCUMENTS_MAX_PER_TENANT`, which is what it was for.
+  - Embedding is batched, so a large document no longer loses its whole vector channel to one
+    oversized provider request; `SELECT *` is gone from both channels; the Postgres arm of
+    `list_documents` returns metadata and orders with a tiebreaker, both of which diverged from
+    the twin.
+  - The conformance Postgres arm had **no teardown**, so it never reset while the memory arm
+    reset around every test — the two were not running the same contract from the same state.
+  - The route tests reached a **real Redis** through the repo `.env`, making the rate limiter a
+    shared cross-process window: six runs inside a minute and the seventh failed on 429.
+
+
 - **`spec.search_tools` and a `SearchBackend` registry — `deep` can research.** It declared
   `pattern: deep` and shipped with `tools: [calculator, list_skills]`, which made a research
   agent that could not retrieve. It now has `search` to find sources and `fetch` to read them;

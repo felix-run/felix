@@ -327,11 +327,45 @@ class JobRun(Base):
     )
 
 
+class DocumentChunk(Base):
+    """One retrievable slice of an ingested document.
+
+    Chunks rather than documents, in one table rather than two. Retrieval returns chunks, so
+    a `documents` parent would exist only to hold a title and a source — both of which are
+    denormalised here instead, because every read path wants them alongside the chunk and no
+    write path updates a document without rewriting all of its chunks anyway. `doc_id` groups
+    them: listing is `DISTINCT doc_id`, replacing is delete-then-insert under one transaction.
+
+    The `embedding vector(...)` column and `content_tsv` are added by migration `0010`, the
+    way `memory_vectors` does it — SQLAlchemy cannot express either a pgvector type or a
+    generated column, and the in-memory twin needs neither.
+    """
+
+    __tablename__ = "document_chunks"
+
+    tenant_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    doc_id: Mapped[str] = mapped_column(Text, nullable=False)
+    chunk_index: Mapped[int] = mapped_column(Integer, server_default=text("0"), default=0)
+    title: Mapped[str] = mapped_column(Text, server_default="", default="")
+    # Where the text came from — a URL, a path, an object-store key. Opaque to the harness
+    # and shown to whoever reads a hit, so a claim can be traced to its origin.
+    source: Mapped[str] = mapped_column(Text, server_default="", default="")
+    content: Mapped[str] = mapped_column(Text, server_default="", default="")
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSONB, server_default=text("'{}'::jsonb"), default=dict
+    )
+    created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    embedding_dim: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    embedding_model: Mapped[str] = mapped_column(Text, server_default="", default="")
+
+
 __all__ = [
     "A2ATask",
     "Approval",
     "AuditEvent",
     "Base",
+    "DocumentChunk",
     "EvalDataset",
     "EvalDatasetItem",
     "EvalRun",

@@ -180,6 +180,12 @@ class Settings(BaseSettings):
     # as a call that never returns rather than as a boot failure.
     search_timeout_seconds: float = Field(default=15.0, gt=0, le=300.0)
 
+    # --- Document corpus ---
+    # Per-tenant document ceiling. Without one, a single `documents:write` credential grows
+    # the database without bound: `MAX_DOCUMENT_CHARS` caps one request and
+    # `MAX_CHUNKS_PER_DOC` caps one document, but nothing capped how many documents.
+    documents_max_per_tenant: int = Field(default=5_000, ge=1, le=1_000_000)
+
     # --- SSE reconnect ---
     # How long `GET /chat/stream/{thread_id}` holds an idle connection before closing
     # it. The client reconnects with its `Last-Event-ID` and loses nothing, so this
