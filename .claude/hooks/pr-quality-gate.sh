@@ -112,7 +112,13 @@ base=origin/main
 git -C "$workdir" rev-parse --verify --quiet "$base" >/dev/null 2>&1 || exit 0
 
 # Nothing reviewable? Then nothing to gate — docs- and config-only PRs pass straight through.
-changed=$(git -C "$workdir" diff --name-only "$base"...HEAD 2>/dev/null | grep -E '^(apps|packages|tests)/.*\.py$')
+#
+# `--diff-filter=d` drops files the PR deletes. There is no code to review in a file that
+# will not exist, and a reviewer pointed at one has nothing to read: the note asked for a
+# quality review of a pure-deletion PR whose entire content was removing a test and the
+# config it guarded. Modified and added files are still gated, so a PR that deletes one
+# module and rewrites another is judged on the rewrite.
+changed=$(git -C "$workdir" diff --name-only --diff-filter=d "$base"...HEAD 2>/dev/null | grep -E '^(apps|packages|tests)/.*\.py$')
 [ -z "$changed" ] && exit 0
 
 tests_changed=$(printf '%s\n' "$changed" | grep -c '^tests/')
