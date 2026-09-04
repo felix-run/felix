@@ -49,8 +49,8 @@ class _Client:
 
 async def _run(monkeypatch: pytest.MonkeyPatch, settings: Settings, messages: Any) -> Any:
     """Capture the span a real call produces, with `settings` as the active context."""
+    from felix.observability import genai as genai_mod
     from felix.observability import tracing as tracing_mod
-    from felix.patterns import model as model_mod
 
     spans: list[Any] = []
     original = tracing_mod.make_span
@@ -63,7 +63,9 @@ async def _run(monkeypatch: pytest.MonkeyPatch, settings: Settings, messages: An
     # `timed_span` opens the span, so the spy goes on tracing's `make_span` rather than a
     # name re-exported into the model module.
     monkeypatch.setattr(tracing_mod, "make_span", _spy)
-    monkeypatch.setattr(model_mod, "get_settings", lambda: settings)
+    # Content capture is decided in `observability.genai`, which is where the settings
+    # lookup lives now that the span shaping is out of the pattern module.
+    monkeypatch.setattr(genai_mod, "get_settings", lambda: settings)
     await _traced(_Client()).chat(messages, [])
     return spans[0]
 

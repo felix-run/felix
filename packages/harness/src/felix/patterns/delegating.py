@@ -20,8 +20,10 @@ from typing import Any
 from felix.manifests.schema import PlanExecuteSpec, ReflectSpec
 from felix.patterns.model import (
     ModelChatResult,
+    ModelClient,
     build_model,
     record_usage,
+    supports_stream_turn,
     wire_model_id,
 )
 from felix.patterns.react import build_react_agent
@@ -158,7 +160,7 @@ def _terminal_events(result: InvokeOutput) -> list[Event]:
 
 
 async def _yield_model_stream(
-    model: Any, messages: list[ChatMessage], collected: list[str], *, manifest_id: str
+    model: ModelClient, messages: list[ChatMessage], collected: list[str], *, manifest_id: str
 ) -> AsyncIterator[Event]:
     """Stream a text-only model call as display events, and meter it.
 
@@ -179,8 +181,8 @@ async def _yield_model_stream(
     delta: one request, correctly metered, at the cost of token-by-token display for that
     provider. Streaming for show is not worth an uncapped spend.
     """
-    stream_turn = getattr(model, "stream_turn", None)
-    if stream_turn is not None:
+    if supports_stream_turn(model):
+        stream_turn = model.stream_turn
         async for item in stream_turn(messages, []):
             if isinstance(item, ModelChatResult):
                 record_usage(
@@ -366,7 +368,7 @@ class _DelegatingAgent:
         yield tap.output if tap.output is not None else _empty_output(input)
 
     async def _generate(
-        self, model: Any, messages: list[ChatMessage], *, emit_events: bool
+        self, model: ModelClient, messages: list[ChatMessage], *, emit_events: bool
     ) -> AsyncIterator[Event | ChatMessage]:
         """Produce an assistant message from `model`, ending with the complete one.
 

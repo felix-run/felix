@@ -7,7 +7,7 @@ pinned, in order of how quietly they failed:
    chat produced three unrelated single-span traces instead of one tree.
 2. The model call had no span at all, so the one operation carrying token usage, model
    name and cost was the one operation a tracing backend could not see.
-3. `stream_turn` is detected with `getattr(model, "stream_turn", None)`. Any wrapper that
+3. `stream_turn` is a capability, detected with `supports_stream_turn`. Any wrapper that
    defines it unconditionally pushes every non-streaming provider into the streaming path
    and silently unmeters the turn.
 """
@@ -56,7 +56,7 @@ class _WithStream(_NoStream):
 
 
 def test_a_non_streaming_provider_does_not_gain_stream_turn() -> None:
-    """The footgun: callers probe for `stream_turn` with getattr.
+    """The footgun: `supports_stream_turn` answers on the attribute.
 
     A wrapper that always defines it would route a provider that cannot report usage into
     `_stream_one_turn`, and `record_usage` is the sole feed for every token and cost limit.
