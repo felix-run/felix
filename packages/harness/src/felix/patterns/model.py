@@ -203,6 +203,10 @@ def record_usage(
 # any OTLP consumer) renders these spans as model generations with token usage attached,
 # instead of anonymous timing bars — which is the whole reason the attribute names are
 # borrowed rather than invented.
+# Prompts grow without bound; a span attribute should not. Truncation is preferable to a
+# span the exporter refuses or the backend rejects.
+MAX_SPAN_CONTENT_CHARS = 32_000
+
 GEN_AI_SPAN_ATTRS = (
     "gen_ai.operation.name",
     "gen_ai.system",
@@ -214,10 +218,105 @@ GEN_AI_SPAN_ATTRS = (
 )
 
 
+def _content_capture_enabled() -> bool:
+    """`FELIX_OTEL_CAPTURE_CONTENT`, read from the active request's settings.
+
+    Off by default. A tracing backend is an egress destination like any other, and span
+    attributes do not pass through the governance content screening that guards tool
+    output — so the prompt and the completion only leave the process when an operator has
+    said so.
+    """
+    ctx = try_get_context()
+    settings = getattr(ctx, "settings", None) if ctx is not None else None
+    if settings is None:
+        settings = get_settings()
+    return bool(getattr(settings, "otel_capture_content", False))
+
+
+def _redacted_json(value: Any) -> str | None:
+    """Serialise for a span attribute, with the audit store's redaction applied first.
+
+    `redact_json` is what the audit path already uses, so content on a span is masked to
+    the same standard as content in an audit row — and to no better one. It replaces
+    values Felix *knows* are secrets (those hydrated from the secrets backend) by
+    substring match; it is not pattern detection. A credential a user types into a chat is
+    therefore exported verbatim. That boundary is why `FELIX_OTEL_CAPTURE_CONTENT`
+    defaults to off.
+    """
+    try:
+        from felix.secrets import redact_json
+
+        return json.dumps(redact_json(value), default=str)[:MAX_SPAN_CONTENT_CHARS]
+    except Exception:
+        logger.debug("span content redaction failed; dropping content", exc_info=True)
+        return None
+
+
+def _record_input_on_span(span: SpanContext, messages: list[ChatMessage]) -> None:
+    if not _content_capture_enabled():
+        return
+    payload = _redacted_json([_message_dict(m) for m in messages])
+    if payload is not None:
+        span.set_attribute("gen_ai.input.messages", payload)
+
+
+def _record_output_on_span(span: SpanContext, result: ModelChatResult) -> None:
+    if not _content_capture_enabled():
+        return
+    payload = _redacted_json([_message_dict(result.message)])
+    if payload is not None:
+        span.set_attribute("gen_ai.output.messages", payload)
+
+
+def _message_dict(message: Any) -> dict[str, Any]:
+    """The parts of a message worth tracing, without dragging in provider internals."""
+    content = getattr(message, "content", None)
+    out: dict[str, Any] = {"role": getattr(message, "role", "") or "", "content": content}
+    calls = getattr(message, "tool_calls", None)
+    if calls:
+        out["tool_calls"] = [
+            {"name": getattr(c, "name", ""), "args": getattr(c, "args", None)} for c in calls
+        ]
+    return out
+
+
+def _identity_attrs(ctx: Any) -> dict[str, Any]:
+    """Session and caller identity, under the names backends actually read.
+
+    `thread_id` is an opaque id Felix already generates, and it is what turns a multi-turn
+    conversation into one session rather than N unrelated traces. The principal and tenant
+    are gated: a tracing backend is an egress destination, and `principal_sub` can be a
+    real person's subject claim rather than a service account.
+    """
+    attrs: dict[str, Any] = {}
+    thread_id = getattr(ctx, "thread_id", None)
+    if thread_id:
+        # Two names for two readers; both are in common use and neither is universal.
+        attrs["session.id"] = str(thread_id)
+        attrs["gen_ai.conversation.id"] = str(thread_id)
+    settings = getattr(ctx, "settings", None)
+    if not bool(getattr(settings, "otel_capture_identity", True)):
+        return attrs
+    auth = getattr(ctx, "auth", None)
+    if auth is None:
+        return attrs
+    principal = getattr(auth, "principal_sub", "") or ""
+    # `anonymous` is the default subject, not an identity — recording it would fill the
+    # console's Users view with a single meaningless entry.
+    if principal and principal != "anonymous":
+        attrs["user.id"] = str(principal)
+        attrs["gen_ai.user.id"] = str(principal)
+    tenant = getattr(auth, "tenant_id", "") or ""
+    if tenant:
+        attrs["felix.tenant.id"] = str(tenant)
+    return attrs
+
+
 def _record_result_on_span(span: SpanContext, result: ModelChatResult, wire_model: str) -> None:
     """Attach the response half of a generation: stop reason, tokens, cost."""
     span.set_attribute("gen_ai.response.model", wire_model)
     span.set_attribute("gen_ai.response.finish_reasons", str(result.stop_reason))
+    _record_output_on_span(span, result)
     usage = result.usage
     if usage is None:
         # Same failure `_metered_usage` warns about — a turn that cannot be capped.
@@ -226,6 +325,12 @@ def _record_result_on_span(span: SpanContext, result: ModelChatResult, wire_mode
         return
     span.set_attribute("gen_ai.usage.input_tokens", usage.input)
     span.set_attribute("gen_ai.usage.output_tokens", usage.output)
+    # Cache tokens under the GenAI-semconv names as well as Felix's own. Only the former
+    # are read by backends, and dropping them is not cosmetic: Felix's `usage_with_cost`
+    # counts cache reads and creations, so a backend computing cost from input/output
+    # alone silently disagrees with Felix's own number as soon as prompt caching is on.
+    span.set_attribute("gen_ai.usage.cache_creation_input_tokens", usage.cache_creation)
+    span.set_attribute("gen_ai.usage.cache_read_input_tokens", usage.cache_read)
     span.set_attribute("felix.usage.cache_creation", usage.cache_creation)
     span.set_attribute("felix.usage.cache_read", usage.cache_read)
     try:
@@ -271,6 +376,7 @@ class _TracedClient:
             manifest_id = getattr(ctx, "manifest_id", None)
             if manifest_id:
                 attrs["felix.manifest.id"] = str(manifest_id)
+            attrs.update(_identity_attrs(ctx))
         return make_span(f"chat {wire_model}", attrs)
 
     def _wire_model(self) -> str:
@@ -283,6 +389,7 @@ class _TracedClient:
         opts: ModelChatOptions | None = None,
     ) -> ModelChatResult:
         span = self._span()
+        _record_input_on_span(span, messages)
         started = time.perf_counter()
         status = "ok"
         try:
@@ -338,6 +445,7 @@ class _TracedStreamingClient(_TracedClient):
         opts: ModelChatOptions | None = None,
     ) -> AsyncIterator[StreamDelta | ModelChatResult]:
         span = self._span()
+        _record_input_on_span(span, messages)
         span.set_attribute("gen_ai.operation.name", "chat")
         span.set_attribute("felix.streamed", True)
         started = time.perf_counter()

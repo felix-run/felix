@@ -95,7 +95,7 @@ model calls as generations with token usage attached rather than as anonymous ti
 | --- | --- | --- |
 | HTTP request | per request, via `opentelemetry-instrumentation-fastapi` | standard HTTP semconv; the trace root |
 | `manifest` | one per compile | `manifest_name`, `manifest_version` |
-| `chat {model}` | one per **provider call** | `gen_ai.operation.name`, `gen_ai.system`, `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.response.finish_reasons`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `felix.usage.cache_creation`, `felix.usage.cache_read`, `felix.cost_usd`, `felix.model.route`, `felix.manifest.id` |
+| `chat {model}` | one per **provider call** | `gen_ai.operation.name`, `gen_ai.system`, `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.response.finish_reasons`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.usage.cache_creation_input_tokens`, `gen_ai.usage.cache_read_input_tokens`, `felix.cost_usd`, `felix.model.route`, `felix.manifest.id`, plus identity below |
 | `tool {name}` | one per tool call | `gen_ai.tool.name`, `gen_ai.operation.name=execute_tool`, `felix.tool.transport`, `status` |
 | `worker {task}` | one per periodic sweep | `felix.worker.task` |
 
@@ -106,12 +106,44 @@ hide the retry, which is the thing worth seeing.
 `felix.usage.unmetered=true` on a `chat` span is the span-level twin of
 `felix_model_unmetered` — that turn counted against no budget.
 
+### Identity and sessions
+
+Every span carries `session.id` and `gen_ai.conversation.id` when the request has a thread —
+namespaced as `{tenant}:{thread_id}`, so threads cannot collide across tenants. This is what
+turns a multi-turn conversation into one session in a backend rather than N unrelated traces.
+
+`FELIX_OTEL_CAPTURE_IDENTITY` (default **true**) additionally emits `user.id` /
+`gen_ai.user.id` from the auth principal and `felix.tenant.id`. Set it false when principal
+subjects are personal identifiers you do not want in a tracing backend. The anonymous
+principal is never recorded — it is a default, not a person, and would appear as one
+meaningless user.
+
+**Cache tokens are emitted under the `gen_ai.usage.*` names**, not only Felix's own. This
+is not cosmetic: `usage_with_cost` counts cache reads and creations, so a backend computing
+cost from input/output alone silently disagrees with Felix's own number once prompt caching
+is on.
+
+### Probe endpoints are not traced
+
+`/health`, `/live`, `/ready` and `/metrics` are excluded, as are the ASGI `http send` /
+`http receive` child spans. Docker healthchecks and a Prometheus scrape run every 10-15s
+forever: in the first real export, 270 of 372 traces were probes against 3 actual chats, and
+552 of 936 observations were ASGI plumbing. The request span still measures the whole request.
+
 ### Content is not captured
 
-Prompts and completions do not appear on spans. `FELIX_OTEL_CAPTURE_CONTENT=true` opts in.
+Prompts and completions do not appear on spans. `FELIX_OTEL_CAPTURE_CONTENT=true` opts in,
+writing `gen_ai.input.messages` and `gen_ai.output.messages` (truncated at 32k characters).
+
 Leave it off unless the tracing backend is inside your trust boundary: a tracing backend is
 an egress destination, and span attributes are not covered by the governance content
 screening that guards tool output.
+
+**Know what the redaction does and does not cover.** Captured content passes through
+`redact_json`, the same masking the audit path uses — which replaces values Felix *knows*
+are secrets (those hydrated from the secrets backend) by substring match. It is not pattern
+detection, so a credential a user types into a chat is exported verbatim. That boundary is
+the reason this defaults to off.
 
 ## Logs
 

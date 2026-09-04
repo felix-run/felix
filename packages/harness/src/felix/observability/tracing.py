@@ -223,6 +223,18 @@ def _build_sampler(settings: Any) -> Any | None:
     return ParentBased(root=TraceIdRatioBased(max(ratio, 0.0)))
 
 
+# Probe and scrape endpoints. Docker healthchecks and a Prometheus scrape both run every
+# 10-15s forever, so tracing them buried real traffic: 270 of 372 traces in the first local
+# run were `GET /health` or `GET /metrics`, against 3 chats. None of them describe agent
+# behaviour, and all of them cost export bandwidth and retention.
+_EXCLUDED_URLS = "health,live,ready,metrics"
+
+# The ASGI instrumentation emits a child span per `http.receive` / `http.send` event, which
+# was 552 of 936 observations — four plumbing spans inside every chat trace, between the
+# manifest span and the model call. The request span still measures the whole request.
+_EXCLUDED_SPANS = ["send", "receive"]
+
+
 def instrument_fastapi(app: Any) -> bool:
     """Open a root span per HTTP request and honour an inbound `traceparent`.
 
@@ -241,7 +253,11 @@ def instrument_fastapi(app: Any) -> bool:
         logger.warning("otel extra installed without instrumentation-fastapi; no request spans")
         return False
     try:
-        FastAPIInstrumentor.instrument_app(app)
+        FastAPIInstrumentor.instrument_app(
+            app,
+            excluded_urls=_EXCLUDED_URLS,
+            exclude_spans=_EXCLUDED_SPANS,
+        )
     except Exception:
         logger.warning("fastapi instrumentation failed; spans will not be parented", exc_info=True)
         return False

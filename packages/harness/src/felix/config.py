@@ -149,6 +149,11 @@ class Settings(BaseSettings):
     # egress destination like any other, and span attributes are not covered by the
     # governance screening that guards tool output.
     otel_capture_content: bool = False
+    # Caller identity on spans: `user.id` from the auth principal and the tenant id.
+    # `session.id` (the thread) is always emitted — it is an opaque id Felix generates and
+    # is what groups a multi-turn conversation. This gates only the parts that can name a
+    # real person, because a tracing backend is an egress destination.
+    otel_capture_identity: bool = True
     # Ship logs over OTLP as well as traces. Off by default: log volume is a real cost and
     # the operator opts into it. Records carry trace_id/span_id from the active context,
     # so a log line links to the span that produced it.

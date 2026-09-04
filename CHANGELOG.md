@@ -117,7 +117,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   token counts, 3 `TOOL` rows, and the rest `SPAN` — the classification that proves the
   `gen_ai.*` attribute names are right.
 
+- **Session and caller identity on spans.** `session.id` / `gen_ai.conversation.id` carry the
+  thread (namespaced `{tenant}:{thread_id}`, so threads cannot collide across tenants), which
+  is what makes a multi-turn conversation one session in a backend instead of N unrelated
+  traces. `FELIX_OTEL_CAPTURE_IDENTITY` (default true) adds `user.id` / `gen_ai.user.id` from
+  the auth principal and `felix.tenant.id`; set it false when principal subjects are personal
+  identifiers. The anonymous principal is never recorded — it is a default, not a person.
+
 ### Fixed
+
+- **`FELIX_OTEL_CAPTURE_CONTENT` did nothing.** It was declared in `config.py` and documented
+  in `.env.example`, the Helm values, `docs/OBSERVABILITY.md` and this changelog, and read by
+  no code — a setting that reads as a control and was not one, found only by looking for its
+  effect in a backend and not finding it. It now writes `gen_ai.input.messages` and
+  `gen_ai.output.messages` (32k cap) through `redact_json`, the audit path's masking.
+
+  That masking replaces values Felix *knows* are secrets, by substring match; it is not
+  pattern detection, so a credential a user types into a chat is exported verbatim. The docs
+  now say so, because the previous wording implied more than the code does.
+
+  `tests/unit/test_span_enrichment.py` also adds the guard that would have caught this: every
+  `otel_*` / `metrics_*` setting must be read somewhere outside `config.py`.
+
+- **Cache tokens never reached any backend.** They went out as `felix.usage.*` only, while
+  backends read `gen_ai.usage.cache_creation_input_tokens` / `..._cache_read_input_tokens`.
+  Not cosmetic: `usage_with_cost` counts them, so a backend computing cost from input/output
+  alone silently disagrees with Felix's own number as soon as prompt caching is on.
+
+- **Probe endpoints and ASGI plumbing were traced.** `/health`, `/live`, `/ready` and
+  `/metrics` are excluded now, as are the per-request `http send` / `http receive` child
+  spans. Docker healthchecks and a Prometheus scrape run every 10-15s forever: in the first
+  real export, 270 of 372 traces were probes against 3 actual chats, and 552 of 936
+  observations were ASGI plumbing. Agent activity was under 1% of what was being exported.
 
 - **The Memoturn console rendered "Something went wrong".** Its image serves static files
   only — `/api/*` and `/auth/*` routing lives in Memoturn's production front proxy, which

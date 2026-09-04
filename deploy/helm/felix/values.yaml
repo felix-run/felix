@@ -47,6 +47,8 @@ config:
   FELIX_OTEL_SAMPLE_RATIO: "1.0"
   # Prompts/completions on spans. Off: a tracing backend is an egress destination.
   FELIX_OTEL_CAPTURE_CONTENT: "false"
+  # user.id / tenant on spans. session.id (thread) is emitted regardless.
+  FELIX_OTEL_CAPTURE_IDENTITY: "true"
   # Worker-only Prometheus port (0 = off). UNAUTHENTICATED — never expose it via a Service
   # reachable outside the cluster.
   FELIX_METRICS_PORT: "0"
