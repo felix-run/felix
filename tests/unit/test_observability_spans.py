@@ -273,3 +273,29 @@ def test_fastapi_is_instrumented_at_construction_not_in_the_lifespan() -> None:
         "no effect: spans will export as unparented single-span traces"
     )
     assert "instrument_fastapi" in source, "FastAPI is never instrumented, so there is no trace root"
+
+
+@pytest.mark.parametrize(
+    ("base", "signal", "expected"),
+    [
+        # A standard collector exposes OTLP/HTTP at the root of :4318.
+        ("http://otel-collector:4318", "traces", "http://otel-collector:4318/v1/traces"),
+        ("http://otel-collector:4318", "logs", "http://otel-collector:4318/v1/logs"),
+        # Memoturn mounts its receiver under a prefix.
+        ("http://memoturn-api:3001/v1/otel", "traces", "http://memoturn-api:3001/v1/otel/v1/traces"),
+        ("https://mt.example.com/v1/otel/", "logs", "https://mt.example.com/v1/otel/v1/logs"),
+        # An operator who pinned the exact URL keeps it.
+        ("http://c:4318/v1/traces", "traces", "http://c:4318/v1/traces"),
+    ],
+)
+def test_otlp_http_endpoints_get_a_signal_path(base: str, signal: str, expected: str) -> None:
+    """One `FELIX_OTEL_ENDPOINT` serves two signals, so the path must be derived.
+
+    The Python OTLP/HTTP exporters treat `endpoint` as the complete URL for their signal
+    and append nothing. Passing the base through unchanged POSTed to it verbatim — every
+    span and log record was sent, accepted by nothing, and answered with a 404 that only
+    the receiving end ever logged.
+    """
+    from felix.observability.tracing import _signal_endpoint
+
+    assert _signal_endpoint(base, signal) == expected

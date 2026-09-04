@@ -1,0 +1,224 @@
+# Memoturn overlay — LLM observability, running against Felix's own backing services.
+#
+# Run from repo root (see deploy/docker/README.md):
+#   make up-memoturn
+#
+# Memoturn console  http://localhost:3002   (API on :3001)
+#
+# Memoturn ingests OTLP natively and maps spans carrying `gen_ai.*` semantic-convention
+# attributes to generations, which is exactly what felix.patterns.model emits — so Felix
+# needs no Memoturn SDK, no extra dependency, and no code that knows the vendor exists.
+# It is one OTLP endpoint plus a Basic auth header, reached through the settings
+# FELIX_OTEL_PROTOCOL and FELIX_OTEL_HEADERS.
+#
+# Why not Memoturn's own compose file: that one also stands up Postgres, Valkey, MinIO,
+# Caddy and Apache Doris — a 4 GB floor, more than the whole Felix stack. Here it reuses
+# Felix's Postgres (its own database), Valkey (its own Redis index) and MinIO, and
+# TELEMETRY_ENGINE=postgres drops Doris entirely. Caddy is Memoturn's production TLS
+# terminator; locally the console and API publish on 127.0.0.1 like everything else.
+#
+# The published images are linux/amd64 only, so an arm64 host (Apple Silicon) runs them
+# under emulation. Without the explicit platform Docker refuses with "no matching manifest
+# for linux/arm64/v8" and the whole overlay fails to pull. Override with
+# FELIX_MEMOTURN_PLATFORM when arm64 images exist.
+#
+# Every service here carries `profiles: ["full"]`, and `make up-memoturn` passes
+# `--profile full`. That is not decoration: Memoturn keeps its raw event log in blob storage
+# and so depends on MinIO, which is itself a `full`-profile service — and Compose rejects a
+# profile-less service that depends on a profiled one ("depends on undefined service"). The
+# profiles also keep `docker compose config` valid without `--profile full`, which is how CI
+# validates every overlay.
+
+name: felix
+
+services:
+  api:
+    environment:
+      # Felix exports straight to Memoturn's OTLP receiver. `http` because that is what
+      # Memoturn accepts (/v1/otel/v1/traces, protobuf or JSON), and the header is the
+      # documented `Authorization: Basic base64(publicKey:secretKey)`.
+      #
+      # To send to Jaeger *and* Memoturn at once, run the observability overlay as well,
+      # leave this pointing at the collector and add an otlphttp exporter there: the
+      # collector is the thing that fans out. A process has one OTLP destination.
+      FELIX_OTEL_ENABLED: "true"
+      FELIX_OTEL_PROTOCOL: http
+      FELIX_OTEL_ENDPOINT: ${FELIX_MEMOTURN_ENDPOINT:-http://memoturn-api:3001/v1/otel}
+      FELIX_OTEL_HEADERS: authorization=Basic ${FELIX_MEMOTURN_BASIC_AUTH:?base64 of "<public_key>:<secret_key>" from Memoturn project settings — see deploy/docker/README.md}
+      FELIX_OTEL_LOGS: ${FELIX_OTEL_LOGS:-true}
+    build:
+      args:
+        FELIX_EXTRAS: ${FELIX_DOCKER_EXTRAS:-}${FELIX_DOCKER_EXTRAS:+,}otel
+    # No `depends_on: memoturn-api`. Two reasons, and the second is the important one:
+    # `api` is not in the `full` profile, so depending on a profiled service makes the
+    # project invalid without `--profile full` (which is how CI validates overlays). And a
+    # telemetry backend must never gate the application's startup — the exporter batches
+    # and retries, so Felix starting first is correct rather than merely tolerable.
+
+  worker:
+    environment:
+      FELIX_OTEL_ENABLED: "true"
+      FELIX_OTEL_PROTOCOL: http
+      FELIX_OTEL_ENDPOINT: ${FELIX_MEMOTURN_ENDPOINT:-http://memoturn-api:3001/v1/otel}
+      FELIX_OTEL_HEADERS: authorization=Basic ${FELIX_MEMOTURN_BASIC_AUTH:?set FELIX_MEMOTURN_BASIC_AUTH in .env}
+      FELIX_OTEL_LOGS: ${FELIX_OTEL_LOGS:-true}
+    build:
+      args:
+        FELIX_EXTRAS: ${FELIX_DOCKER_EXTRAS:-}${FELIX_DOCKER_EXTRAS:+,}otel
+
+  # Postgres will not create a second database for us, and an init script under
+  # /docker-entrypoint-initdb.d/ only runs on a *fresh* data volume — so it would silently
+  # do nothing for everyone who already has one. A one-shot idempotent job is the shape
+  # Memoturn's own compose uses for exactly this (minio-setup, doris-setup).
+  memoturn-createdb:
+    profiles: ["full"]
+    image: pgvector/pgvector:pg17@sha256:cf134a767f474095eeba57e0117be8e568e011a63f33fbf252f14c9b760f8e6f
+    restart: "no"
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    entrypoint:
+      - /bin/sh
+      - -c
+      - psql -h postgres -U felix -d felix -tAc "SELECT 1 FROM pg_database WHERE datname='memoturn'" | grep -q 1 || createdb -h postgres -U felix memoturn
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Felix's MinIO has a felix-bundles bucket, not Memoturn's. Memoturn keeps its raw event
+  # log — its source of truth — in blob storage and does not create the bucket itself, so
+  # ingest returns 500 with `NoSuchBucket` until this has run. Same one-shot shape as
+  # Memoturn's own minio-setup job.
+  memoturn-minio-setup:
+    profiles: ["full"]
+    image: minio/mc:latest@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
+    restart: "no"
+    entrypoint:
+      - /bin/sh
+      - -c
+      - mc alias set local http://minio:9000 "${MINIO_ROOT_USER:-felix}" "${MINIO_ROOT_PASSWORD:?}" && mc mb --ignore-existing "local/${FELIX_MEMOTURN_BUCKET:-memoturn}"
+    depends_on:
+      minio:
+        condition: service_healthy
+
+  memoturn-migrate:
+    profiles: ["full"]
+    image: ghcr.io/memoturn/api:0.5.0@sha256:42203b0226b07719c408fb69cd6caca21351a78727fde303a7919511614d1ca8
+    platform: ${FELIX_MEMOTURN_PLATFORM:-linux/amd64}
+    restart: "no"
+    command: ["sh", "-c", "bun --filter @memoturn/db migrate && bun packages/telemetry/src/migrate.ts"]
+    environment:
+      NODE_ENV: production
+      TELEMETRY_ENGINE: postgres
+      DATABASE_URL: postgresql://felix:${POSTGRES_PASSWORD:?}@postgres:5432/memoturn?schema=public
+    depends_on:
+      memoturn-createdb:
+        condition: service_completed_successfully
+
+  memoturn-api:
+    profiles: ["full"]
+    image: ghcr.io/memoturn/api:0.5.0@sha256:42203b0226b07719c408fb69cd6caca21351a78727fde303a7919511614d1ca8
+    platform: ${FELIX_MEMOTURN_PLATFORM:-linux/amd64}
+    environment:
+      NODE_ENV: production
+      API_PORT: "3001"
+      # Postgres rather than Doris for telemetry: Doris FE+BE alone wants ~4 GB, more than
+      # the entire Felix stack. Right for a local install, not for volume.
+      TELEMETRY_ENGINE: postgres
+      DATABASE_URL: postgresql://felix:${POSTGRES_PASSWORD:?}@postgres:5432/memoturn?schema=public
+      # Felix's Valkey, on a separate database index so the two never share keyspace.
+      #
+      # Caveat worth knowing: Felix runs Valkey with `--maxmemory-policy allkeys-lru`, and
+      # Memoturn's queue (BullMQ) warns that it wants `noeviction` — under memory pressure
+      # a queued ingest job can be evicted, which loses telemetry silently. Acceptable for
+      # a local stack; give Memoturn its own Valkey with `noeviction` if you run this for
+      # anything you care about keeping.
+      REDIS_URL: redis://valkey:6379/${FELIX_MEMOTURN_REDIS_DB:-3}
+      BLOB_ENDPOINT: http://minio:9000
+      BLOB_REGION: us-east-1
+      BLOB_BUCKET: ${FELIX_MEMOTURN_BUCKET:-memoturn}
+      BLOB_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-felix}
+      BLOB_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in .env — Memoturn keeps its raw event log in blob storage}
+      BLOB_FORCE_PATH_STYLE: "true"
+      # Memoturn's env.ts refuses to boot without these. Local values are still real
+      # secrets: generate with `openssl rand -base64 48`.
+      BETTER_AUTH_SECRET: ${MEMOTURN_AUTH_SECRET:?set MEMOTURN_AUTH_SECRET in .env (openssl rand -base64 48)}
+      ENCRYPTION_KEY: ${MEMOTURN_ENCRYPTION_KEY:?set MEMOTURN_ENCRYPTION_KEY in .env (openssl rand -base64 48)}
+      # Origin only, no path — Better Auth treats a path here as its mount and would stop
+      # honouring basePath "/auth".
+      AUTH_BASE_URL: http://localhost:${FELIX_MEMOTURN_CONSOLE_PORT:-3002}
+      AUTH_TRUSTED_ORIGINS: http://localhost:${FELIX_MEMOTURN_CONSOLE_PORT:-3002}
+      WORKER_METRICS_URL: http://memoturn-worker:3002/metrics
+      RATE_LIMIT_PER_MINUTE: ${MEMOTURN_RATE_LIMIT_PER_MINUTE:-600}
+    ports:
+      - "${FELIX_BIND_ADDR:-127.0.0.1}:${FELIX_MEMOTURN_API_PORT:-3001}:3001"
+    depends_on:
+      memoturn-migrate:
+        condition: service_completed_successfully
+      memoturn-minio-setup:
+        condition: service_completed_successfully
+      valkey:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    # `bun` rather than curl/wget: the oven/bun base image guarantees neither.
+    healthcheck:
+      test: ["CMD", "bun", "-e", "fetch('http://127.0.0.1:3001/v1/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    mem_limit: ${FELIX_MEMOTURN_API_MEM_LIMIT:-512m}
+    cpus: ${FELIX_MEMOTURN_API_CPUS:-0.5}
+    restart: unless-stopped
+
+  memoturn-worker:
+    profiles: ["full"]
+    image: ghcr.io/memoturn/worker:0.5.0@sha256:d422353a4bed303e01451ec73d1919315ded92b4b9e9c08eda034194a66646f8
+    platform: ${FELIX_MEMOTURN_PLATFORM:-linux/amd64}
+    environment:
+      NODE_ENV: production
+      TELEMETRY_ENGINE: postgres
+      DATABASE_URL: postgresql://felix:${POSTGRES_PASSWORD:?}@postgres:5432/memoturn?schema=public
+      REDIS_URL: redis://valkey:6379/${FELIX_MEMOTURN_REDIS_DB:-3}
+      BLOB_ENDPOINT: http://minio:9000
+      BLOB_REGION: us-east-1
+      BLOB_BUCKET: ${FELIX_MEMOTURN_BUCKET:-memoturn}
+      BLOB_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-felix}
+      BLOB_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?}
+      BLOB_FORCE_PATH_STYLE: "true"
+      BETTER_AUTH_SECRET: ${MEMOTURN_AUTH_SECRET:?}
+      ENCRYPTION_KEY: ${MEMOTURN_ENCRYPTION_KEY:?}
+      # The worker runs the same production-config validation as the API and refuses to
+      # start without these — it sends alert and invitation mail, and builds the links in
+      # it against AUTH_BASE_URL. Omitting them exits 1 with a clear message, but the API
+      # stays healthy and returns 200 to ingest, so traces are accepted and then never
+      # processed into the telemetry store.
+      AUTH_BASE_URL: http://localhost:${FELIX_MEMOTURN_CONSOLE_PORT:-3002}
+      AUTH_TRUSTED_ORIGINS: http://localhost:${FELIX_MEMOTURN_CONSOLE_PORT:-3002}
+      WORKER_CONCURRENCY: ${MEMOTURN_WORKER_CONCURRENCY:-10}
+      # Binds 0.0.0.0 so the API's ingest-health page can reach /metrics by service name;
+      # the default 127.0.0.1 only works when both run in one process.
+      WORKER_HOST: 0.0.0.0
+    depends_on:
+      memoturn-migrate:
+        condition: service_completed_successfully
+      memoturn-minio-setup:
+        condition: service_completed_successfully
+      valkey:
+        condition: service_healthy
+    mem_limit: ${FELIX_MEMOTURN_WORKER_MEM_LIMIT:-384m}
+    cpus: ${FELIX_MEMOTURN_WORKER_CPUS:-0.5}
+    restart: unless-stopped
+
+  memoturn-console:
+    profiles: ["full"]
+    image: ghcr.io/memoturn/console:0.5.0@sha256:f2f18a6a4068f76e9c5c01a4f05c5eb7ba815c15ff29b2cbc1e9b6522e9688fe
+    platform: ${FELIX_MEMOTURN_PLATFORM:-linux/amd64}
+    ports:
+      - "${FELIX_BIND_ADDR:-127.0.0.1}:${FELIX_MEMOTURN_CONSOLE_PORT:-3002}:3000"
+    depends_on:
+      memoturn-api:
+        condition: service_healthy
+    mem_limit: ${FELIX_MEMOTURN_CONSOLE_MEM_LIMIT:-128m}
+    cpus: ${FELIX_MEMOTURN_CONSOLE_CPUS:-0.25}
+    restart: unless-stopped

@@ -103,7 +103,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   worker and temporal-worker together — they must agree, or a durable chat is enqueued for one
   driver and executed by the other.
 
+- **`make up-memoturn`** — runs [Memoturn](https://memoturn.com) locally and points Felix's
+  OTLP export at it. Felix gains **no dependency**: Memoturn ingests OTLP natively and maps
+  spans carrying `gen_ai.*` attributes to generations, which is what `patterns/model.py`
+  already emits, so the whole integration is an endpoint plus a Basic auth header expressed
+  as `FELIX_OTEL_PROTOCOL=http` and `FELIX_OTEL_HEADERS`. Nothing in Felix knows the vendor
+  exists — "Protocols, not vendors" applied to telemetry.
+
+  It borrows Felix's Postgres (own database), Valkey (own index) and MinIO (own bucket)
+  instead of the Postgres + Valkey + MinIO + Caddy + Apache Doris its own compose stands up,
+  and `TELEMETRY_ENGINE=postgres` drops Doris — a 4 GB floor, more than the whole Felix
+  stack. Verified end to end: a chat arrives as 6 `GENERATION` rows carrying model and real
+  token counts, 3 `TOOL` rows, and the rest `SPAN` — the classification that proves the
+  `gen_ai.*` attribute names are right.
+
 ### Fixed
+
+- **OTLP/HTTP export sent every span to a 404.** The Python OTLP/HTTP exporters treat
+  `endpoint` as the complete URL for their signal and append nothing, but
+  `FELIX_OTEL_ENDPOINT` is a single base shared by traces and logs — so it was POSTed
+  verbatim and rejected by every collector and backend alike. The per-signal path is now
+  derived (`/v1/traces`, `/v1/logs`), and an endpoint that already carries one is left alone.
+  Only the receiving end ever logged the 404, which is why `grpc` looked fine and `http` was
+  quietly inert.
 
 - **`FELIX_DURABILITY=temporal` completed durable chats and persisted none of them.** The
   workflow ran, `tctl workflow show` reported `"status":"completed"`, and

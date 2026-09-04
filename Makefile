@@ -1,4 +1,4 @@
-.PHONY: help schema install install-full install-warehouse lint fmt type test check check-ci conformance dev dev-key up up-lite up-gcp up-full up-pooled up-replicas up-observability up-temporal metrics-token down cli seed migrate doctor docker-build
+.PHONY: help schema install install-full install-warehouse lint fmt type test check check-ci conformance dev dev-key up up-lite up-gcp up-full up-pooled up-replicas up-observability up-temporal up-memoturn metrics-token down cli seed migrate doctor docker-build
 
 COMPOSE := docker compose -f deploy/docker/compose.yml --project-directory .
 COMPOSE_LITE := $(COMPOSE) -f deploy/docker/compose.lite.yml
@@ -7,6 +7,7 @@ COMPOSE_PGB := $(COMPOSE) -f deploy/docker/compose.pgbouncer.yml
 COMPOSE_REPLICAS := $(COMPOSE) -f deploy/docker/compose.replicas.yml
 COMPOSE_OBS := $(COMPOSE) -f deploy/docker/compose.observability.yml
 COMPOSE_TEMPORAL := $(COMPOSE) -f deploy/docker/compose.temporal.yml
+COMPOSE_MEMOTURN := $(COMPOSE) -f deploy/docker/compose.memoturn.yml
 
 help:
 	@echo "Felix dev targets:"
@@ -26,6 +27,7 @@ help:
 	@echo "  up-replicas       + two API replicas behind one origin (cross-replica proof)"
 	@echo "  up-observability  + OTel Collector, Prometheus, Grafana, Jaeger, Loki, exporters"
 	@echo "  up-temporal       + Temporal server, UI :8233, and felix-temporal-worker"
+	@echo "  up-memoturn       + Memoturn (console :3002) on Felix's own Postgres/Valkey/MinIO"
 	@echo "  schema            regenerate schemas/manifest.schema.json"
 	@echo "  down / cli / seed / migrate / doctor"
 	@echo "  Warehouse: FELIX_WAREHOUSE=duckdb + FELIX_DOCKER_EXTRAS=warehouse"
@@ -135,6 +137,11 @@ metrics-token:
 # image build there too, since durability/temporal.py raises without temporalio.
 up-temporal: dev-key
 	$(COMPOSE_TEMPORAL) up --build
+
+# --profile full because Memoturn keeps its raw event log in blob storage, and MinIO
+# is the one backing service the base stack does not start by default.
+up-memoturn: dev-key
+	$(COMPOSE_MEMOTURN) --profile full up --build
 
 up-full: dev-key
 	FELIX_DOCKER_EXTRAS=$${FELIX_DOCKER_EXTRAS:-aws} FELIX_OBJECT_STORE=s3 \

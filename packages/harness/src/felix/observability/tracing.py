@@ -170,6 +170,23 @@ def _parse_otel_headers(raw: str) -> dict[str, str]:
     return headers
 
 
+def _signal_endpoint(endpoint: str, signal: str) -> str:
+    """Per-signal path for OTLP/HTTP. gRPC needs none; HTTP does.
+
+    `FELIX_OTEL_ENDPOINT` is one base URL shared by traces and logs, so the signal path
+    has to be derived rather than configured — there is only one setting for two signals.
+    The Python OTLP/HTTP exporters treat `endpoint` as the complete URL for their signal
+    and append nothing, so passing the base straight through POSTed to it verbatim and got
+    a 404 from every collector and backend alike.
+
+    An endpoint that already carries the suffix is left alone, so an operator can still pin
+    an exact URL.
+    """
+    base = endpoint.rstrip("/")
+    suffix = f"/v1/{signal}"
+    return base if base.endswith(suffix) else base + suffix
+
+
 def _build_exporter(settings: Any, endpoint: str, headers: dict[str, str]) -> Any:
     """OTLP exporter for the configured protocol.
 
@@ -183,7 +200,7 @@ def _build_exporter(settings: Any, endpoint: str, headers: dict[str, str]) -> An
             OTLPSpanExporter as HttpExporter,
         )
 
-        return HttpExporter(endpoint=endpoint, headers=headers or None)
+        return HttpExporter(endpoint=_signal_endpoint(endpoint, "traces"), headers=headers or None)
     from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
         OTLPSpanExporter as GrpcExporter,
     )
@@ -292,7 +309,7 @@ def _build_log_exporter(settings: Any, endpoint: str, headers: dict[str, str]) -
             OTLPLogExporter as HttpLogExporter,
         )
 
-        return HttpLogExporter(endpoint=endpoint, headers=headers or None)
+        return HttpLogExporter(endpoint=_signal_endpoint(endpoint, "logs"), headers=headers or None)
     from opentelemetry.exporter.otlp.proto.grpc._log_exporter import (
         OTLPLogExporter as GrpcLogExporter,
     )
