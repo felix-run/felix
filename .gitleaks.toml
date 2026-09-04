@@ -1,26 +1,31 @@
 # gitleaks configuration: the default ruleset, plus one narrowly-scoped allowlist for a
 # false positive that is already in git history and so cannot be edited away.
 #
-# Scope an entry with a **literal regex and nothing else**. A `paths` entry looks narrowing
-# and is the opposite: gitleaks ORs the conditions in an allowlist, so adding a path excuses
-# every finding of that rule anywhere in the file. This entry had one, and a real secret
-# added to that file went undetected until it was removed — the scanner was off for a whole
-# file to excuse fourteen characters. (`matchCondition = "AND"` is documented for this and
-# was not honoured here, so it is not a fix.)
+# Before adding or widening an entry, know what does NOT scope one:
 #
-# Verify any entry you add the same way, because reading it cannot tell you:
+#   * `paths` — gitleaks ORs the conditions inside an allowlist, so a path excuses every
+#     finding of that rule anywhere in the file. `matchCondition = "AND"` is documented for
+#     this and was not honoured. An entry here had one, and a real secret in that file went
+#     undetected.
+#   * a short literal — allowlist regexes match as substrings, so `regexes = ['''key''']`
+#     has no metacharacters and silences the rule completely. "Literal" is not "narrow".
+#   * `stopwords`, `commits`, `targets` — each widens; `commits` undoes the `fetch-depth: 0`
+#     the workflow exists to preserve.
 #
-#   c() { docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:v8.30.1 \
-#           dir /repo --redact --exit-code 1 2>&1 | grep -oE 'leaks found: [0-9]+'; }
-#   c                                                    # baseline
-#   printf 'aws_secret_access_key = "%s"\n' "$(openssl rand -base64 30 | tr -d '/+=' | head -c 40)" \
-#     >> <the file the entry mentions>
-#   c                                                    # must be baseline + 1
+# The check that matters is not reading this file. `.github/workflows/security.yml` plants a
+# random secret in a throwaway directory alongside this config and fails the build if
+# gitleaks does not flag it — so a clean scan means "clean" rather than "suppressed". Run
+# the same thing locally before changing anything here:
 #
-# Use a random value, not a documented example: the AWS docs key
-# `wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY` is allowlisted by gitleaks itself, so probing
-# with it proves nothing. The CI job scans with `fetch-depth: 0` because a secret removed in
-# a later commit still leaked; an over-broad entry here silently undoes that.
+#   probe="$(mktemp -d)"; cp .gitleaks.toml "$probe/"
+#   printf 'aws_secret_access_key = "%s"\n' \
+#     "$(openssl rand -base64 30 | tr -d '/+=' | head -c 40)" > "$probe/planted.py"
+#   docker run --rm -v "$probe:/probe" zricethezav/gitleaks:v8.30.1 dir /probe --redact --exit-code 1
+#   # exit 1 with a finding = good. exit 0 = this config is silencing the scanner.
+#
+# Use a random value. gitleaks allowlists the AWS documentation key
+# `wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY`, so probing with it proves nothing — that
+# mistake is how the `paths` entry above was reported as verified.
 
 [extend]
 useDefault = true

@@ -124,3 +124,32 @@ jobs:
           docker run --rm -v "$PWD:/repo" \
             zricethezav/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
             git /repo --redact --verbose --exit-code 1
+      # Prove the scanner still fires with this repo's config applied. Without this, a
+      # `no leaks found` above means either "clean" or "the config silenced the rules",
+      # and the two are indistinguishable — which is how an allowlist scoped by `paths`
+      # turned the scanner off for a whole file and was reported as verified.
+      #
+      # A structural test over .gitleaks.toml cannot close this: it can only encode one
+      # person's theory of which TOML keys are dangerous, and there are at least five
+      # suppression channels (allowlist regexes/paths/stopwords/commits/targets,
+      # extend.disabledRules, a redefined rule, .gitleaksignore). Planting a secret and
+      # requiring a finding tests the property instead of the theory.
+      #
+      # The value is random per run, so it cannot be allowlisted by accident, and it never
+      # touches the repo — the scan runs on a throwaway directory holding a copy of the
+      # config. Do not use a documented example key here: gitleaks allowlists the AWS docs
+      # value `wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY`, so probing with it proves nothing.
+      - name: gitleaks still detects a planted secret
+        run: |
+          set -euo pipefail
+          probe="$(mktemp -d)"
+          cp .gitleaks.toml "$probe/" 2>/dev/null || true
+          printf 'aws_secret_access_key = "%s"\n' \
+            "$(openssl rand -base64 30 | tr -d '/+=' | head -c 40)" > "$probe/planted.py"
+          if docker run --rm -v "$probe:/probe" \
+               zricethezav/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
+               dir /probe --redact --exit-code 1; then
+            echo "::error::gitleaks did not flag a planted secret — .gitleaks.toml is suppressing the rules it is meant to narrow. The clean result from the scan above cannot be trusted."
+            exit 1
+          fi
+          echo "gitleaks flagged the planted secret; the scan above is meaningful."
