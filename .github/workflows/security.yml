@@ -124,32 +124,55 @@ jobs:
           docker run --rm -v "$PWD:/repo" \
             zricethezav/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
             git /repo --redact --verbose --exit-code 1
-      # Prove the scanner still fires with this repo's config applied. Without this, a
-      # `no leaks found` above means either "clean" or "the config silenced the rules",
-      # and the two are indistinguishable — which is how an allowlist scoped by `paths`
-      # turned the scanner off for a whole file and was reported as verified.
+      # Prove the scanner still fires. Without this, `no leaks found` above means either
+      # "clean" or "the config silenced the rules", and the two are indistinguishable.
       #
-      # A structural test over .gitleaks.toml cannot close this: it can only encode one
-      # person's theory of which TOML keys are dangerous, and there are at least five
-      # suppression channels (allowlist regexes/paths/stopwords/commits/targets,
-      # extend.disabledRules, a redefined rule, .gitleaksignore). Planting a secret and
-      # requiring a finding tests the property instead of the theory.
+      # What this catches and what it does not, both measured:
       #
-      # The value is random per run, so it cannot be allowlisted by accident, and it never
-      # touches the repo — the scan runs on a throwaway directory holding a copy of the
-      # config. Do not use a documented example key here: gitleaks allowlists the AWS docs
-      # value `wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY`, so probing with it proves nothing.
+      #   caught here          extend.disabledRules; a [[rules]] block redefining a default
+      #                        rule; a global [allowlist]; anything that silences a rule
+      #                        outright, including channels nobody has thought of.
+      #
+      #   NOT caught here      file-scoped suppression — a rule allowlist with `paths`,
+      #                        `stopwords` or `commits`. The probe directory is not this
+      #                        repo, so a path-scoped entry cannot match it: the repo scan
+      #                        is suppressed and this step still passes. That is the exact
+      #                        shape of the original defect, and the permitted-keys
+      #                        assertion in tests/unit/test_gitleaks_allowlist.py is what
+      #                        catches it. Neither control subsumes the other.
+      #
+      # Five values, not one: gitleaks' default `generic-api-key` rule carries a stopword
+      # allowlist, so a random value that happens to contain an English word ("pool",
+      # "like", "shop") is not flagged. Measured at ~1.2% for a single value — a security
+      # job that cries wolf one run in eighty teaches people to re-run it. Five
+      # independent values put that beyond reach.
+      #
+      # Do not substitute a documented example key: gitleaks allowlists the AWS docs value
+      # `wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY`, so probing with it proves nothing.
       - name: gitleaks still detects a planted secret
         run: |
           set -euo pipefail
           probe="$(mktemp -d)"
-          cp .gitleaks.toml "$probe/" 2>/dev/null || true
-          printf 'aws_secret_access_key = "%s"\n' \
-            "$(openssl rand -base64 30 | tr -d '/+=' | head -c 40)" > "$probe/planted.py"
-          if docker run --rm -v "$probe:/probe" \
-               zricethezav/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
-               dir /probe --redact --exit-code 1; then
-            echo "::error::gitleaks did not flag a planted secret — .gitleaks.toml is suppressing the rules it is meant to narrow. The clean result from the scan above cannot be trusted."
-            exit 1
-          fi
-          echo "gitleaks flagged the planted secret; the scan above is meaningful."
+          # No `|| true`: if the config is missing or renamed, this step would silently
+          # degrade to testing stock gitleaks and pass either way.
+          cp .gitleaks.toml "$probe/"
+          for _ in 1 2 3 4 5; do
+            printf 'aws_secret_access_key = "%s"\n' \
+              "$(openssl rand -base64 30 | tr -d '/+=' | head -c 40)" >> "$probe/planted.py"
+          done
+          docker run --rm -v "$probe:/probe" \
+            zricethezav/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
+            dir /probe --redact --exit-code 0 \
+            --report-format json --report-path /probe/report.json
+          python3 - "$probe/report.json" <<'PROBE'
+          import json, sys
+          findings = json.load(open(sys.argv[1]))
+          rules = {f.get("RuleID") for f in findings}
+          if "generic-api-key" not in rules:
+              sys.exit(
+                  "gitleaks did not flag any of five planted secrets. .gitleaks.toml is "
+                  "silencing the rules it is meant to narrow, so the clean result from the "
+                  f"scan above cannot be trusted. Rules that did fire: {sorted(rules)}"
+              )
+          print(f"gitleaks flagged {len(findings)} planted secret(s); the scan above is meaningful.")
+          PROBE
