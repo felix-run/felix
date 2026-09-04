@@ -91,17 +91,19 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         from felix.flush import start_flush_task, stop_flush_task
-        from felix.observability.tracing import setup_observability, shutdown_observability
+        from felix.observability.tracing import (
+            setup_log_export,
+            setup_observability,
+            shutdown_observability,
+        )
         from felix.secrets import hydrate_secrets
 
         app.state.settings = cfg
         app.state.tools = tool_provider
         app.state.plugins = plugin_list
         await hydrate_secrets(cfg)
-        # Passing the app instruments FastAPI, which opens a root span per request and
-        # extracts an inbound `traceparent`. Without it Felix's own spans have no parent
-        # and each one lands as a separate single-span trace.
-        setup_observability(cfg, app)
+        setup_observability(cfg)
+        setup_log_export(cfg)
         for hook in get_registry().startup_hooks:
             # One bad third-party hook must not take down API startup; every other
             # plugin call site is already defensive.
@@ -172,6 +174,14 @@ def create_app(
         # /openapi.json and /redoc are unchanged.
         docs_url=None,
     )
+    # Must be here and not in the lifespan: this installs ASGI middleware, and Starlette
+    # has finalised its middleware stack by the time the lifespan runs. Instrumenting
+    # there is silently ineffective — every Felix span still exports, but each becomes its
+    # own single-span trace because no request span exists to parent it.
+    if cfg.otel_enabled:
+        from felix.observability.tracing import instrument_fastapi
+
+        instrument_fastapi(app)
     register_docs(app)
     # Eager state so ASGI tests / middleware work before lifespan starts.
     app.state.settings = cfg

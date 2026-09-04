@@ -14,6 +14,8 @@ pinned, in order of how quietly they failed:
 
 from __future__ import annotations
 
+import ast
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -244,3 +246,30 @@ def test_spans_nest_into_one_trace() -> None:
     assert child.parent is not None, "the model span was still an orphan root"
     assert child.parent.span_id == parent.context.span_id
     assert child.context.trace_id == parent.context.trace_id
+
+
+def test_fastapi_is_instrumented_at_construction_not_in_the_lifespan() -> None:
+    """The trap that produced one-span traces in a real deployment.
+
+    `FastAPIInstrumentor.instrument_app` installs ASGI middleware, and Starlette finalises
+    its middleware stack before the lifespan runs. Calling it from the lifespan is
+    accepted and reports success while adding nothing — and the symptom looks like tracing
+    *working*: every Felix span still exports, each as its own single-span trace, because
+    no request span exists to parent it. Unit tests of `make_span` cannot see this; only
+    where the call sits can.
+    """
+    source = (Path(__file__).resolve().parents[2] / "apps/api/src/felix_api/app.py").read_text()
+    tree = ast.parse(source)
+
+    lifespan_calls: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "lifespan":
+            lifespan_calls = {
+                n.func.id for n in ast.walk(node) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+            }
+    assert lifespan_calls, "no lifespan found in create_app; this test needs rewriting"
+    assert "instrument_fastapi" not in lifespan_calls, (
+        "instrument_fastapi is called from the lifespan, where installing middleware has "
+        "no effect: spans will export as unparented single-span traces"
+    )
+    assert "instrument_fastapi" in source, "FastAPI is never instrumented, so there is no trace root"

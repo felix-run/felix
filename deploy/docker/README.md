@@ -19,6 +19,8 @@
 | `compose.gcp.yml` | Public VM: no DB/cache publish; workspace mount |
 | `compose.pgbouncer.yml` | PgBouncer in transaction mode in front of Postgres |
 | `compose.replicas.yml` | Two API replicas behind one nginx origin |
+| `compose.observability.yml` | OTel Collector, Prometheus, Grafana, Jaeger, Loki, Postgres/Valkey exporters |
+| `config/` | Config mounted read-only by the overlays above |
 
 ## Connection pooling
 
@@ -130,3 +132,46 @@ idle stream.
 
 Combine with `compose.pgbouncer.yml` when you want both. Two replicas is also what
 makes the connection ceiling arrive sooner, since the pool is per process.
+
+## Observability
+
+`make up-observability` adds metrics, traces and logs to the base stack. It also builds
+the image with the `otel` extra — the lean default does not include it, and without it the
+API logs `FELIX_OTEL_ENABLED=true but otel extra is not installed` and exports nothing.
+
+| | |
+|---|---|
+| Grafana | <http://localhost:3000> — provisioned datasources, one `Felix — harness overview` dashboard |
+| Prometheus | <http://localhost:9090> |
+| Jaeger | <http://localhost:16686> |
+
+Budget roughly 1.7 GiB of additional `mem_limit` on top of the base stack, so this does
+not belong on the same host as `make up-lite`.
+
+### The scrape credential
+
+`/metrics` requires authentication, and Compose defaults to `FELIX_AUTH_MODE=api_key`.
+`scripts/metrics-token.sh` (run automatically by `make up-observability`) mints a
+**second** API key with an empty `scopes` array, merges it into `FELIX_AUTH_API_KEYS`
+alongside your operator key, and writes the bare token to `deploy/docker/.metrics-token`
+(gitignored, mode 600) because Prometheus has no env expansion in scrape configs.
+
+`/metrics` has no scope gate — any valid key is accepted — so the unscoped key reads
+metrics and is refused everywhere else. It is not the operator key, so leaking it does not
+leak write access to `PUT /manifests`.
+
+### What is deliberately not here
+
+- **The worker's metrics port is not published.** The worker has no auth middleware, so
+  `FELIX_METRICS_PORT` is unauthenticated while carrying the same tenant-supplied label
+  values as `/metrics`. Prometheus reaches it over the Compose network; nothing else should.
+- **Logs arrive over OTLP, not by tailing `/var/lib/docker/containers`.** File tailing
+  needs the collector to run as root to read `root:root 0640` files, gives it every
+  container's logs, fails silently when it cannot, and does not survive Kubernetes.
+  Emitting from the process also stamps `trace_id`/`span_id` on each record, so a log line
+  links to the span that produced it instead of being matched by a regex.
+- **Optional overlays are discovered from files.** `config/prometheus-targets/` is empty by
+  default; an overlay drops a target file in. A static entry for a service that is usually
+  not running is a permanently-down target, which teaches operators to ignore a red target list.
+
+See [docs/OBSERVABILITY.md](../../docs/OBSERVABILITY.md) for the metric catalog and span schema.

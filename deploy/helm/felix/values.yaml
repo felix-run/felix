@@ -99,6 +99,27 @@ s3:
   bucket: felix-bundles
   region: us-east-1
 
+# Prometheus Operator scrape of /metrics. Requires the ServiceMonitor CRD.
+serviceMonitor:
+  enabled: false
+  # Empty = same namespace as the release.
+  namespace: ""
+  # Labels your Prometheus instance's serviceMonitorSelector matches on.
+  labels: {}
+  interval: 30s
+  scrapeTimeout: 10s
+  # /metrics is authenticated on purpose: its labels carry tenant-supplied manifest ids
+  # and remote MCP tool names. Point this at a Secret holding a Felix API key with an
+  # empty `scopes` array — /metrics has no scope gate, so an unscoped key reads metrics
+  # and can do nothing else.
+  bearerTokenSecret:
+    name: ""
+    key: token
+  # `manifest_id` is tenant-supplied and MCP tool names come from a remote server, so
+  # cardinality is bounded by your tenants, not by you. Drop or relabel series here if a
+  # tenant's naming becomes a problem.
+  metricRelabelings: []
+
 autoscaling:
   enabled: false
   minReplicas: 1

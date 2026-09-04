@@ -9,7 +9,12 @@ from collections.abc import Awaitable, Callable
 
 from felix.config import get_settings
 from felix.observability.metrics import record_counter, record_histogram
-from felix.observability.tracing import make_span, setup_observability, shutdown_observability
+from felix.observability.tracing import (
+    make_span,
+    setup_log_export,
+    setup_observability,
+    shutdown_observability,
+)
 from taskiq import TaskiqEvents, TaskiqScheduler
 from taskiq.schedule_sources import LabelScheduleSource
 from taskiq_redis import ListQueueBroker, RedisAsyncResultBackend
@@ -45,6 +50,7 @@ async def _on_worker_startup(_state: object) -> None:
     # by the API — so every fiber resume, flush and sweep below exported no span at all.
     configure_logging(_settings)
     setup_observability(_settings)
+    setup_log_export(_settings)
     _start_metrics_server()
 
     load_optional_plugins()

@@ -1,0 +1,204 @@
+# Observability overlay — OTel Collector, Prometheus, Grafana, Jaeger, Loki, exporters.
+#
+# Run from repo root (see deploy/docker/README.md):
+#   make up-observability
+#   docker compose -f deploy/docker/compose.yml -f deploy/docker/compose.observability.yml \
+#     --project-directory . up --build
+#
+# Grafana        http://localhost:3000  (anonymous admin — local only)
+# Prometheus     http://localhost:9090
+# Jaeger         http://localhost:16686
+#
+# Nothing here is in the base stack: `make up` stays lean, and this adds roughly 700 MiB
+# of limits on top of it. See docs/OBSERVABILITY.md for what the signals mean.
+
+name: felix
+
+services:
+  # Felix exports OTLP to the collector and the worker opens its metrics port. Both are
+  # overlay-only, so the base stack is unchanged.
+  api:
+    build:
+      args:
+        # This overlay exports OTLP, which needs felix-harness[otel] in the image — the
+        # lean default does not have it, and without this the API logs
+        # "FELIX_OTEL_ENABLED=true but otel extra is not installed" and exports nothing.
+        # Appended to whatever else the operator asked for, so FELIX_DOCKER_EXTRAS=aws
+        # still gets aws.
+        FELIX_EXTRAS: ${FELIX_DOCKER_EXTRAS:-}${FELIX_DOCKER_EXTRAS:+,}otel
+    environment:
+      FELIX_OTEL_ENABLED: "true"
+      FELIX_OTEL_ENDPOINT: http://otel-collector:4317
+      FELIX_OTEL_PROTOCOL: ${FELIX_OTEL_PROTOCOL:-grpc}
+      FELIX_OTEL_SAMPLE_RATIO: ${FELIX_OTEL_SAMPLE_RATIO:-1.0}
+      # Prompts and completions stay off spans unless you opt in; a tracing backend is an
+      # egress destination and span attributes are not content-screened.
+      FELIX_OTEL_CAPTURE_CONTENT: ${FELIX_OTEL_CAPTURE_CONTENT:-false}
+      FELIX_OTEL_LOGS: ${FELIX_OTEL_LOGS:-true}
+    depends_on:
+      otel-collector:
+        condition: service_started
+
+  worker:
+    build:
+      args:
+        # This overlay exports OTLP, which needs felix-harness[otel] in the image — the
+        # lean default does not have it, and without this the API logs
+        # "FELIX_OTEL_ENABLED=true but otel extra is not installed" and exports nothing.
+        # Appended to whatever else the operator asked for, so FELIX_DOCKER_EXTRAS=aws
+        # still gets aws.
+        FELIX_EXTRAS: ${FELIX_DOCKER_EXTRAS:-}${FELIX_DOCKER_EXTRAS:+,}otel
+    environment:
+      FELIX_OTEL_ENABLED: "true"
+      FELIX_OTEL_ENDPOINT: http://otel-collector:4317
+      FELIX_OTEL_PROTOCOL: ${FELIX_OTEL_PROTOCOL:-grpc}
+      FELIX_OTEL_SAMPLE_RATIO: ${FELIX_OTEL_SAMPLE_RATIO:-1.0}
+      FELIX_OTEL_CAPTURE_CONTENT: ${FELIX_OTEL_CAPTURE_CONTENT:-false}
+      FELIX_OTEL_LOGS: ${FELIX_OTEL_LOGS:-true}
+      # No host port is published for this: the worker has no auth middleware, so this
+      # endpoint is unauthenticated while carrying the same tenant-supplied label values
+      # as the API's /metrics. Reachable only from the compose network.
+      FELIX_METRICS_PORT: "9100"
+
+  # No `scheduler` block on purpose. `felix-scheduler` runs Taskiq's run_scheduler, which
+  # never fires the broker WORKER_STARTUP event that `_on_worker_startup` hooks — so
+  # FELIX_OTEL_ENABLED there would configure nothing and imply coverage that does not exist.
+  # The scheduler only enqueues; the work (and its telemetry) happens in the worker.
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.160.0@sha256:799dc6cf12c96192af37b5bdba804da8c10b3bc563b43cb90c3f3c58d9572ad6
+    command: ["--config=/etc/otel/config.yaml"]
+    environment:
+      FELIX_ENVIRONMENT: ${FELIX_ENVIRONMENT:-development}
+    volumes:
+      - ./deploy/docker/config/otel-collector.yaml:/etc/otel/config.yaml:ro
+    depends_on:
+      jaeger:
+        condition: service_started
+      loki:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "/otelcol-contrib", "--version"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    mem_limit: ${FELIX_OTEL_MEM_LIMIT:-256m}
+    cpus: ${FELIX_OTEL_CPUS:-0.5}
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.14.0@sha256:5ce7540c3c00ef4ab0c9d2c995c6a5b9c421f44b4a115d97a2c7af3b1c21cbb0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${FELIX_PROM_RETENTION:-7d}
+      - --web.enable-lifecycle
+    volumes:
+      - ./deploy/docker/config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # File-based discovery for optional overlays (compose.temporal.yml drops a file in).
+      - ./deploy/docker/config/prometheus-targets:/etc/prometheus/targets:ro
+      # Minted by scripts/metrics-token.sh; `make up-observability` depends on it, the way
+      # every up-* target already depends on dev-key.
+      - ./deploy/docker/.metrics-token:/etc/prometheus/metrics-token:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "${FELIX_BIND_ADDR:-127.0.0.1}:${FELIX_PROM_PORT:-9090}:9090"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:9090/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    mem_limit: ${FELIX_PROM_MEM_LIMIT:-512m}
+    cpus: ${FELIX_PROM_CPUS:-0.5}
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:13.0.8@sha256:a21e4b8b9cd20e9a556dd9e2efd4d81855d4390b507406b0ae11720b71e44ac2
+    environment:
+      # Anonymous admin. Correct for a loopback-bound local stack and wrong anywhere else —
+      # set FELIX_GRAFANA_ANONYMOUS=false and GF_SECURITY_ADMIN_PASSWORD before exposing it.
+      GF_AUTH_ANONYMOUS_ENABLED: ${FELIX_GRAFANA_ANONYMOUS:-true}
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_BASIC_ENABLED: "false"
+      GF_SECURITY_ADMIN_PASSWORD: ${FELIX_GRAFANA_PASSWORD:-admin}
+      GF_USERS_DEFAULT_THEME: dark
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    volumes:
+      - ./deploy/docker/config/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/docker/config/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "${FELIX_BIND_ADDR:-127.0.0.1}:${FELIX_GRAFANA_PORT:-3000}:3000"
+    depends_on:
+      prometheus:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:3000/api/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    mem_limit: ${FELIX_GRAFANA_MEM_LIMIT:-256m}
+    cpus: ${FELIX_GRAFANA_CPUS:-0.5}
+    restart: unless-stopped
+
+  # All-in-one Jaeger: OTLP in, UI out, in-memory storage. Traces do not survive a restart,
+  # which is the right trade for a local stack and the reason this is not a production shape.
+  jaeger:
+    image: jaegertracing/jaeger:2.20.0@sha256:46a886260e04002d8f45e213fc39063fa11a50446048fdaa64786fc0840cb9f8
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "${FELIX_BIND_ADDR:-127.0.0.1}:${FELIX_JAEGER_PORT:-16686}:16686"
+    mem_limit: ${FELIX_JAEGER_MEM_LIMIT:-384m}
+    cpus: ${FELIX_JAEGER_CPUS:-0.5}
+    restart: unless-stopped
+
+  loki:
+    image: grafana/loki:3.7.7@sha256:d70e4659623f3e109af669cae76fe2a5dd5be54e2298fe8aed380d982fbc2500
+    command: ["-config.file=/etc/loki/config.yaml"]
+    user: "0"
+    volumes:
+      - ./deploy/docker/config/loki.yaml:/etc/loki/config.yaml:ro
+      - loki-data:/loki
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:3100/ready || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    mem_limit: ${FELIX_LOKI_MEM_LIMIT:-256m}
+    cpus: ${FELIX_LOKI_CPUS:-0.5}
+    restart: unless-stopped
+
+  # Connection-pool saturation is one of the two most common ways this stack degrades, and
+  # nothing in Felix's own counters can see it.
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.20.1@sha256:ac5ec343104fae0e2d84a27bb8d69b38430a11910c5382cad85d478d2bab713e
+    environment:
+      DATA_SOURCE_NAME: postgresql://felix:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/felix?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    mem_limit: ${FELIX_PG_EXPORTER_MEM_LIMIT:-64m}
+    cpus: ${FELIX_PG_EXPORTER_CPUS:-0.25}
+    restart: unless-stopped
+
+  # The other one: eviction under maxmemory-policy allkeys-lru silently drops session state.
+  valkey-exporter:
+    image: oliver006/redis_exporter:v1.90.0-alpine@sha256:136a6aac1258bcb41449272fe0de1d71e65f8cd69514efb2a410b2fd2239a3ba
+    command: ["--redis.addr", "redis://valkey:6379"]
+    depends_on:
+      valkey:
+        condition: service_healthy
+    mem_limit: ${FELIX_VALKEY_EXPORTER_MEM_LIMIT:-64m}
+    cpus: ${FELIX_VALKEY_EXPORTER_CPUS:-0.25}
+    restart: unless-stopped
+
+volumes:
+  prometheus-data:
+  grafana-data:
+  loki-data:

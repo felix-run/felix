@@ -282,9 +282,12 @@ comment explaining exactly that. It is conditional, not inert.
       drift. Spans now follow the OTel GenAI semantic conventions, and a model call is a span at
       all (it was not). The `metrics.py` silent degrade on a reused label set is unchanged and is
       documented as a known limitation rather than fixed.
-- [ ] **Ship one dashboard** — zero matches for grafana / servicemonitor / prometheus config under
-      `deploy/`. A Grafana JSON and a ServiceMonitor turn four emitted signal types into something
-      an operator sees.
+- [x] **Ship one dashboard** — `deploy/docker/compose.observability.yml` (`make up-observability`)
+      brings up an OTel Collector, Prometheus, Grafana, Jaeger, Loki and Postgres/Valkey exporters,
+      with a provisioned `Felix — harness overview` dashboard whose governance row surfaces the
+      counters GOVERNANCE.md tells operators to watch. A gated `serviceMonitor` template covers the
+      Kubernetes side. The scrape credential is a zero-scope API key, because `/metrics` is
+      authenticated on purpose.
 - [ ] **Sandbox ladder extras** — capability-bridge / gVisor as documented extras, not the default
       lean image.
 - [ ] **OAuth / dynamic provider keys** — secrets backends cover static keys; refresh /

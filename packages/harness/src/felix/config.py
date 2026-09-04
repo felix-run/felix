@@ -149,6 +149,10 @@ class Settings(BaseSettings):
     # egress destination like any other, and span attributes are not covered by the
     # governance screening that guards tool output.
     otel_capture_content: bool = False
+    # Ship logs over OTLP as well as traces. Off by default: log volume is a real cost and
+    # the operator opts into it. Records carry trace_id/span_id from the active context,
+    # so a log line links to the span that produced it.
+    otel_logs: bool = False
     # Worker-side Prometheus endpoint. 0 = off. The worker has no HTTP server otherwise,
     # so every fiber resume, flush and cron sweep is invisible to a scrape without this.
     # It is UNAUTHENTICATED — keep it on an internal network, never publish it.

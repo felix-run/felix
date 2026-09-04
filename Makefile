@@ -1,10 +1,11 @@
-.PHONY: help schema install install-full install-warehouse lint fmt type test check check-ci conformance dev dev-key up up-lite up-gcp up-full up-pooled up-replicas down cli seed migrate doctor docker-build
+.PHONY: help schema install install-full install-warehouse lint fmt type test check check-ci conformance dev dev-key up up-lite up-gcp up-full up-pooled up-replicas up-observability metrics-token down cli seed migrate doctor docker-build
 
 COMPOSE := docker compose -f deploy/docker/compose.yml --project-directory .
 COMPOSE_LITE := $(COMPOSE) -f deploy/docker/compose.lite.yml
 COMPOSE_GCP := $(COMPOSE) -f deploy/docker/compose.gcp.yml -f deploy/docker/compose.lite.yml
 COMPOSE_PGB := $(COMPOSE) -f deploy/docker/compose.pgbouncer.yml
 COMPOSE_REPLICAS := $(COMPOSE) -f deploy/docker/compose.replicas.yml
+COMPOSE_OBS := $(COMPOSE) -f deploy/docker/compose.observability.yml
 
 help:
 	@echo "Felix dev targets:"
@@ -22,6 +23,7 @@ help:
 	@echo "  up-full           compose --profile full (MinIO; set FELIX_DOCKER_EXTRAS=aws)"
 	@echo "  up-pooled         + PgBouncer in transaction mode (many workers, few connections)"
 	@echo "  up-replicas       + two API replicas behind one origin (cross-replica proof)"
+	@echo "  up-observability  + OTel Collector, Prometheus, Grafana, Jaeger, Loki, exporters"
 	@echo "  schema            regenerate schemas/manifest.schema.json"
 	@echo "  down / cli / seed / migrate / doctor"
 	@echo "  Warehouse: FELIX_WAREHOUSE=duckdb + FELIX_DOCKER_EXTRAS=warehouse"
@@ -117,6 +119,14 @@ up-pooled: dev-key
 
 up-replicas: dev-key
 	$(COMPOSE_REPLICAS) up --build
+
+# Needs the scrape credential as well as the operator key: /metrics is auth-gated, so
+# Prometheus cannot reach it without one. See scripts/metrics-token.sh.
+up-observability: dev-key metrics-token
+	$(COMPOSE_OBS) up --build
+
+metrics-token:
+	@./scripts/metrics-token.sh
 
 up-full: dev-key
 	FELIX_DOCKER_EXTRAS=$${FELIX_DOCKER_EXTRAS:-aws} FELIX_OBJECT_STORE=s3 \

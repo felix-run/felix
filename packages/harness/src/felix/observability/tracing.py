@@ -16,6 +16,7 @@ T = TypeVar("T")
 
 _otel_tracer: Any | None = None
 _otel_checked = False
+_log_handler: logging.Handler | None = None
 
 
 def _attach_span(otel_span: Any) -> Any | None:
@@ -141,8 +142,10 @@ async def span_cm(
 __all__ = [
     "SpanAttributeValue",
     "SpanContext",
+    "instrument_fastapi",
     "make_span",
     "manifest_span",
+    "setup_log_export",
     "setup_observability",
     "shutdown_observability",
     "span_cm",
@@ -203,11 +206,17 @@ def _build_sampler(settings: Any) -> Any | None:
     return ParentBased(root=TraceIdRatioBased(max(ratio, 0.0)))
 
 
-def _instrument_fastapi(app: Any) -> bool:
+def instrument_fastapi(app: Any) -> bool:
     """Open a root span per HTTP request and honour an inbound `traceparent`.
 
     `opentelemetry-instrumentation-fastapi` was declared in the `otel` extra and never
     imported, which is why Felix's spans had no request to hang from.
+
+    **Call this while the app is being constructed, not from its lifespan.** It installs
+    ASGI middleware, and Starlette finalises its middleware stack before the lifespan
+    runs — so instrumenting there is accepted, reports success, and adds nothing. The
+    symptom is subtle: every Felix span still exports, each one as its own single-span
+    trace, which looks like tracing working rather than tracing broken.
     """
     try:
         from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
@@ -222,12 +231,13 @@ def _instrument_fastapi(app: Any) -> bool:
     return True
 
 
-def setup_observability(settings: Any, app: Any | None = None) -> bool:
+def setup_observability(settings: Any) -> bool:
     """Bootstrap OTLP tracing when FELIX_OTEL_ENABLED=true.
 
     Returns True when the SDK was configured. Safe no-op without the otel extra.
 
-    Pass `app` from the API to also instrument FastAPI; the worker calls this without one.
+    Installs the exporter only. FastAPI instrumentation is `instrument_fastapi`, which has
+    to run at construction time — see the note there.
     """
     global _otel_tracer, _otel_checked
     if not getattr(settings, "otel_enabled", False):
@@ -270,9 +280,87 @@ def setup_observability(settings: Any, app: Any | None = None) -> bool:
     trace.set_tracer_provider(provider)
     _otel_tracer = trace.get_tracer("felix")
     _otel_checked = True
-    if app is not None:
-        _instrument_fastapi(app)
     logger.info("otel_enabled endpoint=%s protocol=%s", endpoint, getattr(settings, "otel_protocol", "grpc"))
+    return True
+
+
+def _build_log_exporter(settings: Any, endpoint: str, headers: dict[str, str]) -> Any:
+    """OTLP log exporter matching the configured protocol."""
+    protocol = (getattr(settings, "otel_protocol", "grpc") or "grpc").lower()
+    if protocol == "http":
+        from opentelemetry.exporter.otlp.proto.http._log_exporter import (
+            OTLPLogExporter as HttpLogExporter,
+        )
+
+        return HttpLogExporter(endpoint=endpoint, headers=headers or None)
+    from opentelemetry.exporter.otlp.proto.grpc._log_exporter import (
+        OTLPLogExporter as GrpcLogExporter,
+    )
+
+    insecure = bool(getattr(settings, "otel_insecure", True))
+    return GrpcLogExporter(endpoint=endpoint, insecure=insecure, headers=headers or None)
+
+
+def setup_log_export(settings: Any) -> bool:
+    """Ship logs over OTLP, correlated with the trace that produced them.
+
+    The obvious alternative — pointing a collector's `filelog` receiver at
+    `/var/lib/docker/containers` — was tried and rejected. It needs a read-only mount of
+    every container's logs on the host and a collector running as root to read files that
+    are `root:root 0640`, and it fails *silently* when it cannot (the receiver simply opens
+    zero files). It is also Linux/Docker-shaped: nothing about it survives Kubernetes,
+    systemd, or a process started by hand.
+
+    Emitting from the process needs none of that, and gets something file tailing cannot:
+    the SDK stamps `trace_id` and `span_id` onto each record from the active context, so a
+    log line links to the exact span it came from instead of being matched by a regex over
+    the text.
+
+    Off by default — log volume is a real cost, and it is the operator's to opt into.
+    """
+    if not (getattr(settings, "otel_enabled", False) and getattr(settings, "otel_logs", False)):
+        return False
+    try:
+        from opentelemetry._logs import set_logger_provider
+        from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
+        from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
+        from opentelemetry.sdk.resources import Resource
+    except ImportError:
+        logger.warning("FELIX_OTEL_LOGS=true but the otel extra is not installed")
+        return False
+
+    from felix import __version__ as harness_version
+
+    endpoint = getattr(settings, "otel_endpoint", "") or "http://localhost:4317"
+    headers = _parse_otel_headers(getattr(settings, "otel_headers", "") or "")
+    resource = Resource.create(
+        {
+            "service.name": getattr(settings, "otel_service_name", "") or "felix",
+            "service.version": harness_version,
+            "deployment.environment": getattr(settings, "environment", "development"),
+        }
+    )
+    provider = LoggerProvider(resource=resource)
+    try:
+        exporter = _build_log_exporter(settings, endpoint, headers)
+    except ImportError:
+        logger.warning("otel log exporter for the configured protocol is not installed")
+        return False
+    provider.add_log_record_processor(BatchLogRecordProcessor(exporter))
+    set_logger_provider(provider)
+
+    global _log_handler
+    handler = LoggingHandler(level=logging.NOTSET, logger_provider=provider)
+    # Marked so `shutdown_observability` removes exactly this handler and re-running setup
+    # cannot stack duplicates — the same reason `configure_logging` marks its own.
+    handler._felix_otel = True  # type: ignore[attr-defined]
+    root = logging.getLogger()
+    for existing in list(root.handlers):
+        if getattr(existing, "_felix_otel", False):
+            root.removeHandler(existing)
+    root.addHandler(handler)
+    _log_handler = handler
+    logger.info("otel_logs_enabled endpoint=%s", endpoint)
     return True
 
 
@@ -287,5 +375,17 @@ def shutdown_observability() -> None:
             shutdown()
     except Exception:
         logger.debug("otel shutdown failed", exc_info=True)
+    global _log_handler
+    if _log_handler is not None:
+        logging.getLogger().removeHandler(_log_handler)
+        _log_handler = None
+    try:
+        from opentelemetry._logs import get_logger_provider
+
+        log_shutdown = getattr(get_logger_provider(), "shutdown", None)
+        if callable(log_shutdown):
+            log_shutdown()
+    except Exception:
+        logger.debug("otel log provider shutdown failed", exc_info=True)
     _otel_tracer = None
     _otel_checked = False

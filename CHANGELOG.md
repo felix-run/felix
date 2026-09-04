@@ -68,7 +68,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A tracing backend is an egress destination, and span attributes are not covered by the
   governance content screening that guards tool output.
 
+- **`make up-observability`** — `deploy/docker/compose.observability.yml` brings up an OTel
+  Collector, Prometheus, Grafana, Jaeger, Loki and Postgres/Valkey exporters against the base
+  stack, with datasources and one dashboard provisioned. The dashboard is built from counters
+  that actually exist, and its governance row surfaces the controls `deploy/GOVERNANCE.md`
+  tells operators to watch — `felix_control_unavailable`, `felix_untrusted_tools_unscreened`,
+  `felix_policy_unsatisfiable`, `felix_rule_targets_nothing` — which nothing previously showed.
+
+  Three decisions the files explain in place, each found by running the stack rather than
+  reading it. The overlay rebuilds the image with the `otel` extra, because the lean default
+  omits it and OTLP export then degrades to a single warning line while everything else looks
+  healthy. Logs arrive over OTLP rather than from a `filelog` receiver over
+  `/var/lib/docker/containers`, which needs the collector to run as root, hands it every
+  container's logs, and opens zero files without saying so. And optional-overlay scrape targets
+  are file-discovered, so a service that is not running is absent rather than permanently down.
+
+- **`scripts/metrics-token.sh`** — mints a *second* API key with an empty `scopes` array and
+  merges it into `FELIX_AUTH_API_KEYS` beside the operator key. `/metrics` has no scope gate,
+  so the result reads metrics and is refused everywhere else; leaking it does not leak write
+  access to `PUT /manifests`. Prometheus has no env expansion in scrape configs, so the bare
+  token is written to a gitignored `deploy/docker/.metrics-token` (mode 600).
+
+- **`serviceMonitor` Helm template** (gated, off by default) — the Kubernetes analogue, reading
+  the same kind of unscoped key from a Secret.
+
+- **`FELIX_OTEL_LOGS`** — ships the log stream over OTLP with `trace_id`/`span_id` stamped from
+  the active context, so a log line joins to the span that produced it and Felix's `request_id`
+  rides along. Off by default; log volume is the operator's cost to choose.
+
 ### Fixed
+
+- **FastAPI was instrumented from the lifespan, where it does nothing.** `instrument_app`
+  installs ASGI middleware and Starlette finalises its stack before the lifespan runs, so the
+  call was accepted, reported success, and added no request span. The symptom looked like
+  tracing *working*: every span still exported, each as its own single-span trace. It now runs
+  at construction time, and a test pins the call out of the lifespan — a unit test of the span
+  helpers cannot see this, only where the call sits can.
 
 - **Every span claimed `service.version` `0.1.0`**, hardcoded, while the packages shipped
   0.2.2. It now reports the real harness version.

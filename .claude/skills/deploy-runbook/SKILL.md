@@ -27,11 +27,19 @@ make up          # compose.yml — api :8080, worker, Postgres+pgvector, Valkey,
 make up-lite     # + compose.lite.yml — tighter mem_limit for 2–4 GiB hosts
 make up-gcp      # + compose.gcp.yml + lite — no DB/cache host ports (public VM)
 make up-full     # --profile full — adds MinIO, FELIX_DOCKER_EXTRAS=aws, FELIX_OBJECT_STORE=s3
+make up-observability  # + collector, Prometheus, Grafana :3000, Jaeger :16686, Loki, exporters
 make down
 make migrate     # uv run felix migrate head
 ```
 
 Always run Compose from the repo root — the Makefile passes `--project-directory .`.
+
+`up-observability` also rebuilds the image with the `otel` extra appended to
+`FELIX_DOCKER_EXTRAS`. Without it the API logs `FELIX_OTEL_ENABLED=true but otel extra is
+not installed` and exports nothing while otherwise looking healthy — check that line first
+when Jaeger is empty. It runs `scripts/metrics-token.sh` too, because `/metrics` is
+auth-gated and Prometheus has no env expansion in scrape configs, so the credential has to
+reach it as a file. Budget ~1.7 GiB on top of the base stack; do not pair it with `up-lite`.
 
 ## Lean vs full
 

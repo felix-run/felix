@@ -14,6 +14,7 @@ time, so a metric added without a row here fails CI.
 | Metrics (API) | `GET /metrics` on the API, Prometheus text format | nothing — `prometheus-client` is a core dependency |
 | Metrics (worker) | `FELIX_METRICS_PORT` on the worker process | nothing |
 | Traces | OTLP export | `FELIX_OTEL_ENABLED=true` + `felix-harness[otel]` |
+| Logs | OTLP export, trace-correlated | `FELIX_OTEL_ENABLED=true` + `FELIX_OTEL_LOGS=true` + the extra |
 | Audit / usage rows | Postgres, `GET /audit`, `GET /usage` | nothing |
 
 Two properties of `/metrics` are deliberate and easy to undo by accident:
@@ -111,6 +112,23 @@ Prompts and completions do not appear on spans. `FELIX_OTEL_CAPTURE_CONTENT=true
 Leave it off unless the tracing backend is inside your trust boundary: a tracing backend is
 an egress destination, and span attributes are not covered by the governance content
 screening that guards tool output.
+
+## Logs
+
+`FELIX_OTEL_LOGS=true` ships the standard-library log stream over OTLP alongside traces.
+The SDK stamps `trace_id` and `span_id` onto each record from the active context, so a log
+line joins to the exact span that produced it — and Felix's own `request_id` rides along,
+so an inbound `x-request-id` remains the thing you search by.
+
+It is off by default because log volume is a cost the operator should choose.
+
+**Why not tail the container logs instead.** Pointing a collector's `filelog` receiver at
+`/var/lib/docker/containers` was tried and rejected: it needs the collector to run as root
+to read files that are `root:root 0640`, hands it every container's logs on the host, fails
+*silently* when it cannot (the receiver opens zero files and reports nothing), and is
+Docker-shaped in a way that survives neither Kubernetes nor a process started by hand.
+Emitting from the process needs no mount, no root, and is the only version that carries
+trace context.
 
 ## Known limitations
 
