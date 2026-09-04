@@ -23,7 +23,7 @@ permissions:
 
 jobs:
   codeql:
-    name: CodeQL
+    name: CodeQL (${{ matrix.language }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -67,6 +67,31 @@ jobs:
         uses: github/codeql-action/analyze@c16c0f3f2812ec4bb3750a5ed64873fe2ce0fbef # codeql-bundle-v2.26.3
         with:
           category: /language:${{ matrix.language }}
+
+  # The name branch protection requires, held stable across matrix changes.
+  #
+  # `main` requires a check literally called `CodeQL` from the Actions app (app_id 15368).
+  # Adding the matrix renamed that job to `CodeQL (python)` / `CodeQL (actions)`, so nothing
+  # from Actions was called `CodeQL` any more — the only check by that name came from the
+  # CodeQL *app*, a different app_id, and GitHub refused it: "Required status check `CodeQL`
+  # was not set by the expected GitHub app."
+  #
+  # Fixed here rather than by editing branch protection, so the required contexts do not have
+  # to be re-edited every time this matrix gains or loses a language. `if: always()` because a
+  # gate that is skipped when its dependency fails never reports, and a required check that
+  # never reports blocks the merge just as hard as a failing one.
+  codeql-gate:
+    name: CodeQL
+    needs: [codeql]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every language analysis must have succeeded
+        if: needs.codeql.result != 'success'
+        run: |
+          echo "CodeQL matrix result: ${{ needs.codeql.result }}"
+          exit 1
 
   dependencies:
     name: Dependency CVEs
