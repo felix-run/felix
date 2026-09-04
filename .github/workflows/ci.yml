@@ -337,6 +337,13 @@ jobs:
           # one, so it demands a tag. Any non-empty value satisfies an interpolation
           # check -- this step parses the file, it does not pull anything.
           FELIX_IMAGE_TAG: ci-compose-check
+          # The memoturn overlay uses `${VAR:?}` for the three secrets Memoturn's own env
+          # validation refuses to boot without, so interpolation fails outright when they
+          # are unset. Any non-empty value satisfies a config check — this step parses the
+          # file, it starts nothing.
+          MEMOTURN_AUTH_SECRET: ci-compose-check-not-a-secret
+          MEMOTURN_ENCRYPTION_KEY: ci-compose-check-not-a-secret
+          FELIX_MEMOTURN_BASIC_AUTH: ci-compose-check-not-a-secret
       - name: Build lean image
         run: docker build -f deploy/docker/Dockerfile --build-arg FELIX_EXTRAS= -t felix:ci .
       # Scans the image we actually ship, OS packages included. Unfixed

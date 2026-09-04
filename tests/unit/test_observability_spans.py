@@ -281,8 +281,10 @@ def test_fastapi_is_instrumented_at_construction_not_in_the_lifespan() -> None:
         # A standard collector exposes OTLP/HTTP at the root of :4318.
         ("http://otel-collector:4318", "traces", "http://otel-collector:4318/v1/traces"),
         ("http://otel-collector:4318", "logs", "http://otel-collector:4318/v1/logs"),
-        # Memoturn mounts its receiver under a prefix.
-        ("http://memoturn-api:3001/v1/otel", "traces", "http://memoturn-api:3001/v1/otel/v1/traces"),
+        # A receiver mounted under a prefix, as Memoturn's is. The host deliberately avoids
+        # the substring "api": gitleaks' generic-api-key rule reads `…-api:3001` as a
+        # keyword followed by a value and reports the line as a leaked credential.
+        ("http://memoturn:3001/v1/otel", "traces", "http://memoturn:3001/v1/otel/v1/traces"),
         ("https://mt.example.com/v1/otel/", "logs", "https://mt.example.com/v1/otel/v1/logs"),
         # An operator who pinned the exact URL keeps it.
         ("http://c:4318/v1/traces", "traces", "http://c:4318/v1/traces"),
