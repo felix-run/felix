@@ -46,33 +46,52 @@ This list is exhaustive. A large file **not** named here has no such defense —
 
 ## Large and undefended — splitting these is welcome
 
-The section above was read as "every big file in this repo is deliberate," which is how
-the two largest modules in the harness kept getting a pass. They are not defended:
+The section above was read as "every big file in this repo is deliberate," which is how the
+largest modules kept getting a pass. Nothing below is defended. **Line counts go stale — run
+the command before trusting them:**
 
-- `packages/harness/src/felix/patterns/model.py` is **522 lines and under budget** — this
-  entry described it at ~1,630 and named the wire-client split as the obvious next step long
-  after that had happened. A stale hotspot map costs more than no map: it sends the next
-  reviewer at work already done and away from the file that has grown since.
+```bash
+find packages apps -name '*.py' | xargs wc -l | sort -rn | head -12
+```
 
-  Three splits got it there. The wire formats and neutral types moved to `packages/ai`
-  (`felix_ai`), which is also what makes model-agnosticism structural rather than claimed.
-  The GenAI span shaping moved to `observability/genai.py` — content capture, redaction and
-  the semconv attribute writing are not model-specific. The resilience composites moved to
-  `patterns/model_composites.py`: failing over and escalating are a policy about unavailable
-  or inadequate answers, not routing.
+Current, largest first:
 
-  What remains is the module's actual subject: route resolution against `Settings`,
-  `record_usage`, the traced client wrappers, and the provider factories.
+| Lines | Module |
+|---|---|
+| 1,509 | `apps/api/src/felix_api/routes/chat.py` |
+| 1,497 | `packages/harness/src/felix/manifests/builder.py` |
+| 1,084 | `packages/harness/src/felix/patterns/react.py` |
+| 867 | `packages/harness/src/felix/memory/store.py` |
+| 798 | `packages/harness/src/felix/manifests/schema.py` |
+| 730 | `packages/harness/src/felix/patterns/delegating.py` |
 
-  Note for anyone auditing metering: `model_composites.py` is in
-  `_UNMETERED_BY_DESIGN` alongside `model.py` in `tests/unit/test_invariants.py`, for the
-  reason that exemption always had — these hold clients, and metering is the caller's job.
-  A *pattern* added to that set would be a bug.
+`builder.py` has a partial defense — the governance wrapper order is load-bearing and must
+stay one readable sequence — but that argument covers the `apply_*` chain, not the whole
+file. The other five have none.
+
+### Settled, and why the entry is kept
+
+`patterns/model.py` was listed here at ~1,630 lines, naming a wire-client split as the
+obvious next step, long after that split had happened. **A stale hotspot map costs more than
+no map**: it aims a reviewer at work already done and away from whatever has grown since.
+That is the reason for the `find | wc -l` line above — this table will rot too.
+
+It is 522 lines now. Three splits: the wire formats and neutral types to `packages/ai`
+(which is what makes model-agnosticism structural rather than claimed), the GenAI span
+shaping to `observability/genai.py`, and the resilience composites to
+`patterns/model_composites.py`. What remains is route resolution, `record_usage`, the traced
+client wrappers and the provider factories.
+
+Auditing metering: `model.py` and `model_composites.py` are both in `_UNMETERED_BY_DESIGN`
+in `tests/unit/test_invariants.py`, because they hold clients rather than call them. Read
+the comment there — it is not "nothing here meters". `_EscalationClient` makes two billed
+calls and returns one, so it folds the discarded turn's usage into the result; a caller can
+only meter what it is handed.
 
 `packages/harness/src/felix/patterns/__init__.py` was 920 lines and is now 152: the composite
 agent moved to `patterns/delegating.py` and the deep pattern's plan tools to
 `patterns/plan_tools.py`, which also removed both of that file's `noqa: E402` imports.
-`delegating.py` is ~645 lines and holds one `_run_*` per pattern.
+`delegating.py` is 730 lines and holds one `_run_*` per pattern.
 
 ## Duplication that is a defect, not a counter-rule
 

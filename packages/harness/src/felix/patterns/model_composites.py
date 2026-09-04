@@ -10,15 +10,19 @@ around whatever `build_one_model` produced without either knowing about the othe
 
 One property both share and neither can express in a type: they define `stream_turn`
 unconditionally, so `supports_stream_turn` answers True for a composite whatever its
-members do. That is why each has to settle a turn its members cannot stream, rather than
-leaving the caller to notice — see `_FallbackClient.stream_turn`.
+members do. Each therefore settles the turn itself rather than leaving a caller to notice —
+`_FallbackClient` only when no member could stream it, `_EscalationClient` always, because
+it needs the finished reply before it can judge confidence.
+
+Both are also the only place that can see a turn the caller never receives, which is why
+`_EscalationClient` folds the discarded primary's usage into what it returns. A caller
+meters what it is handed.
 """
 
 from __future__ import annotations
 
-import logging
-from collections.abc import AsyncIterator, Sequence
-from dataclasses import dataclass
+from collections.abc import AsyncIterator, Iterator, Sequence
+from dataclasses import dataclass, replace
 
 from felix_ai.types import (
     ChatMessage,
@@ -27,14 +31,13 @@ from felix_ai.types import (
     ModelClient,
     ModelRoute,
     StreamDelta,
+    TokenUsage,
     ToolSchema,
     supports_stream_turn,
 )
 from felix_ai.wire import ModelGatewayError
 
 from felix.observability.metrics import record_counter
-
-logger = logging.getLogger("felix.patterns.model_composites")
 
 
 @dataclass
@@ -127,11 +130,8 @@ class _FallbackClient:
         # Settling it here rather than in each caller matches `_EscalationClient`, which
         # already resolves the answer with `chat()` and chunks it for display.
         result = await self.chat(messages, tools, opts)
-        text = result.message.content or ""
-        step = 48
-        for i in range(0, len(text), step):
-            yield StreamDelta(kind="text", text=text[i : i + step])
-        yield result
+        for item in _settled_stream(result):
+            yield item
 
     async def stream(
         self,
@@ -162,6 +162,65 @@ class _FallbackClient:
                 continue
         assert last_err is not None
         raise last_err
+
+
+# A settled answer, chunked for a smooth SSE render. Both composites resolve turns their
+# members cannot stream, and the three copies of this loop had already begun to differ —
+# two yielded `StreamDelta`, one yielded `str`, and each named 48 itself. Stream and
+# non-stream copies drifting is the one duplication this repo has repeatedly shipped bugs
+# from; three of them inside 240 lines is where it starts.
+_CHUNK_CHARS = 48
+
+
+def _chunks(text: str) -> Iterator[str]:
+    for i in range(0, len(text), _CHUNK_CHARS):
+        yield text[i : i + _CHUNK_CHARS]
+
+
+def _settled_stream(result: ModelChatResult) -> Iterator[StreamDelta | ModelChatResult]:
+    """Display deltas for an answer that was resolved with `chat()`, then the result itself.
+
+    The terminal `ModelChatResult` is what the caller meters; without it the turn is billed
+    and invisible to every budget.
+    """
+    for chunk in _chunks(result.message.content or ""):
+        yield StreamDelta(kind="text", text=chunk)
+    yield result
+
+
+def _with_usage_of(kept: ModelChatResult, discarded: ModelChatResult) -> ModelChatResult:
+    """Fold a discarded turn's usage into the one being returned.
+
+    Escalation makes two billed calls and returns the second. Callers meter what they get
+    back — `record_usage(result, ...)` in `react` and `delegating` only ever sees the
+    returned result — so the primary's tokens reached neither `ctx.limit_state` nor the
+    usage table, and `limits.max_cost_usd` under-counted an escalating run by whatever the
+    discarded turn cost. Measured on a plausible pair: 2,100 tokens billed, 100 metered.
+
+    This is the "billed twice, metered once" shape the metering invariant in
+    `tests/unit/test_invariants.py` cites as having already shipped twice, and the composite
+    is the only place that can see both turns.
+
+    Pricing is per-model and both turns are summed here under the *returned* model's id, so
+    a two-model escalation prices the primary's tokens at the escalation target's rate. That
+    is wrong in the third decimal and right about the thing that matters — a budget that
+    counts every token spent. Metering each turn under its own model needs `record_usage`
+    inside the composite, which would double-count against the caller that also meters.
+    """
+    a, b = kept.usage, discarded.usage
+    if b is None:
+        return kept
+    if a is None:
+        return replace(kept, usage=b)
+    return replace(
+        kept,
+        usage=TokenUsage(
+            input=a.input + b.input,
+            output=a.output + b.output,
+            cache_creation=a.cache_creation + b.cache_creation,
+            cache_read=a.cache_read + b.cache_read,
+        ),
+    )
 
 
 @dataclass
@@ -196,7 +255,8 @@ class _EscalationClient:
                 "reason": "low_confidence",
             },
         )
-        return await self.escalate_to.chat(messages, tools, opts)
+        escalated = await self.escalate_to.chat(messages, tools, opts)
+        return _with_usage_of(escalated, result)
 
     async def stream_turn(
         self,
@@ -211,11 +271,8 @@ class _EscalationClient:
         the time-to-first-token, which escalation trades away by design.
         """
         result = await self.chat(messages, tools, opts)
-        text = result.message.content or ""
-        step = 48
-        for i in range(0, len(text), step):
-            yield StreamDelta(kind="text", text=text[i : i + step])
-        yield result
+        for item in _settled_stream(result):
+            yield item
 
     async def stream(
         self,
@@ -225,12 +282,8 @@ class _EscalationClient:
     ) -> AsyncIterator[str]:
         # Confidence check needs the full reply; stream escalate path when needed.
         result = await self.chat(messages, tools, opts)
-        if result.message.content:
-            # Chunk for smoother SSE when escalation used the chat path.
-            text = result.message.content
-            step = 48
-            for i in range(0, len(text), step):
-                yield text[i : i + step]
+        for chunk in _chunks(result.message.content or ""):
+            yield chunk
 
 
 def _is_provider_error(err: object) -> bool:

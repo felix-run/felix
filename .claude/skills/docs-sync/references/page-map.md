@@ -11,7 +11,7 @@
 | `packages/harness/src/felix/manifests/schema.py`, `manifests/*.yaml` | `$DOCS/guide/manifest-reference.mdx` |
 | `manifests/{builder,resolver,pin}.py` | `$DOCS/internals/manifest-pipeline.mdx` |
 | `patterns/{react,registry,types}.py` | `$DOCS/internals/patterns.mdx` |
-| `patterns/model.py`, `patterns/model_registry.py` | `$DOCS/internals/model-client.mdx` |
+| `patterns/model*.py` (client, registry, composites) | `$DOCS/internals/model-client.mdx` |
 | `auth/*`, `manifests/inbound_auth.py` | `$DOCS/internals/auth.mdx` |
 | `governance/*`, `security/*`, `manifests/governance.py` | `$DOCS/internals/governance.mdx` |
 | `db/*`, `session/store.py`, `migrations/versions/*` | `$DOCS/internals/persistence.mdx` |

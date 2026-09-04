@@ -39,6 +39,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **An escalating turn was billed twice and metered once.** `confidence_escalation` calls the
+  primary, judges the answer, then calls the stronger model — two billed turns for one reply —
+  and returned only the second. Callers meter what they are handed (`record_usage(result, …)`
+  sees the returned result and nothing else), so the discarded turn reached neither
+  `ctx.limit_state` nor the usage table and `limits.max_cost_usd` under-counted the run by
+  whatever it cost. Measured on a plausible pair: **2,100 tokens billed, 100 metered**.
+
+  The composite folds the discarded usage into the result it returns, because it is the only
+  thing that can see both turns. Both turns are summed under the returned model's id, so a
+  two-model escalation prices the primary's tokens at the target's rate — wrong in the third
+  decimal, right about the budget counting every token spent.
+
+  `confidence_escalation` is a published manifest field that had no behavioural test at all;
+  `tests/unit/test_confidence_escalation.py` is its first.
+
+
 - **A fallback chain that could not stream produced an empty answer and made no model
   call.** `_FallbackClient` skips members without `stream_turn`, so a chain of chat-only
   providers streamed from none of them and fell out of the loop having yielded nothing —

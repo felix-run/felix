@@ -1,10 +1,14 @@
 """Model client — the harness half of the model layer.
 
 The wire formats, the catalog and the neutral types moved to `felix_ai`, which may not
-import `felix`. What stays here is everything that needs the harness: resolving
-`FELIX_MODEL_ROUTES` against `Settings`, metering a turn against `ctx.limit_state` and the
-usage store, the fallback/escalation composites, and the factories that adapt `Settings`
-into the explicit configuration a wire client takes.
+import `felix`. What stays here is what needs the harness: resolving `FELIX_MODEL_ROUTES`
+against `Settings`, metering a turn against `ctx.limit_state` and the usage store, the
+traced client wrappers, and the factories that adapt `Settings` into the explicit
+configuration a wire client takes.
+
+The fallback and escalation composites are in `patterns/model_composites.py` — what to do
+when an answer is unavailable or not good enough is a policy, not routing. The GenAI span
+shaping is in `observability/genai.py`.
 
 Every public name this module used to export is re-exported below, so existing imports of
 `felix.patterns.model` keep working.
