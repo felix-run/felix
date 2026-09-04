@@ -120,11 +120,17 @@ async def start_durable_chat(
         try:
             from felix.durability.temporal import start_fiber_workflow
 
-            await start_fiber_workflow(settings, fiber)
+            # Mark and persist BEFORE starting the workflow, not after. Starting first and
+            # saving second handed Temporal a snapshot of the row and then bumped the
+            # stored `version` behind it, so every write the activity made compared
+            # against a version that was already stale and was discarded — the workflow
+            # ran to completion, reported "completed", and the fiber row stayed `pending`
+            # forever. A durable chat that finishes invisibly is worse than one that fails.
             state = dict(fiber.get("state_json") or state)
             state["backend"] = "temporal"
             fiber["state_json"] = state
             await save_fiber(settings, fiber)
+            await start_fiber_workflow(settings, fiber)
         except Exception:
             # Record the fallback, not just log it. `backend` was set inside the `try`,
             # so a failed start left the row indistinguishable from a run that never

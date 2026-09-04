@@ -1,0 +1,32 @@
+# Provisioned so `make up-observability` lands on a working Grafana with no clicking.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: felix-prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    jsonData:
+      timeInterval: 15s
+
+  - name: Loki
+    type: loki
+    uid: felix-loki
+    access: proxy
+    url: http://loki:3100
+    jsonData:
+      # Felix stamps a request_id on every log line and the same id on the request span,
+      # so a log line links straight to its trace.
+      derivedFields:
+        - name: TraceID
+          matcherRegex: '"trace_id":\s*"(\w+)"'
+          url: '$${__value.raw}'
+          datasourceUid: felix-jaeger
+
+  - name: Jaeger
+    type: jaeger
+    uid: felix-jaeger
+    access: proxy
+    url: http://jaeger:16686

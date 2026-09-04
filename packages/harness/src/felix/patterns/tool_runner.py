@@ -17,13 +17,21 @@ from typing import Any
 from felix.audit.emit import emit_agent_audit
 from felix.hooks import run_after_tool, run_before_tool
 from felix.observability.metrics import record_counter
-from felix.observability.tracing import with_span
+from felix.observability.tracing import timed_span
 from felix.patterns.types import ChatMessage, ToolCall
 from felix.steer import should_cancel_remaining_tools
 from felix.tools.errors import infer_error_code, read_tool_error_code, tool_output_content
 from felix.tools.types import Tool, ToolInvocationCtx, is_wrapper_deny
 
 logger = logging.getLogger("felix.patterns.tool_runner")
+
+
+def _transport_of(tool: Any | None) -> str:
+    """Transport for a span attribute; `unknown` when the model named a tool we lack."""
+    if tool is None:
+        return "unknown"
+    return str(getattr(getattr(tool, "executor", None), "transport", "") or "unknown")
+
 
 _SEQUENTIAL_TRANSPORTS = frozenset({"client", "approval"})
 
@@ -168,7 +176,24 @@ class ToolRunner:
                 terminate,
             )
 
-        return await with_span("tool.call", _run, {"tool": call.name})
+        # Labels mirror `felix_tool_calls` — transport and manifest, never the tool name.
+        # MCP tool names arrive from a remote server, so they are unbounded label values.
+        transport = _transport_of(self.tool_map.get(call.name))
+        # `gen_ai.tool.name` is the GenAI-semconv name for this; an OTLP backend uses it to
+        # render the span as a tool invocation rather than an unlabelled child. `tool` is
+        # kept alongside it because existing log-only consumers read that key.
+        async with timed_span(
+            f"tool {call.name}",
+            {
+                "tool": call.name,
+                "gen_ai.tool.name": call.name,
+                "gen_ai.operation.name": "execute_tool",
+                "felix.tool.transport": transport,
+            },
+            metric="felix_tool_call_seconds",
+            labels={"transport": transport, "manifest_id": self.manifest_id},
+        ) as span:
+            return await _run(span)
 
     async def _record_and_postprocess(
         self,

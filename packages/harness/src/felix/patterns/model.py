@@ -49,6 +49,7 @@ from felix_ai.wire import (
 from felix.config import DEFAULT_MODEL_ROUTES, Settings, get_settings
 from felix.context import try_get_context
 from felix.observability.metrics import record_counter
+from felix.observability.tracing import SpanContext, timed_span
 from felix.patterns.model_registry import (
     get_model_provider,
     list_model_providers,
@@ -195,6 +196,214 @@ def record_usage(
                 )
     except Exception:
         logger.debug("usage_sink_failed", exc_info=True)
+
+
+# Prompts grow without bound; a span attribute should not. Truncation is preferable to a
+# span the exporter refuses or the backend rejects.
+MAX_SPAN_CONTENT_CHARS = 32_000
+
+
+def _content_capture_enabled() -> bool:
+    """`FELIX_OTEL_CAPTURE_CONTENT`, read from the active request's settings.
+
+    Off by default. A tracing backend is an egress destination like any other, and span
+    attributes do not pass through the governance content screening that guards tool
+    output — so the prompt and the completion only leave the process when an operator has
+    said so.
+    """
+    ctx = try_get_context()
+    settings = getattr(ctx, "settings", None) if ctx is not None else None
+    if settings is None:
+        settings = get_settings()
+    return bool(getattr(settings, "otel_capture_content", False))
+
+
+def _redacted_json(value: Any) -> str | None:
+    """Serialise for a span attribute, with the audit store's redaction applied first.
+
+    `redact_json` is what the audit path already uses, so content on a span is masked to
+    the same standard as content in an audit row — and to no better one. It replaces
+    values Felix *knows* are secrets (those hydrated from the secrets backend) by
+    substring match; it is not pattern detection. A credential a user types into a chat is
+    therefore exported verbatim. That boundary is why `FELIX_OTEL_CAPTURE_CONTENT`
+    defaults to off.
+    """
+    try:
+        from felix.secrets import redact_json
+
+        return json.dumps(redact_json(value), default=str)[:MAX_SPAN_CONTENT_CHARS]
+    except Exception:
+        logger.debug("span content redaction failed; dropping content", exc_info=True)
+        return None
+
+
+def _record_input_on_span(span: SpanContext, messages: list[ChatMessage]) -> None:
+    if not _content_capture_enabled():
+        return
+    payload = _redacted_json([_message_dict(m) for m in messages])
+    if payload is not None:
+        span.set_attribute("gen_ai.input.messages", payload)
+
+
+def _record_output_on_span(span: SpanContext, result: ModelChatResult) -> None:
+    if not _content_capture_enabled():
+        return
+    payload = _redacted_json([_message_dict(result.message)])
+    if payload is not None:
+        span.set_attribute("gen_ai.output.messages", payload)
+
+
+def _message_dict(message: Any) -> dict[str, Any]:
+    """The parts of a message worth tracing, without dragging in provider internals."""
+    content = getattr(message, "content", None)
+    out: dict[str, Any] = {"role": getattr(message, "role", "") or "", "content": content}
+    calls = getattr(message, "tool_calls", None)
+    if calls:
+        out["tool_calls"] = [
+            {"name": getattr(c, "name", ""), "args": getattr(c, "args", None)} for c in calls
+        ]
+    return out
+
+
+def _record_result_on_span(span: SpanContext, result: ModelChatResult, wire_model: str) -> None:
+    """Attach the response half of a generation: stop reason, tokens, cost."""
+    span.set_attribute("gen_ai.response.model", wire_model)
+    span.set_attribute("gen_ai.response.finish_reasons", str(result.stop_reason))
+    _record_output_on_span(span, result)
+    usage = result.usage
+    if usage is None:
+        # Same failure `_metered_usage` warns about — a turn that cannot be capped.
+        # Worth seeing in a trace, not only in the log.
+        span.set_attribute("felix.usage.unmetered", True)
+        return
+    span.set_attribute("gen_ai.usage.input_tokens", usage.input)
+    span.set_attribute("gen_ai.usage.output_tokens", usage.output)
+    # Cache tokens under the GenAI-semconv names as well as Felix's own. Only the former
+    # are read by backends, and dropping them is not cosmetic: Felix's `usage_with_cost`
+    # counts cache reads and creations, so a backend computing cost from input/output
+    # alone silently disagrees with Felix's own number as soon as prompt caching is on.
+    span.set_attribute("gen_ai.usage.cache_creation_input_tokens", usage.cache_creation)
+    span.set_attribute("gen_ai.usage.cache_read_input_tokens", usage.cache_read)
+    span.set_attribute("felix.usage.cache_creation", usage.cache_creation)
+    span.set_attribute("felix.usage.cache_read", usage.cache_read)
+    try:
+        from felix.usage.pricing import usage_with_cost
+
+        priced = usage_with_cost(usage, model_id=wire_model)
+        span.set_attribute("felix.cost_usd", float((priced.get("cost") or {}).get("total") or 0.0))
+    except Exception:
+        logger.debug("span pricing unavailable", exc_info=True)
+
+
+@dataclass
+class _TracedClient:
+    """One span and one latency sample per provider call.
+
+    Wrapped around the leaf client in `build_one_model`, which every model the harness
+    builds passes through — primary, each fallback, and an escalation target alike. That
+    placement is deliberate: a fallback chain that tries two providers produces two spans,
+    which is what a trace should show. Wrapping the composite instead would have collapsed
+    them into one and hidden the retry.
+
+    Only `chat` and `stream_turn` are instrumented, because they are the two that report
+    usage. `stream` cannot report any, so it is passed through untouched rather than
+    given a span that would claim a generation with no tokens.
+    """
+
+    inner: ModelClient
+    model_id: str
+    route: ModelRoute
+
+    def _span_attrs(self) -> dict[str, Any]:
+        wire_model = self._wire_model()
+        ctx = try_get_context()
+        attrs: dict[str, Any] = {
+            "gen_ai.operation.name": "chat",
+            "gen_ai.system": str(getattr(self.route, "provider", "") or "unknown"),
+            "gen_ai.request.model": wire_model,
+            # The logical route name, which is what operators configure and what the
+            # `felix_tokens` counter reports. Not the same string as the wire model.
+            "felix.model.route": self.model_id,
+        }
+        if ctx is not None:
+            manifest_id = getattr(ctx, "manifest_id", None)
+            if manifest_id:
+                attrs["felix.manifest.id"] = str(manifest_id)
+        return attrs
+
+    def _wire_model(self) -> str:
+        return str(getattr(self.route, "model", "") or self.model_id)
+
+    async def chat(
+        self,
+        messages: list[ChatMessage],
+        tools: Sequence[ToolSchema],
+        opts: ModelChatOptions | None = None,
+    ) -> ModelChatResult:
+        async with timed_span(
+            f"chat {self._wire_model()}",
+            self._span_attrs(),
+            metric="felix_model_call_seconds",
+            labels={"model": self.model_id},
+        ) as span:
+            _record_input_on_span(span, messages)
+            result = await self.inner.chat(messages, tools, opts)
+            _record_result_on_span(span, result, self._wire_model())
+            return result
+
+    def stream(
+        self,
+        messages: list[ChatMessage],
+        tools: Sequence[ToolSchema],
+        opts: ModelChatOptions | None = None,
+    ) -> AsyncIterator[str]:
+        return self.inner.stream(messages, tools, opts)
+
+    def __getattr__(self, name: str) -> Any:
+        # Providers carry extra attributes the harness reads by name (`wire_model_id`
+        # walks `route`/`model_id`, patterns probe for capabilities). Forward anything
+        # this wrapper does not define — but see `_TracedStreamingClient`: `stream_turn`
+        # is resolved by `getattr(model, "stream_turn", None)`, so it must NOT be
+        # forwarded here or every client would claim to support it.
+        # `inner` guards against infinite recursion when it is unset (an instance built
+        # by copy/pickle before __init__ runs); without it the forward looks itself up.
+        if name in ("inner", "stream_turn"):
+            raise AttributeError(name)
+        return getattr(self.inner, name)
+
+
+@dataclass
+class _TracedStreamingClient(_TracedClient):
+    """`_TracedClient` for providers that implement `stream_turn`.
+
+    The capability is detected with `getattr(model, "stream_turn", None)`, so it has to be
+    absent on the wrapper when it is absent on the client — a wrapper that always defined
+    it would push every non-streaming provider into the streaming path.
+    """
+
+    async def stream_turn(
+        self,
+        messages: list[ChatMessage],
+        tools: Sequence[ToolSchema],
+        opts: ModelChatOptions | None = None,
+    ) -> AsyncIterator[StreamDelta | ModelChatResult]:
+        async with timed_span(
+            f"chat {self._wire_model()}",
+            {**self._span_attrs(), "felix.streamed": True},
+            metric="felix_model_call_seconds",
+            labels={"model": self.model_id},
+        ) as span:
+            _record_input_on_span(span, messages)
+            async for item in self.inner.stream_turn(messages, tools, opts):
+                # Usage rides on the terminal ModelChatResult, not on the deltas.
+                if isinstance(item, ModelChatResult):
+                    _record_result_on_span(span, item, self._wire_model())
+                yield item
+
+
+def _traced(client: ModelClient) -> ModelClient:
+    cls = _TracedStreamingClient if getattr(client, "stream_turn", None) is not None else _TracedClient
+    return cls(inner=client, model_id=client.model_id, route=client.route)
 
 
 @dataclass
@@ -502,7 +711,10 @@ def build_one_model(settings: Settings, spec: Any, logical_id: str) -> ModelClie
             f"Unknown model provider '{route.provider}' — registered: "
             f"{', '.join(list_model_providers()) or '(none)'}"
         )
-    return factory(logical_id, route, spec, settings)
+    # Every model the harness builds comes through here — primary, fallbacks and
+    # escalation targets alike — so this is the one place a span per provider call can be
+    # added without touching each of the eight `record_usage` call sites.
+    return _traced(factory(logical_id, route, spec, settings))
 
 
 def build_model(settings: Settings | None, spec: Any) -> ModelClient:

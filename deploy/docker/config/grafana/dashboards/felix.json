@@ -1,0 +1,784 @@
+{
+  "uid": "felix-overview",
+  "title": "Felix \u2014 harness overview",
+  "description": "Built from the counters felix actually emits; see docs/OBSERVABILITY.md for the catalog. Note: a manifest's spec.observability.metrics allowlist suppresses counters not named in it, so a zero on the governance row can mean 'nothing happened' or 'this tenant opted out of telling you'.",
+  "tags": [
+    "felix"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "editable": true,
+  "panels": [
+    {
+      "type": "row",
+      "title": "Model and cost",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Tokens/sec by kind",
+      "description": "felix_tokens, split into input and output.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "felix-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 1
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "felix-prometheus"
+          },
+          "expr": "sum by (kind) (rate(felix_tokens_total[5m]))",
+          "legendFormat": "{{kind}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Model call latency (p50 / p95)",
+      "description": "One observation per provider call. A fallback chain contributes one per attempt.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "felix-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 1
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "felix-prometheus"
+          },
+          "expr": "histogram_quantile(0.50, sum by (le, model) (rate(felix_model_call_seconds_bucket[5m])))",
+          "legendFormat": "p50 {{model}}",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "felix-prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, model) (rate(felix_model_call_seconds_bucket[5m])))",
+          "legendFormat": "p95 {{model}}",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Unmetered turns",
+      "description": "A turn that reported no usage counted against NO budget: max_cost_usd and the token limits fail open for it. Usually a streamed response missing stream_options.include_usage. Non-zero here means limits are not being enforced.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "felix-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 1
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "felix-prometheus"
+          },
+          "expr": "sum(increase(felix_model_unmetered_total[1h]))",
+          "legendFormat": "last hour",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {}
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Model reliability",
+      "description": "Retries, timeouts, and retries declined on quota.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "felix-prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 9
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "felix-prometheus"
+          },
+          "expr": "sum by (provider, status) (rate(felix_model_retry_total[5m]))",
+          "legendFormat": "retry {{provider}} {{status}}",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "felix-prometheus"
+          },
+          "expr": "sum by (provider) (rate(felix_model_timeout_total[5m]))",
+          "legendFormat": "timeout {{provider}}",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "felix-prometheus"
+          },
+          "expr": "sum by (provider, reason) (rate(felix_model_retry_skipped_total[5m]))",
+          "legendFormat": "skipped {{provider}} {{reason}}",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Model switches (fallback / escalation)",
+      "description": "A sustained rate here means the primary route is unhealthy.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "felix-prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 9
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "felix-prometheus"
+          },
+          "expr": "sum by (from, to, reason) (rate(felix_model_switch_total[5m]))",
+          "legendFormat": "{{from}} -> {{to}} ({{reason}})",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "row",
+      "title": "Tools",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 16
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Tool calls/sec by status",
+      "description": "ok / error / denied.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "felix-prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 0,
+        "y": 17
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "felix-prometheus"
+          },
+          "expr": "sum by (status) (rate(felix_tool_calls_total[5m]))",
+          "legendFormat": "{{status}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Tool error ratio by transport",
+      "description": "Which transport is failing \u2014 mcp, a2a, builtin, browser.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "felix-prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 8,
+        "y": 17
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "felix-prometheus"
+          },
+          "expr": "sum by (transport) (rate(felix_tool_calls_total{status=\"error\"}[5m]))\n  / clamp_min(sum by (transport) (rate(felix_tool_calls_total[5m])), 0.0001)",
+          "legendFormat": "{{transport}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Tool latency p95 by transport",
+      "description": "Not labelled by tool name on purpose: MCP tool names come from a remote server and are unbounded label values.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "felix-prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 16,
+        "y": 17
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "felix-prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, transport) (rate(felix_tool_call_seconds_bucket[5m])))",
+          "legendFormat": "{{transport}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "row",
+      "title": "Governance \u2014 the controls GOVERNANCE.md says to watch",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 24
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Controls unavailable or degraded",
+      "description": "A control that could not run, or ran in a reduced mode (e.g. PII without Presidio). This is a governance gap, not a performance metric.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "felix-prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 0,
+        "y": 25
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "felix-prometheus"
+          },
+          "expr": "sum by (control) (increase(felix_control_unavailable_total[1h]))",
+          "legendFormat": "unavailable {{control}}",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "felix-prometheus"
+          },
+          "expr": "sum by (control, reason) (increase(felix_control_degraded_total[1h]))",
+          "legendFormat": "degraded {{control}} {{reason}}",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Untrusted tool output reaching the model unscreened",
+      "description": "Untrusted tool output was passed to the model without content screening. The prompt-injection surface.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "felix-prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 8,
+        "y": 25
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "felix-prometheus"
+          },
+          "expr": "sum(increase(felix_untrusted_tools_unscreened_total[1h]))",
+          "legendFormat": "last hour",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {}
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Rules that are not controls",
+      "description": "A rule matching no tool, or a policy that can never pass. Both read as controls in a manifest and are not.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "felix-prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 16,
+        "y": 25
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "felix-prometheus"
+          },
+          "expr": "sum by (kind) (increase(felix_rule_targets_nothing_total[1h]))",
+          "legendFormat": "targets nothing {{kind}}",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "felix-prometheus"
+          },
+          "expr": "sum(increase(felix_policy_unsatisfiable_total[1h]))",
+          "legendFormat": "unsatisfiable",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Denials, masking and approvals",
+      "description": "Controls doing their job.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "felix-prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 32
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "felix-prometheus"
+          },
+          "expr": "sum by (policy) (rate(felix_policy_deny_total[5m]))",
+          "legendFormat": "deny {{policy}}",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "felix-prometheus"
+          },
+          "expr": "sum(rate(felix_secret_masking_total[5m]))",
+          "legendFormat": "secret masked",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "felix-prometheus"
+          },
+          "expr": "sum(rate(felix_approval_required_total[5m]))",
+          "legendFormat": "approval required",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Egress blocked",
+      "description": "SSRF / egress policy refusals, from the HTTP path and the browser tool.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "felix-prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 32
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "felix-prometheus"
+          },
+          "expr": "sum by (reason) (rate(felix_egress_blocked_total[5m]))",
+          "legendFormat": "egress {{reason}}",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "felix-prometheus"
+          },
+          "expr": "sum by (reason) (rate(felix_browser_egress_blocked_total[5m]))",
+          "legendFormat": "browser {{reason}}",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "row",
+      "title": "Worker and durability",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 39
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Sweeps/sec by task",
+      "description": "A line that drops to zero has stopped firing. Before this existed, that looked exactly like a sweep that ran and found nothing. felix-scheduler must be running alongside felix-worker or none of these fire.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "felix-prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 0,
+        "y": 40
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "felix-prometheus"
+          },
+          "expr": "sum by (task) (rate(felix_worker_task_total[15m]))",
+          "legendFormat": "{{task}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Sweep failures",
+      "description": "Any sustained value means a periodic control is not running to completion.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "felix-prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 8,
+        "y": 40
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "felix-prometheus"
+          },
+          "expr": "sum by (task) (increase(felix_worker_task_total{status=\"error\"}[1h]))",
+          "legendFormat": "{{task}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Buffered rows dropped",
+      "description": "Audit or usage rows lost because the buffer hit its cap. Silent data loss: the rows are gone from Postgres and the warehouse both.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "felix-prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 16,
+        "y": 40
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "felix-prometheus"
+          },
+          "expr": "sum by (buffer) (increase(felix_buffer_dropped_total[1h]))",
+          "legendFormat": "{{buffer}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {}
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Sweep duration p95",
+      "description": "A sweep approaching its cron interval is about to overlap itself.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "felix-prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 47
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "felix-prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, task) (rate(felix_worker_task_seconds_bucket[15m])))",
+          "legendFormat": "{{task}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Run outcomes",
+      "description": "How runs ended.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "felix-prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 47
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "felix-prometheus"
+          },
+          "expr": "sum by (reason) (rate(felix_run_stop_reason_total[5m]))",
+          "legendFormat": "{{reason}}",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "felix-prometheus"
+          },
+          "expr": "sum(rate(felix_context_overflow_recovered_total[5m]))",
+          "legendFormat": "context overflow recovered",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "felix-prometheus"
+          },
+          "expr": "sum(rate(felix_interrupted_tool_calls_total[5m]))",
+          "legendFormat": "interrupted tool calls",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {}
+        },
+        "overrides": []
+      }
+    }
+  ]
+}

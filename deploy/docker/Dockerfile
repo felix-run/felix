@@ -37,7 +37,7 @@ COPY manifests ./manifests
 COPY migrations ./migrations
 COPY alembic.ini ./
 
-# Core install only. Optional: FELIX_EXTRAS=aws,gcp,otel (comma-separated)
+# Core install only. Optional: FELIX_EXTRAS=aws,gcp,otel,temporal,warehouse (comma-separated)
 # Always --locked: the image must be built from the committed uv.lock, the same
 # resolution CI tested. --locked asserts the lock still matches pyproject and
 # fails the build if it does not; --frozen would only skip re-locking, and would

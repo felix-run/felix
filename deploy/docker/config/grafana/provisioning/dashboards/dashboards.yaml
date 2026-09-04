@@ -1,0 +1,12 @@
+apiVersion: 1
+
+providers:
+  - name: felix
+    orgId: 1
+    folder: Felix
+    type: file
+    disableDeletion: false
+    # Edits in the UI are not written back to the repo; export the JSON to keep a change.
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards

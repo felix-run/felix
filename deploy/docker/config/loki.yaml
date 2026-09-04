@@ -1,0 +1,51 @@
+# Single-binary Loki with filesystem storage — right for a local stack, not for production.
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  grpc_listen_port: 9096
+  log_level: info
+
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: /loki
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+
+schema_config:
+  configs:
+    - from: 2024-04-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+limits_config:
+  # The OTLP ingest path needs this on; it is how the collector's log records arrive.
+  allow_structured_metadata: true
+  retention_period: 168h
+  reject_old_samples: false
+
+  # Deliberately no `otlp_config` override. Loki's default already indexes only a small
+  # allowlist of resource attributes (service.name, service.instance.id,
+  # deployment.environment, the k8s.* set) and routes everything else — trace_id, span_id,
+  # request_id, code.* — to structured metadata, which stays queryable without creating a
+  # stream. Verified rather than assumed: a run producing dozens of distinct
+  # label-plus-metadata combinations left `loki_ingester_streams_created_total` at 3.
+  #
+  # Worth knowing when reading this back: the query API merges structured metadata into
+  # each result's `stream` map, so a query response looks like it has ~20 labels.
+  # `/loki/api/v1/labels` and that counter are the honest answers.
+
+compactor:
+  working_directory: /loki/compactor
+  retention_enabled: true
+  delete_request_store: filesystem

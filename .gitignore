@@ -58,3 +58,6 @@ workspace/*
 
 # Cursor: agent plans are scratch, keep them local
 .cursor/plans/
+
+# Prometheus scrape credential, minted by scripts/metrics-token.sh
+deploy/docker/.metrics-token

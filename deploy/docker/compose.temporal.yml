@@ -1,0 +1,137 @@
+# Temporal overlay — durable execution backed by Temporal instead of the fiber sweeper.
+#
+# Run from repo root (see deploy/docker/README.md):
+#   make up-temporal
+#
+# Temporal UI   http://localhost:8233
+#
+# Composable with the observability overlay:
+#   docker compose -f deploy/docker/compose.yml \
+#     -f deploy/docker/compose.observability.yml \
+#     -f deploy/docker/compose.temporal.yml --project-directory . up --build
+#
+# To scrape the Temporal server too, drop a target file into
+# config/prometheus-targets/ (that directory's README has the two lines). It is not
+# shipped: an overlay cannot add a volume to a service the base file does not define, so
+# doing it from here would break `make up-temporal` on its own — and shipping it
+# unconditionally would give anyone running only the observability overlay a target that
+# is permanently down.
+#
+# What this changes about Felix: FELIX_DURABILITY=temporal makes `start_durable_chat` open
+# a workflow instead of leaving the row for the Postgres sweeper, and the sweeper skips
+# rows stamped `state_json.backend == "temporal"` so nothing is driven twice. The fiber row
+# in Postgres stays the system of record either way — Temporal replaces the scheduling
+# envelope, not the step engine.
+
+name: felix
+
+services:
+  # `felix temporal-worker` on task queue `felix-fibers`. Needs the temporal extra in the
+  # image: without it durability/temporal.py raises rather than degrading, which is right —
+  # a durable chat that silently ran transiently would be worse.
+  temporal-worker:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile
+      args:
+        FELIX_EXTRAS: ${FELIX_DOCKER_EXTRAS:-}${FELIX_DOCKER_EXTRAS:+,}temporal
+    image: felix:latest
+    command: ["felix-temporal-worker"]
+    environment:
+      FELIX_ENVIRONMENT: ${FELIX_ENVIRONMENT:-development}
+      FELIX_ALLOW_INSECURE: ${FELIX_ALLOW_INSECURE:-false}
+      FELIX_AUTH_MODE: ${FELIX_AUTH_MODE:-api_key}
+      FELIX_AUTH_API_KEYS: ${FELIX_AUTH_API_KEYS:?run `make up` (or scripts/dev-key.sh) to generate a local API key}
+      FELIX_DATABASE_URL: postgresql+psycopg://felix:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/felix
+      FELIX_REDIS_URL: redis://valkey:6379/0
+      FELIX_ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      FELIX_OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      FELIX_DATA_DIR: /data
+      FELIX_OBJECT_STORE: ${FELIX_OBJECT_STORE:-fs}
+      FELIX_SECRETS_BACKEND: ${FELIX_SECRETS_BACKEND:-env}
+      FELIX_DURABILITY: temporal
+      FELIX_TEMPORAL_HOST: temporal:7233
+      FELIX_TEMPORAL_NAMESPACE: ${FELIX_TEMPORAL_NAMESPACE:-default}
+      FELIX_DEFAULT_MANIFEST: ${FELIX_DEFAULT_MANIFEST:-quick}
+      FELIX_DEFAULT_MODEL_ID: ${FELIX_DEFAULT_MODEL_ID:-claude-sonnet}
+      FELIX_MODEL_ROUTES: ${FELIX_MODEL_ROUTES:-}
+      FELIX_WORKSPACE_ROOT: ${FELIX_WORKSPACE_ROOT:-/workspace}
+    volumes:
+      - felix-data:/data
+      - ${FELIX_WORKSPACE_HOST:-./workspace}:/workspace
+    depends_on:
+      postgres:
+        condition: service_healthy
+      temporal:
+        condition: service_healthy
+    # Image HEALTHCHECK probes the API's /health; this container has no HTTP server.
+    healthcheck:
+      disable: true
+    mem_limit: ${FELIX_TEMPORAL_WORKER_MEM_LIMIT:-512m}
+    cpus: ${FELIX_TEMPORAL_WORKER_CPUS:-0.5}
+    restart: unless-stopped
+
+  # The API and worker must agree with the temporal-worker about the backend, or a durable
+  # chat is enqueued for one driver and executed by the other.
+  api:
+    environment:
+      FELIX_DURABILITY: temporal
+      FELIX_TEMPORAL_HOST: temporal:7233
+      FELIX_TEMPORAL_NAMESPACE: ${FELIX_TEMPORAL_NAMESPACE:-default}
+    build:
+      args:
+        FELIX_EXTRAS: ${FELIX_DOCKER_EXTRAS:-}${FELIX_DOCKER_EXTRAS:+,}temporal
+
+  worker:
+    environment:
+      FELIX_DURABILITY: temporal
+      FELIX_TEMPORAL_HOST: temporal:7233
+      FELIX_TEMPORAL_NAMESPACE: ${FELIX_TEMPORAL_NAMESPACE:-default}
+    build:
+      args:
+        FELIX_EXTRAS: ${FELIX_DOCKER_EXTRAS:-}${FELIX_DOCKER_EXTRAS:+,}temporal
+
+  # auto-setup creates the `temporal` and `temporal_visibility` databases and runs the
+  # schema migrations on first boot. It reuses Felix's Postgres rather than standing up a
+  # second one: `felix` is the superuser there, so it can create both, and a second
+  # Postgres would put this overlay out of reach of a small VM. Not a production shape —
+  # auto-setup is explicitly a development convenience.
+  temporal:
+    image: temporalio/auto-setup:1.29.7@sha256:f14912b699cf73015ad5c4fc18d522d4b014db90e794039214dfb7c022c2644f
+    environment:
+      DB: postgres12
+      DB_PORT: "5432"
+      POSTGRES_SEEDS: postgres
+      POSTGRES_USER: felix
+      POSTGRES_PWD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      DBNAME: temporal
+      VISIBILITY_DBNAME: temporal_visibility
+      # Serves Temporal's own metrics. Add a target file under config/prometheus-targets/
+      # to have the observability overlay scrape them; see the header note.
+      PROMETHEUS_ENDPOINT: 0.0.0.0:9090
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "tctl", "--address", "temporal:7233", "cluster", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+    mem_limit: ${FELIX_TEMPORAL_MEM_LIMIT:-768m}
+    cpus: ${FELIX_TEMPORAL_CPUS:-1.0}
+    restart: unless-stopped
+
+  temporal-ui:
+    image: temporalio/ui:2.53.3@sha256:eef301146e60fad34b47adaecfae4149016e34b2d44ba94fca5fd8e5441f182a
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CORS_ORIGINS: http://localhost:${FELIX_TEMPORAL_UI_PORT:-8233}
+    ports:
+      - "${FELIX_BIND_ADDR:-127.0.0.1}:${FELIX_TEMPORAL_UI_PORT:-8233}:8080"
+    depends_on:
+      temporal:
+        condition: service_healthy
+    mem_limit: ${FELIX_TEMPORAL_UI_MEM_LIMIT:-192m}
+    cpus: ${FELIX_TEMPORAL_UI_CPUS:-0.25}
+    restart: unless-stopped

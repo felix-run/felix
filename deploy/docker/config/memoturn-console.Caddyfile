@@ -1,0 +1,45 @@
+# Console + same-origin API for the local Memoturn overlay.
+#
+# Replaces the console image's own Caddyfile, which serves static files only. The console
+# bundle is built with VITE_API_BASE=/api, and in production Memoturn's front proxy
+# (infra/Caddyfile) is what forwards /api/* and /auth/* to the API. This overlay has no
+# front proxy — TLS is the only other thing that one does, and there is none locally — so
+# without these rules every call the SPA makes lands on the static server and 404s. The
+# page then renders "Something went wrong" while the API itself is perfectly healthy.
+#
+# Routing is copied from infra/Caddyfile so the two cannot drift in shape:
+#   handle_path strips /api      -> /api/v1/projects  becomes /v1/projects
+#   handle keeps /auth           -> Better Auth is mounted at basePath /auth
+#
+# Same-origin on purpose. Pointing the SPA at http://localhost:3001 directly would make
+# every request cross-origin and drag in CORS plus SameSite cookie rules for the session.
+:3000 {
+	encode zstd gzip
+
+	handle_path /api/* {
+		reverse_proxy memoturn-api:3001
+	}
+
+	handle /auth/* {
+		reverse_proxy memoturn-api:3001
+	}
+
+	@oauthDiscovery path /.well-known/oauth-authorization-server /.well-known/oauth-protected-resource /.well-known/openid-configuration
+	handle @oauthDiscovery {
+		reverse_proxy memoturn-api:3001
+	}
+
+	# Static SPA with history fallback — the image's original config, unchanged.
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+		# Vite content-hashes /assets; everything else must revalidate.
+		header /assets/* Cache-Control "public, max-age=31536000, immutable"
+		@nonAssets not path /assets/*
+		header @nonAssets Cache-Control "no-cache"
+	}
+
+	# No Content-Security-Policy here. Production sets it on the front proxy; adding a
+	# different one locally would mean debugging a policy that never ships.
+}

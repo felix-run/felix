@@ -135,6 +135,33 @@ class Settings(BaseSettings):
     # --- observability ---
     otel_enabled: bool = False
     otel_endpoint: str = "http://localhost:4317"
+    otel_service_name: str = "felix"
+    # grpc talks to a collector on 4317; http to an OTLP/HTTP endpoint on 4318 or a
+    # hosted ingest behind TLS. Open string rather than a Literal only where a registry
+    # backs it — here the exporter set is fixed by the SDK, so a Literal is correct.
+    otel_protocol: Literal["grpc", "http"] = "grpc"
+    # `k=v,k2=v2`. The only way to authenticate to a collector; without it the exporter
+    # could reach nothing that asks for a credential.
+    otel_headers: str = ""
+    otel_insecure: bool = True
+    otel_sample_ratio: float = Field(default=1.0, ge=0.0, le=1.0)
+    # Prompts and completions stay OUT of spans by default. A tracing backend is an
+    # egress destination like any other, and span attributes are not covered by the
+    # governance screening that guards tool output.
+    otel_capture_content: bool = False
+    # Caller identity on spans: `user.id` from the auth principal and the tenant id.
+    # `session.id` (the thread) is always emitted — it is an opaque id Felix generates and
+    # is what groups a multi-turn conversation. This gates only the parts that can name a
+    # real person, because a tracing backend is an egress destination.
+    otel_capture_identity: bool = True
+    # Ship logs over OTLP as well as traces. Off by default: log volume is a real cost and
+    # the operator opts into it. Records carry trace_id/span_id from the active context,
+    # so a log line links to the span that produced it.
+    otel_logs: bool = False
+    # Worker-side Prometheus endpoint. 0 = off. The worker has no HTTP server otherwise,
+    # so every fiber resume, flush and cron sweep is invisible to a scrape without this.
+    # It is UNAUTHENTICATED — keep it on an internal network, never publish it.
+    metrics_port: int = Field(default=0, ge=0, le=65535)
 
     # --- analytics warehouse (append-only spill; Postgres is SoR) ---
     # Lean default: none. Recommended when enabling spill: duckdb

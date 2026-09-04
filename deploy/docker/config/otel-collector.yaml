@@ -1,0 +1,86 @@
+# OpenTelemetry Collector for the Felix local stack.
+#
+# It does three jobs:
+#   1. receives OTLP traces from felix-api / felix-worker (FELIX_OTEL_ENDPOINT)
+#   2. receives OTLP logs from the same processes and forwards them to Loki, already
+#      stamped with the trace and span they came from
+#   3. accepts extra exporters layered in by overlay (see compose.memoturn.yml)
+#
+# Env expansion is a collector feature (`${env:VAR}`), unlike Prometheus, which has none in
+# scrape configs and needs a credentials file instead.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # Bound the collector's own memory before it becomes the reason the host struggles.
+  memory_limiter:
+    check_interval: 2s
+    limit_percentage: 75
+    spike_limit_percentage: 20
+  batch:
+    timeout: 5s
+    send_batch_size: 512
+  resource:
+    attributes:
+      - key: deployment.environment
+        value: ${env:FELIX_ENVIRONMENT}
+        action: upsert
+
+exporters:
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+
+  otlphttp/loki:
+    endpoint: http://loki:3100/otlp
+
+  # No `prometheus` exporter here on purpose. Felix's metrics are pulled from
+  # /metrics by Prometheus directly; nothing sends metrics to the collector over OTLP,
+  # so re-exposing them here would define an endpoint with nothing behind it — a target
+  # that is permanently down and looks like a fault. Traces and logs are what this
+  # collector carries.
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  telemetry:
+    metrics:
+      # Scraped by Prometheus as job `otel-collector`; how you notice the collector is
+      # dropping spans rather than wondering why traces are thin.
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8888
+  pipelines:
+    # Additional trace exporters are layered in by overlay rather than declared here.
+    # The collector validates every *defined* exporter, not only the ones a pipeline
+    # references, so an exporter with an unset endpoint fails startup even when unused —
+    # which would make this overlay depend on a service it does not require.
+    # compose.memoturn.yml passes a second --config that adds its exporter and re-declares
+    # this pipeline; the collector deep-merges the two.
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, batch]
+      exporters: [otlp/jaeger]
+    logs:
+      # OTLP rather than a `filelog` receiver over /var/lib/docker/containers. That needs
+      # the collector to run as root to read root:root 0640 files, gives it a view of
+      # every container on the host, fails silently when it cannot (it just opens zero
+      # files), and is Docker-shaped in a way that does not survive Kubernetes. Emitting
+      # from the process also carries trace_id/span_id, so logs link to spans exactly
+      # rather than by matching text.
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/loki]

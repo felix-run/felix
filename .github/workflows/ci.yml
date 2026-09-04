@@ -150,10 +150,10 @@ jobs:
       - name: Set up Python
         run: uv python install 3.14
       # Lean install plus only the extras that gate tests. `--all-extras` would drag in
-      # playwright, boto3 and presidio for no coverage; these three are the ones whose
+      # playwright, boto3 and presidio for no coverage; these four are the ones whose
       # absence silently deletes tests (see tests/optional_deps.py).
       - name: Install dependencies
-        run: uv sync --locked --dev --extra temporal --extra warehouse --extra sandbox
+        run: uv sync --locked --dev --extra temporal --extra warehouse --extra sandbox --extra otel
       - name: Bundle manifests
         run: uv run felix bundle-manifests
       # ./scripts/test.sh owns the in-memory test environment — the same
@@ -318,6 +318,10 @@ jobs:
           check -f deploy/docker/compose.gcp.yml -f deploy/docker/compose.lite.yml
           check -f deploy/docker/compose.pgbouncer.yml
           check -f deploy/docker/compose.replicas.yml
+          check -f deploy/docker/compose.observability.yml
+          check -f deploy/docker/compose.temporal.yml
+          check -f deploy/docker/compose.memoturn.yml
+          check -f deploy/docker/compose.observability.yml -f deploy/docker/compose.temporal.yml
         env:
           POSTGRES_PASSWORD: ci-compose-check-not-a-secret
           MINIO_ROOT_PASSWORD: ci-compose-check-not-a-secret
@@ -333,6 +337,13 @@ jobs:
           # one, so it demands a tag. Any non-empty value satisfies an interpolation
           # check -- this step parses the file, it does not pull anything.
           FELIX_IMAGE_TAG: ci-compose-check
+          # The memoturn overlay uses `${VAR:?}` for the three secrets Memoturn's own env
+          # validation refuses to boot without, so interpolation fails outright when they
+          # are unset. Any non-empty value satisfies a config check — this step parses the
+          # file, it starts nothing.
+          MEMOTURN_AUTH_SECRET: ci-compose-check-not-a-secret
+          MEMOTURN_ENCRYPTION_KEY: ci-compose-check-not-a-secret
+          FELIX_MEMOTURN_BASIC_AUTH: ci-compose-check-not-a-secret
       - name: Build lean image
         run: docker build -f deploy/docker/Dockerfile --build-arg FELIX_EXTRAS= -t felix:ci .
       # Scans the image we actually ship, OS packages included. Unfixed

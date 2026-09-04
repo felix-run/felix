@@ -119,6 +119,29 @@ root — `make up` sets `--project-directory .`.
 Heavy optional dependencies (Playwright, sentence-transformers, DuckDB, Presidio, Temporal) are
 **never** in the default image. Install them through extras only when needed.
 
+### Observability
+
+`prometheus-client` is a core dependency, so `GET /metrics` works on a lean image with no
+extras. Traces and OTLP logs need `felix-harness[otel]` and `FELIX_OTEL_ENABLED=true`.
+
+```bash
+make up-observability   # OTel Collector, Prometheus, Grafana, Jaeger, Loki, exporters
+```
+
+Grafana lands on <http://localhost:3000> with datasources provisioned and one dashboard
+built from the counters Felix actually emits — including a governance row for the controls
+[`deploy/GOVERNANCE.md`](deploy/GOVERNANCE.md) tells operators to watch. Model calls are
+spans carrying the OpenTelemetry **GenAI semantic conventions**, so any OTLP backend renders
+them as generations with token usage and cost rather than anonymous timing bars.
+
+`/metrics` is deliberately **not** public: its label values include tenant-supplied manifest
+ids and remote MCP tool names, so an anonymous scrape would disclose every tenant's manifests
+and tools. `scripts/metrics-token.sh` mints a scrape key with no scopes — `/metrics` has no
+scope gate, so it reads metrics and is refused everywhere else. In Kubernetes, set
+`serviceMonitor.enabled=true` and point it at a Secret holding the same kind of key.
+
+[docs/OBSERVABILITY.md](docs/OBSERVABILITY.md) is the metric catalog and span schema.
+
 ### Analytics warehouse (optional)
 
 Postgres is the system of record. The warehouse is optional append-only spill for audit and eval
@@ -262,6 +285,7 @@ recorded in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 | MCP | `POST /mcp` |
 | Agent card | `GET /.well-known/agent-card.json` |
 | Liveness / readiness | `GET /live` (also `/health`), `GET /ready` |
+| Metrics | `GET /metrics` — **authenticated**, see below |
 
 A dropped stream is recoverable: structural SSE frames carry an `id:` cursor (token-level frames do not, which per the SSE spec leaves the client's `lastEventId` on the last one it saw), and `GET /chat/stream/{thread_id}` replays what was missed (or opens with a `snapshot` frame) and then tails the thread. The run itself is still torn down on disconnect, so what you get back is the thread, not the abandoned turn.
 

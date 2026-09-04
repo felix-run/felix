@@ -1,0 +1,24 @@
+# gitleaks configuration. The default ruleset, plus narrowly-scoped allowlists for
+# false positives that are already in git history and so cannot be edited away.
+#
+# Keep every entry pinned to a rule AND a path AND a literal string. A broad allowlist
+# here silently disables the scanner for a whole directory, which is worse than the
+# false positive it removes — the CI job runs with `fetch-depth: 0` precisely because a
+# secret removed in a later commit still leaked.
+
+[extend]
+useDefault = true
+
+[[rules]]
+  id = "generic-api-key"
+  [[rules.allowlists]]
+    description = """
+    `generic-api-key` reads a hostname ending in `-api` followed by `:<port>` as a keyword
+    and a credential. The match is an OTLP endpoint in a test parametrize —
+    `http://memoturn-api:3001/v1/otel` — asserting that the exporter appends a per-signal
+    path. The working tree no longer contains it (the test host was renamed), but the
+    string remains in commit 1552801 and history is scanned.
+    """
+    regexTarget = "line"
+    regexes = ['''memoturn-api:3001''']
+    paths = ['''tests/unit/test_observability_spans\.py''']
