@@ -8,16 +8,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import yaml
+from tests.compose_yaml import load_compose as _load
 
 ROOT = Path(__file__).resolve().parents[2]
 OVERLAY = ROOT / "deploy/docker/compose.observability.yml"
 COLLECTOR = ROOT / "deploy/docker/config/otel-collector.yaml"
 PROMETHEUS = ROOT / "deploy/docker/config/prometheus.yml"
-
-
-def _load(path: Path) -> dict:
-    return yaml.safe_load(path.read_text())
 
 
 def test_the_overlay_builds_the_image_with_the_otel_extra() -> None:

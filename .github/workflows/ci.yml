@@ -322,6 +322,12 @@ jobs:
           check -f deploy/docker/compose.temporal.yml
           check -f deploy/docker/compose.memoturn.yml
           check -f deploy/docker/compose.observability.yml -f deploy/docker/compose.temporal.yml
+          # Rendered-config assertions a parse cannot make: no Felix service still builds
+          # under the published-image overlay, and every one waits on the migration.
+          render() { docker compose -f deploy/docker/compose.yml "$@" --project-directory . config --format json; }
+          render | python3 scripts/check-compose-render.py
+          render -f deploy/docker/compose.temporal.yml | python3 scripts/check-compose-render.py
+          render -f deploy/docker/compose.gcp.yml -f deploy/docker/compose.lite.yml | python3 scripts/check-compose-render.py --published
         env:
           POSTGRES_PASSWORD: ci-compose-check-not-a-secret
           MINIO_ROOT_PASSWORD: ci-compose-check-not-a-secret

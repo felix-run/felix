@@ -135,24 +135,27 @@ All default safely; none is required.
 # 1. Move the checkout to the tag (it supplies the migrations and compose files).
 cd /opt/felix && git fetch --tags && git checkout vX.Y.Z
 
-# 2. Migrate FIRST, from the target version's code, before the new app starts.
-#    Otherwise the new image boots against a schema it does not have yet.
-#    `felix migrate` only ever upgrades — there is no downgrade subcommand.
-docker compose <-f overlays…> run --rm --no-deps api felix migrate head
-
-# 3. Pin the release and roll. Deployments that use the published image set the
-#    tag in the host .env rather than the repo defaulting it.
+# 2. Pin the release. Deployments that use the published image set the tag in the
+#    host .env rather than the repo defaulting it.
 echo 'FELIX_IMAGE_TAG=X.Y.Z' >> .env     # or edit the existing line
+
+# 3. Roll. The `migrate` service runs `felix migrate head` from the target image and
+#    api, worker and scheduler wait for it to complete, so the new app never boots
+#    against a schema it does not have yet. `felix migrate` only ever upgrades —
+#    there is no downgrade subcommand.
 docker compose <-f overlays…> up -d
+
+# To migrate ahead of the roll instead (a long migration you want to watch):
+docker compose <-f overlays…> run --rm migrate
 ```
 
 `make up-gcp` wraps that last command, but **`make` is not installed on every host** — a minimal
 VM image often lacks it, and the failure (`make: command not found`) happens before anything rolls.
 The compose invocation above is what the target runs and needs no `make`.
 
-Steps 2 and 3 are one change. If your platform cannot do them atomically, prefer migrating
-*immediately* before the roll and keep the gap short — the window between them is the window in
-which a plain-role deployment is returning nothing.
+The migration and the roll are one `up`. If you split them with the `run --rm migrate` form,
+keep the gap short — the window between them is the window in which a plain-role deployment
+is returning nothing.
 
 ## Verify — actually check
 

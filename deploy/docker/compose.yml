@@ -43,15 +43,40 @@ x-felix-env: &felix-env
   FELIX_GCP_PROJECT: ${FELIX_GCP_PROJECT:-}
   FELIX_AWS_REGION: ${FELIX_AWS_REGION:-}
 
+# One image for every Felix process. Lean by default; FELIX_DOCKER_EXTRAS=aws,gcp adds
+# the cloud SDKs. Overlays that pull a published image `!reset` the build (see gcp).
+x-felix-build: &felix-build
+  build:
+    context: .
+    dockerfile: deploy/docker/Dockerfile
+    args:
+      FELIX_EXTRAS: ${FELIX_DOCKER_EXTRAS:-}
+  image: felix:latest
+
 services:
+  # Applies Alembic migrations, then exits; every Felix process waits on it, so the app
+  # never boots against a schema it does not have yet. Reaches Postgres directly on
+  # purpose — the pgbouncer overlay leaves this URL alone, because a migration is an
+  # admin action, not request traffic to multiplex. `felix migrate` only ever upgrades
+  # and is idempotent, so a re-`up` re-running it is cheap.
+  migrate:
+    <<: *felix-build
+    command: ["felix", "migrate", "head"]
+    environment:
+      <<: *felix-env
+      # Nothing but the database is needed to migrate; the object store is not opened.
+      FELIX_OBJECT_STORE: memory
+    depends_on:
+      postgres:
+        condition: service_healthy
+    mem_limit: ${FELIX_MIGRATE_MEM_LIMIT:-256m}
+    cpus: ${FELIX_MIGRATE_CPUS:-0.5}
+    healthcheck:
+      disable: true
+    restart: "no"
+
   api:
-    build:
-      context: .
-      dockerfile: deploy/docker/Dockerfile
-      args:
-        # Lean by default. Override: FELIX_DOCKER_EXTRAS=aws,gcp
-        FELIX_EXTRAS: ${FELIX_DOCKER_EXTRAS:-}
-    image: felix:latest
+    <<: *felix-build
     command: ["felix-api"]
     ports:
       - "${FELIX_BIND_ADDR:-127.0.0.1}:${FELIX_PORT:-8080}:8080"
@@ -67,6 +92,8 @@ services:
       - felix-data:/data
       - ${FELIX_WORKSPACE_HOST:-./workspace}:/workspace
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       valkey:
@@ -76,12 +103,7 @@ services:
     restart: unless-stopped
 
   worker:
-    build:
-      context: .
-      dockerfile: deploy/docker/Dockerfile
-      args:
-        FELIX_EXTRAS: ${FELIX_DOCKER_EXTRAS:-}
-    image: felix:latest
+    <<: *felix-build
     command: ["felix-worker"]
     environment:
       <<: *felix-env
@@ -94,6 +116,8 @@ services:
       - felix-data:/data
       - ${FELIX_WORKSPACE_HOST:-./workspace}:/workspace
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       valkey:
@@ -109,12 +133,7 @@ services:
 
   # Enqueues labeled Taskiq cron tasks (audit flush, jobs, fibers, …).
   scheduler:
-    build:
-      context: .
-      dockerfile: deploy/docker/Dockerfile
-      args:
-        FELIX_EXTRAS: ${FELIX_DOCKER_EXTRAS:-}
-    image: felix:latest
+    <<: *felix-build
     command: ["felix-scheduler"]
     environment:
       <<: *felix-env
@@ -126,6 +145,8 @@ services:
     volumes:
       - felix-data:/data
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       valkey:

@@ -55,10 +55,12 @@ say "1. Booting two replicas behind one origin"
 # which may predate the code under test entirely.
 "${COMPOSE[@]}" up -d --build
 
-say "2. Migrating (directly, not through any pooler)"
-"${COMPOSE[@]}" exec -T -e FELIX_DATABASE_URL="postgresql+psycopg://felix:${POSTGRES_PASSWORD}@postgres:5432/felix" \
-  api felix migrate head >/dev/null
-echo "   schema at head"
+say "2. Schema"
+# The api replicas depend on the `migrate` one-shot completing, so `up -d` returning
+# means the schema is at head. Exiting 0 is what completion means; confirm it.
+[[ "$(docker ps -a --filter "label=com.docker.compose.project=$PROJECT" --filter "label=com.docker.compose.service=migrate" --format '{{.Status}}' | head -1)" == Exited\ \(0\)* ]] \
+  || { echo "the migrate service did not exit 0" >&2; exit 1; }
+echo "   schema at head (migrate service exited 0)"
 
 A="$(docker ps --filter "label=com.docker.compose.project=$PROJECT" --filter "label=com.docker.compose.service=api" --format '{{.Names}}' | sort | head -1)"
 B="$(docker ps --filter "label=com.docker.compose.project=$PROJECT" --filter "label=com.docker.compose.service=api" --format '{{.Names}}' | sort | tail -1)"

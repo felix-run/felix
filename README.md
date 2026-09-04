@@ -36,10 +36,12 @@ cp .env.example .env
 #   openssl rand -hex 32
 
 make install          # lean core + dev (small VMs / CI)
-make up               # api :8080, worker, pgvector, Valkey (fs object store)
-make migrate
+make up               # migrates, then api :8080, worker, pgvector, Valkey (fs object store)
 curl -s http://localhost:8080/health | jq
 ```
+
+The stack applies Alembic migrations in a one-shot `migrate` service before the api,
+worker and scheduler start, so there is no separate migration step for Compose.
 
 Two alternatives to `make up`:
 

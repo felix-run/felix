@@ -21,6 +21,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hosts, ports and database users — and the detail is logged instead. One `PROBE_PATHS`
   set feeds both allowlists, and `tests/unit/test_operability.py` reads the probe paths
   out of the chart, the Dockerfile and the Compose files and asserts each is declared there.
+- **Compose migrates before it serves.** A one-shot `migrate` service runs `felix migrate
+  head` against Postgres, and api, worker and scheduler wait for it to complete. Before
+  this the schema was a separate `make migrate` from the host — which `make up-lite` and
+  `make up-gcp` cannot even reach, since they publish no database port — and a first
+  `make up` served a schemaless database that `/ready` (a `SELECT 1`) reported Ready. The
+  gcp overlay pulls the same published image for the migration, the Temporal overlay's
+  worker waits on it too, and the pgbouncer overlay leaves it on Postgres rather than the
+  pooler. The Helm chart had a pre-install migrate Job all along.
+  `tests/unit/test_compose_migrate.py` pins the wiring, and the CI docker job now runs
+  `scripts/check-compose-render.py` over the rendered config, because one property is
+  invisible to a parse: `build: !reset null` applied through a YAML merge key does not
+  reset, and the published-image overlay would quietly build on the host again.
 
 ### Changed
 

@@ -13,9 +13,10 @@
 #   docker compose -f deploy/docker/compose.yml \
 #                  -f deploy/docker/compose.pgbouncer.yml --project-directory . up
 #
-# Run migrations against Postgres directly rather than through the pooler. Nothing here
-# breaks under transaction pooling, but a migration is a one-off admin action and there
-# is no reason to route it through a multiplexer sized for request traffic.
+# The base file's `migrate` service is deliberately not listed here, so it keeps reaching
+# Postgres directly. Nothing breaks under transaction pooling, but a migration is a
+# one-off admin action and there is no reason to route it through a multiplexer sized
+# for request traffic.
 
 x-pooled-db: &pooled-db
   # Same credentials, one hop further out. PgBouncer listens on 5432 in this image.

@@ -21,6 +21,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.compose_yaml import load_compose as _load
+
 ROOT = Path(__file__).resolve().parents[2]
 OVERLAY = ROOT / "deploy" / "docker" / "compose.pgbouncer.yml"
 BASE = ROOT / "deploy" / "docker" / "compose.yml"
@@ -37,22 +39,6 @@ def _compose_default(spec: object) -> str:
     if ":-" in text:
         return text.split(":-", 1)[1].rstrip("}")
     return text.strip("${}")
-
-
-def _load(path: Path) -> dict:
-    """Parse a compose file.
-
-    `ruamel.yaml` rather than `pyyaml`: it is what the harness declares and uses, so it
-    is present by contract. `yaml` happens to be importable here only as somebody
-    else's transitive dependency, which is a thing that stops being true without
-    warning.
-
-    `${VAR:?err}` interpolation is compose's, not YAML's, so the raw parse leaves those
-    as strings — which is all these assertions need.
-    """
-    from ruamel.yaml import YAML
-
-    return YAML(typ="safe").load(path.read_text(encoding="utf-8")) or {}
 
 
 def test_every_service_it_overrides_exists_in_the_base() -> None:
