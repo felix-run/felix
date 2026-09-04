@@ -32,6 +32,11 @@ logger = logging.getLogger("felix.documents.store")
 # on purpose: a channel that returns exactly `limit` gives RRF nothing to reorder.
 CHANNEL_DEPTH = 40
 
+# Named rather than `SELECT *`: the star pulled `content_tsv` and a `vector(768)` for every
+# candidate on both channels and then discarded both — megabytes of wire traffic per search,
+# for columns no code path reads.
+_HIT_COLUMNS = "id, doc_id, chunk_index, title, source, content, created_at"
+
 # A corpus is operator-owned, but "operator-owned" is not "unbounded" — a runaway ingest
 # should fail loudly rather than fill a disk.
 MAX_CHUNKS_PER_DOC = 2_000
@@ -80,8 +85,59 @@ class DocumentSummary:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+def _first_chunk(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """The `chunk_index == 0` row, which is the one carrying the document's metadata."""
+    return min(rows, key=lambda r: int(r.get("chunk_index") or 0))
+
+
 def _tokens(text: str) -> set[str]:
     return {w for w in "".join(c if c.isalnum() else " " for c in text.lower()).split() if len(w) > 2}
+
+
+# Chunks per embedding request. A 2,000-chunk document in one call is a ~750k-token request
+# that every hosted provider refuses, and the refusal was swallowed into a WARNING while
+# ingest returned 200 — the whole document silently text-only. Batching turns a provider's
+# batch ceiling into a non-event.
+EMBED_BATCH = 64
+
+
+async def _embed_chunks(
+    chunks: list[Chunk], embedder: Any | None, *, source: str
+) -> tuple[list[list[float] | None], str]:
+    """Vectors positionally aligned with `chunks`, and the model that produced them.
+
+    A batch that comes back the wrong length is discarded rather than zipped: vectors are
+    matched to chunks by position, so a short batch would attach one chunk's meaning to
+    another's text. Failure of any batch costs that batch's vectors, not the ingest.
+    """
+    vectors: list[list[float] | None] = [None] * len(chunks)
+    if not chunks or embedder is None or not getattr(embedder, "enabled", False):
+        return vectors, ""
+
+    model = str(getattr(embedder, "model", "") or type(embedder).__name__)
+    for start in range(0, len(chunks), EMBED_BATCH):
+        window = chunks[start : start + EMBED_BATCH]
+        try:
+            produced = await embedder.embed([c.text for c in window])
+        except Exception:
+            logger.warning(
+                "embedding failed for %r chunks %d-%d; those stay text-only",
+                source,
+                start,
+                start + len(window) - 1,
+                exc_info=True,
+            )
+            continue
+        if len(produced) != len(window):
+            logger.warning(
+                "embedder returned %d vectors for %d chunks; that batch stays text-only",
+                len(produced),
+                len(window),
+            )
+            continue
+        for offset, vec in enumerate(produced):
+            vectors[start + offset] = list(vec)
+    return vectors, model
 
 
 async def put_document(
@@ -107,24 +163,7 @@ async def put_document(
     if len(chunks) > MAX_CHUNKS_PER_DOC:
         raise ValueError(f"document splits into {len(chunks)} chunks; the ceiling is {MAX_CHUNKS_PER_DOC}")
 
-    vectors: list[list[float] | None] = [None] * len(chunks)
-    model = ""
-    if chunks and embedder is not None and getattr(embedder, "enabled", False):
-        try:
-            produced = await embedder.embed([c.text for c in chunks])
-            model = str(getattr(embedder, "model", "") or type(embedder).__name__)
-            if len(produced) == len(chunks):
-                vectors = list(produced)
-            else:
-                # A partial batch cannot be matched to its chunks by position, and guessing
-                # would attach one chunk's meaning to another's text.
-                logger.warning(
-                    "embedder returned %d vectors for %d chunks; storing without the vector channel",
-                    len(produced),
-                    len(chunks),
-                )
-        except Exception:
-            logger.warning("embedding failed for %r; storing text-only", source, exc_info=True)
+    vectors, model = await _embed_chunks(chunks, embedder, source=source)
 
     rows = _build_rows(
         chunks,
@@ -180,7 +219,12 @@ def _build_rows(
                     "title": title,
                     "source": source,
                     "content": chunk.text,
-                    "metadata": dict(metadata or {}),
+                    # First chunk only. Copied onto every row this was a storage amplifier,
+                    # not a convenience: one request inside the 1 MiB body limit can carry
+                    # ~880 KB of metadata and 1,969 chunks, each getting its own copy — 1.7 GB
+                    # written, measured. Both documented ceilings held; their *product* was
+                    # what nothing bounded.
+                    "metadata": dict(metadata or {}) if chunk.index == 0 else {},
                     "created_at": ts,
                     "embedding_dim": len(vec) if vec else None,
                     "embedding_model": model if vec else "",
@@ -226,23 +270,36 @@ async def _put_in_postgres(
 
 
 async def _write_embedding(db: Any, tenant_id: str, chunk_id: str, vector: list[float]) -> None:
-    """Raw SQL because pgvector's type is not expressible in `db/models.py`.
+    """Attach one chunk's vector, inside a savepoint.
 
-    A failure here degrades to text-only retrieval rather than losing the chunk: the row is
-    already written, and a corpus searchable by one channel beats an ingest that rolled back.
+    The savepoint is the point. Catching the exception without one left the *transaction*
+    aborted, so the caller's `commit()` discarded the chunk inserts too — `put_document`
+    returned `(doc_id, 1)` and the table held zero rows. Reproduced against real Postgres with
+    a 26-dimension embedder against the migration's `vector(768)` column, which any operator
+    reaches by pointing `FELIX_MEMORY_EMBEDDER` at a model of another size.
+
+    That is the `memory_vectors` failure one level down: a write reporting success and storing
+    nothing, with the detail in a log nobody reads. Losing a document's vector channel is an
+    acceptable degradation; losing the document is not.
     """
     from sqlalchemy import text as sql_text
 
     literal = "[" + ",".join(f"{float(x):.7g}" for x in vector) + "]"
     try:
-        await db.execute(
-            sql_text(
-                "UPDATE document_chunks SET embedding = CAST(:v AS vector) WHERE tenant_id = :t AND id = :i"
-            ),
-            {"v": literal, "t": tenant_id, "i": chunk_id},
-        )
+        async with db.begin_nested():
+            await db.execute(
+                sql_text(
+                    "UPDATE document_chunks SET embedding = CAST(:v AS vector) "
+                    "WHERE tenant_id = :t AND id = :i"
+                ),
+                {"v": literal, "t": tenant_id, "i": chunk_id},
+            )
     except Exception:
-        logger.warning("failed to write embedding for chunk %s; text-only", chunk_id, exc_info=True)
+        logger.warning(
+            "failed to write embedding for chunk %s; the chunk is stored, text-only",
+            chunk_id,
+            exc_info=True,
+        )
 
 
 async def list_documents(settings: Settings, tenant_id: str, *, limit: int = 100) -> list[DocumentSummary]:
@@ -258,7 +315,9 @@ async def list_documents(settings: Settings, tenant_id: str, *, limit: int = 100
                 source=rows[0]["source"],
                 chunks=len(rows),
                 created_at=rows[0]["created_at"],
-                metadata=dict(rows[0]["metadata"]),
+                # Metadata lives on chunk 0 only, so read it from there rather than from
+                # whichever row happened to sort first.
+                metadata=dict(_first_chunk(rows).get("metadata") or {}),
             )
             for doc_id, rows in by_doc.items()
         ]
@@ -267,24 +326,52 @@ async def list_documents(settings: Settings, tenant_id: str, *, limit: int = 100
 
     factory = get_session_factory(settings=settings)
     async with factory() as db:
-        result = await db.execute(
+        counts = await db.execute(
             select(
                 DocumentChunk.doc_id,
-                func.min(DocumentChunk.title),
-                func.min(DocumentChunk.source),
                 func.count(),
                 func.min(DocumentChunk.created_at),
             )
             .where(DocumentChunk.tenant_id == tenant_id)
             .group_by(DocumentChunk.doc_id)
-            .order_by(func.min(DocumentChunk.created_at).desc())
+            # `doc_id` is the tiebreaker, not decoration: two documents ingested in the same
+            # millisecond came back stably ordered on one arm and arbitrarily on the other,
+            # while the route documents "newest first" as a promise.
+            .order_by(func.min(DocumentChunk.created_at).desc(), DocumentChunk.doc_id)
             .limit(limit)
         )
+        grouped = counts.all()
+        if not grouped:
+            return []
+
+        # Title, source and metadata all live on chunk 0, and none of them can be aggregated:
+        # `max(jsonb)` does not exist in Postgres, and `min(title)` over the group is only
+        # right by accident because every chunk carries the same title. A second indexed
+        # lookup of the chunk-0 rows is the honest version, and it is what makes this arm
+        # return metadata at all — it previously returned none while the twin returned it.
+        heads = await db.execute(
+            select(
+                DocumentChunk.doc_id,
+                DocumentChunk.title,
+                DocumentChunk.source,
+                DocumentChunk.metadata_json,
+            ).where(
+                DocumentChunk.tenant_id == tenant_id,
+                DocumentChunk.chunk_index == 0,
+                DocumentChunk.doc_id.in_([r[0] for r in grouped]),
+            )
+        )
+        head = {r[0]: r for r in heads.all()}
         return [
             DocumentSummary(
-                doc_id=r[0], title=r[1] or "", source=r[2] or "", chunks=r[3], created_at=r[4] or 0
+                doc_id=doc_id,
+                title=(head.get(doc_id) or (None, "", "", {}))[1] or "",
+                source=(head.get(doc_id) or (None, "", "", {}))[2] or "",
+                chunks=count,
+                created_at=created or 0,
+                metadata=dict((head.get(doc_id) or (None, "", "", {}))[3] or {}),
             )
-            for r in result.all()
+            for doc_id, count, created in grouped
         ]
 
 
@@ -410,27 +497,34 @@ async def _channels_in_postgres(
     async with factory() as db:
         tsquery = _tsquery_or(query)
         if tsquery:
-            result = await db.execute(
-                sql_text(
-                    "SELECT * FROM document_chunks "
-                    "WHERE tenant_id = :t AND content_tsv @@ to_tsquery('english', :q) "
-                    "ORDER BY ts_rank(content_tsv, to_tsquery('english', :q)) DESC, id "
-                    "LIMIT :n"
-                ),
-                {"t": tenant_id, "q": tsquery, "n": CHANNEL_DEPTH},
-            )
-            ids = []
-            for r in result.mappings().all():
-                rows[r["id"]] = dict(r)
-                ids.append(r["id"])
-            ranked["lexical"] = ids
+            try:
+                result = await db.execute(
+                    sql_text(
+                        f"SELECT {_HIT_COLUMNS} FROM document_chunks "
+                        "WHERE tenant_id = :t AND content_tsv @@ to_tsquery('english', :q) "
+                        "ORDER BY ts_rank(content_tsv, to_tsquery('english', :q)) DESC, id "
+                        "LIMIT :n"
+                    ),
+                    {"t": tenant_id, "q": tsquery, "n": CHANNEL_DEPTH},
+                )
+                ids = []
+                for r in result.mappings().all():
+                    rows[r["id"]] = dict(r)
+                    ids.append(r["id"])
+                ranked["lexical"] = ids
+            except Exception:
+                # Guarded like the vector channel below, for the reason `memory/recall.py`
+                # gives: the generated column only exists after `0010`, so a pod running ahead
+                # of the migration — or a statement timeout — should lose a channel, not the
+                # request. Unguarded, this took the vector channel down with it as well.
+                logger.warning("lexical channel failed; vector only", exc_info=True)
 
         if vector is not None:
             literal = "[" + ",".join(f"{float(x):.7g}" for x in vector) + "]"
             try:
                 result = await db.execute(
                     sql_text(
-                        "SELECT * FROM document_chunks "
+                        f"SELECT {_HIT_COLUMNS} FROM document_chunks "
                         "WHERE tenant_id = :t AND embedding IS NOT NULL "
                         "ORDER BY embedding <=> CAST(:v AS vector), id LIMIT :n"
                     ),

@@ -352,6 +352,12 @@ def _route_settings() -> Settings:
         environment="development",
         object_store="memory",
         database_url="memory://doc-routes",
+        # Without this, `Settings` picks up the repo `.env` Redis and the rate limiter becomes
+        # a *shared, cross-process* fixed window with a 60s TTL: six runs of this file inside a
+        # minute and the seventh fails on 429. Every other route-test helper in the suite sets
+        # it for the same reason. CI has no Redis, so the failure only bites locally — which is
+        # worse, because it trains you to re-run until green.
+        redis_url="",
     )
 
 
@@ -502,3 +508,265 @@ def test_an_overlapped_chunk_starts_at_a_word_boundary() -> None:
     words = set(PROSE.replace("\n", " ").split())
     broken = [w for w in starts if w not in words]
     assert not broken, f"chunks starting mid-word: {broken}"
+
+
+# --- gaps the test-quality review found -------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_every_route_is_scope_gated_not_just_the_first_two() -> None:
+    """`search` and `delete` had no coverage, and both survived deleting their gate:
+    a `chat:write` principal could read the whole corpus, and a reader could delete."""
+    async with _client() as client:
+        created = await client.post("/documents", json=_doc(), headers=_auth("sk-write"))
+        doc_id = created.json()["doc_id"]
+
+        blind = await client.get("/documents/search", params={"q": "x"}, headers=_auth("sk-none"))
+        assert blind.status_code == 403
+        assert "documents:read" in blind.json()["detail"]
+
+        reader_delete = await client.delete(f"/documents/{doc_id}", headers=_auth("sk-read"))
+        assert reader_delete.status_code == 403, "a documents:read principal deleted a document"
+
+
+@pytest.mark.asyncio
+async def test_tenant_isolation_is_symmetric_and_covers_delete() -> None:
+    """The one-sided version — "the other tenant's corpus is empty" — is also true when the
+    store is broken. Both tenants ingest, and each must see only its own."""
+    async with _client() as client:
+        acme = await client.post("/documents", json=_doc(title="Acme doc"), headers=_auth("sk-write"))
+        acme_id = acme.json()["doc_id"]
+        other = await client.post("/documents", json=_doc(title="Other doc"), headers=_auth("sk-other"))
+        other_id = other.json()["doc_id"]
+        assert acme_id != other_id
+
+        assert [
+            d["title"] for d in (await client.get("/documents", headers=_auth("sk-read"))).json()["items"]
+        ] == ["Acme doc"]
+        other_list = await client.get("/documents", headers=_auth("sk-other"))
+        assert [d["title"] for d in other_list.json()["items"]] == ["Other doc"]
+
+        # Cross-tenant delete must not reach across, on either backend.
+        stolen = await client.delete(f"/documents/{acme_id}", headers=_auth("sk-other"))
+        assert stolen.status_code == 404
+        assert (await client.get("/documents", headers=_auth("sk-read"))).json()["count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_search_returns_the_best_chunk_first() -> None:
+    """Ordering was unpinned in both channels and on both backends: reversing the sort, or
+    ranking by *fewest* matching terms, left the suite green. The old assertion — a term
+    present in two of three candidate chunks — could not tell the orders apart."""
+    s = _settings()
+    await put_document(
+        s,
+        tenant_id="t",
+        title="Ordered",
+        source="s",
+        text=(
+            "Alpha paragraph mentions nothing special at all here.\n\n"
+            "Beta paragraph mentions zarquon exactly once in the corpus.\n\n"
+            "Gamma paragraph mentions nothing special at all either.\n\n"
+        ),
+        max_chars=60,
+        overlap_chars=0,
+    )
+    hits = await search_documents(s, tenant_id="t", query="zarquon", limit=3)
+    assert hits, "the discriminating term retrieved nothing"
+    assert "zarquon" in hits[0].content, f"best chunk was not first: {[h.content[:40] for h in hits]}"
+
+
+@pytest.mark.asyncio
+async def test_list_is_newest_first_with_a_stable_tiebreaker() -> None:
+    """Ordering was unpinned, and the two arms disagreed: the twin sorted
+    `(-created_at, doc_id)` while Postgres had no tiebreaker at all."""
+    s = _settings()
+    for title in ("One", "Two", "Three"):
+        await _ingest(s, title=title, text=PROSE)
+    summaries = await list_documents(s, "t")
+    assert len(summaries) == 3
+    stamps = [d.created_at for d in summaries]
+    assert stamps == sorted(stamps, reverse=True), "not newest-first"
+    same_ms = [d.doc_id for d in summaries if d.created_at == stamps[0]]
+    assert same_ms == sorted(same_ms), "no stable tiebreaker within one millisecond"
+
+
+@pytest.mark.asyncio
+async def test_list_honours_its_limit() -> None:
+    s = _settings()
+    for title in ("One", "Two", "Three"):
+        await _ingest(s, title=title)
+    assert len(await list_documents(s, "t", limit=2)) == 2
+
+
+@pytest.mark.asyncio
+async def test_count_is_documents_not_chunks() -> None:
+    """`func.count(doc_id)` instead of `count(distinct(doc_id))` survived — it counts chunks."""
+    s = _settings()
+    _, chunks = await _ingest(s)
+    assert chunks > 1
+    assert await doc_store.count_documents(s, "t") == 1
+    assert await doc_store.count_documents(s, "other-tenant") == 0
+
+
+@pytest.mark.asyncio
+async def test_the_production_defaults_are_exercised() -> None:
+    """Every other test passes `max_chars`/`overlap_chars`, so `POST /documents` with no budget
+    fields — the way the route actually calls this — went down a branch nothing covered."""
+    from felix.documents.chunking import DEFAULT_MAX_CHARS
+
+    s = _settings()
+    _, chunks = await put_document(s, tenant_id="t", title="Defaults", source="s", text=PROSE * 20)
+    assert chunks > 1, "the default budget must still split a long document"
+    stored = [r for (t_, _), r in doc_store._memory_rows.items() if t_ == "t"]
+    assert max(len(r["content"]) for r in stored) <= DEFAULT_MAX_CHARS + 64
+
+
+def test_document_identity_survives_a_shifted_separator() -> None:
+    """`f"{source}\\x00{title}"` exists so ("ab","c") and ("a","bc") differ. Single-character
+    fixtures could not tell the NUL from a plain concatenation."""
+    assert document_id("ab", "c") != document_id("a", "bc")
+
+
+def test_chunk_offsets_point_at_the_text_they_describe() -> None:
+    """`start`/`end` are documented as tracing a hit back to where it came from; only an
+    inequality between them was asserted, so an off-by-one survived."""
+    body = (PROSE * 3).strip()
+    for c in chunk_text(body, max_chars=120, overlap_chars=30):
+        assert body[c.start : c.end].strip() == c.text, f"offsets do not describe chunk {c.index}"
+
+
+def test_the_best_boundary_wins_not_the_nearest() -> None:
+    """Deleting the `break` in `_split_point` — so the latest-occurring boundary wins instead
+    of the best-ranked one — survived, because `endswith(".")` is also true of a space cut."""
+    from felix.documents.chunking import _split_point
+
+    text = "alpha beta gamma.\n\ndelta epsilon zeta eta theta iota kappa"
+    # A paragraph break at 19 competes with bare spaces much nearer the window end.
+    assert _split_point(text, 48, 10) == 19
+
+
+class _KeyedEmbedder:
+    """A *discriminating* embedder: one-hot on a marker word.
+
+    The bag-of-characters stub is deterministic but not discriminating — every chunk of
+    English prose has a positive cosine with every query, so the vector channel returns
+    everything and `any("vector" in h.channels)` is satisfied by membership rather than by
+    ranking. Replacing `_cosine` with `return 1.0` passed against it. Here a text ranks only
+    for its own marker, so a chunk with no marker in common scores exactly zero.
+    """
+
+    enabled = True
+    model = "keyed"
+    # Each concept has a word that appears in the corpus and a synonym that does not, so a
+    # query can be *semantically* on target while sharing no token with the chunk. Without
+    # that, "gamma" also matches lexically and dropping the vector channel changes nothing —
+    # which is exactly how the fusion mutation survived the first version of this stub.
+    MARKERS = (("alpha", "primary"), ("beta", "secondary"), ("gamma", "tertiary"))
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        out = []
+        for text in texts:
+            lowered = text.lower()
+            out.append([1.0 if any(w in lowered for w in pair) else 0.0 for pair in self.MARKERS])
+        return out
+
+
+MARKED = (
+    "First section discusses alpha and nothing else of note.\n\n"
+    "Second section discusses beta and nothing else of note.\n\n"
+    "Third section discusses gamma and nothing else of note.\n\n"
+)
+
+
+@pytest.mark.asyncio
+async def test_a_chunk_only_the_vector_channel_can_find_is_returned() -> None:
+    """Pins that fusion actually consults the vector channel.
+
+    `rrf_fuse({"lexical": ...})` — dropping the vector channel entirely — survived every
+    earlier test. The query here shares no lexical token with the target chunk, so the vector
+    channel is the only thing that can surface it.
+    """
+    s = _settings()
+    await put_document(
+        s,
+        tenant_id="t",
+        title="Marked",
+        source="s",
+        text=MARKED,
+        max_chars=60,
+        overlap_chars=0,
+        embedder=_KeyedEmbedder(),
+    )
+    # "tertiary" appears in no chunk, so the lexical channel cannot produce this hit at all.
+    assert "tertiary" not in MARKED.lower()
+    hits = await search_documents(s, tenant_id="t", query="tertiary", limit=5, embedder=_KeyedEmbedder())
+    assert hits, "dropping the vector channel leaves nothing able to find this chunk"
+    assert "gamma" in hits[0].content
+    assert hits[0].channels == ("vector",), f"expected a vector-only hit, got {hits[0].channels}"
+    assert "vector" in hits[0].channels
+
+
+@pytest.mark.asyncio
+async def test_the_vector_channel_excludes_what_does_not_match() -> None:
+    """`_cosine` returning a constant made every chunk a vector hit and still looked wired."""
+    s = _settings()
+    await put_document(
+        s,
+        tenant_id="t",
+        title="Marked",
+        source="s",
+        text=MARKED,
+        max_chars=60,
+        overlap_chars=0,
+        embedder=_KeyedEmbedder(),
+    )
+    hits = await search_documents(s, tenant_id="t", query="tertiary", limit=10, embedder=_KeyedEmbedder())
+    by_vector = [h for h in hits if "vector" in h.channels]
+    assert len(by_vector) == 1, (
+        f"the vector channel matched {len(by_vector)} chunks for a one-hot query: "
+        f"{[h.content[:30] for h in by_vector]}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_more_relevant_chunk_ranks_first() -> None:
+    """Ordering was unpinned in both directions: sorting worst-first, and ranking lexically by
+    *fewest* matching terms, both survived. A single-match fixture cannot tell them apart —
+    the only hit is first either way."""
+    s = _settings()
+    await put_document(
+        s,
+        tenant_id="t",
+        title="Ranked",
+        source="s",
+        text=(
+            "Section one mentions quokka and wombat together in one place.\n\n"
+            "Section two mentions quokka alone without the other animal.\n\n"
+            "Section three mentions neither of those two animals at all.\n\n"
+        ),
+        max_chars=64,
+        overlap_chars=0,
+    )
+    hits = await search_documents(s, tenant_id="t", query="quokka wombat", limit=5)
+    assert len(hits) >= 2, "need at least two matching chunks for ordering to mean anything"
+    assert "wombat" in hits[0].content, (
+        f"the chunk matching both terms did not rank first: {[h.content[:40] for h in hits]}"
+    )
+    assert hits[0].score > hits[1].score, "scores are tied, so ordering proves nothing"
+
+
+@pytest.mark.asyncio
+async def test_metadata_is_written_only_to_the_first_chunk() -> None:
+    """Copied onto every row it was a 1,700x amplifier. Asserting only that `list_documents`
+    returns it cannot see the copies — chunk 0 has it either way."""
+    s = _settings()
+    _, chunks = await _ingest(s, metadata={"team": "platform"})
+    assert chunks > 1
+
+    rows = sorted(
+        (r for (t_, _), r in doc_store._memory_rows.items() if t_ == "t"),
+        key=lambda r: r["chunk_index"],
+    )
+    assert rows[0]["metadata"] == {"team": "platform"}
+    assert all(r["metadata"] == {} for r in rows[1:]), "metadata was copied onto later chunks"

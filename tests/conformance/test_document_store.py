@@ -184,3 +184,110 @@ async def test_the_limit_is_honoured_on_both_arms(document_settings: Any) -> Non
         document_settings, tenant_id=TENANT, query="felix manifest agent guard", limit=2
     )
     assert len(hits) == 2
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_metadata_round_trips_on_both_arms(document_settings: Any) -> None:
+    """A live divergence the contract could not see: the twin returned metadata and the
+    Postgres arm always returned `{}`, because its `select` never fetched the column."""
+    await _ingest(document_settings, metadata={"team": "platform", "rev": 7})
+    (summary,) = await doc_store.list_documents(document_settings, TENANT)
+    assert summary.metadata == {"team": "platform", "rev": 7}
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_metadata_is_stored_once_not_per_chunk(document_settings: Any) -> None:
+    """Copied onto every row it was a 1,700x storage amplifier. Chunk 0 carries it."""
+    _, chunks = await _ingest(document_settings, metadata={"k": "v"})
+    assert chunks > 1, "needs a multi-chunk document to mean anything"
+    hits = await doc_store.search_documents(
+        document_settings, tenant_id=TENANT, query="egress guard validated", limit=50
+    )
+    assert hits
+    (summary,) = await doc_store.list_documents(document_settings, TENANT)
+    assert summary.metadata == {"k": "v"}, "metadata must still be reachable from chunk 0"
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_several_documents_list_newest_first_with_a_tiebreaker(document_settings: Any) -> None:
+    """Every other test here ingests one title, so ordering, `limit` and `count` across
+    documents were untested on both arms — and the arms disagreed, the twin sorting
+    `(-created_at, doc_id)` and Postgres having no tiebreaker at all."""
+    for title in ("One", "Two", "Three"):
+        await _ingest(document_settings, title=title)
+
+    summaries = await doc_store.list_documents(document_settings, TENANT)
+    assert len(summaries) == 3
+    assert await doc_store.count_documents(document_settings, TENANT) == 3
+
+    stamps = [s.created_at for s in summaries]
+    assert stamps == sorted(stamps, reverse=True), "not newest-first"
+    same_ms = [s.doc_id for s in summaries if s.created_at == stamps[0]]
+    assert same_ms == sorted(same_ms), "no stable tiebreaker within one millisecond"
+
+    assert len(await doc_store.list_documents(document_settings, TENANT, limit=2)) == 2
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_the_stored_chunk_count_matches_what_ingest_reported(document_settings: Any) -> None:
+    """`put_document`'s return value was never cross-checked against storage.
+
+    That is how an aborted transaction reported `(doc_id, 1)` against an empty table.
+    """
+    _, reported = await _ingest(document_settings)
+    (summary,) = await doc_store.list_documents(document_settings, TENANT)
+    assert summary.chunks == reported, f"ingest said {reported}, storage holds {summary.chunks}"
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_an_embedder_of_the_wrong_dimension_loses_vectors_not_the_document(
+    document_settings: Any,
+) -> None:
+    """The defect this contract exists for, one level down from `memory_vectors`.
+
+    A 26-dimension embedder against the migration's `vector(768)` column aborted the
+    transaction inside a swallowed `except`, so the commit discarded the chunk inserts and
+    `put_document` returned a count for rows that were never written. Reachable by any
+    operator who points `FELIX_MEMORY_EMBEDDER` at a model of another size.
+    """
+
+    class _WrongDim:
+        enabled = True
+        model = "wrong-dim"
+
+        async def embed(self, texts: list[str]) -> list[list[float]]:
+            return [[0.1] * 26 for _ in texts]
+
+    _, reported = await _ingest(document_settings, embedder=_WrongDim())
+    assert reported > 0
+
+    summaries = await doc_store.list_documents(document_settings, TENANT)
+    assert summaries, "the document was lost entirely"
+    assert summaries[0].chunks == reported, "ingest reported chunks that were never stored"
+    assert await doc_store.search_documents(
+        document_settings, tenant_id=TENANT, query="egress guard validated", limit=3
+    ), "the document is unretrievable, so the rows are not really there"
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_a_second_tenants_corpus_is_invisible_both_ways(document_settings: Any) -> None:
+    """The one-sided form — an empty tenant sees nothing — is also true of a broken store."""
+    await _ingest(document_settings, title="Mine")
+    await doc_store.put_document(
+        document_settings, tenant_id="other", title="Theirs", source="s2", text=PROSE, max_chars=90
+    )
+
+    mine = await doc_store.list_documents(document_settings, TENANT)
+    theirs = await doc_store.list_documents(document_settings, "other")
+    assert [s.title for s in mine] == ["Mine"]
+    assert [s.title for s in theirs] == ["Theirs"]
+
+    # A cross-tenant delete must not reach across.
+    assert await doc_store.delete_document(document_settings, "other", mine[0].doc_id) == 0
+    assert await doc_store.list_documents(document_settings, TENANT) == mine

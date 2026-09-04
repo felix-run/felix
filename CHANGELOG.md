@@ -123,6 +123,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The agent-facing `search_documents` tool is deliberately a follow-up rather than part of this
   change.
 
+  Found by review before this shipped, and worth recording because the first round of tests
+  caught none of it:
+  - **Ingest reported success and stored nothing.** A dimension mismatch made
+    `_write_embedding` raise; the `except` swallowed it but left the *transaction* aborted, so
+    the commit discarded the chunk inserts too — `put_document` returned `(doc_id, 1)` against
+    an empty table. The `memory_vectors` failure one level down, reachable by pointing
+    `FELIX_MEMORY_EMBEDDER` at a model of another size. The write is inside a savepoint now,
+    and the contract asserts the stored count matches the reported one.
+  - **Metadata was a 1,700× storage amplifier**: unbounded in the request model *and* copied
+    onto every chunk, so one request inside the 1 MiB body limit stored 1.7 GB. Bounded at
+    16 KB and written to chunk 0 only — either fix alone leaves the other shape available.
+  - **The lexical channel was unguarded** while the vector one was, so a pod running ahead of
+    the migration lost the request instead of a channel — and took the vector channel with it.
+  - **A NUL byte was an uncaught 500** (psycopg raises `DataError`, not `ValueError`), accepted
+    on the in-memory arm, so the contract could not see the divergence.
+  - **`count_documents` was dead** — exported, tested, called by nothing. It now enforces
+    `FELIX_DOCUMENTS_MAX_PER_TENANT`, which is what it was for.
+  - Embedding is batched, so a large document no longer loses its whole vector channel to one
+    oversized provider request; `SELECT *` is gone from both channels; the Postgres arm of
+    `list_documents` returns metadata and orders with a tiebreaker, both of which diverged from
+    the twin.
+  - The conformance Postgres arm had **no teardown**, so it never reset while the memory arm
+    reset around every test — the two were not running the same contract from the same state.
+  - The route tests reached a **real Redis** through the repo `.env`, making the rate limiter a
+    shared cross-process window: six runs inside a minute and the seventh failed on 429.
+
 
 - **`spec.search_tools` and a `SearchBackend` registry — `deep` can research.** It declared
   `pattern: deep` and shipped with `tools: [calculator, list_skills]`, which made a research

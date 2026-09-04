@@ -150,7 +150,7 @@ async def store(request: pytest.FixtureRequest) -> AsyncIterator[Any]:
         await engine.dispose()
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def document_settings(request: pytest.FixtureRequest) -> AsyncIterator[Any]:
     """`Settings` pointed at the backend named by the parametrization.
 
@@ -181,4 +181,10 @@ async def document_settings(request: pytest.FixtureRequest) -> AsyncIterator[Any
     try:
         yield Settings(database_url=url)
     finally:
+        # Teardown, like the sibling fixtures. Without it the Postgres arm never reset while
+        # the memory arm reset around every test, so the two were no longer running the same
+        # contract from the same state — which is the premise. It passed only because every
+        # test here ingests the same (source, title) and so overwrites the same doc_id; the
+        # first test with a second title would have made the arm order-dependent.
         await dispose_engine()
+        await drop_everything(url)

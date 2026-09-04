@@ -25,7 +25,7 @@ from felix.auth.mgmt import (
     tenant_id_from_request,
 )
 from felix.documents.chunking import DEFAULT_MAX_CHARS, DEFAULT_OVERLAP_CHARS
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
 router = APIRouter(tags=["Documents"])
 
@@ -44,6 +44,28 @@ MAX_TITLE_CHARS = 400
 MAX_SOURCE_CHARS = 2_000
 
 
+# Serialized ceiling on `metadata`. It was the one field in this model with no bound, and it
+# is written per document but *travels* with a request that also carries up to
+# `MAX_CHUNKS_PER_DOC` chunks — measured at 1.7 GB stored from a single request inside the
+# body limit before metadata stopped being copied onto every row. Bounded here as well as
+# denormalised away in the store, because either fix alone leaves the other shape available.
+MAX_METADATA_BYTES = 16_384
+
+
+def _no_control_chars(value: str, field: str) -> str:
+    """Reject NUL and friends.
+
+    A NUL is valid JSON and passes every length check, and psycopg refuses it client-side with
+    `DataError` — not `ValueError` — so it escaped the handler's 400 and became an uncaught
+    500. The in-memory arm accepts it happily, so the conformance contract cannot see the
+    divergence either.
+    """
+    bad = {ch for ch in value if ch in "\x00" or (ord(ch) < 32 and ch not in "\t\n\r")}
+    if bad:
+        raise ValueError(f"{field} contains control characters that cannot be stored")
+    return value
+
+
 class DocumentIngestRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -56,6 +78,24 @@ class DocumentIngestRequest(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     max_chars: int = Field(default=DEFAULT_MAX_CHARS, ge=128, le=20_000)
     overlap_chars: int = Field(default=DEFAULT_OVERLAP_CHARS, ge=0, le=4_000)
+
+    @field_validator("title", "source", "text")
+    @classmethod
+    def _printable(cls, v: str, info: ValidationInfo) -> str:
+        return _no_control_chars(v, str(info.field_name))
+
+    @field_validator("metadata")
+    @classmethod
+    def _bounded_metadata(cls, v: dict[str, Any]) -> dict[str, Any]:
+        import json
+
+        try:
+            size = len(json.dumps(v).encode())
+        except (TypeError, ValueError) as exc:
+            raise ValueError("metadata must be JSON-serialisable") from exc
+        if size > MAX_METADATA_BYTES:
+            raise ValueError(f"metadata is {size} bytes; the ceiling is {MAX_METADATA_BYTES}")
+        return v
 
 
 def _embedder(request: Request) -> Any:
@@ -148,10 +188,27 @@ async def ingest_document(request: Request, body: DocumentIngestRequest) -> dict
     from felix.documents import store as doc_store
 
     require_mgmt_scopes(request, SCOPE_DOCUMENTS_WRITE)
+    settings = request.app.state.settings
+    tenant_id = tenant_id_from_request(request)
+
+    # Checked before the work, and only for a document that does not already exist — a
+    # re-ingest of something already in the corpus must not be refused for being over a
+    # ceiling it is not adding to. `count_documents` existed, was tested, and was called by
+    # nothing until this; a quota is what it was for.
+    ceiling = int(getattr(settings, "documents_max_per_tenant", 0) or 0)
+    if ceiling:
+        doc_id = doc_store.document_id(body.source, body.title)
+        known = {d.doc_id for d in await doc_store.list_documents(settings, tenant_id, limit=ceiling)}
+        if doc_id not in known and await doc_store.count_documents(settings, tenant_id) >= ceiling:
+            raise HTTPException(
+                status_code=409,
+                detail=f"corpus is at its ceiling of {ceiling} documents (FELIX_DOCUMENTS_MAX_PER_TENANT)",
+            )
+
     try:
         doc_id, chunks = await doc_store.put_document(
-            request.app.state.settings,
-            tenant_id=tenant_id_from_request(request),
+            settings,
+            tenant_id=tenant_id,
             title=body.title,
             source=body.source,
             text=body.text,
