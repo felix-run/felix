@@ -770,3 +770,24 @@ async def test_metadata_is_written_only_to_the_first_chunk() -> None:
     )
     assert rows[0]["metadata"] == {"team": "platform"}
     assert all(r["metadata"] == {} for r in rows[1:]), "metadata was copied onto later chunks"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["title", "source"])
+async def test_single_line_fields_refuse_newlines(field: str) -> None:
+    """`source` is logged on an embedding failure and both are rendered per hit, so a newline
+    is a forged-log-line and forged-result primitive. `%r` escapes it today; refusing it at the
+    boundary is what survives someone changing that to `%s`."""
+    async with _client() as client:
+        body = _doc(**{field: "ok\nWARNING forged entry"})
+        assert (await client.post("/documents", json=body, headers=_auth("sk-write"))).status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_document_text_may_contain_newlines() -> None:
+    """Prose is the one field that obviously needs them; refusing them there would be absurd."""
+    async with _client() as client:
+        created = await client.post(
+            "/documents", json=_doc(text="para one\n\npara two"), headers=_auth("sk-write")
+        )
+        assert created.status_code == 200

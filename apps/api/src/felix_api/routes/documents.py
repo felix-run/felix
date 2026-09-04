@@ -52,17 +52,25 @@ MAX_SOURCE_CHARS = 2_000
 MAX_METADATA_BYTES = 16_384
 
 
-def _no_control_chars(value: str, field: str) -> str:
+def _no_control_chars(value: str, field: str, *, allow_newlines: bool) -> str:
     """Reject NUL and friends.
 
     A NUL is valid JSON and passes every length check, and psycopg refuses it client-side with
     `DataError` — not `ValueError` — so it escaped the handler's 400 and became an uncaught
     500. The in-memory arm accepts it happily, so the conformance contract cannot see the
     divergence either.
+
+    `title` and `source` additionally forbid newlines, because they are single-line values by
+    nature and both reach line-oriented formats: `source` is logged on an embedding failure,
+    and both are rendered per hit. `%r` escapes a newline today, which is exactly the kind of
+    protection that disappears when someone changes it to `%s` — so the newline is refused at
+    the boundary instead, the same way the search tool flattens what it renders.
     """
-    bad = {ch for ch in value if ch in "\x00" or (ord(ch) < 32 and ch not in "\t\n\r")}
+    allowed = "\t\n\r" if allow_newlines else "\t"
+    bad = {ch for ch in value if ch == "\x00" or (ord(ch) < 32 and ch not in allowed)}
     if bad:
-        raise ValueError(f"{field} contains control characters that cannot be stored")
+        kind = "control characters" if allow_newlines else "control characters or newlines"
+        raise ValueError(f"{field} contains {kind} that cannot be stored")
     return value
 
 
@@ -79,10 +87,15 @@ class DocumentIngestRequest(BaseModel):
     max_chars: int = Field(default=DEFAULT_MAX_CHARS, ge=128, le=20_000)
     overlap_chars: int = Field(default=DEFAULT_OVERLAP_CHARS, ge=0, le=4_000)
 
-    @field_validator("title", "source", "text")
+    @field_validator("title", "source")
+    @classmethod
+    def _single_line(cls, v: str, info: ValidationInfo) -> str:
+        return _no_control_chars(v, str(info.field_name), allow_newlines=False)
+
+    @field_validator("text")
     @classmethod
     def _printable(cls, v: str, info: ValidationInfo) -> str:
-        return _no_control_chars(v, str(info.field_name))
+        return _no_control_chars(v, str(info.field_name), allow_newlines=True)
 
     @field_validator("metadata")
     @classmethod
