@@ -495,6 +495,14 @@ clients.
 `/metrics` requires authentication: its label values include tenant-supplied manifest ids
 and remote MCP tool names.
 
+`/health`, `/live` and `/ready` are public and unthrottled, because kubelet presents no
+credential and treats a 429 as a failed probe (`PROBE_PATHS` in `felix/security/rate_limit.py`
+feeds both allowlists). `/ready` therefore tells an anonymous caller which dependency is
+down, and nothing more: the exception text goes to the log, its report is cached for two
+seconds, and concurrent callers share one probe, so the route can be hammered and the
+database cannot. If even up/down per dependency is too much for your perimeter, restrict
+those paths at the ingress — the chart's default rule forwards `/`.
+
 ## JWT verification
 
 `FELIX_JWT_VERIFIERS` is `scheme:issuer[;aud=…][;tenant=claim|issuer|fixed:<tenant>]`,

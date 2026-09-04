@@ -83,6 +83,10 @@ def test_metrics_is_no_longer_public() -> None:
 
     assert _is_public_path("/metrics") is False
     assert _is_public_path("/health") is True
+    # The probe paths the Helm chart actually uses; kubelet cannot present a credential.
+    for path in ("/live", "/ready"):
+        assert _is_public_path(path) is True
+        assert should_skip_rate_limit(path) is True
 
 
 # --- limiter behaviour ------------------------------------------------------------

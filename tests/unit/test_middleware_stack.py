@@ -220,10 +220,11 @@ async def test_a_raising_key_resolver_does_not_take_down_the_request(caplog) -> 
     caplog.set_level(logging.WARNING, logger="felix_api.middleware")
     app = create_app(settings=_settings("badresolver"), plugins=[_BadPlugin()])
     async with _client(app) as client:
-        # Not /health: it is in the rate-limiter's skip list, so the resolver would
-        # never run and the test would pass with or without the guard.
-        first = await client.get("/live")
-        rest = [await client.get("/live") for _ in range(4)]
+        # Not a probe path: /health, /live and /ready are in the rate-limiter's skip
+        # list, so the resolver would never run and the test would pass with or without
+        # the guard. /metrics is deliberately throttled, and is 200 under auth_mode=none.
+        first = await client.get("/metrics")
+        rest = [await client.get("/metrics") for _ in range(4)]
     assert first.status_code == 200
     assert [r.status_code for r in rest] == [200, 200, 200, 200]
     # Filtered by logger name: caplog captures every record at WARNING, so an

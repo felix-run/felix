@@ -252,7 +252,12 @@ def create_app(
         report = await check_readiness(cfg)
         if not report.ready:
             response.status_code = 503
-        return report.as_dict()
+            # The route is public, so the exception text (internal hosts, ports, database
+            # users) goes to the log, and the body says only which probe failed.
+            for probe in report.probes:
+                if not probe.ok:
+                    logger.warning("readiness probe %s failed: %s", probe.name, probe.detail)
+        return report.as_dict(include_detail=False)
 
     @app.get("/metrics", tags=["System"])
     async def metrics() -> Response:

@@ -21,11 +21,18 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Any
 
 # A probe that hangs is a probe that fails. Kubernetes gives up on its own timeout
 # anyway; bounding here makes the failure legible instead of a client-side timeout.
 PROBE_TIMEOUT_S = 3.0
+
+# `/ready` is public and exempt from rate limiting, because kubelet sends no credential
+# and treats a 429 as a failed probe. Left uncached, that makes three dependency pings
+# per anonymous request — a cheap way to load the database from outside. A report this
+# old is served as-is; kubelet's period is 10s, so it never sees a stale answer.
+READINESS_CACHE_S = 2.0
 
 
 @dataclass(frozen=True)
@@ -47,11 +54,23 @@ class ReadinessReport:
     ready: bool
     probes: list[ProbeResult] = field(default_factory=list)
 
-    def as_dict(self) -> dict[str, Any]:
-        return {
-            "status": "ready" if self.ready else "not_ready",
-            "checks": {p.name: p.as_dict() for p in self.probes},
-        }
+    def as_dict(self, *, include_detail: bool = True) -> dict[str, Any]:
+        """``include_detail=False`` is what the public route sends: a probe's detail is
+        the exception text, which names internal hosts, ports and database users."""
+        checks = {p.name: p.as_dict() for p in self.probes}
+        if not include_detail:
+            for check in checks.values():
+                check.pop("detail", None)
+        return {"status": "ready" if self.ready else "not_ready", "checks": checks}
+
+
+# Keyed on the settings object by identity: one process has one, so this is a single
+# entry in production, and two configurations never share a report. The in-flight task
+# is shared too, so callers arriving during a probe await it instead of probing again —
+# without that, a blackholed dependency turns every request in its 3s window into three
+# more connections, on the pod that is already degraded.
+_cached_report: tuple[Any, float, ReadinessReport] | None = None
+_inflight: tuple[Any, asyncio.Task[ReadinessReport]] | None = None
 
 
 async def _timed(name: str, coro: Any) -> ProbeResult:
@@ -104,8 +123,38 @@ async def _probe_object_store(settings: Any) -> str:
     return getattr(settings, "object_store", "") or "ok"
 
 
-async def check_readiness(settings: Any) -> ReadinessReport:
-    """Probe every dependency this process needs to serve a request."""
+async def check_readiness(settings: Any, *, max_age_s: float = READINESS_CACHE_S) -> ReadinessReport:
+    """Probe every dependency this process needs to serve a request.
+
+    A report younger than ``max_age_s`` is served as-is, and concurrent callers share one
+    probe. Cached by default so the next caller cannot forget; pass ``0`` to always probe.
+    """
+    global _inflight
+    if max_age_s > 0 and _cached_report is not None:
+        owner, at, report = _cached_report
+        if owner is settings and time.monotonic() - at < max_age_s:
+            return report
+    if _inflight is not None and _inflight[0] is settings and not _inflight[1].done():
+        return await asyncio.shield(_inflight[1])
+    task = asyncio.ensure_future(_probe_dependencies(settings))
+    _inflight = (settings, task)
+    # The task stores its own result. Storing it from this caller would tie the cache
+    # to this caller surviving: a request cancelled mid-probe (client disconnect) would
+    # discard the report and clear the guard while the probe kept running, and a loop
+    # of open-and-abort would restore the amplification the cache exists to remove.
+    task.add_done_callback(partial(_store_report, settings))
+    return await asyncio.shield(task)
+
+
+def _store_report(settings: Any, task: asyncio.Task[ReadinessReport]) -> None:
+    global _cached_report, _inflight
+    if _inflight is not None and _inflight[1] is task:
+        _inflight = None
+    if not task.cancelled() and task.exception() is None:
+        _cached_report = (settings, time.monotonic(), task.result())
+
+
+async def _probe_dependencies(settings: Any) -> ReadinessReport:
     results = await asyncio.gather(
         _timed("database", _probe_database(settings)),
         _timed("redis", _probe_redis(settings)),
@@ -115,4 +164,4 @@ async def check_readiness(settings: Any) -> ReadinessReport:
     return ReadinessReport(ready=all(p.ok for p in probes), probes=probes)
 
 
-__all__ = ["PROBE_TIMEOUT_S", "ProbeResult", "ReadinessReport", "check_readiness"]
+__all__ = ["PROBE_TIMEOUT_S", "READINESS_CACHE_S", "ProbeResult", "ReadinessReport", "check_readiness"]

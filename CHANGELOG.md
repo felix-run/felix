@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`/ready` and `/live` no longer require a credential.** The Helm chart probes both, and
+  kubelet sends no `Authorization` header, but only `/health` was on the public allowlist —
+  so under `api_key` or `jwt` every pod's readiness probe got 401, the pod never became
+  Ready, and the liveness probe restarted it. Compose probes `/health`, which is why local
+  runs never showed it. Both paths are now public and exempt from rate limiting (kubelet
+  treats a 429 as a failure), and because `/ready` probes the database, cache and object
+  store, its report is cached for two seconds and concurrent callers share one probe, so
+  an anonymous caller can hammer the route and not the dependencies. The public body now
+  says which probe failed and not why — the detail was the exception text, naming internal
+  hosts, ports and database users — and the detail is logged instead. One `PROBE_PATHS`
+  set feeds both allowlists, and `tests/unit/test_operability.py` reads the probe paths
+  out of the chart, the Dockerfile and the Compose files and asserts each is declared there.
+
 ### Changed
 
 - **The fallback and escalation composites moved to `patterns/model_composites.py`.** They
