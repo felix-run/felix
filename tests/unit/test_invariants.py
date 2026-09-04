@@ -724,6 +724,41 @@ def test_a_pattern_that_reaches_a_model_records_the_usage() -> None:
     )
 
 
+def test_pattern_loops_meter_through_the_helper_that_carries_the_price_override() -> None:
+    """`spec.model.price` rides on the client, and `record_model_usage` is what hands it to
+    `record_usage`. A loop that calls `record_usage` directly prices that one turn by the
+    catalog while its neighbours are priced by the manifest — so the loops may only meter
+    through the helper, and the helper must pass the override on."""
+    patterns = HARNESS / "patterns"
+    direct: list[str] = []
+    for path in sorted(patterns.glob("*.py")):
+        if path.name == "model.py":
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "record_usage"
+            ):
+                direct.append(f"{path.name}:{node.lineno}")
+    assert direct == [], f"pattern loops must meter through record_model_usage, not record_usage: {direct}"
+
+    model_tree = ast.parse((patterns / "model.py").read_text(encoding="utf-8"))
+    helper = next(
+        n for n in ast.walk(model_tree) if isinstance(n, ast.FunctionDef) and n.name == "record_model_usage"
+    )
+    forwards = [
+        n
+        for n in ast.walk(helper)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name)
+        and n.func.id == "record_usage"
+        and any(k.arg == "price_override" for k in n.keywords)
+    ]
+    assert forwards, "record_model_usage must pass price_override to record_usage"
+
+
 def _self_attrs_touched(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
     """Names like `_plugins` from `self._plugins.append(...)` or `self._x = y`."""
     return {

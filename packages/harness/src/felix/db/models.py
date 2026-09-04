@@ -11,6 +11,7 @@ from sqlalchemy import (
     Float,
     Index,
     Integer,
+    Numeric,
     Text,
     false,
     text,
@@ -288,6 +289,11 @@ class UsageEvent(Base):
     tokens_output: Mapped[int] = mapped_column(Integer, server_default="0", default=0)
     cache_creation: Mapped[int] = mapped_column(Integer, server_default="0", default=0)
     cache_read: Mapped[int] = mapped_column(Integer, server_default="0", default=0)
+    # `model_id` is the logical route name the operator configured; this is the provider's
+    # id the row was priced by. Cost is fixed at write time — the only moment the wire id,
+    # the rates and any manifest price override are all in hand.
+    wire_model_id: Mapped[str] = mapped_column(Text, server_default="", default="")
+    cost_usd: Mapped[float] = mapped_column(Numeric(14, 8, asdecimal=False), server_default="0", default=0)
     meta_json: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default=text("'{}'::jsonb"), default=dict)
 
     __table_args__ = (Index("idx_usage_tenant_ts", "tenant_id", "ts"),)

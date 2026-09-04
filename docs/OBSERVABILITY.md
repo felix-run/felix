@@ -15,7 +15,7 @@ time, so a metric added without a row here fails CI.
 | Metrics (worker) | `FELIX_METRICS_PORT` on the worker process (the Helm chart sets it from `worker.metricsPort` and probes it for liveness) | nothing |
 | Traces | OTLP export | `FELIX_OTEL_ENABLED=true` + `felix-harness[otel]` |
 | Logs | OTLP export, trace-correlated | `FELIX_OTEL_ENABLED=true` + `FELIX_OTEL_LOGS=true` + the extra |
-| Audit / usage rows | Postgres, `GET /audit`, `GET /usage` | nothing |
+| Audit / usage rows | Postgres, `GET /audit`, `GET /usage`, `GET /usage/summary` | nothing |
 
 Two properties of `/metrics` are deliberate and easy to undo by accident:
 
@@ -42,6 +42,7 @@ text is logged.
 | --- | --- | --- |
 | `felix_tokens` | `manifest_id`, `model`, `kind` | Tokens billed this turn; `kind` is `input` or `output`. |
 | `felix_model_unmetered` | `manifest_id`, `model` | **Watch this.** A turn reported no usage, so it counted against no budget — `limits.max_cost_usd` and the token limits fail *open* for it. Usually a streamed response missing `stream_options.include_usage`. |
+| `felix_model_unpriced` | `manifest_id`, `model` | **Watch this.** A turn reported usage but Felix has no rate for the wire model and the manifest sets no `spec.model.price`, so it was metered at `$0` — the token limits hold, `limits.max_cost_usd` fails *open* for it. Add the rate to the catalog or the manifest. |
 | `felix_model_call_seconds` | `model`, `status` | Provider call latency, one observation per attempt. |
 | `felix_model_switch` | `from`, `to`, `reason` | A fallback or escalation changed model mid-run. |
 | `felix_model_retry` | `provider`, `status` | An upstream call was retried. |

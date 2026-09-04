@@ -36,6 +36,8 @@ def _event_dict(row: UsageEvent | dict[str, Any]) -> dict[str, Any]:
         "tokens_output": row.tokens_output,
         "cache_creation": row.cache_creation,
         "cache_read": row.cache_read,
+        "wire_model_id": row.wire_model_id,
+        "cost_usd": row.cost_usd,
         "meta_json": row.meta_json,
     }
 
@@ -50,9 +52,18 @@ def record_tokens(
     tokens_output: int = 0,
     cache_creation: int = 0,
     cache_read: int = 0,
+    wire_model_id: str = "",
+    cost_usd: float = 0.0,
     meta: dict[str, Any] | None = None,
 ) -> None:
-    """Buffer a token-usage event for later flush."""
+    """Buffer a token-usage event for later flush.
+
+    `model_id` is the logical route name and is what is reported; `wire_model_id` is the
+    provider's id the row was priced by. Cost arrives already priced — `record_usage` is
+    the one pricer, at the one moment the wire id, the rates and any manifest override are
+    all in hand — and is fixed on the row: nothing recomputes it later, because later the
+    override and the route are gone.
+    """
     _ = settings
     event = {
         "id": uuid.uuid4().hex,
@@ -65,6 +76,8 @@ def record_tokens(
         "tokens_output": int(tokens_output or 0),
         "cache_creation": int(cache_creation or 0),
         "cache_read": int(cache_read or 0),
+        "wire_model_id": wire_model_id or "",
+        "cost_usd": float(cost_usd or 0.0),
         "meta_json": meta or {},
     }
     _pending.append(event)
@@ -143,10 +156,106 @@ async def _write_batch(settings: Settings, batch: list[dict[str, Any]]) -> None:
                     tokens_output=int(event.get("tokens_output") or 0),
                     cache_creation=int(event.get("cache_creation") or 0),
                     cache_read=int(event.get("cache_read") or 0),
+                    wire_model_id=event.get("wire_model_id", ""),
+                    cost_usd=float(event.get("cost_usd") or 0.0),
                     meta_json=event.get("meta_json") or {},
                 )
             )
         await db.commit()
+
+
+SUMMARY_DEFAULT_WINDOW_MS = 30 * 24 * 60 * 60 * 1000
+_SUMMED_COLUMNS = ("tokens_input", "tokens_output", "cache_creation", "cache_read", "cost_usd")
+
+
+def _day(ts: int) -> str:
+    """The UTC date a row falls on — the same bucket the SQL arm computes with `to_char`."""
+    from datetime import UTC, datetime
+
+    return datetime.fromtimestamp(ts / 1000, UTC).strftime("%Y-%m-%d")
+
+
+def _summary_memory(
+    tenant_id: str, since_ms: int, until_ms: int, manifest_id: str | None
+) -> list[dict[str, Any]]:
+    buckets: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for e in _memory_events:
+        if e["tenant_id"] != tenant_id or not (since_ms <= e["ts"] < until_ms):
+            continue
+        if manifest_id is not None and e["manifest_id"] != manifest_id:
+            continue
+        key = (e["manifest_id"], e["model_id"], _day(e["ts"]))
+        bucket = buckets.setdefault(
+            key,
+            {
+                "manifest_id": key[0],
+                "model_id": key[1],
+                "day": key[2],
+                "calls": 0,
+                **dict.fromkeys(_SUMMED_COLUMNS, 0),
+            },
+        )
+        bucket["calls"] += 1
+        for k in _SUMMED_COLUMNS:
+            bucket[k] += e.get(k) or 0
+    return sorted(buckets.values(), key=lambda b: (b["day"], b["manifest_id"], b["model_id"]), reverse=True)
+
+
+async def _summary_sql(
+    settings: Settings, tenant_id: str, since_ms: int, until_ms: int, manifest_id: str | None
+) -> list[dict[str, Any]]:
+    from sqlalchemy import func
+
+    # UTC explicitly: `to_timestamp` yields a timestamptz and `to_char` would otherwise
+    # render it in the session's time zone, splitting a day differently from the twin.
+    day = func.to_char(func.timezone("UTC", func.to_timestamp(UsageEvent.ts / 1000.0)), "YYYY-MM-DD")
+    stmt = (
+        select(
+            UsageEvent.manifest_id,
+            UsageEvent.model_id,
+            day.label("day"),
+            func.count().label("calls"),
+            *[func.coalesce(func.sum(getattr(UsageEvent, k)), 0).label(k) for k in _SUMMED_COLUMNS],
+        )
+        .where(UsageEvent.tenant_id == tenant_id, UsageEvent.ts >= since_ms, UsageEvent.ts < until_ms)
+        .group_by(UsageEvent.manifest_id, UsageEvent.model_id, day)
+        .order_by(day.desc(), UsageEvent.manifest_id, UsageEvent.model_id)
+    )
+    if manifest_id is not None:
+        stmt = stmt.where(UsageEvent.manifest_id == manifest_id)
+    factory = get_session_factory(settings=settings)
+    async with factory() as db:
+        rows = (await db.execute(stmt)).mappings().all()
+    # `sum(numeric)` is a Decimal whatever the column's result processor says.
+    return [{**dict(r), "cost_usd": float(r["cost_usd"])} for r in rows]
+
+
+async def summary(
+    settings: Settings,
+    tenant_id: str,
+    *,
+    since_ms: int | None = None,
+    until_ms: int | None = None,
+    manifest_id: str | None = None,
+) -> dict[str, Any]:
+    """Spend grouped by manifest, model and UTC day, with totals — "what did tenant X
+    spend last month" in one call. Defaults to the last thirty days."""
+    # The window is half-open, so the default upper bound is one past "now": a row written
+    # in the same millisecond as the query would otherwise fall outside it.
+    until_ms = int(until_ms if until_ms is not None else now_ms() + 1)
+    since_ms = int(since_ms if since_ms is not None else until_ms - SUMMARY_DEFAULT_WINDOW_MS)
+    if _use_memory(settings):
+        items = _summary_memory(tenant_id, since_ms, until_ms, manifest_id)
+    else:
+        items = await _summary_sql(settings, tenant_id, since_ms, until_ms, manifest_id)
+    for item in items:
+        item["cost_usd"] = round(float(item["cost_usd"]), 8)
+    totals = {
+        "calls": sum(i["calls"] for i in items),
+        **{k: sum(i[k] for i in items) for k in _SUMMED_COLUMNS},
+    }
+    totals["cost_usd"] = round(float(totals["cost_usd"]), 8)
+    return {"since_ms": since_ms, "until_ms": until_ms, "items": items, "totals": totals}
 
 
 def pending_count() -> int:
@@ -171,4 +280,5 @@ __all__ = [
     "pending_count",
     "query",
     "record_tokens",
+    "summary",
 ]
