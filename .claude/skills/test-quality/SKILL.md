@@ -13,9 +13,32 @@ checked. Judge the suite on what it would catch.
 ## The first question
 
 **Would this test fail without the change it accompanies?** Everything else is secondary. Read what
-the assertion actually pins; when it is not obvious, prove it — revert the production hunk in a
-scratch copy, run the test, and watch it go red. A test added alongside a fix that passes on the
-unfixed code is the highest-value finding you can report.
+the assertion actually pins; when it is not obvious, prove it. A test added alongside a fix that
+passes on the unfixed code is the highest-value finding you can report.
+
+In this repo, proving it means **mutation**: introduce a real violation of the thing the test
+claims to pin, run the test, watch it go red, revert, and confirm the tree is clean. A probe file
+under the scanned root is usually enough and leaves nothing to undo but one `unlink`.
+
+Read the outcome carefully, because two of the three are failures of the test:
+
+| Outcome | Meaning |
+|---|---|
+| **RED** | It failed on the violation. The test is evidence. |
+| **GREEN** | It passed on a real violation. It pins nothing — report it. |
+| **ERROR** | It errored rather than failed: an import, a missing symbol, a fixture. That is not a pass and not a failure; it says nothing about whether the test would catch the bug. Fix it until it FAILS, then re-run. |
+
+Mutation is the only method that works for a test that *reads* the tree, which is most structural
+invariants here — reverting source through `PYTHONPATH` changes what `import` resolves and nothing
+on disk, so a scanning test sees the working copy whatever you do. A tool that automated the
+import-driven case existed briefly and was deleted: it could not serve the tests that most needed
+it, and it cost more to keep honest than doing the mutation by hand.
+
+**Structural tests need this most.** An AST or `rglob` scan that matches nothing passes, and reads
+exactly like the rule holding. One here matched `timeout=<Constant>` while every literal it hunted
+lived inside `httpx.Timeout(...)`; another checked a hand-written list naming six of nine governance
+wrappers. Both were green the day they were written. Assert that the corpus and the match set are
+non-empty, so the day the scan stops finding anything is the day it fails rather than goes quiet.
 
 ## Assertion strength, weakest to strongest
 

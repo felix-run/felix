@@ -64,7 +64,8 @@ ENV UV_CACHE_DIR=/tmp/uv \
     FELIX_PORT=8080 \
     FELIX_OBJECT_STORE=fs \
     PATH="/app/.venv/bin:$PATH" \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
 
 WORKDIR /app
 
@@ -83,9 +84,15 @@ RUN set -eux; \
            /usr/local/lib/python3.14/site-packages/pip-*.dist-info \
            /usr/local/lib/python3.14/ensurepip
 
+# `/app` stays owned by root. The runtime user needs to *read* the venv and the bundled
+# manifests, never to write them — and under FELIX_MANIFEST_SOURCE=bundled those manifests
+# are the only definition of every agent's prompt, tools, egress targets and inbound auth.
+# Owning them would mean any arbitrary-write primitive in the process rewrites the agents it
+# is running, which makes "changing an agent means shipping an image" a convention rather
+# than a property. Only /data is writable.
 RUN mkdir -p /data \
     && useradd --uid 10001 --create-home --shell /usr/sbin/nologin felix \
-    && chown -R felix:felix /app /data
+    && chown -R felix:felix /data
 
 USER felix
 EXPOSE 8080

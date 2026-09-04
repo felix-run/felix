@@ -9,8 +9,10 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from felix.patterns.model import ModelChatResult, StreamDelta, _parse_tool_arguments, _repair_json
+from felix.patterns.model import ModelChatResult, StreamDelta
 from felix.patterns.types import ChatMessage
+from felix_ai.wire.base import _repair_json
+from felix_ai.wire.base import parse_tool_arguments as _parse_tool_arguments
 
 
 class _FakeStreamResponse:
@@ -59,14 +61,15 @@ class _FakeStream:
 
 
 def _client(monkeypatch: Any, lines: list[str], style: str):
+    import httpx
     from felix.config import Settings
-    from felix.patterns import model as model_mod
+    from felix_ai import AnthropicMessagesClient, ModelRoute, OpenAICompletionsClient
 
-    monkeypatch.setattr(model_mod.httpx, "AsyncClient", _FakeAsyncClient(lines))
-    cls = model_mod._AnthropicClient if style == "anthropic" else model_mod._OpenAIClient
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient(lines))
+    cls = AnthropicMessagesClient if style == "anthropic" else OpenAICompletionsClient
     return cls(
         model_id="m",
-        route=model_mod.ModelRoute(provider=style, model="m"),
+        route=ModelRoute(provider=style, model="m"),
         settings=Settings(allow_insecure=True, auth_mode="none", environment="development"),
         spec=None,
         base_url="https://example.invalid",

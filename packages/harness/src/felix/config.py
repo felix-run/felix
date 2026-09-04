@@ -112,6 +112,10 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     litellm_base_url: str = ""
     model_routes: str = ""  # JSON override of logical id -> {provider, model}
+    # JSON: provider name -> {"base_url": ..., "api_key": ...}. The built-in providers
+    # have named fields above; a plugin's provider cannot, because Settings ignores
+    # extras, so without this an installed provider had no way to be given a key.
+    model_provider_options: str = ""
     # Bounds each HTTP request to a model provider. A large tool call — a file's contents
     # as an argument, say — can legitimately take longer than two minutes to generate, and
     # when it does the request fails and takes the whole run with it. On a streaming call
@@ -162,6 +166,26 @@ class Settings(BaseSettings):
     memory_embedding_model: str = "bge-base-en-v1.5"
     memory_recall_limit: int = 8
 
+    # --- Web search ---
+    # Off by default: search reaches an endpoint the operator runs or pays for, so it is
+    # not something a deployment should acquire by upgrading. `searxng` is bundled because
+    # it is self-hostable and needs no account; anything else is a plugin.
+    # Registrable: felix.search.register_search_backend adds a backend.
+    search_backend: str = "none"
+    # Base URL of that backend. Operator-supplied, and still validated by the egress guard —
+    # a search endpoint in private space is refused like any other outbound destination.
+    search_url: str = ""
+    search_api_key: str = ""
+    # Bounded like every other integration timeout. Unbounded, a misconfiguration presented
+    # as a call that never returns rather than as a boot failure.
+    search_timeout_seconds: float = Field(default=15.0, gt=0, le=300.0)
+
+    # --- Document corpus ---
+    # Per-tenant document ceiling. Without one, a single `documents:write` credential grows
+    # the database without bound: `MAX_DOCUMENT_CHARS` caps one request and
+    # `MAX_CHUNKS_PER_DOC` caps one document, but nothing capped how many documents.
+    documents_max_per_tenant: int = Field(default=5_000, ge=1, le=1_000_000)
+
     # --- SSE reconnect ---
     # How long `GET /chat/stream/{thread_id}` holds an idle connection before closing
     # it. The client reconnects with its `Last-Event-ID` and loses nothing, so this
@@ -211,6 +235,16 @@ class Settings(BaseSettings):
 
     # --- misc ---
     default_manifest: str = "quick"
+    # Where a manifest may come from. `store` is the full product: Postgres versions with
+    # canary and rollback, then the bundled YAML. `bundled` serves only the files baked into
+    # the image — the write routes are not registered at all, so the capability is absent
+    # rather than refused, and nothing above bundled is consulted.
+    #
+    # A closed Literal on purpose, unlike the registry-backed settings: this names a policy
+    # core itself enforces, not a component core loads, so there is nothing for a third
+    # value to select.
+    manifest_source: Literal["store", "bundled"] = "store"
+
     hibernate_after_seconds: int = 300
     # How often each emitting process drains its audit/usage buffers. The agent
     # loop runs in the API, so the API must flush too — the worker cron alone only
@@ -230,6 +264,11 @@ class Settings(BaseSettings):
     @classmethod
     def _strip_keys(cls, v: Any) -> Any:
         return v if v is not None else ""
+
+    @property
+    def bundled_only(self) -> bool:
+        """True when the image is the only manifest source."""
+        return self.manifest_source == "bundled"
 
     def _validate_registry_backed_settings(self) -> None:
         """Fail fast on a backend name nothing registered.
@@ -252,6 +291,7 @@ class Settings(BaseSettings):
                 )
 
         from felix.memory.embedder import list_embedder_backends
+        from felix.search import list_search_backends
         from felix.secrets import list_secrets_backends
         from felix.storage import list_object_stores
         from felix.warehouse import list_warehouse_backends
@@ -261,10 +301,63 @@ class Settings(BaseSettings):
             ("FELIX_SECRETS_BACKEND", self.secrets_backend, list_secrets_backends()),
             ("FELIX_WAREHOUSE", (self.warehouse or "none").lower(), list_warehouse_backends()),
             ("FELIX_MEMORY_EMBEDDER", self.memory_embedder, list_embedder_backends()),
+            ("FELIX_SEARCH_BACKEND", self.search_backend, list_search_backends()),
         ):
             if value not in known:
                 names = ", ".join(known)
                 raise RuntimeError(f"Unknown {env_name}={value!r} (registered: {names})")
+
+        self._validate_search_url()
+
+        self._validate_model_route_providers()
+
+    def _validate_search_url(self) -> None:
+        """A search backend that needs a URL must have a usable one, checked at boot.
+
+        Without this a bad value surfaced as `search_error: EgressBlocked` on every call —
+        a runtime symptom for a startup mistake, and one that reads like the search engine
+        is down rather than like the operator mistyped a setting.
+        """
+        if self.search_backend == "none":
+            return
+        url = (self.search_url or "").strip()
+        if not url:
+            raise RuntimeError(f"FELIX_SEARCH_BACKEND={self.search_backend!r} requires FELIX_SEARCH_URL")
+        from urllib.parse import urlsplit
+
+        parts = urlsplit(url)
+        if parts.scheme not in ("http", "https") or not parts.netloc:
+            raise RuntimeError(f"FELIX_SEARCH_URL must be an absolute http(s) URL, got {url!r}")
+        if parts.scheme == "http" and not (self.environment == "development" and self.allow_insecure):
+            raise RuntimeError("FELIX_SEARCH_URL may only be http:// in development with allow_insecure")
+        if parts.query or parts.fragment:
+            # `SearxngBackend` appends "/search" and httpx replaces the query wholesale, so a
+            # URL carrying either silently loses part of itself rather than failing.
+            raise RuntimeError("FELIX_SEARCH_URL must not carry a query string or fragment")
+
+    def _validate_model_route_providers(self) -> None:
+        """Every provider named in FELIX_MODEL_ROUTES must be registered.
+
+        This was the one registry-backed setting with no startup check. A typo surfaced
+        only when a request happened to take that route — so a bad *fallback* stayed
+        invisible until the primary was already failing, which is the worst possible moment
+        to discover a second misconfiguration.
+        """
+        import felix.patterns  # noqa: F401  — importing registers the built-in providers
+        from felix.patterns.model import parse_model_routes
+        from felix.patterns.model_registry import list_model_providers
+
+        known = set(list_model_providers())
+        if not known:
+            return
+        unknown = sorted(
+            {route.provider for route in parse_model_routes(self).values() if route.provider not in known}
+        )
+        if unknown:
+            raise RuntimeError(
+                f"Unknown model provider(s) in FELIX_MODEL_ROUTES: {', '.join(unknown)} "
+                f"(registered: {', '.join(sorted(known))})"
+            )
 
     def validate_runtime(self) -> None:
         """Fail fast on unsafe or incomplete configuration."""
@@ -297,7 +390,8 @@ def get_settings() -> Settings:
     return Settings()
 
 
-# Logical model routes — Workers AI dropped; Ollama / LiteLLM fill the OSS slot.
+# Logical model routes. Providers are registered descriptors (see felix_ai.providers);
+# these are just the ids Felix ships pre-mapped. Anything else is FELIX_MODEL_ROUTES.
 DEFAULT_MODEL_ROUTES: dict[str, dict[str, str]] = {
     # Current generation. Wire ids are complete as written — no date suffixes.
     "claude-opus": {"provider": "anthropic", "model": "claude-opus-5"},

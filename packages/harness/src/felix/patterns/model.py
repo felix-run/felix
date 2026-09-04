@@ -1,531 +1,160 @@
-"""Model client — chat/stream with fallbacks and confidence escalation."""
+"""Model client — the harness half of the model layer.
+
+The wire formats, the catalog and the neutral types moved to `felix_ai`, which may not
+import `felix`. What stays here is everything that needs the harness: resolving
+`FELIX_MODEL_ROUTES` against `Settings`, metering a turn against `ctx.limit_state` and the
+usage store, the fallback/escalation composites, and the factories that adapt `Settings`
+into the explicit configuration a wire client takes.
+
+Every public name this module used to export is re-exported below, so existing imports of
+`felix.patterns.model` keep working.
+"""
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
-import random
-import time
-import uuid
-from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol, runtime_checkable
+from functools import lru_cache
+from typing import Any
 
-import httpx
+from felix_ai.providers import ProviderSpec, builtin_provider_specs
+from felix_ai.types import (
+    ChatMessage,
+    ModelChatOptions,
+    ModelChatResult,
+    ModelClient,
+    ModelConfig,
+    ModelProvider,
+    ModelRoute,
+    StopReason,
+    StreamDelta,
+    TokenUsage,
+    ToolCall,
+    ToolSchema,
+)
+from felix_ai.wire import (
+    MODEL_MAX_RETRIES,
+    AnthropicMessagesClient,
+    HttpModelClient,
+    ModelGatewayError,
+    OpenAICompletionsClient,
+    apply_anthropic_thinking_cache,
+    apply_openai_thinking_cache,
+    post_with_retry,
+    reasoning_effort_from_budget,
+)
 
 from felix.config import DEFAULT_MODEL_ROUTES, Settings, get_settings
 from felix.context import try_get_context
-from felix.model_catalog import clamp_effort, entry_for
 from felix.observability.metrics import record_counter
 from felix.patterns.model_registry import (
     get_model_provider,
     list_model_providers,
     register_model_provider,
 )
-from felix.patterns.types import ChatMessage, ToolCall
-from felix.timeouts import DEFAULT_CONNECT_TIMEOUT_S
-from felix.tools.types import Tool
 
 logger = logging.getLogger("felix.patterns.model")
 
-# `refusal` and `pause_turn` are real API outcomes. They were absent here, and the
-# providers' stop_reason was never read at all — it was synthesised from whether the
-# turn contained tool calls — so a truncated answer, a safety refusal, and a paused
-# server-tool turn all presented to the agent loop as a normal completion.
-StopReason = Literal[
-    "end_turn",
-    "tool_use",
-    "max_tokens",
-    "stop_sequence",
-    "pause_turn",
-    "refusal",
-    "unknown",
-]
 
+@lru_cache(maxsize=32)
+def _parse_routes_cached(raw: str) -> dict[str, ModelRoute]:
+    """Routes for one `FELIX_MODEL_ROUTES` string.
 
-@dataclass(slots=True)
-class ModelRoute:
-    provider: str
-    model: str
-
-
-@dataclass(slots=True)
-class TokenUsage:
-    input: int = 0
-    output: int = 0
-    cache_creation: int = 0
-    cache_read: int = 0
-
-
-@dataclass(slots=True)
-class ModelChatOptions:
-    temperature: float | None = None
-    max_tokens: int | None = None
-    signal: Any | None = None
-    # Keep this request out of the conversation's prompt cache.
-    #
-    # A one-off request made during a run — summarising for compaction, scoring a judge —
-    # shares the thread's cache key by default and carries a completely different prefix.
-    # On an OpenAI-style endpoint that churns the conversation's cached prefix, so the
-    # next real turn misses; on Anthropic it writes a fresh cache entry, billed at a
-    # premium, for a prompt that will never be read again.
-    isolate_cache: bool = False
-
-
-@dataclass(slots=True)
-class StreamDelta:
-    """One incremental piece of an assistant turn.
-
-    Yielded by `stream_turn` for display. Tool-call arguments are accumulated rather than
-    surfaced, because a partial argument object is not something a caller can act on.
+    Keyed on the string rather than on `Settings`, which is neither hashable nor stable —
+    and the string is the whole input. `parse_model_routes` went from 3 call sites to 7 in
+    this branch (context-window sizing, handoff family, cost measurability, startup
+    validation, the request allowlist), so a single agent compile re-ran `json.loads` and
+    rebuilt the dict several times over.
     """
-
-    kind: Literal["text", "thinking"] = "text"
-    text: str = ""
-
-
-@dataclass(slots=True)
-class ModelChatResult:
-    message: ChatMessage
-    stop_reason: StopReason = "end_turn"
-    usage: TokenUsage | None = None
-
-
-@runtime_checkable
-class ModelProvider(Protocol):
-    """Protocol for provider-backed model clients."""
-
-    model_id: str
-    route: ModelRoute
-
-    async def chat(
-        self,
-        messages: list[ChatMessage],
-        tools: list[Tool],
-        opts: ModelChatOptions | None = None,
-    ) -> ModelChatResult: ...
-
-    def stream(
-        self,
-        messages: list[ChatMessage],
-        tools: list[Tool],
-        opts: ModelChatOptions | None = None,
-    ) -> AsyncIterator[str]: ...
-
-    # Optional, but the difference matters: `stream()` yields text and nothing else, so a
-    # provider that implements only it cannot report tool calls *or* usage from a streamed
-    # request. `record_usage` is the sole feed for `limits.max_input_tokens`,
-    # `max_output_tokens` and `max_cost_usd`, so callers must either use `stream_turn` or
-    # pay for a second `chat()` to meter the turn — see `_stream_one_turn` in
-    # `patterns/react.py` and `_yield_model_stream` in `patterns/delegating.py`.
-    #
-    # It was left off this Protocol entirely, which meant a third-party provider could
-    # implement the published contract in full and still land in the unmetered path with
-    # nothing to tell its author why. Callers detect it with `getattr(model, "stream_turn",
-    # None)`; declaring it here is what makes the capability visible and checkable.
-    def stream_turn(
-        self,
-        messages: list[ChatMessage],
-        tools: list[Tool],
-        opts: ModelChatOptions | None = None,
-    ) -> AsyncIterator[StreamDelta | ModelChatResult]: ...
-
-
-# Alias used throughout patterns
-ModelClient = ModelProvider
-
-
-class ModelGatewayError(Exception):
-    """An upstream model provider returned an error response.
-
-    ``str(exc)`` is relayed to API clients verbatim by both `/chat` and
-    `/v1/chat/completions`, so the provider's response body is deliberately kept **out**
-    of the message: it can carry provider request ids, organization identifiers, quota
-    and billing detail, and echoed request content. The body is retained on ``.body``
-    for server-side logging only.
-    """
-
-    def __init__(self, label: str, status: int, body: str) -> None:
-        super().__init__(f"{label} provider returned HTTP {status}")
-        self.status = status
-        self.label = label
-        self.body = (body or "")[:2000]
-        self.name = "ModelGatewayError"
-
-
-def parse_model_routes(settings: Settings | None = None) -> dict[str, ModelRoute]:
-    settings = settings or get_settings()
-    routes = {k: ModelRoute(**v) for k, v in DEFAULT_MODEL_ROUTES.items()}
-    if settings.model_routes.strip():
+    routes = {
+        k: ModelRoute(provider=v["provider"], model=v["model"]) for k, v in DEFAULT_MODEL_ROUTES.items()
+    }
+    if raw.strip():
         try:
-            override = json.loads(settings.model_routes)
+            override = json.loads(raw)
             for k, v in override.items():
                 routes[k] = ModelRoute(provider=v["provider"], model=v["model"])
-        except json.JSONDecodeError, KeyError, TypeError:
+        except Exception:
             logger.warning("invalid FELIX_MODEL_ROUTES; using defaults")
     return routes
 
 
-def reasoning_effort_from_budget(budget: int) -> str:
-    """Map Anthropic-style budget tokens onto OpenAI ``reasoning_effort``."""
-    if budget < 4096:
-        return "low"
-    if budget < 16384:
-        return "medium"
-    return "high"
+def parse_model_routes(settings: Settings | None = None) -> dict[str, ModelRoute]:
+    """Logical model id -> route, with `FELIX_MODEL_ROUTES` overlaid on the defaults."""
+    settings = settings or get_settings()
+    # A copy per call: the cached dict is shared, and a caller that mutated it would
+    # silently reconfigure routing for every other caller in the process.
+    return dict(_parse_routes_cached(settings.model_routes or ""))
 
 
-def apply_openai_thinking_cache(
-    body: dict[str, Any],
-    spec: Any,
-    *,
-    cache_key: str | None = None,
-    isolate_cache: bool = False,
-) -> None:
-    """Attach thinking budget + prompt cache hints to an OpenAI-style request."""
-    budget = getattr(spec, "thinking_budget", None) if spec is not None else None
-    if budget:
-        n = int(budget)
-        body["reasoning_effort"] = reasoning_effort_from_budget(n)
-        # LiteLLM / Anthropic-via-OpenAI also honor this block.
-        body["thinking"] = {"type": "enabled", "budget_tokens": n}
-    if isolate_cache:
-        return
-    if spec is not None and getattr(spec, "cache", False):
-        key = cache_key
-        if not key:
-            key = "felix"
-            try:
-                from felix.context import try_get_context
+def wire_model_id(client: Any) -> str:
+    """The provider's own model id, which is what the catalog and the price table key on.
 
-                ctx = try_get_context()
-                tid = getattr(ctx, "thread_id", None) if ctx is not None else None
-                if tid:
-                    key = f"felix:{tid}"
-            except Exception:
-                pass
-        body["prompt_cache_key"] = key
-
-
-# Non-streaming requests must stay under the SDK/HTTP timeout, so this is a floor that
-# leaves room for a real answer rather than the previous 4096.
-_DEFAULT_MAX_TOKENS = 16_000
-
-
-def _effort_from_budget(budget: int) -> str:
-    """Map a legacy thinking budget onto an effort level."""
-    if budget < 4_096:
-        return "low"
-    if budget < 16_384:
-        return "medium"
-    if budget < 32_768:
-        return "high"
-    return "xhigh"
-
-
-def apply_anthropic_thinking_cache(
-    body: dict[str, Any], spec: Any, model: str = "", *, isolate_cache: bool = False
-) -> None:
-    """Attach thinking + ephemeral cache_control in the shape this model accepts.
-
-    The previous version emitted one shape for every Claude model:
-    ``thinking: {"type": "enabled", "budget_tokens": N}`` plus ``temperature: 1``. Both
-    are **removed** on the current generation and return HTTP 400, so the manifest's
-    thinking levels hard-failed against Opus 5, Sonnet 5, Fable 5, and Opus 4.7/4.8.
+    `client.model_id` is the *logical* route name — `fast`, `claude-sonnet`, whatever the
+    operator called it in `FELIX_MODEL_ROUTES` — and feeding that to `entry_for` matched
+    nothing, so every custom route fell to the catalog default. Reporting still uses the
+    logical name, because that is what an operator configured and recognises.
     """
-    entry = entry_for(model or str(body.get("model") or ""))
-    caps = entry.quirks
-
-    # Sampling params are rejected outright on 4.6+, so drop what the caller set rather
-    # than letting the request 400 on a parameter the model no longer accepts.
-    if not caps.sampling:
-        body.pop("temperature", None)
-        body.pop("top_p", None)
-        body.pop("top_k", None)
-
-    def _clamp_output() -> None:
-        # Never ask for more output than the model will grant. Applies regardless of
-        # whether a model spec was supplied.
-        requested = int(body.get("max_tokens") or _DEFAULT_MAX_TOKENS)
-        body["max_tokens"] = min(requested, entry.max_output_tokens)
-
-    if spec is None:
-        _clamp_output()
-        return
-
-    budget = getattr(spec, "thinking_budget", None)
-    if budget:
-        n = int(budget)
-        if caps.adaptive_thinking:
-            # Depth is expressed as effort now; the budget is only a hint about how hard
-            # the operator wants the model to think.
-            body["thinking"] = {"type": "adaptive"}
-            if caps.effort:
-                body.setdefault("output_config", {})["effort"] = clamp_effort(_effort_from_budget(n), caps)
-            if caps.sampling:
-                body["temperature"] = 1
-        elif caps.budget_tokens:
-            body["thinking"] = {"type": "enabled", "budget_tokens": n}
-            # Pre-4.6 requires temperature=1 when thinking is enabled.
-            body["temperature"] = 1
-            current = int(body.get("max_tokens") or _DEFAULT_MAX_TOKENS)
-            if current <= n:
-                body["max_tokens"] = n + 1024
-
-    _clamp_output()
-    if getattr(spec, "cache", False) and not isolate_cache:
-        system = body.get("system")
-        if isinstance(system, str) and system:
-            body["system"] = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
-        tools = body.get("tools")
-        if isinstance(tools, list) and tools:
-            last = dict(tools[-1])
-            last["cache_control"] = {"type": "ephemeral"}
-            tools[-1] = last
+    route = getattr(client, "route", None)
+    return str(getattr(route, "model", "") or getattr(client, "model_id", "") or "")
 
 
-_ANTHROPIC_STOP: dict[str, StopReason] = {
-    "end_turn": "end_turn",
-    "tool_use": "tool_use",
-    "max_tokens": "max_tokens",
-    "stop_sequence": "stop_sequence",
-    "pause_turn": "pause_turn",
-    "refusal": "refusal",
-}
+def _metered_usage(result: ModelChatResult, *, manifest_id: str, model_id: str | None) -> TokenUsage | None:
+    """This turn's usage, or `None` after saying loudly that there wasn't any.
 
-# OpenAI names the same outcomes differently.
-_OPENAI_STOP: dict[str, StopReason] = {
-    "stop": "end_turn",
-    "length": "max_tokens",
-    "tool_calls": "tool_use",
-    "function_call": "tool_use",
-    "content_filter": "refusal",
-}
+    Returns the usage rather than a bool so the caller keeps the non-`None` narrowing —
+    an earlier version answered `is_unmetered()` and moved every `result.usage` access
+    below it back into `TokenUsage | None`.
 
-
-def _map_stop(raw: Any, table: dict[str, StopReason], *, had_tool_calls: bool) -> StopReason:
-    """Translate a provider stop reason, falling back to the old inference."""
-    key = str(raw or "").strip().lower()
-    mapped = table.get(key)
-    if mapped is not None:
-        return mapped
-    if key:
-        logger.debug("unrecognised stop_reason %r from provider", key)
-        return "unknown"
-    # Provider omitted it — preserve the previous behaviour rather than guess.
-    return "tool_use" if had_tool_calls else "end_turn"
-
-
-# Retried statuses: rate limiting and transient upstream failures. 4xx other than these
-# will not succeed on a retry, so retrying them just burns latency.
-_RETRY_STATUSES = frozenset({408, 409, 429, 500, 502, 503, 504})
-MODEL_MAX_RETRIES = 2  # three attempts total
-_BASE_BACKOFF_S = 0.5
-_MAX_BACKOFF_S = 20.0
-
-
-# A 429 has two very different causes. Transient overload clears on its own and is worth
-# a retry; a spent quota or a billing problem does not clear within a request, so retrying
-# only adds latency to a failure the caller is going to see anyway.
-_HARD_LIMIT_MARKERS = (
-    "insufficient_quota",
-    "insufficient quota",
-    "billing",
-    "payment",
-    "credit balance",
-    "exceeded your current quota",
-    "monthly usage limit",
-    "spending limit",
-    "account is not active",
-)
-
-
-def _is_exhausted_quota(resp: Any) -> bool:
-    """True when a rate-limit response reflects a spent budget rather than backpressure."""
-    try:
-        body = (resp.text or "").lower()
-    except Exception:
-        return False
-    return any(marker in body for marker in _HARD_LIMIT_MARKERS)
-
-
-def _retry_after_seconds(resp: Any) -> float | None:
-    """Honour the provider's own Retry-After, in seconds or as an HTTP date."""
-    raw = ""
-    try:
-        raw = (resp.headers.get("retry-after") or "").strip()
-    except Exception:
-        return None
-    if not raw:
-        return None
-    try:
-        return max(0.0, float(raw))
-    except ValueError:
-        pass
-    try:
-        from email.utils import parsedate_to_datetime
-
-        when = parsedate_to_datetime(raw)
-        if when is None:
-            return None
-        delta = when.timestamp() - time.time()
-        return max(0.0, delta)
-    except Exception:
-        return None
-
-
-def _backoff_delay(attempt: int, retry_after: float | None) -> float:
-    """Exponential backoff with jitter, never shorter than the provider asked for."""
-    if retry_after is not None:
-        return min(retry_after, _MAX_BACKOFF_S)
-    base = min(_BASE_BACKOFF_S * (2**attempt), _MAX_BACKOFF_S)
-    # Jitter spreads retries from concurrent runs; not a security decision.
-    return base + random.uniform(0, base / 2)
-
-
-async def _post_with_retry(
-    client: Any,
-    url: str,
-    *,
-    label: str,
-    json: dict[str, Any],
-    headers: dict[str, str],
-    max_retries: int = MODEL_MAX_RETRIES,
-) -> Any:
-    """POST, retrying rate limits and transient upstream failures.
-
-    There was no retry anywhere in this layer: `_is_provider_error` existed but was only
-    consulted by `_FallbackClient` to advance to the next *model*, and with no
-    `spec.fallbacks` configured — the default in every bundled manifest — a single 429
-    failed the whole run.
+    Not a no-op worth passing over quietly. `record_usage` is the only feed for
+    `limits.max_input_tokens`, `max_output_tokens` and `max_cost_usd`, so a turn that
+    reports nothing is a turn that cannot be capped — the budgets fail *open*. Most often
+    this is a provider whose streamed response omits usage: the OpenAI wire format needs
+    `stream_options.include_usage`, and an implementation that forgets it makes the whole
+    run free as far as limits are concerned.
     """
-    last: Exception | None = None
-    for attempt in range(max_retries + 1):
-        try:
-            resp = await client.post(url, json=json, headers=headers)
-        except httpx.ReadTimeout, httpx.WriteTimeout:
-            # Not backpressure. The bytes were accepted (or are still going out) and a retry
-            # re-sends identical input to wait out an identical ceiling, so this used to cost
-            # three full timeouts before surfacing. Fail once and say so — the fix is a larger
-            # FELIX_MODEL_TIMEOUT_SECONDS, not another attempt.
-            #
-            # ConnectTimeout is deliberately NOT here: nothing was accepted, the far side may
-            # be briefly unreachable, and the next attempt is a genuinely different bet.
-            record_counter("felix_model_timeout", {"provider": label})
-            logger.warning(
-                "%s timed out mid-request; not retrying — raise FELIX_MODEL_TIMEOUT_SECONDS "
-                "if this request is legitimately long",
-                label,
-            )
-            raise
-        except httpx.HTTPError as exc:
-            last = exc
-            if attempt >= max_retries:
-                raise
-            await asyncio.sleep(_backoff_delay(attempt, None))
-            continue
-        if resp.status_code in _RETRY_STATUSES and attempt < max_retries:
-            if resp.status_code == 429 and _is_exhausted_quota(resp):
-                logger.warning("%s rate limit is a spent quota, not backpressure; not retrying", label)
-                record_counter("felix_model_retry_skipped", {"provider": label, "reason": "quota"})
-                return resp
-            delay = _backoff_delay(attempt, _retry_after_seconds(resp))
-            record_counter("felix_model_retry", {"provider": label, "status": str(resp.status_code)})
-            logger.warning(
-                "%s returned %s; retrying in %.1fs (attempt %d/%d)",
-                label,
-                resp.status_code,
-                delay,
-                attempt + 1,
-                max_retries,
-            )
-            await asyncio.sleep(delay)
-            continue
-        return resp
-    raise last if last is not None else RuntimeError("unreachable")
-
-
-def _parse_tool_arguments(raw: str) -> dict[str, Any]:
-    """Parse tool-call arguments accumulated from a stream, repairing what is repairable.
-
-    Arguments arrive as JSON fragments concatenated across many events. Models routinely
-    emit raw control characters inside string literals and invalid backslash escapes,
-    which are not legal JSON, so a strict parse throws away an otherwise complete call.
-    Repair those two, then try once more.
-
-    A fragment that is still unparseable yields `{}` rather than raising: the call is
-    surfaced to the loop, where a tool invoked with the wrong arguments is refused by
-    schema validation, which is a better failure than an exception that loses the turn.
-    Genuinely truncated calls are caught earlier, by the `max_tokens` quarantine.
-    """
-    text = (raw or "").strip()
-    if not text:
-        return {}
-    try:
-        parsed = json.loads(text)
-    except json.JSONDecodeError:
-        try:
-            parsed = json.loads(_repair_json(text))
-        except json.JSONDecodeError:
-            logger.warning("unparseable streamed tool arguments (%d chars)", len(text))
-            return {}
-    return parsed if isinstance(parsed, dict) else {}
-
-
-def _repair_json(text: str) -> str:
-    """Escape raw control characters and doubtful backslashes inside JSON string literals."""
-    out: list[str] = []
-    in_string = False
-    escaped = False
-    for ch in text:
-        if escaped:
-            # A backslash that does not begin a legal escape is itself literal data.
-            out.append(ch if ch in '"\\/bfnrtu' else "\\" + ch)
-            escaped = False
-            continue
-        if ch == "\\" and in_string:
-            escaped = True
-            out.append(ch)
-            continue
-        if ch == '"':
-            in_string = not in_string
-            out.append(ch)
-            continue
-        if in_string and ch in "\n\r\t":
-            out.append({"\n": "\\n", "\r": "\\r", "\t": "\\t"}[ch])
-            continue
-        if in_string and ord(ch) < 0x20:
-            out.append(f"\\u{ord(ch):04x}")
-            continue
-        out.append(ch)
-    return "".join(out)
-
-
-def _openai_usage(usage_raw: dict[str, Any]) -> TokenUsage:
-    # prompt_tokens already includes cached tokens.
-    return TokenUsage(
-        input=int(usage_raw.get("prompt_tokens") or 0),
-        output=int(usage_raw.get("completion_tokens") or 0),
+    usage = result.usage
+    if usage and (usage.input or usage.output or usage.cache_read or usage.cache_creation):
+        return usage
+    logger.warning(
+        "model turn reported no usage; this turn is unmetered and cannot count "
+        "against limits.max_cost_usd (model=%s)",
+        model_id or "default",
     )
+    record_counter("felix_model_unmetered", {"manifest_id": manifest_id, "model": model_id or "default"})
+    return None
 
 
-def record_usage(result: ModelChatResult, *, manifest_id: str, model_id: str | None = None) -> None:
-    if not result.usage:
+def record_usage(
+    result: ModelChatResult,
+    *,
+    manifest_id: str,
+    model_id: str | None = None,
+    wire_model_id: str | None = None,
+) -> None:
+    """Meter one turn: run budgets, Prometheus, the usage store, and the plugin sink.
+
+    `model_id` is the logical route name and is what gets *reported*. `wire_model_id` is
+    the provider's own id and is what gets *priced*, because that is what the catalog keys
+    on. When they were the same argument, every custom route priced at the catalog default.
+    """
+    usage = _metered_usage(result, manifest_id=manifest_id, model_id=model_id)
+    if usage is None:
         return
     labels = {"manifest_id": manifest_id, "model": model_id or "default"}
     ctx = try_get_context()
     tenant_id = "default"
     if ctx is not None:
-        u = result.usage
+        u = usage
         ctx.limit_state.tokens_input += u.input + u.cache_creation + u.cache_read
         ctx.limit_state.tokens_output += u.output
         # Accumulate spend so `limits.max_cost_usd` has something to measure.
         try:
             from felix.usage.pricing import usage_with_cost
 
-            priced = usage_with_cost(u, model_id=model_id or "")
+            priced = usage_with_cost(u, model_id=wire_model_id or model_id or "")
             ctx.limit_state.cost_usd += float((priced.get("cost") or {}).get("total") or 0.0)
         except Exception:
             logger.debug("usage pricing unavailable", exc_info=True)
@@ -533,8 +162,8 @@ def record_usage(result: ModelChatResult, *, manifest_id: str, model_id: str | N
         settings = ctx.settings
     else:
         settings = get_settings()
-    record_counter("felix_tokens", {**labels, "kind": "input"}, result.usage.input)
-    record_counter("felix_tokens", {**labels, "kind": "output"}, result.usage.output)
+    record_counter("felix_tokens", {**labels, "kind": "input"}, usage.input)
+    record_counter("felix_tokens", {**labels, "kind": "output"}, usage.output)
     try:
         from felix.usage.store import record_tokens
 
@@ -543,10 +172,10 @@ def record_usage(result: ModelChatResult, *, manifest_id: str, model_id: str | N
             tenant_id=tenant_id,
             manifest_id=manifest_id,
             model_id=model_id or "",
-            tokens_input=result.usage.input,
-            tokens_output=result.usage.output,
-            cache_creation=result.usage.cache_creation,
-            cache_read=result.usage.cache_read,
+            tokens_input=usage.input,
+            tokens_output=usage.output,
+            cache_creation=usage.cache_creation,
+            cache_read=usage.cache_read,
         )
     except Exception:
         logger.debug("usage_record_failed", exc_info=True)
@@ -562,825 +191,10 @@ def record_usage(result: ModelChatResult, *, manifest_id: str, model_id: str | N
                     tenant_id=tenant_id,
                     manifest_id=manifest_id,
                     model_id=model_id or "",
-                    usage=result.usage,
+                    usage=usage,
                 )
     except Exception:
         logger.debug("usage_sink_failed", exc_info=True)
-
-
-def _anthropic_user_or_plain(m: ChatMessage) -> dict[str, Any]:
-    """Convert a non-tool message for Anthropic, including image blocks."""
-    if m.role == "user" and (m.attachments or m.content_blocks):
-        blocks: list[dict[str, Any]] = []
-        if m.content_blocks:
-            for b in m.content_blocks:
-                if b.type == "text" and b.text:
-                    blocks.append({"type": "text", "text": b.text})
-                elif b.url:
-                    blocks.append(
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "url",
-                                "url": b.url,
-                                "media_type": b.media_type or "image/png",
-                            },
-                        }
-                    )
-        else:
-            if m.content:
-                blocks.append({"type": "text", "text": m.content})
-            for att in m.attachments or []:
-                blocks.append(
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "url",
-                            "url": att.url,
-                            "media_type": att.media_type or "image/png",
-                        },
-                    }
-                )
-        return {"role": "user", "content": blocks or m.content}
-    return {"role": m.role, "content": m.content}
-
-
-def _messages_to_openai(messages: list[ChatMessage]) -> list[dict[str, Any]]:
-    out: list[dict[str, Any]] = []
-    for m in messages:
-        content: Any = m.content
-        if m.attachments or (m.content_blocks and any(b.type != "text" for b in m.content_blocks)):
-            parts: list[dict[str, Any]] = []
-            if m.content_blocks:
-                for b in m.content_blocks:
-                    if b.type == "text" and b.text:
-                        parts.append({"type": "text", "text": b.text})
-                    elif b.type in {"image_url", "image"} and b.url:
-                        img: dict[str, Any] = {"url": b.url}
-                        if b.detail:
-                            img["detail"] = b.detail
-                        parts.append({"type": "image_url", "image_url": img})
-            else:
-                if m.content:
-                    parts.append({"type": "text", "text": m.content})
-                for att in m.attachments or []:
-                    img = {"url": att.url}
-                    if att.detail:
-                        img["detail"] = att.detail
-                    parts.append({"type": "image_url", "image_url": img})
-            content = parts or m.content
-        item: dict[str, Any] = {"role": m.role, "content": content}
-        if m.tool_call_id:
-            item["tool_call_id"] = m.tool_call_id
-        if m.name:
-            item["name"] = m.name
-        if m.tool_calls:
-            item["tool_calls"] = [
-                {
-                    "id": tc.id,
-                    "type": "function",
-                    "function": {"name": tc.name, "arguments": json.dumps(tc.args)},
-                }
-                for tc in m.tool_calls
-            ]
-        out.append(item)
-    return out
-
-
-def _anthropic_thinking_blocks(m: ChatMessage) -> list[dict[str, Any]]:
-    """Thinking blocks to replay for an assistant turn, in the order the model emitted them.
-
-    Extended thinking combined with tool use is stateful: the provider signs each thinking
-    block, and a later turn that replays the tool call must replay the signed reasoning
-    with it. Felix captured neither, so a thinking-enabled manifest lost its reasoning at
-    the first tool call and every following turn was answered without it.
-
-    A `thinking` block is only replayable with the signature that was issued for it, so an
-    unsigned one is dropped rather than sent — the provider rejects the whole turn on a
-    missing or unverifiable signature. `redacted_thinking` carries no readable text but
-    must still be echoed back, so it travels on its opaque `data` field alone.
-    """
-    blocks: list[dict[str, Any]] = []
-    for raw in m.thinking or []:
-        if not isinstance(raw, dict):
-            continue
-        kind = raw.get("type")
-        if kind == "thinking" and raw.get("signature"):
-            blocks.append(
-                {
-                    "type": "thinking",
-                    "thinking": str(raw.get("thinking") or ""),
-                    "signature": str(raw["signature"]),
-                }
-            )
-        elif kind == "redacted_thinking" and raw.get("data"):
-            blocks.append({"type": "redacted_thinking", "data": str(raw["data"])})
-    return blocks
-
-
-def _tool_json_schema(tool: Tool) -> dict[str, Any]:
-    if tool.raw_input_schema is not None:
-        return tool.raw_input_schema
-    schema = tool.args_schema
-    if schema is None:
-        return {"type": "object", "properties": {}}
-    if isinstance(schema, dict):
-        return schema
-    if hasattr(schema, "model_json_schema"):
-        return schema.model_json_schema()
-    return {"type": "object", "properties": {}}
-
-
-def _tools_to_openai(tools: list[Tool]) -> list[dict[str, Any]]:
-    return [
-        {
-            "type": "function",
-            "function": {
-                "name": t.name,
-                "description": t.description,
-                "parameters": _tool_json_schema(t),
-            },
-        }
-        for t in tools
-    ]
-
-
-def _parse_openai_tool_calls(raw: list[dict[str, Any]] | None) -> list[ToolCall] | None:
-    if not raw:
-        return None
-    calls: list[ToolCall] = []
-    for tc in raw:
-        fn = tc.get("function") or {}
-        args_raw = fn.get("arguments") or "{}"
-        try:
-            args = json.loads(args_raw) if isinstance(args_raw, str) else dict(args_raw)
-        except json.JSONDecodeError:
-            args = {"_raw": args_raw}
-        calls.append(ToolCall(id=str(tc.get("id") or ""), name=str(fn.get("name") or ""), args=args))
-    return calls
-
-
-@dataclass
-class _HttpModelClient(ABC):
-    """Shared transport for the HTTP providers: OpenAI-style and Anthropic.
-
-    This was one class carrying a `style: Literal["openai", "anthropic"]` flag and
-    branching on it in `chat`, `stream_turn` and `stream`, with eight provider-specific
-    methods behind them — while the `ModelProvider` Protocol and the provider registry
-    right above it already described exactly the seam that flag was standing in for.
-    All three factories returned this one class.
-
-    The subclasses now hold everything wire-specific. This base owns only what does not
-    differ: the connection fields, and resolving `ModelChatOptions` against `spec`
-    defaults once so the three entry points cannot disagree about what temperature or
-    token ceiling a turn ran with.
-    """
-
-    model_id: str
-    route: ModelRoute
-    settings: Settings
-    spec: Any
-    base_url: str
-    api_key: str
-
-    def _timeout(self) -> httpx.Timeout:
-        """Request timeout for this client, from the `Settings` it was constructed with.
-
-        Read off the instance rather than the process-global settings: `build_model` exists
-        so a caller can pass its own `Settings`, and every other field here honours that.
-        On a streaming call the read bound applies between chunks, not to the whole turn.
-        """
-        return httpx.Timeout(
-            float(self.settings.model_timeout_seconds),
-            connect=DEFAULT_CONNECT_TIMEOUT_S,
-        )
-
-    def _resolve(self, opts: ModelChatOptions | None) -> tuple[ModelChatOptions, float, int | None]:
-        """Options for this turn, with `spec` supplying whatever the caller left unset."""
-        opts = opts or ModelChatOptions()
-        temperature = (
-            opts.temperature if opts.temperature is not None else getattr(self.spec, "temperature", 0)
-        )
-        max_tokens = opts.max_tokens or getattr(self.spec, "max_tokens", None)
-        return opts, temperature, max_tokens
-
-    async def chat(
-        self,
-        messages: list[ChatMessage],
-        tools: list[Tool],
-        opts: ModelChatOptions | None = None,
-    ) -> ModelChatResult:
-        opts, temperature, max_tokens = self._resolve(opts)
-        return await self._chat(messages, tools, temperature, max_tokens, isolate_cache=opts.isolate_cache)
-
-    async def stream_turn(
-        self,
-        messages: list[ChatMessage],
-        tools: list[Tool],
-        opts: ModelChatOptions | None = None,
-    ) -> AsyncIterator[StreamDelta | ModelChatResult]:
-        """Stream one turn in a single request, ending with the authoritative result.
-
-        The agent loop used to stream a turn for display and then call `chat()` to get
-        the real answer — two full inferences for one turn. That billed the input twice,
-        metered only the second (so `limits.max_cost_usd` and the token budgets counted
-        roughly half of what a streaming run actually spent), and sampled the answer
-        twice, so the text a user watched arrive could differ from the text that was
-        saved. It also meant the streamed request carried no tools at all.
-
-        One request now yields display deltas and finishes by yielding the
-        `ModelChatResult` — same message, tool calls, stop reason and usage that `chat()`
-        would have returned. Callers distinguish the final item by type.
-        """
-        _, temperature, max_tokens = self._resolve(opts)
-        async for item in self._stream_turn(messages, tools, temperature, max_tokens):
-            yield item
-
-    async def stream(
-        self,
-        messages: list[ChatMessage],
-        tools: list[Tool],
-        opts: ModelChatOptions | None = None,
-    ) -> AsyncIterator[str]:
-        _, temperature, max_tokens = self._resolve(opts)
-        async for chunk in self._stream(messages, tools, temperature, max_tokens):
-            yield chunk
-
-    # --- what a wire format must provide -------------------------------------------
-    #
-    # Abstract, so a wire format missing one fails at construction rather than at the
-    # first call that happens to need it.
-
-    @abstractmethod
-    def _body(
-        self,
-        messages: list[ChatMessage],
-        tools: list[Tool],
-        temperature: float,
-        max_tokens: int | None,
-        *,
-        isolate_cache: bool = False,
-    ) -> dict[str, Any]:
-        raise NotImplementedError
-
-    @abstractmethod
-    async def _chat(
-        self,
-        messages: list[ChatMessage],
-        tools: list[Tool],
-        temperature: float,
-        max_tokens: int | None,
-        *,
-        isolate_cache: bool = False,
-    ) -> ModelChatResult:
-        raise NotImplementedError
-
-    @abstractmethod
-    def _stream_turn(
-        self,
-        messages: list[ChatMessage],
-        tools: list[Tool],
-        temperature: float,
-        max_tokens: int | None,
-    ) -> AsyncIterator[StreamDelta | ModelChatResult]:
-        raise NotImplementedError
-
-    @abstractmethod
-    def _stream(
-        self,
-        messages: list[ChatMessage],
-        tools: list[Tool],
-        temperature: float,
-        max_tokens: int | None,
-    ) -> AsyncIterator[str]:
-        raise NotImplementedError
-
-
-@dataclass
-class _OpenAIClient(_HttpModelClient):
-    """The OpenAI chat-completions wire format — also Ollama and any LiteLLM gateway."""
-
-    def _body(
-        self,
-        messages: list[ChatMessage],
-        tools: list[Tool],
-        temperature: float,
-        max_tokens: int | None,
-        *,
-        isolate_cache: bool = False,
-    ) -> dict[str, Any]:
-        body: dict[str, Any] = {
-            "model": self.route.model,
-            "messages": _messages_to_openai(messages),
-            "temperature": temperature,
-        }
-        if max_tokens:
-            body["max_tokens"] = max_tokens
-        if tools:
-            body["tools"] = _tools_to_openai(tools)
-        apply_openai_thinking_cache(body, self.spec, isolate_cache=isolate_cache)
-        return body
-
-    async def _chat(
-        self,
-        messages: list[ChatMessage],
-        tools: list[Tool],
-        temperature: float,
-        max_tokens: int | None,
-        *,
-        isolate_cache: bool = False,
-    ) -> ModelChatResult:
-        body = self._body(messages, tools, temperature, max_tokens, isolate_cache=isolate_cache)
-        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
-        async with httpx.AsyncClient(timeout=self._timeout()) as client:
-            resp = await _post_with_retry(
-                client,
-                f"{self.base_url.rstrip('/')}/chat/completions",
-                label="openai",
-                json=body,
-                headers=headers,
-            )
-            if resp.status_code >= 400:
-                raise ModelGatewayError("openai", resp.status_code, resp.text)
-            data = resp.json()
-        choice = (data.get("choices") or [{}])[0]
-        msg = choice.get("message") or {}
-        usage_raw = data.get("usage") or {}
-        tool_calls = _parse_openai_tool_calls(msg.get("tool_calls"))
-        stop = _map_stop(choice.get("finish_reason"), _OPENAI_STOP, had_tool_calls=bool(tool_calls))
-        return ModelChatResult(
-            message=ChatMessage(
-                role="assistant",
-                content=str(msg.get("content") or ""),
-                tool_calls=tool_calls,
-            ),
-            stop_reason=stop,
-            usage=_openai_usage(usage_raw),
-        )
-
-    async def _stream_turn(
-        self,
-        messages: list[ChatMessage],
-        tools: list[Tool],
-        temperature: float,
-        max_tokens: int | None,
-    ) -> AsyncIterator[StreamDelta | ModelChatResult]:
-        body = self._body(messages, tools, temperature, max_tokens)
-        body["stream"] = True
-        # Usage is omitted from a streamed response unless it is asked for, and without
-        # it a streaming turn would meter as zero tokens.
-        body["stream_options"] = {"include_usage": True}
-        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
-
-        text_parts: list[str] = []
-        tools_by_index: dict[int, dict[str, Any]] = {}
-        usage = TokenUsage()
-        raw_stop: str | None = None
-
-        async with (
-            httpx.AsyncClient(timeout=self._timeout()) as client,
-            client.stream(
-                "POST",
-                f"{self.base_url.rstrip('/')}/chat/completions",
-                json=body,
-                headers=headers,
-            ) as resp,
-        ):
-            if resp.status_code >= 400:
-                raw = await resp.aread()
-                raise ModelGatewayError("openai", resp.status_code, raw.decode("utf-8", errors="replace"))
-            async for line in resp.aiter_lines():
-                if not line:
-                    continue
-                if line.startswith("data:"):
-                    payload = line[5:].strip()
-                elif line.startswith("{"):
-                    payload = line.strip()
-                else:
-                    continue
-                if payload == "[DONE]":
-                    break
-                try:
-                    data = json.loads(payload)
-                except json.JSONDecodeError:
-                    continue
-
-                if data.get("usage"):
-                    usage = _openai_usage(data["usage"])
-                for choice in data.get("choices") or []:
-                    raw_stop = choice.get("finish_reason") or raw_stop
-                    delta = choice.get("delta") or {}
-                    content = delta.get("content")
-                    if content:
-                        text_parts.append(str(content))
-                        yield StreamDelta(kind="text", text=str(content))
-                    for raw_call in delta.get("tool_calls") or []:
-                        index = int(raw_call.get("index") or 0)
-                        entry = tools_by_index.setdefault(index, {"id": "", "name": "", "json": ""})
-                        if raw_call.get("id"):
-                            entry["id"] = str(raw_call["id"])
-                        fn = raw_call.get("function") or {}
-                        if fn.get("name"):
-                            entry["name"] = str(fn["name"])
-                        if fn.get("arguments"):
-                            entry["json"] = str(entry["json"]) + str(fn["arguments"])
-
-        tool_calls = [
-            ToolCall(
-                id=entry["id"] or f"call_{uuid.uuid4().hex[:12]}",
-                name=str(entry["name"]),
-                args=_parse_tool_arguments(entry["json"]),
-            )
-            for _, entry in sorted(tools_by_index.items())
-            if entry.get("name")
-        ]
-        yield ModelChatResult(
-            message=ChatMessage(
-                role="assistant",
-                content="".join(text_parts),
-                tool_calls=tool_calls or None,
-            ),
-            stop_reason=_map_stop(raw_stop, _OPENAI_STOP, had_tool_calls=bool(tool_calls)),
-            usage=usage,
-        )
-
-    async def _stream(
-        self,
-        messages: list[ChatMessage],
-        tools: list[Tool],
-        temperature: float,
-        max_tokens: int | None,
-    ) -> AsyncIterator[str]:
-        body: dict[str, Any] = {
-            "model": self.route.model,
-            "messages": _messages_to_openai(messages),
-            "temperature": temperature,
-            "stream": True,
-        }
-        if max_tokens:
-            body["max_tokens"] = max_tokens
-        apply_openai_thinking_cache(body, self.spec)
-        # Streaming path is text-oriented; tool calls use chat() in the agent loop.
-        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
-        async with (
-            httpx.AsyncClient(timeout=self._timeout()) as client,
-            client.stream(
-                "POST",
-                f"{self.base_url.rstrip('/')}/chat/completions",
-                json=body,
-                headers=headers,
-            ) as resp,
-        ):
-            if resp.status_code >= 400:
-                text = await resp.aread()
-                raise ModelGatewayError("openai", resp.status_code, text.decode("utf-8", errors="replace"))
-            async for line in resp.aiter_lines():
-                if not line:
-                    continue
-                if line.startswith("data:"):
-                    payload = line[5:].strip()
-                elif line.startswith("{"):
-                    payload = line.strip()
-                else:
-                    continue
-                if payload == "[DONE]":
-                    break
-                try:
-                    data = json.loads(payload)
-                except json.JSONDecodeError:
-                    continue
-                for choice in data.get("choices") or []:
-                    delta = choice.get("delta") or {}
-                    content = delta.get("content")
-                    if content:
-                        yield str(content)
-
-
-@dataclass
-class _AnthropicClient(_HttpModelClient):
-    """The Anthropic messages wire format, including thinking blocks and cache points."""
-
-    def _body(
-        self,
-        messages: list[ChatMessage],
-        tools: list[Tool],
-        temperature: float,
-        max_tokens: int | None,
-        *,
-        isolate_cache: bool = False,
-    ) -> dict[str, Any]:
-        system = ""
-        converted: list[dict[str, Any]] = []
-        for m in messages:
-            if m.role == "system":
-                system = (system + "\n" + m.content).strip() if system else m.content
-                continue
-            if m.role == "tool":
-                converted.append(
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "tool_result",
-                                "tool_use_id": m.tool_call_id,
-                                "content": m.content,
-                            }
-                        ],
-                    }
-                )
-                continue
-            if m.role == "assistant" and m.tool_calls:
-                # Thinking blocks come first and verbatim: with extended thinking on, the
-                # provider rejects a turn that replays a tool call without the signed
-                # reasoning that produced it.
-                blocks: list[dict[str, Any]] = _anthropic_thinking_blocks(m)
-                if m.content:
-                    blocks.append({"type": "text", "text": m.content})
-                for tc in m.tool_calls:
-                    blocks.append({"type": "tool_use", "id": tc.id, "name": tc.name, "input": tc.args})
-                converted.append({"role": "assistant", "content": blocks})
-                continue
-            converted.append(_anthropic_user_or_plain(m))
-
-        body: dict[str, Any] = {
-            "model": self.route.model,
-            "messages": converted,
-            "temperature": temperature,
-            "max_tokens": max_tokens or _DEFAULT_MAX_TOKENS,
-        }
-        if system:
-            body["system"] = system
-        if tools:
-            body["tools"] = [
-                {
-                    "name": t.name,
-                    "description": t.description,
-                    "input_schema": _tool_json_schema(t),
-                }
-                for t in tools
-            ]
-        apply_anthropic_thinking_cache(body, self.spec, self.route.model, isolate_cache=isolate_cache)
-        return body
-
-    async def _chat(
-        self,
-        messages: list[ChatMessage],
-        tools: list[Tool],
-        temperature: float,
-        max_tokens: int | None,
-        *,
-        isolate_cache: bool = False,
-    ) -> ModelChatResult:
-        body = self._body(messages, tools, temperature, max_tokens, isolate_cache=isolate_cache)
-        headers = {
-            "x-api-key": self.api_key,
-            "anthropic-version": "2023-06-01",
-            "Content-Type": "application/json",
-        }
-        async with httpx.AsyncClient(timeout=self._timeout()) as client:
-            resp = await _post_with_retry(
-                client,
-                f"{self.base_url.rstrip('/')}/v1/messages",
-                label="anthropic",
-                json=body,
-                headers=headers,
-            )
-            if resp.status_code >= 400:
-                raise ModelGatewayError("anthropic", resp.status_code, resp.text)
-            data = resp.json()
-        content_blocks = data.get("content") or []
-        text_parts: list[str] = []
-        tool_calls: list[ToolCall] = []
-        thinking_blocks: list[dict[str, Any]] = []
-        for b in content_blocks:
-            if b.get("type") == "text":
-                text_parts.append(str(b.get("text") or ""))
-            elif b.get("type") == "tool_use":
-                tool_calls.append(
-                    ToolCall(
-                        id=str(b.get("id") or ""),
-                        name=str(b.get("name") or ""),
-                        args=dict(b.get("input") or {}),
-                    )
-                )
-            elif b.get("type") in ("thinking", "redacted_thinking"):
-                thinking_blocks.append(dict(b))
-        usage_raw = data.get("usage") or {}
-        stop = _map_stop(data.get("stop_reason"), _ANTHROPIC_STOP, had_tool_calls=bool(tool_calls))
-        return ModelChatResult(
-            message=ChatMessage(
-                role="assistant",
-                content="".join(text_parts),
-                tool_calls=tool_calls or None,
-                thinking=thinking_blocks or None,
-            ),
-            stop_reason=stop,
-            usage=TokenUsage(
-                input=int(usage_raw.get("input_tokens") or 0),
-                output=int(usage_raw.get("output_tokens") or 0),
-                cache_creation=int(usage_raw.get("cache_creation_input_tokens") or 0),
-                cache_read=int(usage_raw.get("cache_read_input_tokens") or 0),
-            ),
-        )
-
-    async def _stream_turn(
-        self,
-        messages: list[ChatMessage],
-        tools: list[Tool],
-        temperature: float,
-        max_tokens: int | None,
-    ) -> AsyncIterator[StreamDelta | ModelChatResult]:
-        body = self._body(messages, tools, temperature, max_tokens)
-        body["stream"] = True
-        headers = {
-            "x-api-key": self.api_key,
-            "anthropic-version": "2023-06-01",
-            "Content-Type": "application/json",
-        }
-
-        text_parts: list[str] = []
-        thinking_by_index: dict[int, dict[str, Any]] = {}
-        tools_by_index: dict[int, dict[str, Any]] = {}
-        usage = TokenUsage()
-        raw_stop: str | None = None
-
-        async with (
-            httpx.AsyncClient(timeout=self._timeout()) as client,
-            client.stream(
-                "POST",
-                f"{self.base_url.rstrip('/')}/v1/messages",
-                json=body,
-                headers=headers,
-            ) as resp,
-        ):
-            if resp.status_code >= 400:
-                raw = await resp.aread()
-                raise ModelGatewayError("anthropic", resp.status_code, raw.decode("utf-8", errors="replace"))
-            async for line in resp.aiter_lines():
-                if not line.startswith("data:"):
-                    continue
-                payload = line[5:].strip()
-                if not payload or payload == "[DONE]":
-                    continue
-                try:
-                    data = json.loads(payload)
-                except json.JSONDecodeError:
-                    continue
-                kind = data.get("type")
-
-                if kind == "message_start":
-                    raw_usage = (data.get("message") or {}).get("usage") or {}
-                    usage.input = int(raw_usage.get("input_tokens") or 0)
-                    usage.cache_creation = int(raw_usage.get("cache_creation_input_tokens") or 0)
-                    usage.cache_read = int(raw_usage.get("cache_read_input_tokens") or 0)
-                elif kind == "content_block_start":
-                    index = int(data.get("index") or 0)
-                    block = data.get("content_block") or {}
-                    btype = block.get("type")
-                    if btype == "tool_use":
-                        tools_by_index[index] = {
-                            "id": str(block.get("id") or ""),
-                            "name": str(block.get("name") or ""),
-                            "json": "",
-                        }
-                    elif btype in ("thinking", "redacted_thinking"):
-                        thinking_by_index[index] = dict(block)
-                    elif btype == "text" and block.get("text"):
-                        text_parts.append(str(block["text"]))
-                        yield StreamDelta(kind="text", text=str(block["text"]))
-                elif kind == "content_block_delta":
-                    index = int(data.get("index") or 0)
-                    delta = data.get("delta") or {}
-                    dtype = delta.get("type")
-                    if dtype == "text_delta" and delta.get("text"):
-                        text_parts.append(str(delta["text"]))
-                        yield StreamDelta(kind="text", text=str(delta["text"]))
-                    elif dtype == "thinking_delta" and delta.get("thinking"):
-                        block = thinking_by_index.setdefault(index, {"type": "thinking", "thinking": ""})
-                        block["thinking"] = str(block.get("thinking") or "") + str(delta["thinking"])
-                        yield StreamDelta(kind="thinking", text=str(delta["thinking"]))
-                    elif dtype == "signature_delta" and delta.get("signature"):
-                        block = thinking_by_index.setdefault(index, {"type": "thinking", "thinking": ""})
-                        block["signature"] = str(block.get("signature") or "") + str(delta["signature"])
-                    elif dtype == "input_json_delta":
-                        entry = tools_by_index.setdefault(index, {"id": "", "name": "", "json": ""})
-                        entry["json"] = str(entry["json"]) + str(delta.get("partial_json") or "")
-                elif kind == "message_delta":
-                    raw_stop = (data.get("delta") or {}).get("stop_reason") or raw_stop
-                    out = (data.get("usage") or {}).get("output_tokens")
-                    if out is not None:
-                        usage.output = int(out)
-
-        tool_calls = [
-            ToolCall(
-                id=entry["id"] or f"call_{uuid.uuid4().hex[:12]}",
-                name=str(entry["name"]),
-                args=_parse_tool_arguments(entry["json"]),
-            )
-            for _, entry in sorted(tools_by_index.items())
-            if entry.get("name")
-        ]
-        thinking = [thinking_by_index[i] for i in sorted(thinking_by_index)]
-        yield ModelChatResult(
-            message=ChatMessage(
-                role="assistant",
-                content="".join(text_parts),
-                tool_calls=tool_calls or None,
-                thinking=thinking or None,
-            ),
-            stop_reason=_map_stop(raw_stop, _ANTHROPIC_STOP, had_tool_calls=bool(tool_calls)),
-            usage=usage,
-        )
-
-    async def _stream(
-        self,
-        messages: list[ChatMessage],
-        tools: list[Tool],
-        temperature: float,
-        max_tokens: int | None,
-    ) -> AsyncIterator[str]:
-        system = ""
-        converted: list[dict[str, Any]] = []
-        for m in messages:
-            if m.role == "system":
-                system = (system + "\n" + m.content).strip() if system else m.content
-                continue
-            if m.role == "tool":
-                converted.append(
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "tool_result",
-                                "tool_use_id": m.tool_call_id,
-                                "content": m.content,
-                            }
-                        ],
-                    }
-                )
-                continue
-            if m.role == "assistant" and m.tool_calls:
-                # Thinking blocks come first and verbatim: with extended thinking on, the
-                # provider rejects a turn that replays a tool call without the signed
-                # reasoning that produced it.
-                blocks: list[dict[str, Any]] = _anthropic_thinking_blocks(m)
-                if m.content:
-                    blocks.append({"type": "text", "text": m.content})
-                for tc in m.tool_calls:
-                    blocks.append({"type": "tool_use", "id": tc.id, "name": tc.name, "input": tc.args})
-                converted.append({"role": "assistant", "content": blocks})
-                continue
-            converted.append(_anthropic_user_or_plain(m))
-
-        body: dict[str, Any] = {
-            "model": self.route.model,
-            "messages": converted,
-            "temperature": temperature,
-            "max_tokens": max_tokens or _DEFAULT_MAX_TOKENS,
-            "stream": True,
-        }
-        if system:
-            body["system"] = system
-        apply_anthropic_thinking_cache(body, self.spec, self.route.model)
-        headers = {
-            "x-api-key": self.api_key,
-            "anthropic-version": "2023-06-01",
-            "Content-Type": "application/json",
-        }
-        async with (
-            httpx.AsyncClient(timeout=self._timeout()) as client,
-            client.stream(
-                "POST",
-                f"{self.base_url.rstrip('/')}/v1/messages",
-                json=body,
-                headers=headers,
-            ) as resp,
-        ):
-            if resp.status_code >= 400:
-                text = await resp.aread()
-                raise ModelGatewayError(
-                    "anthropic",
-                    resp.status_code,
-                    text.decode("utf-8", errors="replace"),
-                )
-            async for line in resp.aiter_lines():
-                if not line.startswith("data:"):
-                    continue
-                payload = line[5:].strip()
-                if not payload or payload == "[DONE]":
-                    continue
-                try:
-                    data = json.loads(payload)
-                except json.JSONDecodeError:
-                    continue
-                if data.get("type") == "content_block_delta":
-                    delta = data.get("delta") or {}
-                    if delta.get("type") == "text_delta" and delta.get("text"):
-                        yield str(delta["text"])
-                elif data.get("type") == "content_block_start":
-                    block = data.get("content_block") or {}
-                    if block.get("type") == "text" and block.get("text"):
-                        yield str(block["text"])
 
 
 @dataclass
@@ -1393,7 +207,7 @@ class _FallbackClient:
     async def chat(
         self,
         messages: list[ChatMessage],
-        tools: list[Tool],
+        tools: Sequence[ToolSchema],
         opts: ModelChatOptions | None = None,
     ) -> ModelChatResult:
         chain = [self.primary, *self.fallbacks]
@@ -1422,7 +236,7 @@ class _FallbackClient:
     async def stream_turn(
         self,
         messages: list[ChatMessage],
-        tools: list[Tool],
+        tools: Sequence[ToolSchema],
         opts: ModelChatOptions | None = None,
     ) -> AsyncIterator[StreamDelta | ModelChatResult]:
         """Advance to the next model on a provider error, but only before anything shipped.
@@ -1463,7 +277,7 @@ class _FallbackClient:
     async def stream(
         self,
         messages: list[ChatMessage],
-        tools: list[Tool],
+        tools: Sequence[ToolSchema],
         opts: ModelChatOptions | None = None,
     ) -> AsyncIterator[str]:
         chain = [self.primary, *self.fallbacks]
@@ -1509,7 +323,7 @@ class _EscalationClient:
     async def chat(
         self,
         messages: list[ChatMessage],
-        tools: list[Tool],
+        tools: Sequence[ToolSchema],
         opts: ModelChatOptions | None = None,
     ) -> ModelChatResult:
         result = await self.primary.chat(messages, tools, opts)
@@ -1528,7 +342,7 @@ class _EscalationClient:
     async def stream_turn(
         self,
         messages: list[ChatMessage],
-        tools: list[Tool],
+        tools: Sequence[ToolSchema],
         opts: ModelChatOptions | None = None,
     ) -> AsyncIterator[StreamDelta | ModelChatResult]:
         """Escalation needs the finished reply to judge confidence, so it cannot stream.
@@ -1547,7 +361,7 @@ class _EscalationClient:
     async def stream(
         self,
         messages: list[ChatMessage],
-        tools: list[Tool],
+        tools: Sequence[ToolSchema],
         opts: ModelChatOptions | None = None,
     ) -> AsyncIterator[str]:
         # Confidence check needs the full reply; stream escalate path when needed.
@@ -1567,45 +381,114 @@ def _is_provider_error(err: object) -> bool:
     return bool(isinstance(status, int) and (status >= 500 or status == 429))
 
 
-def _make_anthropic(model_id: str, route: ModelRoute, spec: Any, settings: Settings) -> ModelClient:
-    return _AnthropicClient(
-        model_id=model_id,
-        route=route,
-        settings=settings,
-        spec=spec,
-        base_url="https://api.anthropic.com",
-        api_key=settings.anthropic_api_key,
-    )
+def parse_provider_options(settings: Settings | None = None) -> dict[str, dict[str, str]]:
+    """`FELIX_MODEL_PROVIDER_OPTIONS` — per-provider endpoint and credential.
+
+    The built-in providers have named `Settings` fields, but a plugin's cannot: `Settings`
+    is `extra="ignore"`, so `FELIX_MYPROVIDER_API_KEY` never lands on it. Without this a
+    registered third-party provider had no way to be given a key at all, which made the
+    open registry a good deal less open than it looked.
+
+    Malformed JSON degrades to no options with a warning rather than failing startup, the
+    same way `parse_model_routes` treats a malformed route table.
+    """
+    settings = settings or get_settings()
+    raw = (getattr(settings, "model_provider_options", "") or "").strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.warning("invalid FELIX_MODEL_PROVIDER_OPTIONS; ignoring")
+        return {}
+    if not isinstance(parsed, dict):
+        logger.warning("FELIX_MODEL_PROVIDER_OPTIONS must be an object; ignoring")
+        return {}
+    out: dict[str, dict[str, str]] = {}
+    for name, opts in parsed.items():
+        if isinstance(opts, dict):
+            # `None` and booleans are dropped rather than stringified: `str(None)` is
+            # `"None"`, which is truthy, so a `null` api_key suppressed the settings-field
+            # fallback and the missing-credential warning and went out as `Bearer None`.
+            out[str(name)] = {
+                str(k): str(v) for k, v in opts.items() if v is not None and not isinstance(v, bool)
+            }
+    return out
 
 
-def _make_openai(model_id: str, route: ModelRoute, spec: Any, settings: Settings) -> ModelClient:
-    base = settings.litellm_base_url or "https://api.openai.com/v1"
-    return _OpenAIClient(
-        model_id=model_id,
-        route=route,
-        settings=settings,
-        spec=spec,
-        base_url=base if base.endswith("/v1") else f"{base.rstrip('/')}/v1",
-        api_key=settings.openai_api_key,
-    )
+# Providers already warned about a missing credential, so the notice is a startup-ish fact
+# rather than per-turn noise.
+_WARNED_NO_CREDENTIAL: set[str] = set()
 
 
-def _make_ollama(model_id: str, route: ModelRoute, spec: Any, settings: Settings) -> ModelClient:
-    base = settings.ollama_base_url.rstrip("/") + "/v1"
-    return _OpenAIClient(
-        model_id=model_id,
-        route=route,
-        settings=settings,
-        spec=spec,
-        base_url=base,
-        api_key="ollama",
-    )
+def resolve_provider_config(spec: ProviderSpec, settings: Settings) -> tuple[str, str, dict[str, str]]:
+    """The endpoint and credential for one provider, most specific source winning.
+
+    An explicit `FELIX_MODEL_PROVIDER_OPTIONS` entry beats the provider's named `Settings`
+    field, which beats the descriptor's default. That ordering is what lets an operator
+    point a built-in provider somewhere else without a new setting, and lets a plugin
+    provider be configured with no `Settings` field at all.
+    """
+    options = parse_provider_options(settings).get(spec.name, {})
+
+    configured = options.get("base_url")
+    if not configured and spec.base_url_config_key:
+        configured = str(getattr(settings, spec.base_url_config_key, "") or "")
+    base_url = spec.resolve_base_url(configured, options)
+
+    api_key = options.get("api_key") or ""
+    if not api_key and spec.api_key_config_key:
+        api_key = str(getattr(settings, spec.api_key_config_key, "") or "")
+    if not api_key and spec.api_key_literal:
+        api_key = spec.api_key_literal
+    if not api_key and spec.name not in _WARNED_NO_CREDENTIAL:
+        # Once per provider, not once per turn. `resolve_provider_config` runs on the
+        # per-request path — `build_model` from the react loop, from each sub-agent, and
+        # from the inbound injection screener on every turn — so an unconditional warning
+        # is unbounded log volume for a configuration that is legitimate (a local gateway
+        # with no key), keyed to whatever rate a caller chooses. A guard that fires on every
+        # request for a supported setup carries no signal.
+        _WARNED_NO_CREDENTIAL.add(spec.name)
+        logger.warning(
+            "provider %r has no credential; requests will be sent unauthenticated. Set it "
+            'in FELIX_MODEL_PROVIDER_OPTIONS, e.g. {"%s": {"api_key": "..."}}',
+            spec.name,
+            spec.name,
+        )
+    return base_url, api_key, spec.resolve_headers(options)
+
+
+def provider_factory(spec: ProviderSpec) -> Callable[..., ModelClient]:
+    """Adapt a `ProviderSpec` into the `(logical_id, route, spec, settings)` factory."""
+
+    def factory(model_id: str, route: ModelRoute, model_spec: Any, settings: Settings) -> ModelClient:
+        base_url, api_key, headers = resolve_provider_config(spec, settings)
+        return spec.wire(
+            model_id=model_id,
+            route=route,
+            settings=settings,
+            spec=model_spec,
+            base_url=base_url,
+            api_key=api_key,
+            extra_headers=headers,
+        )
+
+    factory.__name__ = f"_make_{spec.name}"
+    factory.__qualname__ = factory.__name__
+    return factory
 
 
 def register_builtin_providers() -> None:
-    register_model_provider("anthropic", _make_anthropic)
-    register_model_provider("openai", _make_openai)
-    register_model_provider("ollama", _make_ollama)
+    """Register every built-in provider. Idempotent — registration is last-write-wins.
+
+    This used to be guarded in `build_model` by `if not list_model_providers()`, a sentinel
+    that could only be right while nothing else ever registered first: after a
+    `reset_model_provider_registry()` it restored the three builtins and silently dropped
+    every plugin provider, because `load_optional_plugins` had already run and would not
+    run again.
+    """
+    for spec in builtin_provider_specs():
+        register_model_provider(spec.name, provider_factory(spec))
 
 
 def build_one_model(settings: Settings, spec: Any, logical_id: str) -> ModelClient:
@@ -1624,8 +507,6 @@ def build_one_model(settings: Settings, spec: Any, logical_id: str) -> ModelClie
 
 def build_model(settings: Settings | None, spec: Any) -> ModelClient:
     settings = settings or get_settings()
-    if not list_model_providers():
-        register_builtin_providers()
     primary_id = getattr(spec, "id", None) or settings.default_model_id
     client = build_one_model(settings, spec, primary_id)
     fallbacks_ids = list(getattr(spec, "fallbacks", None) or [])
@@ -1652,18 +533,34 @@ def build_model(settings: Settings | None, spec: Any) -> ModelClient:
 
 
 __all__ = [
+    "MODEL_MAX_RETRIES",
+    "AnthropicMessagesClient",
+    "ChatMessage",
+    "HttpModelClient",
     "ModelChatOptions",
     "ModelChatResult",
     "ModelClient",
+    "ModelConfig",
     "ModelGatewayError",
     "ModelProvider",
     "ModelRoute",
+    "OpenAICompletionsClient",
+    "StopReason",
+    "StreamDelta",
     "TokenUsage",
+    "ToolCall",
+    "ToolSchema",
     "apply_anthropic_thinking_cache",
     "apply_openai_thinking_cache",
     "build_model",
+    "build_one_model",
     "parse_model_routes",
+    "parse_provider_options",
+    "post_with_retry",
+    "provider_factory",
     "reasoning_effort_from_budget",
     "record_usage",
     "register_builtin_providers",
+    "resolve_provider_config",
+    "wire_model_id",
 ]

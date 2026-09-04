@@ -310,6 +310,10 @@ async def resolve_manifest(
             cache_key=f"global_object:{manifest_name}",
         )
 
+    return _resolve_from_bundled(manifest_name, bundled_dir)
+
+
+def _resolve_from_bundled(manifest_name: str, bundled_dir: str | None) -> ResolvedManifest:
     try:
         bundled = load_bundled(manifest_name, bundled_dir=bundled_dir)
     except FileNotFoundError as exc:
@@ -326,10 +330,16 @@ def invalidate_active(tenant_id: str, name: str) -> None:
 
 
 def clear_resolver_cache() -> None:
+    from felix.manifests.loader import clear_bundled_cache
+
     _version_blob_cache.clear()
     _active_pointer_cache.clear()
     _tenant_obj_cache.clear()
     _global_obj_cache.clear()
+    # The bundled cache is a manifest cache like the rest, and under
+    # `manifest_source=bundled` it is the only one — leaving it out meant "clear the
+    # resolver cache" did not.
+    clear_bundled_cache()
 
 
 __all__ = [

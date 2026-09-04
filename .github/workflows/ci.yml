@@ -21,6 +21,7 @@ jobs:
       docker: ${{ steps.filter.outputs.docker }}
       helm: ${{ steps.filter.outputs.helm }}
       toolkit: ${{ steps.filter.outputs.toolkit }}
+      scalar: ${{ steps.filter.outputs.scalar }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
@@ -50,6 +51,11 @@ jobs:
             helm:
               - 'deploy/helm/**'
               - '.github/workflows/**'
+            # The pinned bundle and its hash live in one file, and the check reaches a
+            # third-party CDN — so it runs when that file moves, not on every PR.
+            scalar:
+              - 'apps/api/src/felix_api/docs.py'
+              - 'scripts/check-scalar-sri.py'
             toolkit:
               - '.claude/**'
               - 'CLAUDE.md'
@@ -93,6 +99,14 @@ jobs:
         run: uv run ruff check .
       - name: Ruff format check
         run: uv run ruff format --check .
+      # The docs page loads Scalar from a pinned CDN path under SRI. A version bump
+      # that leaves the hash stale blanks /docs while every test stays green, so the
+      # pairing is checked here rather than remembered.
+      - name: Scalar bundle integrity
+        if: needs.changes.outputs.scalar == 'true'
+        env:
+          FELIX_REQUIRE_SCALAR_SRI: '1'
+        run: uv run python scripts/check-scalar-sri.py
 
   typecheck:
     needs: changes

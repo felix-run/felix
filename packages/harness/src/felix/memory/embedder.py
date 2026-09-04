@@ -157,31 +157,68 @@ def _build_sentence_transformers(settings: Settings) -> Embedder:
     )
 
 
-def _build_openai(settings: Settings) -> Embedder:
-    return OpenAIEmbedder(
-        model=str(getattr(settings, "memory_embedding_model", "") or "text-embedding-3-small"),
-        api_key=str(getattr(settings, "openai_api_key", "") or ""),
-        base_url=str(getattr(settings, "openai_base_url", "") or "https://api.openai.com/v1"),
-        dim=int(getattr(settings, "memory_embedding_dim", 0) or 0) or None,
-        timeout_s=float(getattr(settings, "model_timeout_seconds", DEFAULT_EMBED_TIMEOUT_S)),
-    )
+def _build_compat(provider_name: str) -> EmbedderFactory:
+    """An embedder against a registered OpenAI-compatible provider that serves `/embeddings`.
 
+    Resolved through the same descriptor as the model client, so the two cannot disagree
+    about the endpoint or the credential — the disagreement the phantom
+    `settings.openai_base_url` caused, where the embedder silently always went to
+    api.openai.com while the model client honoured the configured gateway.
+    """
 
-def _build_ollama(settings: Settings) -> Embedder:
-    base = str(getattr(settings, "ollama_base_url", "") or "http://localhost:11434/v1")
-    return OpenAIEmbedder(
-        model=str(getattr(settings, "memory_embedding_model", "") or "nomic-embed-text"),
-        api_key="",
-        base_url=base,
-        dim=int(getattr(settings, "memory_embedding_dim", 0) or 0) or None,
-        timeout_s=float(getattr(settings, "model_timeout_seconds", DEFAULT_EMBED_TIMEOUT_S)),
-    )
+    def factory(settings: Settings) -> Embedder:
+        from felix_ai.providers import builtin_provider_specs
+
+        from felix.patterns.model import resolve_provider_config
+
+        spec = next(s for s in builtin_provider_specs() if s.name == provider_name)
+        base_url, api_key, _headers = resolve_provider_config(spec, settings)
+        # Only an *explicitly set* FELIX_MEMORY_EMBEDDING_MODEL wins. The field's schema
+        # default is `bge-base-en-v1.5`, a sentence-transformers name, and reading it
+        # unconditionally sent that string to OpenAI as a model id — which the old
+        # `_build_openai` did too, since its own default was unreachable behind a field
+        # that is never empty. Same trick `runtime.py` uses for `context_window_tokens`.
+        declared = "memory_embedding_model" in getattr(settings, "model_fields_set", set())
+        configured = str(getattr(settings, "memory_embedding_model", "") or "")
+        model = (configured if declared else "") or spec.embedding_model
+        if not model:
+            # An empty model id would go out as `{"model": ""}` and fail at the provider
+            # with an error naming neither Felix nor the setting to fix.
+            raise RuntimeError(
+                f"FELIX_MEMORY_EMBEDDER={provider_name} needs FELIX_MEMORY_EMBEDDING_MODEL "
+                f"— {provider_name} has no default embedding model."
+            )
+        return OpenAIEmbedder(
+            model=model,
+            api_key=api_key,
+            base_url=base_url,
+            dim=int(getattr(settings, "memory_embedding_dim", 0) or 0) or None,
+            timeout_s=float(getattr(settings, "model_timeout_seconds", DEFAULT_EMBED_TIMEOUT_S)),
+        )
+
+    return factory
 
 
 register_embedder_backend("none", _build_none)
 register_embedder_backend("sentence_transformers", _build_sentence_transformers)
-register_embedder_backend("openai", _build_openai)
-register_embedder_backend("ollama", _build_ollama)
+
+
+def _register_compat_embedders() -> None:
+    """Register every provider that *says* it serves `/embeddings`.
+
+    Registering the whole OpenAI-compatible table instead was wrong in a way that looked
+    right: several of those endpoints implement chat only, so `FELIX_MEMORY_EMBEDDER=groq`
+    passed the registry-backed startup validation and then failed at the first embed. The
+    capability belongs on the row.
+    """
+    from felix_ai.providers import builtin_provider_specs
+
+    for spec in builtin_provider_specs():
+        if spec.supports_embeddings:
+            register_embedder_backend(spec.name, _build_compat(spec.name))
+
+
+_register_compat_embedders()
 
 
 def build_embedder(settings: Settings) -> Embedder:

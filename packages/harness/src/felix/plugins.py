@@ -98,6 +98,19 @@ class PluginRegistry:
     def usage_sink_factory(self) -> Callable[[Settings], Any] | None:
         return self._usage_sink_factory
 
+    def register_model_provider(self, name: str, factory: Callable[..., Any]) -> None:
+        """Register a model provider, selected by `provider` in `FELIX_MODEL_ROUTES`.
+
+        Forwarded to the model registry rather than stored here, like the agent-loop hooks
+        below. It exists because a plugin previously had to reach into
+        `felix.patterns.model_registry` itself: the registry was open, but it was the one
+        open registry with no seam on this object and no example in the reference plugin,
+        so the documented way to add a provider was to read the source.
+        """
+        from felix.patterns.model_registry import register_model_provider
+
+        register_model_provider(name, factory)
+
     def register_startup_hook(self, hook: Callable[..., Awaitable[Any]]) -> None:
         self._startup_hooks.append(hook)
 

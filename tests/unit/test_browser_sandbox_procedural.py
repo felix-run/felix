@@ -92,8 +92,14 @@ async def test_browser_content_and_guards(monkeypatch: pytest.MonkeyPatch) -> No
         async def close(self) -> None:
             return None
 
+    launched_args: list[list[str]] = []
+
     class _Chromium:
-        async def launch(self, headless: bool = True) -> _Browser:
+        async def launch(self, headless: bool = True, args: list[str] | None = None) -> _Browser:
+            # Recorded, not just accepted: the resolver pin is the whole reason the browser
+            # is not a second, unvalidated lookup, and a fake that shrugs at `args` would
+            # let it be dropped silently.
+            launched_args.append(list(args or []))
             return _Browser()
 
     class _PW:
@@ -117,6 +123,9 @@ async def test_browser_content_and_guards(monkeypatch: pytest.MonkeyPatch) -> No
         ]
     )
     out = await tools[0].executor.execute({"url": "https://example.com/docs"}, ToolInvocationCtx())
+    assert launched_args and any(a.startswith("--host-resolver-rules=MAP ") for a in launched_args[0]), (
+        f"the navigation host was not pinned at launch: {launched_args}"
+    )
     assert "hello from page" in (out if isinstance(out, str) else out.content)
 
     blocked = await tools[0].executor.execute({"url": "https://evil.example/x"}, ToolInvocationCtx())

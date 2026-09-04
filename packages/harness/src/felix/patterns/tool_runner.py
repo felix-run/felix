@@ -94,6 +94,17 @@ class ToolRunner:
                     False,
                 )
             span.set_attribute("tool.transport", tool.executor.transport)
+            # Only the call itself. Everything after it is bookkeeping over a tool that has
+            # already run, and it used to sit inside this `try` with the execution — so a
+            # failure there fell into the handler below, which calls `run_after_tool` a second
+            # time and tells the model `[error/...]` for a call that succeeded. A model told a
+            # side-effecting tool failed may run it again.
+            #
+            # Reachable, though not by the obvious route: `run_after_tool` isolates each hook
+            # and `emit_agent_audit` swallows its own failures, so neither can raise. What can
+            # is the handling of a hook's *return* — an after-tool hook replacing `content`
+            # with an object whose `__str__` raises produced exactly two hook invocations,
+            # `[False, True]`, and an `[error/internal]` message for a successful tool.
             try:
                 result = await tool.executor.execute(
                     call.args,
@@ -102,46 +113,6 @@ class ToolRunner:
                         tool_call_id=call.id,
                         thread_id=thread_id,
                     ),
-                )
-                content = tool_output_content(result)
-                err = read_tool_error_code(result)
-                status = "denied" if is_wrapper_deny(result) else ("error" if err else "ok")
-                record_counter(
-                    "felix_tool_calls",
-                    {
-                        "transport": tool.executor.transport,
-                        "status": status,
-                        "manifest_id": self.manifest_id,
-                    },
-                )
-                emit_agent_audit(
-                    "tool_call" if status != "denied" else "policy_deny",
-                    status=status,
-                    manifest_id=self.manifest_id,
-                    payload={
-                        "tool": call.name,
-                        "tool_call_id": call.id,
-                        "thread_id": thread_id,
-                    },
-                )
-                after = await run_after_tool(
-                    {"id": call.id, "name": call.name, "args": call.args},
-                    result,
-                    is_error=bool(err),
-                    context={"manifest_id": self.manifest_id, "thread_id": thread_id},
-                )
-                terminate = bool(after and after.get("terminate"))
-                if after and after.get("content") is not None:
-                    content = str(after["content"])
-                return (
-                    "ok",
-                    ChatMessage(
-                        role="tool",
-                        tool_call_id=call.id,
-                        name=call.name,
-                        content=content,
-                    ),
-                    terminate,
                 )
             except Exception as exc:
                 code = infer_error_code(exc)
@@ -184,7 +155,75 @@ class ToolRunner:
                     terminate,
                 )
 
+            content, terminate = await self._record_and_postprocess(tool, call, result, thread_id=thread_id)
+
+            return (
+                "ok",
+                ChatMessage(
+                    role="tool",
+                    tool_call_id=call.id,
+                    name=call.name,
+                    content=content,
+                ),
+                terminate,
+            )
+
         return await with_span("tool.call", _run, {"tool": call.name})
+
+    async def _record_and_postprocess(
+        self,
+        tool: Tool,
+        call: ToolCall,
+        result: Any,
+        *,
+        thread_id: str | None,
+    ) -> tuple[str, bool]:
+        """Metering, audit and the after-tool hook, for a tool that has already run.
+
+        Separate from the call itself because none of it can undo the call. It used to share
+        the call's `try`, so a failure here fell into that handler — which invokes
+        `run_after_tool` a second time and reports `[error/...]` to the model for a tool that
+        succeeded. A model told a side-effecting tool failed may run it again.
+
+        `content` starts empty and keeps whatever it reached, because the thing that failed
+        may be `tool_output_content` itself.
+        """
+        content = ""
+        terminate = False
+        try:
+            content = tool_output_content(result)
+            err = read_tool_error_code(result)
+            status = "denied" if is_wrapper_deny(result) else ("error" if err else "ok")
+            record_counter(
+                "felix_tool_calls",
+                {
+                    "transport": tool.executor.transport,
+                    "status": status,
+                    "manifest_id": self.manifest_id,
+                },
+            )
+            emit_agent_audit(
+                "tool_call" if status != "denied" else "policy_deny",
+                status=status,
+                manifest_id=self.manifest_id,
+                payload={"tool": call.name, "tool_call_id": call.id, "thread_id": thread_id},
+            )
+            after = await run_after_tool(
+                {"id": call.id, "name": call.name, "args": call.args},
+                result,
+                is_error=bool(err),
+                context={"manifest_id": self.manifest_id, "thread_id": thread_id},
+            )
+            terminate = bool(after and after.get("terminate"))
+            if after and after.get("content") is not None:
+                content = str(after["content"])
+        except Exception:
+            logger.warning("post-call handling failed for %s; the tool already ran", call.name, exc_info=True)
+            record_counter(
+                "felix_control_degraded",
+                {"control": "after_tool", "manifest_id": self.manifest_id},
+            )
+        return content, terminate
 
     async def run_batch(
         self,

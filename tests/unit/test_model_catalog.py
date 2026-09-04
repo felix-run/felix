@@ -68,7 +68,9 @@ def test_family_fallback_is_conservative_on_context() -> None:
 
 def test_price_lookup_reads_the_same_record() -> None:
     for model_id in all_entries():
-        assert _lookup_price(model_id)["input"] == entry_for(model_id).pricing.input
+        pricing = entry_for(model_id).pricing
+        expected = pricing.input if pricing is not None else 0.0
+        assert _lookup_price(model_id)["input"] == expected
 
 
 def test_pricing_dict_omits_tiers_when_there_are_none() -> None:
@@ -95,6 +97,34 @@ def test_every_entry_is_internally_coherent(model_id: str) -> None:
     assert isinstance(entry, ModelCatalogEntry)
     assert entry.context_window >= 8_192
     assert entry.max_output_tokens >= 1_024
-    assert entry.pricing.output >= entry.pricing.input, "output is never cheaper than input"
-    assert entry.pricing.cache_read <= entry.pricing.input, "cache reads are a discount"
+    if entry.pricing is not None:
+        assert entry.pricing.output >= entry.pricing.input, "output is never cheaper than input"
+        assert entry.pricing.cache_read <= entry.pricing.input, "cache reads are a discount"
     assert "text" in entry.input_modalities
+
+
+def test_the_unpriced_set_is_exactly_this() -> None:
+    """Named exhaustively, not sampled: a *new* entry shipping unpriced silently zeroes
+    spend for a model that costs money, and the coherence assertions above now skip
+    unpriced entries. Adding one has to be a decision someone makes here."""
+    unpriced = {key for key, entry in all_entries().items() if entry.pricing is None}
+    assert unpriced == {"gpt-4.1", "gpt-4", "o1", "o3", "o4", "llama"}
+
+
+def test_an_entry_that_states_no_rates_has_none() -> None:
+    """`ModelPricing()` carries Claude Sonnet's list price in its own field defaults, so
+    while it was the field default, every entry that simply omitted rates billed at $3/$15
+    per Mtok. Several entries say in a comment that they have no bundled rate — and were
+    priced as Sonnet regardless."""
+    for model_id in ("gpt-4.1", "gpt-4", "o1", "o3", "o4", "llama"):
+        assert all_entries()[model_id].pricing is None, model_id
+
+
+def test_a_hosted_llama_is_not_free_just_because_it_says_llama() -> None:
+    """`entry_for` matches by substring, and Llama is served for money by Workers AI, Groq,
+    Together and Fireworks. Pricing the `llama` entry at zero would have made all of them
+    free to `limits.max_cost_usd`."""
+    from felix.model_catalog import is_priced
+
+    assert not is_priced("@cf/meta/llama-3.3-70b-instruct-fp8-fast")
+    assert entry_for("@cf/meta/llama-3.3-70b-instruct-fp8-fast").pricing is None

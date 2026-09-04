@@ -3,9 +3,11 @@
 Living tracker for what to build next. Update status in place; keep items
 concrete enough to pick up in a single session.
 
-**Repos:** `felix-run/felix` (harness) · `felix-run/web` (chat-ui + float + docs)
-**Live:** [api.felix.run](https://api.felix.run) · [chat.felix.run](https://chat.felix.run) · [float.felix.run](https://float.felix.run) · [docs.felix.run](https://docs.felix.run)
-**Last reviewed:** 2026-08-28 (extensibility audit: the seams that were open, the ones that only looked open, and the two that were bugs)
+**Repos:** `felix-run/felix` (harness) · `felix-run/web` (chat-ui + docs)
+**Live:** [api.felix.run](https://api.felix.run) · [chat.felix.run](https://chat.felix.run) · [docs.felix.run](https://docs.felix.run)
+**Last reviewed:** 2026-09-02 (product-depth audit: what the harness lets an agent actually *do*)
+
+Completed waves and what they taught now live in [HISTORY.md](HISTORY.md).
 
 ---
 
@@ -15,468 +17,451 @@ concrete enough to pick up in a single session.
 |--------|---------|
 | `[ ]` | Not started |
 | `[~]` | In progress / partial |
-| `[x]` | Done (keep briefly for history, then move to **Shipped**) |
+| `[x]` | Done (fold into [HISTORY.md](HISTORY.md) on the next tidy pass) |
 | `[!]` | Blocked / deferred on purpose |
 
-When you finish an item: mark `[x]`, note the commit if useful, then fold it
-into **Shipped** on the next tidy pass. Pick from **Now** unless a demo needs
-something from **Next**.
+Pick from **Now** unless a demo needs something from **Next**.
 
 ---
 
-## Suggested pick-up order
+## The loop
 
-1. **Cowork completion smoke** on GCE — the last piece of the durable loop, and the
-   only one that needs a dogfood run on live infrastructure first.
-2. Docs getting-started (Python) + governed demo policy decision.
-3. Pick from **Next → Harness**: the memory-trust decisions, the ASGI audit's last
-   two items, or single-sourcing the version.
+**Dogfood `contributor.yaml` on real Felix work → fix what breaks → write it down here.**
 
-Scale-out proof was item 1 and landed in #104, which also closed the gap that made
-it urgent: `session/notify.py`'s Redis arm now has a conformance arm gated on a real
-server, and `scripts/smoke-replicas.sh` proves a cross-replica wake end to end.
+This replaces the loop this file carried until 2026-09-02, which read "dogfood float". `float`
+was deleted from `felix-run/web` on 2026-08-23 — *"what it actually contributed was a mode, not
+a product"* — and the line survived it by ten days. That matters more than a stale link: with
+nothing running real work, the only remaining source of tasks was the source tree, and the
+harness spent roughly forty commits auditing itself.
 
-Items 3–6 of an earlier order are done: `spec.a2a`, `spec.anomaly`,
-`inbound.schemes` and `outbound.providers` are all enforced, the durable client
-poll landed in #76 and #78, and `v0.2.0` is tagged.
+Self-audit is not wasted — the mutation audit in [HISTORY.md](HISTORY.md) found two controls
+that were silently absent, which no amount of feature work would have surfaced. But it is a
+*supplement* to a running workload, not a substitute for one, and it cannot tell you that the
+support agent has no way to look anything up.
 
-When in doubt: **dogfood float → fix what breaks → write it down here.**
+### Meta-work budget
 
----
+Two rules, mirrored in `.claude/rules/felix-invariants.md`:
 
-## Now (next 1–2 sessions)
-
-### 1. Close the durable loop
-
-`spec.execution.mode: durable` on `POST /chat` returns **202** +
-`resume_token`. Poll is `GET /chat/runs/{resume_token}`. The rest of the
-surface still pretends every chat is synchronous.
-
-- [x] **`FelixClient.prompt`** — polls `GET /chat/runs/{resume_token}` to a
-      terminal status, honours `expires_at`, emits progress, and takes `wait_s`.
-      Exhausting the budget returns `status: "waiting"` rather than a failure: the
-      run is still going and the token still resolves, so reporting `failed` would
-      make a caller retry work already in flight (#78)
-- [x] **`POST /chat/stream`** — streams the run rather than returning 202, so a
-      disconnect tears down the poll instead of the run. It had not mentioned
-      `mode: durable` at all, so a manifest asking for durable execution got it on
-      `/chat` and was silently ignored here (#76)
-- [ ] **Cowork completion on GCE** — idle BRPOP / scheduler fixes shipped
-      (`9f79a18`); local durable poll reached `completed`. Prod smoke still
-      only asserts cowork `202` accept. Dogfood one Background run on float →
-      `completed`, then extend `.github/workflows/smoke.yml` with a
-      **soft** completion poll (`continue-on-error: true`, ~3 min).
-
-Files: `packages/harness/src/felix/sdk.py`,
-`apps/api/src/felix_api/routes/chat.py`,
-`packages/harness/src/felix/durability/runs.py`,
-`.github/workflows/smoke.yml`.
-
-### 2. Manifest fields that still do nothing
-
-- [x] **`spec.a2a` → agent card** — `publish` and `capabilities` are unused.
-      `GET /.well-known/agent-card.json` always advertises streaming + MCP and
-      never lists manifest skills. Honor `publish` (404 or empty card when
-      false), merge `spec.a2a.capabilities`, and emit `spec.skills`.
-      File: `packages/harness/src/felix/a2a/card.py`.
-- [x] **`spec.anomaly` → worker scan** — `AnomalySpec` (`enabled`,
-      `min_volume`, `min_rate`, `baseline_factor`) is ignored.
-      `jobs/anomaly.py` uses hardcoded `MIN_VOLUME=10` / `BASELINE_FACTOR=3.0`.
-      Load the tenant manifest (or per-manifest rows) and skip when
-      `enabled: false`.
-- [x] **`spec.auth.inbound.schemes`** — `allow_anonymous` and
-      `required_scopes` are enforced. `schemes` is only a governance compile
-      check. Enforce against the request principal, or drop the field.
-- [x] **`spec.auth.outbound.providers`** — unused. Constrain which secret
-      backends / model providers a manifest may call, or remove it.
-- [x] **`spec.observability.metrics`** — tracing is process-global; the
-      per-manifest name list does nothing. Allowlist `record_counter` names
-      or delete the field.
-
-### 3. Docs + demo policy
-
-- [ ] **Docs getting-started (Python)** — Starlight at docs.felix.run still
-      has TS/Workers-era prose. Operator path: Compose → migrate → `quick` /
-      `cowork` → chat-ui / float against `api.felix.run`. (Likely
-      `felix-run/web` docs sources; keep a short pointer in this README.)
-- [ ] **Governed demo path (decide)** — `manifests/governed.yaml` +
-      `deploy/GOVERNANCE.md` + Helm ESO are in. Either enable on GCE
-      (RBAC scopes for chat/float keys) **or** keep demo anonymous and
-      document that choice explicitly in `deploy/GOVERNANCE.md`.
-- [!] **Rotate Anthropic API key** — only when you say go. Then Secret
-      Manager `felix-anthropic-api-key` + recreate API/worker.
-
-### 4. Release hygiene
-
-- [x] **Tagged `v0.2.0`** — nine version sites plus the Helm chart, changelog
-      closed out, GitHub release cut from its section, public docs synced first.
-      Two things the procedure got wrong and that `docs/RELEASING.md` should
-      absorb: its step-2 eval smoke fails on any machine whose `.env` points at a
-      real Postgres (needs `FELIX_DATABASE_URL=memory://`), and step 6 earned its
-      place by catching a caution box claiming `/chat/stream` ignores
-      `mode: durable`. Release *automation* (GHCR publish, SBOM, signing) is still
-      deferred — see **Repo / release hygiene** under Next.
+- **One hardening / invariant / audit item per cycle.** Everything else must add user-visible
+  capability. Defects found in a *real run* are exempt — that is the loop working.
+- **A control may not be added for a capability that does not exist.** This is the rule whose
+  absence produced 1,401 lines of `manifests/builder.py` wrapping a calculator.
 
 ---
 
+## The finding this cycle turns on
+
+Audited 2026-09-02. Every number re-derived against the tree, not read from a prior note.
+
+| Measure | Value |
+|---|---|
+| `felix/tools/` — the capability surface | 2,142 lines |
+| `.claude/` — scaffolding for the agent that edits Felix | 3,200 lines |
+| `manifests/builder.py` — governance wrapping that surface | 1,401 lines |
+| Built-in tool registry | 8 tools |
+| `skills/` shipped Agent Skills | 5, of which 4 document Felix itself |
+
+The built-in registry in full: `calculator`, `list_dir`, `read_file`, `write_file`,
+`search_files`, `list_skills`, `activate_skill`, `deactivate_skill` — and the three skill tools
+are stubs returning `[]` until `builder.py:1251` rebinds them against a catalog.
+
+`manifests/support.yaml` declares `tools: [calculator, list_skills]` — a support agent that
+cannot look anything up. `manifests/deep.yaml` declares the same — a deep-research agent that
+cannot retrieve. An agent on Felix cannot read a URL, search, query a database, or retrieve a
+document. `HttpExecutor` has existed at `tools/transports.py:20` since early on and **no
+manifest field constructs it**.
+
+The governance stack is the best-engineered part of the harness and it is guarding almost
+nothing. Everything in **Now** follows from that.
+
+---
+
+## Now
+
+### A. Capability surface
+
+First, because everything else governs it.
+
+- [x] **`http_fetch`** — `spec.http_tools` binds a fetch tool per ref; `support` uses it as
+      `fetch_docs`, confined to the docs site. Two corrections to this entry as written, both
+      found by reading the code rather than the note: the existing `HttpExecutor` was the wrong
+      starting point (it posts tool *arguments* to a manifest-fixed URL — operator picks the
+      destination; here the model does, which is the whole risk), and the "pin the connection"
+      prerequisite was **already met** by `#128`–`#130`, so `safe_async_client` gave it for free
+      including on redirect hops. `http` stays out of `_TRUSTED_TRANSPORTS` and was added to
+      `_UNTRUSTED_SOURCE_PREFIXES`; both layers are pinned separately, because asserting only
+      their combination left either free to regress.
+- [x] **Web search** — `felix/search.py` carries the `SearchBackend` Protocol and
+      `register_search_backend`, selected by `FELIX_SEARCH_BACKEND` and validated against the
+      registry at boot. `spec.search_tools` binds the tool. One correction to this entry: the
+      bundled backend needed **no extra**, because SearXNG speaks JSON over httpx, which is
+      already core — the extra was assumed rather than checked. SearXNG rather than a hosted
+      API because it is the one an operator can run themselves without an account, which is the
+      same argument as `FELIX_OBJECT_STORE=fs`.
+- [~] **Document retrieval** — the corpus landed: `felix/documents/` (chunking, hybrid store,
+      in-memory twin), migration `0010`, conformance against both backends, and `/documents`
+      management routes so an operator can ingest, search, inspect and remove. Split from the
+      agent-facing half deliberately, on the evidence that the two smaller features in this
+      workstream each drew ~7 review findings; **the `search_documents` tool and wiring
+      `support` to the Felix docs are the follow-up**, and item 6 stays open until then.
+      Reuses the `Embedder` seam and `FELIX_MEMORY_EMBEDDER` rather than adding a second
+      embedder setting — one embedder per deployment, one vector dimension.
+- [ ] **Structured output** — `spec.output_schema` → `response_format` on the OpenAI wire,
+      tool-shaped constrained output on the Anthropic wire, pydantic validation with one repair
+      retry. Both wires already emit tool JSON schema (`felix_ai/wire/base.py:133`). There is no
+      `response_format` anywhere in `packages/` or `apps/` today.
+- [ ] **Attachments** — an upload endpoint backed by the object store, base64 into a content
+      block. Image-by-URL already works on `/chat` (`felix_ai/types.py:ContentBlock`, encoded by
+      both wires); the gaps are upload, and `openai_compat.py:34` typing content as `str | None`
+      so images cannot reach `/v1` at all.
+- [~] **Make the bundled manifests use them.** `support` fetches from the docs site and `deep`
+      now has `search` + `fetch` with screening on — the two manifests the audit named. Document
+      search over the Felix docs waits on the retrieval item above. A tool no manifest declares
+      is inert by this repo's own definition, so this stays open until that lands.
+
+Decision gate, not a commitment: the **governed coding toolset** (`read`/`edit`/`bash` behind a
+`FilesystemBackend` + `ShellBackend` pair) was deferred as "large, and conditional — only worth
+starting if coding-agent use cases are actually on the roadmap". The daily-driver goal makes it
+live again. Revisit after the first three land, on evidence, not before.
+
+### B. Close the durable loop
+
+- [ ] **Run a fiber to suspension inside one claim.** `resume_due_fibers` calls
+      `_step_with_lease` once per claimed row and `_run_fiber_step` advances exactly one op, so
+      a durable chat — whose `steps` has length 1 — needs **two `* * * * *` ticks**: one to run
+      `invoke` and set `running`, a second to notice `cursor >= len(steps)` and flip `completed`.
+      Minimum ~2 minutes, and the second is pure scheduler latency. A *failure* terminates in one
+      sweep, so a failed run reaches its terminal state a full minute faster than a successful
+      one. Clear `heartbeat_at` on suspend so sleeping is distinguishable from crashed.
+- [ ] **Approvals reach the durable path.** `side_events` is a process-local
+      `dict[str, asyncio.Queue]`, so on a fiber the `approval_required` emit lands in the
+      worker's own memory and is unreachable by construction — on precisely the path where a
+      human would have time to respond. Route it through the Redis layer `session/notify.py`
+      already built in `#93`.
+- [ ] **Signed completion webhooks**, delivered from the **worker** — the fiber reaches terminal
+      state under its cron and the API replica that accepted the request may be gone. Dead letter
+      is `status='dead'` on the same durable row, not a second store. `spec.webhooks` selects
+      operator-registered endpoint ids and **never carries URLs**: a manifest author holds a
+      tenant scope, and a tenant-supplied URL on a path carrying run output is an exfiltration
+      channel SSRF checks do not address.
+- [ ] **Bound the retry.** A step that raises is caught, logged at `warning`, and released — with
+      no attempt counter, no backoff, and no dead letter, so a deterministically failing fiber
+      retries every 60 seconds until `expires_at`.
+- [ ] **Non-streaming `/chat` approval visibility.** `invoke()` never drains `side_events`, so a
+      caller blocked on an approval hangs for the full TTL and then receives a deny, never
+      learning an approval was requested.
+- [ ] **`ctx.step(key, fn)` memoization** + an append-only `fiber_steps` table, so a crash
+      mid-tool-loop resumes instead of replaying a whole `invoke`. Today the only mitigation is
+      `_interrupted_tool_results` telling the *model* a call may already have taken effect — a
+      prompt-level stand-in for a durability primitive.
+
+Not a gap, checked this cycle: the lease is renewed in flight (`fibers.py:443`, renewal loop at
+`:473`), so `FIBER_LEASE_MS` bounds "how long after a worker dies is its fiber stranded", not
+"how long may a step take". The replay-on-long-approval bug that shape implies was already found
+and fixed; the comment at `fibers.py:36-46` is the record.
+
+### C. Operator console
+
+- [ ] **Persist cost.** `usage/pricing.py` has a real `estimate_cost` with cache and
+      long-context tiers; `record_tokens` takes no cost argument and writes none, so `GET /usage`
+      (30 lines) returns raw token rows and nothing can answer "what did tenant X spend last
+      month". Add cost at write time and return it.
+- [ ] **`GET /usage/summary`** — group by manifest / model / day, with totals.
+- [ ] **Fill the missing bundled rates** — `gpt-4.1` has no entry and bills at the default, and
+      no bundled entry sets a long-context tier, so `limits.max_cost_usd` fails closed on an
+      undercount.
+- [ ] **Attribute denials in the audit record.** Every wrapper denial emits one undifferentiated
+      `policy_deny` carrying `{tool, tool_call_id, thread_id}` — which control fired, and why,
+      exists only in the tool message. The wrappers emit Prometheus counters, not audit events.
+      An auditor cannot answer "show me every call blocked by policy X in Q3". Then
+      `GET /audit/export` over a time range; `audit.py`'s docstring already promises an export
+      that does not exist.
+- [ ] **Surface eval instrumentation** — `EvalRun.started_at/finished_at` and `ItemScore`'s
+      `duration_ms` / token counts / `tool_call_count` are all stored and rendered nowhere. And
+      make the judge's fail-open path visible: any exception silently degrades an LLM judge to a
+      substring check with `reason: "llm_fallback:<exc>"`, so a misconfigured judge model does not
+      fail your eval, it quietly weakens it.
+- [ ] **Skills routes.** `grep -rn skill apps/api/src/felix_api/routes/` returns **zero** — 564
+      lines of skills subsystem and a `skill_activation` table with no HTTP reachability. List,
+      inspect, and report which skill activated on a turn.
+
+### D. Truth in advertising
+
+Small, and blocking for the adopter goal: anyone evaluating Felix on its governance claims reads
+`governed.yaml` first. Enforce or delete, per item.
+
+- [ ] **`governed.yaml:142 retention_days: 30` is inert** — defined in `schema.py:595` and read
+      by nothing; `jobs/retention.py:17` hardcodes the TTL. Already named in
+      `test_inert_manifest_fields.py`. The flagship governed manifest declares a data-retention
+      policy that changes nothing.
+- [ ] **`governed.yaml:128 guardrails.targets: [input, output]` does not scrub replies.**
+      `apply_guardrails` wraps **tools** only; `redact_pii`'s two call sites are user input
+      (`inbound.py:200`) and tool output (`builder.py:547`). A reader reasonably concludes the
+      agent's replies are PII-scrubbed. Implement outbound redaction, or correct the manifest and
+      `deploy/GOVERNANCE.md`.
+- [ ] **Five `PlanExecuteSpec` fields are inert** — `planner_model`, `executor_model`,
+      `replan_on_failure`, `max_replans`, `planner_few_shots` (`schema.py:435-442`) each have
+      exactly one reference: their own definition. The documented replan behaviour does not exist.
+- [ ] **Final-response judges do nothing on the streaming path.**
+      `wrap_final_response_judges` passes events through unjudged on `stream_events`, so the only
+      outbound model-call control is inert on the primary chat surface.
+- [ ] **Inbound screening skips two paths** — called from `/chat`, `/v1` and A2A, but not from
+      `routes/mcp.py` and not from the durable fiber path. A manifest with
+      `content_screening.enabled: true` is unscreened over MCP and on every background run.
+
+Checked and *not* a gap, so nobody "fixes" it: `allow_unattended` is enforced — at compile, under
+`eu_ai_act` at `risk_tier: high` (`governance.py:209`), which is why `contributor.yaml` carries a
+comment explaining exactly that. It is conditional, not inert.
+
+---
 ## Next (this quarter)
 
 ### Harness
 
-- [ ] **Temporal Compose profile** — `FELIX_DURABILITY=temporal` +
-      `felix temporal-worker` exist; optional compose profile + README for
-      long HITL demos. Keep Postgres fibers as default.
-- [ ] **Live-model eval (optional CI)** — fixture/`--mock` is in CI;
-      optional nightly against `api.felix.run` that does not block PRs
-      (`--llm-judge` opt-in).
-- [x] **Scale-out proof** — `compose.replicas.yml`, `make up-replicas` and
-      `scripts/smoke-replicas.sh`, plus a conformance arm gated on a real Redis
-      (#104). Measured: an append on replica B reached a resume stream on replica A
-      in **2 ms**, against a deliberately slowed 30 s poll floor — at the 1 s default
-      the same test passes against a completely broken notification layer, which is
-      the trap this was built to avoid. Steer, approvals and fiber leases still have
-      no two-replica assertion of their own; the stack to write one against now
-      exists.
-- [ ] **Sandbox ladder extras** — capability-bridge / gVisor as documented
-      extras, not default lean image.
-- [ ] **OAuth / dynamic provider keys** — secrets backends cover static keys;
-      refresh/`getApiKey(provider)` only if a real customer path needs it.
-- [ ] **Schema cleanup pass** — unused fields still to decide on after the
-      enforce-or-drop calls above. `memory.checkpointer` is done: it selects the
-      session store for real, and the three names that could never work here are a
-      validation error instead of a silent alias.
+- [ ] **Tamper-evident audit chain** — `seq` + `prev_hash` + keyed HMAC per row, per tenant,
+      with `verify_chain` reporting the first break. Allocate the chain at write time inside the
+      insert transaction under a per-tenant advisory lock (`session/store.py:93` is the
+      precedent), so a `DurableBuffer` drop does not read as tampering. Hash a `payload_sha256`
+      column rather than the payload bytes — `jsonb` does not preserve key order. Retention needs
+      a pruning anchor or it breaks the chain it prunes. Pairs with **audit export** in C.
+- [ ] **Framework mapping earns its name, or loses it.** `validate_governance` is 55 lines of
+      compile-time flag assertions with no mapping to a control id (no CC6.1, no Article 14) and
+      no artifact — nothing produces "here is your evidence for control X". `_has_boundary_control`
+      is satisfied by `any_limit(...)`, and `EffectiveLimits` backfills every limit from
+      `ABSOLUTE_LIMITS`, so that check is close to unfalsifiable. Either produce a signed compile
+      receipt (`manifests/pin.py` already stores a content hash per thread and is the closest
+      thing to evidence in the system), or rename the field so `frameworks: [soc2]` stops
+      inviting a reading it cannot support. The schema disclaimer is right and is in the file
+      nobody reads.
+- [ ] **Temporal: decide.** The arm is a 152-line driver loop using none of Temporal's durability
+      primitives — no signals, no queries, no child workflows, no `continue_as_new`, no activity
+      retry policy. State still lives in the Postgres `Fiber` row, so an operator choosing it for
+      Temporal's guarantees gets Felix's. Four of its six tests assert only that the classes can
+      be constructed, and there is no integration test against a dev server. It does fix the
+      one-op-per-tick problem — which item B1 fixes for everyone. Either invest properly or
+      document it as a compatibility shim.
+- [ ] **Live-model eval (optional CI)** — the current gate is 3 fixture items whose mock answers
+      satisfy their own rubrics (`_mock_answer` returns `rubric["expect"]` when none is given), so
+      it proves the plumbing executes and scores nothing about the agent. Optional nightly against
+      `api.felix.run` that does not block PRs.
+- [ ] **Eval scoring depth** — four string rules (`equals` / `contains` / `min_chars` / non-empty)
+      plus one judge. No regex, no schema check, no tool-call or trajectory assertions, no numeric
+      tolerance, no significance test on comparative runs. Nobody can gate a model change on this
+      without writing their own scorer.
+- [ ] **Long-context price tiers** — `estimate_cost` supports request-wide tiers but no bundled
+      entry sets one. Needs current rates per deployment via a manifest price override. Folded
+      into C where it touches `max_cost_usd`.
+- [ ] **Memory defaults** — `FELIX_MEMORY_EMBEDDER=none` by default, so the vector channel never
+      runs out of the box and nothing exercises it outside tests. Of nine bundled manifests only
+      `cowork` and `governed` enable capture and recall tools, so `quick` — the manifest every
+      README example uses — has no long-term memory at all. Extraction quality is whatever one
+      prompt returns; a live run stored an assistant's apology as a durable fact.
+      `consolidation.py` is 14 lines against `extraction.py`'s 340, so the store only grows.
+- [ ] **Who may retire a memory by naming its `topic_key`** — `put_memory` supersedes any active
+      row sharing a `topic_key`, and `capture_from_turn` reaches the same supersession post-turn
+      through no governance wrapper at all. The durable fix is store-level: require rank above
+      `_DEFAULT_TRUST` for a cross-row sweep, so rank-1 writers store alongside rather than
+      retire. A real ergonomic change, which is why it is a decision and not a patch.
+- [ ] **`deploy/GOVERNANCE.md`: which layer owns retirement** — follows whichever way the above
+      lands. `retired_by` versus `source`, why resurrection is gated on who retired rather than
+      who wrote, and which of the manifest, the store and the approval wrapper is authoritative.
+      Enforced in `tests/conformance/test_memory_trust_matrix.py`; the prose does not exist.
+- [ ] **Warn when `when_args` names nothing** — `ApprovalRule.when_args` is not validated against
+      the gated tool's schema, so `when_args: [topickey]` yields a rule that never fires and still
+      passes `validate-manifest` and both framework checks. `RememberArgs` is a pydantic model with
+      `extra="forbid"`, so the check is cheap. Decide whether it warns or refuses.
+- [ ] **Split-turn compaction** — when one turn alone exceeds `keep_recent_tokens` the cut lands
+      mid-turn and one summary covers both sides. Two summaries with different prompts and budgets
+      is the fix. Narrow: only bites on very long single turns.
+- [ ] **Tools carry their own prompt copy** — a `prompt_line` / `prompt_guidance` on `Tool`,
+      assembled in `builder.py`, so the system prompt is derived from the active tool set instead
+      of hand-maintained. Removes a drift class; more valuable once **A** multiplies the tool set.
+- [ ] **Telemetry vocabulary** — no span/attribute schema, and no metric catalog anywhere, so an
+      operator cannot know what to graph without grepping call sites. `metrics.py` also silently
+      degrades to `logger.info` when a name is reused under a second label set.
+- [ ] **Ship one dashboard** — zero matches for grafana / servicemonitor / prometheus config under
+      `deploy/`. A Grafana JSON and a ServiceMonitor turn four emitted signal types into something
+      an operator sees.
+- [ ] **Sandbox ladder extras** — capability-bridge / gVisor as documented extras, not the default
+      lean image.
+- [ ] **OAuth / dynamic provider keys** — secrets backends cover static keys; refresh /
+      `getApiKey(provider)` only if a real customer path needs it.
+- [ ] **`append_batch` read-modify-write** — fold the read into the insert
+      (`INSERT … SELECT coalesce(max(seq), -1) + :offset … RETURNING seq`) to shorten the lock
+      window to one round trip. Deferred as the highest-risk change the ASGI audit named: it is
+      the write path for every session event, the multi-row sequence allocation has to move into
+      SQL, and the in-memory twin allocates differently. Conformance against real Postgres is
+      mandatory, not optional.
+- [ ] **Decide on a JWT verification cache** — `verify_jwt` verifies signatures on the event loop
+      for every request in `jwt` mode. A TTL cache keyed on the token digest removes the repeat
+      cost, but a cached "valid" survives a revocation for as long as it lives. That is a posture
+      call about how stale an authorisation may be, and it wants an owner rather than a default.
 
-#### From the cross-harness port audit (Aug 2026)
+#### From the governance mutation audit (Sep 2026, #141–#150)
 
-Read against a sibling runtime that solved the same problems from a stateful,
-per-agent-SQLite starting point. Its actor / hibernation / hash-ring machinery is
-a **non-goal** here — all of it exists to serialise writes to owner-local SQLite,
-which shared Postgres makes unnecessary. What is portable is what it built *on
-top of* durable state. Ordered by value; the first two need no migration.
+Carried forward intact. These are the exempt kind under the meta-work budget: several are
+security findings on the durable-run authority path, and they came from mutating live controls
+rather than from re-reading a file. The wave itself is written up in [HISTORY.md](HISTORY.md).
 
-- [x] **SSE reconnect-to-snapshot** — shipped in #54. The original entry here was
-      wrong on three counts, all verified before building: the turn runs *inside*
-      the SSE generator, so turn and stream are always the same process and there
-      is no cross-replica `side_events` gap on the streaming path; tearing the run
-      down on disconnect is deliberate, with a comment saying so ("let the
-      cancellation propagate so the run is torn down instead of continuing to burn
-      model tokens"); and `event: error` was already emitted at `chat.py:467`, so
-      "never add an `event:` line" was false when written. What shipped is the
-      honest slice: `id:` cursors plus `GET /chat/stream/{thread_id}` to recover
-      the thread. Still open, and now separable — **detached turns** would reverse
-      that teardown decision on cost grounds and needs its own argument, and
-      **durable runs still stream nothing** (approvals are pollable via
-      `/approvals`, but nothing watches a background run).
-- [~] **Long-term memory** — schema and provenance in #46, hybrid recall and
-      the `Embedder` seam in #47, the agent-facing tools in #49, the management
-      routes in #50, and turned on in `governed` and `cowork` in #51 — which is
-      also what caught `capture.model` being inert and tool writes carrying no
-      provenance. Remaining, and only worth doing on evidence: semantic recall
-      is still off by default (`FELIX_MEMORY_EMBEDDER=none`), so nothing
-      exercises the vector channel outside tests; and extraction quality is
-      whatever one prompt returns — a live run happily stored an assistant's
-      apology as a durable fact.
-- [ ] **Tamper-evident audit chain** — `seq` + `prev_hash` + keyed-HMAC per row,
-      per tenant, with `verify_chain` reporting the first break. Allocate the
-      chain at write time inside the insert transaction, under a per-tenant
-      advisory lock (`session/store.py:93` is the precedent): that is what keeps
-      a `DurableBuffer` drop from reading as tampering, since a seq is only ever
-      consumed by a row that is actually inserted. Hash a `payload_sha256`
-      column rather than the payload bytes — `jsonb` does not preserve key order.
-      Retention needs a pruning anchor or it breaks the chain it prunes.
-- [ ] **Signed completion webhooks** — closes the durable loop above: today a
-      `202` can only be polled. Deliver from the **worker**, since the fiber
-      reaches terminal state under its cron and the API replica that accepted the
-      request may be gone. A dead letter is `status='dead'` on the same durable
-      row, not a second store. `spec.webhooks` should select operator-registered
-      endpoint ids, never carry URLs — a manifest author holds a tenant scope,
-      and a tenant-supplied URL on a path carrying run output is an exfiltration
-      channel that SSRF checks do not address.
-- [ ] **Fiber engine ergonomics** — `_run_fiber_step` advances **one op per
-      sweep** against a `* * * * *` cron, so a four-op fiber takes four minutes
-      of wall clock, nearly all idle. Run the handler to suspension inside one
-      claim; clear `heartbeat_at` on suspend so sleeping is distinguishable from
-      crashed. Then `ctx.step(key, fn)` memoization and an append-only
-      `fiber_steps` table, so a crash mid-tool-loop resumes instead of replaying
-      a whole `invoke`. Extend the lease inside `step` — it is sized for one op.
-- [ ] **Governed `http_fetch` tool** — the model cannot read a URL today.
-      The sibling's capability bridge is the wrong shape here: `dispatch_rpc`
-      bypasses all nine governance wrappers, including content screening on a
-      fetched page, which is attacker-controlled input. As a tool it inherits the
-      whole stack. Prerequisite: pin the connection to the validated address —
-      `HttpExecutor` validates the URL then hands it to httpx, which re-resolves.
-- [!] **Model-call middleware chain** — considered and rejected. A
-      plugin-supplied `wrap_tool_call` is an unordered hole through the
-      nine-wrapper stack whose order `test_invariants.py` pins as immutable, and
-      `wrap_model_call`'s only real users are retry and fallback, which already
-      exist and belong where they can see the provider. A custom fallback is a
-      registered `ModelProvider`. The one genuine gap is a per-tool per-turn call
-      cap, which is a field on `Limits`.
+- [ ] **Governance-gap counters vs the tenant metric allowlist.** `runtime.py`'s
+      `_apply_metric_allowlist` runs before `build_agent`, and `observability/metrics.py` drops
+      any counter not in `spec.observability.metrics`. So a tenant-authored manifest that sets
+      that field for any reason silently suppresses `felix_untrusted_tools_unscreened`,
+      `felix_policy_unsatisfiable` and `felix_rule_targets_nothing` — the exact signals
+      `deploy/GOVERNANCE.md` now tells operators to watch. The WARNING still fires, so this is
+      partial. **Decide:** should governance-gap counters be exempt from the manifest allowlist?
+- [ ] **Keep growing the fiber scheduler, or make Temporal the documented multi-step path.**
+      Temporal already wraps the same `advance_fiber`; what fibers duplicates is the scheduling
+      envelope, and that is where this audit's durability bugs were — a lease that equalled the
+      approval timeout (#150), resolution outside the tenant context (#150). **B6** above
+      proposes step memoization and an append-only `fiber_steps` table, which is an activity
+      model by another name. **Decide before starting that item.**
+- [ ] **`cowork.yaml` sets `auth.inbound.allow_anonymous: true` on a manifest that binds a
+      local shell.** The `client-shell` approval rule and the `thread_id`/`tool_call_id`
+      requirement are what stand between an anonymous caller and command execution on a
+      developer's machine. Untouched by the audit; wants a conscious yes or no.
+- [ ] **A per-tool screener cost lever.** `content_screening.tools` became additive in #146, so
+      the only per-tool cost control is gone. Free in the default configuration (no `model`
+      set), and a manifest binding twenty MCP tools that named three now pays twenty screener
+      calls per turn where it does. If that shows up: add `model_tools:` — *which tools get the
+      expensive screener*, marker screening unconditional — never a way to exempt an untrusted
+      tool from screening.
+- [ ] **Should `felix validate-manifest` hard-fail on a pattern matching no declared
+      integration?** Compile-time tolerance exists for the dynamic tool set (a failed MCP
+      discovery binds nothing). At author time the builtins plus declared refs are statically
+      known, so `github__*` against a builtin-only agent is a typo with no runtime excuse.
+      Author-friction call.
+- [ ] **Fiber rows are never swept.** `jobs/retention.py` covers `audit_events`, `plans` and
+      `memory_vectors`, not `fibers`. So `state.auth` — principal, scopes, scheme — accumulates
+      indefinitely, outliving both the run's usability and the 30-day audit TTL that motivated
+      it. Retention for `fibers` is the fix.
+- [ ] **Temporal carries `state["auth"]` into workflow history.** `start_fiber_workflow` passes
+      the whole fiber dict as the workflow argument, and the activity re-passes it per step, so
+      `{principal_sub, scopes, scheme}` for every tenant accumulates in one namespace outside
+      the RLS boundary and outside the run's TTL. User message content already went there; a
+      scope inventory is new.
+- [ ] **The Temporal path trusts the fiber row wholesale.** `fiber_step` calls `advance_fiber`
+      with the row straight from the workflow argument, never re-read from Postgres, and
+      `_save_fiber` writes under `rls_bypass()`. Anyone who can start a workflow on the
+      `felix-fibers` task queue therefore chooses `tenant_id`, `expires_at` and now
+      `state["auth"]`. Temporal access is privileged; this should be a documented assumption.
+- [ ] **Memory tools are not untrusted.** `recall` and `list_memories` are `transport: local`
+      with `source: memory`, which is not in `_UNTRUSTED_SOURCE_PREFIXES`, so recall is not
+      screened by default — `cowork.yaml` names them explicitly instead. Capture runs over turns
+      containing untrusted tool output, so recall is a re-entry path for content quarantined on
+      the way in. Either add `memory` to the untrusted prefixes or keep it a per-manifest choice.
+- [ ] **`scheme` replay on resume.** A resumed fiber presents the recorded scheme without
+      holding a credential, so `auth.inbound.schemes` can only ever agree with the enqueue-side
+      check. Defence in depth lost, not a hole; worth a sentence in GOVERNANCE.md.
+- [ ] **`pr-quality-gate.sh` does not treat `durability/` as a control path.** It reported
+      "felix-security-reviewer is not needed" on #149, the most security-relevant change of the
+      session — a resumed run's authority comes from there. Add `durability` to the token list.
+- [ ] **felix-web docs lag #148–#150.** `internals/governance.mdx` covers screening and glob
+      targeting; the durable-run authority model, the lease semantics and the RLS ordering are
+      only in `deploy/GOVERNANCE.md`.
+- [ ] **`durability` stays a closed `Literal`.** Fibers-vs-Temporal is not a factory swap, so a
+      registry there is a feature, not a refactor. Recorded so it is not "opened" by mistake.
 
-#### From the harness audit (Aug 2026)
+### Headless / contract
 
-Deferred deliberately; each has a written reason, not just a lack of time.
+- [ ] **Nothing enforces RLS coverage for a new tenant table.** `0006_tenant_rls` applied a
+      policy to a fixed list; a table added later is covered only if whoever added it
+      remembered, and the failure is silent — the table simply is not isolated.
+      `document_chunks` (migration `0010`) carries its policy because it was written by hand,
+      which is the argument, not the reassurance. An invariant comparing tables with a
+      `tenant_id` column against those carrying `felix_tenant_isolation` is ~15 lines and is
+      the natural candidate for this cycle's one hardening item.
 
-- [ ] **Governed coding toolset** — `read` / `write` / `edit` / `bash` / `grep`
-      / `find` behind a `FilesystemBackend` + `ShellBackend` protocol pair under
-      a new `felix/exec/`, every method returning a result rather than raising,
-      with a stable backend-independent error-code set. Would unify
-      workspace / sandbox / container / client-bridge execution behind one seam,
-      and wrapped in the governance stack it is a product a local coding agent
-      structurally cannot ship. **Large, and conditional**: only worth starting
-      if coding-agent use cases are actually on the roadmap, because a
-      half-built tool suite is worse than none. Design notes worth stealing when
-      it happens: multi-edit applied against original offsets, fuzzy matching
-      that rewrites only touched lines and copies the rest byte-for-byte,
-      read truncation that tells the model the exact `offset=` to resume from,
-      bounded rolling output capture that spills to a temp file and names it.
-- [ ] **Split-turn compaction** — when one turn alone exceeds
-      `keep_recent_tokens` the cut lands mid-turn and a single summary has to
-      cover both sides of it. Two summaries with different prompts and budgets
-      (history, then a turn-prefix) is the fix. Narrow: only bites on very long
-      single turns.
-- [ ] **Tools carry their own prompt copy** — a `prompt_line` and
-      `prompt_guidance` on `Tool`, assembled in `manifests/builder.py`, so the
-      system prompt is *derived* from the active tool set instead of
-      hand-maintained. Removes a drift class rather than fixing a live bug; a
-      tool with no `prompt_line` stays deliberately invisible to the model.
-- [ ] **Telemetry vocabulary** — OTel and Prometheus are wired but there is no
-      span/attribute vocabulary and no schema. Most of the value was the
-      conformance-suite pattern, which `tests/conformance/` already has.
-- [ ] **Scripted model provider** — a `scripted` provider in
-      `patterns/model_registry.py` to replace the ad-hoc doubles each test file
-      builds. Convenience: the doubles work, and this would not find bugs.
-- [ ] **Long-context price tiers** — `estimate_cost` supports request-wide
-      tiers but **no bundled entry sets them**, so any provider that bills long
-      context at a premium is still under-counted, and `limits.max_cost_usd`
-      fails closed on that number. Needs current rates per deployment via a
-      manifest price override. `gpt-4.1` likewise has no bundled rate and bills
-      at the default.
-- [ ] **`uv --exclude-newer`** — refuse dependency versions published in the
-      last day or two, the analogue of an npm `min-release-age`. Cheap; the rest
-      of the supply-chain posture is already covered.
-- [~] **`react.py` is 928 lines against a 600 budget** — the duplicated loop is
-      gone (that was the real defect); what remains is one sequential turn loop
-      plus session plumbing. Splitting further trades readability for a number.
-      Revisit only if it grows again.
+- [ ] **Headless invariant is prose only** — CLAUDE.md asserts it; nothing fails when it stops
+      being true. An AST/file check over `apps/api` for `StaticFiles`, `Jinja2Templates` and
+      `app.mount`, plus a tracked-file check for asset extensions, is ~20 lines in the existing
+      idiom. Cheapest item here.
+- [ ] **No-CORS contract undocumented** — the stack is body-limit → rate-limit → auth with no CORS
+      layer, so a browser on another origin cannot call Felix directly. Deliberate, written down
+      nowhere; the requirement survives only inside felix-web's `worker/index.ts`. A self-hoster
+      pointing a browser app at `:8080` hits an opaque wall.
+- [ ] **`POST /chat/ui` sub-protocol unspecified** — the route exists and the harness can block on
+      a waiter for `DEFAULT_TIMEOUT_SECONDS = 300`. Document the frames and move the timeout to a
+      `FELIX_` setting. Related: `request_ui` / `request_confirm` / `request_select` have **zero
+      callers in core**, so no tool exposes them and an agent cannot currently ask the user a
+      structured question — a capability-surface item hiding in a documentation one.
+- [ ] **Wire-contract snapshot** — snapshot `/openapi.json` and the SSE event-name set.
+      `felix-run/web` mirrors `StreamEvent` by hand and its union has an open arm, so an added or
+      renamed frame silently does nothing on both sides. Fold in **snapshot-authoritative
+      streaming** if it happens.
+- [ ] **Publish the SDK, or say it is not one.** `felix/sdk.py` is 570 lines covering ~27 of ~72
+      operations, all in `/chat` + `/approvals`, returning `dict[str, Any]` throughout — no
+      response models, no event-name enums, no typed exceptions, no pagination helpers — and it
+      lives inside the harness, so importing it drags the whole server dependency tree. The
+      durable-run polling and lease handling in it are genuinely good. The README never mentions
+      it, so a Python adopter finds it by reading source.
 
-#### From the headless-first audit (Aug 2026)
+### Control plane
 
-The property holds: no asset pipeline, no `StaticFiles` / template engine /
-`app.mount` anywhere in `apps/`, no UI service in Compose or the Helm chart, and
-every capability reachable over REST/SSE, `/v1`, A2A, or MCP. chat-ui consumes a
-generated `harness-openapi.json` and works *around* missing routes (skills, eval
-per-item, job run-now) rather than the harness growing them for it. What follows
-is the gap between that being true and it being **enforced or documented**.
-
-- [ ] **Headless invariant is prose only** — CLAUDE.md asserts it; nothing fails
-      when it stops being true. `tests/unit/test_invariants.py` already makes
-      the argument in its own docstring ("rules hold only while whoever is
-      editing has them in context"). An AST/file check over `apps/api` for
-      `StaticFiles`, `Jinja2Templates` and `app.mount`, plus a tracked-file
-      check for asset extensions, is ~20 lines in the existing idiom and costs
-      nothing at runtime. Cheapest item here; do it first.
-- [ ] **No-CORS contract undocumented** — the stack is body-limit → rate-limit →
-      auth with no CORS layer, so a browser on any other origin cannot call
-      Felix directly. Deliberate, but written down nowhere: `README.md`,
-      `deploy/README.md`, `deploy/GOVERNANCE.md` and `docs/` never mention CORS,
-      and the requirement survives only inside felix-web's `worker/index.ts`,
-      which proxies `/api/*` and injects the bearer token. A self-hoster
-      pointing a browser app at `:8080` hits an opaque wall. Short block in the
-      deploy docs, plus the reverse-proxy shape it implies.
-- [ ] **`POST /chat/ui` sub-protocol unspecified** — README:193 lists the route
-      but not the contract: the harness can emit a `ui_request` SSE side-event
-      and block on a waiter for `DEFAULT_TIMEOUT_SECONDS = 300`. Nothing in core
-      calls it today (`felix/ui/` has no call sites outside its own module and
-      the route), so no headless caller can stall on it *yet* — but a plugin
-      using `request_confirm` would make a non-answering client eat five minutes
-      per prompt. Document the frames, and move the timeout to a `FELIX_`
-      setting instead of a module constant.
-
-Not gaps, recorded so they are not "fixed" by mistake: the chat-ui-shaped
-accommodations in `eval.py:132` (alias route named for the client),
-`audit.py:34` (an `events` alias for the TS shape) and `approvals.py:24`
-(accepting `status`) are deliberate compat with a shipped client — removing them
-breaks felix-web. Whether `felix/ui/` is dead code or a plugin-seam affordance
-needs a real reachability check (entry points, registry, string lookup) before
-anyone deletes it.
-
-#### From the extensibility audit (Aug 2026)
-
-Audited whether the harness lives up to "aggressively extensible — features other
-tools bake in are buildable as a plugin, a skill, or a third-party package". It
-mostly did not, and two of the gaps were bugs rather than missing affordances.
-
-- [x] **Content screening trusted a denylist and failed open.** `transport` is an
-      open `str`, so any transport not on `_UNTRUSTED_TRANSPORTS` skipped screening —
-      including in-tree `http` (remote response text) and `client` (browser content).
-      Inverted to a `_TRUSTED_TRANSPORTS` allowlist.
-- [x] **Plugin tools existed only in the API process.** `default_tool_provider()`
-      backs fibers, scheduled jobs, eval and the CLI and registered builtins only, so
-      a plugin tool resolved on `/chat` and raised `Unknown tool` as a durable run.
-- [x] **Dead registration seams wired or removed** — `register_authenticator`
-      (now read by the auth middleware), `register_audit_sink` (now fanned out beside
-      the usage sink), `register_router` (deleted; `plugin.routes()` covered it). A
-      new invariant fails if any `register_*` method loses its consumer.
-- [x] **Closed `Literal`s in front of open registries opened** — object store,
-      secrets, warehouse, embedder, auth mode, each validated against its registry at
-      startup. Storage/secrets/warehouse gained registries to be validated against.
-- [x] **`spec.extensions`** gives a plugin somewhere to put manifest config; the rest
-      of the schema stays `extra="forbid"`.
-- [x] **`register_session_strategy`**, and an unknown strategy warns instead of
-      silently degrading to full replay.
-- [x] **The third-party story** — `examples/felix-plugin-example/`, an entry-point
-      test, `FELIX_SKILLS_DIR`, a public `internals/plugins` page, a README
-      "Extending Felix" section, and the principle written into
-      `.claude/rules/felix-invariants.md`.
-- [x] **`felix/ui/` reachability question answered** (see the note above): it is live
-      code, not a plugin-seam affordance. The only importer is
-      `felix_api/routes/chat.py:1123` (`from felix.ui import resolve_ui_response`),
-      plus one test; no entry point, registry, or string lookup reaches it.
-- [x] **`MemorySpec.checkpointer` now selects the session store.** Implemented
-      rather than deleted, so the eight bundled manifests setting it keep working.
-      `postgres` (default) / `none`, open via `register_checkpointer`.
-      `none` returns no store at all, reusing the path the react loop already takes
-      for a request with no thread, and is refused alongside a session strategy that
-      needs state, `session.compact_after_turn`, `memory.capture.enabled` or
-      `memory.recall.tools` — each of which would otherwise be silently dropped.
-- [ ] **`durability` stays a closed `Literal`.** Fibers-vs-Temporal is not a factory
-      swap, so a registry there is a feature, not a refactor.
-
-#### From the memory-trust + scanner wave (Aug 2026)
-
-Left open deliberately after the wave that landed #57–#64. The first two are
-decisions about behaviour rather than fixes someone can just apply; the third
-is prose that should follow whichever way the first one goes.
-
-- [ ] **Who may retire a memory by naming its `topic_key`** — `put_memory`
-      supersedes any active row sharing a `topic_key`, so writing a new value
-      under an existing key retires whatever held it. `remember` is gated on
-      `topic_key` in `governed.yaml`, which closes the route a model can aim
-      deliberately (`recall` prints every stored key, so they are
-      enumerable). `capture_from_turn` reaches the same supersession
-      post-turn without a tool call, so it passes through no governance
-      wrapper at all — harder to aim, since it needs the extractor steered
-      onto the victim's key, but ungated and free against `max_tool_calls`.
-      The durable fix is store-level: require rank above `_DEFAULT_TRUST` for
-      a *cross-row* sweep, so rank-1 writers store alongside rather than
-      retire. That is a real ergonomic change (agents could no longer correct
-      their own captured facts by re-keying), which is why it is a decision
-      and not a patch.
-- [ ] **`deploy/GOVERNANCE.md`: which layer owns retirement** — whichever way
-      the above lands, the memory trust model needs writing down: `retired_by`
-      versus `source`, why resurrection is gated on who retired rather than
-      who wrote, and which of the manifest, the store and the approval wrapper
-      is authoritative. The rules are enforced in
-      `tests/conformance/test_memory_trust_matrix.py`; the prose does not
-      exist yet.
-- [ ] **Warn when `when_args` names nothing** — `ApprovalRule.when_args` is
-      not validated against the gated tool's schema, so `when_args:
-      [topickey]` yields a rule that never fires. It still passes
-      `validate-manifest`, and still satisfies the `eu_ai_act` and SOC 2
-      boundary checks, because both test that approvals exist rather than
-      that they cover anything. Not a regression — `tools: [typo]` was
-      already vacuous the same way — but `when_args` makes the mistake much
-      easier to make and invisible once made. A `logger.warning` at bind time
-      is the fix; `RememberArgs` is a pydantic model with `extra="forbid"`,
-      so the check is cheap, and tools carrying a raw JSON schema are
-      checkable too. Decide whether it warns or refuses.
-
-#### From the ASGI latency audit (Aug 2026)
-
-Nine of the ten findings landed as #55 and #66–#74. These two are what is left,
-and both are decisions rather than fixes someone can just apply.
-
-- [ ] **Collapse `append_batch`'s read-modify-write** — the Postgres arm takes
-      a transaction-scoped advisory lock, reads `coalesce(max(seq), -1)`,
-      inserts, and commits. Folding the read into the insert
-      (`INSERT … SELECT coalesce(max(seq), -1) + :offset … RETURNING seq`)
-      would shorten the lock window to a single round trip, so it no longer
-      brackets a client round trip while every other writer on the thread
-      waits. Deferred because it is the write path for every session event and
-      the highest-risk change the audit named: the multi-row sequence
-      allocation has to move into SQL, and the in-memory twin models allocation
-      differently (it counts a list). Conformance against a real Postgres is
-      mandatory, not optional — `FELIX_CONFORMANCE_REQUIRE_POSTGRES=1`. The
-      related bullet, buffering appends during a streaming turn and flushing at
-      structural boundaries, is a bigger change to the turn loop and should
-      follow rather than lead.
-- [ ] **Decide on a JWT verification cache** — `verify_jwt` does synchronous
-      signature verification on the event loop for every request in `jwt` mode.
-      A small TTL cache keyed on the token digest removes the repeat cost for a
-      chatty client. Not done with the parse caching in #72 because it is not a
-      performance question: the entry has to expire well before the token does,
-      and a cached "valid" survives a revocation for as long as it lives. That
-      is a security posture call about how stale an authorisation may be, and
-      it wants an owner rather than a default.
-
-Recorded as known and accepted, not as gaps:
-
-- `export_session` returns a whole branch as JSONL and is deliberately not
-  paginated — an export that silently truncates is worse than a slow one.
-- `_build_thread_snapshot` carries the transcript a reconnecting client
-  rebuilds from, so bounding it changes what a reconnect *means*. `#74` bounded
-  `GET /chat/history` and left this alone on purpose.
-- `GET /chat/history` can now page, but its *default* still returns up to 5000
-  events. Lowering it is the bigger win and a breaking change for felix-web, so
-  it is a product decision rather than a fix.
-- `_stream_cursor` still runs one query per structural SSE frame. #67 returned
-  the allocated sequence numbers so a writer need not re-read them, but the
-  Postgres store hands out a fresh session object per `open()` while the
-  in-memory store caches one per thread — so the object the agent writes
-  through is not the object the route reads. Bridging them needs a head cache
-  whose staleness cuts both ways: stale low replays events, stale high skips
-  them.
-
-### Product (`felix-run/web`)
-
-- [ ] **Session-control UX gaps** — export JSONL from UI, clearer
-      lease-contention copy, reconnect-to-snapshot after hard refresh,
-      empty/search states.
-- [ ] **Usage → cost view** — rollup by manifest/day + $ estimate from
-      model catalog metadata.
-- [ ] **Float as primary cowork surface** — chat-ui stays general console;
-      float owns mount/VFS/approvals/Background.
-- [ ] **Prune leftover TS-harness skills/copy** in docs sync sources after
-      the getting-started rewrite.
+- [ ] **A tenant is a string.** There is no `Tenant` table and no `ApiKey` table; `tenant_id` is a
+      column on every row and never a foreign key. Minting a key means editing
+      `FELIX_AUTH_API_KEYS` JSON and restarting. Manifest CRUD, canary and rollback are real and
+      API-driven; onboarding tenant #2 is a config edit and a process restart. Decide whether that
+      is the product (single-operator self-host) or a gap, and write the answer down either way.
+- [ ] **Manifest version listing** — `GET /manifests/{name}?version=N` fetches one; nothing
+      enumerates what exists, so rollback requires knowing the number already.
+- [ ] **Run a job now** — `jobs.py` is CRUD plus run history; you can only wait for cron.
 
 ### Repo / release hygiene
 
-Deferred from the DX audit (2026-08-22). Phases 1–3 shipped; this is the
-remainder, none of it blocking.
+- [~] **Required status checks + `CODEOWNERS`** — the status-check half is **done** and this
+      entry was wrong: `main` requires 13 contexts, all bound to the Actions app, and the
+      `changes` job does report success so doc-only PRs stay mergeable. Found by hitting it —
+      renaming a job for the CodeQL matrix broke `CodeQL` with "not set by the expected GitHub
+      app", which only happens when protection is real. Two things follow. **`CODEOWNERS` still
+      does not exist**, so review remains convention. And a required context is now coupled to a
+      *job name*: rename one and merges block repo-wide with an error that names GitHub apps
+      rather than the rename. `security.yml` pins its own name with an aggregate gate job;
+      nothing stops the next rename elsewhere, and an invariant comparing required contexts
+      against the names the workflows actually produce is ~20 lines
+      (`.github/workflows/*.yml` → job `name`, matrix expanded).
+- [ ] **Tag-driven release** — build, push to GHCR, attach an SBOM, sign with cosign via OIDC,
+      then point `deploy/` at the published image. CI already builds and scans the image and
+      throws it away.
+- [ ] **Single-source the version** — `0.2.2` lives in four `pyproject.toml` files, the root, and
+      the Helm `appVersion`. Releasing means editing six files correctly from memory.
+- [ ] **`uv --exclude-newer`** — refuse dependency versions published in the last day or two, the
+      analogue of an npm `min-release-age`. Cheap; the rest of the supply-chain posture is covered.
+- [ ] **Postgres 18** — `pgvector/pgvector:0.8.6-pg18-trixie` exists. Own branch with a rollback
+      plan: compatibility pass over the revisions, FTS index, RLS, and a dump/restore path.
+- [ ] **`.cursor/plans/` decision** — tracked but ungitignored. Keep as versioned planning notes
+      or ignore; either is fine, drifting is not.
 
-- [ ] **Required status checks + `CODEOWNERS`** — CI now runs 14 jobs, but
-      nothing blocks a merge on them, so the human review gate is convention
-      rather than mechanism. Repo-settings change plus a `CODEOWNERS` file;
-      make the `changes` job report success so doc-only PRs stay mergeable.
-- [ ] **Tag-driven release** — build, push to GHCR, attach an SBOM, sign with
-      cosign via OIDC, then point `deploy/` at the published image instead of a
-      locally built `felix:latest`. CI already builds and scans the image; it
-      just throws it away.
-- [ ] **Single-source the version** — `0.1.0` currently lives in four
-      `pyproject.toml` files, the root, and the Helm `appVersion`. Releasing
-      means editing six files correctly from memory.
-- [ ] **Wire-contract snapshot** — snapshot `/openapi.json` and the SSE
-      event-name set. `felix-run/web` mirrors `StreamEvent` by hand and its
-      union has an open arm, so an added or renamed frame silently does
-      nothing on both sides.
-- [ ] **Postgres 18** — `pgvector/pgvector:0.8.6-pg18-trixie` exists. Own
-      branch with a rollback plan: compatibility pass over the six revisions,
-      FTS index, and RLS, plus a dump/restore path for existing deployments.
-- [ ] **`.cursor/plans/` decision** — tracked but ungitignored. Keep as
-      versioned planning notes or ignore; either is fine, drifting is not.
+### Product (`felix-run/web`)
+
+- [ ] **Rails before toast.** The last several PRs were all one toast component; `PRODUCT.md` says
+      failure looks like "the rails are wallpaper". Cost view and eval instrumentation (C) are the
+      two panels that make the right rail answer its own brief.
+- [ ] **Session-control UX gaps** — export JSONL from the UI, clearer lease-contention copy,
+      reconnect-to-snapshot after a hard refresh, empty/search states.
+- [ ] **Labels name the thing, not the wire key** — `agent-sheet.tsx` prints `max_tokens`,
+      `checkpointer`, `full_replay` verbatim.
+- [ ] **Prune leftover TS-harness skills/copy** in the docs sync sources. The getting-started
+      rewrite landed (that item is done, and this file claimed otherwise until 2026-09-02); the
+      residual TS-era prose elsewhere did not go with it.
 
 ### Deploy
 
-- [ ] **GKE dogfood** — Helm + ESO → one known-good install note under
-      `deploy/gcp/`.
-- [ ] **AWS smoke checklist** — mirror GCP path (Secrets Manager / S3) in
-      `deploy/aws/`.
-- [ ] **Postgres RLS dogfood** — migration `0006` + `FELIX_DATABASE_RLS=true`
-      on a non-prod branch; verify retention bypass + mixed-tenant audit flush.
+- [ ] **Cowork completion smoke on GCE** — local durable poll reaches `completed`; prod smoke
+      still only asserts a cowork `202` accept. Extend `.github/workflows/smoke.yml` with a
+      **soft** completion poll (`continue-on-error: true`, ~3 min). Cheaper once **B1** removes the
+      two-tick floor.
+- [ ] **Governed demo path (decide)** — either enable on GCE (RBAC scopes for chat keys) **or**
+      keep the demo anonymous and document that choice in `deploy/GOVERNANCE.md`.
+- [ ] **GKE dogfood** — Helm + ESO → one known-good install note under `deploy/gcp/`.
+- [ ] **AWS smoke checklist** — mirror the GCP path (Secrets Manager / S3) in `deploy/aws/`.
+- [ ] **Postgres RLS dogfood** — migration `0006` + `FELIX_DATABASE_RLS=true` on a non-prod
+      branch; verify retention bypass + mixed-tenant audit flush.
+- [!] **Rotate Anthropic API key** — only when you say go. Then Secret Manager
+      `felix-anthropic-api-key` + recreate API/worker.
 
 ---
-
 ## Later / explicit non-goals
 
 - [!] **`memory.consolidate` LLM merge** — worker already hash-dedupes.
@@ -491,7 +476,9 @@ remainder, none of it blocking.
       runtime in v1 (governance stays manifest compile + wrappers).
 - [!] **Commerce / billing plugin** — seam only; no Stripe in-tree.
 - [!] **Cloudflare compute in the harness** — Workers/DOs out of `felix`;
-      CF hosts web + named tunnel to GCE API only.
+      CF hosts web + named tunnel to GCE API only. Scoped to *compute*: the
+      `workers_ai` model provider is an outbound HTTPS call to api.cloudflare.com,
+      the same shape as every other hosted provider, and does not reopen this.
 - [!] **Merging web into `felix`** — keep repos split.
 - [!] **Third-party TUI / CBOR / npm package installer** — session/loop
       ideas only; composition is YAML + `felix.plugins` entry points.
@@ -512,310 +499,8 @@ remainder, none of it blocking.
 
 ---
 
-## Shipped (recent)
 
-### RLS opt-out coherence (Aug 2026, v0.2.1)
+## Shipped
 
-`0006_tenant_rls` applies `ENABLE` *and* `FORCE ROW LEVEL SECURITY`
-unconditionally, but the application set neither GUC unless `FELIX_DATABASE_RLS`
-was true — which it is not by default. On any connection RLS actually applies to,
-all 16 tenant tables returned zero rows and rejected writes, silently. Only a
-superuser or `BYPASSRLS` role escaped it, which is what the bundled compose stack
-uses, so it never appeared locally while being a total outage on managed
-Postgres. The listener now declares `app.rls_bypass` when RLS is off, making the
-flag a real runtime toggle; the migration stays unconditional so the schema is
-reproducible. `felix doctor` reports coherence between the two halves, including
-the case where RLS is on but the connection skips the policies entirely.
-
-`docs/UPGRADING.md` also landed: the upgrade path had lived in whoever last did
-one, and `RELEASING.md` stops at the tag by design.
-
-### Connections and notifications (Aug 2026)
-
-Two ceilings the ASGI audit had measured but not removed: connections, and query
-volume that grows with connected clients rather than with work. Landed as #91–#94
-and #96–#99, plus #101. Then a review pass over the result, which is where most of
-this list came from.
-
-- [x] **A pooler seam, and then the pooler.** `FELIX_DB_PREPARED_STATEMENTS`
-      (#91) exists because psycopg3 auto-prepares after five executions and the
-      sixth lands on a different server connection under transaction pooling —
-      five identical queries succeed first, so the symptom arrives detached from
-      its cause. `make up-pooled` (#94) makes PgBouncer a target rather than a
-      paragraph. Booting it (#96) is the first time anything pulled the image,
-      and the pull failed: `edoburu/pgbouncer:1.25.2` is the version PgBouncer
-      prints in its own log, not a tag. A test asserting "pinned and not
-      `:latest`" was happy with a tag that resolves to nothing. Once fixed, the
-      overlay did what it claims — api, worker and scheduler, each with its own
-      pool, sharing **two** Postgres backends, and 40 consecutive requests past
-      the prepare threshold with no error.
-- [x] **Wake a resume stream instead of asking it every second** (#93) — query
-      volume there grew with *connected users*, not with turns, which is the
-      line that crosses first at scale. Redis pub/sub, ref-counted on one shared
-      subscriber connection, with the poll left underneath: the notification is
-      a hint, never the source of truth, so a dropped message costs latency and
-      never correctness.
-- [x] **What shipping that broke, found by running the quality reviewers
-      retroactively** (#97). Worth recording because none of it was caught by
-      the tests that shipped alongside it:
-      - `_announce` defaulted `tenant_id` to `"default"` and the in-memory
-        session had no tenant to pass, so every `memory://` append announced on
-        that channel whoever wrote it. A real tenant's reader was never woken; a
-        `"default"` reader was woken by other tenants' writes. `get_session_store`
-        had the same bug in its storage half. Every test used `"default"` — the
-        one value that could not fail. **Third instance, Aug 2026:**
-        `memory/tools.py:_provenance` called `get_session_store(settings)` with no
-        tenant, so `remember` read tenant `"default"`'s log for every caller and
-        stamped `origin_seq = 0`. Same shape, same cause: a `tenant_id` that
-        defaults. The defaults are now gone from the session accessors and
-        `tests/unit/test_invariants.py` fails if one comes back — a required
-        keyword catches omission, though not an explicit `tenant_id="default"`.
-      - The subscription was scoped to a *wait*, not a reader, so a stream
-        subscribed and unsubscribed once per poll interval while the docstring
-        said "as readers come and go".
-      - The refcount was taken *after* the SUBSCRIBE round trip, so a departing
-        reader could unsubscribe a channel an arriving one was still waiting on
-        — while it reported `by_notification=True` and stretched its poll to a
-        minute. A stream that believes it is being woken and is not.
-- [x] **A spent connect guard latched notifications off for good** (#101) —
-      found by reviewing a CodeQL false positive rather than by the alert being
-      right. `_connecting` is a single-flight guard whose `finally` does not run
-      if the loop closes mid-connect; every later call then short-circuited on it
-      and returned `None` without attempting a connect, for the life of the
-      process.
-- [x] **Collapsed `_connect_args` back into `_pool_kwargs`** (#98). The split
-      reintroduced exactly the shape `_pool_kwargs`'s docstring exists to
-      prevent, and the AST test asserting both builders passed `connect_args`
-      existed only because they could diverge. Also added the conformance arm
-      that runs seven queries against a real connection — that the setting
-      reaches the driver was a pure-function assertion; that it stops psycopg
-      preparing had been checked once, by hand.
-- [x] **Separated resume pacing from resume framing** (#99) — 107 lines to 83.
-      The point was not the line count: the 60-second notified ceiling, the whole
-      reason #93 exists, shipped a release with no assertion anywhere, and the
-      reason was visible in what covering it took. It is four lines now.
-
-- [x] **Proved the thing two replicas do that one cannot** (#104) — `notify.py`'s
-      whole reason for existing was the part with no coverage, because in one process
-      the in-process waiter answers first and Redis is never consulted. Building the
-      proof also found that the CI docker job validated only the base compose file:
-      the overlays were excluded from `check-yaml` for using `!reset`, under a comment
-      promising CI checked them instead, and CI did not. Turning that on found the gcp
-      overlay could not be parsed at all without two variables nothing had ever
-      supplied.
-
-Three tests written during this wave did not fail against the code they were
-written for, and were only caught by running them against it: a race repro whose
-fake let two SUBSCRIBEs overlap when a real connection serializes them, a
-Makefile check that matched a variable definition rather than the recipe, and a
-grace-window assertion that was simply off by one. The habit that catches these
-is running a new test against the unfixed code and requiring FAILED, not ERROR.
-
-### ASGI latency audit (Aug 2026)
-
-A measured audit of the FastAPI/Starlette layer, then nine of its ten findings.
-Every figure below came from a benchmark against this checkout rather than from
-reading the code, and three of the audit's own conclusions did not survive being
-measured.
-
-- [x] **Four `BaseHTTPMiddleware` layers wrapped every request and every
-      streamed token.** Starlette implements each with a task group, an
-      `anyio.Event` and a zero-buffer memory object stream, so a response chunk
-      crossed four of them. Converting all four to pure ASGI took `/health` from
-      651.6 µs to 125.3 µs and an SSE chunk from 77.6 µs to 1.5 µs. The
-      streaming body cap became real in the same change: `call_next` ignores its
-      `request` argument, so the capped receive channel was never read and a
-      chunked upload with no `Content-Length` had no limit at all (#55)
-- [x] **`with_heartbeat` allocated a task per streamed event** — 44.17 µs to
-      1.10 µs with a pump task and a bounded queue (#55)
-- [x] **The pool was hardcoded at 5 + 10 in two places**, so fifteen
-      connections per worker was a ceiling nobody could raise; `FELIX_WORKERS`
-      was a bare `os.environ` read. Both are settings now, and both engines size
-      themselves through one function so they cannot drift apart again (#66)
-- [x] **`append_batch` discarded the sequence numbers it had just allocated
-      under the lock** — returned now, asserted on both arms (#67)
-- [x] **Rate-limit eviction ran `max(v)` across every tracked key**, and keys
-      are per-IP, so the defensive component's cost grew with the attack it
-      absorbs: 1412.7 µs to 6.7 µs at 50k keys. The bigger everyday win was the
-      steady-state hit — 13.92 µs to 0.37 µs — which the audit had measured at
-      1.5 µs and explicitly ruled out (#68)
-- [x] **The bundled skills catalog was re-walked on every chat request**,
-      synchronously on the event loop: 56.6 µs to 1.4 µs. The audit's suggested
-      mtime key would have bought almost nothing — the walk dominates, not the
-      reads (#69)
-- [x] **Five sequential store reads on the reattach path** — 2.66 ms to 1.38 ms
-      against a real Postgres, and the gap widens with network latency rather
-      than narrowing (#70)
-- [x] **The resume stream polled at a fixed 1 Hz per client until 300 s of
-      silence** — 300 polls per idle window down to 61, with the first thirty
-      seconds deliberately left at the floor so reattach latency is unchanged
-      (#71)
-- [x] **Credentials were re-parsed on every authenticated request** — 21.5 µs
-      to 0.4 µs. The audit's hashed-index suggestion was implemented and then
-      dropped: it optimised the wrong half, and CodeQL was right that a hash of
-      a credential in the auth path needs an argument nobody should have to
-      make (#72)
-- [x] **Four resolver caches were unbounded and three were tenant-keyed**, so
-      every tenant that resolved a manifest left an entry for the life of the
-      process (#73)
-- [x] **`GET /chat/history` returned every message a thread had ever had.**
-      Bounded and pageable, taking the newest window rather than the oldest —
-      `get_events(limit=n)` takes the first n, which for a transcript is the
-      wrong end (#74)
-
-### Cross-harness port audit (Aug 2026)
-
-Second pass against a sibling runtime, this time looking for features to port.
-Like the first, it mostly found bugs — in code that two sessions had each half
-fixed, and in a delivery path nothing asserted end to end.
-
-- [x] **`memory_vectors` rejected every insert on Postgres.** The column
-      `embedding vector(768) NOT NULL` has existed since `0001_baseline` — added
-      by raw SQL, so invisible from `db/models.py` — and `put_memory` never
-      supplied a vector. Every insert raised NotNullViolation, and the only
-      caller swallowed it into a debug log, so long-term memory had never stored
-      a row outside the in-memory twin. Found by the first Postgres conformance
-      test the store ever had (#46)
-- [x] **Migrations were never executed by CI.** The `conformance` job runs a real
-      pgvector Postgres (#39), but built its schema with `Base.metadata.create_all`
-      — so no revision ran, and the DDL that lives only in a migration was never
-      present. `create_all` cannot produce a generated column or a GIN index, which
-      is exactly what the memory and audit work depends on. The Postgres arm now
-      applies `alembic upgrade head`, and three tests assert every revision applies,
-      reverses, and produces `session_events.content_tsv` and its index (#45)
-
-- [x] **Recalled memory facts never reached the model on a threaded chat.**
-      `_assemble_messages` built the list with the prelude, then let the session
-      strategy replace it wholesale. Four existing tests asserted the block was
-      *built* correctly; none that it survived assembly (#43)
-- [x] **Embeddings ran on the event loop**, stalling every concurrent request on
-      the worker — tool retrieval reaches the encoder up to four times per loop
-      step. Threaded, with the cheap keyword path kept inline and a guard pinned
-      to the code it mirrors by test (#44)
-
-The port items themselves are under **Next → Harness → From the cross-harness
-port audit**. The streaming double-inference this pass also flagged was already
-fixed by `#36`.
-
-### Harness audit wave (Aug 2026)
-
-Cross-harness audit that set out to find portable packages and mostly found
-bugs — fifteen of them, clustered almost entirely in code that existed in two
-copies with nothing comparing them, or in code nothing exercised.
-
-- [x] Truncated turns executed their tool calls, past command screening —
-      arguments can be cut off mid-write and still parse (#34)
-- [x] Extended thinking was write-only: sent, never read back, never replayed,
-      so a thinking manifest lost its reasoning at the first tool call (#34)
-- [x] Flat pricing, generic 429 retry, and unguarded parallel writes (#34)
-- [x] Model metadata was three tables with three matching rules that disagreed
-      on `claude-opus-4-5`'s context window; one record now, and the dead
-      `context_window` field that let them drift is gone (#35)
-- [x] Compaction sized itself to a hardcoded 128K regardless of the model (#35)
-- [x] **Streaming ran the inference twice** — double billed, half metered
-      against fail-closed budgets, and the streamed text could differ from what
-      was saved (#36)
-- [x] Provider context-overflow was a hard failure instead of compact-and-retry,
-      including two providers that overflow without raising (#37)
-- [x] `invoke` and `stream_events` were two copies of one loop that had drifted:
-      streaming wrote **no** turn-level audit record, did not record an abort,
-      and drained follow-ups after a fatal tool error (#38)
-- [x] In-memory stores were never checked against the Postgres ones they stand
-      in for; one contract, both backends, and a CI job that fails rather than
-      skips when the database is missing (#39)
-- [x] A run killed mid-tool left a thread that could not be resumed at all, and
-      `Tool.replay_safe` now says whether a tool may be re-run; adding it
-      exposed that wrapper cloning silently dropped unknown fields (#40)
-- [x] Side requests — compaction, memory, screening, branch summaries — spent
-      the conversation's prompt cache (#41)
-- [x] **The composite patterns were the same drift, one file over.** Streamed
-      `parallel` and `plan_execute` never called `record_usage`, so their
-      synthesis and planning inferences were unbilled and escaped
-      `limits.max_cost_usd` while the non-streaming twins metered correctly;
-      `reflect`'s verifier was unmetered on both paths and returned `0.8` — above
-      its own 0.7 threshold — whenever it could not be reached. Every pattern is
-      now one `_run_*(input, *, emit_events)`, and `stream_turn` is on the
-      `ModelProvider` Protocol so a plugin provider can see what implementing
-      only `stream()` forfeits (#82)
-- [x] Six Temporal tests never ran in CI: gated on an extra the test job did not
-      install, and a module-level `importorskip` collapses to one collect-time
-      skip, so they vanished without touching the skip count. Extras-gated tests
-      now fail under `FELIX_REQUIRE_OPTIONAL_EXTRAS`, and an invariant asserts CI
-      installs every extra the tests gate on (#82)
-- [x] The governance wrappers took `Any` and read strict pydantic config through
-      `getattr` defaults, so a renamed field failed *open* and `ty` could not see
-      the layer at all; typing it surfaced two further defects on contact (#82)
-
-PRs `#34` … `#41`, `#82`. Remaining items are under **Next → Harness → From the
-harness audit**.
-
-### DX / CI hardening wave (Aug 2026)
-
-Three-phase remediation of a developer-experience and supply-chain audit.
-CI went from 6 jobs that skipped on doc-only PRs to 14 that run.
-
-- [x] `pre-commit` was never installable — the ruff repo entry lacked its URL
-      scheme, so `install-hooks` failed for every contributor. Fixed, plus a CI
-      job so it cannot rot again (#8)
-- [x] `make check` failed on any machine with a `.env` (pytest inherited
-      `FELIX_DATABASE_URL`; `make type` checked `tests/` while CI does not).
-      `scripts/test.sh` is now the single test entry point for make and CI (#8)
-- [x] Docker and CI use `uv sync --locked`, not `--frozen` with a fallback —
-      a stale lock fails the build instead of silently shipping a different
-      resolution (#8)
-- [x] Actions at current majors and pinned by commit SHA; every base and
-      service image pinned by digest; Dependabot's docker entry fixed (it
-      pointed at `/`, where there is no Dockerfile) and grouped weekly (#9)
-- [x] Repo invariants are tests, not prose: `.env.example` covers every
-      setting, no optional dependency imported at module scope, every
-      Postgres-touching module has a `memory://` path, and the governance
-      wrapper order is fixed (`tests/unit/test_invariants.py`) (#10)
-- [x] `lean` CI job imports all 156 modules with no extras installed;
-      `toolkit` job validates `.claude/` hooks, settings, and skill
-      frontmatter — both previously outside the CI path filter (#10)
-- [x] Security scanning: CodeQL, `pip-audit` over the locked set with extras,
-      gitleaks over full history, Trivy on the built image (#11)
-- [x] Runtime image hardened — dropped `pip` (its vendored `msgpack` and
-      `setuptools` carried HIGH CVEs that are not Felix dependencies) and
-      applied pending OS updates. Scans clean; +15 MB (#11)
-- [x] Coverage measured and gated at 60% (#11)
-
-PRs `#8` … `#11`. Toolkit itself landed in `#6`.
-
-### Governance / secrets wave (Aug 2026)
-
-- [x] Manifest `secret:NAME` refs + plaintext forbid + output masking
-- [x] State scrub (session / audit / fiber) + `pin_compile` drift refuse
-- [x] Inbound auth (`allow_anonymous` / `required_scopes`) on chat / v1 / A2A
-- [x] Inbound `/mcp` through compiled agent wrappers
-- [x] `spec.governance` SOC2 / EU AI Act fail-closed + Art. 50 notice + audit emit
-- [x] `felix validate-manifest` + `manifests/governed.yaml` + `deploy/GOVERNANCE.md`
-- [x] Management-API RBAC scopes; Helm External Secrets template
-- [x] `command_screening.include_defaults`
-- [x] Presidio (opt-in extra) + regex residual PII
-- [x] Opt-in LLM judges (`--llm-judge` / rubric / `JudgeRule.model`)
-- [x] Opt-in Postgres RLS (`0006_tenant_rls`, `FELIX_DATABASE_RLS`)
-- [x] Inbound user-turn screening (injection + input PII) on chat / v1 / A2A
-- [x] CI green (ruff/format, ty scope, compose secrets, OpenAPI URL)
-
-Commits (approx): `34c667f` … `87ae629`.
-
-### Session / Pi-shaped depth (Aug 2026)
-
-- [x] Snapshots, list/name/label, abort/continue, thinking levels
-- [x] Parallel tools, branch summaries, compaction, steering modes
-- [x] FTS search, Redis-backed leases, JSONL export, UI prompts
-- [x] Comparative evals; chat-ui + float wired for search / thinking / rewind
-
-### Product / cowork
-
-- [x] Client tools bridge + approval interrupt/resume + workspace tools
-- [x] `manifests/cowork.yaml` + Float + chat-ui cowork default
-- [x] Shared `@felix/cowork-client`
-
-### Ops
-
-- [x] `api.felix.run` tunnel; GCE loopback; GCP Secret Manager hydrate
-- [x] Smoke workflow (health + quick + cowork accept + session surfaces)
-- [x] Worker idle BRPOP / scheduler `asyncio.run` / Compose healthcheck fix
-- [x] `v0.1.0` release
+Moved to [HISTORY.md](HISTORY.md) — the wave-by-wave record of what shipped and what each wave
+taught, including the audit conclusions that did not survive being measured.

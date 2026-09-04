@@ -25,13 +25,22 @@ async def resolve_tenant_manifest(
     name: str,
     *,
     thread_id: str | None = None,
+    pin_version: int | None = None,
 ) -> ResolvedManifest:
     return await resolve_manifest(
         settings,
         tenant_id,
         name,
         thread_id=thread_id,
-        manifest_store=PostgresManifestStore(settings),
+        # A caller that names a version means it: evaluation scoring a canary has to load
+        # that canary, not whatever is active. Unknown versions raise rather than falling
+        # back, because a silent fall-back is what made a canary look benchmarked.
+        pin_version=pin_version,
+        # Under `bundled` the layers above the image do not exist, so they are not supplied.
+        # `_read_tenant_postgres` and `_read_object` already return None for a missing store,
+        # which is the same collapse a branch in the resolver would produce — expressed by
+        # absence rather than by policy in the deepest function on this path.
+        manifest_store=None if settings.bundled_only else PostgresManifestStore(settings),
     )
 
 
@@ -83,8 +92,13 @@ def _context_window_for_manifest(manifest: Any, strategy_spec: Any) -> int:
     model_id = str(getattr(model_spec, "id", "") or "")
     if model_id:
         from felix.model_catalog import entry_for
+        from felix.patterns.model import parse_model_routes
 
-        return entry_for(model_id).context_window
+        # `model_id` here is the logical route name. `claude-sonnet` matched only the loose
+        # family key at 200K, so a manifest on the default route compacted against a fifth of
+        # the window it pays for; an id matching nothing at all fell to the 128K default.
+        route = parse_model_routes().get(model_id)
+        return entry_for(route.model if route is not None else model_id).context_window
     return int(declared or 128000)
 
 

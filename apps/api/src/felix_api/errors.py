@@ -27,10 +27,18 @@ def _relayable() -> tuple[type[BaseException], ...]:
     anywhere in the app without ordering constraints.
     """
     from felix.manifests.inbound_auth import InboundAuthError
+    from felix.manifests.loader import ManifestParseError
     from felix.manifests.pin import ManifestDriftError
     from felix.patterns.model import ModelGatewayError
 
-    types: tuple[type[BaseException], ...] = (ModelGatewayError, ManifestDriftError, InboundAuthError)
+    types: tuple[type[BaseException], ...] = (
+        ModelGatewayError,
+        ManifestDriftError,
+        InboundAuthError,
+        # Rendered by felix.manifests.loader without the offending value, precisely so it
+        # can travel: the whole point of the refusal is that an operator can read it.
+        ManifestParseError,
+    )
     try:
         # Optional package on a lean install, so its absence must not turn a content
         # filter's explanation into "internal error" -- that message is the entire

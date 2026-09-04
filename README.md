@@ -153,6 +153,7 @@ Client → Ingress (Caddy / Traefik / nginx / Cloudflare DNS+CDN)
 | `apps/api` | HTTP: `/chat`, `/v1`, `/a2a`, `/mcp`, management APIs, OpenAPI |
 | `apps/worker` | Audit flush, scheduled jobs, memory consolidation, retention, anomaly scan, continuous eval, fiber resume |
 | `felix-scheduler` | Enqueues labeled Taskiq cron tasks — **required alongside the worker**, or nothing periodic fires |
+| `packages/ai` | Model layer: wire formats, catalog, turn types. Imports nothing from `felix` |
 | `packages/harness` | Manifests, patterns, tools, session, governance, auth, plugins |
 | `packages/cli` | `felix migrate \| eval \| mint-jwt \| bundle-manifests \| validate-manifest \| doctor \| version \| temporal-worker` |
 | `manifests/` | Bundled agents: `quick`, `deep`, `router`, `oss-only`, `hybrid-router`, `support`, `cowork`, `governed`, `contributor` |
@@ -191,6 +192,9 @@ Felix runs on infrastructure **you** operate. Cloudflare DNS, CDN, TLS, and WAF 
 origin are fine. There is **no** Cloudflare Workers, Durable Objects, Hyperdrive, R2-as-binding,
 Queues, or Workflows compute in this stack.
 
+The line is **compute**, not vendor. Calling a hosted Cloudflare **API** over HTTPS — Workers AI as a model provider, R2 through its S3 endpoint — is an outbound request like any other and is fine. What Felix will not do
+is *run on* Workers or Durable Objects, or depend on a binding only available inside them.
+
 ### Extending Felix
 
 Felix is built to **not dictate your workflow**. Features other harnesses bake in are meant to
@@ -220,6 +224,7 @@ Core also exposes open registries, callable at import time, each selected by ord
 | `register_secrets_backend` | `FELIX_SECRETS_BACKEND` |
 | `register_warehouse_backend` | `FELIX_WAREHOUSE` |
 | `register_embedder_backend` | `FELIX_MEMORY_EMBEDDER` |
+| `register_search_backend` | `FELIX_SEARCH_BACKEND` |
 | `register_session_strategy` | `spec.session.strategy` |
 | `register_checkpointer` | `spec.memory.checkpointer` |
 
@@ -280,6 +285,53 @@ Outbound integrations carry their own ceilings: `spec.mcp_servers[].timeout_ms` 
 containers.
 
 
+Providers Felix ships, all speaking one of two wire formats:
+
+| Provider | Endpoint | Configured with |
+|---|---|---|
+| `anthropic` | `api.anthropic.com` | `FELIX_ANTHROPIC_API_KEY` |
+| `openai` | `api.openai.com/v1`, or `FELIX_LITELLM_BASE_URL` | `FELIX_OPENAI_API_KEY` |
+| `ollama` | `FELIX_OLLAMA_BASE_URL` | — (local, and billed as free) |
+| `workers_ai` | `api.cloudflare.com/…/accounts/{account_id}/ai/v1` | `api_key`, `account_id`, optional `gateway_id` |
+| `groq` `together` `deepseek` `cerebras` `fireworks` `openrouter` `xai` `mistral` `google` | each vendor's OpenAI-compatible endpoint | `api_key` |
+
+Everything past the first three is configured through `FELIX_MODEL_PROVIDER_OPTIONS` rather
+than a settings field per vendor. Each is also selectable as `FELIX_MEMORY_EMBEDDER`, since
+`/embeddings` is part of the same wire format.
+
+**None of the hosted tier ships with per-token rates, deliberately.** Felix does not invent
+prices: an unpriced model contributes zero to spend and a manifest that *declares*
+`limits.max_cost_usd` on one is refused at compile, pointing at `spec.model.price`. Guessing
+is how every unrecognised model came to be billed at Claude Sonnet's $3/$15 per Mtok.
+Cloudflare bills Workers AI in neurons rather than tokens, so a per-token rate for it would
+be fiction. `ollama` is exempt because a local runtime genuinely costs nothing — that is a
+property of the provider, not of the model's name.
+
+A provider is a descriptor — a wire format, an endpoint, and where its credential lives —
+so adding one is a row rather than a module. Both wire formats and the HTTP transport are
+public in `felix_ai.wire` (`OpenAICompletionsClient`, `AnthropicMessagesClient`,
+`post_with_retry`, `map_stop`, `parse_tool_arguments`), because re-deriving retry-on-429,
+SSE parsing and usage accounting is most of the work of writing a provider — and what a
+provider gets wrong in usage reporting fails *open* on `limits.max_cost_usd`.
+
+`FELIX_MODEL_PROVIDER_OPTIONS` carries a per-provider endpoint and credential as JSON. The
+built-in providers have named settings, but a provider added by a plugin cannot — `Settings`
+ignores unknown env vars — so this is how an installed provider is given a key. An entry
+also overrides the named field, which is how a built-in is pointed at a gateway:
+
+```
+FELIX_MODEL_PROVIDER_OPTIONS={"anthropic":{"base_url":"https://gateway.internal/v1"}}
+```
+
+Every option value is added to the redaction list **except** the ones the provider consumes
+as addressing — `base_url`, any `{placeholder}` its endpoint templates, and its header
+options — so a credential cannot reach tool output whatever the option is called. The
+converse is worth knowing: an unrecognised option is redacted, so a long, non-secret value
+there will be masked out of tool results. Keep credentials out of `base_url`, which is
+exempt by definition and also reaches server logs through connection errors. Providers named in `FELIX_MODEL_ROUTES` are resolved
+against the registry at startup, so a typo fails immediately rather than on the first
+request that happens to take that route.
+
 Manifests reference **logical** model ids, mapped to wire ids by `FELIX_MODEL_ROUTES` (a JSON
 override) or by the built-in defaults:
 
@@ -326,6 +378,28 @@ a later turn replaying a tool call has to replay the signed reasoning that produ
 blocks are captured off the response, persisted on the session event, and replayed ahead of the
 `tool_use` blocks on the next request. A block whose signature was not captured is dropped rather
 than sent, because an unverifiable signature rejects the whole turn.
+
+### Where manifests come from
+
+`FELIX_MANIFEST_SOURCE` picks the posture:
+
+| Value | Resolution order | Writes |
+|---|---|---|
+| `store` (default) | tenant Postgres version → bundled YAML | `PUT /manifests`, canary, rollback |
+| `bundled` | bundled YAML only | routes not mounted |
+
+`bundled` is for a single-tenant or self-hosted deployment with no use for runtime
+authoring. The write routes are never registered, so the verbs are absent from the app and
+from `/openapi.json` rather than present and refusing, and no manifest store is constructed
+at all. `felix doctor` reports which posture is active.
+
+Two things to know before flipping an existing deployment:
+
+- **Stored manifests stop being served.** Every tenant collapses onto the image's file, so
+  any per-tenant `spec.auth.inbound` tightening — `required_scopes` in particular — is
+  dropped. Eight of the nine bundled manifests are `allow_anonymous: true`.
+- **`pin_compile` threads will 409 once.** The resolved version becomes `null` and the
+  content hash becomes the bundled YAML's, which is drift by design.
 
 ### Manifest capabilities
 

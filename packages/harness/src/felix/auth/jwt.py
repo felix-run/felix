@@ -13,7 +13,7 @@ from joserfc import jwk, jwt
 from joserfc.errors import JoseError
 from joserfc.jwt import JWTClaimsRegistry
 
-from felix.auth.context import Principal
+from felix.auth.context import Principal, assert_valid_tenant_id
 
 if TYPE_CHECKING:
     from felix.config import Settings
@@ -156,6 +156,13 @@ def _tenant_from_payload(
             f"token from {_issuer(cfg)} has no tenant claim and the verifier uses "
             "tenant_mode=claim; set tenant_mode=fixed:<tenant> or issue the claim"
         )
+
+    try:
+        # Same rule as every other door. A claim is the least trustworthy source of a
+        # tenant id, so the shape is checked before the allowlist.
+        assert_valid_tenant_id(claimed)
+    except ValueError as exc:
+        raise TenantResolutionError(f"tenant claim is unusable: {exc}") from exc
 
     allowed = allowed_tenants(settings)
     if allowed and claimed not in allowed:

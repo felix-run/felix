@@ -148,3 +148,43 @@ async def store(request: pytest.FixtureRequest) -> AsyncIterator[Any]:
     finally:
         await drop_everything(url)
         await engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def document_settings(request: pytest.FixtureRequest) -> AsyncIterator[Any]:
+    """`Settings` pointed at the backend named by the parametrization.
+
+    Same shape as `memory_settings`, and for the same reason: the corpus store exists twice —
+    a dict walk for `memory://` and SQL with a generated tsvector plus pgvector for Postgres —
+    and only running one contract against both keeps the copies honest. The in-memory arm's
+    cosine similarity and the Postgres arm's `<=>` operator are two different rankers that
+    have to agree about what a hit *is*.
+    """
+    from felix.config import Settings
+    from felix.db.session import dispose_engine
+    from felix.documents import store as doc_store
+
+    backend = request.param
+    if backend == "memory":
+        doc_store.reset_documents_for_tests()
+        yield Settings(database_url="memory://conformance")
+        doc_store.reset_documents_for_tests()
+        return
+
+    url = postgres_url()
+    if not url:
+        if os.environ.get(REQUIRE_ENV):
+            pytest.fail(f"{REQUIRE_ENV} is set but {PG_URL_ENV} is not — the Postgres arm cannot run")
+        pytest.skip(f"{PG_URL_ENV} unset — the Postgres arm of the corpus contract did not run")
+
+    await migrate_to_head(url)
+    try:
+        yield Settings(database_url=url)
+    finally:
+        # Teardown, like the sibling fixtures. Without it the Postgres arm never reset while
+        # the memory arm reset around every test, so the two were no longer running the same
+        # contract from the same state — which is the premise. It passed only because every
+        # test here ingests the same (source, title) and so overwrites the same doc_id; the
+        # first test with a second title would have made the arm order-dependent.
+        await dispose_engine()
+        await drop_everything(url)

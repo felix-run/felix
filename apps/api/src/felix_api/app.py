@@ -23,6 +23,7 @@ from felix.tools.provider import ToolProvider
 from starlette.responses import Response
 
 from felix_api.composition import compose, installed_plugins
+from felix_api.docs import register_docs
 from felix_api.middleware import BodyLimitMiddleware, RateLimitMiddleware, RequestIdMiddleware
 from felix_api.routes import (
     a2a,
@@ -30,6 +31,7 @@ from felix_api.routes import (
     artifacts,
     audit,
     chat,
+    documents,
     internal,
     jobs,
     manifests,
@@ -163,7 +165,11 @@ def create_app(
             "url": "https://github.com/felix-run/felix/blob/main/LICENSE",
         },
         lifespan=lifespan,
+        # Swagger UI gives up the /docs path to the Scalar reference mounted below.
+        # /openapi.json and /redoc are unchanged.
+        docs_url=None,
     )
+    register_docs(app)
     # Eager state so ASGI tests / middleware work before lifespan starts.
     app.state.settings = cfg
     app.state.tools = tool_provider
@@ -250,9 +256,14 @@ def create_app(
     app.include_router(plans.router, prefix="/plans")
     app.include_router(jobs.router, prefix="/jobs")
     app.include_router(manifests.router, prefix="/manifests")
+    if not cfg.bundled_only:
+        # Absent rather than refused: under `manifest_source=bundled` the write verbs are
+        # never registered, so they do not appear in the OpenAPI document either.
+        app.include_router(manifests.write_router, prefix="/manifests")
     app.include_router(eval_routes.router, prefix="/eval")
     app.include_router(usage.router, prefix="/usage")
     app.include_router(memory.router, prefix="/memory")
+    app.include_router(documents.router, prefix="/documents")
     app.include_router(a2a.router, prefix="/a2a")
     app.include_router(mcp.router, prefix="/mcp")
     app.include_router(well_known.router)

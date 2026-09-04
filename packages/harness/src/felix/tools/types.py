@@ -2,12 +2,57 @@
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     pass
+
+
+def accepts_positional(fn: Callable[..., Any], count: int) -> bool:
+    """Can `fn` be called with exactly `count` positional arguments?
+
+    Asked once, at wrap time. The alternative — calling with the wider signature and catching
+    `TypeError` — cannot tell "wrong arity" from "`TypeError` raised inside a body that ran",
+    so any tool whose body raises `TypeError` on attacker-shaped input executed **twice** for
+    one model tool call. Measured at two sites: `wrap_executor`, where `apply_artifact_spill`
+    passes a three-parameter `execute` that dispatches on the first call, and `define_tool`,
+    whose `handler(parsed, ctx)` fell back to `handler(parsed)`. An MCP server returning a list
+    where a dict was expected is enough to reach it.
+
+    Unintrospectable callables (some C functions) answer `False`, which selects the narrower
+    call. Guessing narrow is safe: a genuine arity mismatch raises once, loudly, instead of
+    running a side effect a second time.
+    """
+
+    try:
+        sig = inspect.signature(fn)
+    except TypeError, ValueError:  # pragma: no cover - builtins without signatures
+        return False
+    required = 0
+    allowed = 0
+    var_positional = False
+    for param in sig.parameters.values():
+        if param.kind is param.VAR_POSITIONAL:
+            # `*args` removes the upper bound. It does not remove the lower one: an earlier
+            # version returned True here, so `f(a, b, c, *rest)` answered yes at count=2 —
+            # which a real call rejects with "missing a required argument". The parametrized
+            # case covering this branch used `lambda *a: None`, the one shape that cannot
+            # expose it, which is why the table below is now checked against
+            # `signature().bind` rather than against hand-written expectations.
+            var_positional = True
+            continue
+        if param.kind not in (param.POSITIONAL_ONLY, param.POSITIONAL_OR_KEYWORD):
+            continue
+        allowed += 1
+        if param.default is param.empty:
+            required += 1
+    if var_positional:
+        return required <= count
+    return required <= count <= allowed
+
 
 type ToolInput = dict[str, Any]
 WrapperSource = Literal["policy", "limits", "guardrails", "approvals", "command", "screening"]
@@ -120,6 +165,9 @@ def define_tool(
     from felix.tools.executor import local_executor
 
     schema = args_schema if args_schema is not None else args
+    # Once, at definition. See `accepts_positional`: probing by calling and catching
+    # `TypeError` ran the handler twice whenever the handler itself raised one.
+    handler_takes_ctx = accepts_positional(handler, 2)
 
     async def _execute(a: ToolInput, ctx: ToolInvocationCtx | None = None) -> ToolOutput:
         if validate is not None:
@@ -140,10 +188,9 @@ def define_tool(
                 )
         else:
             parsed = a
-        try:
+        if handler_takes_ctx:
             return await handler(parsed, ctx)
-        except TypeError:
-            return await handler(parsed)
+        return await handler(parsed)
 
     return Tool(
         name=name,
@@ -198,6 +245,7 @@ __all__ = [
     "ToolOutput",
     "ToolOutputDict",
     "WrapperSource",
+    "accepts_positional",
     "define_tool",
     "define_tool_with_executor",
     "deny_output",

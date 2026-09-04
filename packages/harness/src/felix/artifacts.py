@@ -107,12 +107,16 @@ def apply_artifact_spill(
     def wrap_one(tool: Tool) -> Tool:
         inner = tool.executor
 
+        # `inner` by closure, like all eight wrappers in manifests/builder.py. It used to be
+        # a third parameter defaulted to `inner`, which existed only to satisfy the old
+        # arity-probe-by-exception in `wrap_executor` — and made this the one wrapper whose
+        # `execute` dispatched on the probe's first call, so a `TypeError` from anywhere in
+        # the governance chain below re-ran the whole chain.
         async def execute(
             args: dict[str, Any],
             ctx: ToolInvocationCtx | None = None,
-            _inner: Any = inner,
         ) -> ToolOutput:
-            result = await _inner.execute(args, ctx)
+            result = await inner.execute(args, ctx)
             content = tool_output_content(result)
             if len(content) <= threshold:
                 return result

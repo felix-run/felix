@@ -9,6 +9,7 @@ from typing import Any, Literal
 
 from felix.auth.context import AuthContext
 from felix.context import try_get_context
+from felix.governance.content_screening import _INJECTION
 from felix.limits import EffectiveLimits, effective_limits
 from felix.manifests.loader import load_bundled, parse_manifest
 from felix.manifests.schema import (
@@ -23,6 +24,7 @@ from felix.manifests.schema import (
     guardrails_enabled,
     judges_enabled,
 )
+from felix.manifests.tool_match import matches_any, unmatched_patterns
 from felix.observability.metrics import record_counter
 from felix.observability.tracing import manifest_span
 from felix.patterns.registry import get_pattern, list_patterns
@@ -130,21 +132,38 @@ def _clone_tool(tool: Tool, executor: Any) -> Tool:
 
 
 def apply_policies(tools: list[Tool], policies: list[Policy], manifest_id: str) -> list[Tool]:
-    by_tool: dict[str, list[Policy]] = {}
-    for p in policies:
-        for name in p.tools:
-            by_tool.setdefault(name, []).append(p)
-
     def wrap_one(tool: Tool) -> Tool:
-        rules = by_tool.get(tool.name)
+        # Matched per tool rather than through a dict keyed by literal name, which cannot
+        # express a pattern. Order is the manifest's, so a denial names the first rule that
+        # refuses, as it did before.
+        rules = [p for p in policies if matches_any(p.tools, tool.name)]
         if not rules:
             return tool
         inner = tool.executor
 
         async def execute(args: ToolInput, ctx: ToolInvocationCtx | None = None) -> ToolOutput:
             req_ctx = try_get_context()
-            scopes = req_ctx.auth.scopes if req_ctx else frozenset()
+            # `frozenset(...)`, not the attribute as-is. `AuthContext.scopes` is an unvalidated
+            # dataclass field, and the plugin authenticator seam adopts whatever `Principal` a
+            # plugin returns — a plugin doing `scopes=" ".join(claims["scope"])` yields a `str`,
+            # for which `s not in scopes` is a *substring* test: `tools:calc` is "held" by a
+            # caller with `tools:calculator`, and `admin` by one with `no-admin`. Coercing here
+            # makes the check a membership test whatever the caller layer produced.
+            scopes = frozenset(req_ctx.auth.scopes) if req_ctx else frozenset()
             for rule in rules:
+                # Fail closed on a rule that requires nothing. The schema rejects this shape,
+                # so reaching it means a Policy was built in code or parsed by an older path —
+                # and `[s for s in [] if ...]` is empty, which would read as "every scope
+                # satisfied" and permit the call. Same stance as apply_limits with no context.
+                if not rule.required_scopes:
+                    record_counter(
+                        "felix_policy_deny",
+                        {"manifest_id": manifest_id, "tool": tool.name, "policy": rule.id},
+                    )
+                    return deny_output(
+                        f"[policy denied] {rule.id} requires no scopes, so it cannot authorise {tool.name}",
+                        "policy",
+                    )
                 missing = [s for s in rule.required_scopes if s not in scopes]
                 if missing:
                     record_counter(
@@ -157,16 +176,7 @@ def apply_policies(tools: list[Tool], policies: list[Policy], manifest_id: str) 
                     )
             return await inner.execute(args, ctx)
 
-        return Tool(
-            name=tool.name,
-            description=tool.description,
-            args_schema=tool.args_schema,
-            executor=wrap_executor(inner, execute),
-            raw_input_schema=tool.raw_input_schema,
-            is_peer=tool.is_peer,
-            source=tool.source,
-            fatal=tool.fatal,
-        )
+        return _clone_tool(tool, wrap_executor(inner, execute))
 
     return _wrap_tools(tools, wrap_one)
 
@@ -215,10 +225,10 @@ def apply_command_screening(
                 rules.append(CommandRule(pattern=pattern, decision=decision, reason=reason))
 
     compiled = [(re.compile(r.pattern, re.I), r.decision, r.reason or r.pattern) for r in rules]
-    targets = set(screening.target_tools)
+    targets = list(screening.target_tools)
 
     def wrap_one(tool: Tool) -> Tool:
-        if targets and tool.name not in targets:
+        if targets and not matches_any(targets, tool.name):
             if tool.executor.transport not in {"sandbox", "container"}:
                 return tool
         if not compiled and tool.executor.transport not in {"sandbox", "container"}:
@@ -258,16 +268,7 @@ def apply_command_screening(
                         break
             return await inner.execute(args, ctx)
 
-        return Tool(
-            name=tool.name,
-            description=tool.description,
-            args_schema=tool.args_schema,
-            executor=wrap_executor(inner, execute),
-            raw_input_schema=tool.raw_input_schema,
-            is_peer=tool.is_peer,
-            source=tool.source,
-            fatal=tool.fatal,
-        )
+        return _clone_tool(tool, wrap_executor(inner, execute))
 
     return _wrap_tools(tools, wrap_one)
 
@@ -283,12 +284,21 @@ _DEFAULT_COMMAND_RULES: tuple[tuple[str, Literal["allow", "deny", "require_appro
 )
 
 
-_INJECTION_MARKERS = (
-    "ignore previous instructions",
-    "ignore your previous instructions",
-    "disregard your instructions",
-    "system prompt",
-)
+# The marker scan reuses `governance/content_screening.py:_INJECTION` rather than keeping its
+# own list. There were two, and this one held the less careful copy: a bare `"system prompt"`
+# substring, where the other module already had `system\s+prompt\s*:` and `<\s*/?\s*system\s*>`.
+#
+# That mattered once `cowork.yaml` enabled screening over its client tools. `"system prompt"`
+# matches any *mention* of the phrase, so `cat CLAUDE.md` on this very repository — 23 of its
+# files contain it — had its entire output replaced by `[quarantined]`; `_replace_content`
+# swaps the whole string, it does not redact the match. A control that eats a developer's
+# `git log -p` is a control someone turns off, and turning it off would have removed screening
+# from `local_shell` too.
+#
+# Not a sensitivity trade invented here: the anchored patterns still flag
+# "ignore previous instructions ..." and "System prompt: you are now ...", and they are the
+# ones this repo had already thought about. A second partial copy of a rule is the shape
+# `tests/unit/test_invariants.py` was written to catch.
 
 # Trust is an allowlist, not a denylist. `Tool.executor.transport` is an open `str`
 # (tools/types.py) — a plugin may mint its own — so an untrusted-denylist silently fails
@@ -310,6 +320,11 @@ _UNTRUSTED_SOURCE_PREFIXES = (
     "client",
     "sandbox",
     "container",
+    # A fetched page is attacker-controlled input in the same way a browser page is: the
+    # model chose the URL, and whatever answers gets to write into the transcript.
+    "http",
+    # A search result's title and snippet are written by whoever ranked for the query.
+    "search",
 )
 
 
@@ -327,13 +342,24 @@ def apply_content_screening(
     if screening is None or not screening.enabled:
         return tools
     on_flag = screening.on_flag
-    named = set(screening.tools)
+    named = list(screening.tools)
     model_id = screening.model.strip()
 
     def wrap_one(tool: Tool) -> Tool:
-        if named and tool.name not in named:
-            return tool
-        if not named and not _is_untrusted_tool(tool):
+        # Additive: what `tools` names, *plus* every untrusted tool, always.
+        #
+        # These used to be alternatives — a non-empty `tools` list replaced the untrusted-tool
+        # default rather than adding to it. So the natural way to *extend* screening to one
+        # trusted local tool silently turned it off for every `mcp__*`, `peer__*`, browser,
+        # sandbox, container and queue tool, while the manifest still read as a working
+        # control. Injected content on a fetched page then reached the model with the whole
+        # governed toolset behind it.
+        #
+        # There is no safe narrowing here, which is why the escape hatch is gone rather than
+        # renamed: turning screening off for untrusted output is the thing screening exists to
+        # prevent. `matches_any([], name)` is False, so a manifest that never sets `tools`
+        # behaves exactly as before.
+        if not (matches_any(named, tool.name) or _is_untrusted_tool(tool)):
             return tool
         inner = tool.executor
 
@@ -342,8 +368,7 @@ def apply_content_screening(
             if is_wrapper_deny(out):
                 return out
             content = tool_output_content(out)
-            lower = content.lower()
-            flagged = any(m in lower for m in _INJECTION_MARKERS)
+            flagged = any(rx.search(content) for rx in _INJECTION)
             unavailable = False
             if not flagged and model_id:
                 from felix.config import get_settings
@@ -378,16 +403,7 @@ def apply_content_screening(
                 return _replace_content(out, notice)
             return out
 
-        return Tool(
-            name=tool.name,
-            description=tool.description,
-            args_schema=tool.args_schema,
-            executor=wrap_executor(inner, execute),
-            raw_input_schema=tool.raw_input_schema,
-            is_peer=tool.is_peer,
-            source=tool.source,
-            fatal=tool.fatal,
-        )
+        return _clone_tool(tool, wrap_executor(inner, execute))
 
     return _wrap_tools(tools, wrap_one)
 
@@ -506,16 +522,7 @@ def apply_limits(tools: list[Tool], limits: Limits | EffectiveLimits, manifest_i
                 ls.peer_hops += 1
             return await inner.execute(args, ctx)
 
-        return Tool(
-            name=tool.name,
-            description=tool.description,
-            args_schema=tool.args_schema,
-            executor=wrap_executor(inner, execute),
-            raw_input_schema=tool.raw_input_schema,
-            is_peer=tool.is_peer,
-            source=tool.source,
-            fatal=tool.fatal,
-        )
+        return _clone_tool(tool, wrap_executor(inner, execute))
 
     return _wrap_tools(tools, wrap_one)
 
@@ -547,16 +554,7 @@ def apply_guardrails(tools: list[Tool], guardrails: Guardrails | None, manifest_
                 return deny_output("[guardrails] PII blocked", "guardrails")
             return _replace_content(out, result.text)
 
-        return Tool(
-            name=tool.name,
-            description=tool.description,
-            args_schema=tool.args_schema,
-            executor=wrap_executor(inner, execute),
-            raw_input_schema=tool.raw_input_schema,
-            is_peer=tool.is_peer,
-            source=tool.source,
-            fatal=tool.fatal,
-        )
+        return _clone_tool(tool, wrap_executor(inner, execute))
 
     return _wrap_tools(tools, wrap_one)
 
@@ -670,7 +668,7 @@ def apply_judges(tools: list[Tool], guardrails: Guardrails | None, manifest_id: 
         return tools
 
     def wrap_one(tool: Tool) -> Tool:
-        applicable = [j for j in judges if not j.target_tools or tool.name in j.target_tools]
+        applicable = [j for j in judges if not j.target_tools or matches_any(j.target_tools, tool.name)]
         if not applicable:
             return tool
         inner = tool.executor
@@ -693,16 +691,7 @@ def apply_judges(tools: list[Tool], guardrails: Guardrails | None, manifest_id: 
                     )
             return out
 
-        return Tool(
-            name=tool.name,
-            description=tool.description,
-            args_schema=tool.args_schema,
-            executor=wrap_executor(inner, execute),
-            raw_input_schema=tool.raw_input_schema,
-            is_peer=tool.is_peer,
-            source=tool.source,
-            fatal=tool.fatal,
-        )
+        return _clone_tool(tool, wrap_executor(inner, execute))
 
     return _wrap_tools(tools, wrap_one)
 
@@ -791,15 +780,29 @@ def _arg_present(args: ToolInput, name: str) -> bool:
 
 
 def apply_approvals(tools: list[Tool], rules: list[ApprovalRule], manifest_id: str) -> list[Tool]:
-    gated: dict[str, ApprovalRule] = {}
-    for r in rules:
-        for name in r.tools:
-            gated[name] = r
-    if not gated:
+    if not any(r.tools for r in rules):
         return tools
 
     def wrap_one(tool: Tool) -> Tool:
-        rule = gated.get(tool.name)
+        # Approvals is the only control in the stack that selects *one* rule — policies and
+        # judges apply every match conjunctively, so for them more matches can only tighten.
+        # Here the chosen rule decides `ttl_seconds`, `one_shot`, `bind_principal` and
+        # `when_args`, so "which rule matched" is the whole gate.
+        #
+        # A literal name therefore beats a pattern, and among literals the last still wins —
+        # which is exactly what the previous `gated[name] = r` dict did, since a glob rule
+        # contributed nothing to it. That makes globbing here provably non-weakening: every
+        # tool gated before is gated by the same rule as before, and a pattern can only gate
+        # a tool that nothing gated.
+        #
+        # Plain last-match-wins was not that. With a strict literal rule followed by a broad
+        # `github__*` audit rule carrying `when_args: [force]`, the pattern won and every call
+        # without `force` ran ungated: a one-shot, principal-bound gate on a destructive tool,
+        # removed by adding a rule. That shape is expected in the wild precisely because the
+        # docs told operators to write the glob that never worked.
+        literal = [r for r in rules if tool.name in r.tools]
+        matched = literal or [r for r in rules if matches_any(r.tools, tool.name)]
+        rule = matched[-1] if matched else None
         if rule is None:
             return tool
         inner = tool.executor
@@ -835,7 +838,15 @@ def apply_approvals(tools: list[Tool], rules: list[ApprovalRule], manifest_id: s
                         tool_name=tool.name,
                         call_signature=sig,
                         # bind_principal: A's approval must not authorize B's call.
-                        principal_subj=(req.auth.principal_sub or "") if rule.bind_principal else None,
+                        # `on_behalf_of` when a machine actor is running A's work — a resumed
+                        # durable fiber is principal `fiber`, and without this A's grant would
+                        # not match its own run. Empty for every ordinary caller, so this
+                        # changes nothing outside that case.
+                        principal_subj=(
+                            (req.auth.on_behalf_of or req.auth.principal_sub or "")
+                            if rule.bind_principal
+                            else None
+                        ),
                         # one_shot: a spent grant must not authorize a replay.
                         unconsumed_only=bool(rule.one_shot),
                     )
@@ -904,16 +915,7 @@ def apply_approvals(tools: list[Tool], rules: list[ApprovalRule], manifest_id: s
                 return await inner.execute(args, ctx)
             return await inner.execute(args, ctx)
 
-        return Tool(
-            name=tool.name,
-            description=tool.description,
-            args_schema=tool.args_schema,
-            executor=wrap_executor(inner, execute),
-            raw_input_schema=tool.raw_input_schema,
-            is_peer=tool.is_peer,
-            source=tool.source,
-            fatal=tool.fatal,
-        )
+        return _clone_tool(tool, wrap_executor(inner, execute))
 
     return _wrap_tools(tools, wrap_one)
 
@@ -994,6 +996,124 @@ def _collect_secrets(deps: BuildDeps) -> list[str]:
     return collected_secret_values(settings)
 
 
+def _warn_unmatched_tool_patterns(m: Manifest, bound: list[str]) -> None:
+    """Say so when a governance rule targets tools that are not there."""
+    targets: list[tuple[str, str, list[str]]] = []
+    for policy in m.spec.policies:
+        targets.append(("policy", policy.id, list(policy.tools)))
+    for rule in m.spec.approvals:
+        targets.append(("approval", rule.id, list(rule.tools)))
+    if m.spec.guardrails:
+        for judge in m.spec.guardrails.judges:
+            if judge.final_response:
+                # `wrap_final_response_judges` never reads target_tools, so any value here is
+                # ignored. Warning about *unmatched* patterns would be right by accident and
+                # silent when they match — say the real thing instead.
+                if judge.target_tools:
+                    logger.warning(
+                        "judge %r sets final_response, so its target_tools are ignored",
+                        judge.name,
+                        extra={"manifest_id": m.metadata.name},
+                    )
+                continue
+            targets.append(("judge", judge.name, list(judge.target_tools)))
+    if m.spec.content_screening and m.spec.content_screening.enabled:
+        targets.append(("content_screening", "content_screening", list(m.spec.content_screening.tools)))
+    if m.spec.command_screening and m.spec.command_screening.enabled:
+        targets.append(
+            ("command_screening", "command_screening", list(m.spec.command_screening.target_tools))
+        )
+
+    for kind, rule_id, patterns in targets:
+        missing = unmatched_patterns(patterns, bound)
+        if missing:
+            logger.warning(
+                "%s %r targets %s, which match no bound tool — it gates nothing",
+                kind,
+                rule_id,
+                ", ".join(repr(x) for x in missing),
+                extra={"manifest_id": m.metadata.name},
+            )
+            record_counter(
+                "felix_rule_targets_nothing",
+                {"manifest_id": m.metadata.name, "kind": kind, "rule": rule_id},
+            )
+
+
+def _summarise(names: list[str], limit: int = 8) -> str:
+    """Name a few and say how many more, so a truncated list does not read as complete."""
+    shown = ", ".join(repr(n) for n in names[:limit])
+    extra = len(names) - limit
+    return f"{shown} and {extra} more" if extra > 0 else shown
+
+
+def _warn_untrusted_tools_are_unscreened(m: Manifest, untrusted: list[str]) -> None:
+    """Say so when untrusted tool output reaches the model with nothing looking at it.
+
+    `content_screening.enabled` defaults to False, and `validate_governance` requires it only under
+    `eu_ai_act` — `soc2` does not, and its data-governance check is satisfiable by guardrails
+    instead. So a manifest that binds an MCP server, an
+    A2A peer, a browser, a sandbox, a container or a queue and never enables screening is a
+    normal, valid manifest in which attacker-controlled text reaches the model with the whole
+    governed toolset behind it — the last remaining path of that shape after the additive-
+    screening change.
+
+    A warning, not a default flip and not a refusal. Turning screening on by default would
+    change the cost and the behaviour of every existing deployment binding an MCP server,
+    which is not a thing to do silently in a patch; refusing would break them outright. What
+    was missing is anything saying it at the moment the manifest is compiled.
+
+    Silent across every bundled manifest, which is the bar for shipping it — a warning that
+    fires on what we ship is noise on arrival. `contributor.yaml` and `cowork.yaml` are the
+    two that bind untrusted tools, and both enable screening.
+    """
+    if not untrusted:
+        return
+    # `content_screening` has a default_factory, so it is never None — only disabled.
+    if m.spec.content_screening.enabled:
+        return
+    logger.warning(
+        "manifest %r binds untrusted tool(s) %s with content_screening disabled, so their "
+        "output reaches the model unscreened",
+        m.metadata.name,
+        _summarise(sorted(untrusted)),
+        extra={"manifest_id": m.metadata.name},
+    )
+    record_counter("felix_untrusted_tools_unscreened", {"manifest_id": m.metadata.name})
+
+
+def _warn_policies_cannot_be_satisfied(m: Manifest, settings: Any) -> None:
+    """Say so at compile when nothing in this configuration can hold a scope.
+
+    `apply_policies` denies when a required scope is absent, and it is right to: "no scopes"
+    must not read as "all scopes". But several contexts carry an empty scope set by
+    construction, so `spec.policies` plus one of them denies *every* policied tool — safe, and
+    baffling if you have not read `deploy/GOVERNANCE.md`.
+
+    A warning rather than a refusal. The combination is legitimate — a manifest can be served
+    over HTTP to a scoped caller *and* resumed as a fiber — so refusing it would break a
+    working deployment to prevent a surprise. Naming it at compile is what turns "my calculator
+    stopped working" into a one-line answer.
+    """
+    if not m.spec.policies:
+        return
+    reasons: list[str] = []
+    if m.spec.execution.mode == "durable":
+        reasons.append("execution.mode: durable — a resumed fiber runs as principal 'fiber' with no scopes")
+    if str(getattr(settings, "auth_mode", "")) == "none":
+        reasons.append("FELIX_AUTH_MODE=none — every caller is anonymous with no scopes")
+    if not reasons:
+        return
+    logger.warning(
+        "manifest %r declares policies that nothing in this configuration can satisfy, so every "
+        "policied tool will deny: %s",
+        m.metadata.name,
+        "; ".join(reasons),
+        extra={"manifest_id": m.metadata.name},
+    )
+    record_counter("felix_policy_unsatisfiable", {"manifest_id": m.metadata.name})
+
+
 async def build_agent(
     manifest: Manifest | str | dict[str, Any],
     tools: ToolProvider | None = None,
@@ -1058,10 +1178,15 @@ async def build_agent(
         )
 
         # Governance compile checks (frameworks + plaintext secret policy).
-        from felix.manifests.governance import apply_transparency_notice, validate_governance
+        from felix.manifests.governance import (
+            apply_transparency_notice,
+            assert_cost_limit_is_measurable,
+            validate_governance,
+        )
         from felix.manifests.secret_refs import resolve_outbound_secrets
 
         validate_governance(m, deps.settings)
+        assert_cost_limit_is_measurable(m, deps.settings)
         if m.spec.governance.transparency_notice:
             system_prompt = apply_transparency_notice(system_prompt or "", m.metadata.name)
 
@@ -1098,6 +1223,37 @@ async def build_agent(
                 )
             except Exception:
                 logger.warning("browser tool binding failed", exc_info=True)
+
+        # Fetch tools: the model names the URL, the egress guard pins the address.
+        if m.spec.http_tools:
+            try:
+                from felix.tools.http_fetch import tools_from_http_fetch_refs
+
+                _append_unique_tools(
+                    resolved,
+                    tools_from_http_fetch_refs(list(m.spec.http_tools), allow_http=allow_http),
+                )
+            except Exception:
+                logger.warning("http fetch tool binding failed", exc_info=True)
+
+        # Web search: the model supplies a query, the operator supplies the endpoint.
+        if m.spec.search_tools:
+            try:
+                from felix.search import build_search_backend
+                from felix.tools.web_search import tools_from_search_refs
+
+                _append_unique_tools(
+                    resolved,
+                    tools_from_search_refs(
+                        list(m.spec.search_tools),
+                        # `deps.settings` is the reconciled one; `None` resolves to the
+                        # null backend, so a compile with no settings binds a tool that
+                        # reports it is unconfigured rather than raising here.
+                        backend=build_search_backend(deps.settings),
+                    ),
+                )
+            except Exception:
+                logger.warning("search tool binding failed", exc_info=True)
 
         # Client-executed tools (browser/desktop float posts results back).
         if m.spec.client_tools:
@@ -1249,6 +1405,16 @@ async def build_agent(
                 )
             except Exception:
                 logger.debug("active facts inject failed", exc_info=True)
+
+        # A pattern that matches no bound tool gates nothing — a typo, a renamed MCP server,
+        # or a glob written before its target existed. Logged rather than refused: the bound
+        # set legitimately varies (an MCP server whose discovery failed binds no tools), so
+        # refusing would let a remote outage take the agent down with it. Silent was not an
+        # option either — an inert control that validates is the defect this repo keeps
+        # shipping, and globs make one easier to write by hand.
+        _warn_unmatched_tool_patterns(m, [t.name for t in resolved])
+        _warn_policies_cannot_be_satisfied(m, deps.settings)
+        _warn_untrusted_tools_are_unscreened(m, [t.name for t in resolved if _is_untrusted_tool(t)])
 
         # Governance pipeline (order matters — matches TS builder).
         resolved = apply_secret_masking(resolved, _collect_secrets(deps), m.metadata.name)

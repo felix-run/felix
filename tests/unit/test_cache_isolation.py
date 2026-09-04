@@ -82,7 +82,10 @@ def test_isolation_does_not_disable_thinking() -> None:
         thinking_budget = 8192
 
     body: dict[str, Any] = {}
-    apply_openai_thinking_cache(body, _Thinking(), isolate_cache=True)
+    # The model is named because `reasoning_effort` is now gated on the catalog saying the
+    # target accepts it; it used to be sent to every OpenAI-compatible endpoint, including
+    # the ones that 400 on it.
+    apply_openai_thinking_cache(body, _Thinking(), "gpt-4.1", isolate_cache=True)
     assert body["reasoning_effort"] == "medium"
     assert "prompt_cache_key" not in body
 
@@ -121,13 +124,14 @@ class _FakeClient:
 
 
 def _client(monkeypatch: Any):
+    import httpx
     from felix.config import Settings
-    from felix.patterns import model as model_mod
+    from felix_ai import AnthropicMessagesClient, ModelRoute
 
-    monkeypatch.setattr(model_mod.httpx, "AsyncClient", _FakeClient())
-    return model_mod._AnthropicClient(
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeClient())
+    return AnthropicMessagesClient(
         model_id="claude-sonnet-4-5",
-        route=model_mod.ModelRoute(provider="anthropic", model="claude-sonnet-4-5"),
+        route=ModelRoute(provider="anthropic", model="claude-sonnet-4-5"),
         settings=Settings(allow_insecure=True, auth_mode="none", environment="development"),
         spec=_Spec(),
         base_url="https://example.invalid",

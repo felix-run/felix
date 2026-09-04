@@ -487,6 +487,39 @@ def validate_checkpointer_config(
         )
 
 
+def screenable_text(event_type: str, payload: dict[str, Any]) -> str:
+    """Every string this payload will contribute to an event, joined for screening.
+
+    Derived from `_payload_to_appendable` rather than from a list of key names, because a
+    list of key names is the bug: the internal landing path screened `content`, `text`,
+    `message` and `output` while the lift also carried `tool_calls` and `metadata` — and
+    `event_to_chat_message` replays both into model context, `metadata.attachments` as image
+    attachments and `metadata.thinking` as thinking blocks.
+
+    Screening what is actually stored means a future field is covered the day it is lifted,
+    instead of the day someone remembers to add it here.
+    """
+    event = _payload_to_appendable(event_type, payload)
+    found: list[str] = []
+
+    def walk(value: Any) -> None:
+        if isinstance(value, str):
+            if value:
+                found.append(value)
+        elif isinstance(value, dict):
+            for key, item in value.items():
+                if isinstance(key, str) and key:
+                    found.append(key)
+                walk(item)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                walk(item)
+
+    for part in (event.content, event.name, event.role, event.tool_calls, event.metadata):
+        walk(part)
+    return "\n".join(found)
+
+
 def _payload_to_appendable(event_type: str, payload: dict[str, Any]) -> AppendableEvent:
     known_kinds: set[str] = {
         "message",
@@ -543,5 +576,6 @@ __all__ = [
     "get_session_store",
     "list_checkpointers",
     "register_checkpointer",
+    "screenable_text",
     "validate_checkpointer_config",
 ]

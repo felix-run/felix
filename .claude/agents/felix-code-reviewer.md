@@ -28,7 +28,9 @@ code to judge fit — a diff-only review misses the failures that matter here.
    - `memory://` in-memory twin still implemented for any new store.
    - New `FELIX_` setting mirrored to `.env.example` (+ README when it changes lean/full).
    - Model change accompanied by an Alembic revision.
-   - No Cloudflare Workers/DO/Hyperdrive compute introduced.
+   - No Cloudflare Workers/DO/Hyperdrive compute introduced. Calling a hosted Cloudflare
+     API over HTTPS (the `workers_ai` provider, R2 via S3) is not that — the rule is about
+     where Felix runs, not whose API it calls.
 3. **Tests** — does the change have a test that would fail without it? Do new tests run under
    `FELIX_DATABASE_URL=memory://ci` (CI has no services)?
 4. **Simplification** — duplicated logic that an existing helper already covers; a wrapper that

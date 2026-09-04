@@ -9,6 +9,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
 from felix.manifests.schema import A2APeerRef
+from felix.security.egress import safe_async_client
 from felix.security.ssrf import assert_safe_outbound_url
 from felix.timeouts import request_timeout
 from felix.tools.types import Tool, ToolInvocationCtx, define_tool
@@ -73,7 +74,7 @@ def _extract_peer_text(body: dict[str, Any]) -> str:
 
 
 def make_peer_tool(ref: A2APeerRef, *, allow_http: bool = False) -> Tool:
-    assert_safe_outbound_url(ref.url, allow_http=allow_http)
+    assert_safe_outbound_url(ref.url, allow_http=allow_http, resolve=False)
     url = ref.url.rstrip("/")
     # Accept bare host or /a2a path.
     endpoint = url if url.endswith("/a2a") else f"{url}/a2a"
@@ -92,7 +93,7 @@ def make_peer_tool(ref: A2APeerRef, *, allow_http: bool = False) -> Tool:
         }
         if args.manifest:
             payload["params"]["manifest"] = args.manifest  # type: ignore[index]
-        async with httpx.AsyncClient(timeout=_peer_timeout(ref), follow_redirects=False) as client:
+        async with safe_async_client(allow_http=allow_http, timeout=_peer_timeout(ref)) as client:
             resp = await client.post(endpoint, json=payload, headers=_auth_headers(ref.auth))
             resp.raise_for_status()
             body = resp.json()
