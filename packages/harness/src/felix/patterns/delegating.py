@@ -22,6 +22,7 @@ from felix.patterns.model import (
     ModelChatResult,
     build_model,
     record_usage,
+    supports_stream_turn,
     wire_model_id,
 )
 from felix.patterns.react import build_react_agent
@@ -179,8 +180,8 @@ async def _yield_model_stream(
     delta: one request, correctly metered, at the cost of token-by-token display for that
     provider. Streaming for show is not worth an uncapped spend.
     """
-    stream_turn = getattr(model, "stream_turn", None)
-    if stream_turn is not None:
+    if supports_stream_turn(model):
+        stream_turn = model.stream_turn
         async for item in stream_turn(messages, []):
             if isinstance(item, ModelChatResult):
                 record_usage(

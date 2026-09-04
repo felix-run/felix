@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, TypeGuard, runtime_checkable
 
 Role = Literal["user", "assistant", "system", "tool"]
 
@@ -299,23 +299,47 @@ class ModelProvider(Protocol):
         opts: ModelChatOptions | None = None,
     ) -> AsyncIterator[str]: ...
 
-    # Optional, but the difference matters: `stream()` yields text and nothing else, so a
-    # provider that implements only it cannot report tool calls *or* usage from a streamed
-    # request. `record_usage` is the sole feed for `limits.max_input_tokens`,
-    # `max_output_tokens` and `max_cost_usd`, so callers must either use `stream_turn` or
-    # pay for a second `chat()` to meter the turn — see `_stream_one_turn` in
-    # `patterns/react.py` and `_yield_model_stream` in `patterns/delegating.py`.
-    #
-    # It was left off this Protocol entirely, which meant a third-party provider could
-    # implement the published contract in full and still land in the unmetered path with
-    # nothing to tell its author why. Callers detect it with `getattr(model, "stream_turn",
-    # None)`; declaring it here is what makes the capability visible and checkable.
+
+@runtime_checkable
+class StreamingModelProvider(ModelProvider, Protocol):
+    """A provider that can stream a turn *and* report what it cost.
+
+    The difference matters: `stream()` yields text and nothing else, so a provider that
+    implements only it cannot report tool calls *or* usage from a streamed request.
+    `record_usage` is the sole feed for `limits.max_input_tokens`, `max_output_tokens` and
+    `max_cost_usd`, so a caller must either use `stream_turn` or pay for a second `chat()`
+    to meter the turn — see `_stream_one_turn` in `patterns/react.py` and
+    `_yield_model_stream` in `patterns/delegating.py`.
+
+    `stream_turn` was once absent from the published contract entirely, so a third-party
+    provider could implement everything documented and still land in the unmetered path
+    with nothing to say why. It was then added to `ModelProvider` itself, which made the
+    opposite claim — that every provider must stream — while every caller went on probing
+    for it and the scripted provider, the wire clients and the traced wrapper all treated
+    it as optional. A type checker reading that saw a wrapper hiding a mandatory member.
+
+    A separate Protocol says the true thing: streaming is a capability some providers have.
+    Probe for it with `supports_stream_turn`, never with `getattr`, so the narrowing is
+    visible to the type checker as well as to the reader.
+    """
+
     def stream_turn(
         self,
         messages: list[ChatMessage],
         tools: Sequence[ToolSchema],
         opts: ModelChatOptions | None = None,
     ) -> AsyncIterator[StreamDelta | ModelChatResult]: ...
+
+
+def supports_stream_turn(client: object) -> TypeGuard[StreamingModelProvider]:
+    """True when `client` can stream a metered turn.
+
+    One predicate rather than four hand-rolled `getattr(model, "stream_turn", None)`
+    checks, so "does this provider stream" has a single answer and the narrowing is a type
+    the checker understands. `callable` rather than a plain attribute test: a wrapper that
+    forwards attributes can answer to the name without implementing it.
+    """
+    return callable(getattr(client, "stream_turn", None))
 
 
 # Alias used throughout patterns
@@ -335,7 +359,9 @@ __all__ = [
     "Role",
     "StopReason",
     "StreamDelta",
+    "StreamingModelProvider",
     "TokenUsage",
     "ToolCall",
     "ToolSchema",
+    "supports_stream_turn",
 ]

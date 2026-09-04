@@ -30,9 +30,11 @@ from felix_ai.types import (
     ModelRoute,
     StopReason,
     StreamDelta,
+    StreamingModelProvider,
     TokenUsage,
     ToolCall,
     ToolSchema,
+    supports_stream_turn,
 )
 from felix_ai.wire import (
     MODEL_MAX_RETRIES,
@@ -48,8 +50,12 @@ from felix_ai.wire import (
 
 from felix.config import DEFAULT_MODEL_ROUTES, Settings, get_settings
 from felix.context import try_get_context
+from felix.observability.genai import (
+    record_input_on_span,
+    record_result_on_span,
+)
 from felix.observability.metrics import record_counter
-from felix.observability.tracing import SpanContext, timed_span
+from felix.observability.tracing import timed_span
 from felix.patterns.model_registry import (
     get_model_provider,
     list_model_providers,
@@ -198,103 +204,6 @@ def record_usage(
         logger.debug("usage_sink_failed", exc_info=True)
 
 
-# Prompts grow without bound; a span attribute should not. Truncation is preferable to a
-# span the exporter refuses or the backend rejects.
-MAX_SPAN_CONTENT_CHARS = 32_000
-
-
-def _content_capture_enabled() -> bool:
-    """`FELIX_OTEL_CAPTURE_CONTENT`, read from the active request's settings.
-
-    Off by default. A tracing backend is an egress destination like any other, and span
-    attributes do not pass through the governance content screening that guards tool
-    output — so the prompt and the completion only leave the process when an operator has
-    said so.
-    """
-    ctx = try_get_context()
-    settings = getattr(ctx, "settings", None) if ctx is not None else None
-    if settings is None:
-        settings = get_settings()
-    return bool(getattr(settings, "otel_capture_content", False))
-
-
-def _redacted_json(value: Any) -> str | None:
-    """Serialise for a span attribute, with the audit store's redaction applied first.
-
-    `redact_json` is what the audit path already uses, so content on a span is masked to
-    the same standard as content in an audit row — and to no better one. It replaces
-    values Felix *knows* are secrets (those hydrated from the secrets backend) by
-    substring match; it is not pattern detection. A credential a user types into a chat is
-    therefore exported verbatim. That boundary is why `FELIX_OTEL_CAPTURE_CONTENT`
-    defaults to off.
-    """
-    try:
-        from felix.secrets import redact_json
-
-        return json.dumps(redact_json(value), default=str)[:MAX_SPAN_CONTENT_CHARS]
-    except Exception:
-        logger.debug("span content redaction failed; dropping content", exc_info=True)
-        return None
-
-
-def _record_input_on_span(span: SpanContext, messages: list[ChatMessage]) -> None:
-    if not _content_capture_enabled():
-        return
-    payload = _redacted_json([_message_dict(m) for m in messages])
-    if payload is not None:
-        span.set_attribute("gen_ai.input.messages", payload)
-
-
-def _record_output_on_span(span: SpanContext, result: ModelChatResult) -> None:
-    if not _content_capture_enabled():
-        return
-    payload = _redacted_json([_message_dict(result.message)])
-    if payload is not None:
-        span.set_attribute("gen_ai.output.messages", payload)
-
-
-def _message_dict(message: Any) -> dict[str, Any]:
-    """The parts of a message worth tracing, without dragging in provider internals."""
-    content = getattr(message, "content", None)
-    out: dict[str, Any] = {"role": getattr(message, "role", "") or "", "content": content}
-    calls = getattr(message, "tool_calls", None)
-    if calls:
-        out["tool_calls"] = [
-            {"name": getattr(c, "name", ""), "args": getattr(c, "args", None)} for c in calls
-        ]
-    return out
-
-
-def _record_result_on_span(span: SpanContext, result: ModelChatResult, wire_model: str) -> None:
-    """Attach the response half of a generation: stop reason, tokens, cost."""
-    span.set_attribute("gen_ai.response.model", wire_model)
-    span.set_attribute("gen_ai.response.finish_reasons", str(result.stop_reason))
-    _record_output_on_span(span, result)
-    usage = result.usage
-    if usage is None:
-        # Same failure `_metered_usage` warns about — a turn that cannot be capped.
-        # Worth seeing in a trace, not only in the log.
-        span.set_attribute("felix.usage.unmetered", True)
-        return
-    span.set_attribute("gen_ai.usage.input_tokens", usage.input)
-    span.set_attribute("gen_ai.usage.output_tokens", usage.output)
-    # Cache tokens under the GenAI-semconv names as well as Felix's own. Only the former
-    # are read by backends, and dropping them is not cosmetic: Felix's `usage_with_cost`
-    # counts cache reads and creations, so a backend computing cost from input/output
-    # alone silently disagrees with Felix's own number as soon as prompt caching is on.
-    span.set_attribute("gen_ai.usage.cache_creation_input_tokens", usage.cache_creation)
-    span.set_attribute("gen_ai.usage.cache_read_input_tokens", usage.cache_read)
-    span.set_attribute("felix.usage.cache_creation", usage.cache_creation)
-    span.set_attribute("felix.usage.cache_read", usage.cache_read)
-    try:
-        from felix.usage.pricing import usage_with_cost
-
-        priced = usage_with_cost(usage, model_id=wire_model)
-        span.set_attribute("felix.cost_usd", float((priced.get("cost") or {}).get("total") or 0.0))
-    except Exception:
-        logger.debug("span pricing unavailable", exc_info=True)
-
-
 @dataclass
 class _TracedClient:
     """One span and one latency sample per provider call.
@@ -346,9 +255,9 @@ class _TracedClient:
             metric="felix_model_call_seconds",
             labels={"model": self.model_id},
         ) as span:
-            _record_input_on_span(span, messages)
+            record_input_on_span(span, messages)
             result = await self.inner.chat(messages, tools, opts)
-            _record_result_on_span(span, result, self._wire_model())
+            record_result_on_span(span, result, self._wire_model())
             return result
 
     def stream(
@@ -361,10 +270,10 @@ class _TracedClient:
 
     def __getattr__(self, name: str) -> Any:
         # Providers carry extra attributes the harness reads by name (`wire_model_id`
-        # walks `route`/`model_id`, patterns probe for capabilities). Forward anything
-        # this wrapper does not define — but see `_TracedStreamingClient`: `stream_turn`
-        # is resolved by `getattr(model, "stream_turn", None)`, so it must NOT be
-        # forwarded here or every client would claim to support it.
+        # walks `route`/`model_id`). Forward anything this wrapper does not define — but
+        # `stream_turn` must NOT be forwarded, or `supports_stream_turn` would answer True
+        # for every wrapped client and push non-streaming providers into the streamed
+        # path, where `record_usage` is never reached and the turn escapes every limit.
         # `inner` guards against infinite recursion when it is unset (an instance built
         # by copy/pickle before __init__ runs); without it the forward looks itself up.
         if name in ("inner", "stream_turn"):
@@ -376,10 +285,15 @@ class _TracedClient:
 class _TracedStreamingClient(_TracedClient):
     """`_TracedClient` for providers that implement `stream_turn`.
 
-    The capability is detected with `getattr(model, "stream_turn", None)`, so it has to be
-    absent on the wrapper when it is absent on the client — a wrapper that always defined
-    it would push every non-streaming provider into the streaming path.
+    `supports_stream_turn` answers on the attribute, so the capability has to be absent on
+    the wrapper when it is absent on the client — a wrapper that always defined it would
+    push every non-streaming provider into the streamed path.
     """
+
+    # Narrowed from `ModelClient`: `_traced` only builds this class for a client that
+    # `supports_stream_turn` accepted, and saying so is what lets a type checker follow
+    # the `self.inner.stream_turn` call below.
+    inner: StreamingModelProvider
 
     async def stream_turn(
         self,
@@ -393,17 +307,25 @@ class _TracedStreamingClient(_TracedClient):
             metric="felix_model_call_seconds",
             labels={"model": self.model_id},
         ) as span:
-            _record_input_on_span(span, messages)
+            record_input_on_span(span, messages)
             async for item in self.inner.stream_turn(messages, tools, opts):
                 # Usage rides on the terminal ModelChatResult, not on the deltas.
                 if isinstance(item, ModelChatResult):
-                    _record_result_on_span(span, item, self._wire_model())
+                    record_result_on_span(span, item, self._wire_model())
                 yield item
 
 
 def _traced(client: ModelClient) -> ModelClient:
-    cls = _TracedStreamingClient if getattr(client, "stream_turn", None) is not None else _TracedClient
-    return cls(inner=client, model_id=client.model_id, route=client.route)
+    """Wrap a leaf client so each provider call emits a span and a latency observation.
+
+    Branching rather than picking a class into a variable: `supports_stream_turn` is a
+    `TypeGuard`, so an `if` narrows `client` to `StreamingModelProvider` inside the branch
+    and the streaming wrapper's `inner` field can say what it actually requires. A ternary
+    collapses both classes into a union before the narrowing applies.
+    """
+    if supports_stream_turn(client):
+        return _TracedStreamingClient(inner=client, model_id=client.model_id, route=client.route)
+    return _TracedClient(inner=client, model_id=client.model_id, route=client.route)
 
 
 @dataclass
@@ -458,9 +380,9 @@ class _FallbackClient:
         last_err: Exception | None = None
         for i, client in enumerate(chain):
             emitted = False
-            turn = getattr(client, "stream_turn", None)
-            if turn is None:
+            if not supports_stream_turn(client):
                 continue
+            turn = client.stream_turn
             try:
                 async for item in turn(messages, tools, opts):
                     emitted = True
@@ -759,6 +681,7 @@ __all__ = [
     "OpenAICompletionsClient",
     "StopReason",
     "StreamDelta",
+    "StreamingModelProvider",
     "TokenUsage",
     "ToolCall",
     "ToolSchema",
@@ -774,5 +697,6 @@ __all__ = [
     "record_usage",
     "register_builtin_providers",
     "resolve_provider_config",
+    "supports_stream_turn",
     "wire_model_id",
 ]

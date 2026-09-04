@@ -19,6 +19,7 @@ from felix.patterns.model import (
     ModelGatewayError,
     build_model,
     record_usage,
+    supports_stream_turn,
     wire_model_id,
 )
 from felix.patterns.overflow import is_context_overflow, is_silent_overflow
@@ -365,8 +366,8 @@ class _ReactAgent:
         Extracted so the caller can retry the whole turn after compacting, which it can
         only do while nothing has been emitted.
         """
-        stream_turn = getattr(model, "stream_turn", None)
-        if stream_turn is not None:
+        if supports_stream_turn(model):
+            stream_turn = model.stream_turn
             # One request for the whole turn. See `stream_turn` for why the
             # stream-then-chat pair it replaces was worse than it looked.
             async for item in stream_turn(messages, active_tools):
