@@ -210,6 +210,24 @@ def _find_cut(
     return older, kept, is_split
 
 
+def meter_summarizer(result: Any, model: Any, *, kind: str, reason: str) -> dict[str, Any]:
+    """Meter a summarizer call like any other model call on the tenant's behalf.
+
+    Through `record_model_usage`, so it reaches the run's `limit_state` (and so
+    `limits.max_cost_usd`), Prometheus, the usage store and the plugin sink — attributed
+    to the tenant and manifest of the request that triggered it, priced by the wire model
+    id, and tagged in `meta` so it can be told apart from the turn. A metering failure
+    is logged and never costs the summary itself. Returns the priced usage block.
+    """
+    from felix.patterns.model import record_model_usage
+
+    try:
+        return record_model_usage(result, model, meta={"kind": kind, "reason": reason})
+    except Exception:
+        logger.warning("%s usage was not recorded", kind, exc_info=True)
+        return {}
+
+
 class CompactingSessionStrategy:
     """Auto-compact when context exceeds ``context_window - reserve_tokens``."""
 
@@ -465,28 +483,7 @@ class CompactingSessionStrategy:
                     ModelChatOptions(isolate_cache=True),
                 )
                 summary_text = result.message.content
-                if getattr(result, "usage", None):
-                    from felix.usage.pricing import usage_with_cost
-
-                    mid = getattr(model, "model_id", "") or ""
-                    usage_meta = usage_with_cost(result.usage, model_id=mid)
-                    try:
-                        from felix.config import get_settings
-                        from felix.usage.store import record_tokens
-
-                        record_tokens(
-                            get_settings(),
-                            tenant_id="default",
-                            manifest_id="compaction",
-                            model_id=mid,
-                            tokens_input=int(getattr(result.usage, "input", 0) or 0),
-                            tokens_output=int(getattr(result.usage, "output", 0) or 0),
-                            cache_creation=int(getattr(result.usage, "cache_creation", 0) or 0),
-                            cache_read=int(getattr(result.usage, "cache_read", 0) or 0),
-                            meta={"kind": "compaction", "reason": reason},
-                        )
-                    except Exception:
-                        pass
+                usage_meta = meter_summarizer(result, model, kind="compaction", reason=reason)
             except Exception as exc:
                 logger.debug("compaction summarization failed", exc_info=True)
                 await run_compact_failed(
