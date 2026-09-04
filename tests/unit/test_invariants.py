@@ -664,10 +664,13 @@ def test_governance_wrappers_declare_their_config_type() -> None:
     assert untyped == [], f"governance wrapper config parameters must not be Any: {untyped}"
 
 
-# `model.py` holds the clients themselves plus the fallback/escalation composites: they
-# *are* the call, and metering is the caller's job. Every other module under patterns/ is
-# a caller.
-_UNMETERED_BY_DESIGN = {"model.py"}
+# These hold the model clients themselves: they *are* the call, and metering is the
+# caller's job. Every other module under patterns/ is a caller.
+#
+# `model_composites.py` is exempt for the reason `model.py` always was — it holds the
+# fallback and escalation wrappers, which this comment named before they moved into their
+# own module. Adding a *pattern* here would be wrong; adding a module of clients is not.
+_UNMETERED_BY_DESIGN = {"model.py", "model_composites.py"}
 
 
 def test_a_pattern_that_reaches_a_model_records_the_usage() -> None:

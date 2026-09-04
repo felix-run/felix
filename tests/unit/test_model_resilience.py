@@ -164,7 +164,7 @@ def test_a_timeout_does_not_advance_the_fallback_chain() -> None:
     the full ceiling — the same amplification this change removed from `_post_with_retry`.
     """
     import httpx
-    from felix.patterns.model import _is_provider_error
+    from felix.patterns.model_composites import _is_provider_error
 
     assert _is_provider_error(httpx.ReadTimeout("x")) is False
     assert _is_provider_error(httpx.WriteTimeout("x")) is False

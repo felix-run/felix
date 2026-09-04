@@ -49,13 +49,25 @@ This list is exhaustive. A large file **not** named here has no such defense —
 The section above was read as "every big file in this repo is deliberate," which is how
 the two largest modules in the harness kept getting a pass. They are not defended:
 
-- `packages/harness/src/felix/patterns/model.py` (~1,630 lines). The wire clients were split
-  into `_OpenAIClient` and `_AnthropicClient` behind a 113-line `_HttpModelClient` base, so the
-  `style == "anthropic"` flag and its three dispatch sites are gone. What remains is a long
-  file rather than a tangled one: the two wire formats (~200 and ~320 lines) plus request
-  building, retry/backoff, SSE parsing, usage recording, and the `_FallbackClient` /
-  `_EscalationClient` composites. Moving the two clients into their own modules is the
-  obvious next step and is mechanical; nothing depends on them staying here.
+- `packages/harness/src/felix/patterns/model.py` is **522 lines and under budget** — this
+  entry described it at ~1,630 and named the wire-client split as the obvious next step long
+  after that had happened. A stale hotspot map costs more than no map: it sends the next
+  reviewer at work already done and away from the file that has grown since.
+
+  Three splits got it there. The wire formats and neutral types moved to `packages/ai`
+  (`felix_ai`), which is also what makes model-agnosticism structural rather than claimed.
+  The GenAI span shaping moved to `observability/genai.py` — content capture, redaction and
+  the semconv attribute writing are not model-specific. The resilience composites moved to
+  `patterns/model_composites.py`: failing over and escalating are a policy about unavailable
+  or inadequate answers, not routing.
+
+  What remains is the module's actual subject: route resolution against `Settings`,
+  `record_usage`, the traced client wrappers, and the provider factories.
+
+  Note for anyone auditing metering: `model_composites.py` is in
+  `_UNMETERED_BY_DESIGN` alongside `model.py` in `tests/unit/test_invariants.py`, for the
+  reason that exemption always had — these hold clients, and metering is the caller's job.
+  A *pattern* added to that set would be a bug.
 
 `packages/harness/src/felix/patterns/__init__.py` was 920 lines and is now 152: the composite
 agent moved to `patterns/delegating.py` and the deep pattern's plan tools to

@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The fallback and escalation composites moved to `patterns/model_composites.py`.** They
+  are private, so nothing outside the repo is affected; tests that reached for
+  `_FallbackClient` or `_is_provider_error` import from the new module.
+
+  Failing over to another model and escalating to a stronger one are a policy about what to
+  do when an answer is unavailable or not good enough — a different subject from resolving a
+  route and metering a turn. `patterns/model.py` is **522 lines, under the 600 budget for the
+  first time**, and holds route resolution, `record_usage`, the traced wrappers and the
+  provider factories.
+
+
 - **`stream_turn` is a separate Protocol, not a required member of `ModelProvider`.** This
   reverses a published contract, so it matters to anyone implementing a provider:
   `felix_ai.types.ModelProvider` no longer requires `stream_turn`, and

@@ -120,7 +120,7 @@ async def test_a_fallback_chain_that_cannot_stream_still_answers() -> None:
     run with `spec.model.fallbacks` and a chat-only provider produced an empty answer with
     no log line and no metering, because no inference had happened.
     """
-    from felix.patterns.model import _FallbackClient
+    from felix.patterns.model_composites import _FallbackClient
     from felix_ai.types import StreamDelta
 
     leaf = _NonStreaming()
