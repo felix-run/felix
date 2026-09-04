@@ -585,7 +585,7 @@ def test_optional_extras_are_gated_through_the_helper() -> None:
 # `apply_artifact_spill` is excluded because it lives in felix/artifacts.py, not
 # builder.py; the intersection below drops it, and test_governance_wrappers_all_resolve
 # asserts the set is not silently empty.
-GOVERNANCE_WRAPPERS = set(EXPECTED_WRAPPER_ORDER) | {"wrap_final_response_judges"}
+GOVERNANCE_WRAPPERS = set(EXPECTED_WRAPPER_ORDER) | {"apply_reply_controls"}
 
 # Parameters that are plumbing rather than manifest config. Deliberately short: an
 # earlier version also excluded `secrets`, `policies` and `rules` — which are exactly the

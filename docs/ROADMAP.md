@@ -208,17 +208,22 @@ Small, and blocking for the adopter goal: anyone evaluating Felix on its governa
       by nothing; `jobs/retention.py:17` hardcodes the TTL. Already named in
       `test_inert_manifest_fields.py`. The flagship governed manifest declares a data-retention
       policy that changes nothing.
-- [ ] **`governed.yaml:128 guardrails.targets: [input, output]` does not scrub replies.**
-      `apply_guardrails` wraps **tools** only; `redact_pii`'s two call sites are user input
-      (`inbound.py:200`) and tool output (`builder.py:547`). A reader reasonably concludes the
-      agent's replies are PII-scrubbed. Implement outbound redaction, or correct the manifest and
-      `deploy/GOVERNANCE.md`.
+- [x] **`governed.yaml:128 guardrails.targets: [input, output]` does not scrub replies.**
+      Implemented: the reply-path wrapper redacts (or blocks) PII in the agent's reply on
+      `invoke` and on the streaming path; `output` covers tool output and the reply,
+      `final_response` the reply alone. `deploy/GOVERNANCE.md` says so.
 - [ ] **Five `PlanExecuteSpec` fields are inert** — `planner_model`, `executor_model`,
       `replan_on_failure`, `max_replans`, `planner_few_shots` (`schema.py:435-442`) each have
       exactly one reference: their own definition. The documented replan behaviour does not exist.
-- [ ] **Final-response judges do nothing on the streaming path.**
-      `wrap_final_response_judges` passes events through unjudged on `stream_events`, so the only
-      outbound model-call control is inert on the primary chat surface.
+- [ ] **The session log keeps the unscreened reply.** The reply controls above govern the
+      reply as it leaves the run; the react loop appends the assistant message to the session
+      log before the wrapper sees it, so a resume stream or a thread export replays the raw
+      text. Either append the screened reply (the wrapper would need the store) or record a
+      redaction event the replay path applies. Named in `deploy/GOVERNANCE.md` as an exception
+      until it lands.
+- [x] **Final-response judges do nothing on the streaming path.** Fixed with the reply-path
+      wrapper: reply text is held until the run ends and released judged, or replaced by the
+      denial; structural frames still stream as they happen.
 - [ ] **Inbound screening skips two paths** — called from `/chat`, `/v1` and A2A, but not from
       `routes/mcp.py` and not from the durable fiber path. A manifest with
       `content_screening.enabled: true` is unscreened over MCP and on every background run.

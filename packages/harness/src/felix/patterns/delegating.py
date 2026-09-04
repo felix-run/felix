@@ -42,7 +42,7 @@ _SCORE_RE = re.compile(r"[-+]?\d*\.?\d+")
 # What an unset `ReflectSpec.criteria` means to a *model*. Deliberately not passed to the
 # heuristic scorer: it reads criteria as tokens to match, so "general helpfulness" scores
 # ~0 against almost any real answer, and a verifier outage would then burn every one of
-# `max_iterations` passes on a default-configured agent. `_heuristic_judge_score` has its
+# `max_iterations` passes on a default-configured agent. `heuristic_judge_score` has its
 # own empty-criteria branch, which is the right answer when nothing was asked for.
 _DEFAULT_REFLECT_CRITERIA = "general helpfulness"
 
@@ -574,7 +574,7 @@ class _DelegatingAgent:
         judge against; the heuristic does not, because it would match those words as
         tokens. One string, two consumers that must read it differently.
 
-        Degrades to `_heuristic_judge_score` — the same fallback `_judge_score` uses in
+        Degrades to `heuristic_judge_score` — the same fallback `judge_score` uses in
         `manifests/builder.py` — when the verifier is unavailable or unparseable. It used
         to return `0.8 if len(answer) > 40 else 0.4`, which is above the default
         `ReflectSpec.threshold` of 0.7: an unreachable verifier, a rate-limited one, or a
@@ -585,7 +585,7 @@ class _DelegatingAgent:
         if not answer.strip():
             return 0.0
 
-        from felix.manifests.builder import _heuristic_judge_score
+        from felix.governance.judges import heuristic_judge_score
 
         try:
             from felix.manifests.schema import ModelSpec
@@ -611,7 +611,7 @@ class _DelegatingAgent:
             )
         except Exception:
             logger.warning("reflect verifier call failed; falling back to the heuristic score", exc_info=True)
-            return _heuristic_judge_score(answer, criteria)
+            return heuristic_judge_score(answer, criteria)
 
         # The verifier is billed whether or not its reply parses.
         record_model_usage(result, model, manifest_id=self.manifest_id)
@@ -622,7 +622,7 @@ class _DelegatingAgent:
                 "reflect verifier returned an unparseable score %r; falling back to the heuristic",
                 (result.message.content or "")[:120],
             )
-            return _heuristic_judge_score(answer, criteria)
+            return heuristic_judge_score(answer, criteria)
         return score
 
     # --- plan_execute ---------------------------------------------------------------

@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import pytest
 from felix.auth.jwt import public_jwks
+from felix.governance.judges import heuristic_judge_score
 from felix.jobs.scheduler import next_run_at_ms
-from felix.manifests.builder import _heuristic_judge_score, apply_judges
+from felix.manifests.builder import apply_judges
 from felix.manifests.schema import Guardrails, JudgeRule
 from felix.patterns.types import ChatMessage
 from felix.secrets import FileSecrets
@@ -24,11 +25,11 @@ def test_next_run_at_ms_parsers() -> None:
 
 
 def test_heuristic_judge_score() -> None:
-    assert _heuristic_judge_score("hi", "nonempty") == 0.0
-    assert _heuristic_judge_score("hello world", "nonempty") == 1.0
-    assert _heuristic_judge_score("abcd", "min_chars:4") == 1.0
-    assert _heuristic_judge_score("ab", "min_chars:4") == 0.5
-    assert _heuristic_judge_score("ship the feature soon", "ship feature") == 1.0
+    assert heuristic_judge_score("hi", "nonempty") == 0.0
+    assert heuristic_judge_score("hello world", "nonempty") == 1.0
+    assert heuristic_judge_score("abcd", "min_chars:4") == 1.0
+    assert heuristic_judge_score("ab", "min_chars:4") == 0.5
+    assert heuristic_judge_score("ship the feature soon", "ship feature") == 1.0
 
 
 @pytest.mark.asyncio

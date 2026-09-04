@@ -108,7 +108,19 @@ spec:
 Runtime also enforces `spec.auth.inbound`, routes inbound MCP through the
 compiled agent, emits audit events from the agent loop, and redacts durable
 state. User turns are screened when `content_screening.enabled` and/or
-`guardrails.providers: [pii]` targets `input` (block or redact). Tenant
+`guardrails.providers: [pii]` targets `input` (block or redact). `guardrails.targets`
+name where PII is caught: `input` is the user turn, `output` is everything leaving the
+model boundary — tool output *and* the agent's reply — and `final_response` is the reply
+alone. The reply-path controls (`output`/`final_response` PII, and `judges` with
+`final_response: true`) wrap the agent rather than its tools, and apply on the streaming
+path as well as `invoke`: reply text is held until the run ends and released screened,
+while tool and approval frames stream as they happen. A denial or redaction emits a
+`guardrails_reply` or `judge_deny` audit event. Two things the reply controls do not
+cover, stated so nobody assumes them: the session log holds the reply as the model
+produced it, so `GET /chat/stream/{thread_id}` replays and `GET /chat/threads` exports
+carry the unscreened text — the controls govern the reply as it leaves the run, not the
+transcript (tracked in `docs/ROADMAP.md`); and `thinking_delta` is reasoning, not the
+reply, and passes through unscreened. Tenant
 isolation is application-level `tenant_id` by default; enable Postgres RLS
 with migration `0006_tenant_rls` and `FELIX_DATABASE_RLS=true`
 (sets `app.tenant_id` / `app.rls_bypass` GUCs per transaction).

@@ -10,6 +10,7 @@ from typing import Any, Literal
 from felix.auth.context import AuthContext
 from felix.context import try_get_context
 from felix.governance.content_screening import _INJECTION
+from felix.governance.judges import judge_score
 from felix.limits import EffectiveLimits, effective_limits
 from felix.manifests.loader import load_bundled, parse_manifest
 from felix.manifests.schema import (
@@ -17,7 +18,6 @@ from felix.manifests.schema import (
     CommandScreening,
     ContentScreening,
     Guardrails,
-    JudgeRule,
     Limits,
     Manifest,
     Policy,
@@ -535,8 +535,9 @@ def apply_guardrails(tools: list[Tool], guardrails: Guardrails | None, manifest_
         return tools
     block = guardrails.block_on_match
     targets = set(guardrails.targets)
-    # Default targets include output; skip wrapping when only input is requested.
-    if targets and "output" not in targets and "final_response" not in targets:
+    # `output` is tool output and the reply; `final_response` is the reply alone, which
+    # `apply_reply_controls` handles. Only `output` wraps tools (the default includes it).
+    if targets and "output" not in targets:
         return tools
 
     def wrap_one(tool: Tool) -> Tool:
@@ -557,107 +558,6 @@ def apply_guardrails(tools: list[Tool], guardrails: Guardrails | None, manifest_
         return _clone_tool(tool, wrap_executor(inner, execute))
 
     return _wrap_tools(tools, wrap_one)
-
-
-def _heuristic_judge_score(content: str, criteria: str) -> float:
-    """Score tool/final output against judge criteria (0..1).
-
-    Supports:
-    * nonempty / not empty
-    * min_length:N / min_chars:N
-    * keyword overlap with criteria tokens (default)
-    """
-    text = (content or "").strip()
-    c = (criteria or "").strip().lower()
-    if not c:
-        return 1.0 if len(text) >= 3 else 0.0
-    if "nonempty" in c or "not empty" in c or c in {"relevance", "useful"}:
-        return 1.0 if len(text) >= 3 else 0.0
-    for prefix in ("min_length:", "min_chars:"):
-        if c.startswith(prefix):
-            try:
-                n = max(int(c.split(":", 1)[1].strip()), 1)
-            except ValueError:
-                n = 1
-            return min(1.0, len(text) / n)
-    # Explicit assertions, so a criterion's *polarity* is stated rather than inferred.
-    for prefix in ("assert_absent:", "must_not_contain:"):
-        if c.startswith(prefix):
-            needles = [n.strip() for n in c.split(":", 1)[1].split(",") if n.strip()]
-            lower = text.lower()
-            return 0.0 if any(n in lower for n in needles) else 1.0
-    for prefix in ("assert_present:", "must_contain:"):
-        if c.startswith(prefix):
-            needles = [n.strip() for n in c.split(":", 1)[1].split(",") if n.strip()]
-            lower = text.lower()
-            return 1.0 if all(n in lower for n in needles) else 0.0
-
-    # Bag-of-words overlap cannot express a negative criterion: for
-    # "must not leak credentials or secrets" it scored output *containing* those words
-    # highest, so a safety judge passed exactly what it was meant to block. Refuse to
-    # guess — a judge with no model and no explicit assertion fails closed.
-    if _looks_negated(c):
-        logger.error(
-            "judge criteria %r is a negative assertion but has no model and no "
-            "assert_absent: prefix; failing closed",
-            criteria,
-        )
-        return 0.0
-
-    tokens = [t for t in c.replace(",", " ").split() if len(t) > 2]
-    if not tokens:
-        return 1.0 if len(text) >= 3 else 0.0
-    lower = text.lower()
-    words = set(lower.split())
-    hit = sum(1 for t in tokens if t in words or t in lower)
-    return hit / len(tokens)
-
-
-_NEGATION_MARKERS = (
-    "must not",
-    "should not",
-    "never",
-    "no ",
-    "without",
-    "avoid",
-    "free of",
-    "does not",
-    "doesn't",
-    "don't",
-    "cannot",
-    "refuse",
-    "prohibit",
-    "forbid",
-)
-
-
-def _looks_negated(criteria: str) -> bool:
-    """True when a criterion reads as "must NOT ..." — polarity a bag of words inverts."""
-    return any(m in criteria for m in _NEGATION_MARKERS)
-
-
-async def _judge_score(content: str, judge: JudgeRule, *, settings: Any | None = None) -> float:
-    """Heuristic score, or LLM score when ``judge.model`` is set."""
-    criteria = judge.criteria
-    model_id = judge.model.strip()
-    if not model_id or settings is None:
-        return _heuristic_judge_score(content, criteria)
-    try:
-        from felix.eval.compare import llm_judge_score
-        from felix.manifests.schema import ModelSpec
-        from felix.patterns.model import build_model
-
-        model = build_model(settings, ModelSpec(id=model_id))
-        result = await llm_judge_score(
-            model,
-            user_input="",
-            answer=content,
-            criteria=criteria,
-            threshold=judge.threshold,
-        )
-        return float(result.get("score") or 0.0)
-    except Exception:
-        return _heuristic_judge_score(content, criteria)
 
 
 def apply_judges(tools: list[Tool], guardrails: Guardrails | None, manifest_id: str) -> list[Tool]:
@@ -682,7 +582,7 @@ def apply_judges(tools: list[Tool], guardrails: Guardrails | None, manifest_id: 
 
             settings = get_settings()
             for j in applicable:
-                score = await _judge_score(content, j, settings=settings)
+                score = await judge_score(content, j, settings=settings)
                 threshold = float(getattr(j, "threshold", 0.7) or 0.7)
                 if score < threshold:
                     return deny_output(
@@ -696,52 +596,18 @@ def apply_judges(tools: list[Tool], guardrails: Guardrails | None, manifest_id: 
     return _wrap_tools(tools, wrap_one)
 
 
-def wrap_final_response_judges(agent: Agent, guardrails: Guardrails | None, manifest_id: str) -> Agent:
-    """Apply final_response=True judges to the agent's reply."""
-    _ = manifest_id
-    judges = [j for j in (guardrails.judges if guardrails else []) if j.final_response]
-    if not judges:
+def apply_reply_controls(agent: Agent, guardrails: Guardrails | None, manifest_id: str) -> Agent:
+    """The reply-path controls: `final_response` judges and PII guardrails on the reply.
+
+    Wraps the agent rather than its tools, because the reply is not a tool output. The
+    mechanics live in `felix.governance.reply`; this is the slot in the compile that
+    applies them, last, after the pattern has been built.
+    """
+    from felix.governance.reply import ReplyControlsAgent, reply_controls_enabled
+
+    if guardrails is None or not reply_controls_enabled(guardrails):
         return agent
-
-    from collections.abc import AsyncIterator
-
-    from felix.patterns.types import ChatMessage, Event, InvokeInput, InvokeOutput
-
-    class _FinalJudgeAgent:
-        def __init__(self, inner: Agent) -> None:
-            self._inner = inner
-            for attr in (
-                "tools",
-                "pattern",
-                "manifest_id",
-                "manifest_version",
-                "system_prompt",
-            ):
-                if hasattr(inner, attr):
-                    setattr(self, attr, getattr(inner, attr))
-
-        async def invoke(self, input: InvokeInput) -> InvokeOutput:
-            result = await self._inner.invoke(input)
-            content = result.final.content if result.final else ""
-            from felix.config import get_settings
-
-            settings = get_settings()
-            for j in judges:
-                score = await _judge_score(content, j, settings=settings)
-                threshold = float(getattr(j, "threshold", 0.7) or 0.7)
-                if score < threshold:
-                    msg = ChatMessage(
-                        role="assistant",
-                        content=(f"[judge denied] {j.name}: score={score:.2f} < {threshold}"),
-                    )
-                    return InvokeOutput(messages=[*result.messages[:-1], msg], final=msg)
-            return result
-
-        async def stream_events(self, input: InvokeInput) -> AsyncIterator[Event]:
-            async for ev in self._inner.stream_events(input):
-                yield ev
-
-    return _FinalJudgeAgent(agent)  # type: ignore[return-value]
+    return ReplyControlsAgent(agent, guardrails, manifest_id)  # type: ignore[return-value]
 
 
 def _arg_present(args: ToolInput, name: str) -> bool:
@@ -1006,7 +872,7 @@ def _warn_unmatched_tool_patterns(m: Manifest, bound: list[str]) -> None:
     if m.spec.guardrails:
         for judge in m.spec.guardrails.judges:
             if judge.final_response:
-                # `wrap_final_response_judges` never reads target_tools, so any value here is
+                # `apply_reply_controls` never reads target_tools, so any value here is
                 # ignored. Warning about *unmatched* patterns would be right by accident and
                 # silent when they match — say the real thing instead.
                 if judge.target_tools:
@@ -1487,11 +1353,9 @@ async def build_agent(
                 "procedural_memory": m.spec.procedural_memory,
             }
         )
-        if judges_enabled(m.spec.guardrails):
-            agent = wrap_final_response_judges(agent, m.spec.guardrails, m.metadata.name)
-        return agent
+        return apply_reply_controls(agent, m.spec.guardrails, m.metadata.name)
     finally:
         span.end()
 
 
-__all__ = ["BuildDeps", "build_agent", "wrap_final_response_judges"]
+__all__ = ["BuildDeps", "apply_reply_controls", "build_agent"]

@@ -125,6 +125,8 @@ spec:
 
   guardrails:
     providers: [pii]
+    # input = the user turn; output = tool output and the agent's reply, on invoke and on
+    # the streaming path alike (reply text is held and released screened).
     targets: [input, output]
 
   anomaly:

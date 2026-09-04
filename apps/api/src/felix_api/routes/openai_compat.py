@@ -12,6 +12,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from felix.context import AuthContext, RequestContext, async_run_with_context, try_get_context
+from felix.governance.reply import REPLY_TEXT_EVENTS
 from felix.logging_setup import loggable
 from felix.manifests.inbound_auth import InboundAuthError
 from felix.manifests.loader import list_bundled
@@ -164,7 +165,10 @@ async def chat_completions(body: ChatCompletionsRequest, request: Request) -> An
                     tenant_id=auth.tenant_id,
                 )
                 async for event in agent.stream_events(invoke_input):
-                    text = getattr(event, "text", "") or ""
+                    # Only the reply is assistant content on this wire. `thinking_delta`
+                    # has a `.text` too, and emitting it here rendered reasoning as the
+                    # answer — and past the reply controls, which hold reply text only.
+                    text = event.text if getattr(event, "event", "") in REPLY_TEXT_EVENTS else ""
                     chunk = {
                         "id": completion_id,
                         "object": "chat.completion.chunk",

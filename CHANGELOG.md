@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Final-response judges and PII guardrails now govern the reply on the streaming path.**
+  `wrap_final_response_judges` passed events straight through on `stream_events`, so the
+  only outbound model-call control was inert on the primary chat surface; and
+  `apply_guardrails` wrapped tools only, so `guardrails.targets: [input, output]` scrubbed
+  user input and tool output and let the reply through untouched — `governed.yaml`
+  declared a reply scrub that did not exist. Both now wrap the agent: on `invoke` the
+  reply is screened before it returns; on a stream the reply's text is held until the run
+  ends and released screened (or replaced by the denial), while tool, approval and session
+  frames stream as they happen — including the `session_progress` envelope the react
+  loop carries each delta in a second time, and every assistant turn, not only the final
+  one. `output` means everything leaving the model boundary — tool output and the reply —
+  and `final_response` the reply alone, which no longer wraps tools. A redaction or denial
+  emits a `guardrails_reply` / `judge_deny` audit event. The mechanics live in
+  `felix/governance/reply.py`; the builder slot is `apply_reply_controls`. Not covered, and
+  said so in `deploy/GOVERNANCE.md`: the session log keeps the reply as produced, so a
+  resume replay carries the unscreened text.
+
 - **`/ready` and `/live` no longer require a credential.** The Helm chart probes both, and
   kubelet sends no `Authorization` header, but only `/health` was on the public allowlist —
   so under `api_key` or `jwt` every pod's readiness probe got 401, the pod never became
