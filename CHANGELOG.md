@@ -119,6 +119,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The Memoturn console rendered "Something went wrong".** Its image serves static files
+  only — `/api/*` and `/auth/*` routing lives in Memoturn's production front proxy, which
+  this overlay omits because TLS is the only other thing that proxy does. The bundle is
+  built with `VITE_API_BASE=/api`, so every call the SPA made 404'd on the static server
+  while the API itself stayed healthy and answered ingest. The console's own Caddy now
+  forwards both prefixes, same-origin, using the routing from Memoturn's `infra/Caddyfile`.
+
 - **OTLP/HTTP export sent every span to a 404.** The Python OTLP/HTTP exporters treat
   `endpoint` as the complete URL for their signal and append nothing, but
   `FELIX_OTEL_ENDPOINT` is a single base shared by traces and logs — so it was POSTed

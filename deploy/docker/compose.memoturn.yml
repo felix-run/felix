@@ -214,6 +214,12 @@ services:
     profiles: ["full"]
     image: ghcr.io/memoturn/console:0.5.0@sha256:f2f18a6a4068f76e9c5c01a4f05c5eb7ba815c15ff29b2cbc1e9b6522e9688fe
     platform: ${FELIX_MEMOTURN_PLATFORM:-linux/amd64}
+    volumes:
+      # The image serves static files only; /api/* and /auth/* routing lives in Memoturn's
+      # front proxy in production. There is no front proxy here, so the console's own Caddy
+      # does the forwarding — otherwise every SPA call 404s and the page shows
+      # "Something went wrong" while the API is healthy.
+      - ./deploy/docker/config/memoturn-console.Caddyfile:/etc/caddy/Caddyfile:ro
     ports:
       - "${FELIX_BIND_ADDR:-127.0.0.1}:${FELIX_MEMOTURN_CONSOLE_PORT:-3002}:3000"
     depends_on:

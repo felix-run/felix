@@ -252,6 +252,14 @@ The database and the bucket are both created by one-shot idempotent jobs rather 
 and would silently do nothing for anyone who already has one. Without the bucket, ingest
 answers `500 NoSuchBucket`; without the database, nothing starts at all.
 
+The console serves the SPA **and** proxies `/api/*` and `/auth/*` to the API from its own
+Caddy, using `config/memoturn-console.Caddyfile`. The console bundle is built with
+`VITE_API_BASE=/api` and Memoturn's production front proxy is what routes those; this
+overlay has no front proxy, because TLS is the only other thing that one does. Without the
+rules every SPA call 404s on the static server and the page reads "Something went wrong"
+while the API is perfectly healthy. Same-origin on purpose — pointing the SPA at `:3001`
+directly would pull in CORS and SameSite cookie rules for the session.
+
 **One caveat of sharing Valkey.** Felix runs it with `--maxmemory-policy allkeys-lru` and
 Memoturn's queue (BullMQ) wants `noeviction`, so under memory pressure a queued ingest job
 can be evicted and that telemetry is lost without an error. Fine locally; give Memoturn its
