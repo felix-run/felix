@@ -46,6 +46,8 @@ class _FallbackClient:
     fallbacks: list[ModelClient]
     model_id: str
     route: ModelRoute
+    # `spec.model.price`, carried on the client so metering prices by the manifest's rates.
+    price_override: dict[str, float] | None = None
 
     async def chat(
         self,
@@ -231,6 +233,7 @@ class _EscalationClient:
     min_response_chars: int
     model_id: str
     route: ModelRoute
+    price_override: dict[str, float] | None = None
 
     def _low_confidence(self, text: str) -> bool:
         lower = text.lower()

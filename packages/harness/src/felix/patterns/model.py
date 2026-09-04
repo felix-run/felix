@@ -149,6 +149,7 @@ def record_usage(
     model_id: str | None = None,
     wire_model_id: str | None = None,
     meta: dict[str, Any] | None = None,
+    price_override: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     """Meter one turn: run budgets, Prometheus, the usage store, and the plugin sink.
 
@@ -166,16 +167,27 @@ def record_usage(
     summarizer used to write its own row against the literal tenant `"default"` and never
     touched `ctx.limit_state`, so the largest input-token call in a long thread escaped
     `limits.max_cost_usd` and landed on another tenant's bill.
+    `price_override` is `spec.model.price`, carried on the client by `build_model`; the
+    cost it yields is written to the usage row here, at the one moment the wire id, the
+    rates and the override are all in hand.
     """
     usage = _metered_usage(result, manifest_id=manifest_id, model_id=model_id)
     if usage is None:
         return {}
     labels = {"manifest_id": manifest_id, "model": model_id or "default"}
+    priced_by = wire_model_id or model_id or ""
     priced: dict[str, Any] = {}
+    cost_usd: float | None = None
     try:
+        from felix.model_catalog import is_priced
         from felix.usage.pricing import usage_with_cost
 
-        priced = usage_with_cost(usage, model_id=wire_model_id or model_id or "")
+        if price_override is None and not is_priced(priced_by):
+            # Metered, but at no rate: the tokens count against the token caps while the
+            # spend they represent is zero, so `limits.max_cost_usd` fails open for it.
+            record_counter("felix_model_unpriced", {**labels})
+        priced = usage_with_cost(usage, model_id=priced_by, price_override=price_override)
+        cost_usd = float((priced.get("cost") or {}).get("total") or 0.0)
     except Exception:
         logger.debug("usage pricing unavailable", exc_info=True)
     ctx = try_get_context()
@@ -185,7 +197,7 @@ def record_usage(
         ctx.limit_state.tokens_input += u.input + u.cache_creation + u.cache_read
         ctx.limit_state.tokens_output += u.output
         # Accumulate spend so `limits.max_cost_usd` has something to measure.
-        ctx.limit_state.cost_usd += float((priced.get("cost") or {}).get("total") or 0.0)
+        ctx.limit_state.cost_usd += cost_usd or 0.0
         tenant_id = getattr(ctx.auth, "tenant_id", None) or "default"
         settings = ctx.settings
     else:
@@ -204,6 +216,8 @@ def record_usage(
             tokens_output=usage.output,
             cache_creation=usage.cache_creation,
             cache_read=usage.cache_read,
+            wire_model_id=wire_model_id or "",
+            cost_usd=cost_usd or 0.0,
             meta=meta,
         )
     except Exception:
@@ -251,6 +265,7 @@ def record_model_usage(
         model_id=getattr(model, "model_id", "") or "",
         wire_model_id=wire_model_id(model),
         meta=meta,
+        price_override=getattr(model, "price_override", None),
     )
 
 
@@ -272,6 +287,9 @@ class _TracedClient:
     inner: ModelClient
     model_id: str
     route: ModelRoute
+    # `spec.model.price`: USD per 1M tokens, overriding the catalog when metering. It rides
+    # on the client because the client is the one thing every metering site has in hand.
+    price_override: dict[str, float] | None = None
 
     def _span_attrs(self) -> dict[str, Any]:
         wire_model = self._wire_model()
@@ -365,7 +383,7 @@ class _TracedStreamingClient(_TracedClient):
                 yield item
 
 
-def _traced(client: ModelClient) -> ModelClient:
+def _traced(client: ModelClient, *, price_override: dict[str, float] | None = None) -> ModelClient:
     """Wrap a leaf client so each provider call emits a span and a latency observation.
 
     Branching rather than picking a class into a variable: `supports_stream_turn` is a
@@ -374,8 +392,12 @@ def _traced(client: ModelClient) -> ModelClient:
     collapses both classes into a union before the narrowing applies.
     """
     if supports_stream_turn(client):
-        return _TracedStreamingClient(inner=client, model_id=client.model_id, route=client.route)
-    return _TracedClient(inner=client, model_id=client.model_id, route=client.route)
+        return _TracedStreamingClient(
+            inner=client, model_id=client.model_id, route=client.route, price_override=price_override
+        )
+    return _TracedClient(
+        inner=client, model_id=client.model_id, route=client.route, price_override=price_override
+    )
 
 
 def parse_provider_options(settings: Settings | None = None) -> dict[str, dict[str, str]]:
@@ -502,13 +524,26 @@ def build_one_model(settings: Settings, spec: Any, logical_id: str) -> ModelClie
     # Every model the harness builds comes through here — primary, fallbacks and
     # escalation targets alike — so this is the one place a span per provider call can be
     # added without touching each of the eight `record_usage` call sites.
-    return _traced(factory(logical_id, route, spec, settings))
+    return _traced(factory(logical_id, route, spec, settings), price_override=price_override_for(spec))
+
+
+def price_override_for(spec: Any) -> dict[str, float] | None:
+    """`spec.model.price` as the metering override, or None when the manifest sets none.
+
+    The field was documented as overriding cost attribution and only ever decorated the
+    `/v1/models` listing; `record_usage` reads it from the client now.
+    """
+    raw = getattr(spec, "price", None)
+    if not isinstance(raw, dict) or not raw:
+        return None
+    return {str(k): float(v) for k, v in raw.items()}
 
 
 def build_model(settings: Settings | None, spec: Any) -> ModelClient:
     settings = settings or get_settings()
     primary_id = getattr(spec, "id", None) or settings.default_model_id
     client = build_one_model(settings, spec, primary_id)
+    price_override = price_override_for(spec)
     fallbacks_ids = list(getattr(spec, "fallbacks", None) or [])
     if fallbacks_ids:
         fallbacks = [build_one_model(settings, spec, fid) for fid in fallbacks_ids]
@@ -517,6 +552,7 @@ def build_model(settings: Settings | None, spec: Any) -> ModelClient:
             fallbacks=fallbacks,
             model_id=client.model_id,
             route=client.route,
+            price_override=price_override,
         )
     esc = getattr(spec, "confidence_escalation", None)
     if esc is not None and getattr(esc, "enabled", False) and getattr(esc, "escalate_to", ""):
@@ -528,6 +564,7 @@ def build_model(settings: Settings | None, spec: Any) -> ModelClient:
             min_response_chars=esc.min_response_chars,
             model_id=client.model_id,
             route=client.route,
+            price_override=price_override,
         )
     return client
 
@@ -558,6 +595,7 @@ __all__ = [
     "parse_model_routes",
     "parse_provider_options",
     "post_with_retry",
+    "price_override_for",
     "provider_factory",
     "reasoning_effort_from_budget",
     "record_model_usage",

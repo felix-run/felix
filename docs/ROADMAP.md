@@ -174,9 +174,16 @@ and fixed; the comment at `fibers.py:36-46` is the record.
       (30 lines) returns raw token rows and nothing can answer "what did tenant X spend last
       month". Add cost at write time and return it.
 - [ ] **`GET /usage/summary`** — group by manifest / model / day, with totals.
+- [x] **Persist cost.** Migration `0011_usage_cost`: `cost_usd` and `wire_model_id` on every
+      row, priced at write time by the wire id and any `spec.model.price` override (which was
+      documented as doing this and decorated only the `/v1/models` listing). Stored `model_id`
+      stays the logical route name, which is what an operator recognises.
+- [x] **`GET /usage/summary`** — by manifest / model / UTC day, with totals; both backends
+      under conformance.
 - [ ] **Fill the missing bundled rates** — `gpt-4.1` has no entry and bills at the default, and
-      no bundled entry sets a long-context tier, so `limits.max_cost_usd` fails closed on an
-      undercount.
+      no bundled entry sets a long-context tier. Correction to this entry as written: an
+      unpriced model contributes `$0`, so `limits.max_cost_usd` fails **open** for it, not
+      closed — `felix_model_unpriced` now says when that is happening.
 - [ ] **Attribute denials in the audit record.** Every wrapper denial emits one undifferentiated
       `policy_deny` carrying `{tool, tool_call_id, thread_id}` — which control fired, and why,
       exists only in the tool message. The wrappers emit Prometheus counters, not audit events.

@@ -117,6 +117,39 @@ async def memory_settings(request: pytest.FixtureRequest) -> AsyncIterator[Any]:
 
 
 @pytest_asyncio.fixture
+async def usage_settings(request: pytest.FixtureRequest) -> AsyncIterator[Any]:
+    """`Settings` pointed at the backend named by the parametrization, for the usage store.
+
+    The usage store is module-level functions over a process buffer plus one of two
+    sinks; the buffer is drained around each test so an arm never inherits another's rows.
+    """
+    from felix.config import Settings
+    from felix.db.session import dispose_engine
+    from felix.usage import store as usage_store
+
+    usage_store.pending_buffer().reset_for_tests()
+    usage_store.clear_memory()
+    backend = request.param
+    if backend == "memory":
+        yield Settings(database_url="memory://conformance")
+        usage_store.clear_memory()
+        return
+
+    url = postgres_url()
+    if not url:
+        if os.environ.get(REQUIRE_ENV):
+            pytest.fail(f"{REQUIRE_ENV} is set but {PG_URL_ENV} is not — the Postgres arm cannot run")
+        pytest.skip(f"{PG_URL_ENV} unset — the Postgres arm of the usage contract did not run")
+
+    await migrate_to_head(url)
+    try:
+        yield Settings(database_url=url)
+    finally:
+        await dispose_engine()
+        await drop_everything(url)
+
+
+@pytest_asyncio.fixture
 async def store(request: pytest.FixtureRequest) -> AsyncIterator[Any]:
     """A session store for the backend named by the parametrization."""
     backend = request.param

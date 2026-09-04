@@ -56,6 +56,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with a message naming the new one rather than being silently ignored. Upgrading
   replaces the old Deployment (immutable selector), so the api is briefly absent — see
   `deploy/helm/README.md`.
+### Added
+
+- **Usage rows carry their cost, and `GET /usage/summary` adds it up.** `record_tokens`
+  wrote token counts and the *logical* route name and no cost, so `GET /usage` returned
+  raw rows and nothing could answer "what did tenant X spend last month" — and anyone
+  recomputing later fed the logical name to the price table and got `$0` for every custom
+  route. Migration `0011_usage_cost` adds `cost_usd` and `wire_model_id`; the cost is fixed
+  at write time, by the wire id and any `spec.model.price` override, so a later rate change
+  does not rewrite history. `GET /usage/summary?since_ms&until_ms&manifest_id` groups by
+  manifest, model and UTC day with totals (default: the last thirty days). The contract runs
+  against both backends in `tests/conformance/test_usage_store.py`.
+- **`spec.model.price` now prices usage.** It was documented as overriding cost
+  attribution and only decorated the `/v1/models` listing. `build_model` carries it on the
+  client, every metering site passes it, and the budget and the row use it.
+- **`felix_model_unpriced`** counter: a turn reported usage but Felix has no rate for the
+  wire model and the manifest sets none, so it was metered at `$0` — the signal that
+  `limits.max_cost_usd` is failing *open* (the roadmap had this the wrong way round).
 
 ### Changed
 - **The session summarizer is billed to the tenant that triggered it, and counts against
