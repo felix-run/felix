@@ -31,13 +31,31 @@ x-gcp-secrets: &gcp-secrets
   # Leave empty so hydrate_secrets pulls from Secret Manager.
   FELIX_ANTHROPIC_API_KEY: ${FELIX_ANTHROPIC_API_KEY:-}
 
+# Pull the release rather than build it — for the migration too, so the schema applied
+# is the release's. The GCE metadata hosts give ADC inside the container network.
+#
+# `build: !reset null` is written out in every service below rather than living here:
+# Compose applies `!reset` to the node it is written on, and a value that arrives
+# through a `<<:` merge key is not that node — the base file's `build:` survives, and
+# `up` compiles a host artifact again. scripts/check-compose-render.py asserts on the
+# rendered config so this cannot regress quietly.
+x-gcp-image: &gcp-image
+  image: ghcr.io/felix-run/felix:${FELIX_IMAGE_TAG:?set FELIX_IMAGE_TAG in .env, e.g. 0.2.2}-gcp
+  pull_policy: always
+  extra_hosts:
+    - "metadata.google.internal:169.254.169.254"
+    - "metadata:169.254.169.254"
+
 services:
-  api:
-    # Pull the release rather than build it. `!reset` drops the base file's
-    # `build:` so `up` can never silently compile a different artifact.
+  migrate:
+    <<: *gcp-image
     build: !reset null
-    image: ghcr.io/felix-run/felix:${FELIX_IMAGE_TAG:?set FELIX_IMAGE_TAG in .env, e.g. 0.2.2}-gcp
-    pull_policy: always
+    environment:
+      <<: *gcp-secrets
+
+  api:
+    <<: *gcp-image
+    build: !reset null
     # Loopback only — Cloudflare tunnel on the host reaches 127.0.0.1:8080.
     ports: !override
       - "127.0.0.1:8080:8080"
@@ -47,38 +65,22 @@ services:
     environment:
       <<: *gcp-secrets
       FELIX_WORKSPACE_ROOT: /workspace
-    # Reach GCE metadata for ADC inside the container network.
-    extra_hosts:
-      - "metadata.google.internal:169.254.169.254"
-      - "metadata:169.254.169.254"
 
   worker:
-    # Pull the release rather than build it. `!reset` drops the base file's
-    # `build:` so `up` can never silently compile a different artifact.
+    <<: *gcp-image
     build: !reset null
-    image: ghcr.io/felix-run/felix:${FELIX_IMAGE_TAG:?set FELIX_IMAGE_TAG in .env, e.g. 0.2.2}-gcp
-    pull_policy: always
     volumes:
       - felix-data:/data
       - ${FELIX_WORKSPACE_HOST:-./workspace}:/workspace
     environment:
       <<: *gcp-secrets
       FELIX_WORKSPACE_ROOT: /workspace
-    extra_hosts:
-      - "metadata.google.internal:169.254.169.254"
-      - "metadata:169.254.169.254"
 
   scheduler:
-    # Pull the release rather than build it. `!reset` drops the base file's
-    # `build:` so `up` can never silently compile a different artifact.
+    <<: *gcp-image
     build: !reset null
-    image: ghcr.io/felix-run/felix:${FELIX_IMAGE_TAG:?set FELIX_IMAGE_TAG in .env, e.g. 0.2.2}-gcp
-    pull_policy: always
     environment:
       <<: *gcp-secrets
-    extra_hosts:
-      - "metadata.google.internal:169.254.169.254"
-      - "metadata:169.254.169.254"
 
   postgres:
     ports: !override []

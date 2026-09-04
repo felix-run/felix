@@ -60,6 +60,8 @@ services:
       - felix-data:/data
       - ${FELIX_WORKSPACE_HOST:-./workspace}:/workspace
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       temporal:

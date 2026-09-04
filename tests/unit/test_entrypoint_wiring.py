@@ -70,10 +70,10 @@ FELIX_BINARY = re.compile(r"^felix[\w-]*$")
 # In document order, because even per-file a *set* cannot see two commands exchanged between
 # services: give `api:` the worker's command and vice versa and the same three names come
 # back, from a deployment where nothing listens on 8080 and the healthcheck restart-loops.
-# Three near-identical blocks in one file is the copy-paste these formats invite.
+# Four near-identical blocks in one file is the copy-paste these formats invite.
 EXPECTED_COMMANDS = {
     "deploy/docker/Dockerfile": ["felix-api"],
-    "deploy/docker/compose.yml": ["felix-api", "felix-worker", "felix-scheduler"],
+    "deploy/docker/compose.yml": ["felix", "felix-api", "felix-worker", "felix-scheduler"],
     # The Temporal overlay is the only deploy surface that runs the fourth binary. It has
     # no `felix-api` of its own — it layers onto compose.yml, which supplies the rest.
     "deploy/docker/compose.temporal.yml": ["felix-temporal-worker"],
