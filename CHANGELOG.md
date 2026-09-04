@@ -7,6 +7,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A model call is a span, and spans are one trace.** Felix emitted exactly two spans —
+  `tool.call` and `manifest` — and both were orphan roots, because `tracer.start_span` does
+  not touch the active context and nothing established a request-level one. A single chat
+  therefore produced two or three unrelated single-span traces. Worse, the one operation
+  carrying token usage, model name, provider and cost — the model call — had no span at all,
+  so the thing a tracing backend most wants was the thing it could not see.
+
+  Spans now attach to the OTel context, so they nest; `opentelemetry-instrumentation-fastapi`
+  (declared in the `otel` extra since it was added, and never imported) opens the request root
+  and honours an inbound `traceparent`; and every model client built through `build_one_model`
+  is wrapped so each provider call emits a `chat {model}` span carrying the OTel **GenAI
+  semantic conventions** (`gen_ai.system`, `gen_ai.request.model`, `gen_ai.usage.*`) plus
+  Felix's cache and cost attributes. Borrowed rather than invented names, so any OTLP consumer
+  renders these as generations rather than anonymous timing bars.
+
+  The wrapper sits on the leaf client, not the composite, so a fallback chain that tries two
+  providers shows two spans instead of hiding the retry inside one. It also does **not**
+  define `stream_turn` unconditionally: that capability is detected with
+  `getattr(model, "stream_turn", None)`, and a wrapper that always had it would push every
+  non-streaming provider into the streamed path — where `record_usage` is never reached and
+  the turn escapes every token and cost limit.
+
+- **The worker reports something.** It never called `configure_logging` or
+  `setup_observability`, and it has no HTTP server, so every fiber resume, audit/usage flush,
+  retention sweep, anomaly scan and continuous-eval run was invisible: one log line each, no
+  counter, no span, nothing to scrape. A sweep that had stopped firing looked exactly like a
+  sweep that ran and found nothing — the confusion `deploy/GOVERNANCE.md` warns about for the
+  per-tenant detection controls.
+
+  All eight scheduled tasks now emit `felix_worker_task{task,status}` and
+  `felix_worker_task_seconds`, the worker configures logging and tracing at startup and flushes
+  spans at shutdown, and `FELIX_METRICS_PORT` (default `0`, off) exposes its counters.
+  That endpoint is unauthenticated — the worker has no auth middleware — and carries the same
+  tenant-supplied label values as the API's `/metrics`, so it must stay on an internal network.
+
+- **`docs/OBSERVABILITY.md`** — the metric catalog and span/attribute schema, including which
+  counters to watch and why `/metrics` is authenticated and rate-limited.
+  `tests/unit/test_metric_catalog.py` re-derives both tables from the source, so a metric
+  added without a row fails, and so does a row describing a metric nothing emits.
+
+- **Latency exists.** `record_histogram` had been exported, documented and unit-tested with
+  zero call sites, so there was no latency data anywhere. `felix_model_call_seconds`,
+  `felix_tool_call_seconds` and `felix_worker_task_seconds` are its first three. Tool latency
+  is labelled by transport and manifest and deliberately *not* by tool name: MCP tool names
+  arrive from a remote server and are unbounded label values.
+
+- **`felix_buffer_dropped`** — `DurableBuffer` counted and logged dropped audit/usage rows but
+  exported nothing, so silent data loss could only be found by reading logs afterwards.
+
+- **OTLP can reach an authenticated collector.** The exporter was hardcoded to gRPC with
+  `insecure=True` and no header support, which meant no hosted or TLS-terminated OTLP endpoint
+  was reachable at all. `FELIX_OTEL_PROTOCOL` (`grpc`/`http`), `FELIX_OTEL_HEADERS`,
+  `FELIX_OTEL_INSECURE`, `FELIX_OTEL_SERVICE_NAME` and `FELIX_OTEL_SAMPLE_RATIO` are new;
+  header parsing splits once so base64 credentials survive their `=` padding.
+
+- **`FELIX_OTEL_CAPTURE_CONTENT`** (default `false`) — prompts and completions stay off spans.
+  A tracing backend is an egress destination, and span attributes are not covered by the
+  governance content screening that guards tool output.
+
+### Fixed
+
+- **Every span claimed `service.version` `0.1.0`**, hardcoded, while the packages shipped
+  0.2.2. It now reports the real harness version.
+
 ### Security
 
 - **A provider credential was masked only if its option was *named* like one.**

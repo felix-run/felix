@@ -277,9 +277,11 @@ comment explaining exactly that. It is conditional, not inert.
 - [ ] **Tools carry their own prompt copy** — a `prompt_line` / `prompt_guidance` on `Tool`,
       assembled in `builder.py`, so the system prompt is derived from the active tool set instead
       of hand-maintained. Removes a drift class; more valuable once **A** multiplies the tool set.
-- [ ] **Telemetry vocabulary** — no span/attribute schema, and no metric catalog anywhere, so an
-      operator cannot know what to graph without grepping call sites. `metrics.py` also silently
-      degrades to `logger.info` when a name is reused under a second label set.
+- [x] **Telemetry vocabulary** — `docs/OBSERVABILITY.md` carries the metric catalog and the span
+      schema, and `tests/unit/test_metric_catalog.py` re-derives it from the source so it cannot
+      drift. Spans now follow the OTel GenAI semantic conventions, and a model call is a span at
+      all (it was not). The `metrics.py` silent degrade on a reused label set is unchanged and is
+      documented as a known limitation rather than fixed.
 - [ ] **Ship one dashboard** — zero matches for grafana / servicemonitor / prometheus config under
       `deploy/`. A Grafana JSON and a ServiceMonitor turn four emitted signal types into something
       an operator sees.

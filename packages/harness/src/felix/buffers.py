@@ -48,6 +48,19 @@ class DurableBuffer:
         with self._lock:
             return self._dropped
 
+    def _count_drop(self, n: int) -> None:
+        """Losing audit or usage rows is a governance event, not a log line.
+
+        The running total was already tracked and already logged, but nothing exported it,
+        so silent data loss could only be found by reading logs after the fact.
+        """
+        try:
+            from felix.observability.metrics import record_counter
+
+            record_counter("felix_buffer_dropped", {"buffer": self._name}, n)
+        except Exception:  # pragma: no cover - metrics must never break a write path
+            logger.debug("buffer drop counter failed", exc_info=True)
+
     def append(self, event: dict[str, Any]) -> None:
         with self._lock:
             self._items.append(event)
@@ -60,6 +73,7 @@ class DurableBuffer:
             else:
                 dropped = 0
         if dropped:
+            self._count_drop(over)
             logger.error(
                 "%s buffer full (max=%d); dropped oldest events, %d lost since start",
                 self._name,
@@ -108,6 +122,7 @@ class DurableBuffer:
             else:
                 dropped = 0
         if dropped:
+            self._count_drop(over)
             logger.error(
                 "%s buffer full while re-queueing a failed flush; %d lost since start",
                 self._name,

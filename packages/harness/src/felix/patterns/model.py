@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
@@ -48,7 +49,8 @@ from felix_ai.wire import (
 
 from felix.config import DEFAULT_MODEL_ROUTES, Settings, get_settings
 from felix.context import try_get_context
-from felix.observability.metrics import record_counter
+from felix.observability.metrics import record_counter, record_histogram
+from felix.observability.tracing import SpanContext, make_span
 from felix.patterns.model_registry import (
     get_model_provider,
     list_model_providers,
@@ -195,6 +197,173 @@ def record_usage(
                 )
     except Exception:
         logger.debug("usage_sink_failed", exc_info=True)
+
+
+# OTel GenAI semantic conventions. A backend that speaks them (Jaeger, Grafana, Memoturn,
+# any OTLP consumer) renders these spans as model generations with token usage attached,
+# instead of anonymous timing bars — which is the whole reason the attribute names are
+# borrowed rather than invented.
+GEN_AI_SPAN_ATTRS = (
+    "gen_ai.operation.name",
+    "gen_ai.system",
+    "gen_ai.request.model",
+    "gen_ai.response.model",
+    "gen_ai.response.finish_reasons",
+    "gen_ai.usage.input_tokens",
+    "gen_ai.usage.output_tokens",
+)
+
+
+def _record_result_on_span(span: SpanContext, result: ModelChatResult, wire_model: str) -> None:
+    """Attach the response half of a generation: stop reason, tokens, cost."""
+    span.set_attribute("gen_ai.response.model", wire_model)
+    span.set_attribute("gen_ai.response.finish_reasons", str(result.stop_reason))
+    usage = result.usage
+    if usage is None:
+        # Same failure `_metered_usage` warns about — a turn that cannot be capped.
+        # Worth seeing in a trace, not only in the log.
+        span.set_attribute("felix.usage.unmetered", True)
+        return
+    span.set_attribute("gen_ai.usage.input_tokens", usage.input)
+    span.set_attribute("gen_ai.usage.output_tokens", usage.output)
+    span.set_attribute("felix.usage.cache_creation", usage.cache_creation)
+    span.set_attribute("felix.usage.cache_read", usage.cache_read)
+    try:
+        from felix.usage.pricing import usage_with_cost
+
+        priced = usage_with_cost(usage, model_id=wire_model)
+        span.set_attribute("felix.cost_usd", float((priced.get("cost") or {}).get("total") or 0.0))
+    except Exception:
+        logger.debug("span pricing unavailable", exc_info=True)
+
+
+@dataclass
+class _TracedClient:
+    """One span and one latency sample per provider call.
+
+    Wrapped around the leaf client in `build_one_model`, which every model the harness
+    builds passes through — primary, each fallback, and an escalation target alike. That
+    placement is deliberate: a fallback chain that tries two providers produces two spans,
+    which is what a trace should show. Wrapping the composite instead would have collapsed
+    them into one and hidden the retry.
+
+    Only `chat` and `stream_turn` are instrumented, because they are the two that report
+    usage. `stream` cannot report any, so it is passed through untouched rather than
+    given a span that would claim a generation with no tokens.
+    """
+
+    inner: ModelClient
+    model_id: str
+    route: ModelRoute
+
+    def _span(self) -> SpanContext:
+        wire_model = str(getattr(self.route, "model", "") or self.model_id)
+        ctx = try_get_context()
+        attrs: dict[str, Any] = {
+            "gen_ai.operation.name": "chat",
+            "gen_ai.system": str(getattr(self.route, "provider", "") or "unknown"),
+            "gen_ai.request.model": wire_model,
+            # The logical route name, which is what operators configure and what the
+            # `felix_tokens` counter reports. Not the same string as the wire model.
+            "felix.model.route": self.model_id,
+        }
+        if ctx is not None:
+            manifest_id = getattr(ctx, "manifest_id", None)
+            if manifest_id:
+                attrs["felix.manifest.id"] = str(manifest_id)
+        return make_span(f"chat {wire_model}", attrs)
+
+    def _wire_model(self) -> str:
+        return str(getattr(self.route, "model", "") or self.model_id)
+
+    async def chat(
+        self,
+        messages: list[ChatMessage],
+        tools: Sequence[ToolSchema],
+        opts: ModelChatOptions | None = None,
+    ) -> ModelChatResult:
+        span = self._span()
+        started = time.perf_counter()
+        status = "ok"
+        try:
+            result = await self.inner.chat(messages, tools, opts)
+        except Exception:
+            status = "error"
+            span.set_attribute("error", True)
+            raise
+        else:
+            # Attributes must land before `finally` ends the span.
+            _record_result_on_span(span, result, self._wire_model())
+            return result
+        finally:
+            record_histogram(
+                "felix_model_call_seconds",
+                time.perf_counter() - started,
+                {"model": self.model_id, "status": status},
+            )
+            span.end()
+
+    def stream(
+        self,
+        messages: list[ChatMessage],
+        tools: Sequence[ToolSchema],
+        opts: ModelChatOptions | None = None,
+    ) -> AsyncIterator[str]:
+        return self.inner.stream(messages, tools, opts)
+
+    def __getattr__(self, name: str) -> Any:
+        # Providers carry extra attributes the harness reads by name (`wire_model_id`
+        # walks `route`/`model_id`, patterns probe for capabilities). Forward anything
+        # this wrapper does not define — but see `_TracedStreamingClient`: `stream_turn`
+        # is resolved by `getattr(model, "stream_turn", None)`, so it must NOT be
+        # forwarded here or every client would claim to support it.
+        if name == "stream_turn":
+            raise AttributeError(name)
+        return getattr(self.inner, name)
+
+
+@dataclass
+class _TracedStreamingClient(_TracedClient):
+    """`_TracedClient` for providers that implement `stream_turn`.
+
+    The capability is detected with `getattr(model, "stream_turn", None)`, so it has to be
+    absent on the wrapper when it is absent on the client — a wrapper that always defined
+    it would push every non-streaming provider into the streaming path.
+    """
+
+    async def stream_turn(
+        self,
+        messages: list[ChatMessage],
+        tools: Sequence[ToolSchema],
+        opts: ModelChatOptions | None = None,
+    ) -> AsyncIterator[StreamDelta | ModelChatResult]:
+        span = self._span()
+        span.set_attribute("gen_ai.operation.name", "chat")
+        span.set_attribute("felix.streamed", True)
+        started = time.perf_counter()
+        status = "ok"
+        try:
+            async for item in self.inner.stream_turn(messages, tools, opts):
+                # Usage rides on the terminal ModelChatResult, not on the deltas.
+                if isinstance(item, ModelChatResult):
+                    _record_result_on_span(span, item, self._wire_model())
+                yield item
+        except Exception:
+            status = "error"
+            span.set_attribute("error", True)
+            raise
+        finally:
+            record_histogram(
+                "felix_model_call_seconds",
+                time.perf_counter() - started,
+                {"model": self.model_id, "status": status},
+            )
+            span.end()
+
+
+def _traced(client: ModelClient) -> ModelClient:
+    cls = _TracedStreamingClient if getattr(client, "stream_turn", None) is not None else _TracedClient
+    return cls(inner=client, model_id=client.model_id, route=client.route)
 
 
 @dataclass
@@ -502,7 +671,10 @@ def build_one_model(settings: Settings, spec: Any, logical_id: str) -> ModelClie
             f"Unknown model provider '{route.provider}' — registered: "
             f"{', '.join(list_model_providers()) or '(none)'}"
         )
-    return factory(logical_id, route, spec, settings)
+    # Every model the harness builds comes through here — primary, fallbacks and
+    # escalation targets alike — so this is the one place a span per provider call can be
+    # added without touching each of the eight `record_usage` call sites.
+    return _traced(factory(logical_id, route, spec, settings))
 
 
 def build_model(settings: Settings | None, spec: Any) -> ModelClient:

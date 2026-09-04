@@ -37,6 +37,19 @@ config:
   FELIX_DURABILITY: fibers
   FELIX_HIBERNATE_AFTER_SECONDS: "300"
   FELIX_OTEL_ENABLED: "false"
+  # Collector address. grpc -> :4317, http -> :4318 (and what a hosted OTLP ingest wants).
+  FELIX_OTEL_ENDPOINT: "http://otel-collector:4317"
+  FELIX_OTEL_PROTOCOL: "grpc"
+  # `k=v,k2=v2` — the only way to authenticate to a collector. Put credentials in a
+  # secret and mount them; do not inline them here.
+  FELIX_OTEL_HEADERS: ""
+  FELIX_OTEL_INSECURE: "true"
+  FELIX_OTEL_SAMPLE_RATIO: "1.0"
+  # Prompts/completions on spans. Off: a tracing backend is an egress destination.
+  FELIX_OTEL_CAPTURE_CONTENT: "false"
+  # Worker-only Prometheus port (0 = off). UNAUTHENTICATED — never expose it via a Service
+  # reachable outside the cluster.
+  FELIX_METRICS_PORT: "0"
   FELIX_WAREHOUSE: none
   # Extra SKILL.md directory; mount it via extraVolumes when set.
   FELIX_SKILLS_DIR: ""

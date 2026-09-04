@@ -150,10 +150,10 @@ jobs:
       - name: Set up Python
         run: uv python install 3.14
       # Lean install plus only the extras that gate tests. `--all-extras` would drag in
-      # playwright, boto3 and presidio for no coverage; these three are the ones whose
+      # playwright, boto3 and presidio for no coverage; these four are the ones whose
       # absence silently deletes tests (see tests/optional_deps.py).
       - name: Install dependencies
-        run: uv sync --locked --dev --extra temporal --extra warehouse --extra sandbox
+        run: uv sync --locked --dev --extra temporal --extra warehouse --extra sandbox --extra otel
       - name: Bundle manifests
         run: uv run felix bundle-manifests
       # ./scripts/test.sh owns the in-memory test environment — the same

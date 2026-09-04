@@ -98,7 +98,10 @@ def create_app(
         app.state.tools = tool_provider
         app.state.plugins = plugin_list
         await hydrate_secrets(cfg)
-        setup_observability(cfg)
+        # Passing the app instruments FastAPI, which opens a root span per request and
+        # extracts an inbound `traceparent`. Without it Felix's own spans have no parent
+        # and each one lands as a separate single-span trace.
+        setup_observability(cfg, app)
         for hook in get_registry().startup_hooks:
             # One bad third-party hook must not take down API startup; every other
             # plugin call site is already defensive.
