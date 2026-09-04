@@ -107,6 +107,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to arguments too — values are redacted in place, PII in a key refuses. A screener
   *outage* under `on_flag: block` puts a durable fiber to sleep for a minute and retries
   the step, up to ten times, instead of failing every in-flight run for a provider blip.
+- **A manifest cannot store a credential, and a read cannot return one.**
+  `assert_no_plaintext_secrets` ran at compile and only under `forbid_plaintext_secrets` or
+  in production, so `PUT /manifests` stored `auth: Bearer sk-...` and `GET /manifests/{name}`
+  handed the token to the lower `manifests:read` scope. `PUT /manifests` and
+  `felix validate-manifest` now run one write-time validator (`validate_for_write`) — they
+  had drifted, the CLI saying `ok` to what the route refused. Always refused: a
+  credential-shaped `auth` or `env` value (the heuristic now knows vendor-prefixed keys,
+  JWTs, `user:password`), a URL carrying `user:password@`, a stdio command off the
+  allowlist, and a sandbox image outside `FELIX_SANDBOX_ALLOWED_IMAGES` (which stored fine
+  and raised inside every build); under `forbid_plaintext_secrets` or production, every
+  non-ref `env` value, as before. Every read — resolved, by version, and the write's own
+  echo — replaces any literal `auth`, non-ref `env` value and URL userinfo with `[REDACTED]`;
+  `secret:NAME` refs are untouched. `cowork.yaml` no longer allows anonymous callers: it
+  binds a shell on the developer's machine, and under `FELIX_AUTH_MODE=none` the approvals
+  that gate it are anonymous too — so `make dev` cannot drive cowork; the Compose stack can.
 
 ### Changed
 - **The session summarizer is billed to the tenant that triggered it, and counts against

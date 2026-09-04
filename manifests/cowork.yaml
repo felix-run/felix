@@ -129,7 +129,14 @@ spec:
 
   auth:
     inbound:
-      allow_anonymous: true
+      # This manifest binds a shell on the developer's own machine. The approval rule
+      # above is what stands between a caller and that shell, and under
+      # FELIX_AUTH_MODE=none the approvals API is anonymous too — so the same caller
+      # could approve their own command. The runtime already confines `none` to
+      # loopback; this keeps the manifest honest anywhere else. The Compose stack mints
+      # a key; `make dev` runs with FELIX_AUTH_MODE=none, so drive cowork through Compose
+      # (or set FELIX_AUTH_MODE=api_key with a key).
+      allow_anonymous: false
 
   observability:
     trace: true

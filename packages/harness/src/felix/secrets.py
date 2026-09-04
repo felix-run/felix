@@ -23,10 +23,20 @@ _resolved_secret_values: list[str] = []
 # Manifest auth/env may use ``secret:NAME`` (or ``{"secret": "NAME"}``).
 _SECRET_REF_RE = re.compile(r"^secret:(.+)$", re.IGNORECASE)
 # Heuristic: Bearer/Basic tokens or long hex/base64-looking blobs.
+# Credential shapes: an HTTP auth scheme with a token, a long opaque blob, a vendor-prefixed
+# key (`sk-…`, `AKIA…`), a JWT, or `user:password`. A heuristic, used where a false positive
+# is a refusal the author can answer with `secret:NAME`; the read side redacts any literal.
 _PLAINTEXT_AUTH_RE = re.compile(
-    r"^(?:bearer\s+\S+|basic\s+\S+|[A-Za-z0-9+/_-]{24,}={0,2})$",
+    r"^(?:(?:bearer|basic|token|apikey|api-key)\s+\S+"
+    r"|[A-Za-z0-9+/_-]{24,}={0,2}"
+    r"|(?:sk|rk|pk|xox[abp]|ghp|gho|glpat)[-_][A-Za-z0-9_-]{8,}"
+    r"|AKIA[A-Z0-9]{12,}"
+    r"|[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})$",
     re.IGNORECASE,
 )
+# `user:password` — only when the right-hand side is password-shaped (letters and digits,
+# eight or more), so `HOST:localhost` and `format:pretty` stay ordinary settings.
+_USERPASS_RE = re.compile(r"^[^\s:@/]{1,64}:(?=[^\s@/]*\d)(?=[^\s@/]*[A-Za-z])[^\s@/]{8,}$")
 
 
 # The model-provider half of the map below is derived from the provider descriptors rather
@@ -483,7 +493,8 @@ def looks_like_plaintext_secret(value: str | None) -> bool:
         return False
     if is_secret_ref(value):
         return False
-    return bool(_PLAINTEXT_AUTH_RE.match(value.strip()))
+    text = value.strip()
+    return bool(_PLAINTEXT_AUTH_RE.match(text) or _USERPASS_RE.match(text))
 
 
 async def resolve_secret_value(
