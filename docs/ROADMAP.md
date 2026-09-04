@@ -163,6 +163,12 @@ and fixed; the comment at `fibers.py:36-46` is the record.
 
 ### C. Operator console
 
+- [x] **The summarizer is metered.** Found by the 2026-09-04 readiness audit, not on this
+      list: compaction billed its summarizer call to the literal tenant `"default"`, priced it
+      by the logical route name, and never touched `limit_state`, so the largest input-token
+      call in a long thread escaped `max_cost_usd`; `summarizing:N` recorded nothing. Both go
+      through `record_model_usage` now, and the react loop's reported usage block is priced by
+      the wire id (it was the logical name, so every custom route reported `$0` on the turn).
 - [ ] **Persist cost.** `usage/pricing.py` has a real `estimate_cost` with cache and
       long-context tiers; `record_tokens` takes no cost argument and writes none, so `GET /usage`
       (30 lines) returns raw token rows and nothing can answer "what did tenant X spend last

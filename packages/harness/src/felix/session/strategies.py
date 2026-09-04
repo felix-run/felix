@@ -158,7 +158,10 @@ class SummarizingSessionStrategy:
                     [],
                 )
                 summary_text = result.message.content
+                from felix.session.compaction import meter_summarizer
                 from felix.session.types import AppendableEvent
+
+                meter_summarizer(result, model, kind="summarization", reason="threshold")
 
                 await session.append(
                     AppendableEvent(

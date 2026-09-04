@@ -58,6 +58,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `deploy/helm/README.md`.
 
 ### Changed
+- **The session summarizer is billed to the tenant that triggered it, and counts against
+  the run's budget.** Compaction wrote its own usage row against the literal tenant
+  `"default"`, priced it by the logical route name (which the price table does not know,
+  so custom routes priced at $0), and never touched the run's `limit_state` — on a long
+  thread the single largest input-token call escaped `limits.max_cost_usd` and the token
+  caps, and landed on another tenant's bill. The `summarizing:N` strategy recorded nothing
+  at all. Both now go through `record_model_usage` like the turn itself: attributed to the
+  request's tenant and manifest, priced by the wire model id, and tagged
+  `meta.kind: compaction | summarization` so the row can be told apart from the turn.
+  `POST /chat/compact` runs under a context naming the thread's manifest for the same
+  reason. A metering failure is logged at warning rather than swallowed.
+- **The turn's reported cost was priced by the logical route name.** The react loop
+  metered by the wire id but built the `usage` block it reports with `model.model_id`,
+  the operator's route name — so every custom route reported `$0` on the turn while
+  being budgeted correctly. `record_usage` now returns the priced block and the loop
+  reports that. One `record_model_usage(result, model, ...)` replaces nine hand-copied
+  call sites across the pattern loops, and `record_usage` grew a `meta` argument.
 
 - **The fallback and escalation composites moved to `patterns/model_composites.py`.** They
   are private, so nothing outside the repo is affected; tests that reached for

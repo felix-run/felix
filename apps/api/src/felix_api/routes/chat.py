@@ -5,12 +5,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-from felix.context import AuthContext, RequestContext, async_run_with_context, try_get_context
+from felix.context import AuthContext, RequestContext, async_run_with_context, get_context, try_get_context
 from felix.logging_setup import loggable
 from felix.patterns.model import ModelGatewayError
 from felix.patterns.types import ChatMessage, InvokeInput
@@ -1497,13 +1497,17 @@ async def chat_compact(body: CompactRequest, request: Request) -> dict[str, Any]
     await update_thread_meta(
         settings=settings, tenant_id=auth.tenant_id, thread_id=thread, phase="compaction"
     )
-    result = await strategy.compact_now(
-        session,
-        model=model,
-        system_prompt="",
-        instructions=body.instructions,
-        reason="manual",
-    )
+    # The middleware context carries the tenant but no manifest; the summarizer's usage
+    # row should name the manifest this thread runs, not fall to an empty one.
+    ctx = get_context()
+    async with async_run_with_context(replace(ctx, manifest_id=body.manifest, thread_id=thread)):
+        result = await strategy.compact_now(
+            session,
+            model=model,
+            system_prompt="",
+            instructions=body.instructions,
+            reason="manual",
+        )
     await update_thread_meta(settings=settings, tenant_id=auth.tenant_id, thread_id=thread, phase="idle")
     snapshot = await _build_thread_snapshot(settings=settings, tenant_id=auth.tenant_id, thread=thread)
     return {**result, "thread_id": thread, "snapshot": snapshot}

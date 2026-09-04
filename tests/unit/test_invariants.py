@@ -712,13 +712,15 @@ def test_a_pattern_that_reaches_a_model_records_the_usage() -> None:
             if not reaches_model:
                 continue
             names = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
-            if "record_usage" not in names:
+            # `record_model_usage` is the client-shaped spelling of `record_usage` and
+            # is what the pattern loops call; either one feeds `limit_state`.
+            if not names & {"record_usage", "record_model_usage"}:
                 offenders.append(f"{path.name}:{node.lineno} {node.name}")
 
     assert offenders == [], (
         "these call a model without recording usage, so the spend they cause escapes "
-        f"limits.max_cost_usd and the token budgets: {offenders}. Call record_usage on the "
-        "ModelChatResult, or route the call through a helper that does."
+        f"limits.max_cost_usd and the token budgets: {offenders}. Call record_model_usage "
+        "on the ModelChatResult, or route the call through a helper that does."
     )
 
 

@@ -19,7 +19,7 @@ from felix.patterns.model import (
     ModelClient,
     ModelGatewayError,
     build_model,
-    record_usage,
+    record_model_usage,
     supports_stream_turn,
     wire_model_id,
 )
@@ -853,17 +853,7 @@ class _ReactAgent:
                 if result is None:
                     result = await model.chat(messages, active_tools)
 
-                record_usage(
-                    result,
-                    manifest_id=self.manifest_id,
-                    model_id=model.model_id,
-                    wire_model_id=wire_model_id(model),
-                )
-                usage_block = None
-                if result.usage:
-                    from felix.usage.pricing import usage_with_cost
-
-                    usage_block = usage_with_cost(result.usage, model_id=model.model_id or "")
+                usage_block = record_model_usage(result, model, manifest_id=self.manifest_id) or None
                 assistant = result.message
                 if not assistant.content and chunks:
                     assistant = ChatMessage(
@@ -985,12 +975,7 @@ class _ReactAgent:
                     await self._append_produced(input.thread_id, [follow_chat])
                     messages.append(follow_chat)
                     result = await model.chat(messages, await self._active_tools(messages))
-                    record_usage(
-                        result,
-                        manifest_id=self.manifest_id,
-                        model_id=model.model_id,
-                        wire_model_id=wire_model_id(model),
-                    )
+                    record_model_usage(result, model, manifest_id=self.manifest_id)
                     assistant = result.message
                     messages.append(assistant)
                     produced.append(assistant)

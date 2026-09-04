@@ -148,17 +148,36 @@ def record_usage(
     manifest_id: str,
     model_id: str | None = None,
     wire_model_id: str | None = None,
-) -> None:
+    meta: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Meter one turn: run budgets, Prometheus, the usage store, and the plugin sink.
+
+    Returns the priced usage block (`usage_with_cost`, keyed by the wire id), or `{}`
+    when the result carried no usage — so a caller that wants to report cost reads it
+    from here instead of pricing again, possibly by the wrong id.
 
     `model_id` is the logical route name and is what gets *reported*. `wire_model_id` is
     the provider's own id and is what gets *priced*, because that is what the catalog keys
     on. When they were the same argument, every custom route priced at the catalog default.
+
+    Every model call the harness makes on a tenant's behalf goes through here — the turn
+    itself, and the session summarizer that compaction runs. `meta` is how the latter says
+    what it was, so a usage row can be told apart without being billed elsewhere: the
+    summarizer used to write its own row against the literal tenant `"default"` and never
+    touched `ctx.limit_state`, so the largest input-token call in a long thread escaped
+    `limits.max_cost_usd` and landed on another tenant's bill.
     """
     usage = _metered_usage(result, manifest_id=manifest_id, model_id=model_id)
     if usage is None:
-        return
+        return {}
     labels = {"manifest_id": manifest_id, "model": model_id or "default"}
+    priced: dict[str, Any] = {}
+    try:
+        from felix.usage.pricing import usage_with_cost
+
+        priced = usage_with_cost(usage, model_id=wire_model_id or model_id or "")
+    except Exception:
+        logger.debug("usage pricing unavailable", exc_info=True)
     ctx = try_get_context()
     tenant_id = "default"
     if ctx is not None:
@@ -166,13 +185,7 @@ def record_usage(
         ctx.limit_state.tokens_input += u.input + u.cache_creation + u.cache_read
         ctx.limit_state.tokens_output += u.output
         # Accumulate spend so `limits.max_cost_usd` has something to measure.
-        try:
-            from felix.usage.pricing import usage_with_cost
-
-            priced = usage_with_cost(u, model_id=wire_model_id or model_id or "")
-            ctx.limit_state.cost_usd += float((priced.get("cost") or {}).get("total") or 0.0)
-        except Exception:
-            logger.debug("usage pricing unavailable", exc_info=True)
+        ctx.limit_state.cost_usd += float((priced.get("cost") or {}).get("total") or 0.0)
         tenant_id = getattr(ctx.auth, "tenant_id", None) or "default"
         settings = ctx.settings
     else:
@@ -191,6 +204,7 @@ def record_usage(
             tokens_output=usage.output,
             cache_creation=usage.cache_creation,
             cache_read=usage.cache_read,
+            meta=meta,
         )
     except Exception:
         logger.debug("usage_record_failed", exc_info=True)
@@ -210,6 +224,34 @@ def record_usage(
                 )
     except Exception:
         logger.debug("usage_sink_failed", exc_info=True)
+    return priced
+
+
+def record_model_usage(
+    result: ModelChatResult,
+    model: Any,
+    *,
+    manifest_id: str | None = None,
+    meta: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """`record_usage` for a call made through a model client.
+
+    The one spelling every call site wants: the logical route name is reported, the wire
+    id is priced. It was hand-copied at nine sites, and one of them priced the turn's
+    usage block by the logical name — the exact $0-for-custom-routes bug `wire_model_id`
+    exists to close. `manifest_id` defaults to the request's; a call outside a request
+    (a maintenance path) records under an empty manifest rather than inventing one.
+    """
+    if manifest_id is None:
+        ctx = try_get_context()
+        manifest_id = (ctx.manifest_id if ctx is not None else "") or ""
+    return record_usage(
+        result,
+        manifest_id=manifest_id,
+        model_id=getattr(model, "model_id", "") or "",
+        wire_model_id=wire_model_id(model),
+        meta=meta,
+    )
 
 
 @dataclass
@@ -518,6 +560,7 @@ __all__ = [
     "post_with_retry",
     "provider_factory",
     "reasoning_effort_from_budget",
+    "record_model_usage",
     "record_usage",
     "register_builtin_providers",
     "resolve_provider_config",
