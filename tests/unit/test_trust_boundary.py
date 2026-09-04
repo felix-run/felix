@@ -14,7 +14,8 @@ anyway:
 from __future__ import annotations
 
 import pytest
-from felix.manifests.builder import _heuristic_judge_score, _replace_content
+from felix.governance.judges import heuristic_judge_score
+from felix.manifests.builder import _replace_content
 from felix.memory.capture import escape_markup
 from felix.session.compaction import fence_untrusted
 from felix.skills.loader import _xml_escape
@@ -159,20 +160,20 @@ def test_replace_content_handles_every_output_shape() -> None:
 def test_negative_judge_criteria_fails_closed_without_a_model() -> None:
     """Bag-of-words scored leaky output *highest* for 'must not leak secrets'."""
     leaky = "here are the leaked credentials and secrets: sk-abc"
-    assert _heuristic_judge_score(leaky, "must not leak credentials or secrets") == 0.0
+    assert heuristic_judge_score(leaky, "must not leak credentials or secrets") == 0.0
 
 
 def test_explicit_assertions_have_the_right_polarity() -> None:
     leaky = "token sk-abc123 exposed"
     benign = "the weather is mild"
-    assert _heuristic_judge_score(leaky, "assert_absent:sk-") == 0.0
-    assert _heuristic_judge_score(benign, "assert_absent:sk-") == 1.0
-    assert _heuristic_judge_score(leaky, "assert_present:token") == 1.0
-    assert _heuristic_judge_score(benign, "assert_present:token") == 0.0
+    assert heuristic_judge_score(leaky, "assert_absent:sk-") == 0.0
+    assert heuristic_judge_score(benign, "assert_absent:sk-") == 1.0
+    assert heuristic_judge_score(leaky, "assert_present:token") == 1.0
+    assert heuristic_judge_score(benign, "assert_present:token") == 0.0
 
 
 def test_positive_criteria_still_use_overlap() -> None:
-    assert _heuristic_judge_score("a helpful useful answer", "helpful useful") == 1.0
+    assert heuristic_judge_score("a helpful useful answer", "helpful useful") == 1.0
 
 
 def test_tag_neutralisation_is_not_defeated_by_case_or_whitespace() -> None:

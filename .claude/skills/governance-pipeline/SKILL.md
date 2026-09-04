@@ -40,8 +40,9 @@ manifest declares becomes either a bound tool, a prompt fragment, or a wrapper a
    count, masking is innermost and therefore applies to whatever the tool actually returned.
 6. **Pattern build** — `get_pattern(spec.pattern)` receives a `PatternBuildContext` dict with the
    wrapped tools, prompt, session store/strategy, limits, memory, and settings.
-7. **Final-response judges** — when enabled, `wrap_final_response_judges` wraps the `Agent` itself,
-   not its tools.
+7. **Reply-path controls** — `apply_reply_controls` wraps the `Agent` itself, not its tools:
+   `final_response` judges and PII guardrails on the reply, on `invoke` and on the streaming path
+   (reply text is held and released screened). Mechanics in `felix/governance/reply.py`.
 
 ## Adding a control
 
