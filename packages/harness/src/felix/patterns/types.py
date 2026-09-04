@@ -77,6 +77,20 @@ class Agent(Protocol):
     def stream_events(self, input: InvokeInput) -> AsyncIterator[Event]: ...
 
 
+def copy_agent_surface(wrapper: Any, inner: Any, *, manifest_id: str = "") -> None:
+    """Give a wrapping agent the attributes the harness reads off an `Agent`.
+
+    Every agent-level wrapper (inbound screening, the reply controls) has to look like
+    the agent it wraps to `mcp/server.py`, the builder's sub-agent binding and the
+    routes. One place to add the next attribute, instead of one per wrapper.
+    """
+    wrapper.tools = getattr(inner, "tools", [])
+    wrapper.pattern = getattr(inner, "pattern", "")
+    wrapper.manifest_id = getattr(inner, "manifest_id", manifest_id)
+    wrapper.manifest_version = getattr(inner, "manifest_version", "")
+    wrapper.system_prompt = getattr(inner, "system_prompt", "")
+
+
 __all__ = [
     "Agent",
     "ChatMessage",
@@ -89,4 +103,5 @@ __all__ = [
     "Role",
     "StreamEvent",
     "ToolCall",
+    "copy_agent_surface",
 ]

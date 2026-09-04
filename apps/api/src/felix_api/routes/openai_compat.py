@@ -135,7 +135,11 @@ async def chat_completions(body: ChatCompletionsRequest, request: Request) -> An
     # type it means. The old shape caught everything, tested with `isinstance`, and
     # re-raised the rest -- which put every exception in this call through a scope whose
     # job is formatting messages for clients.
-    from felix.governance.inbound import InboundScreeningError, apply_inbound_screening
+    from felix.governance.inbound import (
+        INBOUND_SCREENED_EXTRA,
+        InboundScreeningError,
+        apply_inbound_screening,
+    )
 
     try:
         messages = await apply_inbound_screening(resolved.manifest, messages, settings)
@@ -149,6 +153,8 @@ async def chat_completions(body: ChatCompletionsRequest, request: Request) -> An
         auth=auth,
         manifest_id=body.model,
         thread_id=thread,
+        # Screened above, so the 422 could be answered before a stream opened.
+        extras={INBOUND_SCREENED_EXTRA: True},
     )
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
     created = int(time.time())

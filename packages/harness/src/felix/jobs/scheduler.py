@@ -72,18 +72,16 @@ async def _invoke_job_manifest(
     resolved = await resolve_tenant_manifest(settings, tenant_id, manifest_id, thread_id=thread)
     req_ctx = RequestContext(settings=settings, auth=auth, manifest_id=manifest_id, thread_id=thread)
     async with async_run_with_context(req_ctx):
+        # The prompt is job payload, writable with `jobs:write`. The compiled agent screens
+        # it like any user turn; a refusal raises and is recorded as an error run.
+        messages = [ChatMessage(role="user", content=prompt)]
         agent = await build_tenant_agent(
             settings,
             manifest=resolved.manifest,
             tools=provider,
             tenant_id=tenant_id,
         )
-        result = await agent.invoke(
-            InvokeInput(
-                messages=[ChatMessage(role="user", content=prompt)],
-                thread_id=thread,
-            )
-        )
+        result = await agent.invoke(InvokeInput(messages=messages, thread_id=thread))
     return {
         "status": "ok",
         "answer": result.final.content if result.final else "",

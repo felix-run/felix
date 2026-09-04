@@ -90,6 +90,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`felix_model_unpriced`** counter: a turn reported usage but Felix has no rate for the
   wire model and the manifest sets none, so it was metered at `$0` — the signal that
   `limits.max_cost_usd` is failing *open* (the roadmap had this the wrong way round).
+- **Inbound screening reaches every entrypoint.** `content_screening.enabled` ran on
+  `/chat`, `/v1` and A2A. A cron job's prompt (writable with `jobs:write`), an eval item's
+  `user_input` (writable with `eval:write`), `/chat/continue` and a resumed durable fiber
+  reached the agent unscreened, and a tool call made directly over MCP executed a governed
+  tool on unscreened arguments. All screen now; MCP screens the argument tree, and a flagged
+  argument refuses the call whatever `on_flag` says, because there is no turn to quarantine.
+  The screen is a wrapper the compile puts around the agent, so there is no entrypoint to
+  forget; the HTTP routes still screen before the agent exists (to answer 422 before a
+  stream opens or a durable run is enqueued) and mark the request so it is not paid twice.
+  A screening refusal no longer reports the screener's score, and emits a
+  `felix_inbound_screening` counter and an `inbound_screening` audit event (surface and
+  action, no content). The model screener reads a turn or an argument set in windows, so a
+  long benign prefix cannot push a payload past its window; an argument set over eight
+  windows or 256 strings is refused as `oversize` rather than screened. Input PII applies
+  to arguments too — values are redacted in place, PII in a key refuses. A screener
+  *outage* under `on_flag: block` puts a durable fiber to sleep for a minute and retries
+  the step, up to ten times, instead of failing every in-flight run for a provider blip.
 
 ### Changed
 - **The session summarizer is billed to the tenant that triggered it, and counts against

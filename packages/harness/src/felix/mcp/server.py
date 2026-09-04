@@ -34,8 +34,8 @@ async def _compiled_tools(
     tools: ToolProvider,
     auth: AuthContext,
     manifest_name: str,
-) -> tuple[Any, list[Any]]:
-    """Resolve + compile the tenant manifest; return (agent, governed tools)."""
+) -> tuple[Any, list[Any], Any]:
+    """Resolve + compile the tenant manifest; return (agent, governed tools, manifest)."""
     from felix.runtime import build_tenant_agent, prepare_tenant_invoke, resolve_tenant_manifest
 
     resolved = await resolve_tenant_manifest(settings, auth.tenant_id, manifest_name, thread_id=None)
@@ -47,7 +47,7 @@ async def _compiled_tools(
         tenant_id=auth.tenant_id,
     )
     agent_tools = list(getattr(agent, "tools", None) or [])
-    return agent, agent_tools
+    return agent, agent_tools, resolved.manifest
 
 
 async def handle_rpc(
@@ -83,7 +83,7 @@ async def handle_rpc(
                 manifest_id=manifest_name,
             )
             async with async_run_with_context(req_ctx):
-                _agent, agent_tools = await _compiled_tools(
+                _agent, agent_tools, manifest = await _compiled_tools(
                     settings=settings,
                     tools=tools,
                     auth=call_auth,
@@ -109,11 +109,22 @@ async def handle_rpc(
                         "error": {"code": -32602, "message": f"Unknown tool: {name}"},
                     }
                 tool = by_name[name]
+                # A user turn is screened at every HTTP ingress; a tool call made directly
+                # over MCP has no turn, so the arguments are what gets screened.
+                from felix.governance.inbound import InboundScreeningError, screen_tool_arguments
+
                 try:
-                    out = await tool.executor.execute(
-                        dict(args) if isinstance(args, dict) else {},
-                        ToolInvocationCtx(manifest_id=manifest_name),
+                    args = await screen_tool_arguments(
+                        manifest, dict(args) if isinstance(args, dict) else {}, settings
                     )
+                except InboundScreeningError as exc:
+                    return {
+                        "jsonrpc": "2.0",
+                        "id": rpc_id,
+                        "error": {"code": -32602, "message": f"arguments refused: {exc.detail}"},
+                    }
+                try:
+                    out = await tool.executor.execute(args, ToolInvocationCtx(manifest_id=manifest_name))
                     text = tool_output_content(out)
                     denied = is_wrapper_deny(out)
                     return {

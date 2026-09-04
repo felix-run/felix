@@ -11,6 +11,7 @@ from felix.governance.content_screening import screen_content
 from felix.governance.pii import redact_pii
 from felix.manifests.schema import Manifest
 from felix.observability.metrics import record_counter
+from felix.patterns.types import copy_agent_surface
 
 logger = logging.getLogger("felix.governance.inbound")
 
@@ -149,8 +150,7 @@ async def apply_inbound_screening(
     """Screen user turns for injection + optional input PII. May rewrite content."""
     screening = manifest.spec.content_screening
     guardrails = manifest.spec.guardrails
-    targets = set(guardrails.targets or [])
-    pii_on_input = "pii" in (guardrails.providers or []) and (not targets or "input" in targets)
+    pii_on_input = input_pii_enabled(guardrails)
     content_on = bool(screening.enabled)
     if not content_on and not pii_on_input:
         return messages
@@ -173,15 +173,24 @@ async def apply_inbound_screening(
                 redact_pii=False,
             )
             if verdict.denied:
+                _note(manifest, "turn", "denied" if screening.on_flag == "block" else "quarantined")
                 if screening.on_flag == "block":
                     raise InboundScreeningError("content_screening_denied", status_code=422)
                 text = "[quarantined] user input flagged as potentially hostile"
             model_id = (screening.model or "").strip()
+            if model_id and len(text) > MAX_SCREEN_CHUNKS * SCREEN_CHARS:
+                # Windowing removed the truncation bypass; this keeps it from becoming an
+                # amplifier — a body-limit-sized turn is not screened one window at a time.
+                _note(manifest, "turn", "oversize")
+                if screening.on_flag == "block":
+                    raise InboundScreeningError("turn_too_large", status_code=422)
+                text = "[quarantined] user input too long to screen"
             if model_id and text and not text.startswith("[quarantined]"):
-                result = await screen_for_injection(settings, text, model_id)
+                result = await _screen_chunks(settings, text, model_id)
                 if result.unavailable:
                     # A control that cannot run has not cleared anything. Honour on_flag
                     # rather than silently admitting the turn.
+                    _note(manifest, "turn", "unavailable")
                     if screening.on_flag == "block":
                         raise InboundScreeningError(
                             f"content_screening_unavailable:{result.reason}",
@@ -189,16 +198,17 @@ async def apply_inbound_screening(
                         )
                     text = "[quarantined] user input could not be screened"
                 elif result.flagged:
+                    # The score stays in the log: returned, it is a threshold oracle.
+                    logger.info("inbound screening flagged a turn score=%.2f", result.score)
+                    _note(manifest, "turn", "denied" if screening.on_flag == "block" else "quarantined")
                     if screening.on_flag == "block":
-                        raise InboundScreeningError(
-                            f"content_screening_denied:score={result.score:.2f}",
-                            status_code=422,
-                        )
+                        raise InboundScreeningError("content_screening_denied", status_code=422)
                     text = "[quarantined] user input flagged by model screener"
 
         if pii_on_input:
             result = redact_pii(text)
             if result.matched:
+                _note(manifest, "turn", "denied" if guardrails.block_on_match else "redacted")
                 if guardrails.block_on_match:
                     raise InboundScreeningError("pii_blocked", status_code=422)
                 text = result.text
@@ -207,4 +217,221 @@ async def apply_inbound_screening(
     return out
 
 
-__all__ = ["InboundScreeningError", "apply_inbound_screening"]
+def input_pii_enabled(guardrails: Any) -> bool:
+    """Whether `guardrails.providers: [pii]` reaches the user turn (the twin of
+    `reply_pii_enabled`). `input` is in the default targets."""
+    targets = set(getattr(guardrails, "targets", None) or [])
+    return "pii" in (getattr(guardrails, "providers", None) or []) and (not targets or "input" in targets)
+
+
+def _note(manifest: Manifest, surface: str, action: str) -> None:
+    """A screening decision is a governance event: a counter and an audit row, no content."""
+    from felix.audit.emit import emit_agent_audit
+    from felix.observability.metrics import record_counter
+
+    name = manifest.metadata.name
+    record_counter("felix_inbound_screening", {"manifest_id": name, "surface": surface, "action": action})
+    emit_agent_audit("inbound_screening", status=action, payload={"surface": surface}, manifest_id=name)
+
+
+# The model screener reads SCREEN_CHARS at a time; a turn or argument set longer than
+# this many chunks is refused rather than screened, because each chunk is a model call
+# and rate limiting counts requests, not calls.
+MAX_SCREEN_CHUNKS = 8
+
+
+# Windows overlap by this much so a payload straddling a boundary is inside one of them.
+SCREEN_OVERLAP = 200
+
+
+async def _screen_chunks(settings: Settings, text: str, model_id: str) -> ScreenResult:
+    """Run the model screener over the whole text, a screener-window at a time, so a
+    long benign prefix cannot push a payload past the window. The first flagged or
+    unavailable chunk decides."""
+    step = SCREEN_CHARS - SCREEN_OVERLAP
+    for start in range(0, max(len(text), 1), step):
+        result = await screen_for_injection(settings, text[start : start + SCREEN_CHARS], model_id)
+        if result.unavailable or result.flagged:
+            return result
+        if start + SCREEN_CHARS >= len(text):
+            break
+    return ScreenResult(score=0.0)
+
+
+def _strings_in(value: Any) -> list[str]:
+    """Every string in an argument tree — values *and* keys, since a free-form map's keys
+    reach the tool too."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [t for k, v in value.items() for t in (*_strings_in(k), *_strings_in(v))]
+    if isinstance(value, list | tuple):
+        return [t for v in value for t in _strings_in(v)]
+    return []
+
+
+def _keys_in(value: Any) -> list[str]:
+    if isinstance(value, dict):
+        return [t for k, v in value.items() for t in ([k] if isinstance(k, str) else []) + _keys_in(v)]
+    if isinstance(value, list | tuple):
+        return [t for v in value for t in _keys_in(v)]
+    return []
+
+
+def _map_values(value: Any, fn: Any) -> Any:
+    """Rewrite string *values* only: a key rewritten is a parameter renamed, and two keys
+    rewritten to the same token would collapse into one."""
+    if isinstance(value, str):
+        return fn(value)
+    if isinstance(value, dict):
+        return {k: _map_values(v, fn) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_map_values(v, fn) for v in value]
+    if isinstance(value, tuple):
+        return tuple(_map_values(v, fn) for v in value)
+    return value
+
+
+# An argument tree with more strings than this is not a tool call, and screening it is
+# unbounded work an anonymous MCP client could ask for.
+MAX_ARGUMENT_STRINGS = 256
+
+
+async def screen_tool_arguments(
+    manifest: Manifest, args: dict[str, Any], settings: Settings
+) -> dict[str, Any]:
+    """Screen the arguments of a tool call made directly over MCP.
+
+    `tools/call` executes a governed tool without an agent turn, so the inbound screening
+    a user turn gets never ran on what the remote client sent. Arguments cannot be
+    quarantined the way a turn can — there is no model to warn — so a flagged argument
+    refuses the call whatever `on_flag` says; `on_flag` only decides whether an
+    *unavailable* model screener refuses (block) or lets the marker screen stand. The
+    input PII guardrail applies as it does to a turn: block refuses, otherwise the
+    string values are redacted in place, and PII in a *key* always refuses.
+    """
+    screening = manifest.spec.content_screening
+    guardrails = manifest.spec.guardrails
+    pii_on_input = input_pii_enabled(guardrails)
+    if not screening.enabled and not pii_on_input:
+        return args
+    texts = [t for t in _strings_in(args) if t]
+    if not texts:
+        return args
+    joined = "\n".join(texts)
+    if len(texts) > MAX_ARGUMENT_STRINGS or len(joined) > MAX_SCREEN_CHUNKS * SCREEN_CHARS:
+        _note(manifest, "tool_arguments", "oversize")
+        raise InboundScreeningError("arguments_too_large", status_code=422)
+    if screening.enabled:
+        for text in texts:
+            verdict = await screen_content(text, settings=settings, block_on_injection=True, redact_pii=False)
+            if verdict.denied:
+                _note(manifest, "tool_arguments", "denied")
+                raise InboundScreeningError("content_screening_denied", status_code=422)
+        model_id = (screening.model or "").strip()
+        if model_id:
+            result = await _screen_chunks(settings, joined, model_id)
+            if result.unavailable:
+                _note(manifest, "tool_arguments", "unavailable")
+                if screening.on_flag == "block":
+                    raise InboundScreeningError(
+                        f"content_screening_unavailable:{result.reason}", status_code=503
+                    )
+            elif result.flagged:
+                logger.info("inbound screening flagged tool arguments score=%.2f", result.score)
+                _note(manifest, "tool_arguments", "denied")
+                raise InboundScreeningError("content_screening_denied", status_code=422)
+    if pii_on_input:
+        if any(redact_pii(k).matched for k in _keys_in(args)):
+            _note(manifest, "tool_arguments", "denied")
+            raise InboundScreeningError("pii_blocked", status_code=422)
+        matched = False
+
+        def _redact(text: str) -> str:
+            nonlocal matched
+            result = redact_pii(text)
+            matched = matched or result.matched
+            return result.text
+
+        redacted = _map_values(args, _redact)
+        if matched:
+            _note(manifest, "tool_arguments", "denied" if guardrails.block_on_match else "redacted")
+            if guardrails.block_on_match:
+                raise InboundScreeningError("pii_blocked", status_code=422)
+            return redacted
+    return args
+
+
+# Set on `RequestContext.extras` by an HTTP route that screened the turn before it built
+# the agent — to answer 422 before a stream opens, or before a durable run is enqueued.
+# The compiled agent then skips its own pass. Forgetting to set it costs a second screen
+# (a second model call, when one is configured), never a hole.
+INBOUND_SCREENED_EXTRA = "inbound_screened"
+
+
+class InboundScreeningAgent:
+    """The compiled agent, with the user turn screened on every way in.
+
+    `apply_inbound_screening` used to be a call each entrypoint had to remember: /chat,
+    /v1 and A2A did, and cron jobs, eval items, /chat/continue and a resumed durable
+    fiber did not. Wrapping the agent in the compile means there is no entrypoint to
+    forget — anything that runs the agent runs the screen. An `InboundScreeningError`
+    propagates to the caller, which maps it (422/503 on HTTP, an error run on cron, an
+    error score on eval, a failed fiber).
+    """
+
+    def __init__(self, inner: Any, manifest: Manifest, settings: Settings) -> None:
+        self._inner = inner
+        self._manifest = manifest
+        self._settings = settings
+        copy_agent_surface(self, inner, manifest_id=manifest.metadata.name)
+
+    async def _screened(self, input: Any) -> Any:
+        from dataclasses import replace
+
+        from felix.context import try_get_context
+
+        ctx = try_get_context()
+        # Consumed, not read: the mark means "this turn, screened at the route". A sub-agent
+        # compiled in the same context is a different agent with its own manifest, and
+        # screens what its parent hands it.
+        if ctx is not None and ctx.extras.pop(INBOUND_SCREENED_EXTRA, False):
+            return input
+        messages = await apply_inbound_screening(self._manifest, list(input.messages), self._settings)
+        return replace(input, messages=messages)
+
+    async def invoke(self, input: Any) -> Any:
+        return await self._inner.invoke(await self._screened(input))
+
+    async def stream_events(self, input: Any) -> Any:
+        screened = await self._screened(input)
+        async for item in self._inner.stream_events(screened):
+            yield item
+
+
+def inbound_controls_enabled(manifest: Manifest) -> bool:
+    return bool(manifest.spec.content_screening.enabled) or input_pii_enabled(manifest.spec.guardrails)
+
+
+def apply_inbound_controls(agent: Any, manifest: Manifest, settings: Settings | None) -> Any:
+    """The compile slot: wrap when the manifest screens input, else hand the agent back."""
+    if not inbound_controls_enabled(manifest):
+        return agent
+    if settings is None:
+        from felix.config import get_settings
+
+        settings = get_settings()
+    return InboundScreeningAgent(agent, manifest, settings)
+
+
+__all__ = [
+    "INBOUND_SCREENED_EXTRA",
+    "MAX_SCREEN_CHUNKS",
+    "InboundScreeningAgent",
+    "InboundScreeningError",
+    "apply_inbound_controls",
+    "apply_inbound_screening",
+    "inbound_controls_enabled",
+    "input_pii_enabled",
+    "screen_tool_arguments",
+]

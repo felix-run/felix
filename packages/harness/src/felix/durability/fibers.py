@@ -35,6 +35,10 @@ def reset_memory_fibers() -> None:
 # How long a claim is held. Longer than any realistic single step, short enough that a
 # worker killed mid-step frees the fiber within a few scheduler ticks.
 FIBER_LEASE_MS = 5 * 60 * 1000
+# How long a step sleeps when the inbound screener was unavailable under `on_flag: block`.
+FIBER_SCREENER_RETRY_MS = 60_000
+# After this many sleeps the step fails like any other error, rather than waking forever.
+FIBER_SCREENER_MAX_RETRIES = 10
 # The lease is renewed while a step is in flight, so it bounds "how long after a worker dies
 # is its fiber stranded", not "how long may a step take". Those were the same number, and it
 # was the wrong one: `FIBER_LEASE_MS` was exactly `approvals/interrupt.py`'s 300s default
@@ -316,6 +320,8 @@ async def _run_fiber_step(settings: Settings, row: dict[str, Any]) -> dict[str, 
                             pinned = {**pinned, "pin_compile": True}
                         assert_pin_matches(pinned, resolved.manifest, version=resolved.version)
                     await prepare_tenant_invoke(settings, resolved=resolved, auth=auth, thread_id=thread)
+                    # /chat screened these before enqueuing; the compiled agent screens
+                    # again on resume, under the manifest the run resumes with.
                     agent = await build_tenant_agent(
                         settings,
                         manifest=resolved.manifest,
@@ -332,7 +338,27 @@ async def _run_fiber_step(settings: Settings, row: dict[str, Any]) -> dict[str, 
                     )
                 answer = result.final.content if result.final else ""
                 final = result.final.model_dump() if result.final else {"role": "assistant", "content": ""}
+                state.pop("screener_retries", None)  # the budget is per step, not per fiber
             except Exception as exc:
+                from felix.governance.inbound import InboundScreeningError
+
+                retries = int(state.get("screener_retries") or 0)
+                if (
+                    isinstance(exc, InboundScreeningError)
+                    and exc.status_code == 503
+                    and retries < FIBER_SCREENER_MAX_RETRIES
+                ):
+                    # The screener could not run, not the turn failing to clear it. Under
+                    # `on_flag: block` that must not terminate every in-flight durable run
+                    # for the length of a provider blip: sleep and try the same step again,
+                    # a bounded number of times — a screener down for hours is a failure.
+                    logger.warning("fiber_screening_unavailable id=%s: %s", row["id"], exc.detail)
+                    state["screener_retries"] = retries + 1
+                    row["status"] = "sleeping"
+                    row["wake_at"] = now_ms() + FIBER_SCREENER_RETRY_MS
+                    row["state_json"] = state
+                    await _save_fiber(settings, row)
+                    return row
                 logger.exception("fiber_invoke_failed id=%s", row["id"])
                 error = str(exc)
         stash["last"] = {
