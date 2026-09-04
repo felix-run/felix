@@ -1,10 +1,26 @@
-# gitleaks configuration. The default ruleset, plus narrowly-scoped allowlists for
-# false positives that are already in git history and so cannot be edited away.
+# gitleaks configuration: the default ruleset, plus one narrowly-scoped allowlist for a
+# false positive that is already in git history and so cannot be edited away.
 #
-# Keep every entry pinned to a rule AND a path AND a literal string. A broad allowlist
-# here silently disables the scanner for a whole directory, which is worse than the
-# false positive it removes — the CI job runs with `fetch-depth: 0` precisely because a
-# secret removed in a later commit still leaked.
+# Scope an entry with a **literal regex and nothing else**. A `paths` entry looks narrowing
+# and is the opposite: gitleaks ORs the conditions in an allowlist, so adding a path excuses
+# every finding of that rule anywhere in the file. This entry had one, and a real secret
+# added to that file went undetected until it was removed — the scanner was off for a whole
+# file to excuse fourteen characters. (`matchCondition = "AND"` is documented for this and
+# was not honoured here, so it is not a fix.)
+#
+# Verify any entry you add the same way, because reading it cannot tell you:
+#
+#   c() { docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:v8.30.1 \
+#           dir /repo --redact --exit-code 1 2>&1 | grep -oE 'leaks found: [0-9]+'; }
+#   c                                                    # baseline
+#   printf 'aws_secret_access_key = "%s"\n' "$(openssl rand -base64 30 | tr -d '/+=' | head -c 40)" \
+#     >> <the file the entry mentions>
+#   c                                                    # must be baseline + 1
+#
+# Use a random value, not a documented example: the AWS docs key
+# `wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY` is allowlisted by gitleaks itself, so probing
+# with it proves nothing. The CI job scans with `fetch-depth: 0` because a secret removed in
+# a later commit still leaked; an over-broad entry here silently undoes that.
 
 [extend]
 useDefault = true
@@ -15,10 +31,11 @@ useDefault = true
     description = """
     `generic-api-key` reads a hostname ending in `-api` followed by `:<port>` as a keyword
     and a credential. The match is an OTLP endpoint in a test parametrize —
-    `http://memoturn-api:3001/v1/otel` — asserting that the exporter appends a per-signal
-    path. The working tree no longer contains it (the test host was renamed), but the
-    string remains in commit 1552801 and history is scanned.
+    `http://memoturn-api:3001/v1/otel` — asserting the exporter appends a per-signal path.
+    The working tree no longer contains it (the test host was renamed), but the string is
+    in commit 1552801 and history is scanned.
+
+    Matched as a literal, so it excuses that endpoint wherever it appears and nothing else.
     """
     regexTarget = "line"
     regexes = ['''memoturn-api:3001''']
-    paths = ['''tests/unit/test_observability_spans\.py''']
