@@ -29,12 +29,25 @@ jobs:
     permissions:
       contents: read
       security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        # `actions` was missing, so the workflows scanned nothing while every other
+        # supply-chain control in this repo — SHA-pinned actions, pinned image digests,
+        # `uv sync --locked` — is about exactly the files it reads. GitHub reported this
+        # repo analysable for both languages and only one was being analysed.
+        #
+        # A matrix rather than `languages: python,actions` in one init: `category`
+        # distinguishes uploads, and two languages sharing one category overwrite each
+        # other's results. `fail-fast: false` so a failure in one language still reports
+        # the other.
+        language: [python, actions]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Initialize CodeQL
         uses: github/codeql-action/init@c16c0f3f2812ec4bb3750a5ed64873fe2ce0fbef # codeql-bundle-v2.26.3
         with:
-          languages: python
+          languages: ${{ matrix.language }}
           # `security-extended`, not `security-and-quality`. The two are identical
           # on security queries — quality is the only difference — and the quality
           # suite is a second linter that duplicates ruff without knowing this
@@ -53,7 +66,7 @@ jobs:
       - name: Analyze
         uses: github/codeql-action/analyze@c16c0f3f2812ec4bb3750a5ed64873fe2ce0fbef # codeql-bundle-v2.26.3
         with:
-          category: /language:python
+          category: /language:${{ matrix.language }}
 
   dependencies:
     name: Dependency CVEs
