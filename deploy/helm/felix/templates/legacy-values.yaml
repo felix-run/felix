@@ -1,0 +1,10 @@
+{{- /*
+Renders nothing. Fails the render when a values file still uses a key that moved under
+`api.` after chart 0.2.2 — before this, `resources` and `replicaCount` applied to the pod
+that ran every process, and a stale override would now be silently ignored.
+*/ -}}
+{{- range $key := list "replicaCount" "resources" "autoscaling" "podDisruptionBudget" }}
+{{- if hasKey $.Values $key }}
+{{- fail (printf "values key `%s` moved to `api.%s` after chart 0.2.2 (worker and scheduler have their own blocks)" $key $key) }}
+{{- end }}
+{{- end }}

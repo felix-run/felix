@@ -1,0 +1,54 @@
+# Taskiq worker: drains audit buffers, runs cron sweeps, resumes durable fibers. It runs
+# the agent loop, so it carries the model and object-store credentials — and not the
+# api's signing key or shared secret. Safe to scale: every task is lease- or
+# lock-protected, which the scheduler is not.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "felix.fullname" . }}-worker
+  labels:
+    {{- include "felix.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  replicas: {{ .Values.worker.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "felix.componentSelectorLabels" (dict "root" . "component" "worker") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "felix.componentSelectorLabels" (dict "root" . "component" "worker") | nindent 8 }}
+    spec:
+      {{- include "felix.podSpecCommon" . | nindent 6 }}
+      # A fiber step or a flush in flight should finish rather than replay.
+      terminationGracePeriodSeconds: {{ .Values.worker.terminationGracePeriodSeconds }}
+      containers:
+        - name: worker
+          {{- include "felix.containerBase" . | nindent 10 }}
+          command: ["felix-worker"]
+          {{- if .Values.worker.metricsPort }}
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.worker.metricsPort }}
+          {{- end }}
+          env:
+            {{- include "felix.datastoreEnv" . | nindent 12 }}
+            {{- include "felix.agentEnv" . | nindent 12 }}
+            # The worker's Prometheus endpoint doubles as its liveness signal; it has no
+            # HTTP server otherwise. UNAUTHENTICATED, bound on all interfaces, and its
+            # labels carry tenant-supplied manifest ids: a containerPort only, never
+            # behind the Service, and worth a NetworkPolicy (see the chart README).
+            - name: FELIX_METRICS_PORT
+              value: {{ .Values.worker.metricsPort | quote }}
+          {{- if .Values.worker.metricsPort }}
+          livenessProbe:
+            httpGet:
+              path: /
+              port: metrics
+            initialDelaySeconds: 20
+            periodSeconds: 30
+            failureThreshold: 4
+          {{- end }}
+          resources:
+            {{- toYaml .Values.worker.resources | nindent 12 }}
+      {{- include "felix.podSpecPlacement" . | nindent 6 }}

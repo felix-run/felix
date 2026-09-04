@@ -1,0 +1,34 @@
+# Taskiq scheduler: enqueues the labelled cron tasks the worker runs. Exactly one, and
+# `Recreate` so an upgrade never has two alive at once — each instance enqueues every
+# sweep on every tick. Not an HPA target; no replicas value on purpose. No probe: it
+# exposes no port, so a wedged scheduler shows up as cron staleness in the metrics the
+# worker exports, not to kubelet. Datastore URLs only — it never runs a model.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "felix.fullname" . }}-scheduler
+  labels:
+    {{- include "felix.labels" . | nindent 4 }}
+    app.kubernetes.io/component: scheduler
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "felix.componentSelectorLabels" (dict "root" . "component" "scheduler") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "felix.componentSelectorLabels" (dict "root" . "component" "scheduler") | nindent 8 }}
+    spec:
+      {{- include "felix.podSpecCommon" . | nindent 6 }}
+      containers:
+        - name: scheduler
+          {{- include "felix.containerBase" . | nindent 10 }}
+          command: ["felix-scheduler"]
+          env:
+            {{- include "felix.datastoreEnv" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.scheduler.resources | nindent 12 }}
+      {{- include "felix.podSpecPlacement" . | nindent 6 }}

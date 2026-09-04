@@ -33,6 +33,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `scripts/check-compose-render.py` over the rendered config, because one property is
   invisible to a parse: `build: !reset null` applied through a YAML merge key does not
   reset, and the published-image overlay would quietly build on the host again.
+- **The Helm chart runs each process in its own Deployment.** api, worker and scheduler
+  were three containers in one pod, so the HPA scaled the scheduler with the api and every
+  replica enqueued every cron sweep — N replicas, N audit flushes, N retention passes, N
+  fiber resumes per tick. Now `<release>-api` is what the Service, the PDB and the HPA
+  select; `<release>-worker` has its own `worker.replicaCount`; `<release>-scheduler` is
+  always one with a `Recreate` strategy. Three more chart defects went with it: the worker
+  had no model or object-store credentials although it runs the agent loop (fiber resume,
+  continuous eval) — it has them now, and deliberately not the JWT signing key or the
+  `/internal` shared secret, which nothing on its path reads and which a tool primitive
+  reached through model output must not find; the PDB's `minAvailable: 1` against the
+  one-replica default denied every node drain, so it is `maxUnavailable: 1` now; and
+  `image.repository: felix` resolved to docker.io/library/felix, which does not exist, so
+  a fresh `helm install` went straight to ImagePullBackOff — it is `ghcr.io/felix-run/felix`.
+  The api gets a 120s termination grace and a preStop sleep so an SSE turn in flight
+  finishes; the worker gets a liveness probe on its metrics port (`worker.metricsPort`,
+  9464), because a wedged worker was invisible and never restarted.
+  `tests/unit/test_helm_topology.py` asserts all of it on what `helm template` renders,
+  and CI runs it with `FELIX_REQUIRE_HELM=1` so a missing binary fails rather than skips.
+  **Breaking for values files:** `replicaCount`, `resources`, `autoscaling` and
+  `podDisruptionBudget` moved under `api.`, and the old top-level keys fail the render
+  with a message naming the new one rather than being silently ignored. Upgrading
+  replaces the old Deployment (immutable selector), so the api is briefly absent — see
+  `deploy/helm/README.md`.
 
 ### Changed
 - **The session summarizer is billed to the tenant that triggered it, and counts against

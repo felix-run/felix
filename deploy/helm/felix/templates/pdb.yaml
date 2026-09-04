@@ -1,13 +1,23 @@
-{{- if .Values.podDisruptionBudget.enabled }}
+{{- if .Values.api.podDisruptionBudget.enabled }}
+# Covers the api alone: a worker or scheduler pod being evicted is a restart, not an
+# outage. `maxUnavailable: 1` by default rather than `minAvailable: 1`, because with the
+# chart's one-replica default `minAvailable: 1` denies every voluntary eviction and a
+# node drain hangs forever. Set minAvailable instead when replicaCount is large enough
+# for it to mean something; maxUnavailable wins if both are set.
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: {{ include "felix.fullname" . }}
+  name: {{ include "felix.fullname" . }}-api
   labels:
     {{- include "felix.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
 spec:
-  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  {{- if .Values.api.podDisruptionBudget.maxUnavailable }}
+  maxUnavailable: {{ .Values.api.podDisruptionBudget.maxUnavailable }}
+  {{- else }}
+  minAvailable: {{ .Values.api.podDisruptionBudget.minAvailable }}
+  {{- end }}
   selector:
     matchLabels:
-      {{- include "felix.selectorLabels" . | nindent 6 }}
+      {{- include "felix.componentSelectorLabels" (dict "root" . "component" "api") | nindent 6 }}
 {{- end }}

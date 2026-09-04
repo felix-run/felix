@@ -77,7 +77,10 @@ EXPECTED_COMMANDS = {
     # The Temporal overlay is the only deploy surface that runs the fourth binary. It has
     # no `felix-api` of its own — it layers onto compose.yml, which supplies the rest.
     "deploy/docker/compose.temporal.yml": ["felix-temporal-worker"],
-    "deploy/helm/felix/templates/deployment.yaml": ["felix-api", "felix-worker", "felix-scheduler"],
+    # One Deployment per process, so the Service, HPA and PDB can select the api alone.
+    "deploy/helm/felix/templates/deployment-api.yaml": ["felix-api"],
+    "deploy/helm/felix/templates/deployment-worker.yaml": ["felix-worker"],
+    "deploy/helm/felix/templates/deployment-scheduler.yaml": ["felix-scheduler"],
     "deploy/helm/felix/templates/migrate-job.yaml": ["felix"],
 }
 
