@@ -59,6 +59,7 @@ jobs:
               - '.github/workflows/**'
             helm:
               - 'deploy/helm/**'
+              - 'tests/unit/test_helm_topology.py'
               - '.github/workflows/**'
             # The pinned bundle and its hash live in one file, and the check reaches a
             # third-party CDN — so it runs when that file moves, not on every PR.
@@ -166,6 +167,9 @@ jobs:
       - name: Pytest
         env:
           FELIX_REQUIRE_OPTIONAL_EXTRAS: "1"
+          # ubuntu-latest ships helm; if it ever stops, the topology tests must fail
+          # here rather than skip — the helm job below only runs when the chart changes.
+          FELIX_REQUIRE_HELM: "1"
         run: ./scripts/test.sh -q --cov --cov-report=term:skip-covered --cov-fail-under=70
 
   # The in-memory stores are the CI test path, and nothing compared them against the
@@ -290,6 +294,20 @@ jobs:
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
       - name: Helm lint
         run: helm lint deploy/helm/felix
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - name: Set up Python
+        run: uv python install 3.14
+      - name: Install dependencies
+        run: uv sync --locked --dev
+      # Topology assertions on what `helm template` renders — one Deployment per process,
+      # the scheduler a singleton, the Service/HPA/PDB scoped to the api. Lint cannot see
+      # any of that. FELIX_REQUIRE_HELM turns a missing binary into a failure here, where
+      # the step above just installed it; locally the file skips without helm.
+      - name: Helm topology
+        env:
+          FELIX_REQUIRE_HELM: "1"
+        run: ./scripts/test.sh tests/unit/test_helm_topology.py -q
 
   docker:
     needs: changes

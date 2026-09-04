@@ -1,0 +1,64 @@
+# The HTTP surface: the one Deployment the Service, the HPA and the PDB select.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "felix.fullname" . }}-api
+  labels:
+    {{- include "felix.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  {{- if not .Values.api.autoscaling.enabled }}
+  replicas: {{ .Values.api.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "felix.componentSelectorLabels" (dict "root" . "component" "api") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "felix.componentSelectorLabels" (dict "root" . "component" "api") | nindent 8 }}
+    spec:
+      {{- include "felix.podSpecCommon" . | nindent 6 }}
+      # Long enough for an in-flight SSE turn to finish; the default 30s cut them off.
+      terminationGracePeriodSeconds: {{ .Values.api.terminationGracePeriodSeconds }}
+      containers:
+        - name: api
+          {{- include "felix.containerBase" . | nindent 10 }}
+          command: ["felix-api"]
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            {{- include "felix.datastoreEnv" . | nindent 12 }}
+            {{- include "felix.agentEnv" . | nindent 12 }}
+            {{- include "felix.authEnv" . | nindent 12 }}
+          # Endpoint removal and SIGTERM race; a short sleep lets the endpoint slice
+          # drop the pod before the server stops accepting.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "{{ .Values.api.preStopSleepSeconds }}"]
+          # Readiness probes dependencies and takes the pod out of rotation when they
+          # are down; liveness does no I/O and only restarts a wedged process. Both
+          # paths are public in the API's auth allowlist, because kubelet sends no
+          # credential; `tests/unit/test_helm_topology.py` pins the paths and
+          # `tests/unit/test_operability.py` pins the allowlist.
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /live
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            # Higher than readiness on purpose: a dependency blip must not restart a
+            # process that is otherwise healthy.
+            failureThreshold: 6
+          resources:
+            {{- toYaml .Values.api.resources | nindent 12 }}
+      {{- include "felix.podSpecPlacement" . | nindent 6 }}

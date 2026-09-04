@@ -1,9 +1,65 @@
-replicaCount: 1
-
 image:
-  repository: felix
+  # The published image. `felix`, the old default, resolved to docker.io/library/felix,
+  # which does not exist, so `helm install` from the tree went straight to
+  # ImagePullBackOff.
+  repository: ghcr.io/felix-run/felix
   tag: "0.2.2"
   pullPolicy: IfNotPresent
+
+# One Deployment per process. The Service, the HPA and the PDB select the api alone;
+# the worker scales on its own count; the scheduler is always exactly one.
+api:
+  replicaCount: 1
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+  # maxUnavailable rather than minAvailable by default: with one replica,
+  # `minAvailable: 1` denies every voluntary eviction and a node drain never completes.
+  # Null maxUnavailable to use minAvailable once replicaCount makes it meaningful.
+  podDisruptionBudget:
+    enabled: true
+    maxUnavailable: 1
+    minAvailable: 1
+  # Long enough for an in-flight SSE turn to finish on a rolling update or drain.
+  terminationGracePeriodSeconds: 120
+  # preStop delay so the endpoint slice drops the pod before the server stops accepting.
+  preStopSleepSeconds: 5
+  # Small-VM friendly defaults; raise for production traffic.
+  resources:
+    requests:
+      cpu: 50m
+      memory: 192Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+worker:
+  replicaCount: 1
+  terminationGracePeriodSeconds: 120
+  # Prometheus endpoint on the worker, also its liveness probe. 0 disables both — and
+  # leaves a wedged worker invisible. UNAUTHENTICATED and bound on all interfaces: a
+  # containerPort only, never behind the Service, and any pod in the cluster can reach
+  # it by pod IP. Restrict it to your Prometheus with a NetworkPolicy (chart README).
+  metricsPort: 9464
+  resources:
+    requests:
+      cpu: 50m
+      memory: 192Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+scheduler:
+  # No replicaCount: always one, `Recreate` strategy. See deployment-scheduler.yaml.
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      cpu: "250m"
+      memory: 256Mi
 
 imagePullSecrets: []
 nameOverride: ""
@@ -49,9 +105,6 @@ config:
   FELIX_OTEL_CAPTURE_CONTENT: "false"
   # user.id / tenant on spans. session.id (thread) is emitted regardless.
   FELIX_OTEL_CAPTURE_IDENTITY: "true"
-  # Worker-only Prometheus port (0 = off). UNAUTHENTICATED — never expose it via a Service
-  # reachable outside the cluster.
-  FELIX_METRICS_PORT: "0"
   FELIX_WAREHOUSE: none
   # Extra SKILL.md directory; mount it via extraVolumes when set.
   FELIX_SKILLS_DIR: ""
@@ -122,25 +175,6 @@ serviceMonitor:
   # tenant's naming becomes a problem.
   metricRelabelings: []
 
-autoscaling:
-  enabled: false
-  minReplicas: 1
-  maxReplicas: 10
-  targetCPUUtilizationPercentage: 70
-
-podDisruptionBudget:
-  enabled: true
-  minAvailable: 1
-
-resources:
-  # Small-VM friendly defaults; raise for production traffic.
-  requests:
-    cpu: 50m
-    memory: 192Mi
-  limits:
-    cpu: "1"
-    memory: 1Gi
-
 nodeSelector: {}
 tolerations: []
 affinity: {}
@@ -157,7 +191,9 @@ securityContext:
     drop: ["ALL"]
 
 # Writable /data for FELIX_OBJECT_STORE=fs (and warehouse duckdb files).
-# Enable when using fs so pods survive restarts.
+# Enable when using fs so pods survive restarts. api and worker are separate pods now,
+# so with `fs` the claim has to be ReadWriteMany (or both pods pinned to one node) for
+# an artifact the api spills to be readable by the worker — or use s3/gcs.
 persistence:
   enabled: false
   existingClaim: ""

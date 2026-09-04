@@ -12,7 +12,7 @@ time, so a metric added without a row here fails CI.
 | Signal | Where | Needs |
 | --- | --- | --- |
 | Metrics (API) | `GET /metrics` on the API, Prometheus text format | nothing — `prometheus-client` is a core dependency |
-| Metrics (worker) | `FELIX_METRICS_PORT` on the worker process | nothing |
+| Metrics (worker) | `FELIX_METRICS_PORT` on the worker process (the Helm chart sets it from `worker.metricsPort` and probes it for liveness) | nothing |
 | Traces | OTLP export | `FELIX_OTEL_ENABLED=true` + `felix-harness[otel]` |
 | Logs | OTLP export, trace-correlated | `FELIX_OTEL_ENABLED=true` + `FELIX_OTEL_LOGS=true` + the extra |
 | Audit / usage rows | Postgres, `GET /audit`, `GET /usage` | nothing |
