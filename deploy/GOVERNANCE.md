@@ -108,7 +108,13 @@ spec:
 Runtime also enforces `spec.auth.inbound`, routes inbound MCP through the
 compiled agent, emits audit events from the agent loop, and redacts durable
 state. User turns are screened when `content_screening.enabled` and/or
-`guardrails.providers: [pii]` targets `input` (block or redact). `guardrails.targets`
+`guardrails.providers: [pii]` targets `input` (block or redact) — on every path a turn
+takes: `/chat` and `/chat/continue`, `/v1`, A2A, a cron job's prompt, an eval item, and a
+durable fiber on resume; a tool call made directly over MCP has no turn, so its arguments
+are screened instead and a flagged argument refuses the call whatever `on_flag` says. The
+screen is a wrapper the compile puts around the agent, so there is no entrypoint to forget;
+the HTTP routes screen once more before the agent exists, to answer 422 before a stream
+opens or a durable run is enqueued, and tell the agent so. `guardrails.targets`
 name where PII is caught: `input` is the user turn, `output` is everything leaving the
 model boundary — tool output *and* the agent's reply — and `final_response` is the reply
 alone. The reply-path controls (`output`/`final_response` PII, and `judges` with

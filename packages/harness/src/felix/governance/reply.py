@@ -22,7 +22,7 @@ from dataclasses import replace
 from typing import Any
 
 from felix.manifests.schema import Guardrails, JudgeRule
-from felix.patterns.types import Agent, ChatMessage, Event, InvokeInput, InvokeOutput
+from felix.patterns.types import Agent, ChatMessage, Event, InvokeInput, InvokeOutput, copy_agent_surface
 
 logger = logging.getLogger("felix.governance.reply")
 
@@ -106,11 +106,7 @@ class ReplyControlsAgent:
         self._pii = reply_pii_enabled(guardrails)
         self._block_pii = bool(guardrails.block_on_match)
         self._judges = final_response_judges(guardrails)
-        self.tools = getattr(inner, "tools", [])
-        self.pattern = getattr(inner, "pattern", "")
-        self.manifest_id = getattr(inner, "manifest_id", manifest_id)
-        self.manifest_version = getattr(inner, "manifest_version", "")
-        self.system_prompt = getattr(inner, "system_prompt", "")
+        copy_agent_surface(self, inner, manifest_id=manifest_id)
 
     # --- screening ---------------------------------------------------------------------
 

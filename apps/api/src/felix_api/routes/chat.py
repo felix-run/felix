@@ -11,6 +11,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from felix.context import AuthContext, RequestContext, async_run_with_context, get_context, try_get_context
+from felix.governance.inbound import INBOUND_SCREENED_EXTRA
 from felix.logging_setup import loggable
 from felix.patterns.model import ModelGatewayError
 from felix.patterns.types import ChatMessage, InvokeInput
@@ -341,6 +342,8 @@ async def chat(body: ChatRequest, request: Request) -> Any:
         auth=auth,
         manifest_id=body.manifest,
         thread_id=thread,
+        # Screened above, before the stream opened or the durable run was enqueued.
+        extras={INBOUND_SCREENED_EXTRA: True},
     )
     async with async_run_with_context(req_ctx):
         try:
@@ -629,6 +632,8 @@ async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
         auth=auth,
         manifest_id=body.manifest,
         thread_id=thread,
+        # Screened above, before the stream opened or the durable run was enqueued.
+        extras={INBOUND_SCREENED_EXTRA: True},
     )
 
     async def event_gen():

@@ -69,6 +69,7 @@ worth having at all — each one means a control did not do what the manifest im
 | `felix_rule_targets_nothing` | `manifest_id`, `rule`, `kind` | A rule matches no tool. Looks like a control; is not one. |
 | `felix_untrusted_tools_unscreened` | `manifest_id` | Untrusted tool output reached the model without content screening. |
 | `felix_content_screening` | `manifest_id`, `tool`, `action` | Screening ran; `action` says what it did. |
+| `felix_inbound_screening` | `manifest_id`, `surface`, `action` | Inbound screening acted on a user turn (`surface=turn`) or on MCP tool-call arguments (`surface=tool_arguments`); `action` is `denied`, `quarantined` or `unavailable`. |
 | `felix_secret_masking` | `manifest_id`, `tool` | A secret was masked out of tool output. |
 | `felix_approval_required` | `manifest_id`, `tool`, `rule` | A call paused for human approval. |
 | `felix_control_unavailable` | `control` | **Watch this.** A control could not run at all. |

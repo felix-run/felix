@@ -224,9 +224,12 @@ Small, and blocking for the adopter goal: anyone evaluating Felix on its governa
 - [x] **Final-response judges do nothing on the streaming path.** Fixed with the reply-path
       wrapper: reply text is held until the run ends and released judged, or replaced by the
       denial; structural frames still stream as they happen.
-- [ ] **Inbound screening skips two paths** — called from `/chat`, `/v1` and A2A, but not from
-      `routes/mcp.py` and not from the durable fiber path. A manifest with
-      `content_screening.enabled: true` is unscreened over MCP and on every background run.
+- [x] **Inbound screening skips two paths.** Correction to the entry as written: the durable
+      fiber path *was* screened, at `/chat` before enqueue; the unscreened paths were cron
+      jobs (a prompt writable with `jobs:write`), eval items, `/chat/continue` and MCP
+      `tools/call` arguments. The screen is now a wrapper the compile puts around the agent
+      (`InboundScreeningAgent`), so every path that runs the agent screens without a list of
+      paths; MCP screens the argument tree instead.
 
 Checked and *not* a gap, so nobody "fixes" it: `allow_unattended` is enforced — at compile, under
 `eu_ai_act` at `risk_tier: high` (`governance.py:209`), which is why `contributor.yaml` carries a

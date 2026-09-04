@@ -1353,7 +1353,14 @@ async def build_agent(
                 "procedural_memory": m.spec.procedural_memory,
             }
         )
-        return apply_reply_controls(agent, m.spec.guardrails, m.metadata.name)
+        from felix.governance.inbound import apply_inbound_controls
+
+        # Outermost: the user turn is screened before anything else sees it, and the
+        # reply is screened last. Wrapping here rather than at each entrypoint is what
+        # makes "every path a turn takes" true without a list of paths.
+        return apply_inbound_controls(
+            apply_reply_controls(agent, m.spec.guardrails, m.metadata.name), m, settings
+        )
     finally:
         span.end()
 

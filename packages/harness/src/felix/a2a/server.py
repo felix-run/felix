@@ -85,7 +85,7 @@ async def handle_rpc(
         try:
             resolved = await resolve_tenant_manifest(settings, tenant_id, name, thread_id=thread)
             await prepare_tenant_invoke(settings, resolved=resolved, auth=call_auth, thread_id=thread)
-            from felix.governance.inbound import apply_inbound_screening
+            from felix.governance.inbound import INBOUND_SCREENED_EXTRA, apply_inbound_screening
 
             screened = await apply_inbound_screening(
                 resolved.manifest,
@@ -93,7 +93,13 @@ async def handle_rpc(
                 settings,
             )
             text = screened[0].content if screened else text
-            req_ctx = RequestContext(settings=settings, auth=call_auth, manifest_id=name, thread_id=thread)
+            req_ctx = RequestContext(
+                settings=settings,
+                auth=call_auth,
+                manifest_id=name,
+                thread_id=thread,
+                extras={INBOUND_SCREENED_EXTRA: True},  # screened just above
+            )
             async with async_run_with_context(req_ctx):
                 agent = await build_tenant_agent(
                     settings,

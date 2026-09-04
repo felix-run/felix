@@ -169,18 +169,16 @@ async def start_run(
             else:
                 assert resolved is not None
                 async with async_run_with_context(req_ctx):
+                    # Dataset items are written with `eval:write`; the compiled agent
+                    # screens the turn, and a refusal becomes this item's error score.
+                    messages = [ChatMessage(role="user", content=user_input)]
                     agent = await build_tenant_agent(
                         settings,
                         manifest=resolved.manifest,
                         tools=tools,
                         tenant_id=tenant_id,
                     )
-                    result = await agent.invoke(
-                        InvokeInput(
-                            messages=[ChatMessage(role="user", content=user_input)],
-                            thread_id=req_ctx.thread_id,
-                        )
-                    )
+                    result = await agent.invoke(InvokeInput(messages=messages, thread_id=req_ctx.thread_id))
                 answer = result.final.content if result.final else ""
             heuristic = _score_answer(answer, rubric)
             if _wants_llm_judge(rubric, deterministic_judge=deterministic_judge) and not mock:

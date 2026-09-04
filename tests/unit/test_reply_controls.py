@@ -454,8 +454,14 @@ async def test_a_governed_manifest_streams_its_reply_redacted_end_to_end() -> No
         agent = await build_tenant_agent(
             settings, manifest=manifest, tools=default_tool_provider(), tenant_id="default"
         )
-        assert isinstance(agent, ReplyControlsAgent)
-        agent._inner._resolve_model = lambda _i: _Model()  # type: ignore[attr-defined]
+        # Inbound screening wraps outermost (the manifest targets `input`); the reply
+        # controls sit inside it, around the pattern.
+        from felix.governance.inbound import InboundScreeningAgent
+
+        assert isinstance(agent, InboundScreeningAgent)
+        reply = agent._inner
+        assert isinstance(reply, ReplyControlsAgent)
+        reply._inner._resolve_model = lambda _i: _Model()  # type: ignore[attr-defined]
         items = [
             item
             async for item in agent.stream_events(
