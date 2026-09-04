@@ -157,6 +157,17 @@ The migration and the roll are one `up`. If you split them with the `run --rm mi
 keep the gap short — the window between them is the window in which a plain-role deployment
 is returning nothing.
 
+### Helm
+
+`helm upgrade` runs the migrate Job as a pre-upgrade hook, so the order above is built in.
+Coming from chart 0.2.2 or earlier: the chart moved from one Deployment running all three
+processes to one per process (`<release>-api`, `-worker`, `-scheduler`). A Deployment's
+selector is immutable, so the upgrade deletes the old object and creates the new ones, and
+the api is briefly absent between them — schedule it like a restart. `replicaCount`,
+`resources`, `autoscaling` and `podDisruptionBudget` moved under `api.`; a values file
+still setting them at the top level fails the render and says where they went. Details in
+[deploy/helm/README.md](../deploy/helm/README.md).
+
 ## Verify — actually check
 
 ```bash

@@ -11,5 +11,6 @@ spec:
       targetPort: http
       protocol: TCP
       name: http
+  # api pods only: worker and scheduler pods carry the same instance labels and no port.
   selector:
-    {{- include "felix.selectorLabels" . | nindent 4 }}
+    {{- include "felix.componentSelectorLabels" (dict "root" . "component" "api") | nindent 4 }}

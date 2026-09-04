@@ -1,4 +1,4 @@
-{{- if .Values.autoscaling.enabled }}
+{{- if .Values.api.autoscaling.enabled }}
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
@@ -6,17 +6,19 @@ metadata:
   labels:
     {{- include "felix.labels" . | nindent 4 }}
 spec:
+  # The api alone. Scaling the worker is worker.replicaCount; the scheduler is never
+  # scaled — every instance enqueues every cron sweep.
   scaleTargetRef:
     apiVersion: apps/v1
     kind: Deployment
-    name: {{ include "felix.fullname" . }}
-  minReplicas: {{ .Values.autoscaling.minReplicas }}
-  maxReplicas: {{ .Values.autoscaling.maxReplicas }}
+    name: {{ include "felix.fullname" . }}-api
+  minReplicas: {{ .Values.api.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.api.autoscaling.maxReplicas }}
   metrics:
     - type: Resource
       resource:
         name: cpu
         target:
           type: Utilization
-          averageUtilization: {{ .Values.autoscaling.targetCPUUtilizationPercentage }}
+          averageUtilization: {{ .Values.api.autoscaling.targetCPUUtilizationPercentage }}
 {{- end }}
