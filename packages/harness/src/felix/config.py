@@ -166,6 +166,20 @@ class Settings(BaseSettings):
     memory_embedding_model: str = "bge-base-en-v1.5"
     memory_recall_limit: int = 8
 
+    # --- Web search ---
+    # Off by default: search reaches an endpoint the operator runs or pays for, so it is
+    # not something a deployment should acquire by upgrading. `searxng` is bundled because
+    # it is self-hostable and needs no account; anything else is a plugin.
+    # Registrable: felix.search.register_search_backend adds a backend.
+    search_backend: str = "none"
+    # Base URL of that backend. Operator-supplied, and still validated by the egress guard —
+    # a search endpoint in private space is refused like any other outbound destination.
+    search_url: str = ""
+    search_api_key: str = ""
+    # Bounded like every other integration timeout. Unbounded, a misconfiguration presented
+    # as a call that never returns rather than as a boot failure.
+    search_timeout_seconds: float = Field(default=15.0, gt=0, le=300.0)
+
     # --- SSE reconnect ---
     # How long `GET /chat/stream/{thread_id}` holds an idle connection before closing
     # it. The client reconnects with its `Last-Event-ID` and loses nothing, so this
@@ -271,6 +285,7 @@ class Settings(BaseSettings):
                 )
 
         from felix.memory.embedder import list_embedder_backends
+        from felix.search import list_search_backends
         from felix.secrets import list_secrets_backends
         from felix.storage import list_object_stores
         from felix.warehouse import list_warehouse_backends
@@ -280,12 +295,39 @@ class Settings(BaseSettings):
             ("FELIX_SECRETS_BACKEND", self.secrets_backend, list_secrets_backends()),
             ("FELIX_WAREHOUSE", (self.warehouse or "none").lower(), list_warehouse_backends()),
             ("FELIX_MEMORY_EMBEDDER", self.memory_embedder, list_embedder_backends()),
+            ("FELIX_SEARCH_BACKEND", self.search_backend, list_search_backends()),
         ):
             if value not in known:
                 names = ", ".join(known)
                 raise RuntimeError(f"Unknown {env_name}={value!r} (registered: {names})")
 
+        self._validate_search_url()
+
         self._validate_model_route_providers()
+
+    def _validate_search_url(self) -> None:
+        """A search backend that needs a URL must have a usable one, checked at boot.
+
+        Without this a bad value surfaced as `search_error: EgressBlocked` on every call —
+        a runtime symptom for a startup mistake, and one that reads like the search engine
+        is down rather than like the operator mistyped a setting.
+        """
+        if self.search_backend == "none":
+            return
+        url = (self.search_url or "").strip()
+        if not url:
+            raise RuntimeError(f"FELIX_SEARCH_BACKEND={self.search_backend!r} requires FELIX_SEARCH_URL")
+        from urllib.parse import urlsplit
+
+        parts = urlsplit(url)
+        if parts.scheme not in ("http", "https") or not parts.netloc:
+            raise RuntimeError(f"FELIX_SEARCH_URL must be an absolute http(s) URL, got {url!r}")
+        if parts.scheme == "http" and not (self.environment == "development" and self.allow_insecure):
+            raise RuntimeError("FELIX_SEARCH_URL may only be http:// in development with allow_insecure")
+        if parts.query or parts.fragment:
+            # `SearxngBackend` appends "/search" and httpx replaces the query wholesale, so a
+            # URL carrying either silently loses part of itself rather than failing.
+            raise RuntimeError("FELIX_SEARCH_URL must not carry a query string or fragment")
 
     def _validate_model_route_providers(self) -> None:
         """Every provider named in FELIX_MODEL_ROUTES must be registered.

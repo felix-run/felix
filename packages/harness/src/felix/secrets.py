@@ -53,6 +53,12 @@ _HYDRATE_MAP: dict[str, tuple[str, ...]] = {
         "felix/consumer_shared_secret",
     ),
     "webhook_secret": ("WEBHOOK_SECRET", "webhook_secret", "felix/webhook_secret"),
+    # A search backend's credential is a credential like any other. Left out of this map it
+    # was the one key an operator on AWS/GCP Secrets Manager had to supply as plaintext env,
+    # and it reached none of the four redaction sinks. The replacement cost noted in
+    # `collected_secret_values` is negligible for an API key: high entropy, so it never
+    # matches unrelated text.
+    "search_api_key": ("SEARCH_API_KEY", "search_api_key", "felix/search_api_key"),
 }
 
 

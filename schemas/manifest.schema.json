@@ -1548,6 +1548,46 @@
       "title": "SandboxRef",
       "type": "object"
     },
+    "SearchToolRef": {
+      "additionalProperties": false,
+      "description": "Search the web through the operator's configured backend.\n\nUnlike `HttpFetchToolRef` there is no confinement field, and that is deliberate rather\nthan an omission: the model supplies a query, not a destination, so the only address this\nreaches is the one an operator put in `FELIX_SEARCH_BACKEND`/`FELIX_SEARCH_URL`. What it\nreturns is still untrusted \u2014 a snippet is written by whoever ranked for the query.",
+      "properties": {
+        "name": {
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "max_results": {
+          "anyOf": [
+            {
+              "maximum": 20,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Results"
+        },
+        "fatal": {
+          "default": false,
+          "title": "Fatal",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "SearchToolRef",
+      "type": "object"
+    },
     "SessionSpec": {
       "additionalProperties": false,
       "properties": {
@@ -1738,6 +1778,14 @@
           },
           "maxItems": 64,
           "title": "Http Tools",
+          "type": "array"
+        },
+        "search_tools": {
+          "items": {
+            "$ref": "#/$defs/SearchToolRef"
+          },
+          "maxItems": 64,
+          "title": "Search Tools",
           "type": "array"
         },
         "client_tools": {

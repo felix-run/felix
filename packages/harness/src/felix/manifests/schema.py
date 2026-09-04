@@ -354,6 +354,23 @@ class HttpFetchToolRef(_Strict):
         return self
 
 
+class SearchToolRef(_Strict):
+    """Search the web through the operator's configured backend.
+
+    Unlike `HttpFetchToolRef` there is no confinement field, and that is deliberate rather
+    than an omission: the model supplies a query, not a destination, so the only address this
+    reaches is the one an operator put in `FELIX_SEARCH_BACKEND`/`FELIX_SEARCH_URL`. What it
+    returns is still untrusted — a snippet is written by whoever ranked for the query.
+    """
+
+    name: str = Field(min_length=1)
+    description: str = ""
+    # Results are the whole cost of this tool in a context window, so the cap is per
+    # manifest. Ten is already more than most turns can use well.
+    max_results: int | None = Field(default=None, ge=1, le=20)
+    fatal: bool = False
+
+
 class ClientToolRef(_Strict):
     """Tool executed by the connected client; the server waits for a result."""
 
@@ -682,6 +699,7 @@ class Spec(_Strict):
     sandboxes: list[SandboxRef] = Field(default_factory=list, max_length=MAX_REFS)
     browser_tools: list[BrowserToolRef] = Field(default_factory=list, max_length=MAX_REFS)
     http_tools: list[HttpFetchToolRef] = Field(default_factory=list, max_length=MAX_REFS)
+    search_tools: list[SearchToolRef] = Field(default_factory=list, max_length=MAX_REFS)
     client_tools: list[ClientToolRef] = Field(default_factory=list, max_length=MAX_REFS)
     sub_agents: list[str] = Field(default_factory=list)
     aggregator_prompt: str = ""

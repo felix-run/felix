@@ -92,9 +92,13 @@ First, because everything else governs it.
       including on redirect hops. `http` stays out of `_TRUSTED_TRANSPORTS` and was added to
       `_UNTRUSTED_SOURCE_PREFIXES`; both layers are pinned separately, because asserting only
       their combination left either free to regress.
-- [ ] **Web search** behind a `SearchBackend` Protocol and a `register_search_backend` open
-      registry. The invariant: a list selecting a swappable implementation is a registry, never a
-      closed `Literal`. Default `none`; one bundled HTTPS backend behind an extra.
+- [x] **Web search** — `felix/search.py` carries the `SearchBackend` Protocol and
+      `register_search_backend`, selected by `FELIX_SEARCH_BACKEND` and validated against the
+      registry at boot. `spec.search_tools` binds the tool. One correction to this entry: the
+      bundled backend needed **no extra**, because SearXNG speaks JSON over httpx, which is
+      already core — the extra was assumed rather than checked. SearXNG rather than a hosted
+      API because it is the one an operator can run themselves without an account, which is the
+      same argument as `FELIX_OBJECT_STORE=fs`.
 - [ ] **Document retrieval** — `felix/documents/`: ingest → chunk → embed → a `search_documents`
       tool, reusing the `Embedder` seam (`memory/embedder.py`, already an open registry) and
       pgvector. Needs an Alembic revision **and** an in-memory twin. Largest item here.
@@ -108,10 +112,10 @@ First, because everything else governs it.
       block. Image-by-URL already works on `/chat` (`felix_ai/types.py:ContentBlock`, encoded by
       both wires); the gaps are upload, and `openai_compat.py:34` typing content as `str | None`
       so images cannot reach `/v1` at all.
-- [ ] **Make the bundled manifests use them.** `support` gets fetch + document search over the
-      Felix docs; `deep` gets search + fetch. A tool no manifest declares is inert by this repo's
-      own definition, and shipping the capability without wiring it reproduces the exact defect
-      shape the invariants file names.
+- [~] **Make the bundled manifests use them.** `support` fetches from the docs site and `deep`
+      now has `search` + `fetch` with screening on — the two manifests the audit named. Document
+      search over the Felix docs waits on the retrieval item above. A tool no manifest declares
+      is inert by this repo's own definition, so this stays open until that lands.
 
 Decision gate, not a commitment: the **governed coding toolset** (`read`/`edit`/`bash` behind a
 `FilesystemBackend` + `ShellBackend` pair) was deferred as "large, and conditional — only worth

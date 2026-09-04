@@ -323,6 +323,8 @@ _UNTRUSTED_SOURCE_PREFIXES = (
     # A fetched page is attacker-controlled input in the same way a browser page is: the
     # model chose the URL, and whatever answers gets to write into the transcript.
     "http",
+    # A search result's title and snippet are written by whoever ranked for the query.
+    "search",
 )
 
 
@@ -1233,6 +1235,25 @@ async def build_agent(
                 )
             except Exception:
                 logger.warning("http fetch tool binding failed", exc_info=True)
+
+        # Web search: the model supplies a query, the operator supplies the endpoint.
+        if m.spec.search_tools:
+            try:
+                from felix.search import build_search_backend
+                from felix.tools.web_search import tools_from_search_refs
+
+                _append_unique_tools(
+                    resolved,
+                    tools_from_search_refs(
+                        list(m.spec.search_tools),
+                        # `deps.settings` is the reconciled one; `None` resolves to the
+                        # null backend, so a compile with no settings binds a tool that
+                        # reports it is unconfigured rather than raising here.
+                        backend=build_search_backend(deps.settings),
+                    ),
+                )
+            except Exception:
+                logger.warning("search tool binding failed", exc_info=True)
 
         # Client-executed tools (browser/desktop float posts results back).
         if m.spec.client_tools:

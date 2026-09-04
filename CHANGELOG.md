@@ -83,6 +83,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`spec.search_tools` and a `SearchBackend` registry — `deep` can research.** It declared
+  `pattern: deep` and shipped with `tools: [calculator, list_skills]`, which made a research
+  agent that could not retrieve. It now has `search` to find sources and `fetch` to read them;
+  the two are useless apart, so they landed together.
+
+  The backend is a Protocol behind an open registry (`felix.search.register_search_backend`),
+  selected by `FELIX_SEARCH_BACKEND` and validated against the registry at boot — a list that
+  picks a swappable implementation is never a closed `Literal` here. One backend is bundled:
+  **SearXNG**, because it is the only mainstream option an operator can run themselves without
+  an account, the same reason `FELIX_OBJECT_STORE=fs` is the default. It needs nothing beyond
+  httpx, so unlike the embeddings backends it sits behind no extra. Brave, Tavily or an
+  internal index are a plugin, not a core change.
+
+  Off by default: search reaches an endpoint someone runs or pays for, so a deployment must not
+  acquire it by upgrading.
+
+  Deliberately *not* shaped like `spec.http_tools`, and the difference is the point. There the
+  model chooses a destination, so the tool needs `path_prefix`, per-hop address validation and
+  redirect walking. Here it supplies only a query and the endpoint is the operator's, so the
+  risk profile is MCP's — the egress target is fixed, and it is the **results** that are
+  untrusted, because a title and snippet are written by whoever ranked for the query. Transport
+  `search` is absent from `_TRUSTED_TRANSPORTS` and `search` joins
+  `_UNTRUSTED_SOURCE_PREFIXES`, so content screening covers them; `manifests/deep.yaml` enables
+  it, and a hostile snippet comes back quarantined.
+
+  Unlike a fetch, a search **is** replay-safe — the endpoint is the operator's own and a query
+  has no side effect, so what made `http_fetch` unsafe to replay does not apply.
+
+  Two things the tests caught. Declaring a search tool with no backend configured binds it
+  anyway, returning a distinct "not configured" message and warning at bind time: skipping the
+  binding would have made `spec.search_tools` silently do nothing, and "no backend" has to be
+  distinguishable from "nothing matched" or a model rephrases and retries forever. And the
+  bundled backend needed the same development `allow_http` exemption every other integration
+  gets, or a self-hosted SearXNG on `http://localhost:8888` — the ordinary way to try this —
+  was unreachable from the machine most likely to run it.
+
+  `tests/loopback_http.py` extracts the real-HTTP-server helper the fetch suite introduced, now
+  shared by both: `safe_async_client` refuses `mounts`/`proxy`, so a `MockTransport` cannot be
+  installed without routing around the component under test.
+
+  Found by review before this shipped, and worth recording because the first round of tests
+  missed all of it:
+  - **The rendered result block is a grammar, and its fields were interpolated raw.** `\n`
+    separates fields, `\n\n` separates records, and title/url/snippet are all
+    attacker-influenced — so one result could forge as many more as it liked, with URLs, in
+    text the model reads as harness output, or emit a line shaped like `search_error:`. Every
+    field is now flattened to one line and capped; previously only `snippet` was capped, so an
+    unbounded title crowded out the results that cap protected. The repo's own rule: validating
+    a value for one grammar does not validate it for the next.
+  - **No whole-call deadline and no response cap** — the same defect `http_fetch` had fixed and
+    this did not inherit. A backend dribbling a byte per read held a worker open indefinitely,
+    and `resp.json()` parsed whatever arrived. Both bounded now.
+  - **`FELIX_SEARCH_API_KEY` sat outside `_HYDRATE_MAP`**, so it was the one credential an
+    operator on a secrets backend had to supply as plaintext env, and it reached none of the
+    redaction sinks.
+  - **`deep` is no longer anonymous.** Content screening covers what comes *back*; the URL the
+    model hands to `fetch` passes through no screener, so "unconfined fetch is safe because
+    screening is on" was wrong in the direction that matters. Anonymous access used to buy a
+    calculator; with `fetch` bound unconfined it buys an egress primitive.
+  - `FELIX_SEARCH_URL` is validated at boot — scheme, host, no query string (the backend
+    appends `/search` and httpx replaces the query, so either half silently vanished) — instead
+    of surfacing as `search_error: EgressBlocked` on every call.
+  - Twelve mutations survived the first suite, including the SSRF blocklist disabled entirely:
+    the egress test used `http://169.254.169.254`, so the *scheme* check refused it before the
+    IP check ran, and `http://example.com` failed identically. All twelve now fail.
+
+
 - **`spec.http_tools` — an agent can read a URL.** Until now it could not, except through
   `spec.browser_tools`, which launches a headless Chromium per call. The built-in registry was
   `calculator`, four workspace file tools, and three skill tools, so `manifests/support.yaml`
