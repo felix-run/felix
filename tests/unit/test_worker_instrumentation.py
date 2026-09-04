@@ -72,8 +72,8 @@ async def test_a_sweep_records_a_counter_and_a_duration() -> None:
 
     seen: list[tuple[str, Any]] = []
     counter, histogram = metrics_mod.record_counter, metrics_mod.record_histogram
-    tasks.record_counter = lambda name, labels=None, value=1: seen.append((name, labels))  # type: ignore[assignment]
-    tasks.record_histogram = lambda name, value, labels=None: seen.append((name, labels))  # type: ignore[assignment]
+    metrics_mod.record_counter = lambda name, labels=None, value=1: seen.append((name, labels))  # type: ignore[assignment]
+    metrics_mod.record_histogram = lambda name, value, labels=None: seen.append((name, labels))  # type: ignore[assignment]
     try:
 
         @tasks._instrumented("demo_sweep")
@@ -82,10 +82,11 @@ async def test_a_sweep_records_a_counter_and_a_duration() -> None:
 
         await _sweep()
     finally:
-        tasks.record_counter, tasks.record_histogram = counter, histogram  # type: ignore[assignment]
+        metrics_mod.record_counter, metrics_mod.record_histogram = counter, histogram  # type: ignore[assignment]
 
     assert ("felix_worker_task", {"task": "demo_sweep", "status": "ok"}) in seen
-    assert ("felix_worker_task_seconds", {"task": "demo_sweep"}) in seen
+    # Same status convention as every other timed span, which is the point of sharing one.
+    assert ("felix_worker_task_seconds", {"task": "demo_sweep", "status": "ok"}) in seen
 
 
 @pytest.mark.asyncio
@@ -95,8 +96,8 @@ async def test_a_failing_sweep_is_counted_as_error_and_still_raises() -> None:
 
     seen: list[tuple[str, Any]] = []
     counter, histogram = metrics_mod.record_counter, metrics_mod.record_histogram
-    tasks.record_counter = lambda name, labels=None, value=1: seen.append((name, labels))  # type: ignore[assignment]
-    tasks.record_histogram = lambda name, value, labels=None: None  # type: ignore[assignment]
+    metrics_mod.record_counter = lambda name, labels=None, value=1: seen.append((name, labels))  # type: ignore[assignment]
+    metrics_mod.record_histogram = lambda name, value, labels=None: None  # type: ignore[assignment]
     try:
 
         @tasks._instrumented("broken_sweep")
@@ -106,7 +107,7 @@ async def test_a_failing_sweep_is_counted_as_error_and_still_raises() -> None:
         with pytest.raises(RuntimeError, match="postgres is gone"):
             await _sweep()
     finally:
-        tasks.record_counter, tasks.record_histogram = counter, histogram  # type: ignore[assignment]
+        metrics_mod.record_counter, metrics_mod.record_histogram = counter, histogram  # type: ignore[assignment]
 
     assert ("felix_worker_task", {"task": "broken_sweep", "status": "error"}) in seen
 

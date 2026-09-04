@@ -4,16 +4,14 @@ from __future__ import annotations
 
 import functools
 import logging
-import time
 from collections.abc import Awaitable, Callable
 
 from felix.config import get_settings
-from felix.observability.metrics import record_counter, record_histogram
 from felix.observability.tracing import (
-    make_span,
     setup_log_export,
     setup_observability,
     shutdown_observability,
+    timed_span,
 )
 from taskiq import TaskiqEvents, TaskiqScheduler
 from taskiq.schedule_sources import LabelScheduleSource
@@ -107,23 +105,14 @@ def _instrumented(task_name: str) -> Callable[[Callable[[], Awaitable[None]]], C
     def decorate(fn: Callable[[], Awaitable[None]]) -> Callable[[], Awaitable[None]]:
         @functools.wraps(fn)
         async def wrapped() -> None:
-            span = make_span(f"worker {task_name}", {"felix.worker.task": task_name})
-            started = time.perf_counter()
-            status = "ok"
-            try:
+            async with timed_span(
+                f"worker {task_name}",
+                {"felix.worker.task": task_name},
+                metric="felix_worker_task_seconds",
+                counter="felix_worker_task",
+                labels={"task": task_name},
+            ):
                 await fn()
-            except Exception:
-                status = "error"
-                span.set_attribute("error", True)
-                raise
-            finally:
-                span.end()
-                record_counter("felix_worker_task", {"task": task_name, "status": status})
-                record_histogram(
-                    "felix_worker_task_seconds",
-                    time.perf_counter() - started,
-                    {"task": task_name},
-                )
 
         return wrapped
 

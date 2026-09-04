@@ -129,21 +129,21 @@ async def test_a_streamed_turn_records_usage_from_the_terminal_result() -> None:
     """Usage rides on the final ModelChatResult, not on the deltas."""
     spans: list[Any] = []
     wrapped = _traced(_WithStream())
-    from felix.patterns import model as model_mod
+    from felix.observability import tracing as tracing_mod
 
     made: list[Any] = []
-    original = model_mod.make_span
+    original = tracing_mod.make_span
 
     def _spy(name: str, attributes: Any = None) -> Any:
         span = original(name, attributes)
         made.append(span)
         return span
 
-    model_mod.make_span = _spy  # type: ignore[assignment]
+    tracing_mod.make_span = _spy  # type: ignore[assignment]
     try:
         items = [item async for item in wrapped.stream_turn([], [])]
     finally:
-        model_mod.make_span = original  # type: ignore[assignment]
+        tracing_mod.make_span = original  # type: ignore[assignment]
     spans.extend(made)
     assert len(items) == 1
     assert spans[0].attributes["gen_ai.usage.output_tokens"] == 7
@@ -151,20 +151,20 @@ async def test_a_streamed_turn_records_usage_from_the_terminal_result() -> None:
 
 
 async def _capture_spans(sink: list[Any], call: Any) -> Any:
-    from felix.patterns import model as model_mod
+    from felix.observability import tracing as tracing_mod
 
-    original = model_mod.make_span
+    original = tracing_mod.make_span
 
     def _spy(name: str, attributes: Any = None) -> Any:
         span = original(name, attributes)
         sink.append(span)
         return span
 
-    model_mod.make_span = _spy  # type: ignore[assignment]
+    tracing_mod.make_span = _spy  # type: ignore[assignment]
     try:
         return await call()
     finally:
-        model_mod.make_span = original  # type: ignore[assignment]
+        tracing_mod.make_span = original  # type: ignore[assignment]
 
 
 @pytest.mark.parametrize(

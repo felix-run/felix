@@ -19,6 +19,10 @@ DOC = ROOT / "docs/OBSERVABILITY.md"
 SOURCE_ROOTS = (ROOT / "packages", ROOT / "apps")
 
 RECORDERS = {"record_counter": 0, "record_counter_detached": 1, "record_histogram": 0}
+# `timed_span` records a histogram (and optionally a counter) on the caller's behalf, so the
+# name lives in a keyword at the call site rather than in a positional arg to a recorder.
+# A scan that only knew the recorders reported every one of those as undocumented.
+RECORDER_KEYWORDS = {"timed_span": ("metric", "counter")}
 
 
 def _emitted_metric_names() -> set[str]:
@@ -34,12 +38,15 @@ def _emitted_metric_names() -> set[str]:
                 if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
                     continue
                 index = RECORDERS.get(node.func.id)
-                if index is None:
-                    continue
-                if len(node.args) > index:
+                if index is not None and len(node.args) > index:
                     arg = node.args[index]
                     if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
                         found.add(arg.value)
+                for name in RECORDER_KEYWORDS.get(node.func.id, ()):
+                    for kw in node.keywords:
+                        if kw.arg == name and isinstance(kw.value, ast.Constant):
+                            if isinstance(kw.value.value, str):
+                                found.add(kw.value.value)
     return found
 
 

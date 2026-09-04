@@ -24,9 +24,12 @@ from typing import Any
 
 import pytest
 from felix.config import Settings
-from felix.context import AuthContext, RequestContext
-from felix.patterns.model import _identity_attrs, _traced
+from felix.context import AuthContext, RequestContext, async_run_with_context
+from felix.observability.tracing import _identity_attrs, make_span
+from felix.patterns.model import _traced
 from felix_ai.types import ChatMessage, ModelChatResult, ModelRoute, TokenUsage
+
+from tests.optional_deps import require_optional
 
 ROOT = Path(__file__).resolve().parents[2]
 ROUTE = ModelRoute(provider="anthropic", model="claude-sonnet-4-6")
@@ -46,17 +49,20 @@ class _Client:
 
 async def _run(monkeypatch: pytest.MonkeyPatch, settings: Settings, messages: Any) -> Any:
     """Capture the span a real call produces, with `settings` as the active context."""
+    from felix.observability import tracing as tracing_mod
     from felix.patterns import model as model_mod
 
     spans: list[Any] = []
-    original = model_mod.make_span
+    original = tracing_mod.make_span
 
     def _spy(name: str, attributes: Any = None) -> Any:
         span = original(name, attributes)
         spans.append(span)
         return span
 
-    monkeypatch.setattr(model_mod, "make_span", _spy)
+    # `timed_span` opens the span, so the spy goes on tracing's `make_span` rather than a
+    # name re-exported into the model module.
+    monkeypatch.setattr(tracing_mod, "make_span", _spy)
     monkeypatch.setattr(model_mod, "get_settings", lambda: settings)
     await _traced(_Client()).chat(messages, [])
     return spans[0]
@@ -121,21 +127,32 @@ async def test_captured_content_redacts_configured_secrets(monkeypatch: pytest.M
     assert "[REDACTED]" in payload
 
 
-def test_session_identity_is_always_emitted() -> None:
-    """An opaque thread id, and what turns a conversation into one session."""
-    ctx = RequestContext(settings=_settings(), auth=AuthContext(), thread_id="thread-7")
-    attrs = _identity_attrs(ctx)
+async def _attrs_in(ctx: RequestContext) -> dict[str, Any]:
+    async with async_run_with_context(ctx):
+        return _identity_attrs()
+
+
+@pytest.mark.asyncio
+async def test_session_identity_is_always_emitted() -> None:
+    """An opaque thread id, and what turns a conversation into one session.
+
+    Used verbatim: `threads.effective_thread_id` has already made it `{tenant}:{suffix}`,
+    and prefixing again produced `default:default:my-thread` in a real export.
+    """
+    auth = AuthContext(tenant_id="acme")
+    attrs = await _attrs_in(RequestContext(settings=_settings(), auth=auth, thread_id="thread-7"))
     assert attrs["session.id"] == "thread-7"
     assert attrs["gen_ai.conversation.id"] == "thread-7"
 
 
-def test_caller_identity_is_gated() -> None:
+@pytest.mark.asyncio
+async def test_caller_identity_is_gated() -> None:
     auth = AuthContext(principal_sub="user-42", tenant_id="acme", anonymous=False)
-    on = _identity_attrs(RequestContext(settings=_settings(), auth=auth, thread_id="t"))
+    on = await _attrs_in(RequestContext(settings=_settings(), auth=auth, thread_id="t"))
     assert on["user.id"] == "user-42"
     assert on["felix.tenant.id"] == "acme"
 
-    off = _identity_attrs(
+    off = await _attrs_in(
         RequestContext(settings=_settings(otel_capture_identity=False), auth=auth, thread_id="t")
     )
     assert "user.id" not in off, "identity was exported with FELIX_OTEL_CAPTURE_IDENTITY=false"
@@ -143,10 +160,38 @@ def test_caller_identity_is_gated() -> None:
     assert off["session.id"] == "t"
 
 
-def test_anonymous_is_not_recorded_as_a_user() -> None:
+@pytest.mark.asyncio
+async def test_anonymous_is_not_recorded_as_a_user() -> None:
     """`anonymous` is the default subject, not a person — it would be one fake user."""
-    ctx = RequestContext(settings=_settings(), auth=AuthContext(), thread_id="t")
-    assert "user.id" not in _identity_attrs(ctx)
+    attrs = await _attrs_in(RequestContext(settings=_settings(), auth=AuthContext(), thread_id="t"))
+    assert "user.id" not in attrs
+
+
+@pytest.mark.asyncio
+async def test_identity_reaches_every_span_not_only_model_calls() -> None:
+    """`docs/OBSERVABILITY.md` claims every span carries the session. Make that true.
+
+    The enrichment used to live in `patterns/model.py` and ran only for `chat` spans, so
+    `manifest`, `tool {name}` and `worker {task}` carried none of it while the docs said
+    otherwise. Applying it in `make_span` is what makes the claim structural rather than
+    something three future call sites have to remember.
+    """
+    auth = AuthContext(principal_sub="user-42", tenant_id="acme", anonymous=False)
+    ctx = RequestContext(settings=_settings(), auth=auth, thread_id="t")
+    async with async_run_with_context(ctx):
+        for name in ("manifest", "tool calculator", "worker flush_audit"):
+            span = make_span(name, {"felix.probe": name})
+            assert span.attributes["session.id"] == "t", f"{name} span lost the session"
+            assert span.attributes["user.id"] == "user-42", f"{name} span lost the caller"
+            # Caller-supplied attributes still win over the enrichment.
+            assert span.attributes["felix.probe"] == name
+
+
+@pytest.mark.asyncio
+async def test_a_span_outside_a_request_is_still_fine() -> None:
+    """Worker startup and CLI paths open spans with no request context at all."""
+    span = make_span("worker retention_sweep")
+    assert "session.id" not in span.attributes
 
 
 def test_probe_and_scrape_endpoints_are_not_traced() -> None:
@@ -187,3 +232,43 @@ def test_every_otel_setting_is_read_somewhere() -> None:
         f"settings declared and documented but read by nothing: {unread} — "
         "each is a control that looks present and does nothing"
     )
+
+
+@pytest.mark.asyncio
+async def test_the_request_root_span_gets_identity_too() -> None:
+    """The root is created before auth runs, so it cannot carry identity at creation.
+
+    A backend reads a trace's session and user from its *root* — the root is the request —
+    so leaving it bare loses both, even while every child span has them. Felix's first
+    span inside the request copies them onto whatever span encloses it.
+    """
+    require_optional("opentelemetry.sdk", "otel")
+    from felix.observability import tracing as tracing_mod
+    from opentelemetry import trace
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    previous, checked = tracing_mod._otel_tracer, tracing_mod._otel_checked
+    tracing_mod._otel_tracer = provider.get_tracer("felix-test")
+    tracing_mod._otel_checked = True
+    try:
+        auth = AuthContext(principal_sub="user-42", tenant_id="acme", anonymous=False)
+        async with async_run_with_context(
+            RequestContext(settings=_settings(), auth=auth, thread_id="acme:t")
+        ):
+            # Stands in for the FastAPI instrumentation's request span: opened by the SDK
+            # directly, with no Felix identity on it.
+            root = tracing_mod._otel_tracer.start_span("POST /chat")
+            with trace.use_span(root, end_on_exit=False):
+                tracing_mod.make_span("manifest").end()
+            root.end()
+    finally:
+        tracing_mod._otel_tracer, tracing_mod._otel_checked = previous, checked
+
+    finished = {s.name: s for s in exporter.get_finished_spans()}
+    assert finished["POST /chat"].attributes.get("session.id") == "acme:t"
+    assert finished["POST /chat"].attributes.get("user.id") == "user-42"

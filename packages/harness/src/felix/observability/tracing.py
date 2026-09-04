@@ -96,8 +96,84 @@ class SpanContext:
             self._otel_span.end()
 
 
+def _identity_attrs() -> dict[str, SpanAttributeValue]:
+    """Session and caller identity for the active request.
+
+    Applied by `make_span`, so it is true of every span rather than of whichever call
+    sites remember. It lived in `patterns/model.py` and reached only `chat` spans, while
+    the docs claimed every span carried it — the claim is cheaper to make true than to
+    keep correcting.
+
+    `thread_id` is an opaque id Felix already generates, and it is what turns a multi-turn
+    conversation into one session. The principal and tenant are gated: a tracing backend is
+    an egress destination, and `principal_sub` can be a real person's subject claim.
+    """
+    attrs: dict[str, SpanAttributeValue] = {}
+    try:
+        from felix.context import try_get_context
+
+        ctx = try_get_context()
+    except Exception:  # pragma: no cover - context module always importable
+        return attrs
+    if ctx is None:
+        return attrs
+
+    thread_id = getattr(ctx, "thread_id", None)
+    tenant = getattr(getattr(ctx, "auth", None), "tenant_id", "") or ""
+    if thread_id:
+        # Used as-is. `threads.effective_thread_id` already returns `{tenant}:{suffix}`
+        # unconditionally and rejects a suffix containing the delimiter, so the id is
+        # tenant-scoped before it reaches here. Prefixing again produced
+        # `default:default:my-thread` in a real export.
+        attrs["session.id"] = str(thread_id)
+        # Two names for two readers; neither is universal.
+        attrs["gen_ai.conversation.id"] = str(thread_id)
+
+    settings = getattr(ctx, "settings", None)
+    if not bool(getattr(settings, "otel_capture_identity", True)):
+        return attrs
+    auth = getattr(ctx, "auth", None)
+    principal = getattr(auth, "principal_sub", "") if auth is not None else ""
+    # `anonymous` is the default subject, not an identity — recording it would fill a
+    # backend's Users view with one meaningless entry.
+    if principal and principal != "anonymous":
+        attrs["user.id"] = str(principal)
+        attrs["gen_ai.user.id"] = str(principal)
+    if tenant:
+        attrs["felix.tenant.id"] = str(tenant)
+    return attrs
+
+
+def _annotate_enclosing_span(attrs: dict[str, SpanAttributeValue]) -> None:
+    """Copy identity onto the span already open around this one — the HTTP root.
+
+    The request span is created by the FastAPI instrumentation, which runs before auth, so
+    it cannot carry identity at creation time. That matters more than it looks: a backend
+    reading a trace's session and user from its *root* span — the correct place to read
+    them, since the root is the request — would find none, while every child had them.
+
+    Idempotent and cheap: nested Felix spans re-set values their parent already holds.
+    """
+    if not attrs:
+        return
+    try:
+        from opentelemetry import trace
+
+        current = trace.get_current_span()
+        if current is None or not current.is_recording():
+            return
+        for key, value in attrs.items():
+            current.set_attribute(key, value)
+    except Exception:  # pragma: no cover - identity must never break a span
+        logger.debug("could not annotate the enclosing span with identity", exc_info=True)
+
+
 def make_span(name: str, attributes: dict[str, SpanAttributeValue] | None = None) -> SpanContext:
-    span = SpanContext(name=name, attributes=dict(attributes or {}))
+    identity = _identity_attrs()
+    _annotate_enclosing_span(identity)
+    merged = dict(identity)
+    merged.update(attributes or {})
+    span = SpanContext(name=name, attributes=merged)
     tracer = _get_otel_tracer()
     if tracer is not None:
         span._otel_span = tracer.start_span(name, attributes=span.attributes)
@@ -121,6 +197,45 @@ async def with_span[T](
         span.set_attribute("error", True)
         raise
     finally:
+        span.end()
+
+
+@asynccontextmanager
+async def timed_span(
+    name: str,
+    attributes: dict[str, SpanAttributeValue] | None = None,
+    *,
+    metric: str,
+    labels: dict[str, str] | None = None,
+    counter: str | None = None,
+) -> AsyncIterator[SpanContext]:
+    """A span, a latency observation, and one status convention for both.
+
+    Four call sites hand-rolled this — two model paths, the tool runner and the worker —
+    and had already drifted at birth: three histograms with three different status
+    conventions, so `{status="error"}` was a valid filter on one of them and silently
+    matched nothing on the others. A telemetry vocabulary that is not the same everywhere
+    is not a vocabulary, which is the whole point of the module it lives in.
+
+    `counter` additionally records a `{**labels, status}` counter, for call sites that want
+    a rate as well as a duration.
+    """
+    span = make_span(name, attributes)
+    started = time.perf_counter()
+    status = "ok"
+    try:
+        yield span
+    except Exception:
+        status = "error"
+        span.set_attribute("error", True)
+        raise
+    finally:
+        from felix.observability.metrics import record_counter, record_histogram
+
+        tagged = {**(labels or {}), "status": status}
+        record_histogram(metric, time.perf_counter() - started, tagged)
+        if counter:
+            record_counter(counter, tagged)
         span.end()
 
 
@@ -149,6 +264,7 @@ __all__ = [
     "setup_observability",
     "shutdown_observability",
     "span_cm",
+    "timed_span",
     "with_span",
 ]
 
