@@ -99,11 +99,14 @@ First, because everything else governs it.
       already core — the extra was assumed rather than checked. SearXNG rather than a hosted
       API because it is the one an operator can run themselves without an account, which is the
       same argument as `FELIX_OBJECT_STORE=fs`.
-- [ ] **Document retrieval** — `felix/documents/`: ingest → chunk → embed → a `search_documents`
-      tool, reusing the `Embedder` seam (`memory/embedder.py`, already an open registry) and
-      pgvector. Needs an Alembic revision **and** an in-memory twin. Largest item here.
-      Note what exists today is *fact* memory over rows written by `remember`; `tools/retrieval.py`
-      is tool selection, not document retrieval. Neither is RAG.
+- [~] **Document retrieval** — the corpus landed: `felix/documents/` (chunking, hybrid store,
+      in-memory twin), migration `0010`, conformance against both backends, and `/documents`
+      management routes so an operator can ingest, search, inspect and remove. Split from the
+      agent-facing half deliberately, on the evidence that the two smaller features in this
+      workstream each drew ~7 review findings; **the `search_documents` tool and wiring
+      `support` to the Felix docs are the follow-up**, and item 6 stays open until then.
+      Reuses the `Embedder` seam and `FELIX_MEMORY_EMBEDDER` rather than adding a second
+      embedder setting — one embedder per deployment, one vector dimension.
 - [ ] **Structured output** — `spec.output_schema` → `response_format` on the OpenAI wire,
       tool-shaped constrained output on the Anthropic wire, pydantic validation with one repair
       retry. Both wires already emit tool JSON schema (`felix_ai/wire/base.py:133`). There is no
@@ -361,6 +364,14 @@ rather than from re-reading a file. The wave itself is written up in [HISTORY.md
       registry there is a feature, not a refactor. Recorded so it is not "opened" by mistake.
 
 ### Headless / contract
+
+- [ ] **Nothing enforces RLS coverage for a new tenant table.** `0006_tenant_rls` applied a
+      policy to a fixed list; a table added later is covered only if whoever added it
+      remembered, and the failure is silent — the table simply is not isolated.
+      `document_chunks` (migration `0010`) carries its policy because it was written by hand,
+      which is the argument, not the reassurance. An invariant comparing tables with a
+      `tenant_id` column against those carrying `felix_tenant_isolation` is ~15 lines and is
+      the natural candidate for this cycle's one hardening item.
 
 - [ ] **Headless invariant is prose only** — CLAUDE.md asserts it; nothing fails when it stops
       being true. An AST/file check over `apps/api` for `StaticFiles`, `Jinja2Templates` and

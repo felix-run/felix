@@ -31,6 +31,7 @@ from felix_api.routes import (
     artifacts,
     audit,
     chat,
+    documents,
     internal,
     jobs,
     manifests,
@@ -262,6 +263,7 @@ def create_app(
     app.include_router(eval_routes.router, prefix="/eval")
     app.include_router(usage.router, prefix="/usage")
     app.include_router(memory.router, prefix="/memory")
+    app.include_router(documents.router, prefix="/documents")
     app.include_router(a2a.router, prefix="/a2a")
     app.include_router(mcp.router, prefix="/mcp")
     app.include_router(well_known.router)

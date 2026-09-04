@@ -560,6 +560,7 @@ implies the matching `*:read`.
 | `eval:read` / `eval:write` | `/eval` |
 | `usage:read` | `/usage` |
 | `memory:read` / `memory:write` | `/memory` — inspect, search, correct and prune what an agent has remembered |
+| `documents:read` / `documents:write` | `/documents` — ingest, search, inspect and remove the corpus an agent retrieves from |
 
 ```bash
 felix mint-jwt --sub ops --tenant default \

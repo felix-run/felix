@@ -57,18 +57,23 @@ def _scrub_ambient_git_environment():
 
 @pytest.fixture(autouse=True)
 def _isolate_process_global_stores():
-    """Clear the in-memory manifest store and the resolver caches around every test."""
+    """Clear the in-memory manifest store, corpus and resolver caches around every test."""
+    from felix.documents.store import reset_documents_for_tests
     from felix.durability.fibers import reset_memory_fibers
     from felix.manifests import store as manifest_store
     from felix.manifests.resolver import clear_resolver_cache
 
-    manifest_store.reset_memory_store()
-    clear_resolver_cache()
-    reset_memory_fibers()
+    def _clear() -> None:
+        manifest_store.reset_memory_store()
+        clear_resolver_cache()
+        reset_memory_fibers()
+        # A corpus that survives a test becomes another test's mysterious extra hit, and
+        # retrieval tests assert on result *counts*, so the leak would look like a ranking bug.
+        reset_documents_for_tests()
+
+    _clear()
     yield
-    manifest_store.reset_memory_store()
-    clear_resolver_cache()
-    reset_memory_fibers()
+    _clear()
 
 
 @pytest.fixture(autouse=True)
