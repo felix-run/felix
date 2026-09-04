@@ -29,7 +29,7 @@ case "$rel" in
     emit "internals/manifest-pipeline.mdx (resolve -> pin -> compile -> wrapper order)." ;;
   packages/harness/src/felix/patterns/react.py|packages/harness/src/felix/patterns/registry.py|packages/harness/src/felix/patterns/types.py)
     emit "internals/patterns.mdx (the Agent invoke/stream contract and the ReAct loop)." ;;
-  packages/harness/src/felix/patterns/model.py|packages/harness/src/felix/patterns/model_registry.py)
+  packages/harness/src/felix/patterns/model*.py)
     emit "internals/model-client.mdx (provider routing, thinking/caching, fallback) and the DEFAULT_MODEL_ROUTES table in the README / getting-started if a logical model id changed." ;;
   packages/harness/src/felix/auth/*|packages/harness/src/felix/manifests/inbound_auth.py)
     emit "internals/auth.mdx (auth modes, scopes, inbound manifest auth) and guide/deploy.mdx for production JWT/api_key requirements." ;;

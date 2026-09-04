@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The fallback and escalation composites moved to `patterns/model_composites.py`.** They
+  are private, so nothing outside the repo is affected; tests that reached for
+  `_FallbackClient` or `_is_provider_error` import from the new module.
+
+  Failing over to another model and escalating to a stronger one are a policy about what to
+  do when an answer is unavailable or not good enough — a different subject from resolving a
+  route and metering a turn. `patterns/model.py` is **522 lines, under the 600 budget for the
+  first time**, and holds route resolution, `record_usage`, the traced wrappers and the
+  provider factories.
+
+
 - **`stream_turn` is a separate Protocol, not a required member of `ModelProvider`.** This
   reverses a published contract, so it matters to anyone implementing a provider:
   `felix_ai.types.ModelProvider` no longer requires `stream_turn`, and
@@ -27,6 +38,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the name without implementing it.
 
 ### Fixed
+
+- **An escalating turn was billed twice and metered once.** `confidence_escalation` calls the
+  primary, judges the answer, then calls the stronger model — two billed turns for one reply —
+  and returned only the second. Callers meter what they are handed (`record_usage(result, …)`
+  sees the returned result and nothing else), so the discarded turn reached neither
+  `ctx.limit_state` nor the usage table and `limits.max_cost_usd` under-counted the run by
+  whatever it cost. Measured on a plausible pair: **2,100 tokens billed, 100 metered**.
+
+  The composite folds the discarded usage into the result it returns, because it is the only
+  thing that can see both turns. Both turns are summed under the returned model's id, so a
+  two-model escalation prices the primary's tokens at the target's rate — wrong in the third
+  decimal, right about the budget counting every token spent.
+
+  `confidence_escalation` is a published manifest field that had no behavioural test at all;
+  `tests/unit/test_confidence_escalation.py` is its first.
+
 
 - **A fallback chain that could not stream produced an empty answer and made no model
   call.** `_FallbackClient` skips members without `stream_turn`, so a chain of chat-only

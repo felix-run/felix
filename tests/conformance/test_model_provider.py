@@ -383,7 +383,7 @@ async def test_an_upstream_failure_raises_a_readable_gateway_error(arm: _Arm) ->
     """`_is_provider_error` and `_FallbackClient` branch on `.status`, so a provider that
     raises something opaque never fails over. The body stays off `str(exc)` because that
     string is relayed to API clients."""
-    from felix.patterns.model import _is_provider_error
+    from felix.patterns.model_composites import _is_provider_error
 
     arm.program_error(503)
     with pytest.raises(ModelGatewayError) as excinfo:
@@ -397,7 +397,7 @@ async def test_an_upstream_failure_raises_a_readable_gateway_error(arm: _Arm) ->
 @parametrized
 @pytest.mark.asyncio
 async def test_a_client_error_is_not_treated_as_transient(arm: _Arm) -> None:
-    from felix.patterns.model import _is_provider_error
+    from felix.patterns.model_composites import _is_provider_error
 
     arm.program_error(400)
     with pytest.raises(ModelGatewayError) as excinfo:
@@ -481,7 +481,7 @@ async def test_a_fallback_settles_a_turn_no_member_can_stream() -> None:
     `chat()` and chunk the text for display. One inference, correctly metered, and the
     contract is true of the composite rather than of one of its two callers.
     """
-    from felix.patterns.model import _FallbackClient
+    from felix.patterns.model_composites import _FallbackClient
     from felix_ai.types import ModelChatResult, StreamDelta
 
     class _ChatOnly:
@@ -529,7 +529,7 @@ async def test_a_streamed_upstream_failure_also_raises(arm: _Arm) -> None:
     """The non-streaming path was covered and the streaming one was not, though it is the
     path a real turn takes. A streamed 5xx that yields nothing instead of raising means
     `_FallbackClient` never fails over on a streamed request."""
-    from felix.patterns.model import _is_provider_error
+    from felix.patterns.model_composites import _is_provider_error
 
     arm.program_error(503)
     with pytest.raises(ModelGatewayError) as excinfo:

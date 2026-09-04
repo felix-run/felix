@@ -664,10 +664,18 @@ def test_governance_wrappers_declare_their_config_type() -> None:
     assert untyped == [], f"governance wrapper config parameters must not be Any: {untyped}"
 
 
-# `model.py` holds the clients themselves plus the fallback/escalation composites: they
-# *are* the call, and metering is the caller's job. Every other module under patterns/ is
-# a caller.
-_UNMETERED_BY_DESIGN = {"model.py"}
+# These hold the model clients themselves: they *are* the call. Every other module under
+# patterns/ is a caller, and a caller must meter. Adding a *pattern* here would be a bug.
+#
+# "Metering is the caller's job" is true of `model.py` and of `_FallbackClient`, which make
+# one billed call and hand back its result. It is NOT true of `_EscalationClient`, which
+# makes two and returns the second: the caller meters what it is given, so the discarded
+# turn was billed and invisible to every budget until the composite began folding its usage
+# into the returned result. Escalation meters its own discarded turn, because it is the only
+# thing that can see it — see `_with_usage_of` in `model_composites.py`.
+#
+# So the exemption is "this module holds clients", not "nothing here needs to meter".
+_UNMETERED_BY_DESIGN = {"model.py", "model_composites.py"}
 
 
 def test_a_pattern_that_reaches_a_model_records_the_usage() -> None:
