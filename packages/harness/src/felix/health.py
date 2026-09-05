@@ -73,7 +73,7 @@ _cached_report: tuple[Any, float, ReadinessReport] | None = None
 _inflight: tuple[Any, asyncio.Task[ReadinessReport]] | None = None
 
 
-async def _timed(name: str, coro: Any) -> ProbeResult:
+async def timed_probe(name: str, coro: Any) -> ProbeResult:
     start = time.monotonic()
     try:
         detail = await asyncio.wait_for(coro, PROBE_TIMEOUT_S)
@@ -99,7 +99,7 @@ async def _probe_database(settings: Any) -> str:
     return "reachable"
 
 
-async def _probe_redis(settings: Any) -> str:
+async def probe_redis(settings: Any) -> str:
     url = (getattr(settings, "redis_url", "") or "").strip()
     if not url:
         return "not configured"
@@ -156,12 +156,20 @@ def _store_report(settings: Any, task: asyncio.Task[ReadinessReport]) -> None:
 
 async def _probe_dependencies(settings: Any) -> ReadinessReport:
     results = await asyncio.gather(
-        _timed("database", _probe_database(settings)),
-        _timed("redis", _probe_redis(settings)),
-        _timed("object_store", _probe_object_store(settings)),
+        timed_probe("database", _probe_database(settings)),
+        timed_probe("redis", probe_redis(settings)),
+        timed_probe("object_store", _probe_object_store(settings)),
     )
     probes = list(results)
     return ReadinessReport(ready=all(p.ok for p in probes), probes=probes)
 
 
-__all__ = ["PROBE_TIMEOUT_S", "READINESS_CACHE_S", "ProbeResult", "ReadinessReport", "check_readiness"]
+__all__ = [
+    "PROBE_TIMEOUT_S",
+    "READINESS_CACHE_S",
+    "ProbeResult",
+    "ReadinessReport",
+    "check_readiness",
+    "probe_redis",
+    "timed_probe",
+]

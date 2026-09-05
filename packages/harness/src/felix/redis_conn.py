@@ -48,7 +48,17 @@ class RedisConnection:
     event loop underneath it has been replaced.
     """
 
-    __slots__ = ("_client", "_connecting", "_failed_until", "_label", "_loop", "_on_reset", "_retry_after")
+    __slots__ = (
+        "_client",
+        "_connecting",
+        "_consequence",
+        "_failed_until",
+        "_label",
+        "_loop",
+        "_on_reset",
+        "_retry_after",
+        "_warned",
+    )
 
     def __init__(
         self,
@@ -56,8 +66,14 @@ class RedisConnection:
         *,
         retry_after_seconds: float = RETRY_AFTER_SECONDS,
         on_reset: Callable[[], Awaitable[None]] | None = None,
+        fallback_consequence: str = "",
     ) -> None:
         self._label = label
+        #: What the subsystem loses on the in-process fallback, in its own words, for the
+        #: one warning this helper logs when a configured Redis is unreachable. The helper
+        #: knows only that the fallback does not cross processes; what that costs — a
+        #: "stop" that went nowhere, an approval that never arrives — is the caller's.
+        self._consequence = fallback_consequence
         self._retry_after = retry_after_seconds
         #: Called before the client is dropped, for subsystems holding state derived
         #: from it — a pub/sub connection and its reader task, say — which is not
@@ -67,6 +83,7 @@ class RedisConnection:
         self._loop: weakref.ref[asyncio.AbstractEventLoop] | None = None
         self._connecting: asyncio.Future[None] | None = None
         self._failed_until = 0.0
+        self._warned = False
 
     async def get(self) -> Any | None:
         """The client, connecting if needed. `None` means use your fallback."""
@@ -106,9 +123,26 @@ class RedisConnection:
             )
             await client.ping()
             self._client, self._loop = client, weakref.ref(loop)
+            if self._warned:
+                self._warned = False
+                logger.warning("%s: redis reachable again; cross-process delivery restored", self._label)
             return self._client
         except Exception:
-            logger.debug("%s: redis unavailable, using the fallback", self._label, exc_info=True)
+            if not self._warned:
+                # Once, at warning: the fallback is process-local, so an approval decided on
+                # the API never reaches a fiber on the worker. A debug line made a configured
+                # Redis that was down look exactly like one that was working.
+                self._warned = True
+                logger.warning(
+                    "%s: redis at FELIX_REDIS_URL unreachable; using the in-process fallback, which "
+                    "does not cross processes%s — retrying in %.0fs",
+                    self._label,
+                    f" ({self._consequence})" if self._consequence else "",
+                    self._retry_after,
+                    exc_info=True,
+                )
+            else:
+                logger.debug("%s: redis still unavailable, using the fallback", self._label)
             self._failed_until = time.monotonic() + self._retry_after
             return None
         finally:
@@ -118,6 +152,22 @@ class RedisConnection:
                 fut.set_result(None)
             if self._connecting is fut:
                 self._connecting = None
+
+    async def report_failure(self) -> None:
+        """A command on the client failed: drop it so the next `get()` reconnects.
+
+        Without this a Redis that dies *after* the client was established is never noticed
+        here — `get()` hands back the cached client forever, every command fails into the
+        caller's fallback, and the warning above never fires because nothing reconnects.
+        Delegates to `aclose`, so `on_reset` runs and state derived from the dead client
+        (a pub/sub, say) goes with it.
+        """
+        await self.aclose()
+
+    async def fallback(self, what: str) -> None:
+        """The one line a command's `except` needs: drop the client, log what fell back."""
+        await self.report_failure()
+        logger.debug("%s: %s failed; using the fallback", self._label, what, exc_info=True)
 
     async def aclose(self) -> None:
         """Drop the client and any state derived from it. Safe to call at any time."""

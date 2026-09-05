@@ -174,6 +174,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fiber is `dead`, with the error on the run view. `dead` is terminal to the SDK poller, the
   resume stream, the Temporal loop and the retention sweep (which reads the fiber store's
   terminal set rather than its own copy), under an invariant.
+- **Redis is required outside development, and a Redis that is down says so.** Approvals,
+  UI prompts and client-tool answers cross from the API to the worker through a Redis list;
+  with `FELIX_REDIS_URL` empty the waiter fell back to a process-local future, so a decision
+  made on the API never reached the worker's fiber and the run denied on timeout after the
+  operator was told the approval worked. `validate_runtime` now refuses an empty URL outside
+  `development`, `felix doctor` names what the check is for, and a configured Redis that is
+  unreachable is logged at warning once per subsystem (and once more when it returns) instead
+  of at debug — including a Redis that dies after the client connected, which previously
+  failed every command into the fallback with no reconnect. Session leases move onto the
+  shared connection helper (they latched to in-process for the life of the process after one
+  blip). **Upgrade note:** a Helm release that left `secrets.redisUrl` empty, which the chart
+  README already listed as required, now fails at boot with this message instead of running
+  degraded.
 
 ### Changed
 - **The session summarizer is billed to the tenant that triggered it, and counts against

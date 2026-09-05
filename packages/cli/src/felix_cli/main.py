@@ -411,16 +411,34 @@ def doctor_cmd() -> None:
             except Exception as exc:
                 check("database", False, str(exc)[:120])
 
-        # Redis / Valkey
-        try:
-            import redis.asyncio as redis
+        # Redis / Valkey. Not optional outside development: approvals and client-tool
+        # answers cross from the API to the worker through it, and the in-process fallback
+        # that takes over when it is missing or down cannot deliver them.
+        redis_label = "redis (cross-process approvals, prompts, rate limits)"
+        if not settings.redis_url.strip():
+            if settings.environment == "development":
+                check(
+                    redis_label,
+                    True,
+                    "FELIX_REDIS_URL empty — single process only; required outside development",
+                )
+            else:
+                check(
+                    redis_label,
+                    False,
+                    "FELIX_REDIS_URL empty — durable runs waiting on an approval would time out",
+                )
+        else:
+            # The same bounded probe `/ready` runs, so the two cannot disagree on "reachable".
+            from felix.health import probe_redis, timed_probe
 
-            client = redis.from_url(settings.redis_url)
-            await client.ping()
-            await client.aclose()
-            check("redis", True, "reachable")
-        except Exception as exc:
-            check("redis", False, str(exc)[:120])
+            probe = await timed_probe("redis", probe_redis(settings))
+            detail = (
+                probe.detail
+                if probe.ok
+                else f"unreachable, approvals will not cross processes: {probe.detail}"
+            )
+            check(redis_label, probe.ok, detail)
 
         # Object store factory
         try:

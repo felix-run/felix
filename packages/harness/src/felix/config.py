@@ -417,6 +417,15 @@ class Settings(BaseSettings):
                     f"FELIX_AUTH_MODE=none may only bind loopback; FELIX_HOST={self.host!r} "
                     "is reachable off-host. Set FELIX_AUTH_MODE=api_key|jwt, or bind 127.0.0.1."
                 )
+        if not self.redis_url.strip() and self.environment != "development":
+            # Approvals, client-tool answers and UI prompts are delivered between processes
+            # (API to worker) over Redis; without it the waiter is a process-local future,
+            # so a decision made on the API never reaches the fiber and the run times out
+            # with "denied" after a human clicked Approve.
+            raise RuntimeError(
+                "FELIX_REDIS_URL is required outside development (approvals cross API→worker through it). "
+                "Point it at Valkey/Redis, or set FELIX_ENVIRONMENT=development."
+            )
         if self.scale_out:
             if "sqlite" in self.database_url:
                 raise RuntimeError("Scale-out requires Postgres (FELIX_DATABASE_URL).")

@@ -516,6 +516,18 @@ Approvals are matched on `(tenant, manifest, tool, sha256(args))` and stored in 
 `command_screening` rules with `decision: require_approval` go through the same flow and
 wait up to `command_screening.approval_ttl_seconds` (default 300).
 
+**Across processes.** The run that is waiting and the request that decides are usually in
+different processes — a durable fiber waits on the worker, the operator approves through the
+API. The wait is a Redis list (`BLPOP`), so the decision crosses. Without Redis the waiter is
+a process-local future: the decision lands in the API's memory, the fiber times out and
+denies, and the operator was told the approval worked. `FELIX_REDIS_URL` may therefore not
+be empty outside `development` (`validate_runtime` refuses to start; `felix doctor` says
+why). A URL that is set but unreachable still starts — `/ready` fails on it, which is what
+takes the replica out of rotation — and is logged at warning once per subsystem per process
+(waiters, steer, thread notifications, session leases), on the first failed connection and
+again when a command fails on a client that had connected, rather than silently degraded.
+The same channel carries UI prompts and client-tool answers.
+
 ## Request limits
 
 Rate limiting runs **outside** authentication, so a failed credential is counted — it
