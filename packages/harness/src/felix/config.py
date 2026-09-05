@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ipaddress
+import logging
 from functools import lru_cache
 from typing import Any, Literal
 
@@ -26,6 +27,9 @@ def _is_loopback_host(host: str) -> bool:
     except ValueError:
         # A hostname we cannot classify without DNS — treat as public.
         return False
+
+
+ProcessRole = Literal["api", "worker", "scheduler", "temporal-worker", "cli"]
 
 
 class Settings(BaseSettings):
@@ -122,6 +126,13 @@ class Settings(BaseSettings):
     # this bounds the gap between chunks rather than the whole turn. Connect is pinned
     # separately, so raising this does not also raise the ceiling on reaching a dead host.
     model_timeout_seconds: float = Field(default=120.0, gt=0)
+
+    # --- process identity ---
+    # Which of the deployment's processes this is. Each console script stamps it at start
+    # (`stamp_process_role`), before any engine exists, so every connection presents
+    # `application_name=felix-<role>` to pg_stat_activity; FELIX_PROCESS_ROLE overrides
+    # (a deployment that runs two differently-tuned API pools, say). Empty = unnamed.
+    process_role: ProcessRole | Literal[""] = ""
 
     # --- durability ---
     durability: Literal["fibers", "temporal"] = "fibers"
@@ -257,6 +268,15 @@ class Settings(BaseSettings):
     # server-side. It earns that behind PgBouncer / RDS Proxy / Cloud SQL and wastes it
     # against a direct Postgres, which is why it is a setting rather than a constant.
     db_pool_pre_ping: bool = True
+    # Driver-level bound, psycopg only (other drivers are handed none of these): a connect
+    # that hangs on a blackholed host waits this long, not the OS default of minutes.
+    # Every connection presents `application_name=felix-<role>` so pg_stat_activity can
+    # say which process holds it. There is deliberately no statement-timeout setting: as a
+    # libpq startup option it is rejected by PgBouncer, and with PgBouncer told to ignore
+    # it the connection succeeds and nothing is ever cancelled — a control that reports on
+    # and does nothing. Set it on the role (`ALTER ROLE felix SET statement_timeout`);
+    # `felix doctor` reports what applies.
+    db_connect_timeout_seconds: float = Field(default=10.0, gt=0)
     # Whether the driver may prepare statements server-side.
     #
     # Must be `false` behind a transaction-mode pooler that does not itself track
@@ -275,6 +295,22 @@ class Settings(BaseSettings):
     # now, which is the one thing the conventions say not to do with configuration:
     # invisible to `felix doctor`, absent from .env.example, and unvalidated.
     workers: int = Field(default=1, ge=1)
+    # HTTP server (Granian; uvicorn takes the same where it has an equivalent).
+    # `backlog` is the listen queue; `runtime_threads` the async runtime's threads per
+    # worker. On SIGTERM a worker gets `graceful_shutdown_seconds` to finish in-flight
+    # requests — and to flush its audit/usage buffers at lifespan shutdown — before it is
+    # killed. The default matches the Helm chart's `terminationGracePeriodSeconds`; the
+    # chart sets this from that value so one number governs. A worker that dies is
+    # respawned by default (Granian exits on a fast crash loop; a slow one shows only in
+    # its log line, so watch the log or turn this off to surface it as a container exit).
+    http_backlog: int = Field(default=1024, ge=1)
+    http_runtime_threads: int = Field(default=1, ge=1)
+    graceful_shutdown_seconds: int = Field(default=120, ge=1)
+    respawn_failed_workers: bool = True
+    # Taskiq keeps every task's result in Valkey/Redis until it expires. Cron tasks
+    # return nothing but still write a result per tick; without a TTL they accumulate
+    # against a store that is usually a small LRU.
+    task_result_ttl_seconds: int = Field(default=3600, ge=1)
 
     # --- misc ---
     default_manifest: str = "quick"
@@ -401,6 +437,33 @@ class Settings(BaseSettings):
                 f"Unknown model provider(s) in FELIX_MODEL_ROUTES: {', '.join(unknown)} "
                 f"(registered: {', '.join(sorted(known))})"
             )
+
+    def application_name(self) -> str:
+        """What this process calls itself to Postgres."""
+        return f"felix-{self.process_role}" if self.process_role else "felix"
+
+    def stamp_process_role(self, role: ProcessRole) -> None:
+        """Name this process once, at start. The environment's choice, if any, wins.
+
+        The name is read when an engine is built and engines are cached for the life of
+        the process, so a stamp that arrives after the first engine is a name nothing
+        will carry; that is logged rather than silently accepted. Engines read the
+        cached `get_settings()` instance, so a stamp on any other `Settings` (one handed
+        to `create_app` by a test, say) is also applied to that instance.
+        """
+        from felix.db.session import engines_exist
+
+        if engines_exist():
+            logging.getLogger("felix.config").warning(
+                "process role %r stamped after an engine was built; connections keep application_name=%s",
+                role,
+                self.application_name(),
+            )
+        if not self.process_role:
+            self.process_role = role
+        singleton = get_settings()
+        if singleton is not self and not singleton.process_role:
+            singleton.process_role = role
 
     def validate_runtime(self) -> None:
         """Fail fast on unsafe or incomplete configuration."""

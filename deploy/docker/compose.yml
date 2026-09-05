@@ -78,6 +78,9 @@ services:
   api:
     <<: *felix-build
     command: ["felix-api"]
+    # Compose kills a container 10s after `stop` by default; the API drains in-flight
+    # turns for FELIX_GRACEFUL_SHUTDOWN_SECONDS (120), so give it that long here too.
+    stop_grace_period: 120s
     ports:
       - "${FELIX_BIND_ADDR:-127.0.0.1}:${FELIX_PORT:-8080}:8080"
     environment:

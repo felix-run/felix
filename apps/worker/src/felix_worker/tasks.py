@@ -32,6 +32,8 @@ broker = ListQueueBroker(
         redis_url=_settings.redis_url,
         socket_timeout=None,
         socket_connect_timeout=5.0,
+        # Every tick of every cron task writes a result row; bound how long it lives.
+        result_ex_time=_settings.task_result_ttl_seconds,
     )
 )
 scheduler = TaskiqScheduler(broker=broker, sources=[LabelScheduleSource(broker)])
@@ -39,6 +41,7 @@ scheduler = TaskiqScheduler(broker=broker, sources=[LabelScheduleSource(broker)]
 
 @broker.on_event(TaskiqEvents.WORKER_STARTUP)
 async def _on_worker_startup(_state: object) -> None:
+    _settings.stamp_process_role("worker")
     from felix.logging_setup import configure_logging
     from felix.plugins import get_registry, load_optional_plugins
     from felix.secrets import hydrate_secrets
