@@ -221,6 +221,47 @@ def test_governance_wrapper_order_is_unchanged() -> None:
 
 
 # --------------------------------------------------------------------------
+# The test runner cannot hold a live credential.
+# --------------------------------------------------------------------------
+def test_the_test_runner_blanks_every_credential_setting() -> None:
+    """`scripts/test.sh` must blank every `Settings` field that can carry a paid credential.
+
+    The repo `.env` holds real keys and pydantic-settings reads it, so a credential field the
+    runner does not blank is one a test can spend money through. That is not hypothetical: the
+    suite billed live Anthropic calls until the runner blanked `FELIX_ANTHROPIC_API_KEY` and
+    `FELIX_OPENAI_API_KEY`, and `model_provider_options` is worse than either — it carries a
+    per-provider `api_key` that `resolve_provider_config` prefers *over* both named fields, so
+    a key there re-arms a vendor while the obvious two look safe.
+
+    Enumerated from `Settings` rather than from a hand-written list, so adding
+    `gemini_api_key` fails here instead of leaking into the next run.
+    """
+    config = (HARNESS / "config.py").read_text(encoding="utf-8")
+    body = config.split("class Settings(BaseSettings):", 1)[1].split("\n    def ", 1)[0]
+    fields = {match.group(1) for match in re.finditer(r"^    ([a-z][a-z0-9_]*): ", body, re.MULTILINE)}
+    assert fields, "no Settings fields parsed — has config.py been restructured?"
+
+    # `auth_api_keys` is inbound: it authenticates callers to Felix and buys nothing.
+    credential_fields = {
+        name
+        for name in fields
+        if (name.endswith("_api_key") or name == "model_provider_options") and name != "auth_api_keys"
+    }
+    assert len(credential_fields) >= 3, (
+        f"expected several credential-bearing settings, found {sorted(credential_fields)} — "
+        "the match is probably no longer finding them"
+    )
+
+    runner = (ROOT / "scripts" / "test.sh").read_text(encoding="utf-8")
+    unblanked = sorted(name for name in credential_fields if f'export FELIX_{name.upper()}=""' not in runner)
+    assert unblanked == [], (
+        "scripts/test.sh must blank every credential-bearing setting, or a test that reaches "
+        "the service pays for it with the key in the repo .env:\n  "
+        + "\n  ".join(f'export FELIX_{name.upper()}=""' for name in unblanked)
+    )
+
+
+# --------------------------------------------------------------------------
 # Every FELIX_ setting is discoverable by an operator reading .env.example.
 # --------------------------------------------------------------------------
 def test_env_example_documents_every_setting() -> None:

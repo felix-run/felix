@@ -14,7 +14,15 @@ FELIX_AUTH_MODE=none
 FELIX_HOST=127.0.0.1        # auth_mode=none is only permitted on a loopback bind
 FELIX_DATABASE_URL=memory://ci
 FELIX_OBJECT_STORE=memory
+FELIX_ANTHROPIC_API_KEY=""  # no live vendor call can be made from the suite
+FELIX_OPENAI_API_KEY=""
 ```
+
+The two blank keys are as load-bearing as the in-memory stores. The repo `.env` carries real
+credentials and pydantic-settings reads it, so before they were blanked any test that reached a
+model called the vendor and billed it — which the first run of `tests/e2e/` did, because `.env`
+also overrides `default_model_id` and the route it thought was scripted was not. A mis-routed
+model call must fail closed, not succeed quietly against production.
 
 A bare `uv run pytest` reads the repo `.env`, points `FELIX_DATABASE_URL` at a real Postgres, and
 fails DB-touching tests with what looks like a code bug. The `PreToolUse` hook
@@ -36,7 +44,7 @@ Same principle for models: use the eval fixture path (`--mock`) rather than asse
 | Setting | Value | Consequence |
 |---|---|---|
 | `asyncio_mode` | `auto` | `async def test_…` needs no decorator |
-| `testpaths` | `tests` | 47 files in `tests/unit/`, 3 in `tests/integration/`, plus `tests/test_smoke.py` |
+| `testpaths` | `tests` | 141 files in `tests/unit/`, 11 in `tests/conformance/`, 3 in `tests/integration/`, 2 in `tests/e2e/`, plus `tests/test_smoke.py` |
 | `timeout` / `timeout_method` | `120` / `thread` | A per-test backstop, not a budget. The whole suite runs in roughly 50s, so the margin is on the slowest single test, not the total |
 | `addopts` | none | Coverage is deliberately not on by default so a single-test run stays fast |
 | `per-file-ignores` | `tests/** = E501, RUF012, RUF034` | Long literals and mutable class attrs are fine in tests |
@@ -46,13 +54,13 @@ Same principle for models: use the eval fixture path (`--mock`) rather than asse
 CI's `test` job runs the lean install and then:
 
 ```bash
-./scripts/test.sh -q --cov --cov-report=term:skip-covered --cov-fail-under=60
+./scripts/test.sh -q --cov --cov-report=term:skip-covered --cov-fail-under=70
 ```
 
 The comment on that line is the policy: *the coverage floor is the measured number, ratcheted up
 deliberately — never an aspirational one, which only teaches people to bypass it.* Raising it means
 editing that single flag in `.github/workflows/ci.yml` after the measured number rises.
-`[tool.coverage.run]` covers the four source roots with `branch = false`, and
+`[tool.coverage.run]` covers the five source roots with `branch = false`, and
 `[tool.coverage.report]` excludes `if TYPE_CHECKING:`, `raise NotImplementedError`, and `@overload`.
 
 Read shape, not the number:
@@ -60,6 +68,20 @@ Read shape, not the number:
 ```bash
 ./scripts/test.sh --cov --cov-report=term-missing:skip-covered
 ```
+
+## The layer that runs the whole path
+
+`tests/e2e/` boots the zero-argument `create_application()` — the factory Granian is handed in
+production — sends real HTTP through it, and lets the compiled agent call
+`felix_ai.providers.scripted` instead of a vendor. Everything else on the path is the real
+thing: the middleware stack, manifest resolution, `build_agent`, the governance wrappers, the
+pattern, the reply controls.
+
+Use it whenever the thing under test is *wiring* rather than a unit: a control that must still
+be applied when a request arrives, an event that must reach the store, a frame a client depends
+on. `tests/e2e/conftest.py:boot` takes a script, optional env overrides and optional manifests,
+and yields an HTTP client plus a spy holding every model client the registry built. Do not
+monkeypatch `build_tenant_agent` in a new test — the harness exists so that stops.
 
 ## Promote a repeated finding into a structural test
 

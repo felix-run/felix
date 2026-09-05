@@ -74,6 +74,14 @@ without touching the skip count; that is how six Temporal tests went unexecuted 
 `--extra temporal --extra warehouse` and sets `FELIX_REQUIRE_OPTIONAL_EXTRAS=1`, which turns a
 missing extra into a failure. Locally, without that variable, these still skip as before.
 
+End-to-end (`tests/e2e/`) boots the zero-argument `create_application()` production uses, sends
+real HTTP through it, and points the model at `felix_ai.providers.scripted`. Nothing between the
+socket and the model is replaced, so a governance wrapper that stops being applied fails here
+rather than in a deployment. `conftest.py:boot` yields a client plus a spy over every model client
+built; never monkeypatch `build_tenant_agent` in a new test. `scripts/test.sh` blanks
+`FELIX_ANTHROPIC_API_KEY` and `FELIX_OPENAI_API_KEY` so a mis-routed model call fails closed
+instead of billing a vendor — the repo `.env` carries real keys and pydantic-settings reads it.
+
 Conformance (`tests/conformance/`) runs one contract against every implementation of a seam.
 `test_model_provider.py` does it for model providers — three arms (`scripted`, `openai`,
 `anthropic`), none needing infrastructure, so a skip there is a bug rather than a missing
