@@ -246,7 +246,6 @@ KNOWN_INERT_FIELDS = {
     "replan_on_failure",  # PlanExecuteSpec
     "min_rate",  # AnomalySpec
     "precount",  # Limits
-    "retention_days",  # GovernanceSpec
 }
 
 

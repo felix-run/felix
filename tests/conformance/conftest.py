@@ -221,3 +221,58 @@ async def document_settings(request: pytest.FixtureRequest) -> AsyncIterator[Any
         # first test with a second title would have made the arm order-dependent.
         await dispose_engine()
         await drop_everything(url)
+
+
+@pytest_asyncio.fixture
+async def retention_settings(request: pytest.FixtureRequest) -> AsyncIterator[Any]:
+    """`Settings` for the retention contract, with every swept store empty on both sides.
+
+    The sweep reaches seven tables through seven module-level stores; each in-memory
+    twin is cleared here so an arm never inherits another test's rows.
+    """
+    from felix.a2a import tasks as a2a_store
+    from felix.audit import store as audit_store
+    from felix.config import Settings
+    from felix.db.session import dispose_engine
+    from felix.durability import fibers as fiber_store
+    from felix.manifests import store as manifest_store
+    from felix.memory import store as memory_store
+    from felix.plans import store as plans_store
+    from felix.session import store as session_store
+    from felix.session import thread_state, tree
+    from felix.usage import store as usage_store
+
+    def clear() -> None:
+        audit_store.pending_buffer().reset_for_tests()
+        audit_store._memory_events.clear()
+        usage_store.pending_buffer().reset_for_tests()
+        usage_store.clear_memory()
+        fiber_store.reset_memory_fibers()
+        a2a_store.clear_tasks()
+        plans_store._memory_plans.clear()
+        memory_store._memory_rows.clear()
+        session_store._memory_session_stores.clear()
+        thread_state._meta_by_thread.clear()
+        tree._leaf_by_thread.clear()
+        manifest_store.reset_memory_store()
+
+    clear()
+    backend = request.param
+    if backend == "memory":
+        yield Settings(database_url="memory://conformance")
+        clear()
+        return
+
+    url = postgres_url()
+    if not url:
+        if os.environ.get(REQUIRE_ENV):
+            pytest.fail(f"{REQUIRE_ENV} is set but {PG_URL_ENV} is not — the Postgres arm cannot run")
+        pytest.skip(f"{PG_URL_ENV} unset — the Postgres arm of the retention contract did not run")
+
+    await migrate_to_head(url)
+    try:
+        yield Settings(database_url=url)
+    finally:
+        await dispose_engine()
+        await drop_everything(url)
+        clear()
