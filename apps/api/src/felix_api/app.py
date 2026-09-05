@@ -70,6 +70,7 @@ def create_app(
     """
     cfg = settings or get_settings()
     cfg.validate_runtime()
+    cfg.stamp_process_role("api")
     # FELIX_LOG_LEVEL was never applied to the logging module, and structlog was a
     # dependency nothing imported.
     configure_logging(cfg)

@@ -18,6 +18,16 @@ app = typer.Typer(
 )
 
 
+@app.callback()
+def _root() -> None:
+    """Felix agents harness CLI."""
+    from felix.config import get_settings
+
+    # One more process against the same database: name its connections. In a callback
+    # rather than at import, so importing this module for a helper stamps nothing.
+    get_settings().stamp_process_role("cli")
+
+
 def _load_plugins() -> list[str]:
     """Discover ``felix.plugins`` entry points so plugin patterns and tools exist.
 
@@ -377,7 +387,18 @@ def doctor_cmd() -> None:
                             text("SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user")
                         )
                     )
+                    statement_timeout = str(await conn.scalar(text("SHOW statement_timeout")) or "0")
                 check("database", True, "reachable")
+                # Reported, not judged: the only place a statement timeout can be set is the
+                # server or the role — a client-side one does not survive a pooler.
+                rprint(
+                    f"  [dim]statement_timeout[/dim] {statement_timeout}"
+                    + (
+                        " (none — set it on the role: ALTER ROLE ... SET statement_timeout)"
+                        if statement_timeout == "0"
+                        else ""
+                    )
+                )
 
                 # RLS coherence. The schema half (migration 0006) and the runtime
                 # half (FELIX_DATABASE_RLS) can disagree, and both directions are
