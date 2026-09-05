@@ -39,16 +39,67 @@ def get_request_id() -> str:
     return _request_id.get()
 
 
-class RequestIdFilter(logging.Filter):
-    """Attach the active request id to every record, so plain `logging` calls carry it.
+class LogIdsFilter(logging.Filter):
+    """Attach the request, tenant and trace ids to every record, so plain `logging` calls
+    carry them.
 
     The codebase logs through the stdlib everywhere. Rather than rewrite ~200 call sites
-    to use structlog, the id is injected here and rendered by the formatter.
+    to use structlog, the ids are injected here and rendered by the formatter. The tenant
+    is what a multi-tenant operator filters by; the trace id is what joins a line to the
+    span that produced it when OTel is on (and `-` when it is not).
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
-        record.request_id = _request_id.get() or "-"
+        # Both ids come from the caller — `x-request-id` is a header, the tenant may be a
+        # JWT claim — and the text format is one line per record, so they are escaped at
+        # this grammar boundary rather than trusted. The JSON format escapes anyway.
+        record.request_id = loggable(_request_id.get() or "-", limit=64)
+        record.tenant_id = loggable(_current_tenant(), limit=64)
+        record.trace_id = _current_trace_id()
         return True
+
+
+# Back-compat name; the filter has carried more than the request id since the tenant and
+# trace ids joined it.
+RequestIdFilter = LogIdsFilter
+
+
+def _current_tenant() -> str:
+    try:
+        from felix.context import try_get_context
+
+        ctx = try_get_context()
+        return str(ctx.auth.tenant_id or "-") if ctx is not None else "-"
+    except Exception:  # a filter that raises fails the caller's logging call, not the record
+        return "-"
+
+
+# Resolved once: `opentelemetry` is the `otel` extra, and a failed import is not cached by
+# the import system, so retrying it on every record walked the finder chain each time.
+_get_current_span: Any = None
+_span_lookup_checked = False
+
+
+def _current_trace_id() -> str:
+    """The active OTel trace id as 32 hex digits, or `-` when no span is recording."""
+    global _get_current_span, _span_lookup_checked
+    if not _span_lookup_checked:
+        _span_lookup_checked = True
+        try:
+            from opentelemetry import trace
+
+            _get_current_span = trace.get_current_span
+        except ImportError:
+            _get_current_span = None
+    if _get_current_span is None:
+        return "-"
+    try:
+        context = _get_current_span().get_span_context()
+    except Exception:  # same reason as `_current_tenant`
+        return "-"
+    if not context.is_valid:
+        return "-"
+    return format(context.trace_id, "032x")
 
 
 def configure_logging(settings: Any) -> None:
@@ -69,20 +120,21 @@ def configure_logging(settings: Any) -> None:
 
     handler = logging.StreamHandler()
     handler._felix = True  # type: ignore[attr-defined]
-    handler.addFilter(RequestIdFilter())
+    handler.addFilter(LogIdsFilter())
     handler.setFormatter(_build_formatter(settings))
     root.addHandler(handler)
 
 
 def _build_formatter(settings: Any) -> logging.Formatter:
-    """JSON in production so logs are queryable; readable text elsewhere."""
-    if str(getattr(settings, "environment", "development")) == "production":
-        try:
-            return _json_formatter()
-        except Exception:  # pragma: no cover - structlog always present via deps
-            pass
+    """`FELIX_LOG_FORMAT`: JSON so logs are queryable, text so a person can read them,
+    `auto` picks JSON in production."""
+    wanted = str(getattr(settings, "log_format", "auto") or "auto")
+    if wanted == "auto":
+        wanted = "json" if str(getattr(settings, "environment", "development")) == "production" else "text"
+    if wanted == "json":
+        return _json_formatter()
     return logging.Formatter(
-        "%(asctime)s %(levelname)-7s [%(request_id)s] %(name)s: %(message)s",
+        "%(asctime)s %(levelname)-7s [%(request_id)s %(tenant_id)s %(trace_id)s] %(name)s: %(message)s",
         datefmt="%H:%M:%S",
     )
 
@@ -97,6 +149,8 @@ def _json_formatter() -> logging.Formatter:
                 "level": record.levelname,
                 "logger": record.name,
                 "request_id": getattr(record, "request_id", "-"),
+                "tenant_id": getattr(record, "tenant_id", "-"),
+                "trace_id": getattr(record, "trace_id", "-"),
                 "message": record.getMessage(),
             }
             if record.exc_info:
@@ -141,6 +195,7 @@ def loggable(value: object, *, limit: int = 200) -> str:
 
 __all__ = [
     "REQUEST_ID_HEADER",
+    "LogIdsFilter",
     "RequestIdFilter",
     "configure_logging",
     "get_request_id",

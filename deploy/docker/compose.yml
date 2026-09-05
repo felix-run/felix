@@ -219,8 +219,9 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-felix}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in .env for profile=full}
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      # Loopback like every other service; MinIO holds spilled artifacts and uploads.
+      - "${FELIX_BIND_ADDR:-127.0.0.1}:9000:9000"
+      - "${FELIX_BIND_ADDR:-127.0.0.1}:9001:9001"
     volumes:
       - minio-data:/data
     healthcheck:

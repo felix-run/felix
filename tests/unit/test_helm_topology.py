@@ -14,33 +14,18 @@ locally, without it, these skip and say so.
 
 from __future__ import annotations
 
-import os
-import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
 
 import pytest
-from ruamel.yaml import YAML
+
+from tests.helm import helm_or_skip, render
 
 ROOT = Path(__file__).resolve().parents[2]
-CHART = ROOT / "deploy" / "helm" / "felix"
-REQUIRE_ENV = "FELIX_REQUIRE_HELM"
 
-if shutil.which("helm") is None and os.environ.get(REQUIRE_ENV):
-    pytest.fail(f"{REQUIRE_ENV} is set but no `helm` binary is on PATH")  # pragma: no cover
-
-pytestmark = pytest.mark.skipif(shutil.which("helm") is None, reason="helm binary not on PATH")
-
-
-def _render(*set_values: str) -> dict[tuple[str, str], dict[str, Any]]:
-    """Every object the chart renders, keyed by (kind, name)."""
-    cmd = ["helm", "template", "felix", str(CHART)]
-    for value in set_values:
-        cmd += ["--set", value]
-    out = subprocess.run(cmd, check=True, capture_output=True, text=True).stdout
-    docs = [d for d in YAML(typ="safe").load_all(out) if d]
-    return {(d["kind"], d["metadata"]["name"]): d for d in docs}
+helm_or_skip()
+_render = render
 
 
 @pytest.fixture(scope="module")

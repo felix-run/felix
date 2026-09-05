@@ -92,6 +92,19 @@ worth having at all — each one means a control did not do what the manifest im
 | `felix_worker_task_seconds` | `task` | Sweep duration. |
 | `felix_buffer_dropped` | `buffer` | **Watch this.** Audit or usage rows were dropped because a buffer hit `DEFAULT_MAX_PENDING`. Silent data loss otherwise. |
 
+### Alerting rules
+
+`deploy/helm/felix/files/prometheus-rules.yml` is the one rules file: the Compose
+observability overlay mounts it into Prometheus (`rule_files` in
+`deploy/docker/config/prometheus.yml`) and the Helm chart embeds it in a `PrometheusRule`
+when `prometheusRule.enabled` is set. It alerts on the rows above marked **watch this**
+(`felix_buffer_dropped`, `felix_model_unmetered`, `felix_model_unpriced`,
+`felix_control_unavailable`), on a worker task that stops firing or keeps failing
+(`felix_worker_task`), on an unscrapable API or worker, on repeated provider timeouts, and
+on Postgres connections nearing `max_connections` (from postgres-exporter).
+`tests/unit/test_prometheus_rules.py` re-derives every Felix metric a rule names from the
+source, so a rule cannot quietly watch a metric that no longer exists.
+
 ## Spans
 
 Span attributes follow the OpenTelemetry **GenAI semantic conventions** where one exists,
@@ -153,6 +166,12 @@ detection, so a credential a user types into a chat is exported verbatim. That b
 the reason this defaults to off.
 
 ## Logs
+
+Every line carries `request_id`, `tenant_id` and `trace_id` — injected once by
+`LogIdsFilter` in `logging_setup.py`, so the ~200 stdlib `logging` call sites need no
+change. `tenant_id` is what a multi-tenant operator filters by; `trace_id` is the active
+OTel trace as 32 hex digits, or `-` when no span is recording. `FELIX_LOG_FORMAT` is
+`auto` (JSON in production, readable text elsewhere), `json` or `text`.
 
 `FELIX_OTEL_LOGS=true` ships the standard-library log stream over OTLP alongside traces.
 The SDK stamps `trace_id` and `span_id` onto each record from the active context, so a log

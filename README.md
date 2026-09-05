@@ -492,6 +492,7 @@ Repository documentation for contributors lives in [`docs/`](docs/):
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | What to build next; status updated in place |
 | [`docs/RELEASING.md`](docs/RELEASING.md) | Version bump, changelog, tag, and what CI does |
 | [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) | Recurring failure modes and the actual fix |
+| [`docs/BACKUP.md`](docs/BACKUP.md) | What holds state, how to back it up, and the restore drill |
 
 ## Contributing
 

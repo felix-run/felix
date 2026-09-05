@@ -1,0 +1,103 @@
+# Felix alerting rules — one file, used by both deploy paths.
+#
+# Compose mounts this file into Prometheus (compose.observability.yml); the Helm chart
+# embeds it in a PrometheusRule when `prometheusRule.enabled` is set. Every Felix metric
+# named here is in docs/OBSERVABILITY.md and emitted by the code (tests/unit/test_prometheus_rules.py
+# re-derives that from the source), so a rule cannot quietly watch a metric that no
+# longer exists. Counters carry prometheus_client's `_total` suffix on the wire.
+groups:
+  - name: felix
+    rules:
+      # A periodic control that stops firing looks identical to one that runs and finds
+      # nothing. `felix-scheduler` not running, or a task raising every tick, is this.
+      - alert: FelixWorkerTaskStale
+        expr: sum by (task) (increase(felix_worker_task_total[15m])) == 0
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: "worker task {{ $labels.task }} has not run in 15 minutes"
+          description: "Is felix-scheduler running alongside felix-worker? Nothing fires without it."
+      - alert: FelixSchedulerNeverFired
+        expr: absent_over_time(felix_worker_task_total{task="fiber_scheduler"}[15m])
+        for: 5m
+        labels: {severity: critical}
+        annotations:
+          summary: "the fiber scheduler has not reported in 15 minutes"
+          description: "The series exists only once the task has run; none in 15 minutes means felix-scheduler is not running, or the worker is not scraped."
+      - alert: FelixWorkerTaskFailing
+        expr: sum by (task) (increase(felix_worker_task_total{status="error"}[15m])) > 0
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "worker task {{ $labels.task }} is failing"
+          description: "Retention, flushes and the fiber scheduler all run here; a failing sweep silently stops enforcing."
+
+      # The scrape itself. `/ready` takes a replica out of rotation when a dependency is
+      # down; a target that is not up at all is the same thing seen from Prometheus.
+      - alert: FelixApiDown
+        expr: up{job=~"felix-api.*"} == 0
+        for: 2m
+        labels: {severity: critical}
+        annotations:
+          summary: "felix-api {{ $labels.instance }} is not scrapable"
+      - alert: FelixWorkerDown
+        expr: up{job=~"felix-worker.*"} == 0
+        for: 5m
+        labels: {severity: critical}
+        annotations:
+          summary: "felix-worker {{ $labels.instance }} is not scrapable"
+          description: "Durable runs do not resume and the audit buffer is not flushed while the worker is down."
+
+      # Silent data loss: audit or usage rows dropped because a buffer hit its ceiling.
+      - alert: FelixBufferDropped
+        expr: increase(felix_buffer_dropped_total[10m]) > 0
+        labels: {severity: critical}
+        annotations:
+          summary: "{{ $labels.buffer }} rows were dropped in the last 10 minutes"
+          description: "The buffer flushes every FELIX_AUDIT_FLUSH_SECONDS; the store is down or too slow to keep up."
+
+      # Money: a turn that was not metered counts against no budget. `model` stays on the
+      # alert's labels but out of the summary: `spec.model.id` is tenant-authored text and a
+      # summary is what Alertmanager forwards to chat and pagers.
+      - alert: FelixModelUnmetered
+        expr: increase(felix_model_unmetered_total[1h]) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: "unmetered model turns for {{ $labels.manifest_id }}"
+          description: "limits.max_cost_usd and the token limits fail open for these turns. Usually a streamed response missing stream_options.include_usage."
+      - alert: FelixModelUnpriced
+        expr: increase(felix_model_unpriced_total[1h]) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: "unpriced model turns for {{ $labels.manifest_id }}"
+          description: "Metered at $0. Add the rate to the catalog or set spec.model.price."
+
+      # Governance: a control that could not run at all, or ran in a reduced mode.
+      - alert: FelixControlUnavailable
+        expr: increase(felix_control_unavailable_total[10m]) > 0
+        labels: {severity: critical}
+        annotations:
+          summary: "governance control {{ $labels.control }} could not run"
+      - alert: FelixControlDegraded
+        expr: increase(felix_control_degraded_total[30m]) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: "governance control {{ $labels.control }} ran degraded ({{ $labels.reason }})"
+
+      # Providers.
+      - alert: FelixModelTimeouts
+        expr: increase(felix_model_timeout_total[10m]) > 5
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.provider }} timed out more than 5 times in 10 minutes"
+          description: "FELIX_MODEL_TIMEOUT_SECONDS elapsed; check the provider before raising the ceiling."
+
+      # Postgres, from postgres-exporter: every Felix process carries a pool of
+      # FELIX_DB_POOL_SIZE + FELIX_DB_MAX_OVERFLOW connections, times replicas.
+      - alert: FelixPostgresConnectionsHigh
+        expr: sum(pg_stat_activity_count) / max(pg_settings_max_connections) > 0.8
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "Postgres is at {{ $value | humanizePercentage }} of max_connections"
+          description: "Lower the pool sizes, add a transaction-mode pooler, or raise max_connections."

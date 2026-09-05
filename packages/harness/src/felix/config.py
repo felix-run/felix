@@ -47,6 +47,9 @@ class Settings(BaseSettings):
     host: str = "127.0.0.1"
     port: int = 8080
     log_level: str = "INFO"
+    # `auto` renders JSON in production and readable text elsewhere; set it explicitly
+    # when a staging stack ships to a log store, or a production one is read by a person.
+    log_format: Literal["auto", "json", "text"] = "auto"
     allow_insecure: bool = False  # required if auth_mode=none and host binds public
 
     # --- auth ---
