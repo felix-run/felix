@@ -442,6 +442,54 @@ rather than from re-reading a file. The wave itself is written up in [HISTORY.md
       enumerates what exists, so rollback requires knowing the number already.
 - [ ] **Run a job now** — `jobs.py` is CRUD plus run history; you can only wait for cron.
 
+### Testing strategy
+
+From the audit of 2026-09-05. Phase 1 (the `tests/e2e/` harness), the vendor-credential hole in
+`scripts/test.sh` and the invariant that pins it shipped together; the rest are queued in leverage
+order. One hardening item per cycle under the meta-work budget — the scanner guards below are the
+cheapest and the one the `test-quality` skill itself asks for.
+
+- [ ] **Guard the structural scanners.** `_python_files()` (`tests/unit/test_invariants.py:53`)
+      and `_py_files()` (`test_plugin_boundary.py:15`) return `[]` for a missing directory, and
+      nine scanners end on `assert offenders == []` with no assertion that the corpus or the match
+      set is non-empty — including the `httpx` timeout scanner the skill cites as having been
+      green-on-broken once. The repo already has the idiom in six places
+      (`test_secrets_logging.py:52`). Also: `test_bash_guard_hooks.py:40` skips the whole file
+      without `jq` and has no `FELIX_REQUIRE_*` escape hatch, and
+      `test_resume_poll_backoff.py:30-43` skips when the symbol under test fails to import.
+- [ ] **Route contracts through the e2e harness.** 17 of 27 `/chat` endpoints have no test —
+      steer, abort, continue, fork, rewind, compact, thinking, ui, and all nine `/sessions/*` —
+      and several are verified only by `smoke.yml` against production every six hours.
+      `routes/jobs.py` and `routes/eval.py` receive zero requests anywhere in `tests/`. Porting
+      the smoke sequences in-process also gives `patterns/delegating.py` (699 lines, executed
+      only incidentally by three unrelated files), `session/thread_state.py` and `session/lease.py`
+      their first named tests. Needs one fixture change first: `boot` replays the same script for
+      every request, so a multi-request test cannot vary the turns — let the spy own the queue.
+- [ ] **Postgres arms for the ten stores that have none.** audit, approvals, jobs, manifests,
+      plans, eval, a2a tasks, fibers, queues, skills — each has a `memory://` twin whose SQL
+      counterpart runs only under the migration test, which creates the schema and never queries
+      it. The invariant proves a twin *exists*, not that it behaves like the store it stands in
+      for. Extend the indirect-fixture pattern in `tests/conformance/conftest.py`; one contract
+      file per seam, ordered by how much SQL the twin does not do. `test_migrations.py` also wants
+      an autogenerate-empty check and stepwise per-revision up/down.
+- [ ] **Worker cron bodies and CLI commands.** Six of eight Taskiq tasks never execute in a test
+      and no test pins the cron strings; `migrate`, `eval`, `mint-jwt`, `bundle-manifests`,
+      `version` and `temporal-worker` are never invoked.
+- [ ] **A negative eval fixture.** The three smoke items each carry a `mock_answer` that satisfies
+      its own rubric, so a scorer mutated to `return True` passes CI unchanged. One item that must
+      fail proves the scorer can say no. Pairs with the eval-scoring-depth item above, and does
+      not need it.
+- [ ] **Coverage floor in one place.** The 70 lives only in `.github/workflows/ci.yml:173`, so
+      `make check` enforces none. Move it to `[tool.coverage.report] fail_under` at the measured
+      number and register pytest markers (`e2e`, `structural`, `live`) with `--strict-markers`.
+      `tests/test_smoke.py:62-88` still makes a live model call and skips on any exception, which
+      makes it a permanent no-op; mark it `live` and drop it from the default run.
+- [ ] **One provider-registry restore helper.** `reset_model_provider_registry()` +
+      `register_builtin_providers()` appears in three test files and drops every plugin-registered
+      provider for the rest of the session, which `patterns/model.py:501-508` documents as a bug.
+      `tests/e2e/conftest.py` snapshots and restores the dict instead; the other two should share
+      that helper.
+
 ### Repo / release hygiene
 
 - [~] **Required status checks + `CODEOWNERS`** — the status-check half is **done** and this
