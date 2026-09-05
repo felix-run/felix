@@ -128,6 +128,19 @@ class Settings(BaseSettings):
     temporal_host: str = "localhost:7233"
     temporal_namespace: str = "default"
 
+    # --- retention (worker `retention_sweep`, nightly) ---
+    # Days a row is kept; 0 keeps forever. Every table the harness appends to has one of
+    # these — a table with no bound grows for the life of the deployment. A manifest's
+    # `governance.retention_days` can shorten the audit TTL for its own rows, never extend it.
+    audit_retention_days: int = Field(default=30, ge=0)
+    usage_retention_days: int = Field(default=365, ge=0)
+    # Terminal fibers carry the caller's principal and scopes in `state_json`; finished
+    # A2A tasks share this TTL. Live rows are never swept.
+    fiber_retention_days: int = Field(default=7, ge=0)
+    # The session event log is the chat record, so the default keeps it. When set, a
+    # thread is dropped whole once its last event is this old.
+    session_retention_days: int = Field(default=0, ge=0)
+
     # --- scale-out ---
     scale_out: bool = False
     replica_id: str = "local"

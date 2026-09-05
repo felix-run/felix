@@ -198,6 +198,10 @@ zero cloud SDKs.
 - Manifest secrets, plus opt-in SOC 2 and EU AI Act mapping: [`deploy/GOVERNANCE.md`](deploy/GOVERNANCE.md)
 - Helm: enable `persistence` when using `fs`, so `/data` survives restarts
 - Production JWT and api_key deploys need `FELIX_CONSUMER_SHARED_SECRET` for `POST /internal/*`
+- Retention: the worker's nightly sweep prunes `audit_events`, `usage_events`, finished `fibers`
+  and `a2a_tasks`, and (off by default) idle session threads — `FELIX_AUDIT_RETENTION_DAYS` (30),
+  `FELIX_USAGE_RETENTION_DAYS` (365), `FELIX_FIBER_RETENTION_DAYS` (7), `FELIX_SESSION_RETENTION_DAYS`
+  (0 = keep); a manifest's `governance.retention_days` shortens the audit TTL for its own rows
 
 **Sizing.** Each worker process carries its own connection pool, so raise the two together:
 `FELIX_WORKERS` (1) and `FELIX_DB_POOL_SIZE` (10) + `FELIX_DB_MAX_OVERFLOW` (20) — past that

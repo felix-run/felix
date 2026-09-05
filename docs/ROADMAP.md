@@ -169,11 +169,6 @@ and fixed; the comment at `fibers.py:36-46` is the record.
       call in a long thread escaped `max_cost_usd`; `summarizing:N` recorded nothing. Both go
       through `record_model_usage` now, and the react loop's reported usage block is priced by
       the wire id (it was the logical name, so every custom route reported `$0` on the turn).
-- [ ] **Persist cost.** `usage/pricing.py` has a real `estimate_cost` with cache and
-      long-context tiers; `record_tokens` takes no cost argument and writes none, so `GET /usage`
-      (30 lines) returns raw token rows and nothing can answer "what did tenant X spend last
-      month". Add cost at write time and return it.
-- [ ] **`GET /usage/summary`** — group by manifest / model / day, with totals.
 - [x] **Persist cost.** Migration `0011_usage_cost`: `cost_usd` and `wire_model_id` on every
       row, priced at write time by the wire id and any `spec.model.price` override (which was
       documented as doing this and decorated only the `/v1/models` listing). Stored `model_id`
@@ -204,10 +199,10 @@ and fixed; the comment at `fibers.py:36-46` is the record.
 Small, and blocking for the adopter goal: anyone evaluating Felix on its governance claims reads
 `governed.yaml` first. Enforce or delete, per item.
 
-- [ ] **`governed.yaml:142 retention_days: 30` is inert** — defined in `schema.py:595` and read
-      by nothing; `jobs/retention.py:17` hardcodes the TTL. Already named in
-      `test_inert_manifest_fields.py`. The flagship governed manifest declares a data-retention
-      policy that changes nothing.
+- [x] **`governed.yaml retention_days: 30` is inert.** Wired: the nightly sweep prunes the
+      manifest's own `audit_events` past that many days, capped by `FELIX_AUDIT_RETENTION_DAYS`
+      (a manifest shortens the deployment TTL, never extends it). Removed from
+      `test_inert_manifest_fields.py`.
 - [x] **`governed.yaml:128 guardrails.targets: [input, output]` does not scrub replies.**
       Implemented: the reply-path wrapper redacts (or blocks) PII in the agent's reply on
       `invoke` and on the streaming path; `output` covers tool output and the reply,
@@ -365,10 +360,13 @@ rather than from re-reading a file. The wave itself is written up in [HISTORY.md
       discovery binds nothing). At author time the builtins plus declared refs are statically
       known, so `github__*` against a builtin-only agent is a typo with no runtime excuse.
       Author-friction call.
-- [ ] **Fiber rows are never swept.** `jobs/retention.py` covers `audit_events`, `plans` and
-      `memory_vectors`, not `fibers`. So `state.auth` — principal, scopes, scheme — accumulates
-      indefinitely, outliving both the run's usability and the 30-day audit TTL that motivated
-      it. Retention for `fibers` is the fix.
+- [x] **Fiber rows are never swept** — and neither were `usage_events`, `a2a_tasks` or
+      `session_events`; four tables grew for the life of a deployment. The sweep now covers
+      every appended table on both backends, with `FELIX_{AUDIT,USAGE,FIBER,SESSION}_RETENTION_DAYS`
+      in place of module constants (`0` keeps; sessions keep by default). The memory:// arm
+      never pruned audit rows at all — it filtered the `DurableBuffer` as if it were the list —
+      and swept plans for tenant `default` only; both fixed, and `tests/conformance/test_retention.py`
+      runs the contract against both arms.
 - [ ] **Temporal carries `state["auth"]` into workflow history.** `start_fiber_workflow` passes
       the whole fiber dict as the workflow argument, and the activity re-passes it per step, so
       `{principal_sub, scopes, scheme}` for every tenant accumulates in one namespace outside
