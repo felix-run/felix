@@ -13,6 +13,14 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from felix.context import AuthContext, RequestContext, async_run_with_context, get_context, try_get_context
 from felix.durability.fibers import FIBER_TERMINAL_STATUSES
 from felix.governance.inbound import INBOUND_SCREENED_EXTRA
+from felix.idempotency import (
+    IdempotencyConflict,
+    StoredResponse,
+    once,
+    principal_scope,
+    request_fingerprint,
+    valid_key,
+)
 from felix.logging_setup import loggable
 from felix.patterns.model import ModelGatewayError
 from felix.patterns.types import ChatMessage, InvokeInput
@@ -277,9 +285,52 @@ async def _apply_template(
     return [*messages, ChatMessage(role="user", content=text)]
 
 
+IDEMPOTENCY_HEADER = "idempotency-key"
+
+
 @router.post("")
 @router.post("/")
 async def chat(body: ChatRequest, request: Request) -> Any:
+    """Run a turn. With an `Idempotency-Key`, run it once per key per principal.
+
+    A client that times out and retries otherwise runs the turn twice — two model
+    calls, two usage rows, two session events. The first request claims the key and
+    stores its response on completion; a retry with the same key and body gets that
+    response back with `Idempotent-Replayed: true`; the same key with a different body
+    is `422 idempotency_key_reused`; a retry while the first is still running is
+    `409 idempotency_in_progress`. A failed attempt releases the key so the retry runs.
+    """
+    key = request.headers.get(IDEMPOTENCY_HEADER)
+    if key is None:
+        status, payload = await _chat_turn(body, request)
+        return JSONResponse(payload, status_code=status)
+    if not valid_key(key):
+        raise HTTPException(status_code=400, detail="invalid_idempotency_key")
+    auth = _auth_from_request(request)
+
+    async def run() -> StoredResponse:
+        status, payload = await _chat_turn(body, request)
+        return StoredResponse(status, payload)
+
+    try:
+        response, replayed = await once(
+            request.app.state.idempotency_store,
+            principal_scope(auth.tenant_id, auth.principal_sub),
+            key,
+            request_fingerprint("/chat", body.model_dump(mode="json")),
+            run,
+        )
+    except IdempotencyConflict as exc:
+        status = 409 if exc.kind == "in_progress" else 422
+        raise HTTPException(
+            status_code=status, detail=f"idempotency_{'in_progress' if status == 409 else 'key_reused'}"
+        ) from exc
+    headers = {"idempotent-replayed": "true"} if replayed else None
+    return JSONResponse(response.body, status_code=response.status, headers=headers)
+
+
+async def _chat_turn(body: ChatRequest, request: Request) -> tuple[int, dict[str, Any]]:
+    """The turn itself: `(202, accepted)` for a durable manifest, `(200, result)` otherwise."""
     settings = request.app.state.settings
     tools = request.app.state.tools
     auth = _auth_from_request(request)
@@ -336,7 +387,7 @@ async def chat(body: ChatRequest, request: Request) -> Any:
             execution=execution,
             pin=pin_fields(resolved.manifest, version=resolved.version),
         )
-        return JSONResponse(payload, status_code=202)
+        return 202, payload
 
     req_ctx = RequestContext(
         settings=settings,
@@ -376,7 +427,7 @@ async def chat(body: ChatRequest, request: Request) -> Any:
             raise
 
     final = result.final
-    return {
+    return 200, {
         "messages": [m.model_dump() for m in result.messages],
         "final": final.model_dump() if hasattr(final, "model_dump") else final,
         "thread_id": thread,
