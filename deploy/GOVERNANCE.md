@@ -563,13 +563,22 @@ previously ran inside, and a 401 returned before the limiter was reached.
 FELIX_RATE_LIMIT=120
 FELIX_RATE_LIMIT_WINDOW_SECONDS=60
 FELIX_TRUSTED_CLIENT_IP_HEADER=      # e.g. cf-connecting-ip, behind a proxy you operate
+FELIX_TRUSTED_PROXY_HOPS=1           # proxies you operate that append to that header
 ```
 
 Keyed per client address. Redis-backed when `FELIX_REDIS_URL` is reachable; if it is not,
 limiting **degrades to per-process** with a logged error rather than failing requests or
 skipping the control. Leave `FELIX_TRUSTED_CLIENT_IP_HEADER` empty unless a proxy you
-operate overwrites that header — otherwise a client can present as unlimited distinct
-clients.
+operate writes that header — otherwise a client can present as unlimited distinct
+clients. A forwarding proxy *appends* the peer it saw to `X-Forwarded-For`, so the
+client is read from the **right**, `FELIX_TRUSTED_PROXY_HOPS` entries deep: the last
+entry with one proxy, the one before it with two. Repeated header lines (HAProxy
+`option forwardfor` adds a line rather than extending the list) are joined first, so the
+rule holds across them. The leftmost entry is whatever the client chose to send and is
+never used. A header with fewer entries than the declared hops, or whose chosen entry is
+not an IP address, is not trusted at all: the key falls back to the socket peer, the one
+address a client cannot choose. A single-valued header (`cf-connecting-ip`) is the
+one-entry case of the same rule.
 
 `/metrics` requires authentication: its label values include tenant-supplied manifest ids
 and remote MCP tool names.
@@ -610,6 +619,19 @@ comma-separated. What is enforced:
   cached (15 min TTL), refreshed by the API on a timer. `FELIX_JWKS_PUBLIC` is used for
   the `self` scheme only — it must never verify a token that claims a remote issuer.
 - **Algorithms are asymmetric-only**; there is no HS256 or `none` path.
+- **Clock skew of sixty seconds is tolerated** on `exp`, `nbf` and `iat` (`JWT_LEEWAY_S`);
+  a token past that is `expired`.
+- **An unusable verifier is visible on `/ready`.** A cached `access`/`cognito` key set past
+  its TTL is not served, a shared issuer with no `;aud=` is refused, a `FELIX_JWKS_PUBLIC`
+  that does not import verifies nothing — in each, every token from that issuer fails while
+  the database and Redis probes stay green. `/ready` carries a `jwks` row under
+  `auth_mode=jwt`; it **fails only when no configured verifier is usable** (the pod cannot
+  authenticate anyone and leaves rotation) and otherwise stays ready and logs which issuer
+  is out, so one issuer's outage does not take the deployment off the Service for the
+  issuers that still work. Remote key sets refresh every five minutes against a fifteen-minute
+  TTL, and a failed refresh retries after thirty seconds, so one IdP blip cannot age a set
+  past its TTL. An IdP outage longer than the TTL still 401s that issuer's tokens; the
+  deployment stays up for the others.
 
 ## Tenant resolution
 
@@ -623,7 +645,18 @@ FELIX_ALLOWED_TENANTS=acme,globex     # empty = accept any claimed tenant
 `felix doctor` fails a claim-mode verifier with an empty allowlist outside development (it
 says nothing for `fixed` and `issuer`, which read no claim). Prefer `;tenant=fixed:<tenant>` for a single-tenant deployment. On Cognito, `custom:*`
 attributes are frequently user-writable, so a claim alone is not an authorization
-decision. A token with **no** tenant claim in `claim` mode is now rejected — it
+decision — which is why, outside `FELIX_ENVIRONMENT=development`, a `tenant=claim`
+verifier with an empty `FELIX_ALLOWED_TENANTS` is refused at startup (`validate_runtime`)
+rather than accepting whatever tenant the token names. `fixed` and `issuer` verifiers never
+read the claim and need no allowlist — but `issuer` takes the **first DNS label of the
+issuer host** and discards the path, so two Cognito user pools or two Keycloak realms
+(`…/us-east-1_A` and `…/us-east-1_B`, `…/realms/acme` and `…/realms/globex`) would
+collapse into one tenant; that configuration — or an issuer-derived label that equals another
+verifier's `fixed:` tenant — is refused at startup in every environment.
+Pin path-scoped issuers with `;tenant=fixed:<tenant>`. The allowlist is global, not
+per-verifier: with two `claim` verifiers and `FELIX_ALLOWED_TENANTS=acme,globex`, a token
+from either issuer may claim either tenant. If one issuer must not be able to name the
+other's tenant, give it `;tenant=fixed:` instead. A token with **no** tenant claim in `claim` mode is now rejected — it
 previously fell back to the issuer host's first DNS label, silently putting every such
 user in the same tenant.
 

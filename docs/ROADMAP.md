@@ -437,6 +437,14 @@ rather than from re-reading a file. The wave itself is written up in [HISTORY.md
 
 ### Control plane
 
+- [x] **Edge posture behind a proxy and an IdP** (readiness pass, 2026-09-04). The rate-limit
+      key read the *leftmost* `X-Forwarded-For` entry, the one the client wrote; a `tenant=claim`
+      verifier with no `FELIX_ALLOWED_TENANTS` accepted any claimed tenant; `exp` had zero
+      clock leeway; and a remote JWKS past its TTL 401ed every token from that issuer while
+      `/ready` stayed green. Now: `FELIX_TRUSTED_PROXY_HOPS` counts from the right,
+      `validate_runtime` refuses the unguarded claim mode outside development and colliding
+      `tenant=issuer` verifiers everywhere, sixty seconds of leeway, and a `jwks` row on
+      `/ready` that fails when no verifier is usable (refresh 300s, retry 30s).
 - [ ] **A tenant is a string.** There is no `Tenant` table and no `ApiKey` table; `tenant_id` is a
       column on every row and never a foreign key. Minting a key means editing
       `FELIX_AUTH_API_KEYS` JSON and restarting. Manifest CRUD, canary and rollback are real and

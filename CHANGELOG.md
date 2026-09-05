@@ -74,6 +74,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   leaking into it. Blank keys stop the billing but not the egress (an unauthenticated request
   is still sent), so `tests/e2e` additionally maps every logical model id to the scripted
   provider and refuses to boot if any route still resolves to a real one.
+- **The rate-limit client key behind a proxy is the entry the proxy wrote, not the one
+  the client sent.** With `FELIX_TRUSTED_CLIENT_IP_HEADER=x-forwarded-for` the key was
+  the *leftmost* entry, and a forwarding proxy appends rather than overwrites, so the
+  leftmost entry was whatever the client put in the header it sent: one client could
+  present as unlimited distinct clients, which is exactly what the empty-by-default
+  setting exists to prevent. The client is now counted from the right, `FELIX_TRUSTED_PROXY_HOPS`
+  (default `1`) deep — the last entry with one proxy you operate, the one before it with
+  two. Repeated header lines are joined first (a proxy that adds a line leaves the client's
+  first), a header with fewer entries than the declared hops or a chosen entry that is not
+  an IP address is not trusted at all and the key falls back to the socket peer. A
+  single-valued header such as `cf-connecting-ip` is unaffected.
+- **A JWT deployment that takes the tenant from a claim must name its tenants.** With
+  `tenant=claim` (the default) and an empty `FELIX_ALLOWED_TENANTS`, any tenant a token
+  claimed was accepted — on Cognito the `custom:*` attributes that carry it are frequently
+  user-writable. `validate_runtime` now refuses that combination outside `development`;
+  `;tenant=fixed:<tenant>` and `;tenant=issuer` verifiers never read the claim and need no
+  allowlist. **Upgrade note:** an existing `auth_mode=jwt` deployment with the default
+  `tenant=claim` and an empty `FELIX_ALLOWED_TENANTS` under `FELIX_ENVIRONMENT=staging|production`
+  will refuse to start until the allowlist is set — set it before rolling.
+- **JWT verification tolerates sixty seconds of clock skew.** `exp`, `nbf` and `iat` were
+  checked with zero leeway, so a token was rejected the moment the issuer's clock and
+  ours disagreed by a second. `JWT_LEEWAY_S = 60`, which is what the major IdPs and their
+  SDKs assume; a token past that is still reported as `expired`.
+- **An unusable JWT verifier is visible on `/ready`, and a JWKS blip no longer 401s
+  everyone.** A remote key set past its fifteen-minute TTL is not served, a shared issuer
+  with no audience is refused, a `FELIX_JWKS_PUBLIC` that does not import verifies nothing
+  — in each, every token from that issuer failed with `invalid_token` and the only trace was
+  a per-request log line while `/ready` stayed green. `/ready` now carries a `jwks` row
+  under `auth_mode=jwt`: it fails when no configured verifier is usable, so the pod leaves
+  rotation, and stays ready with a logged warning when only some are, so one issuer's
+  outage does not down the others. The refresh loop ran every 600s against a 900s TTL, so
+  one failed tick aged the set past the TTL before the next attempt; it now runs every
+  300s and retries a failure after 30s.
+- **`tenant=issuer` verifiers that collapse into one tenant are refused.** `issuer` mode
+  takes the first DNS label of the issuer host and discards the path, so two Cognito user
+  pools or two Keycloak realms became one tenant and shared every session and memory row.
+  `validate_runtime` refuses the collision — and an issuer-derived label that equals another
+  verifier's `fixed:` tenant — in every environment; pin path-scoped issuers with
+  `;tenant=fixed:<tenant>`. The guard, the JWKS refresh loop and the `/ready` row all apply
+  to any auth mode other than `none` and `api_key`, so a plugin authenticator that consults
+  `FELIX_JWT_VERIFIERS` gets the same posture as `jwt`. A `FELIX_JWT_VERIFIERS` whose every
+  entry fails to parse (a typo'd scheme) is refused at startup rather than starting a process
+  that 401s everyone.
 
 - **Final-response judges and PII guardrails now govern the reply on the streaming path.**
   `wrap_final_response_judges` passed events straight through on `stream_events`, so the

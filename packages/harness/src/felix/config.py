@@ -92,6 +92,11 @@ class Settings(BaseSettings):
     # attacker-controlled unless a proxy you operate overwrites it, and trusting
     # it blindly lets one client masquerade as unlimited distinct clients.
     trusted_client_ip_header: str = ""
+    # How many proxies you operate append to that header on the way in. A forwarding
+    # proxy *appends* the peer it saw, so the client is counted from the RIGHT: with one
+    # proxy the last entry, with two the one before it. The leftmost entry is whatever
+    # the client chose to send.
+    trusted_proxy_hops: int = Field(default=1, ge=1)
     oauth_cache_key: str = ""  # base64 32-byte AES key
     # Comma-separated commands MCP stdio servers may spawn. Empty (default) disables
     # stdio entirely — manifest-supplied argv would otherwise be arbitrary code execution.
@@ -486,6 +491,59 @@ class Settings(BaseSettings):
         if singleton is not self and not singleton.process_role:
             singleton.process_role = role
 
+    def _validate_jwt_tenant_posture(self) -> None:
+        """Where a JWT deployment's tenant comes from, and whether that is constrained."""
+        from felix.auth.jwt import (
+            allowed_tenants,
+            claim_mode_verifiers,
+            parse_verifiers,
+            tenant_collisions,
+            uses_jwt_verifiers,
+        )
+
+        if (
+            self.auth_mode not in {"none", "api_key"}
+            and self.jwt_verifiers.strip()
+            and not parse_verifiers(self.jwt_verifiers)
+        ):
+            # `parse_verifiers` drops an entry with an unknown scheme with one warning, so
+            # a typo (`oidc:`) left a process that started, reported ready with no
+            # `jwks` row, and 401ed every request.
+            raise RuntimeError(
+                "FELIX_JWT_VERIFIERS is set but no entry parsed (scheme must be access|cognito|self); "
+                "nothing can verify a token."
+            )
+        if not uses_jwt_verifiers(self):
+            return
+        # A claim is the least trustworthy source of a tenant id (Cognito `custom:*`
+        # attributes are often user-writable), and with no allowlist any claimed tenant
+        # is accepted; outside development the process refuses to start on it.
+        # `allowed_tenants()` is the runtime's definition of "empty" — a value of
+        # separators alone must not pass here and be empty there.
+        if (
+            self.environment != "development"
+            and claim_mode_verifiers(self.jwt_verifiers)
+            and not allowed_tenants(self)
+        ):
+            raise RuntimeError(
+                "FELIX_JWT_VERIFIERS resolves the tenant from a token claim "
+                "(tenant=claim) and FELIX_ALLOWED_TENANTS is empty, so any claimed tenant "
+                "would be accepted. Set FELIX_ALLOWED_TENANTS, or pin the verifier with "
+                ";tenant=fixed:<tenant>."
+            )
+        collisions = tenant_collisions(self.jwt_verifiers)
+        if collisions:
+            # Two issuers becoming one tenant is a cross-tenant data path, in every
+            # environment.
+            described = "; ".join(
+                f"{tenant!r} <- {', '.join(issuers)}" for tenant, issuers in collisions.items()
+            )
+            raise RuntimeError(
+                "FELIX_JWT_VERIFIERS: tenant=issuer derives the tenant from the issuer host's "
+                f"first label, and these issuers collapse into one tenant: {described}. "
+                "Pin each with ;tenant=fixed:<tenant>."
+            )
+
     def validate_runtime(self) -> None:
         """Fail fast on unsafe or incomplete configuration."""
         self._validate_registry_backed_settings()
@@ -515,6 +573,8 @@ class Settings(BaseSettings):
                 "FELIX_DOCS_PUBLIC=true serves /docs and /openapi.json — every route, management "
                 "ones included — anonymously on an authenticated deployment"
             )
+
+        self._validate_jwt_tenant_posture()
         if self.scale_out:
             if "sqlite" in self.database_url:
                 raise RuntimeError("Scale-out requires Postgres (FELIX_DATABASE_URL).")

@@ -56,9 +56,11 @@ def test_proxy_header_is_ignored_unless_trusted() -> None:
 
 
 def test_trusted_proxy_header_is_used_when_configured() -> None:
+    """The proxy appends the peer it saw, so its entry is the last one; the first entry
+    is whatever the client sent (test_jwt_proxy_posture pins the hop arithmetic)."""
     s = _settings(trusted_client_ip_header="x-forwarded-for")
-    key = client_key(_Req("10.0.0.1", {"x-forwarded-for": "9.9.9.9, 10.0.0.1"}), s)
-    assert "9.9.9.9" in key, "the origin client is the first entry"
+    key = client_key(_Req("10.0.0.1", {"x-forwarded-for": "6.6.6.6, 9.9.9.9"}), s)
+    assert key == "ip:9.9.9.9"
 
 
 def test_metrics_is_no_longer_exempt() -> None:

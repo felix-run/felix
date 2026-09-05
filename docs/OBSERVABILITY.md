@@ -32,7 +32,11 @@ never publish it.
 The probe paths are the opposite case: `/health`, `/live` and `/ready` are public and
 unthrottled (`PROBE_PATHS` in `felix/security/rate_limit.py`), because kubelet sends no
 credential. `/ready` answers with up/down per dependency and no detail; the exception
-text is logged.
+text is logged. The rows are `database`, `redis`, `object_store`, and — under
+`auth_mode=jwt` — `jwks`, which fails when **no** configured verifier is usable (a remote
+key set never fetched or past its TTL, a shared issuer with no audience, a local key that
+does not import) and stays ok but logs a warning when only some are, because a stale set is
+not served and every token from that issuer would 401 while everything else stayed green.
 
 ## Metrics
 
