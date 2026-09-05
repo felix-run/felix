@@ -61,14 +61,14 @@ class _FakeModel:
         self.chat_text = chat_text
         self.stream_chunks = stream_chunks
 
-    async def chat(self, messages: list[ChatMessage], tools: list) -> Any:
+    async def chat(self, messages: list[ChatMessage], tools: list, opts: Any = None) -> Any:
         class _R:
             message = ChatMessage(role="assistant", content=self.chat_text)
             usage = None
 
         return _R()
 
-    async def stream_turn(self, messages: list[ChatMessage], tools: list):
+    async def stream_turn(self, messages: list[ChatMessage], tools: list, opts: Any = None):
         """Deltas then the authoritative result — the shape `_HttpModelClient` yields.
 
         Present so the composite streaming paths exercise the branch the real providers

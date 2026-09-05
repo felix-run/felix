@@ -24,7 +24,7 @@ from felix.session.types import GetEventsOpts
 from felix.steer import enqueue
 from pydantic import BaseModel, Field
 
-from felix_api.errors import client_safe_message
+from felix_api.errors import client_safe_message, log_gateway_error
 from felix_api.routes._sse import (
     DONE,
     HEARTBEAT,
@@ -367,12 +367,7 @@ async def chat(body: ChatRequest, request: Request) -> Any:
             # CodeQL does not flag it -- its taint source is the network rather than
             # the request -- but a gateway body is shaped by prompt content, which
             # makes it as forgeable as anything the client sends directly.
-            logger.warning(
-                "model gateway error label=%s status=%s body=%s",
-                loggable(exc.label, limit=80),
-                exc.status,
-                loggable(exc.body),
-            )
+            log_gateway_error(logger, exc)
             raise HTTPException(status_code=502, detail=client_safe_message(exc)) from exc
         except Exception as exc:
             http = _http_from_invoke_prep(exc)
@@ -685,6 +680,10 @@ async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
             # The client hung up. Nothing to send; let the cancellation propagate so the
             # run is torn down instead of continuing to burn model tokens.
             raise
+        except ModelGatewayError as exc:
+            # Typed like the non-streaming 502, with the upstream body kept to the log.
+            log_gateway_error(logger, exc)
+            yield error_frame(client_safe_message(exc), kind="model_gateway_error")
         except Exception as exc:
             # Without this the body simply stopped under an already-sent 200 OK, with no
             # error event and no [DONE] — the client could not tell success from failure.
@@ -1415,12 +1414,7 @@ async def chat_continue(body: ContinueRequest, request: Request) -> Any:
             # CodeQL does not flag it -- its taint source is the network rather than
             # the request -- but a gateway body is shaped by prompt content, which
             # makes it as forgeable as anything the client sends directly.
-            logger.warning(
-                "model gateway error label=%s status=%s body=%s",
-                loggable(exc.label, limit=80),
-                exc.status,
-                loggable(exc.body),
-            )
+            log_gateway_error(logger, exc)
             raise HTTPException(status_code=502, detail=client_safe_message(exc)) from exc
         except Exception as exc:
             http = _http_from_invoke_prep(exc)

@@ -496,6 +496,13 @@ cheapest and the one the `test-quality` skill itself asks for.
 
 ### Repo / release hygiene
 
+- [ ] **Credentials survive a `repr`.** `Settings` renders `anthropic_api_key` / `openai_api_key`
+      in clear, `RequestContext` carries `Settings` on every request, and `HttpModelClient` keeps
+      `api_key` as a plain dataclass field — no call site logs any of them today, so this is one
+      `logger.debug("%r", client)` away rather than live. `SecretStr` on the credential fields
+      and `field(repr=False)` on the client close it (`_ReactAgent.settings` got the latter in
+      the `/v1` streaming change). Found by the 2026-09-04 readiness security review.
+
 - [~] **Required status checks + `CODEOWNERS`** — the status-check half is **done** and this
       entry was wrong: `main` requires 13 contexts, all bound to the Actions app, and the
       `changes` job does report success so doc-only PRs stay mergeable. Found by hitting it —

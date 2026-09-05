@@ -195,6 +195,7 @@ def record_usage(
     if ctx is not None:
         u = usage
         ctx.limit_state.tokens_input += u.input + u.cache_creation + u.cache_read
+        ctx.limit_state.tokens_cached += u.cache_read
         ctx.limit_state.tokens_output += u.output
         # Accumulate spend so `limits.max_cost_usd` has something to measure.
         ctx.limit_state.cost_usd += cost_usd or 0.0

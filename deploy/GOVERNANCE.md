@@ -370,6 +370,11 @@ budget alone.
 | `max_input_tokens` / `max_output_tokens` | Accumulated tokens, including cache reads and writes. |
 | `max_cost_usd` | Accumulated spend, priced from the model catalog. |
 
+A caller on `/v1/chat/completions` may pass `max_tokens`; it only ever *lowers* the manifest's
+per-turn ceiling (`spec.model.max_tokens`, or `limits.max_output_tokens` when that is tighter),
+never raises it — the output budget is checked at the top of a turn, so a caller-sized turn
+would otherwise run a full turn past the declared bound before it tripped.
+
 Side requests are metered but deliberately uncached. Compaction, memory capture, inbound
 screening and branch summarisation each issue a model call in the middle of a turn, and
 each carries a different prefix from the conversation around it — so they opt out of the

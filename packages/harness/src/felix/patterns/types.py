@@ -16,7 +16,9 @@ from felix_ai.types import (
     ChatMessage,
     ContentBlock,
     ImageAttachment,
+    ModelChatOptions,
     Role,
+    StopReason,
     ToolCall,
 )
 
@@ -30,12 +32,21 @@ class InvokeInput:
     model_id: str | None = None
     tenant_id: str | None = None
     thinking_level: str | None = None
+    # Per-request sampling, for callers whose wire carries it (`/v1`). `None` keeps the
+    # manifest's `spec.model` values. A caller may only *lower* `max_tokens`: the react
+    # loop clamps it to the manifest's ceiling before the model sees it.
+    model_options: ModelChatOptions | None = None
 
 
 @dataclass(slots=True)
 class InvokeOutput:
     messages: list[ChatMessage]
     final: ChatMessage
+    # Why the last model turn ended. A caller on the OpenAI wire maps it to
+    # `finish_reason`; before this every reply said `stop`. The react loop and the reply
+    # controls set it (`refusal` when governance replaced the reply); the delegating
+    # patterns synthesise their final answer and report the default.
+    stop_reason: StopReason = "end_turn"
 
 
 # Back-compat alias used by TS port call sites.
