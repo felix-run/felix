@@ -7,7 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **An end-to-end test layer: `tests/e2e/`.** Every HTTP test in the repo cut the chain at one
+  of two places — the ones that reached a route replaced `build_tenant_agent` with a stub, and
+  the ones that ran the real compiler and loop never opened a socket. So the path a request
+  actually takes was covered in pieces and never end to end, which is the defect shape the repo
+  names: the branch production takes is the branch nothing covers. The new layer boots the
+  zero-argument `create_application()` that Granian is handed in production, sends real HTTP
+  through it, and maps every logical model id to `felix_ai.providers.scripted` — a real
+  provider, deliberately absent from the production registry — so the middleware stack,
+  manifest resolution, the compile, the governance wrappers, the pattern and the reply controls
+  are all the production ones. Nine tests pin a tool call travelling the whole stack, the route
+  actually taken, a scoped policy denying a tool for a caller without the scope, PII scrubbed
+  from the reply on both `/chat` and `/chat/stream` (the streaming path being the one whose
+  failure mode is tokens already sent), the turn metered and priced, the audit trail from
+  prompt to answer, the SSE frame contract including the tool's output, and `api_key` mode
+  refusing an unauthenticated request. Every one is proved by mutation: nulling
+  `apply_policies`, `apply_reply_controls`, `record_usage`, the tool-call audit emit and its
+  payload, the `tool_start` frame, the model resolution, the calculator handler and the
+  missing-credential check each turns its test red.
+
 ### Fixed
+
+- **The test suite could spend real money.** `scripts/test.sh` redirected the database and the
+  object store to in-memory twins but left the vendor credentials as the repo `.env` set them,
+  so any test that reached a model called the vendor for real. Not hypothetical: the first run
+  of the new e2e suite billed live Anthropic calls, because `.env` also overrides
+  `default_model_id` and the route the fixture believed was scripted was not. The runner now
+  blanks every credential-bearing setting — including `FELIX_MODEL_PROVIDER_OPTIONS`, whose
+  per-provider `api_key` `resolve_provider_config` prefers *over* the named vendor fields, so a
+  key there re-armed a vendor while the obvious two looked safe — and a new invariant
+  enumerates them from `Settings` so a credential field added later fails the suite instead of
+  leaking into it. Blank keys stop the billing but not the egress (an unauthenticated request
+  is still sent), so `tests/e2e` additionally maps every logical model id to the scripted
+  provider and refuses to boot if any route still resolves to a real one.
 
 - **Final-response judges and PII guardrails now govern the reply on the streaming path.**
   `wrap_final_response_judges` passed events straight through on `stream_events`, so the
