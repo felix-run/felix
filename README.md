@@ -207,7 +207,12 @@ zero cloud SDKs.
 `FELIX_WORKERS` (1) and `FELIX_DB_POOL_SIZE` (10) + `FELIX_DB_MAX_OVERFLOW` (20) — past that
 ceiling requests queue for `FELIX_DB_POOL_TIMEOUT_SECONDS` and then fail. Set
 `FELIX_DB_POOL_PRE_PING=false` against a direct Postgres; it costs a round trip per checkout and
-only earns it behind PgBouncer, RDS Proxy, or Cloud SQL.
+only earns it behind PgBouncer, RDS Proxy, or Cloud SQL. Connections give up after
+`FELIX_DB_CONNECT_TIMEOUT_SECONDS` (10) and every connection is `application_name=felix-<role>`
+in `pg_stat_activity`. A statement timeout belongs on the role (`ALTER ROLE felix SET
+statement_timeout`), not in the client — a client-side one does not survive a pooler; `felix
+doctor` reports what applies. On SIGTERM a worker gets `FELIX_GRACEFUL_SHUTDOWN_SECONDS` (120,
+the Helm chart's grace period) to finish in-flight requests before it is killed.
 
 **Behind a pooler.** `WORKERS × (POOL_SIZE + MAX_OVERFLOW)` is the ceiling, and four workers on the
 defaults is 120 connections against a stock Postgres `max_connections` of 100 — which is when a

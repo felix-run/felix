@@ -33,14 +33,14 @@ def _settings(**kw: object) -> Settings:
 def test_preparation_is_on_by_default() -> None:
     """The default suits a direct Postgres, which is what `make up` gives you."""
     assert _settings().db_prepared_statements is True
-    assert db_session._connect_args(_settings(), PG) == {}
+    assert "prepare_threshold" not in db_session._connect_args(_settings(), PG)
 
 
 def test_disabling_it_passes_prepare_threshold_none() -> None:
     """`None` disables auto-preparation. `0` would prepare *everything* immediately,
     which is the opposite of what a pooler needs."""
     args = db_session._connect_args(_settings(db_prepared_statements=False), PG)
-    assert args == {"prepare_threshold": None}
+    assert "prepare_threshold" in args and args["prepare_threshold"] is None
 
 
 def test_the_option_is_not_passed_to_a_driver_that_has_no_such_option() -> None:
@@ -62,7 +62,7 @@ def test_the_engine_kwargs_carry_the_option_to_every_engine() -> None:
     engine added for a good reason would have failed a test whose message read "expected
     two engine constructors".
     """
-    assert db_session._engine_kwargs(_settings(db_prepared_statements=False), PG)["connect_args"] == {
-        "prepare_threshold": None
-    }
-    assert db_session._engine_kwargs(_settings(db_prepared_statements=True), PG)["connect_args"] == {}
+    off = db_session._engine_kwargs(_settings(db_prepared_statements=False), PG)["connect_args"]
+    on = db_session._engine_kwargs(_settings(db_prepared_statements=True), PG)["connect_args"]
+    assert "prepare_threshold" in off and off["prepare_threshold"] is None  # type: ignore[index]
+    assert "prepare_threshold" not in on  # type: ignore[operator]

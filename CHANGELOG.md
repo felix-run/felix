@@ -231,8 +231,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `InvokeInput` carries `model_options` and `InvokeOutput` carries `stop_reason` for any
   caller; the reply controls report `refusal` (`content_filter`) when a judge or PII block
   replaced the reply. `/chat/stream` also types a mid-stream gateway error now.
+- **Connections and task results are bounded, and every process names itself.** The
+  engine had no connect timeout (a blackholed host waited on the OS default) and no
+  `application_name`, so `pg_stat_activity` could not say which Felix process held a
+  connection; every cron tick wrote a Taskiq result that never expired. New:
+  `FELIX_DB_CONNECT_TIMEOUT_SECONDS` (10), `FELIX_TASK_RESULT_TTL_SECONDS` (3600),
+  `FELIX_PROCESS_ROLE` (stamped by each console script: `api`, `worker`, `scheduler`,
+  `temporal-worker`, `cli`; `felix migrate` gets the same bounds), and the Granian knobs
+  `FELIX_HTTP_BACKLOG` (1024) and `FELIX_HTTP_RUNTIME_THREADS` (1), which are Granian's own
+  defaults. There is deliberately no statement-timeout setting: as a libpq startup option
+  PgBouncer rejects it, and with PgBouncer told to ignore it the connection succeeds and
+  nothing is ever cancelled. Set it on the role; `felix doctor` now reports what applies.
 
 ### Changed
+
+- **A worker now has a kill deadline on SIGTERM, and a dead worker is respawned.** Granian
+  previously joined workers without a timeout; `FELIX_GRACEFUL_SHUTDOWN_SECONDS` (120,
+  matching the Helm chart's `terminationGracePeriodSeconds`, which the chart now sets it
+  from) bounds the drain, after which in-flight streams and the unflushed audit buffer are
+  lost — so size it above your longest turn. `FELIX_RESPAWN_FAILED_WORKERS` (true) keeps a
+  deployment serving after a worker dies; a slow crash loop then shows only in Granian's
+  `Respawning worker` log line, so alert on it or set it false to surface as a container exit.
 - **The session summarizer is billed to the tenant that triggered it, and counts against
   the run's budget.** Compaction wrote its own usage row against the literal tenant
   `"default"`, priced it by the logical route name (which the price table does not know,

@@ -32,6 +32,10 @@ spec:
             {{- include "felix.datastoreEnv" . | nindent 12 }}
             {{- include "felix.agentEnv" . | nindent 12 }}
             {{- include "felix.authEnv" . | nindent 12 }}
+            # One number governs the drain: the pod's grace period, minus the preStop
+            # sleep, is what Granian gives each worker before it kills it.
+            - name: FELIX_GRACEFUL_SHUTDOWN_SECONDS
+              value: {{ max 1 (sub .Values.api.terminationGracePeriodSeconds .Values.api.preStopSleepSeconds) | quote }}
           # Endpoint removal and SIGTERM race; a short sleep lets the endpoint slice
           # drop the pod before the server stops accepting.
           lifecycle:

@@ -151,9 +151,13 @@ def test_the_worker_carries_the_credentials_the_agent_loop_needs_and_no_more(ren
         "FELIX_S3_ACCESS_KEY",
         "FELIX_S3_SECRET_KEY",
     } <= worker
-    assert api - worker == {"FELIX_JWKS_PUBLIC", "FELIX_JWKS_PRIVATE", "FELIX_CONSUMER_SHARED_SECRET"}, (
-        api - worker
-    )
+    assert api - worker == {
+        "FELIX_JWKS_PUBLIC",
+        "FELIX_JWKS_PRIVATE",
+        "FELIX_CONSUMER_SHARED_SECRET",
+        # Not a credential: the API's drain deadline, derived from its own grace period.
+        "FELIX_GRACEFUL_SHUTDOWN_SECONDS",
+    }, api - worker
 
 
 def test_the_scheduler_only_gets_the_datastore_urls(rendered: dict) -> None:
@@ -207,3 +211,12 @@ def test_the_worker_port_is_not_reachable_through_the_service(rendered: dict) ->
     """Its metrics are unauthenticated and carry tenant-supplied labels."""
     ports = _only(rendered, "Service")["spec"]["ports"]
     assert [p["targetPort"] for p in ports] == ["http"], ports
+
+
+def test_the_chart_hands_the_api_its_drain_deadline(rendered: dict) -> None:
+    """One number governs the drain: the pod's grace period minus the preStop sleep is
+    what the API is told to give each worker, so `terminationGracePeriodSeconds: 120` is
+    not decorative against an in-process default that cuts under it."""
+    api = _container(_deployments(rendered)["api"], "api")
+    env = {e["name"]: e.get("value") for e in api.get("env", [])}
+    assert env["FELIX_GRACEFUL_SHUTDOWN_SECONDS"] == "115"
