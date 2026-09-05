@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 import pytest_asyncio
+from felix.db.migrations import alembic_config
 
 PG_URL_ENV = "FELIX_CONFORMANCE_DATABASE_URL"
 REQUIRE_ENV = "FELIX_CONFORMANCE_REQUIRE_POSTGRES"
@@ -23,21 +24,18 @@ def postgres_url() -> str | None:
     return os.environ.get(PG_URL_ENV) or None
 
 
-def _alembic_config(url: str):
-    """An Alembic config pointed at `url`, whatever the ambient settings say.
+def postgres_url_or_skip(what: str) -> str:
+    """The conformance database, or a skip — or a failure where a skip would lie.
 
-    `migrations/env.py` reads `config.attributes["felix_url"]` before falling back to
-    `FELIX_DATABASE_URL` — which `scripts/test.sh` pins to `memory://`, so without the
-    override every migration here would target the in-memory URL and do nothing.
+    Locally a skip is right; in CI `FELIX_CONFORMANCE_REQUIRE_POSTGRES` turns the missing
+    database into a failure, because a silently skipped arm looks exactly like a pass.
     """
-    from pathlib import Path
-
-    from alembic.config import Config
-
-    root = Path(__file__).resolve().parents[2]
-    cfg = Config(str(root / "alembic.ini"))
-    cfg.attributes["felix_url"] = url
-    return cfg
+    url = postgres_url()
+    if url:
+        return url
+    if os.environ.get(REQUIRE_ENV):
+        pytest.fail(f"{REQUIRE_ENV} is set but {PG_URL_ENV} is not — the Postgres arm of {what} cannot run")
+    pytest.skip(f"{PG_URL_ENV} unset — the Postgres arm of {what} did not run")
 
 
 async def migrate_to_head(url: str) -> None:
@@ -53,13 +51,13 @@ async def migrate_to_head(url: str) -> None:
     """
     from alembic import command
 
-    await asyncio.to_thread(command.upgrade, _alembic_config(url), "head")
+    await asyncio.to_thread(command.upgrade, alembic_config(url), "head")
 
 
 async def downgrade_to_base(url: str) -> None:
     from alembic import command
 
-    await asyncio.to_thread(command.downgrade, _alembic_config(url), "base")
+    await asyncio.to_thread(command.downgrade, alembic_config(url), "base")
 
 
 async def drop_everything(url: str) -> None:

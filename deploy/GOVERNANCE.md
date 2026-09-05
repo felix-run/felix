@@ -599,7 +599,8 @@ token claim. Constrain it:
 FELIX_ALLOWED_TENANTS=acme,globex     # empty = accept any claimed tenant
 ```
 
-Prefer `;tenant=fixed:<tenant>` for a single-tenant deployment. On Cognito, `custom:*`
+`felix doctor` fails a claim-mode verifier with an empty allowlist outside development (it
+says nothing for `fixed` and `issuer`, which read no claim). Prefer `;tenant=fixed:<tenant>` for a single-tenant deployment. On Cognito, `custom:*`
 attributes are frequently user-writable, so a claim alone is not an authorization
 decision. A token with **no** tenant claim in `claim` mode is now rejected — it
 previously fell back to the issuer host's first DNS label, silently putting every such

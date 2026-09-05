@@ -210,6 +210,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   defaults. There is deliberately no statement-timeout setting: as a libpq startup option
   PgBouncer rejects it, and with PgBouncer told to ignore it the connection succeeds and
   nothing is ever cancelled. Set it on the role; `felix doctor` now reports what applies.
+- **`felix doctor` checks the schema and the posture, not just reachability.** "Database
+  reachable" said nothing about migrations, so a deploy that skipped `felix migrate head`
+  looked healthy until the first query hit a missing column; and a production `.env` with
+  an empty `FELIX_ALLOWED_TENANTS` under a claim-mode JWT verifier, a plaintext OTLP
+  exporter off-host, or prompts captured into spans passed green. Doctor now compares the
+  database's stamped revision with the code's head (`felix.db.migrations`, shared with
+  `felix migrate`, and no longer dependent on the working directory) and, outside
+  development, fails each of those postures with the setting to change — saying, in
+  development, that it skipped them. The OTel verdict is judged the way the exporter
+  decides it (the endpoint scheme over OTLP/HTTP, `FELIX_OTEL_INSECURE` over gRPC, a
+  loopback collector always private).
 
 ### Changed
 
