@@ -647,6 +647,32 @@ felix mint-jwt --sub ops --tenant default \
   --scopes audit:read,manifests:write,approvals:write,jobs:write
 ```
 
+## Supply chain: what proves an image is the one Felix published
+
+Every published image (`ghcr.io/felix-run/felix:X.Y.Z` and `:X.Y.Z-gcp`, each for
+`linux/amd64` and `linux/arm64`) is signed by digest with cosign under the release
+workflow's OIDC identity, carries an SPDX SBOM attestation per platform and SLSA provenance
+from buildx, and was scanned for CRITICAL/HIGH findings before its version tag existed.
+How that pipeline works, what it refuses, and the repository settings it depends on are in
+[`docs/RELEASING.md`](../docs/RELEASING.md). An operator verifies:
+
+```bash
+cosign verify ghcr.io/felix-run/felix:X.Y.Z \
+  --certificate-identity-regexp '^https://github.com/felix-run/felix/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+cosign verify-attestation --type spdxjson ghcr.io/felix-run/felix:X.Y.Z \
+  --certificate-identity-regexp '^https://github.com/felix-run/felix/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+The signature says the image was built by that workflow at that tag; the SLSA provenance
+attached by buildx says from which Dockerfile, sources and build args; the SBOM says what is
+in it. What the workflow cannot prove is who was allowed to push the tag — that is the tag
+ruleset and environment protection described in `docs/RELEASING.md`, repo settings rather
+than code. Dependencies are held for 48 hours after publication before CI accepts them
+(`scripts/check-dependency-age.py`), and every action the workflows run is pinned by commit
+SHA, every scanner and base image by digest.
+
 ## GitOps check
 
 ```bash

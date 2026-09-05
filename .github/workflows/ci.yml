@@ -103,6 +103,13 @@ jobs:
         run: uv python install 3.14
       - name: Verify uv.lock is current
         run: uv lock --check
+      - name: Refuse dependencies published in the last two days
+        # The analogue of npm's min-release-age: a version pushed to PyPI in the last 48h
+        # is the window in which a hijacked package is caught and yanked. A Dependabot bump
+        # that lands inside it fails here and passes two days later without a change.
+        # Not uv's own timestamp cutoff: that is a resolution input, so it makes uv
+        # re-resolve from scratch and fail the check for reasons unrelated to age.
+        run: python3 scripts/check-dependency-age.py --hours 48
       - name: Install dependencies
         run: uv sync --locked --all-extras --dev
       - name: Ruff lint
@@ -374,6 +381,7 @@ jobs:
       # findings are reported but do not fail the build — there is nothing to
       # act on until upstream ships a patch.
       - name: Scan the image
+        # Policy knobs match release.yml's scan of the pushed multi-arch digest; change together.
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: felix:ci

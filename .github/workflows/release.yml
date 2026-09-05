@@ -1,0 +1,248 @@
+# Tag-driven release: verify the tag, build both images for both architectures, push by
+# digest, scan and inventory each platform, then give the release its tag, sign, attest,
+# and publish the GitHub release from the changelog.
+#
+# Nothing here decides *what* ships — the tag does. `verify` refuses a tag whose version
+# the tree does not carry everywhere (scripts/bump-version.py --check), whose commit is
+# not on main, or whose version already has a release. What a workflow file cannot do is
+# protect against a rewritten workflow file arriving on the tag: for that, tag rulesets
+# and an environment with required reviewers live in repo settings (docs/RELEASING.md).
+# Actions and scanner images are pinned by commit SHA / digest, as everywhere else.
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  verify:
+    name: Tag matches the tree
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - id: version
+        name: Every version location agrees with the tag
+        # The script is stdlib-only, so no uv sync; the runner's python3 is enough. The
+        # tag name is a git ref, which permits shell metacharacters — it is never
+        # interpolated into a shell line, only compared by the script.
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${REF_NAME#v}"
+          python3 scripts/bump-version.py --check "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: The tagged commit is on main
+        # A tag can name any commit, including one on no branch at all; releases come
+        # from merge commits whose CI has run.
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+      - name: The version has not been released before
+        # Re-pushing an existing tag would otherwise move the GHCR tag to new bits under
+        # the same version, with a valid signature.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # An explicit 404 is "not released"; anything else (outage, token) is "could not
+          # tell", and the guard fails closed rather than open.
+          if out=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${REF_NAME}" 2>&1); then
+            echo "::error::$REF_NAME already has a GitHub release; a published version is never rebuilt"
+            exit 1
+          fi
+          echo "$out" | grep -q "Not Found" || { echo "::error::could not tell whether $REF_NAME is released: $out"; exit 1; }
+
+  image:
+    name: Image (${{ matrix.variant }})
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+      id-token: write # cosign keyless signing
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The plain image is what compose.yml and the chart deploy; the gcp variant is what
+          # compose.gcp.yml deploys. Two tags per release, each for both architectures: a
+          # single-arch image pushes and pulls fine and dies with `exec format error` on the
+          # host that needed the other one.
+          - variant: plain
+            extras: ""
+            suffix: ""
+          - variant: gcp
+            extras: gcp
+            suffix: -gcp
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+      SUFFIX: ${{ matrix.suffix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.9.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: build
+        name: Build both platforms and push by digest only
+        # No tag yet: the version tag is created below, after both platforms have been
+        # scanned, so a CVE-failing image is never pullable at a release tag.
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.9.0
+        with:
+          context: .
+          file: deploy/docker/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          build-args: FELIX_EXTRAS=${{ matrix.extras }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          # SLSA provenance binds the digest to the Dockerfile, build args and sources;
+          # cosign below signs the digest and attests the SBOM, neither of which says how
+          # the image was built.
+          provenance: mode=max
+          labels: |
+            org.opencontainers.image.title=felix
+            org.opencontainers.image.version=${{ env.VERSION }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+      - id: platforms
+        name: The index carries every platform that was asked for; record each child digest
+        # `platforms` below is the one list; every later step loops over it, so adding an
+        # architecture is a one-line change to the build step and nothing else.
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          ASKED: linux/amd64,linux/arm64
+        run: |
+          set -euo pipefail
+          docker buildx imagetools inspect "${IMAGE}@${DIGEST}" --format '{{json .Manifest}}' > index.json
+          # os/arch, plus the variant when there is one (linux/arm/v7), so two arm manifests
+          # never collide on a name.
+          jq -r '.manifests[] | select(.platform.os != "unknown") | "\(.platform.os)/\(.platform.architecture)\(if .platform.variant then "/" + .platform.variant else "" end)=\(.digest)"' index.json > manifests.txt
+          for want in ${ASKED//,/ }; do
+            grep -q "^${want}=" manifests.txt || { echo "::error::index has no ${want} manifest"; exit 1; }
+          done
+          {
+            echo "manifests<<EOF"
+            cat manifests.txt
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+      - id: scan
+        name: Scan each platform (fails the release on CRITICAL/HIGH)
+        # Trivy from a digest-pinned image rather than the action: the action fetches its
+        # scanner binary at run time, which pinning the action does not pin. Each platform
+        # is scanned by its own digest; an index scan would resolve to the runner's
+        # architecture and skip the other half of what ships. Policy knobs match ci.yml's
+        # scan of the PR build; change them together.
+        env:
+          MANIFESTS: ${{ steps.platforms.outputs.manifests }}
+        run: |
+          set -euo pipefail
+          while IFS='=' read -r platform digest; do
+            echo "::group::trivy ${platform}"
+            docker run --rm -v "$HOME/.docker:/root/.docker:ro" \
+              ghcr.io/aquasecurity/trivy:0.65.0@sha256:a22415a38938a56c379387a8163fcb0ce38b10ace73e593475d3658d578b2436 \
+              image --severity CRITICAL,HIGH --ignore-unfixed --exit-code 1 "${IMAGE}@${digest}"
+            echo "::endgroup::"
+          done <<< "$MANIFESTS"
+      - id: sbom
+        name: SBOM per platform
+        env:
+          MANIFESTS: ${{ steps.platforms.outputs.manifests }}
+        run: |
+          set -euo pipefail
+          while IFS='=' read -r platform digest; do
+            arch="${platform#*/}"; arch="${arch//\//-}"
+            docker run --rm -v "$HOME/.docker:/root/.docker:ro" \
+              anchore/syft:v1.32.0@sha256:b6a6da626d98f5cb92e28934176709003cce6cdcf674816959c7d84845d94045 \
+              "registry:${IMAGE}@${digest}" -o spdx-json > "felix-${VERSION}${SUFFIX}-${arch}.spdx.json"
+            test -s "felix-${VERSION}${SUFFIX}-${arch}.spdx.json"
+          done <<< "$MANIFESTS"
+      - id: tag
+        name: Give the scanned index its release tag
+        # From the digest that was inspected and scanned; `imagetools create` cannot change
+        # its children, so no second platform check is needed here.
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create -t "${IMAGE}:${VERSION}${SUFFIX}" "${IMAGE}@${DIGEST}"
+          # The tag must resolve to the index that was scanned and is signed below: what
+          # `cosign verify <tag>` checks is exactly this digest.
+          created=$(docker buildx imagetools inspect "${IMAGE}:${VERSION}${SUFFIX}" --format '{{json .Manifest}}' | jq -r .digest)
+          test "$created" = "$DIGEST" || { echo "::error::tag resolves to $created, not the scanned index $DIGEST"; exit 1; }
+      - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.2
+      - id: sign
+        name: Sign the index and each platform by digest (keyless, OIDC); attest each SBOM
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          MANIFESTS: ${{ steps.platforms.outputs.manifests }}
+        run: |
+          set -euo pipefail
+          cosign sign --yes "${IMAGE}@${DIGEST}"
+          while IFS='=' read -r platform digest; do
+            arch="${platform#*/}"; arch="${arch//\//-}"
+            cosign sign --yes "${IMAGE}@${digest}"
+            cosign attest --yes --type spdxjson --predicate "felix-${VERSION}${SUFFIX}-${arch}.spdx.json" "${IMAGE}@${digest}"
+          done <<< "$MANIFESTS"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sbom-${{ matrix.variant }}
+          path: felix-${{ env.VERSION }}${{ env.SUFFIX }}-*.spdx.json
+          if-no-files-found: error
+
+  release:
+    name: GitHub release
+    needs: [verify, image]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: sbom-*
+          merge-multiple: true
+          path: sboms
+      - name: Release notes from the changelog
+        run: |
+          set -euo pipefail
+          # A literal match on the heading, not a regex built from the version: `.` in a
+          # version would match any character. awk, not a sed range: a sed range is
+          # inclusive of its end and published the next release's heading as the last line.
+          awk -v v="$VERSION" 'index($0, "## [" v "]") == 1 {f=1; next} /^## \[/ {f=0} f' CHANGELOG.md > notes.md
+          test -s notes.md || { echo "::error::CHANGELOG.md has no section for $VERSION"; exit 1; }
+          {
+            echo
+            echo "Images: \`${IMAGE}:${VERSION}\` and \`${IMAGE}:${VERSION}-gcp\` (linux/amd64, linux/arm64), signed with cosign; verify with"
+            echo '```'
+            echo "cosign verify ${IMAGE}:${VERSION} --certificate-identity-regexp '^https://github.com/${GITHUB_REPOSITORY}/' --certificate-oidc-issuer https://token.actions.githubusercontent.com"
+            echo '```'
+          } >> notes.md
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          name: ${{ github.ref_name }}
+          body_path: notes.md
+          files: sboms/*.spdx.json
+          fail_on_unmatched_files: true
