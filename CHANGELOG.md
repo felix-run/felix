@@ -132,6 +132,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `governance.retention_days` — previously read by nothing — now shortens the audit TTL for its
   own rows, capped by the operator's. On `memory://` the sweep never pruned audit rows (it
   filtered the flush buffer, not the store) and swept plans for tenant `default` only; both fixed.
+- **A durable step that keeps failing is buried, not retried forever.** A failure outside the
+  invoke's own handler (a save that could not land, a store that was down) released the fiber
+  and the next tick claimed it again, once a minute until `expires_at`. Fibers now carry
+  `attempts` (migration `0012_fiber_attempts`); a failed step sleeps for a doubling backoff
+  (1m, 2m, 4m, 8m at the default, capped at 1h) and at `FELIX_FIBER_MAX_ATTEMPTS` (5) the
+  fiber is `dead`, with the error on the run view. `dead` is terminal to the SDK poller, the
+  resume stream, the Temporal loop and the retention sweep (which reads the fiber store's
+  terminal set rather than its own copy), under an invariant.
 
 ### Changed
 - **The session summarizer is billed to the tenant that triggered it, and counts against

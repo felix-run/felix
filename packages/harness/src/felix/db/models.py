@@ -272,6 +272,8 @@ class Fiber(Base):
     # Optimistic concurrency: _save_fiber is a read-modify-write, and a lost update
     # can rewind `cursor` and replay a step that already ran.
     version: Mapped[int] = mapped_column(BigInteger, server_default=text("0"), default=0)
+    # Consecutive failed steps. Reset by a step that completes; at the ceiling the fiber is `dead`.
+    attempts: Mapped[int] = mapped_column(Integer, server_default=text("0"), default=0)
 
     __table_args__ = (Index("idx_fibers_due", "status", "wake_at", "lease_until"),)
 

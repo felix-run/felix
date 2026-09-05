@@ -48,6 +48,7 @@ from felix.db.models import (
     UsageEvent,
 )
 from felix.db.session import _use_memory, get_session_factory
+from felix.durability.fibers import FIBER_TERMINAL_STATUSES
 
 logger = logging.getLogger("felix.jobs.retention")
 
@@ -55,7 +56,9 @@ DAY_MS = 24 * 60 * 60 * 1000
 MEMORY_SUPERSEDED_GRACE_MS = 7 * DAY_MS
 
 # A fiber in one of these will never be stepped again; anything else is retention's to keep.
-TERMINAL_FIBER_STATUSES = frozenset({"completed", "failed", "expired"})
+# One definition: a status the fiber store calls terminal is one retention may sweep, so
+# `dead` (the retry ceiling) is swept the day it exists rather than kept forever.
+TERMINAL_FIBER_STATUSES = FIBER_TERMINAL_STATUSES
 # A2A task states that still expect activity. Trust is an allowlist: a state the harness
 # does not know is treated as finished rather than kept forever.
 LIVE_A2A_STATES = frozenset({"submitted", "working", "input-required", "auth-required"})

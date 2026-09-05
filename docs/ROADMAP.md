@@ -145,9 +145,12 @@ live again. Revisit after the first three land, on evidence, not before.
       operator-registered endpoint ids and **never carries URLs**: a manifest author holds a
       tenant scope, and a tenant-supplied URL on a path carrying run output is an exfiltration
       channel SSRF checks do not address.
-- [ ] **Bound the retry.** A step that raises is caught, logged at `warning`, and released — with
-      no attempt counter, no backoff, and no dead letter, so a deterministically failing fiber
-      retries every 60 seconds until `expires_at`.
+- [x] **Bound the retry.** Correction to the entry as written: an `invoke` that raises is
+      terminal in one tick (`status: failed`); it was the failures *outside* that handler — a
+      save, a lease write, a store down — that were released and re-claimed once a minute until
+      `expires_at`. Now: `fibers.attempts` (migration `0012`), backoff 1m→1h doubling, and
+      `status: dead` at `FELIX_FIBER_MAX_ATTEMPTS` (5), with the error on the run view and every
+      terminal-status set (`sdk.py`, the resume stream) agreeing under an invariant.
 - [ ] **Non-streaming `/chat` approval visibility.** `invoke()` never drains `side_events`, so a
       caller blocked on an approval hangs for the full TTL and then receives a deny, never
       learning an approval was requested.

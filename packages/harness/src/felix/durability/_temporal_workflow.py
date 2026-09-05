@@ -24,7 +24,9 @@ from typing import Any
 
 from temporalio import activity, workflow
 
-_TERMINAL = frozenset({"completed", "failed", "expired"})
+# Mirrors `fibers.FIBER_TERMINAL_STATUSES`; a literal because this module loads inside the
+# workflow sandbox. `tests/unit/test_invariants.py` keeps the two equal.
+_TERMINAL = frozenset({"completed", "failed", "expired", "dead"})
 
 
 @activity.defn(name="felix_fiber_step")

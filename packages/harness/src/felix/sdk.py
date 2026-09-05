@@ -12,7 +12,7 @@ from typing import Any
 import httpx
 
 # Statuses a durable run will not move on from.
-RUN_TERMINAL = frozenset({"completed", "failed", "expired", "cancelled"})
+RUN_TERMINAL = frozenset({"completed", "failed", "expired", "cancelled", "dead"})
 
 # Poll pacing for a durable run. Same shape as the server's resume stream: start
 # responsive, decay while nothing is happening. A durable run exists because it may
