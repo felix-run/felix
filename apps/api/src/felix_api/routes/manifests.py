@@ -12,10 +12,10 @@ from felix.auth.mgmt import (
     subject_from_request,
     tenant_id_from_request,
 )
-from felix.manifests.governance import GovernanceError, assert_stdio_allowed
+from felix.manifests.governance import GovernanceError, validate_for_write
 from felix.manifests.loader import ManifestParseError, parse_manifest
 from felix.manifests.schema import Manifest
-from felix.session.store import validate_checkpointer_config
+from felix.manifests.secret_refs import redact_manifest_secrets
 from pydantic import BaseModel, Field
 
 from felix_api.threads import effective_thread_id
@@ -103,7 +103,7 @@ async def get_manifest(
         row = await manifest_store.get_version(settings, tenant, name, version)
         if row is None:
             raise HTTPException(status_code=404, detail="not_found")
-        return row
+        return {**row, "manifest": redact_manifest_secrets(row["manifest"])}
     thread = effective_thread_id(tenant, thread_id)
     if thread_id and thread is None:
         raise HTTPException(status_code=400, detail="invalid_thread_id")
@@ -112,7 +112,8 @@ async def get_manifest(
         "name": name,
         "version": resolved.version,
         "variant": resolved.variant or "stable",
-        "manifest": resolved.manifest.model_dump(mode="json"),
+        # `manifests:read` is the lower scope; an embedded credential must not ride out on it.
+        "manifest": redact_manifest_secrets(resolved.manifest.model_dump(mode="json")),
     }
 
 
@@ -130,25 +131,12 @@ async def upsert_manifest(name: str, body: ManifestUpsert, request: Request) -> 
         raise HTTPException(status_code=400, detail=str(e)) from e
     if parsed.metadata.name != name:
         raise HTTPException(status_code=400, detail="name_mismatch")
-    # Refuse at write time: compiling this manifest would spawn the command.
+    # Refuse at write time, once, for every rule a stored manifest must satisfy: a stdio
+    # command off the allowlist would spawn, a sandbox image off it would 500 per request,
+    # a credential would be served to `manifests:read`. The CLI runs the same validator.
     try:
-        assert_stdio_allowed(parsed, request.app.state.settings)
+        validate_for_write(parsed, request.app.state.settings)
     except GovernanceError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    # Same reason. `memory.checkpointer` is an open string resolved against a
-    # registry, so pydantic no longer catches a typo — and stored, it would raise
-    # inside every build, i.e. a 500 on every request for this manifest until
-    # someone read a traceback. A 400 here is the same trade `assert_stdio_allowed`
-    # makes above.
-    try:
-        validate_checkpointer_config(
-            parsed.spec.memory.checkpointer,
-            session_strategy=parsed.spec.session.strategy,
-            compact_after_turn=parsed.spec.session.compact_after_turn,
-            memory_capture=parsed.spec.memory.capture.enabled,
-            memory_recall_tools=parsed.spec.memory.recall.tools,
-        )
-    except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     row = await manifest_store.put_version(
         request.app.state.settings,
@@ -158,7 +146,7 @@ async def upsert_manifest(name: str, body: ManifestUpsert, request: Request) -> 
         created_by=subject_from_request(request),
         comment=body.comment,
     )
-    return row
+    return {**row, "manifest": redact_manifest_secrets(row["manifest"])}
 
 
 @write_router.post("/{name}/canary")

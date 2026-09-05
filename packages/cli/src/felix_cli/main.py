@@ -202,31 +202,23 @@ def validate_manifest_cmd(
 ) -> None:
     """Validate a manifest schema + opt-in governance frameworks (GitOps CI)."""
     from felix.config import Settings
-    from felix.manifests.governance import GovernanceError, validate_governance
+    from felix.manifests.governance import GovernanceError, validate_for_write, validate_governance
     from felix.manifests.loader import load_manifest_file
     from felix.patterns.registry import list_patterns
-    from felix.session.store import validate_checkpointer_config
 
     _load_plugins()
     settings = Settings(environment=environment)  # type: ignore[arg-type]
     try:
         manifest = load_manifest_file(path)
         validate_governance(manifest, settings)
+        # The same refusals `PUT /manifests` makes, so `ok` here means the store would take it.
+        validate_for_write(manifest, settings)
         # The registry is open, so this is the only place a bad pattern name can be
         # caught before build time.
         pattern = manifest.spec.pattern
         if pattern not in list_patterns():
             known = ", ".join(sorted(list_patterns()))
             raise ValueError(f"unknown pattern {pattern!r} (registered: {known})")
-        # Same reason: `checkpointer` is an open string resolved against a registry,
-        # so an unknown one is only catchable here or at build time.
-        validate_checkpointer_config(
-            manifest.spec.memory.checkpointer,
-            session_strategy=manifest.spec.session.strategy,
-            compact_after_turn=manifest.spec.session.compact_after_turn,
-            memory_capture=manifest.spec.memory.capture.enabled,
-            memory_recall_tools=manifest.spec.memory.recall.tools,
-        )
         # The schema validators are syntactic — resolving there meant a blocking
         # getaddrinfo on the API event loop for every ref on every read and write, and it
         # never failed closed anyway. The resolving check belongs here, where an author is

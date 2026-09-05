@@ -346,8 +346,12 @@ rather than from re-reading a file. The wave itself is written up in [HISTORY.md
       approval timeout (#150), resolution outside the tenant context (#150). **B6** above
       proposes step memoization and an append-only `fiber_steps` table, which is an activity
       model by another name. **Decide before starting that item.**
-- [ ] **`cowork.yaml` sets `auth.inbound.allow_anonymous: true` on a manifest that binds a
-      local shell.** The `client-shell` approval rule and the `thread_id`/`tool_call_id`
+- [x] **`cowork.yaml` sets `auth.inbound.allow_anonymous: true` on a manifest that binds a
+      local shell.** Now `false`, with the reason in the manifest. Checked at the same time:
+      `validate_runtime` already confines `auth_mode=none` to loopback, so the reachable case
+      was the developer's own machine. Also landed: `PUT /manifests` refuses plaintext
+      credentials and disallowed sandbox images at write time, and `GET /manifests/{name}`
+      redacts an embedded credential — `manifests:read` could read one before. The `client-shell` approval rule and the `thread_id`/`tool_call_id`
       requirement are what stand between an anonymous caller and command execution on a
       developer's machine. Untouched by the audit; wants a conscious yes or no.
 - [ ] **A per-tool screener cost lever.** `content_screening.tools` became additive in #146, so

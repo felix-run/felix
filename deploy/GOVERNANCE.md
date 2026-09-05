@@ -513,6 +513,19 @@ clients.
 `/metrics` requires authentication: its label values include tenant-supplied manifest ids
 and remote MCP tool names.
 
+`PUT /manifests/{name}` and `felix validate-manifest` run the same write-time validator.
+Always refused: an outbound `auth` or `env` value that looks like a credential, a URL
+carrying `user:password@`, a stdio MCP command outside `FELIX_MCP_STDIO_ALLOWED_COMMANDS`,
+and a sandbox image outside `FELIX_SANDBOX_ALLOWED_IMAGES` — each of these stored fine
+before and failed, or executed, on the next request. Under `forbid_plaintext_secrets` (forced
+by any framework, and by `FELIX_ENVIRONMENT=production`) every non-ref `env` value is
+refused too. On read, `GET /manifests/{name}` and the write's own echo replace any literal
+`auth`, any non-ref `env` value and any URL userinfo with `[REDACTED]`, so `manifests:read`
+never returns a credential a stored manifest still carries. `cowork.yaml` no longer allows
+anonymous callers: it binds a shell on the developer's machine, and under
+`FELIX_AUTH_MODE=none` the approvals that gate that shell are anonymous too — which means
+`make dev` (auth `none`) cannot drive cowork; the Compose stack, which mints a key, can.
+
 `/health`, `/live` and `/ready` are public and unthrottled, because kubelet presents no
 credential and treats a 429 as a failed probe (`PROBE_PATHS` in `felix/security/rate_limit.py`
 feeds both allowlists). `/ready` therefore tells an anonymous caller which dependency is
