@@ -187,6 +187,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   blip). **Upgrade note:** a Helm release that left `secrets.redisUrl` empty, which the chart
   README already listed as required, now fails at boot with this message instead of running
   degraded.
+- **`/v1/chat/completions` streams like `/chat/stream`.** The OpenAI-compatible stream had
+  no error handling (a failure mid-stream ended a `200` body with no error and no `[DONE]`),
+  no heartbeat, none of the headers a proxied SSE stream needs, always said
+  `finish_reason: "stop"`, and ignored `temperature` and `max_tokens`. It now uses the shared
+  SSE helpers, ends every stream with `[DONE]` (an error arrives as an OpenAI-shaped
+  `data: {"error": ...}` chunk, gateway errors typed and body-free), maps the run's stop
+  reason to `finish_reason` (`stop`, `length`, `content_filter`), reports
+  `prompt_tokens_details.cached_tokens`, and passes the request's sampling parameters to the
+  model — a caller's `max_tokens` can only lower the manifest's ceiling, never raise it.
+  `InvokeInput` carries `model_options` and `InvokeOutput` carries `stop_reason` for any
+  caller; the reply controls report `refusal` (`content_filter`) when a judge or PII block
+  replaced the reply. `/chat/stream` also types a mid-stream gateway error now.
 
 ### Changed
 - **The session summarizer is billed to the tenant that triggered it, and counts against

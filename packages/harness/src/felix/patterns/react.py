@@ -6,7 +6,7 @@ import logging
 import uuid
 from collections.abc import AsyncIterator
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from felix.audit.emit import emit_agent_audit
@@ -15,6 +15,7 @@ from felix.hooks import run_before_turn, run_filter_history
 from felix.manifests.schema import ABSOLUTE_LIMITS, ModelSpec
 from felix.observability.metrics import record_counter
 from felix.patterns.model import (
+    ModelChatOptions,
     ModelChatResult,
     ModelClient,
     ModelGatewayError,
@@ -32,6 +33,7 @@ from felix.patterns.types import (
     Event,
     InvokeInput,
     InvokeOutput,
+    StopReason,
 )
 from felix.side_events import drain as drain_side_events
 from felix.side_events import release as release_side_events
@@ -170,7 +172,9 @@ class _ReactAgent:
     manifest_version: str
     system_prompt: str
     model_spec: Any
-    settings: Any
+    # `repr=False`: `Settings` carries provider keys, and a dataclass repr of the agent in a
+    # log line or a pytest introspection would print them.
+    settings: Any = field(repr=False)
     recursion_limit: int
     limits: Any = None
     context_prelude: str = ""
@@ -203,6 +207,28 @@ class _ReactAgent:
         loop. With retrieval off — the default — it stays inline.
         """
         return await select_tools_from_ctx_async(self.tools, messages, self.tools_retrieval)
+
+    def _chat_options(self, input: InvokeInput) -> ModelChatOptions | None:
+        """The caller's per-request sampling, bounded by the manifest.
+
+        `max_tokens` may only come *down*: the wire prefers the caller's value over
+        `spec.model.max_tokens`, and the output budget is checked at the top of a turn,
+        so an unclamped value would let one request size a whole turn past the ceiling
+        the operator declared — and past `limits.max_output_tokens` by a full turn.
+        """
+        opts = input.model_options
+        if opts is None:
+            return None
+        spec = _model_spec_with_override(self.model_spec, input.model_id)
+        ceiling = int(getattr(spec, "max_tokens", None) or ABSOLUTE_LIMITS["max_output_tokens"])
+        # `limits` is None for a pattern builder that hands the loop a bare context;
+        # `_over_budget` tolerates that, and so must this.
+        if self.limits is not None and self.limits.max_output_tokens:
+            ceiling = min(ceiling, int(self.limits.max_output_tokens))
+        max_tokens = (
+            opts.max_tokens if opts.max_tokens is None else max(1, min(int(opts.max_tokens), ceiling))
+        )
+        return replace(opts, max_tokens=max_tokens)
 
     def _resolve_model(self, input: InvokeInput) -> Any:
         settings = self.settings or get_settings()
@@ -361,6 +387,7 @@ class _ReactAgent:
         active_tools: list[Tool],
         thread_id: str | None,
         tenant_id: str,
+        opts: ModelChatOptions | None = None,
     ) -> AsyncIterator[Event | ModelChatResult]:
         """Run one streamed turn, yielding display events and then the result.
 
@@ -371,7 +398,7 @@ class _ReactAgent:
             stream_turn = model.stream_turn
             # One request for the whole turn. See `stream_turn` for why the
             # stream-then-chat pair it replaces was worse than it looked.
-            async for item in stream_turn(messages, active_tools):
+            async for item in stream_turn(messages, active_tools, opts):
                 if isinstance(item, ModelChatResult):
                     yield item
                     continue
@@ -411,7 +438,7 @@ class _ReactAgent:
         # A provider that only implements `stream()` cannot report tool calls or usage
         # from the streamed request, so the authoritative turn still costs a second call.
         # Plugin-supplied clients land here.
-        async for delta in model.stream(messages, active_tools):
+        async for delta in model.stream(messages, active_tools, opts):
             if thread_id and await is_aborted(tenant_id, thread_id):
                 return
             yield Event(event="text_delta", data={"chunk": {"content": delta}, "delta": delta})
@@ -752,6 +779,8 @@ class _ReactAgent:
         await self._append_produced(input.thread_id, [m for m in input.messages if m.role == "user"])
         final = ChatMessage(role="assistant", content="")
         fatal = False
+        last_stop: StopReason = "end_turn"
+        opts = self._chat_options(input)
 
         user_preview = next(
             (m.content for m in input.messages if m.role == "user" and m.content),
@@ -812,7 +841,7 @@ class _ReactAgent:
                     try:
                         if emit_events:
                             async for item in self._stream_one_turn(
-                                model, messages, active_tools, input.thread_id, tenant_id
+                                model, messages, active_tools, input.thread_id, tenant_id, opts
                             ):
                                 if isinstance(item, ModelChatResult):
                                     result = item
@@ -824,7 +853,7 @@ class _ReactAgent:
                         else:
                             # No display to feed, so ask for the turn directly rather
                             # than streaming deltas nobody will read.
-                            result = await model.chat(messages, active_tools)
+                            result = await model.chat(messages, active_tools, opts)
                     except ModelGatewayError as exc:
                         if attempt or emitted or not is_context_overflow(exc):
                             raise
@@ -851,7 +880,7 @@ class _ReactAgent:
                     break
 
                 if result is None:
-                    result = await model.chat(messages, active_tools)
+                    result = await model.chat(messages, active_tools, opts)
 
                 usage_block = record_model_usage(result, model, manifest_id=self.manifest_id) or None
                 assistant = result.message
@@ -869,6 +898,7 @@ class _ReactAgent:
                 # not a completed turn, and recording either as one hides a partial or
                 # absent answer behind a successful-looking run.
                 stop_reason = getattr(result, "stop_reason", "end_turn")
+                last_stop = stop_reason or "end_turn"
 
                 if assistant.tool_calls and stop_reason == "max_tokens":
                     # Tool calls on an unfinished message may carry arguments that were
@@ -974,7 +1004,7 @@ class _ReactAgent:
                         yield Event(event="follow_up", data={"content": follow.text})
                     await self._append_produced(input.thread_id, [follow_chat])
                     messages.append(follow_chat)
-                    result = await model.chat(messages, await self._active_tools(messages))
+                    result = await model.chat(messages, await self._active_tools(messages), opts)
                     record_model_usage(result, model, manifest_id=self.manifest_id)
                     assistant = result.message
                     messages.append(assistant)
@@ -1005,7 +1035,7 @@ class _ReactAgent:
         )
         await self._maybe_capture_memory(input, final, model)
 
-        output = InvokeOutput(messages=produced, final=final)
+        output = InvokeOutput(messages=produced, final=final, stop_reason=last_stop)
         if emit_events:
             yield Event(event="on_chain_end", data={"output": output})
             yield Event(
@@ -1013,6 +1043,7 @@ class _ReactAgent:
                 data={
                     "final": final.model_dump(),
                     "messages": [m.model_dump() for m in produced],
+                    "stop_reason": last_stop,
                 },
             )
         yield output

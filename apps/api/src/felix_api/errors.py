@@ -17,7 +17,29 @@ the exact logged traceback.
 
 from __future__ import annotations
 
-from felix.logging_setup import get_request_id
+import logging
+from typing import TYPE_CHECKING
+
+from felix.logging_setup import get_request_id, loggable
+
+if TYPE_CHECKING:
+    from felix.patterns.model import ModelGatewayError
+
+
+def log_gateway_error(logger: logging.Logger, exc: ModelGatewayError) -> None:
+    """The one place a `ModelGatewayError` is written to the log.
+
+    `exc.body` is an upstream response — untrusted, multi-line, and kept off `str(exc)`
+    precisely because that string is relayed to the client — and `exc.label` is a header
+    value that is as forgeable as anything the client sends. Both go through `loggable`,
+    and the discipline lives here rather than at each of the four routes that catch it.
+    """
+    logger.warning(
+        "model gateway error label=%s status=%s body=%s",
+        loggable(exc.label, limit=80),
+        exc.status,
+        loggable(exc.body),
+    )
 
 
 def _relayable() -> tuple[type[BaseException], ...]:

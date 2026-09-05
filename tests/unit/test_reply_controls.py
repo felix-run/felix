@@ -424,7 +424,7 @@ async def test_a_governed_manifest_streams_its_reply_redacted_end_to_end() -> No
                 usage=TokenUsage(input=1, output=1),
             )
 
-        async def stream(self, messages: Any, tools: Any) -> AsyncIterator[str]:
+        async def stream(self, messages: Any, tools: Any, opts: Any = None) -> AsyncIterator[str]:
             """The react loop streams through `stream()` for a client without `stream_turn`."""
             for piece in (PII[:10], PII[10:]):
                 yield piece
