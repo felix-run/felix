@@ -156,6 +156,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `secret:NAME` refs are untouched. `cowork.yaml` no longer allows anonymous callers: it
   binds a shell on the developer's machine, and under `FELIX_AUTH_MODE=none` the approvals
   that gate it are anonymous too — so `make dev` cannot drive cowork; the Compose stack can.
+- **Retention now covers every table the harness appends to.** The nightly sweep pruned
+  `audit_events`, `plans` and `memory_vectors`; `fibers` (which carry the caller's principal and
+  scopes), `usage_events`, `a2a_tasks` and `session_events` grew forever. Each TTL is a setting:
+  `FELIX_AUDIT_RETENTION_DAYS` (30), `FELIX_USAGE_RETENTION_DAYS` (365),
+  `FELIX_FIBER_RETENTION_DAYS` (7, terminal fibers and finished A2A tasks) and
+  `FELIX_SESSION_RETENTION_DAYS` (0 = keep; when set, whole threads whose events *and*
+  metadata are older than the TTL, so a fresh fork of an old conversation survives). A manifest's
+  `governance.retention_days` — previously read by nothing — now shortens the audit TTL for its
+  own rows, capped by the operator's. On `memory://` the sweep never pruned audit rows (it
+  filtered the flush buffer, not the store) and swept plans for tenant `default` only; both fixed.
 
 ### Changed
 - **The session summarizer is billed to the tenant that triggered it, and counts against

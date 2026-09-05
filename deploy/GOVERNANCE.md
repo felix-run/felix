@@ -105,6 +105,18 @@ spec:
 | `soc2` | No anonymous inbound outside development; trace + anomaly on; scopes/schemes; policies **or** approvals **or** limits; plaintext forbid + pin |
 | `eu_ai_act` | Transparency notice; content screening or input guardrails; if `risk_tier: high`, approvals required with `allow_unattended: false` |
 
+`retention_days` is the manifest's data-retention policy for its own audit trail: the nightly
+sweep deletes this manifest's `audit_events` older than that many days. It can only shorten the
+operator's `FELIX_AUDIT_RETENTION_DAYS` (30 by default), never extend it — the deployment's TTL
+is the ceiling, and a manifest keeps less than the deployment, not more. The rule is read off
+the manifest that *governs* the rows — resolved exactly as a request resolves it, so a bundled
+manifest's value (`governed.yaml` says 30) applies to every tenant that serves the bundled copy,
+and a tenant's own stored version of that name replaces it for that tenant. Usage (the billing
+record, 365 days), fibers and A2A tasks (7 days, terminal rows only) and session threads (off:
+the event log is the chat record) have deployment-wide TTLs, `FELIX_*_RETENTION_DAYS`, `0`
+keeping forever. Session retention drops whole idle threads and their metadata; it does not
+reach the facts memory capture extracted from them, which are governed by memory's own rules.
+
 Runtime also enforces `spec.auth.inbound`, routes inbound MCP through the
 compiled agent, emits audit events from the agent loop, and redacts durable
 state. User turns are screened when `content_screening.enabled` and/or
@@ -413,8 +425,8 @@ Two things to know before relying on it:
 
   Two things this does **not** bound. `expires_at` gates step *entry*, so a step that starts
   just inside the horizon runs to completion — cap it with `limits.max_wall_clock_seconds`.
-  And the fiber *row* is not swept by `jobs/retention.py`, so the record of who started a run
-  outlives the run's usability; only its usability expires.
+  The fiber *row* outlives the run's usability by `FELIX_FIBER_RETENTION_DAYS` (7): the nightly
+  sweep deletes terminal fibers older than that, and with them the record of who started the run.
 
   A fiber enqueued with no request context, from a different tenant than the run, or before
   this existed, records nothing and resumes with no scopes. When it *does* carry authority,
