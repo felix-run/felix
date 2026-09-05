@@ -1316,3 +1316,35 @@ def test_every_consumer_of_run_status_agrees_on_what_is_terminal() -> None:
     assert temporal >= FIBER_TERMINAL_STATUSES, (
         "the Temporal workflow loop is missing a fiber terminal status"
     )
+
+
+def test_every_redis_command_fallback_goes_through_the_shared_connection() -> None:
+    """A Redis that dies after the client connected is invisible unless the command
+    failure drops the client: `get()` otherwise hands back the dead client forever and
+    the once-per-process warning never fires. `RedisConnection.fallback()` does that and
+    logs. In a module on the helper, every `except` handler that logs anything must go
+    through it — checked on the AST, so a handler ruff wraps across lines or one that logs
+    at warning is caught the same (a handler that logs nothing is a control-flow branch,
+    not a swallowed failure). The module list is derived, so a fifth subsystem moving onto
+    the helper is covered the day it does."""
+    harness = ROOT / "packages/harness/src/felix"
+    users = sorted(p for p in harness.rglob("*.py") if "RedisConnection(" in p.read_text(encoding="utf-8"))
+    assert len(users) >= 4, f"expected waiters, steer, notify and lease at least; found {users}"
+    bypasses: list[str] = []
+    for path in users:
+        if path.name == "redis_conn.py":
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ExceptHandler):
+                continue
+            calls = [
+                ast.unparse(c.func)
+                for c in ast.walk(node)
+                if isinstance(c, ast.Call) and not isinstance(c, ast.Await)
+            ]
+            through_helper = any(f in {"_conn.fallback", "_conn.report_failure"} for f in calls)
+            logs = any(f.startswith("logger.") for f in calls)
+            if logs and not through_helper:
+                bypasses.append(f"{path.relative_to(ROOT)}:{node.lineno}")
+    assert not bypasses, f"redis command failures that do not go through _conn.fallback(): {bypasses}"

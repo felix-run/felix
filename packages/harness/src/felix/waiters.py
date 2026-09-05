@@ -14,7 +14,10 @@ logger = logging.getLogger("felix.waiters")
 _PREFIX = "felix:waiter:"
 _local: dict[str, asyncio.Future[str]] = {}
 _lock = asyncio.Lock()
-_conn = RedisConnection("waiters")
+_conn = RedisConnection(
+    "waiters",
+    fallback_consequence="approvals, prompts and client-tool answers decided in another process never arrive",
+)
 
 
 def _key(name: str) -> str:
@@ -57,7 +60,7 @@ async def wait(name: str, *, timeout: float) -> dict[str, Any] | None:
                     _, raw = item
                     return json.loads(raw)
         except Exception:
-            logger.debug("waiter redis blpop failed", exc_info=True)
+            await _conn.fallback("waiter redis blpop")
 
     async with _lock:
         fut = _local.get(name)
@@ -90,7 +93,7 @@ async def signal(name: str, payload: dict[str, Any]) -> bool:
             await client.expire(rkey, 3600)
             return True
         except Exception:
-            logger.debug("waiter redis rpush failed", exc_info=True)
+            await _conn.fallback("waiter redis rpush")
 
     async with _lock:
         fut = _local.get(name)

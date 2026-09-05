@@ -138,7 +138,11 @@ live again. Revisit after the first three land, on evidence, not before.
       `dict[str, asyncio.Queue]`, so on a fiber the `approval_required` emit lands in the
       worker's own memory and is unreachable by construction — on precisely the path where a
       human would have time to respond. Route it through the Redis layer `session/notify.py`
-      already built in `#93`.
+      already built in `#93`. Correction from the 2026-09-04 readiness audit: the *decision*
+      does cross — `waiters.py` is a Redis `BLPOP` and the API's approve reaches the worker's
+      fiber. What did not was the no-Redis case, where the waiter silently became a
+      process-local future; `FELIX_REDIS_URL` is now required outside development and a
+      configured Redis that is down is logged at warning. The event-side gap above stands.
 - [ ] **Signed completion webhooks**, delivered from the **worker** — the fiber reaches terminal
       state under its cron and the API replica that accepted the request may be gone. Dead letter
       is `status='dead'` on the same durable row, not a second store. `spec.webhooks` selects

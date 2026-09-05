@@ -53,7 +53,11 @@ async def _drop_pubsub() -> None:
     the hook it calls first.
     """
     global _pubsub, _pump
-    if _pump is not None:
+    # The pump itself reaches here when its read fails (`_conn.fallback` → `on_reset`);
+    # cancelling and awaiting the current task would throw the cancellation into the
+    # pump's own fallback and lose the traceback it was about to log. It is already
+    # unwinding, so just let go of it.
+    if _pump is not None and _pump is not asyncio.current_task():
         _pump.cancel()
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await _pump
@@ -64,7 +68,11 @@ async def _drop_pubsub() -> None:
     _subscribed.clear()
 
 
-_conn = RedisConnection("thread notifications", on_reset=_drop_pubsub)
+_conn = RedisConnection(
+    "thread notifications",
+    on_reset=_drop_pubsub,
+    fallback_consequence="readers on other replicas poll and arrive late",
+)
 _pubsub: Any | None = None
 _pump: asyncio.Task[None] | None = None
 _subscribed: dict[str, int] = {}
@@ -102,7 +110,7 @@ async def _pump_messages(pubsub: Any) -> None:
     except asyncio.CancelledError:
         raise
     except Exception:
-        logger.debug("thread notification pump stopped; polling only", exc_info=True)
+        await _conn.fallback("thread notification pump stopped")
 
 
 def _wake_local(channel: str) -> None:
@@ -156,7 +164,7 @@ async def _ensure_subscribed(channel: str) -> bool:
             _pump = asyncio.create_task(_pump_messages(_pubsub))
         return True
     except Exception:
-        logger.debug("thread notification subscribe failed; polling only", exc_info=True)
+        await _conn.fallback("thread notification subscribe")
         remaining = _subscribed.get(channel, 0) - 1
         if remaining > 0:
             _subscribed[channel] = remaining
@@ -265,7 +273,7 @@ async def notify_appended(tenant_id: str, thread_id: str) -> None:
         if client is not None:
             await client.publish(channel, "1")
     except Exception:
-        logger.debug("thread notification publish failed", exc_info=True)
+        await _conn.fallback("thread notification publish")
 
 
 async def reset_notifications() -> None:
