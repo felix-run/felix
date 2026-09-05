@@ -11,6 +11,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from felix.context import AuthContext, RequestContext, async_run_with_context, get_context, try_get_context
+from felix.durability.fibers import FIBER_TERMINAL_STATUSES
 from felix.governance.inbound import INBOUND_SCREENED_EXTRA
 from felix.logging_setup import loggable
 from felix.patterns.model import ModelGatewayError
@@ -946,7 +947,8 @@ async def chat_history_delete(thread_id: str, request: Request) -> dict[str, str
 # that has been silent past that decays. The load this finding is about comes from tabs
 # left open for minutes, not from the first few seconds of one.
 # Fiber statuses that mean the run will not change again.
-_RUN_TERMINAL = frozenset({"completed", "failed", "expired", "cancelled"})
+# The fiber store's terminal set, plus the client-side cancel the stream reports itself.
+_RUN_TERMINAL = FIBER_TERMINAL_STATUSES | {"cancelled"}
 
 # The ceiling a stream may decay to once notifications are actually being delivered.
 # Far above the un-notified ceiling because the poll is then a safety net against a

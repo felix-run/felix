@@ -50,6 +50,19 @@ FIBER_SCREENER_MAX_RETRIES = 10
 FIBER_LEASE_RENEW_MS = FIBER_LEASE_MS // 3
 # Bound the sweep: an unbounded SELECT loads a whole backlog into memory every minute.
 FIBER_BATCH = 50
+# A step that raises outside the invoke's own handler — a save, a lease write, a store that
+# is down — is retried after a delay that doubles per consecutive failure, from this base
+# to this cap, and after `Settings.fiber_max_attempts` failures the fiber is `dead`: never
+# claimed again, its error on the run view. At the default of 5 the delays are 1m, 2m, 4m,
+# 8m and the fiber is dead 15 minutes after its first failure; the cap is reached from the
+# eighth attempt. Before this it was released and re-claimed on the next tick, once a
+# minute, until `expires_at`.
+FIBER_RETRY_BASE_MS = 60_000
+FIBER_RETRY_MAX_MS = 60 * 60 * 1000
+# Statuses a fiber never leaves: the claim never selects them and nothing advances them
+# again. Every consumer that decides "is this run over" — the resume stream, the SDK poller,
+# the Temporal workflow loop — is checked against this set in `tests/unit/test_invariants.py`.
+FIBER_TERMINAL_STATUSES = frozenset({"completed", "failed", "expired", "dead"})
 
 
 def _fiber_dict(row: Fiber | dict[str, Any]) -> dict[str, Any]:
@@ -63,6 +76,7 @@ def _fiber_dict(row: Fiber | dict[str, Any]) -> dict[str, Any]:
         "lease_owner": row.lease_owner,
         "lease_until": row.lease_until,
         "version": row.version,
+        "attempts": int(row.attempts or 0),
         "state_json": row.state_json,
         "wake_at": row.wake_at,
         "created_at": row.created_at,
@@ -100,6 +114,7 @@ async def create_fiber(
         # never had. The Postgres sweeper always re-reads and so never saw it; the Temporal
         # backend uses this dict directly, and every one of its writes was discarded.
         "version": 0,
+        "attempts": 0,
     }
     if _use_memory(settings):
         _memory_fibers[(tenant_id, fiber_id)] = row
@@ -159,6 +174,7 @@ async def _save_fiber(settings: Settings, row: dict[str, Any]) -> None:
                     lease_owner=row.get("lease_owner", ""),
                     lease_until=row.get("lease_until"),
                     version=expected + 1,
+                    attempts=int(row.get("attempts") or 0),
                 )
             )
             await db.commit()
@@ -354,9 +370,8 @@ async def _run_fiber_step(settings: Settings, row: dict[str, Any]) -> dict[str, 
                     # a bounded number of times — a screener down for hours is a failure.
                     logger.warning("fiber_screening_unavailable id=%s: %s", row["id"], exc.detail)
                     state["screener_retries"] = retries + 1
-                    row["status"] = "sleeping"
-                    row["wake_at"] = now_ms() + FIBER_SCREENER_RETRY_MS
                     row["state_json"] = state
+                    _park(row, FIBER_SCREENER_RETRY_MS)
                     await _save_fiber(settings, row)
                     return row
                 logger.exception("fiber_invoke_failed id=%s", row["id"])
@@ -464,13 +479,112 @@ async def resume_due_fibers(settings: Settings) -> int:
 
     ran = 0
     for row in due:
+        # A step that completes writes 0 with its own save; a step that raises is charged
+        # against the count it was claimed with.
+        prior_failures = int(row.get("attempts") or 0)
+        row["attempts"] = 0
         try:
             await _step_with_lease(settings, row)
-        except Exception:
-            logger.warning("fiber step failed id=%s", row.get("id"), exc_info=True)
-            await _release_fiber(settings, row)
+        except Exception as exc:
+            logger.warning(
+                "fiber step failed id=%s attempt=%d", row.get("id"), prior_failures + 1, exc_info=True
+            )
+            await _retry_or_dead(settings, row, prior_failures + 1, exc)
         ran += 1
     return ran
+
+
+def _park(row: dict[str, Any], delay_ms: int) -> None:
+    """Put a fiber to sleep for `delay_ms`; the caller saves."""
+    row["status"] = "sleeping"
+    row["wake_at"] = now_ms() + max(int(delay_ms), 0)
+
+
+def retry_delay_ms(attempts: int) -> int:
+    """Delay before the next try after `attempts` consecutive failures: 1m, 2m, 4m … 1h."""
+    return min(FIBER_RETRY_BASE_MS * 2 ** max(attempts - 1, 0), FIBER_RETRY_MAX_MS)
+
+
+async def _retry_or_dead(settings: Settings, row: dict[str, Any], attempts: int, exc: Exception) -> None:
+    """Park a failed fiber for a backoff, or bury it once it has failed enough times.
+
+    A step that reached a terminal status and then failed only at its save is finished:
+    that status is kept rather than coerced to `sleeping`, which would re-enter the step
+    loop with `cursor` past the end and report the run `completed` over a failed invoke.
+    """
+    if row.get("status") in FIBER_TERMINAL_STATUSES:
+        row["attempts"] = 0
+    elif attempts >= settings.fiber_max_attempts:
+        row["attempts"] = attempts
+        state = dict(row.get("state_json") or {})
+        stash = dict(state.get("stash") or {})
+        last = dict(stash.get("last") or {})
+        # The first line only: a driver error's later lines echo the statement and its
+        # parameters, which is the run's own state — not something to hand back on a poll.
+        detail = (str(exc).splitlines() or [""])[0][:200]
+        last["error"] = f"step failed {attempts} times; last: {type(exc).__name__}: {detail}"
+        stash["last"] = last
+        state["stash"] = stash
+        row["state_json"] = state
+        row["status"] = "dead"
+        row["wake_at"] = None
+    else:
+        row["attempts"] = attempts
+        _park(row, retry_delay_ms(attempts))
+    try:
+        await _save_fiber(settings, row)
+        return
+    except Exception:
+        # The save is the thing failing — which is the failure this exists to bound, so
+        # the count cannot go through the same write. Record it on the columns alone.
+        logger.warning(
+            "fiber save failed id=%s; recording the attempt without state", row.get("id"), exc_info=True
+        )
+    try:
+        await _record_attempt(settings, row)
+        return
+    except Exception:
+        # The store itself is down. Nothing can be recorded; drop the claim so the next
+        # tick can try again — the count is lost, which errs toward retrying, not burying.
+        logger.warning("fiber retry bookkeeping failed id=%s; releasing", row.get("id"), exc_info=True)
+    try:
+        await _release_fiber(settings, row)
+    except Exception:
+        # Also the store. The lease lapses on its own; the rest of the batch still runs.
+        logger.warning("fiber release failed id=%s; lease will lapse", row.get("id"), exc_info=True)
+
+
+async def _record_attempt(settings: Settings, row: dict[str, Any]) -> None:
+    """Write status, wake_at and attempts — and nothing else — releasing the claim.
+
+    `_save_fiber` also writes `state_json`, through `redact_json`; when that is what raised,
+    this is the write that still lands. The run view derives the error from `attempts`
+    when `dead` carries none.
+    """
+    row["updated_at"] = now_ms()
+    row["lease_owner"] = ""
+    row["lease_until"] = None
+    fields = {
+        k: row.get(k) for k in ("status", "wake_at", "attempts", "updated_at", "lease_owner", "lease_until")
+    }
+    if _use_memory(settings):
+        stored = _memory_fibers.get((row["tenant_id"], row["id"]))
+        if stored is not None:
+            stored.update(fields)
+        return
+    from sqlalchemy import update
+
+    from felix.db.session import rls_bypass
+
+    with rls_bypass():
+        factory = get_session_factory(settings=settings)
+        async with factory() as db:
+            await db.execute(
+                update(Fiber)
+                .where(Fiber.tenant_id == row["tenant_id"], Fiber.id == row["id"])
+                .values(**fields)
+            )
+            await db.commit()
 
 
 async def _renew_lease(settings: Settings, row: dict[str, Any]) -> None:

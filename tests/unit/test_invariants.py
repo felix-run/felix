@@ -1286,3 +1286,33 @@ def test_every_record_usage_call_prices_by_the_wire_model() -> None:
         "record_usage must be told the wire model, or the turn prices against a logical "
         "route id that matches no catalog entry and accrues nothing:\n  " + "\n  ".join(offenders)
     )
+
+
+def test_every_consumer_of_run_status_agrees_on_what_is_terminal() -> None:
+    """`FIBER_TERMINAL_STATUSES` is the one list of statuses the scheduler never advances.
+    Three consumers decide "is this run over" from their own copy: the resume stream, the
+    SDK poller (which must not import the store), and the Temporal workflow loop (read by
+    AST — importing it needs `temporalio`). A status missing from any copy is a run a client
+    polls until its own deadline, or a workflow that spins on a row nothing will change."""
+    from felix.durability.fibers import FIBER_TERMINAL_STATUSES
+    from felix.sdk import RUN_TERMINAL
+    from felix_api.routes.chat import _RUN_TERMINAL
+
+    assert {"completed", "failed", "expired", "dead"} <= FIBER_TERMINAL_STATUSES, "the source set was emptied"
+    assert FIBER_TERMINAL_STATUSES <= RUN_TERMINAL, (
+        "felix.sdk.RUN_TERMINAL is missing a fiber terminal status"
+    )
+    assert FIBER_TERMINAL_STATUSES <= _RUN_TERMINAL, "the resume stream is missing a fiber terminal status"
+
+    workflow = ROOT / "packages/harness/src/felix/durability/_temporal_workflow.py"
+    tree = ast.parse(workflow.read_text(encoding="utf-8"))
+    temporal: set[str] | None = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == "_TERMINAL" for t in node.targets
+        ):
+            temporal = {str(c.value) for c in ast.walk(node.value) if isinstance(c, ast.Constant)}
+    assert temporal is not None, "_temporal_workflow._TERMINAL not found"
+    assert temporal >= FIBER_TERMINAL_STATUSES, (
+        "the Temporal workflow loop is missing a fiber terminal status"
+    )

@@ -339,6 +339,17 @@ Closing the call out is also what makes the thread resumable at all: the provide
 transcript containing a tool call with no answer, so before this an interrupted run could
 not be continued.
 
+A durable step that raises *outside* the invoke's own handler — its save cannot land, the
+lease write fails, a store is down — is not retried forever. The fiber sleeps for a delay
+that doubles per consecutive failure (1m, 2m, 4m, 8m at the default; capped at an hour from
+the eighth) and after `FELIX_FIBER_MAX_ATTEMPTS` (5) it is `dead` — fifteen minutes after
+the first failure at the default: never claimed again, the last error (first line, no
+statement text) on `GET /chat/runs/{resume_token}`, terminal to every consumer. When the
+save is what fails, the count is written on its own columns so the bound still holds; only
+a store that is entirely down leaves the fiber released for the next tick, as before. A
+step that completes resets the count. An `invoke` that fails is `failed` in one tick, as
+before.
+
 ## Run budgets
 
 `spec.limits` bounds a single run. Every field is enforced at two points — before each

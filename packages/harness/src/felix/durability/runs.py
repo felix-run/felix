@@ -166,7 +166,9 @@ async def get_durable_run(settings: Settings, tenant_id: str, resume_token: str)
         "resume_token": row.get("id"),
         "expires_at": state.get("expires_at"),
         "final": last.get("final") or ({"role": "assistant", "content": last.get("answer") or ""}),
-        "error": last.get("error") or "",
+        # A fiber buried because its *save* kept failing could not record the text.
+        "error": last.get("error")
+        or (f"step failed {int(row.get('attempts') or 0)} times" if row.get("status") == "dead" else ""),
         "manifest_id": last.get("manifest_id") or "",
     }
 

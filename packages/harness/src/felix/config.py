@@ -127,6 +127,9 @@ class Settings(BaseSettings):
     durability: Literal["fibers", "temporal"] = "fibers"
     temporal_host: str = "localhost:7233"
     temporal_namespace: str = "default"
+    # Consecutive step failures (outside the invoke's own handler) before a fiber is
+    # marked `dead` instead of retried. Retries back off 1m, 2m, 4m … up to an hour.
+    fiber_max_attempts: int = Field(default=5, ge=1)
 
     # --- retention (worker `retention_sweep`, nightly) ---
     # Days a row is kept; 0 keeps forever. Every table the harness appends to has one of

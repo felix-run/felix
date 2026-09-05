@@ -468,7 +468,7 @@ Storage and execution:
 - Large tool outputs spill via `spec.artifacts`
 - Durable facts via `spec.memory.capture`; how-tos via `spec.procedural_memory`
 - `spec.execution.mode: durable` enqueues a fiber (Temporal optional) and returns `202` with a
-  `resume_token`
+  `resume_token`; a step that keeps failing backs off and is `dead` after `FELIX_FIBER_MAX_ATTEMPTS`
 - Tool retrieval, semantic sessions, and procedural recall use embeddings when
   `felix-harness[embeddings]` is installed
 
