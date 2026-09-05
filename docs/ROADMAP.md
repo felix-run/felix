@@ -152,7 +152,7 @@ live again. Revisit after the first three land, on evidence, not before.
 - [x] **Bound the retry.** Correction to the entry as written: an `invoke` that raises is
       terminal in one tick (`status: failed`); it was the failures *outside* that handler — a
       save, a lease write, a store down — that were released and re-claimed once a minute until
-      `expires_at`. Now: `fibers.attempts` (migration `0012`), backoff 1m→1h doubling, and
+      `expires_at`. Now: `fibers.attempts` (migration `0013`), backoff 1m→1h doubling, and
       `status: dead` at `FELIX_FIBER_MAX_ATTEMPTS` (5), with the error on the run view and every
       terminal-status set (`sdk.py`, the resume stream) agreeing under an invariant.
 - [ ] **Non-streaming `/chat` approval visibility.** `invoke()` never drains `side_events`, so a
@@ -403,13 +403,11 @@ rather than from re-reading a file. The wave itself is written up in [HISTORY.md
 
 ### Headless / contract
 
-- [ ] **Nothing enforces RLS coverage for a new tenant table.** `0006_tenant_rls` applied a
-      policy to a fixed list; a table added later is covered only if whoever added it
-      remembered, and the failure is silent — the table simply is not isolated.
-      `document_chunks` (migration `0010`) carries its policy because it was written by hand,
-      which is the argument, not the reassurance. An invariant comparing tables with a
-      `tenant_id` column against those carrying `felix_tenant_isolation` is ~15 lines and is
-      the natural candidate for this cycle's one hardening item.
+- [x] **Nothing enforces RLS coverage for a new tenant table** (readiness pass, 2026-09-04).
+      `tests/unit/test_rls_coverage.py` renders every migration offline and checks the DDL:
+      every `tenant_id` table carries `felix_tenant_isolation` and `FORCE`, every table has a
+      `tenant_id` (allowlist: `memory_vector_config`), one Alembic head. `oauth_token_cache`,
+      tenant-less and never read or written, is dropped in `0013` with its setting and helper.
 
 - [ ] **Headless invariant is prose only** — CLAUDE.md asserts it; nothing fails when it stops
       being true. An AST/file check over `apps/api` for `StaticFiles`, `Jinja2Templates` and

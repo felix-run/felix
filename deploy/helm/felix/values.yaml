@@ -123,7 +123,6 @@ secrets:
   openaiApiKey: ""
   jwksPrivate: ""
   jwksPublic: ""
-  oauthCacheKey: ""
   # Required for /internal/* when auth_mode != none (or production).
   consumerSharedSecret: ""
 

@@ -97,7 +97,6 @@ class Settings(BaseSettings):
     # proxy the last entry, with two the one before it. The leftmost entry is whatever
     # the client chose to send.
     trusted_proxy_hops: int = Field(default=1, ge=1)
-    oauth_cache_key: str = ""  # base64 32-byte AES key
     # Comma-separated commands MCP stdio servers may spawn. Empty (default) disables
     # stdio entirely — manifest-supplied argv would otherwise be arbitrary code execution.
     mcp_stdio_allowed_commands: str = ""

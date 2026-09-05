@@ -141,7 +141,11 @@ transcript (tracked in `docs/ROADMAP.md`); and `thinking_delta` is reasoning, no
 reply, and passes through unscreened. Tenant
 isolation is application-level `tenant_id` by default; enable Postgres RLS
 with migration `0006_tenant_rls` and `FELIX_DATABASE_RLS=true`
-(sets `app.tenant_id` / `app.rls_bypass` GUCs per transaction).
+(sets `app.tenant_id` / `app.rls_bypass` GUCs per transaction). Every table except
+`memory_vector_config` (one deployment-wide row, no tenant data, RLS never enabled) carries
+a `tenant_id` and the `felix_tenant_isolation` policy — `ENABLE`d, `FORCE`d, and comparing
+`tenant_id` to the session GUC with a bypass arm, and the only policy on the table;
+`tests/unit/test_rls_coverage.py` renders the migrations and fails when a new table does not.
 
 ## Inbound and outbound constraints
 

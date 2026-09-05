@@ -107,15 +107,6 @@ class SkillActivation(Base):
     updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
 
-class OAuthTokenCache(Base):
-    __tablename__ = "oauth_token_cache"
-
-    cache_key: Mapped[str] = mapped_column(Text, primary_key=True)
-    access_token: Mapped[str] = mapped_column(Text, nullable=False)
-    expires_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    scope: Mapped[str] = mapped_column(Text, server_default="", default="")
-
-
 class ManifestRow(Base):
     __tablename__ = "manifests"
 
@@ -383,7 +374,6 @@ __all__ = [
     "ManifestActive",
     "ManifestRow",
     "MemoryVector",
-    "OAuthTokenCache",
     "Plan",
     "SessionEventRow",
     "SkillActivation",
