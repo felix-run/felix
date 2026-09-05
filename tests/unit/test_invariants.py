@@ -50,7 +50,17 @@ OPTIONAL_DISTRIBUTIONS = {
 
 
 def _python_files(base: Path) -> list[Path]:
-    return [p for p in base.rglob("*.py") if p.is_file()] if base.is_dir() else []
+    """Every `.py` under `base` — and never an empty list.
+
+    This used to answer `[]` for a directory that did not exist, which is how a whole
+    family of the scanners below would go quiet at once: they iterate nothing, collect no
+    offenders, and pass. Renaming a package would have silenced them with nothing to see.
+    A scan that finds nothing to inspect is a broken scan, not a clean bill of health.
+    """
+    assert base.is_dir(), f"{base} is not a directory — has the source tree moved?"
+    files = [p for p in base.rglob("*.py") if p.is_file()]
+    assert files, f"no Python files under {base}; a scan over nothing passes by default"
+    return files
 
 
 # --------------------------------------------------------------------------
@@ -90,6 +100,7 @@ def test_an_extra_only_module_is_never_imported_eagerly() -> None:
     failure: it was green against the violation it exists to catch.
     """
     targets = {Path(rel).stem for rel in EXTRA_ONLY_MODULES}
+    inspected = 0
     offenders: list[str] = []
     for root in SOURCE_ROOTS:
         for path in _python_files(root):
@@ -105,10 +116,15 @@ def test_an_extra_only_module_is_never_imported_eagerly() -> None:
                 elif isinstance(node, ast.ImportFrom):
                     segments.update((node.module or "").split("."))
                     segments.update(alias.name for alias in node.names)
+                inspected += len(segments)
                 hit = sorted(segments & targets)
                 if hit:
                     rel = path.relative_to(ROOT)
                     offenders.append(f"{rel}:{node.lineno} imports {', '.join(hit)}")
+    assert inspected >= 200, (
+        f"only {inspected} module-scope import segments inspected (1322 today) — the "
+        "`tree.body` walk has broken, so an eager import here would pass unnoticed"
+    )
     assert offenders == [], (
         "An extra-only module must be imported inside the function that needs it, or a "
         "lean install fails at import:\n  " + "\n  ".join(offenders)
@@ -119,6 +135,7 @@ def test_an_extra_only_module_is_never_imported_eagerly() -> None:
 # needs them, never at module scope.
 # --------------------------------------------------------------------------
 def test_no_optional_dependency_imported_at_module_scope() -> None:
+    inspected = 0
     offenders: list[str] = []
     for root in SOURCE_ROOTS:
         for path in _python_files(root):
@@ -131,10 +148,15 @@ def test_no_optional_dependency_imported_at_module_scope() -> None:
                     names = [alias.name for alias in node.names]
                 elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
                     names = [node.module]
+                inspected += len(names)
                 for name in names:
                     if name.split(".")[0] in OPTIONAL_DISTRIBUTIONS:
                         rel = path.relative_to(ROOT)
                         offenders.append(f"{rel}:{node.lineno} imports {name}")
+    assert inspected > 100, (
+        f"only {inspected} module-scope imports inspected across the source roots — the "
+        "walk is no longer finding imports, so this scan would pass on any violation"
+    )
     assert offenders == [], (
         "Optional dependencies must be imported inside the function that needs them, "
         "so the lean install and the default Docker image keep working:\n  " + "\n  ".join(offenders)
@@ -148,6 +170,7 @@ def test_no_optional_dependency_imported_at_module_scope() -> None:
 def test_postgres_modules_have_an_in_memory_path() -> None:
     # db/__init__.py is a pure re-export surface; db/session.py defines the switch.
     exempt = {"db/__init__.py", "db/session.py"}
+    reaching_postgres = 0
     offenders: list[str] = []
     for path in _python_files(HARNESS):
         rel = str(path.relative_to(HARNESS))
@@ -156,8 +179,13 @@ def test_postgres_modules_have_an_in_memory_path() -> None:
         src = path.read_text(encoding="utf-8")
         if "get_session_factory" not in src:
             continue
+        reaching_postgres += 1
         if "_use_memory" not in src and "InMemory" not in src:
             offenders.append(rel)
+    assert reaching_postgres >= 8, (
+        f"only {reaching_postgres} modules appear to reach Postgres (17 today) — the marker this scan "
+        "keys on has probably been renamed, and every twin would go unchecked"
+    )
     assert offenders == [], (
         "These modules reach Postgres with no memory:// fallback, so the test suite "
         "(FELIX_DATABASE_URL=memory://ci) cannot exercise them:\n  " + "\n  ".join(offenders)
@@ -363,9 +391,12 @@ def test_no_base_http_middleware_anywhere_in_the_source() -> None:
 
     root = Path(__file__).resolve().parents[2]
     offenders: list[str] = []
+    scanned = 0
 
     for base in ("apps", "packages"):
+        assert (root / base).is_dir(), f"{base}/ is missing — has the tree moved?"
         for path in (root / base).rglob("*.py"):
+            scanned += 1
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
             rel = path.relative_to(root)
             for node in ast.walk(tree):
@@ -388,6 +419,7 @@ def test_no_base_http_middleware_anywhere_in_the_source() -> None:
                 ):
                     offenders.append(f'{rel}:{node.lineno}: @....middleware("http")')
 
+    assert scanned > 100, f"only {scanned} source files parsed; this scan is not reaching the tree"
     assert offenders == [], (
         "BaseHTTPMiddleware / @app.middleware('http') found in source:\n  "
         + "\n  ".join(offenders)
@@ -595,10 +627,13 @@ def test_ci_installs_every_extra_the_tests_gate_on() -> None:
 def test_optional_extras_are_gated_through_the_helper() -> None:
     """A bare `importorskip` bypasses the CI requirement flag, so it must not come back."""
     helper = ROOT / "tests" / "optional_deps.py"  # where the one legitimate call lives
+    assert helper.is_file(), "tests/optional_deps.py is gone; the rule has no replacement to name"
+    scanned = 0
     offenders = []
     for path in (ROOT / "tests").rglob("*.py"):
         if path == helper:
             continue
+        scanned += 1
         tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
         for node in ast.walk(tree):
             if (
@@ -607,6 +642,7 @@ def test_optional_extras_are_gated_through_the_helper() -> None:
                 and node.func.attr == "importorskip"
             ):
                 offenders.append(f"{path.relative_to(ROOT)}:{node.lineno}")
+    assert scanned > 100, f"only {scanned} test files parsed; the scan is not reaching tests/"
     assert offenders == [], (
         "use tests/optional_deps.py:require_optional(module, extra) instead of "
         f"pytest.importorskip so CI can require the extra: {offenders}"
@@ -672,8 +708,13 @@ def test_governance_wrappers_read_their_config_as_typed_attributes() -> None:
 
     Reading the fields as attributes is what lets `ty` see this layer at all.
     """
+    wrappers = list(_builder_wrappers())
+    assert len(wrappers) >= 8, (
+        f"expected the full wrapper stack, found only {[n.name for n in wrappers]} — "
+        "a scan over no wrappers cannot see a getattr default"
+    )
     offenders: list[str] = []
-    for node in _builder_wrappers():
+    for node in wrappers:
         params = {a.arg for a in (*node.args.args, *node.args.kwonlyargs)}
         for call in ast.walk(node):
             if (
@@ -693,15 +734,26 @@ def test_governance_wrappers_read_their_config_as_typed_attributes() -> None:
 
 def test_governance_wrappers_declare_their_config_type() -> None:
     """`Any` here is what let the getattr defaults hide. Keep the annotations concrete."""
+    wrappers = list(_builder_wrappers())
+    assert len(wrappers) >= 8, (
+        f"expected the full wrapper stack, found only {[n.name for n in wrappers]} — "
+        "a scan over no wrappers cannot see an `Any` annotation"
+    )
+    config_params = 0
     untyped: list[str] = []
-    for node in _builder_wrappers():
+    for node in wrappers:
         for arg in (*node.args.args, *node.args.kwonlyargs):
             if arg.arg in _NON_CONFIG_PARAMS:
                 continue
+            config_params += 1
             rendered = ast.unparse(arg.annotation) if arg.annotation else "<none>"
             if "Any" in rendered or rendered == "<none>":
                 untyped.append(f"{node.name}({arg.arg}: {rendered})")
 
+    assert config_params >= 5, (
+        f"only {config_params} config parameters inspected across {len(wrappers)} wrappers — "
+        "`_NON_CONFIG_PARAMS` is probably excluding everything, so `Any` would slip through"
+    )
     assert untyped == [], f"governance wrapper config parameters must not be Any: {untyped}"
 
 
@@ -735,6 +787,8 @@ def test_a_pattern_that_reaches_a_model_records_the_usage() -> None:
     either instance in the pattern that came next.
     """
     patterns = HARNESS / "patterns"
+    assert patterns.is_dir(), "packages/harness/src/felix/patterns is missing"
+    reaching_model = 0
     offenders: list[str] = []
 
     for path in sorted(patterns.glob("*.py")):
@@ -752,12 +806,17 @@ def test_a_pattern_that_reaches_a_model_records_the_usage() -> None:
             )
             if not reaches_model:
                 continue
+            reaching_model += 1
             names = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
             # `record_model_usage` is the client-shaped spelling of `record_usage` and
             # is what the pattern loops call; either one feeds `limit_state`.
             if not names & {"record_usage", "record_model_usage"}:
                 offenders.append(f"{path.name}:{node.lineno} {node.name}")
 
+    assert reaching_model >= 3, (
+        f"only {reaching_model} pattern functions appear to reach a model — the `chat` / "
+        "`stream_turn` match has broken, and an unmetered pattern would pass unnoticed"
+    )
     assert offenders == [], (
         "these call a model without recording usage, so the spend they cause escapes "
         f"limits.max_cost_usd and the token budgets: {offenders}. Call record_model_usage "
@@ -772,17 +831,29 @@ def test_pattern_loops_meter_through_the_helper_that_carries_the_price_override(
     through the helper, and the helper must pass the override on."""
     patterns = HARNESS / "patterns"
     direct: list[str] = []
+    through_helper = 0
     for path in sorted(patterns.glob("*.py")):
         if path.name == "model.py":
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
         for node in ast.walk(tree):
-            if (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Name)
-                and node.func.id == "record_usage"
-            ):
+            if not isinstance(node, ast.Call):
+                continue
+            # Both spellings: a bare `record_usage(...)` and a qualified
+            # `model.record_usage(...)`. Matching `ast.Name` alone let the qualified form
+            # through *and* left it invisible, while the sibling scan below already handled
+            # it — so the two disagreed about what counts as metering.
+            name = node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", "")
+            if name == "record_usage":
                 direct.append(f"{path.name}:{node.lineno}")
+            elif name == "record_model_usage":
+                through_helper += 1
+    # The offender list is empty by design, so it proves nothing on its own: this is the
+    # quantity that shows the walk still sees the loops metering at all.
+    assert through_helper >= 4, (
+        f"only {through_helper} record_model_usage call sites found in the pattern loops "
+        "(8 today) — the walk has broken, so a direct record_usage would pass unnoticed"
+    )
     assert direct == [], f"pattern loops must meter through record_model_usage, not record_usage: {direct}"
 
     model_tree = ast.parse((patterns / "model.py").read_text(encoding="utf-8"))
@@ -894,6 +965,8 @@ def test_no_tenant_scoped_accessor_defaults_to_the_default_tenant() -> None:
     Scoped to the session layer, where the accessors hand back a whole tenant's log.
     """
     session_dir = HARNESS / "session"
+    assert session_dir.is_dir(), "packages/harness/src/felix/session is missing"
+    tenant_scoped = 0
     offenders: list[str] = []
 
     for path in sorted(session_dir.rglob("*.py")):
@@ -905,6 +978,8 @@ def test_no_tenant_scoped_accessor_defaults_to_the_default_tenant() -> None:
             # Defaults align to the tail of their own parameter list.
             pairs = list(zip(args.args[len(args.args) - len(args.defaults) :], args.defaults, strict=True))
             pairs += [(a, d) for a, d in zip(args.kwonlyargs, args.kw_defaults, strict=True) if d is not None]
+            if "tenant_id" in {a.arg for a in (*args.args, *args.kwonlyargs)}:
+                tenant_scoped += 1
             for arg, default in pairs:
                 if arg.arg != "tenant_id":
                     continue
@@ -912,6 +987,13 @@ def test_no_tenant_scoped_accessor_defaults_to_the_default_tenant() -> None:
                     rel = path.relative_to(ROOT)
                     offenders.append(f"{rel}:{node.lineno} {node.name}")
 
+    # Counted on `tenant_id` appearing at all (20 functions today), not on it carrying a
+    # default: the rule holds precisely when no default exists, so counting defaults would
+    # floor at zero and prove nothing about whether the walk still works.
+    assert tenant_scoped >= 10, (
+        f"only {tenant_scoped} session functions take a `tenant_id` at all — the walk has "
+        "broken, so a defaulting accessor would pass unnoticed"
+    )
     assert offenders == [], (
         "tenant_id must not default to 'default' on a session accessor — omitting it "
         f"should be a TypeError, not another tenant's log: {'; '.join(offenders)}"
@@ -957,12 +1039,12 @@ def test_no_outbound_http_client_hardcodes_its_timeout() -> None:
                 return bool(args) and all(_is_hardcoded(a, consts) for a in args)
         return False
 
+    clients_seen = 0
     offenders: list[str] = []
     for root in SOURCE_ROOTS:
         for path in _python_files(root):
             rel = str(path.relative_to(ROOT))
-            if any(rel.endswith(k) for k in exempt):
-                continue
+            exempted = any(rel.endswith(k) for k in exempt)
             tree = ast.parse(path.read_text(encoding="utf-8"))
             consts = _module_constants(tree)
             for node in ast.walk(tree):
@@ -979,12 +1061,26 @@ def test_no_outbound_http_client_hardcodes_its_timeout() -> None:
                     is_client = getattr(func, "id", "") == "AsyncClient"
                 if not is_client:
                     continue
+                # Counted before the exemption, as the egress scan below does: the floor is
+                # meant to measure whether the AST still recognises a client, not how many
+                # sites are excused. Counting after it made the floor fall as the exemption
+                # list grew, and left it one ordinary refactor away from red.
+                clients_seen += 1
+                if exempted:
+                    continue
                 kw = next((k for k in node.keywords if k.arg == "timeout"), None)
                 if kw is None:
                     offenders.append(f"{rel}:{node.lineno} no timeout= (httpx defaults to 5s)")
                 elif _is_hardcoded(kw.value, consts):
                     offenders.append(f"{rel}:{node.lineno} hardcoded timeout")
 
+    # The skill's own example of a scan that was green the day it was written: it matched
+    # `timeout=<Constant>` while every literal it hunted lived inside `httpx.Timeout(...)`.
+    # A floor on what it matched at all is what turns "found nothing" into a failure.
+    assert clients_seen >= 10, (
+        f"only {clients_seen} outbound client constructions matched (27 today); this scan has "
+        "stopped recognising them, so a hardcoded timeout would pass unnoticed"
+    )
     assert offenders == [], (
         "an outbound client hardcodes its timeout; read it from Settings or a per-ref field "
         f"so an operator can raise it, or add it to `exempt` with a reason: {offenders}"
@@ -1011,12 +1107,12 @@ def test_outbound_clients_go_through_the_egress_guard() -> None:
         "wire/anthropic_messages.py": "provider base_url is operator config; felix_ai cannot import felix",
         "wire/transport.py": "provider base_url is operator config; felix_ai cannot import felix",
     }
+    seen_clients = 0
     offenders: list[str] = []
     for root in SOURCE_ROOTS:
         for path in _python_files(root):
             rel = str(path.relative_to(ROOT))
-            if any(rel.endswith(k) for k in exempt):
-                continue
+            exempted = any(rel.endswith(k) for k in exempt)
             tree = ast.parse(path.read_text(encoding="utf-8"))
             for node in ast.walk(tree):
                 if not isinstance(node, ast.Call):
@@ -1024,8 +1120,16 @@ def test_outbound_clients_go_through_the_egress_guard() -> None:
                 func = node.func
                 if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
                     if func.value.id == "httpx" and func.attr in {"AsyncClient", "Client"}:
-                        offenders.append(f"{rel}:{node.lineno}")
+                        # Counted before the exemption, so the floor below measures whether
+                        # the AST match still works rather than how many sites are excused.
+                        seen_clients += 1
+                        if not exempted:
+                            offenders.append(f"{rel}:{node.lineno}")
 
+    assert seen_clients >= 10, (
+        f"found only {seen_clients} httpx client constructions (27 today) — the AST match has "
+        "broken and this scan sees nothing"
+    )
     assert offenders == [], (
         "outbound client built directly instead of via felix.security.egress."
         f"safe_async_client; add an exemption with a reason if that is deliberate: {offenders}"
@@ -1246,8 +1350,14 @@ def test_no_provider_header_option_is_also_a_credential() -> None:
     """
     from felix_ai.providers import CREDENTIAL_OPTION_NAMES, builtin_provider_specs
 
+    specs = list(builtin_provider_specs())
+    header_options = sum(len(spec.header_options) for spec in specs)
+    assert header_options >= 1, (
+        "no provider declares a header option, so this invariant has no subject and the "
+        "overlap it forbids cannot arise"
+    )
     offenders: list[str] = []
-    for spec in builtin_provider_specs():
+    for spec in specs:
         declared = CREDENTIAL_OPTION_NAMES | set(spec.credential_option_names)
         for header, key in spec.header_options:
             if key in declared:
@@ -1267,9 +1377,16 @@ def test_every_record_usage_call_prices_by_the_wire_model() -> None:
     `None` precisely so old callers keep working, which means dropping it from a call site
     is silent: deleting it from both `react.py` call sites left the whole suite green.
 
-    Every unit test for this exercises `record_usage` directly, so nothing held the eight
+    Every unit test for this exercises `record_usage` directly, so nothing held the
     production call sites to it. This does.
+
+    One caveat, measured rather than assumed: there is exactly **one** direct `record_usage`
+    call left in the tree — the one inside `record_model_usage`, which now absorbs the nine
+    sites that used to spell it out. So this scan guards the helper, and what guards the
+    callers is `test_a_pattern_that_reaches_a_model_records_the_usage` above. The floor below
+    is set to what is actually there; raise it if direct call sites ever come back.
     """
+    call_sites = 0
     offenders: list[str] = []
     for root in SOURCE_ROOTS:
         for path in _python_files(root):
@@ -1280,8 +1397,13 @@ def test_every_record_usage_call_prices_by_the_wire_model() -> None:
                 name = node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", "")
                 if name != "record_usage":
                     continue
+                call_sites += 1
                 if not any(kw.arg == "wire_model_id" for kw in node.keywords):
                     offenders.append(f"{path.relative_to(ROOT)}:{node.lineno}")
+    assert call_sites >= 1, (
+        "no record_usage call sites found at all; the match has broken and a call that "
+        "drops the wire model would pass unnoticed"
+    )
     assert offenders == [], (
         "record_usage must be told the wire model, or the turn prices against a logical "
         "route id that matches no catalog entry and accrues nothing:\n  " + "\n  ".join(offenders)

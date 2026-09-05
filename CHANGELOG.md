@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Fifteen structural invariants could pass by finding nothing.** `_python_files` and
+  `_py_files` answered `[]` for a directory that no longer existed, so renaming a package
+  would have silenced a whole family of AST scanners at once — each iterating nothing,
+  collecting no offenders, and reporting a clean bill of health. Both helpers now fail on a
+  missing or empty root, and every scanner that had no positive control now carries one: the
+  count of Postgres-touching modules, of outbound client constructions (the `httpx` timeout
+  scanner is the case the `test-quality` skill cites as having been green-on-broken once), of
+  module-scope imports inspected, of session functions taking a `tenant_id`, of pattern
+  functions reaching a model and metering through the helper, of `record_usage` call sites, of
+  governance wrapper config parameters, of provider header options, and of files parsed by the
+  middleware, `importorskip` and plugin-boundary scans. Each floor is the measured number with
+  the measurement recorded beside it, and each was proved by mutation: breaking the AST match
+  or moving the root now turns the scanner red instead of quiet. Two scanners counted the wrong
+  set — the `httpx` timeout scan counted only non-exempt files, which both understated the
+  match and would have gone red on an ordinary consolidation of the wire clients; it now counts
+  before the exemption, as the egress scan beside it always did.
+- **Two files could skip themselves silently.** `test_bash_guard_hooks.py` skipped entirely
+  without `jq` and had no CI escape hatch, so the guard assertions could stop running with
+  nobody told — it now raises under `FELIX_REQUIRE_OPTIONAL_EXTRAS`, the hatch its sibling
+  `test_pr_quality_gate_hook.py` already carried. `test_resume_poll_backoff.py` imported the
+  symbol under test inside a `try/except ImportError` and skipped three tests when it was
+  missing. Nineteen tests carried that skip condition, so a rename would have removed the whole
+  file's arithmetic from the run silently; renaming `_next_poll_delay` now fails collection,
+  which is the loudest available signal rather than the quietest.
+- **`test_every_record_usage_call_prices_by_the_wire_model` guards one call site, not eight.**
+  Measured while adding its floor: `record_model_usage` absorbed the nine sites that used to
+  spell `record_usage` out, so exactly one direct call remains — the one inside that helper.
+  The invariant still earns its place, and its docstring now says what it actually covers and
+  points at the pattern-level invariant that covers the callers.
+
 ### Added
 
 - **An end-to-end test layer: `tests/e2e/`.** Every HTTP test in the repo cut the chain at one
