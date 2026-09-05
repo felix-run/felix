@@ -134,9 +134,10 @@ PROBE_PATHS = frozenset({"/health", "/live", "/ready"})
 
 # /metrics is deliberately NOT skipped: it is a scrape target with unbounded label
 # cardinality, so an unauthenticated caller polling it is a real amplification path.
-SKIP_EXACT = PROBE_PATHS | {"/docs", "/openapi.json", "/redoc"}
-# `/docs/` was here for Swagger UI's /docs/oauth2-redirect, which went with it; the
-# Scalar reference is the single exact path above.
+# Only the probes: kubelet sends no credential and treats a 429 as a failed probe. The
+# API reference used to be here too, which under `api_key`/`jwt` left three paths where a
+# credential could be guessed unthrottled; a request to `/docs` now counts like any other.
+SKIP_EXACT = PROBE_PATHS
 SKIP_PREFIX = ("/.well-known/",)
 
 
@@ -218,6 +219,16 @@ def build_rate_limit_config(settings: Any) -> RateLimitConfig:
     )
 
 
+def trusted_proxy_header(settings: Any) -> str:
+    """The header name a proxy the operator runs writes the client address into, or "".
+
+    Empty means "no proxy is declared" — the one decision behind both the rate-limit
+    key and whether `x-forwarded-proto` is believed (HSTS). Both read it here so the
+    rule has one home.
+    """
+    return (getattr(settings, "trusted_client_ip_header", "") or "").strip().lower()
+
+
 def client_key(request: Any, settings: Any) -> str:
     """Rate-limit key for one request.
 
@@ -226,7 +237,7 @@ def client_key(request: Any, settings: Any) -> str:
     previous per-tenant key also meant that under `auth_mode=none` every caller shared
     one `tenant:default` bucket, so a single client could 429 the whole deployment.
     """
-    header = (getattr(settings, "trusted_client_ip_header", "") or "").strip().lower()
+    header = trusted_proxy_header(settings)
     if header:
         raw = request.headers.get(header) or ""
         # X-Forwarded-For is a list; the first entry is the origin client.
@@ -249,4 +260,5 @@ __all__ = [
     "check_rate_limit",
     "client_key",
     "should_skip_rate_limit",
+    "trusted_proxy_header",
 ]

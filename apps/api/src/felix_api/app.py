@@ -24,7 +24,12 @@ from starlette.responses import Response
 
 from felix_api.composition import compose, installed_plugins
 from felix_api.docs import register_docs
-from felix_api.middleware import BodyLimitMiddleware, RateLimitMiddleware, RequestIdMiddleware
+from felix_api.middleware import (
+    BodyLimitMiddleware,
+    RateLimitMiddleware,
+    RequestIdMiddleware,
+    SecurityHeadersMiddleware,
+)
 from felix_api.routes import (
     a2a,
     approvals,
@@ -171,9 +176,11 @@ def create_app(
             "url": "https://github.com/felix-run/felix/blob/main/LICENSE",
         },
         lifespan=lifespan,
-        # Swagger UI gives up the /docs path to the Scalar reference mounted below.
-        # /openapi.json and /redoc are unchanged.
+        # Swagger UI gives up the /docs path to the Scalar reference mounted below, and
+        # ReDoc goes with it: one reference surface, with one CSP. /openapi.json is
+        # unchanged.
         docs_url=None,
+        redoc_url=None,
     )
     # Must be here and not in the lifespan: this installs ASGI middleware, and Starlette
     # has finalised its middleware stack by the time the lifespan runs. Instrumenting
@@ -215,6 +222,9 @@ def create_app(
         key_resolvers=rate_key_resolvers,
     )
     app.add_middleware(BodyLimitMiddleware, limit=body_limit)
+    # Headers on every response, including a 413 and a 401: registered after body limit
+    # so it wraps it, before request id so the correlation id is still outermost.
+    app.add_middleware(SecurityHeadersMiddleware, settings=cfg)
     app.add_middleware(RequestIdMiddleware)
 
     def _liveness() -> dict[str, Any]:
