@@ -24,23 +24,14 @@ import contextlib
 import pytest
 from felix.config import Settings
 
-# Imported defensively so this module still collects against a version without the
-# backoff. The arithmetic tests then skip -- there is no arithmetic to test -- but the
-# wiring test below still runs and still fails, which is the assertion that matters.
-try:
-    from felix_api.routes.chat import (
-        POLL_BACKOFF_FACTOR,
-        POLL_BACKOFF_GRACE_SECONDS,
-        _next_poll_delay,
-    )
-
-    HAS_BACKOFF = True
-except ImportError:  # pragma: no cover - only on a version predating the backoff
-    POLL_BACKOFF_FACTOR = POLL_BACKOFF_GRACE_SECONDS = 0.0
-    _next_poll_delay = None  # type: ignore[assignment]
-    HAS_BACKOFF = False
-
-pytestmark_arithmetic = pytest.mark.skipif(not HAS_BACKOFF, reason="no backoff to test")
+# Imported directly, not defensively. The `try/except ImportError` this replaces turned a
+# renamed or deleted `_next_poll_delay` into three skipped tests -- the symbol under test
+# going missing is the loudest possible failure, and it was being reported as a pass.
+from felix_api.routes.chat import (
+    POLL_BACKOFF_FACTOR,
+    POLL_BACKOFF_GRACE_SECONDS,
+    _next_poll_delay,
+)
 
 FLOOR, CEILING = 1.0, 10.0
 
@@ -62,7 +53,6 @@ def _ramp(floor: float = FLOOR, ceiling: float = CEILING) -> list[tuple[float, f
     return out
 
 
-@pytestmark_arithmetic
 def test_the_first_thirty_seconds_are_not_slowed_at_all() -> None:
     """The whole cost of this change lands on first-event latency, so the window where
     a user is most likely to act must be untouched."""
@@ -71,21 +61,18 @@ def test_the_first_thirty_seconds_are_not_slowed_at_all() -> None:
             assert delay == FLOOR, f"backed off to {delay}s only {idle}s into the stream"
 
 
-@pytestmark_arithmetic
 def test_it_decays_after_the_grace_window() -> None:
     late = [delay for idle, delay in _ramp() if idle > POLL_BACKOFF_GRACE_SECONDS * 2]
     assert late, "the ramp never got past the grace window"
     assert min(late) > FLOOR, "the poll never decayed at all"
 
 
-@pytestmark_arithmetic
 def test_the_delay_never_passes_the_ceiling_or_drops_below_the_floor() -> None:
     delays = [delay for _idle, delay in _ramp()]
     assert max(delays) <= CEILING
     assert min(delays) >= FLOOR
 
 
-@pytestmark_arithmetic
 def test_the_idle_window_costs_far_fewer_queries() -> None:
     """The point of the finding, stated as the number it is about."""
     polls = len(_ramp())
@@ -93,7 +80,6 @@ def test_the_idle_window_costs_far_fewer_queries() -> None:
     assert polls < fixed_rate / 3, f"{polls} polls per idle window against {fixed_rate} before"
 
 
-@pytestmark_arithmetic
 def test_activity_returns_the_stream_to_the_floor() -> None:
     """`_next_poll_delay` is only consulted on an empty round; the loop resets to the
     floor when events arrive. Asserted here so the reset cannot quietly become a decay
@@ -101,13 +87,11 @@ def test_activity_returns_the_stream_to_the_floor() -> None:
     assert _next_poll_delay(0.0, CEILING, floor=FLOOR, ceiling=CEILING) == FLOOR
 
 
-@pytestmark_arithmetic
 def test_a_ceiling_below_the_floor_cannot_speed_the_poll_up() -> None:
     """Misconfiguration must not turn a backoff into a tighter loop than the floor."""
     assert _next_poll_delay(999.0, FLOOR, floor=FLOOR, ceiling=0.1) <= FLOOR
 
 
-@pytestmark_arithmetic
 def test_the_ramp_is_gentle_enough_to_be_worth_the_grace_window() -> None:
     """A factor so steep that the first post-grace step lands on the ceiling would make
     the grace window the only thing protecting latency."""
@@ -116,7 +100,6 @@ def test_the_ramp_is_gentle_enough_to_be_worth_the_grace_window() -> None:
     assert first_step < CEILING, "the first decay step jumps straight to the ceiling"
 
 
-@pytestmark_arithmetic
 def test_the_ceiling_is_configurable_and_bounded() -> None:
     s = Settings(database_url="memory://x", stream_resume_poll_max_seconds=30.0)
     assert s.stream_resume_poll_max_seconds == 30.0
@@ -124,7 +107,6 @@ def test_the_ceiling_is_configurable_and_bounded() -> None:
         Settings(database_url="memory://x", stream_resume_poll_max_seconds=0.0)
 
 
-@pytestmark_arithmetic
 def test_idle_accounting_follows_the_actual_wait() -> None:
     """The disconnect is 300 seconds of real silence.
 
@@ -196,8 +178,7 @@ async def _record_waits(
         redis_url="",
         stream_resume_idle_seconds=idle_limit,
         stream_resume_poll_seconds=1.0,
-        # Only on a version that has it; the route defaults to 10.0 either way.
-        **({"stream_resume_poll_max_seconds": ceiling} if HAS_BACKOFF else {}),
+        stream_resume_poll_max_seconds=ceiling,
     )
     app = create_app(settings=settings, plugins=[])
     client = AsyncClient(transport=ASGITransport(app=app), base_url="http://test", timeout=30.0)
@@ -228,7 +209,6 @@ async def test_the_loop_actually_waits_the_backed_off_delay(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(not HAS_BACKOFF, reason="notified ceiling arrived with the backoff")
 async def test_a_notified_stream_relaxes_to_the_longer_ceiling(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -248,7 +228,6 @@ async def test_a_notified_stream_relaxes_to_the_longer_ceiling(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(not HAS_BACKOFF, reason="needs the backoff loop")
 async def test_a_wake_puts_the_interval_back_on_the_floor(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -273,12 +252,10 @@ async def test_a_wake_puts_the_interval_back_on_the_floor(
 # full request. Now they are a few lines each.
 
 
-@pytestmark_arithmetic
 def test_pacing_starts_at_the_floor() -> None:
     assert _pacing().timeout == 1.0
 
 
-@pytestmark_arithmetic
 def test_pacing_holds_the_floor_through_the_grace_window() -> None:
     """A tab reattaching after a redeploy should not be answered slowly because it was
     briefly quiet. Only a stream silent past the grace window decays."""
@@ -293,7 +270,6 @@ def test_pacing_holds_the_floor_through_the_grace_window() -> None:
     assert p.timeout > 1.0, "still at the floor after the grace window elapsed"
 
 
-@pytestmark_arithmetic
 def test_pacing_decays_to_the_ceiling_and_stops() -> None:
     p = _pacing()
     for _ in range(200):
@@ -301,7 +277,6 @@ def test_pacing_decays_to_the_ceiling_and_stops() -> None:
     assert p.timeout == 10.0, f"settled at {p.timeout}, not the ceiling"
 
 
-@pytestmark_arithmetic
 def test_activity_puts_the_interval_back_on_the_floor() -> None:
     p = _pacing()
     for _ in range(200):
@@ -310,7 +285,6 @@ def test_activity_puts_the_interval_back_on_the_floor() -> None:
     assert p.timeout == 1.0
 
 
-@pytestmark_arithmetic
 def test_a_notified_stream_decays_past_the_un_notified_ceiling() -> None:
     """The branch the end-to-end tests could not reach until this was extracted."""
     from felix.session.notify import Wake
@@ -323,7 +297,6 @@ def test_a_notified_stream_decays_past_the_un_notified_ceiling() -> None:
     assert p.timeout == NOTIFIED_POLL_CEILING_SECONDS
 
 
-@pytestmark_arithmetic
 def test_losing_notifications_tightens_the_interval_again() -> None:
     """Redis dropping must not leave a stream on the minute-long ceiling: the poll is
     the safety net, and it stops being one if it stays that slow."""
@@ -341,7 +314,6 @@ def test_losing_notifications_tightens_the_interval_again() -> None:
     assert p.timeout <= 10.0, f"stayed on the notified ceiling at {p.timeout}"
 
 
-@pytestmark_arithmetic
 def test_a_wake_resets_the_interval() -> None:
     from felix.session.notify import Wake
 
@@ -352,7 +324,6 @@ def test_a_wake_resets_the_interval() -> None:
     assert p.timeout == 1.0
 
 
-@pytestmark_arithmetic
 def test_pacing_gives_up_only_after_the_idle_limit() -> None:
     """The idle accounting follows the actual wait, so the limit means the seconds it
     says rather than a count of iterations."""

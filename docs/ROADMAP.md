@@ -450,17 +450,24 @@ rather than from re-reading a file. The wave itself is written up in [HISTORY.md
 
 From the audit of 2026-09-05. Phase 1 (the `tests/e2e/` harness), the vendor-credential hole in
 `scripts/test.sh` and the invariant that pins it shipped together; the rest are queued in leverage
-order. One hardening item per cycle under the meta-work budget — the scanner guards below are the
-cheapest and the one the `test-quality` skill itself asks for.
+order. One hardening item per cycle under the meta-work budget; the scanner guards were this
+cycle's, and the route contracts below are the next capability-adjacent step.
 
-- [ ] **Guard the structural scanners.** `_python_files()` (`tests/unit/test_invariants.py:53`)
-      and `_py_files()` (`test_plugin_boundary.py:15`) return `[]` for a missing directory, and
-      nine scanners end on `assert offenders == []` with no assertion that the corpus or the match
-      set is non-empty — including the `httpx` timeout scanner the skill cites as having been
-      green-on-broken once. The repo already has the idiom in six places
-      (`test_secrets_logging.py:52`). Also: `test_bash_guard_hooks.py:40` skips the whole file
-      without `jq` and has no `FELIX_REQUIRE_*` escape hatch, and
-      `test_resume_poll_backoff.py:30-43` skips when the symbol under test fails to import.
+- [x] **Guard the structural scanners.** Fifteen scanners could pass by finding nothing:
+      `_python_files()` and `_py_files()` answered `[]` for a directory that had moved, so a
+      renamed package would have silenced the whole family at once. Both helpers now fail on a
+      missing or empty root, and every scanner without a positive control gained one at its
+      measured count — including the `httpx` timeout scanner the `test-quality` skill cites as
+      having been green-on-broken once. `test_bash_guard_hooks.py` gained the
+      `FELIX_REQUIRE_OPTIONAL_EXTRAS` hatch its sibling already had, and
+      `test_resume_poll_backoff.py` now imports the symbol under test directly, so a rename
+      fails collection instead of silently skipping the nineteen tests that carried the
+      condition. Each guard proved by mutation, and two floors were corrected after review:
+      one counted only non-exempt files, and both were re-derived from measurement.
+      One overclaim surfaced while measuring: `test_every_record_usage_call_prices_by_the_wire_model`
+      covers a single call site, not the eight its docstring named — `record_model_usage`
+      absorbed the rest — and the docstring now says so.
+
 - [ ] **Route contracts through the e2e harness.** 17 of 27 `/chat` endpoints have no test —
       steer, abort, continue, fork, rewind, compact, thinking, ui, and all nine `/sessions/*` —
       and several are verified only by `smoke.yml` against production every six hours.
