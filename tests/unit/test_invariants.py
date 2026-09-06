@@ -11,9 +11,10 @@ costs nothing at runtime and cannot be satisfied by mocking.
 from __future__ import annotations
 
 import ast
-import importlib.util
 import re
 from pathlib import Path
+
+from tests._scripts import load_script
 
 ROOT = Path(__file__).resolve().parents[2]
 HARNESS = ROOT / "packages" / "harness" / "src" / "felix"
@@ -316,12 +317,7 @@ def test_env_example_documents_every_setting() -> None:
 # The editor-facing JSON Schema tracks the pydantic models it is generated from.
 # --------------------------------------------------------------------------
 def test_manifest_json_schema_is_current() -> None:
-    spec = importlib.util.spec_from_file_location(
-        "_gen_manifest_schema", ROOT / "scripts" / "gen-manifest-schema.py"
-    )
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    module = load_script("gen-manifest-schema")
 
     checked_in = ROOT / "schemas" / "manifest.schema.json"
     assert checked_in.exists(), (
@@ -1470,3 +1466,42 @@ def test_every_redis_command_fallback_goes_through_the_shared_connection() -> No
             if logs and not through_helper:
                 bypasses.append(f"{path.relative_to(ROOT)}:{node.lineno}")
     assert not bypasses, f"redis command failures that do not go through _conn.fallback(): {bypasses}"
+
+
+# --------------------------------------------------------------------------
+# Supply chain: every action pinned by commit SHA, dependencies held back two days,
+# and an owner for every path that is a control.
+# --------------------------------------------------------------------------
+def test_every_workflow_action_is_pinned_by_commit_sha_with_its_version_noted() -> None:
+    """A tag can be moved; a SHA cannot. The trailing `# vX.Y.Z` is what Dependabot bumps
+    together with the SHA, so a pin without it is one Dependabot will not follow."""
+    unpinned: list[str] = []
+    for path in (ROOT / ".github" / "workflows").glob("*.yml"):
+        for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            m = re.search(r"uses:\s*([^\s@]+)@(\S+)(.*)$", line)
+            if not m or m.group(1).startswith("./"):
+                continue
+            if not re.fullmatch(r"[0-9a-f]{40}", m.group(2)) or not re.search(r"#\s*\S+", m.group(3)):
+                unpinned.append(f"{path.name}:{n} {line.strip()}")
+    assert not unpinned, unpinned
+
+
+def test_ci_refuses_dependencies_younger_than_two_days() -> None:
+    ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert "scripts/check-dependency-age.py --hours 48" in ci, "the min-release-age guard is gone"
+    assert "--exclude-newer" not in ci, "a timestamp cutoff makes uv re-resolve and fail the lock check"
+
+
+def test_codeowners_covers_the_controls_and_the_supply_chain() -> None:
+    owners = (ROOT / ".github" / "CODEOWNERS").read_text(encoding="utf-8")
+    rules = {line.split()[0] for line in owners.splitlines() if line and not line.startswith("#")}
+    assert "*" in rules
+    for path in (
+        "/packages/harness/src/felix/governance/",
+        "/packages/harness/src/felix/auth/",
+        "/migrations/",
+        "/deploy/",
+        "/.github/",
+        "/uv.lock",
+    ):
+        assert path in rules, path

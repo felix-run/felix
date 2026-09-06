@@ -521,13 +521,17 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       nothing stops the next rename elsewhere, and an invariant comparing required contexts
       against the names the workflows actually produce is ~20 lines
       (`.github/workflows/*.yml` → job `name`, matrix expanded).
-- [ ] **Tag-driven release** — build, push to GHCR, attach an SBOM, sign with cosign via OIDC,
-      then point `deploy/` at the published image. CI already builds and scans the image and
-      throws it away.
-- [ ] **Single-source the version** — `0.2.2` lives in four `pyproject.toml` files, the root, and
-      the Helm `appVersion`. Releasing means editing six files correctly from memory.
-- [ ] **`uv --exclude-newer`** — refuse dependency versions published in the last day or two, the
-      analogue of an npm `min-release-age`. Cheap; the rest of the supply-chain posture is covered.
+- [x] **Tag-driven release** — `release.yml` on `v*.*.*`: version verified against the tree,
+      both images for both architectures to GHCR, Trivy on the pushed digest, SPDX SBOM attached
+      and attested, cosign keyless signing, GitHub release from the changelog section.
+- [x] **Single-source the version** — every workspace member's `pyproject.toml` and
+      `__init__.py` plus `Chart.yaml` `version` + `appVersion` and `values.yaml` `image.tag`
+      (more than the six this entry counted). `scripts/bump-version.py` is the list, a test
+      proves it matches the tree, the release workflow refuses a tag that disagrees.
+- [x] **`uv --exclude-newer`** — the CI lock check refuses anything published in the last 48h.
+- [x] **CODEOWNERS** — `.github/CODEOWNERS` covers the controls, migrations, deploy and the
+      supply chain; with branch protection's code-owner review, nothing on those paths merges
+      without one.
 - [ ] **Postgres 18** — `pgvector/pgvector:0.8.6-pg18-trixie` exists. Own branch with a rollback
       plan: compatibility pass over the revisions, FTS index, RLS, and a dump/restore path.
 - [ ] **`.cursor/plans/` decision** — tracked but ungitignored. Keep as versioned planning notes

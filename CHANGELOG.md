@@ -261,6 +261,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   observability overlay, embedded by the chart's `PrometheusRule` when
   `prometheusRule.enabled`), every log line carries `tenant_id` and `trace_id`,
   `FELIX_LOG_FORMAT` (`auto|json|text`), and `docs/BACKUP.md` with the restore drill.
+- **Releases are tag-driven and the version is single-sourced.** `release.yml` runs on a
+  `vX.Y.Z` tag: it refuses a version the tree does not carry in every location
+  (`scripts/bump-version.py --check`), a commit that is not on `main`, or a version that
+  already has a release; builds the plain and `-gcp` images for `linux/amd64` and
+  `linux/arm64`, pushes by digest, scans and inventories each platform (a CRITICAL/HIGH
+  finding fails the release before the version tag exists), then tags, signs the index and
+  each platform with cosign (keyless OIDC), attests each SBOM, attaches SLSA provenance, and
+  publishes the GitHub release from the changelog section. CI now holds dependencies for 48
+  hours after publication (`scripts/check-dependency-age.py`, which decides "is this PyPI"
+  on the lock entry's parsed host rather than a URL prefix — `https://pypi.org.evil.test`
+  would otherwise have been aged against real PyPI's metadata), and `.github/CODEOWNERS`
+  names an owner for the controls, migrations, deploy and the supply chain. `deploy/GOVERNANCE.md`
+  gains a supply-chain section with the verification commands; the repo settings the
+  workflow cannot enforce (tag ruleset, environment reviewers, immutable tags, code-owner
+  review) are recorded as decisions in `docs/RELEASING.md`.
 
 ### Changed
 

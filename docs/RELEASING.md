@@ -1,44 +1,27 @@
 # Releasing Felix
 
-Releases are cut by hand. No workflow triggers on tags — `ci.yml` runs on pushes to `main` and on
-pull requests only — so nothing is published or built as a side effect of tagging. That is
-deliberate: the tag records what shipped, it does not perform the shipping.
+A release is a tag. `release.yml` runs on `v*.*.*`: it refuses a tag whose version is not the
+one the tree carries everywhere, builds the two images for both architectures, pushes them to
+GHCR, scans them, attaches an SBOM, signs them with cosign via OIDC, and publishes the GitHub
+release from the changelog section. The tag records what shipped *and* performs the shipping —
+so it is placed on a merge commit whose CI is already green, never earlier.
 
 Felix follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html), and `CHANGELOG.md` follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Every workspace member shares one version
 number; they are versioned together and released together.
 
-## Version lives in twelve places
+## One version, one script
 
-All five `pyproject.toml` files and all four `__init__.py` files must agree, or `felix version`
-reports one number while the built wheel carries another. The Helm chart carries three more, and
-they are the ones that get forgotten: they are not Python, so the greps below never covered them.
-
-| File | Field |
-|---|---|
-| `pyproject.toml` | `version` |
-| `packages/harness/pyproject.toml` | `version` |
-| `packages/cli/pyproject.toml` | `version` |
-| `apps/api/pyproject.toml` | `version` |
-| `apps/worker/pyproject.toml` | `version` |
-| `packages/harness/src/felix/__init__.py` | `__version__` |
-| `packages/cli/src/felix_cli/__init__.py` | `__version__` |
-| `apps/api/src/felix_api/__init__.py` | `__version__` |
-| `apps/worker/src/felix_worker/__init__.py` | `__version__` |
-| `deploy/helm/felix/Chart.yaml` | `version` |
-| `deploy/helm/felix/Chart.yaml` | `appVersion` |
-| `deploy/helm/felix/values.yaml` | `image.tag` |
-
-`values.yaml`'s `image.tag` is the one that does damage when it is missed: `helm install` from the
-release tree then deploys the *previous* image, so an operator upgrading gets the version the
-release was meant to replace. `v0.2.1` shipped that way.
-
-Check them in one pass:
+The version is carried by every workspace member's `pyproject.toml` and `__init__.py`, and by
+the Helm chart's `version`, `appVersion` and `image.tag`. `v0.2.1` shipped with `image.tag`
+pointing at the previous image because those were edited from memory. `scripts/bump-version.py`
+is now the list of every location — `tests/unit/test_version_single_source.py` proves the list
+matches the files in the tree, and `release.yml` refuses a tag that disagrees with it — so the
+list is not repeated here.
 
 ```bash
-grep -rn '^version = ' pyproject.toml packages/*/pyproject.toml apps/*/pyproject.toml
-grep -rn '__version__ = ' packages/*/src/*/__init__.py apps/*/src/*/__init__.py
-grep -rnE '^(version|appVersion):|^  tag:' deploy/helm/felix/Chart.yaml deploy/helm/felix/values.yaml
+python scripts/bump-version.py --check        # every location agrees; prints the version
+python scripts/bump-version.py 0.3.0          # sets every location, then `uv lock`
 ```
 
 ## Procedure
@@ -70,7 +53,7 @@ grep -rnE '^(version|appVersion):|^  tag:' deploy/helm/felix/Chart.yaml deploy/h
    `FELIX_` setting is a minor bump; everything else is a patch. Removing or renaming a manifest
    `spec.*` field breaks operators' YAML — treat it as breaking even when the code still parses.
 
-4. **Bump all nine files** to the new version.
+4. **Bump the version**: `python scripts/bump-version.py X.Y.Z` (every location, then `uv lock`).
 
 5. **Close out the changelog.** Rename `## [Unreleased]` to `## [X.Y.Z] — YYYY-MM-DD`, open a fresh
    empty `## [Unreleased]` above it, and add the comparison link at the bottom of the file next to
@@ -119,16 +102,21 @@ grep -rnE '^(version|appVersion):|^  tag:' deploy/helm/felix/Chart.yaml deploy/h
    the tag by name** rather than `--follow-tags`, which would also try to push `main` — already
    pushed by the merge, and blocked besides.
 
-8. **Publish the GitHub release**, using the changelog section as the body.
+8. **Watch the release workflow.** Pushing the tag is the release: `release.yml` verifies the
+   version, builds and pushes `ghcr.io/felix-run/felix:X.Y.Z` and `:X.Y.Z-gcp` for
+   `linux/amd64` and `linux/arm64`, fails on a CRITICAL/HIGH finding in the pushed image,
+   attaches an SPDX SBOM, signs both images by digest with cosign (keyless, the workflow's OIDC
+   identity), and publishes the GitHub release with the changelog section as its body.
 
    ```bash
-   gh release create vX.Y.Z --title "vX.Y.Z" --notes-file <(
-     awk '/^## \[X.Y.Z\]/{f=1; next} /^## \[/{f=0} f' CHANGELOG.md
-   )
+   gh run watch --exit-status $(gh run list --workflow release.yml --limit 1 --json databaseId --jq '.[0].databaseId')
+   docker manifest inspect ghcr.io/felix-run/felix:X.Y.Z          # both platforms listed
+   cosign verify ghcr.io/felix-run/felix:X.Y.Z \
+     --certificate-identity-regexp '^https://github.com/felix-run/felix/' \
+     --certificate-oidc-issuer https://token.actions.githubusercontent.com
    ```
 
-   `awk` rather than `sed -n '/.../,/## \[/p'`: a `sed` range is inclusive of its end, so that
-   version published the *next* release's heading as the last line of the body.
+   An empty changelog section fails the release rather than publishing a blank body.
 
 9. **Update `docs/ROADMAP.md`** — mark the shipped items `[x]`, refresh the *Last reviewed* line,
    and fold the completed work into [`docs/HISTORY.md`](HISTORY.md) as a wave entry. The roadmap
@@ -137,32 +125,41 @@ grep -rnE '^(version|appVersion):|^  tag:' deploy/helm/felix/Chart.yaml deploy/h
 
 ## After the tag
 
-- **Publish the images.** Nothing builds them on a tag. A release publishes two tags, each for
-  **both** architectures — a single-arch image is the failure worth guarding against, because it
-  pushes and pulls fine and then dies with `exec format error` on the host that needed the other
-  one:
-
-  ```bash
-  docker buildx build --platform linux/amd64,linux/arm64 -f deploy/docker/Dockerfile \
-    --build-arg FELIX_EXTRAS=""    -t ghcr.io/felix-run/felix:vX.Y.Z-plain --push .
-  docker buildx build --platform linux/amd64,linux/arm64 -f deploy/docker/Dockerfile \
-    --build-arg FELIX_EXTRAS="gcp" -t ghcr.io/felix-run/felix:vX.Y.Z-gcp   --push .
-  ```
-
-  Substitute the real tag: `:X.Y.Z` for the plain build, `:X.Y.Z-gcp` for the one
-  `deploy/docker/compose.gcp.yml` deploys. Confirm what you published rather than trusting the
-  push output — `docker manifest inspect ghcr.io/felix-run/felix:X.Y.Z` must list both platforms.
-
-- **Deployments pin the tag themselves**, via `FELIX_IMAGE_TAG` in the host `.env`. That is
-  deliberately not defaulted in the repo: a default would be another place a release has to
-  remember to bump, and the version-places table above exists because that has already gone wrong
-  twice.
-- Publishing to PyPI is not wired up either. `uv publish` exists but no workflow calls it.
+- **Deployments pin the tag themselves**, via `FELIX_IMAGE_TAG` in the host `.env` and
+  `image.tag` in the chart. The chart's value is one of the locations the bump script sets.
+- Publishing to PyPI is not wired up. `uv publish` exists but no workflow calls it.
 - Watch the scheduled `smoke.yml` run against `api.felix.run` after deploying — it exercises health,
   a sync `/chat`, a durable `202`, and the thinking/lease/search/abort surfaces, and it does not
   block PR CI, so a failure there is easy to miss.
 - **Deploying the tag is [`UPGRADING.md`](UPGRADING.md).** A release is not an upgrade: migrations
   and the settings they require move with the image, not after it.
+
+## Dependencies are held back two days
+
+`ci.yml` runs `scripts/check-dependency-age.py --hours 48`: it reads `uv.lock` as written and
+asks PyPI when each pinned version was uploaded, failing on anything younger than 48 hours —
+the window in which a hijacked package is caught and yanked. A Dependabot bump that lands
+inside it fails and passes two days later without a change; a deliberate urgent upgrade
+passes `--allow <package>`. (Not `uv lock --exclude-newer`: a timestamp cutoff is a
+resolution input, so uv re-resolves from scratch and the lock check fails for reasons that
+have nothing to do with age.)
+
+## What the workflow cannot enforce: repo settings
+
+`release.yml` runs the workflow file *at the tag*, so a rewritten workflow arriving on a tag
+is not something the workflow can defend against, and a tag can name any commit. The
+controls for that live in repository settings, and each is a decision recorded here rather
+than in code:
+
+| Setting | What it closes |
+|---|---|
+| A **tag ruleset** on `refs/tags/v*` restricting creation, update and deletion to a bypass list | Anyone with `push` publishing a signed release; a force-pushed tag moving a released version to new bits |
+| A GitHub **environment** on the `image` and `release` jobs with required reviewers | The same, surviving a rewritten workflow file on the tag |
+| **Immutable tags** on the GHCR package | A re-published version even if the tag ruleset is bypassed |
+| **Require review from code owners** on `main` (plus dismiss stale reviews and require last-push approval) | `.github/CODEOWNERS` is advisory until this is on; with one owner who authors most PRs it also blocks self-merge on those paths without an admin bypass |
+
+`verify` does what a workflow can: the tag's version must be the tree's everywhere, the
+commit must be an ancestor of `main`, and the version must not already have a release.
 
 ## If a release is wrong
 
