@@ -22,6 +22,11 @@ logger = logging.getLogger("felix.auth.jwt")
 
 ALLOWED_ALGORITHMS = ("RS256", "RS384", "RS512", "ES256", "ES384", "ES512")
 
+# Clock skew tolerated on `exp`/`nbf`/`iat`. Zero rejected a token the moment the
+# issuer's clock and ours disagreed by a second; sixty is what the major IdPs and their
+# SDKs assume, and short enough that an expired token is still an expired token.
+JWT_LEEWAY_S = 60
+
 
 @dataclass(slots=True)
 class VerifierConfig:
@@ -42,7 +47,7 @@ class VerifyOk:
 @dataclass(slots=True)
 class VerifyFail:
     ok: Literal[False] = False
-    reason: Literal["invalid_token", "expired", "no_verifier_matched"] = "invalid_token"
+    reason: Literal["invalid_token", "expired", "no_verifier_matched", "tenant_not_allowed"] = "invalid_token"
 
 
 VerifyResult = VerifyOk | VerifyFail
@@ -119,6 +124,13 @@ def _issuer(cfg: VerifierConfig) -> str:
     return cfg.issuer
 
 
+def _tenant_from_issuer(cfg: VerifierConfig) -> str:
+    """`tenant=issuer`: the first DNS label of the issuer host. The path is discarded,
+    which is why `tenant_collisions` exists."""
+    host = _issuer(cfg).removeprefix("https://").removeprefix("http://").split("/")[0]
+    return host.split(".")[0] or "default"
+
+
 class TenantResolutionError(ValueError):
     """The token does not identify a tenant this deployment will accept."""
 
@@ -138,8 +150,7 @@ def _tenant_from_payload(
     if cfg.tenant_mode == "fixed" and cfg.fixed_tenant:
         return cfg.fixed_tenant
     if cfg.tenant_mode == "issuer":
-        host = _issuer(cfg).removeprefix("https://").removeprefix("http://").split("/")[0]
-        return host.split(".")[0] or "default"
+        return _tenant_from_issuer(cfg)
 
     claimed = ""
     for key in ("tenant_id", "custom:tenant_id", "tid"):
@@ -245,15 +256,97 @@ async def refresh_jwks(url: str, *, timeout_s: float = JWKS_FETCH_TIMEOUT_S) -> 
     return key_set
 
 
+def _jwks_age_ms(url: str) -> int | None:
+    """Milliseconds since the key set at ``url`` was fetched; None if it never was."""
+    entry = _remote_jwks.get(url)
+    return None if entry is None else int(time.time() * 1000) - entry[1]
+
+
+def _is_fresh(age_ms: int | None) -> bool:
+    """The one freshness rule. `cached_jwks` serves by it and `/ready` reports by it, so
+    the probe cannot say fresh where verification says stale, or the reverse."""
+    return age_ms is not None and age_ms <= JWKS_TTL_MS
+
+
 def cached_jwks(url: str) -> Any:
     """A cached key set if it is still fresh, else None."""
-    entry = _remote_jwks.get(url)
-    if entry is None:
+    if not _is_fresh(_jwks_age_ms(url)):
         return None
-    key_set, fetched_at = entry
-    if int(time.time() * 1000) - fetched_at > JWKS_TTL_MS:
+    return _remote_jwks[url][0]
+
+
+def _remote_verifiers(jwt_verifiers: str) -> list[VerifierConfig]:
+    return [cfg for cfg in parse_verifiers(jwt_verifiers) if cfg.scheme in _REMOTE_SCHEMES]
+
+
+def _verifier_unusable_reason(cfg: VerifierConfig, jwks_public: str) -> str | None:
+    """Why `verify_jwt` would skip this verifier right now, or None when it can verify.
+
+    The one definition of "usable": `verify_jwt` skips on it and `/ready` reports on it,
+    so a fourth skip condition added here reaches both. Each reason is a state in which
+    every token from that issuer fails with `invalid_token` while the database and Redis
+    probes stay green: a shared issuer with no audience (it signs for every application
+    under it, so without an audience check a token minted for any other app is accepted),
+    a remote key set never fetched or past its TTL (not served — `cached_jwks` returns
+    None), a local key that does not import.
+    """
+    if cfg.scheme in _REMOTE_SCHEMES:
+        if not cfg.audience:
+            return "no audience configured; a shared issuer is refused without one"
+        age_ms = _jwks_age_ms(_jwks_url(cfg))
+        if age_ms is None:
+            return "key set never fetched; call refresh_jwks() at startup"
+        if not _is_fresh(age_ms):
+            return f"key set stale: fetched {age_ms // 1000}s ago, ttl {JWKS_TTL_MS // 1000}s"
         return None
-    return key_set
+    if _import_local_key_set(jwks_public) is None:
+        return "FELIX_JWKS_PUBLIC is empty or does not import"
+    return None
+
+
+def verifier_status(settings: Settings) -> list[tuple[VerifierConfig, str | None]]:
+    """Every configured verifier, in order, with why it is unusable or None. Positional
+    rather than keyed, so two verifiers on one issuer (two audiences) stay two entries."""
+    return [
+        (cfg, _verifier_unusable_reason(cfg, settings.jwks_public))
+        for cfg in parse_verifiers(settings.jwt_verifiers)
+    ]
+
+
+def uses_jwt_verifiers(settings: Settings) -> bool:
+    """Whether FELIX_JWT_VERIFIERS is in play: `jwt`, or a plugin mode that may consult
+    the same verifiers — never `none` or `api_key`. The startup guard, the refresh loop
+    and the `/ready` row all gate on this one predicate."""
+    return settings.auth_mode not in {"none", "api_key"} and bool(parse_verifiers(settings.jwt_verifiers))
+
+
+def claim_mode_verifiers(jwt_verifiers: str) -> list[VerifierConfig]:
+    """Verifiers that take the tenant from a token claim — the ones FELIX_ALLOWED_TENANTS
+    constrains. `fixed` and `issuer` modes never consult the claim."""
+    return [cfg for cfg in parse_verifiers(jwt_verifiers) if cfg.tenant_mode == "claim"]
+
+
+def tenant_collisions(jwt_verifiers: str) -> dict[str, list[str]]:
+    """Tenants an `issuer`-mode verifier derives that another verifier also lands in.
+
+    `issuer` mode takes the first DNS label of the issuer *host* and discards the path,
+    so two Cognito pools (`…amazonaws.com/us-east-1_A`, `…/us-east-1_B`) or two Keycloak
+    realms both become one tenant — and every principal from either lands in it. The same
+    holds when the derived label happens to equal another verifier's `fixed:` tenant. The
+    derivation is kept (changing it renames existing tenants); the collision is refused.
+    Two `fixed:` verifiers naming the same tenant are a stated intent and are not one.
+    """
+    by_tenant: dict[str, list[tuple[str, str]]] = {}
+    for cfg in parse_verifiers(jwt_verifiers):
+        if cfg.tenant_mode == "issuer":
+            by_tenant.setdefault(_tenant_from_issuer(cfg), []).append(("issuer", _issuer(cfg)))
+        elif cfg.tenant_mode == "fixed" and cfg.fixed_tenant:
+            by_tenant.setdefault(cfg.fixed_tenant, []).append(("fixed", _issuer(cfg)))
+    return {
+        tenant: [issuer for _, issuer in members]
+        for tenant, members in by_tenant.items()
+        if len(members) > 1 and any(mode == "issuer" for mode, _ in members)
+    }
 
 
 def _load_key_set(jwks_public: str, url: str, scheme: str = "self") -> Any:
@@ -270,15 +363,21 @@ def _load_key_set(jwks_public: str, url: str, scheme: str = "self") -> Any:
 async def refresh_all_jwks(settings: Settings) -> int:
     """Fetch every configured remote issuer's key set. Returns how many succeeded."""
     ok = 0
-    for cfg in parse_verifiers(settings.jwt_verifiers):
-        if cfg.scheme not in _REMOTE_SCHEMES:
-            continue
+    for cfg in _remote_verifiers(settings.jwt_verifiers):
         if await refresh_jwks(_jwks_url(cfg)) is not None:
             ok += 1
     return ok
 
 
-async def run_jwks_refresh_loop(settings: Settings, *, interval_s: float) -> None:
+# The refresh cadence against a 15-minute TTL. At 600s one failed tick left the set
+# aging past the TTL before the next attempt, so a single IdP blip 401ed every token for
+# five minutes; 300s gives three attempts inside the TTL, and a failed one retries at
+# JWKS_RETRY_S instead of waiting a whole interval.
+JWKS_REFRESH_INTERVAL_S = 300.0
+JWKS_RETRY_S = 30.0
+
+
+async def run_jwks_refresh_loop(settings: Settings, *, interval_s: float = JWKS_REFRESH_INTERVAL_S) -> None:
     """Keep remote key sets fresh so verification never has to fetch inline.
 
     `verify_jwt` is synchronous and on the request path, so it reads a cache rather than
@@ -286,14 +385,19 @@ async def run_jwks_refresh_loop(settings: Settings, *, interval_s: float) -> Non
     """
     import asyncio
 
+    delay = interval_s
     while True:
         try:
-            await asyncio.sleep(interval_s)
-            await refresh_all_jwks(settings)
+            await asyncio.sleep(delay)
+            expected = len(_remote_verifiers(settings.jwt_verifiers))
+            delay = (
+                interval_s if await refresh_all_jwks(settings) == expected else min(interval_s, JWKS_RETRY_S)
+            )
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.warning("jwks refresh iteration failed", exc_info=True)
+            delay = min(interval_s, JWKS_RETRY_S)
 
 
 def verify_jwt(
@@ -307,21 +411,12 @@ def verify_jwt(
         return VerifyFail(reason="no_verifier_matched")
     saw_expired = False
     for cfg in configs:
-        key_set = _load_key_set(jwks_public, _jwks_url(cfg), cfg.scheme)
-        if key_set is None:
-            if cfg.scheme in _REMOTE_SCHEMES:
-                logger.warning("no cached JWKS for %s; call refresh_jwks() at startup", _jwks_url(cfg))
+        why = _verifier_unusable_reason(cfg, jwks_public)
+        if why is not None:
+            logger.warning("verifier %s:%s skipped: %s", cfg.scheme, cfg.issuer, why)
             continue
-
-        # A shared issuer (Cloudflare Access, a Cognito user pool) signs tokens for every
-        # application under it. Without an audience check, a token minted for any other
-        # app at the same issuer is accepted here.
-        if cfg.scheme in _REMOTE_SCHEMES and not cfg.audience:
-            logger.error(
-                "verifier %s:%s has no audience; refusing to accept tokens from a shared issuer without one",
-                cfg.scheme,
-                cfg.issuer,
-            )
+        key_set = _load_key_set(jwks_public, _jwks_url(cfg), cfg.scheme)
+        if key_set is None:  # pragma: no cover - the reason check above covers every None
             continue
 
         try:
@@ -333,7 +428,7 @@ def verify_jwt(
             }
             if cfg.audience:
                 registry_claims["aud"] = {"essential": True, "value": cfg.audience}
-            claims_requests = JWTClaimsRegistry(**registry_claims)
+            claims_requests = JWTClaimsRegistry(leeway=JWT_LEEWAY_S, **registry_claims)
             token_obj = jwt.decode(token, key_set, algorithms=list(ALLOWED_ALGORITHMS))
             claims_requests.validate(token_obj.claims)
             try:
@@ -410,13 +505,19 @@ def public_jwks(jwks_public: str) -> dict[str, Any]:
 
 
 __all__ = [
+    "JWKS_REFRESH_INTERVAL_S",
+    "JWT_LEEWAY_S",
     "VerifierConfig",
     "VerifyFail",
     "VerifyOk",
     "VerifyResult",
+    "claim_mode_verifiers",
     "mint_token",
     "parse_verifiers",
     "payload_to_principal",
     "public_jwks",
+    "tenant_collisions",
+    "uses_jwt_verifiers",
+    "verifier_status",
     "verify_jwt",
 ]

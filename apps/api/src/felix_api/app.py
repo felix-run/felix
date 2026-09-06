@@ -126,11 +126,13 @@ def create_app(
         # cache. Without this the `access` and `cognito` schemes have no key source at
         # all and every token from them fails closed.
         jwks_task = None
-        if cfg.auth_mode == "jwt":
+        from felix.auth.jwt import uses_jwt_verifiers
+
+        if uses_jwt_verifiers(cfg):
             from felix.auth.jwt import refresh_all_jwks, run_jwks_refresh_loop
 
             await refresh_all_jwks(cfg)
-            jwks_task = asyncio.create_task(run_jwks_refresh_loop(cfg, interval_s=600.0))
+            jwks_task = asyncio.create_task(run_jwks_refresh_loop(cfg))
         app.state.jwks_task = jwks_task
         try:
             yield
