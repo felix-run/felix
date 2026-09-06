@@ -1,8 +1,8 @@
 """The `/docs` reference UI.
 
 `/docs` used to be Swagger UI, which FastAPI mounts by default. These pin the
-replacement: Scalar, served from the same `/openapi.json`, still public and still
-unauthenticated in every auth mode.
+replacement: Scalar, served from the same `/openapi.json`, behind the same credential as
+the API it documents (anonymous under `auth_mode=none` or `FELIX_DOCS_PUBLIC=true`).
 """
 
 from __future__ import annotations
@@ -62,8 +62,9 @@ async def test_docs_serves_scalar_not_swagger_ui() -> None:
 
 
 @pytest.mark.asyncio
-async def test_openapi_and_redoc_are_untouched() -> None:
-    """Only Swagger UI gave up its path. `docs_url` and `redoc_url` sit adjacent."""
+async def test_openapi_is_untouched_and_redoc_is_gone() -> None:
+    """One reference surface: ReDoc was HTML with an inline script and a CDN bundle and
+    no CSP — gated like `/docs` but not protected like it."""
     app = create_app(settings=_settings("docs-siblings"), plugins=[])
     async with _client(app) as client:
         spec = await client.get("/openapi.json")
@@ -71,7 +72,7 @@ async def test_openapi_and_redoc_are_untouched() -> None:
 
     assert spec.status_code == 200
     assert spec.json()["info"]["title"] == "Felix"
-    assert redoc.status_code == 200
+    assert redoc.status_code == 404
     # The reference documents the API, it is not part of it.
     assert "/docs" not in spec.json()["paths"]
 
@@ -115,9 +116,8 @@ async def test_page_follows_a_relocated_spec_path() -> None:
 async def test_page_follows_the_request_s_root_path() -> None:
     """Behind a proxy prefix, a precomputed spec path is a 404.
 
-    FastAPI resolves it per request for `/redoc` and did for Swagger UI, so a static
-    page here would leave `/redoc` working and `/docs` blank — and every curl snippet
-    missing the prefix.
+    FastAPI resolved it per request for Swagger UI, so a static page here would leave
+    `/docs` blank behind a prefix — and every curl snippet missing the prefix.
     """
     app = FastAPI(title="Felix", docs_url=None, root_path="/felix")
     register_docs(app)
@@ -132,21 +132,33 @@ async def test_page_follows_the_request_s_root_path() -> None:
 
 
 @pytest.mark.asyncio
-async def test_docs_is_public_under_api_key_auth() -> None:
-    """A reference UI behind a 401 is useless — but the exemption must be narrow."""
+async def test_docs_takes_the_api_credential_under_api_key_auth() -> None:
+    """The reference is a map of every route, management ones included, so under real
+    auth it takes the same credential as the API. An operator who wants it anonymous on
+    an authenticated deployment says so with FELIX_DOCS_PUBLIC."""
     app = create_app(
-        settings=_settings("docs-auth", auth_mode="api_key", api_keys='{"k":{"scopes":["*"]}}'),
+        settings=_settings("docs-auth", auth_mode="api_key", auth_api_keys='{"k":{"scopes":["*"]}}'),
         plugins=[],
     )
     async with _client(app) as client:
-        docs = await client.get("/docs")
+        anonymous = await client.get("/docs")
+        with_key = await client.get("/docs", headers={"authorization": "Bearer k"})
         # Control: without it a 200 from an app whose auth middleware stopped running
-        # looks exactly like a working exemption.
+        # looks exactly like a working gate.
         guarded = await client.post("/chat", json={"input": "hi"})
 
-    assert docs.status_code == 200
-    assert SCALAR_JS_URL in docs.text
+    assert anonymous.status_code == 401
+    assert with_key.status_code == 200 and SCALAR_JS_URL in with_key.text
     assert guarded.status_code == 401
+
+    opened = create_app(
+        settings=_settings(
+            "docs-open", auth_mode="api_key", auth_api_keys='{"k":{"scopes":["*"]}}', docs_public=True
+        ),
+        plugins=[],
+    )
+    async with _client(opened) as client:
+        assert (await client.get("/docs")).status_code == 200
 
 
 def test_bundle_is_pinned_and_carries_integrity_attributes() -> None:
@@ -159,7 +171,7 @@ def test_bundle_is_pinned_and_carries_integrity_attributes() -> None:
     assert re.search(r"@scalar/api-reference@\d+\.\d+\.\d+/", SCALAR_JS_URL)
     assert SCALAR_JS_SRI.startswith("sha384-")
 
-    html = scalar_html(openapi_url="/openapi.json", title="t")
+    html = scalar_html(openapi_url="/openapi.json", title="t", nonce="t")
     assert f'integrity="{SCALAR_JS_SRI}"' in html
     assert 'crossorigin="anonymous"' in html
 
@@ -167,10 +179,10 @@ def test_bundle_is_pinned_and_carries_integrity_attributes() -> None:
 def test_interpolated_values_cannot_break_out_of_their_tags() -> None:
     """Nothing feeds these today; `create_app` hardcodes the title. The escaping is
     what keeps that true once a title or spec path becomes caller-supplied."""
-    page = scalar_html(openapi_url="/openapi.json</script><script>x=1", title="t")
+    page = scalar_html(openapi_url="/openapi.json</script><script>x=1", title="t", nonce="t")
     assert "</script><script>x=1" not in page
     assert "<\\/script>" in page
 
-    titled = scalar_html(openapi_url="/openapi.json", title="</title><script>alert(1)</script>")
+    titled = scalar_html(openapi_url="/openapi.json", title="</title><script>alert(1)</script>", nonce="t")
     assert "<script>alert(1)</script>" not in titled
     assert "&lt;/title&gt;" in titled

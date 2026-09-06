@@ -10,6 +10,8 @@ from typing import Any, Literal
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+logger = logging.getLogger("felix.config")
+
 
 def _is_loopback_host(host: str) -> bool:
     """True when binding ``host`` cannot be reached from off-host.
@@ -65,6 +67,22 @@ class Settings(BaseSettings):
     # Comma-separated tenants a JWT may claim. Empty = any claimed tenant is
     # accepted, which is only safe when the IdP is the sole writer of that claim.
     allowed_tenants: str = ""
+
+    # --- HTTP posture ---
+    # `/docs` and `/openapi.json` describe every route and are behind auth in `api_key`
+    # and `jwt` modes. A browser cannot send the API credential, so the reference is then
+    # reachable from one only through an authenticating proxy in front of the origin — or
+    # by opening it here, which republishes the route map anonymously (warned at startup
+    # outside development). Under `auth_mode=none` everything is public.
+    docs_public: bool = False
+    # Strict-Transport-Security is sent only on responses that arrived over TLS — either
+    # directly, or behind a proxy that says so via `x-forwarded-proto` when the trusted
+    # proxy header is configured — because an HSTS header on a plaintext response is either
+    # ignored or, on a shared hostname, pins a policy the operator did not choose.
+    # `includeSubDomains` pins every sibling of the hostname too; on an apex or shared
+    # parent that is a 180-day decision, so it is its own switch.
+    hsts_max_age_seconds: int = Field(default=15_552_000, ge=0)  # 180 days; 0 disables
+    hsts_include_subdomains: bool = True
 
     # --- request limits ---
     rate_limit: int = 120
@@ -491,6 +509,11 @@ class Settings(BaseSettings):
             raise RuntimeError(
                 "FELIX_REDIS_URL is required outside development (approvals cross API→worker through it). "
                 "Point it at Valkey/Redis, or set FELIX_ENVIRONMENT=development."
+            )
+        if self.docs_public and self.auth_mode != "none" and self.environment != "development":
+            logger.warning(
+                "FELIX_DOCS_PUBLIC=true serves /docs and /openapi.json — every route, management "
+                "ones included — anonymously on an authenticated deployment"
             )
         if self.scale_out:
             if "sqlite" in self.database_url:
