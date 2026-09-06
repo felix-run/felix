@@ -87,7 +87,19 @@ monkeypatch `build_tenant_agent` in a new test — the harness exists so that st
 
 When the same quality defect keeps recurring, stop reporting it and encode it.
 `tests/unit/test_invariants.py` is the pattern: AST or file inspection, no runtime cost, and it
-cannot be satisfied by mocking. It already pins the optional-import rule, the `memory://` twin rule,
+cannot be satisfied by mocking.
+
+**Every scanner there carries a positive control, and a new one must too.** `_python_files()` and
+`_py_files()` fail on a missing or empty root rather than returning `[]`, and each scan asserts a
+floor on what it actually matched — modules reaching Postgres, `httpx` clients constructed,
+functions taking a `tenant_id`, and so on — before asserting the offender list is empty. The floor
+is the measured count, not an aspiration: two of them were set by guess when the guards went in and
+both had to come down, and one of those measurements found an invariant covering a single call site
+where its docstring claimed eight. Count *before* any exemption filter, so the floor measures whether
+the match still works rather than how many sites are excused. A scan that stops matching must go red,
+not quiet.
+
+`test_invariants.py` already pins the optional-import rule, the `memory://` twin rule,
 the governance wrapper order, `.env.example` coverage of every setting, and the generated manifest
 schema. `tests/unit/test_plugin_boundary.py` does the same for the plugin seam. Adding a rule there
 is cheaper than catching it in review forever.
