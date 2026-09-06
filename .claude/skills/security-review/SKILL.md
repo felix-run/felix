@@ -26,7 +26,7 @@ Rank findings by this threat model:
 | Per-manifest inbound auth | `manifests/inbound_auth.py` |
 | Injection / content screening | `governance/{inbound,content_screening}.py` |
 | PII | `governance/pii.py` (Presidio, optional extra) |
-| SSRF, rate limit, constant-time, at-rest | `security/{ssrf,rate_limit,constant_time,at_rest,expr}.py` |
+| SSRF, rate limit, constant-time | `security/{ssrf,rate_limit,constant_time,expr}.py` |
 | Secret refs + masking | `manifests/secret_refs.py`, `secrets.py`, `builder.py:apply_secret_masking` |
 | Tenant RLS | `db/session.py` (`tenant_session`, `rls_bypass`), `migrations/versions/0006_tenant_rls.py` |
 | Outbound/inbound integrations | `mcp/`, `a2a/peers.py`, `tools/{sandboxes,queues,transports,client_bridge,browser}.py` |

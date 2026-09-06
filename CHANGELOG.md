@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **`oauth_token_cache`, `FELIX_OAUTH_CACHE_KEY`, `felix.security.encrypt_at_rest` /
+  `decrypt_at_rest` and `felix.db.models.OAuthTokenCache`.** The baseline created the table
+  for an OAuth client-credentials cache that was never built: nothing read or wrote it,
+  nothing read the setting, the AES helper had no caller, and it was a table without a
+  tenant. Migration `0013` drops it (`IF EXISTS`; irreversible for data, of which there was
+  none), and the setting, model, helper and Helm `secrets.oauthCacheKey` go with it. An
+  out-of-tree plugin importing any of these needs its own table and policy.
+
 ### Fixed
 
 - **Fifteen structural invariants could pass by finding nothing.** `_python_files` and
@@ -117,6 +127,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `FELIX_JWT_VERIFIERS` gets the same posture as `jwt`. A `FELIX_JWT_VERIFIERS` whose every
   entry fails to parse (a typo'd scheme) is refused at startup rather than starting a process
   that 401s everyone.
+- **RLS coverage is enforced from the rendered migrations.** `0006_tenant_rls` applied
+  `felix_tenant_isolation` to a fixed list of tables; a table added later was isolated only
+  if whoever added it remembered, and the failure was silent. `tests/unit/test_rls_coverage.py`
+  now renders every migration offline, in Alembic chain order, and reads the DDL back: every
+  model table with a `tenant_id` column must be `ENABLE`d and `FORCE`d and carry the policy;
+  the policy's `USING` and `WITH CHECK` must compare `tenant_id` to the session GUC with the
+  bypass arm, and must be the only policy on the table (permissive policies are OR'd, so a
+  second one beside it disables isolation); every table in the DDL must have a `tenant_id`
+  unless named in the allowlist (`memory_vector_config`, one deployment-wide row); and the
+  migration chain must have one head.
 
 - **Final-response judges and PII guardrails now govern the reply on the streaming path.**
   `wrap_final_response_judges` passed events straight through on `stream_events`, so the
