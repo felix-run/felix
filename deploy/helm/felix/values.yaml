@@ -154,6 +154,14 @@ s3:
   bucket: felix-bundles
   region: us-east-1
 
+# Alerting rules for Prometheus Operator, from files/prometheus-rules.yml — the same file
+# the Compose observability overlay mounts. Set `labels` to what your Prometheus's
+# ruleSelector matches on.
+prometheusRule:
+  enabled: false
+  namespace: ""
+  labels: {}
+
 # Prometheus Operator scrape of /metrics. Requires the ServiceMonitor CRD.
 serviceMonitor:
   enabled: false

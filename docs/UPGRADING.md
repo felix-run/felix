@@ -131,6 +131,7 @@ All default safely; none is required.
 
 ```bash
 # 0. Take a backup and verify you can restore it. Not a snapshot you have never restored.
+#    docs/BACKUP.md has the commands and the drill.
 
 # 1. Move the checkout to the tag (it supplies the migrations and compose files).
 cd /opt/felix && git fetch --tags && git checkout vX.Y.Z

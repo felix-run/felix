@@ -253,6 +253,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   development, that it skipped them. The OTel verdict is judged the way the exporter
   decides it (the endpoint scheme over OTLP/HTTP, `FELIX_OTEL_INSECURE` over gRPC, a
   loopback collector always private).
+- **Alert rules, log ids, and a backup runbook.** There were no Prometheus rules, so the
+  metrics the catalog marks **watch this** were counted and never raised; logs carried a
+  request id but no tenant or trace id, and JSON rendering was tied to
+  `FELIX_ENVIRONMENT=production`; nothing said what to back up. Now:
+  `deploy/helm/felix/files/prometheus-rules.yml` (one file — mounted by the Compose
+  observability overlay, embedded by the chart's `PrometheusRule` when
+  `prometheusRule.enabled`), every log line carries `tenant_id` and `trace_id`,
+  `FELIX_LOG_FORMAT` (`auto|json|text`), and `docs/BACKUP.md` with the restore drill.
 
 ### Changed
 

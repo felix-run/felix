@@ -11,6 +11,11 @@ global:
   external_labels:
     stack: felix
 
+# deploy/helm/felix/files/prometheus-rules.yml, mounted by compose.observability.yml —
+# the one rules file both deploy paths use.
+rule_files:
+  - /etc/prometheus/rules/felix.yml
+
 scrape_configs:
   - job_name: felix-api
     metrics_path: /metrics

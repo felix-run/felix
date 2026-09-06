@@ -17,6 +17,7 @@ site at **[docs.felix.run](https://docs.felix.run)**, authored in the separate
 | [`RELEASING.md`](RELEASING.md) | Cutting a release: version, changelog, tag, and what CI does |
 | [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) | Local failure modes and the actual fix for each |
 | [`UPGRADING.md`](UPGRADING.md) | Moving a deployment between versions: migrations, the settings that must move with them, verification, rollback |
+| [`BACKUP.md`](BACKUP.md) | What holds state, how to copy it, and the restore drill that proves the copy works |
 
 Filenames in this directory are `UPPERCASE.md`.
 

@@ -1,0 +1,25 @@
+{{- if .Values.prometheusRule.enabled }}
+{{- /*
+  The same rules Compose loads from deploy/helm/felix/files/prometheus-rules.yml — one
+  file, embedded here so the two deploy paths cannot drift. Prometheus Operator picks the
+  resource up through its ruleSelector; set `prometheusRule.labels` to match yours.
+
+  `.Files.Get`, never `tpl`: the annotations carry Prometheus's own `{{ $labels.x }}` and
+  `{{ $value }}` templates, which `tpl` would try to evaluate and break. A threshold that
+  needs `.Values` belongs in a separate values-driven rule, not in this file.
+*/}}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "felix.fullname" . }}
+  {{- with .Values.prometheusRule.namespace }}
+  namespace: {{ . }}
+  {{- end }}
+  labels:
+    {{- include "felix.labels" . | nindent 4 }}
+    {{- with .Values.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  {{- (.Files.Get "files/prometheus-rules.yml") | fromYaml | toYaml | nindent 2 }}
+{{- end }}
