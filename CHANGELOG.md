@@ -276,6 +276,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gains a supply-chain section with the verification commands; the repo settings the
   workflow cannot enforce (tag ruleset, environment reviewers, immutable tags, code-owner
   review) are recorded as decisions in `docs/RELEASING.md`.
+- **Browser headers on every response; the API reference behind auth; `/redoc` removed.**
+  No response set `nosniff`, `DENY`, a referrer policy or `no-store`; `/docs`,
+  `/openapi.json` and `/redoc` — a map of every route — were public in every auth mode and
+  exempt from the rate limiter, which under `api_key` and `jwt` left three paths where a
+  credential could be guessed unthrottled. A pure-ASGI `SecurityHeadersMiddleware` sets the
+  four on every response and `Strict-Transport-Security` (`FELIX_HSTS_MAX_AGE_SECONDS`, 180
+  days; `FELIX_HSTS_INCLUDE_SUBDOMAINS`) on responses over TLS — the connection's scheme, or
+  the last `x-forwarded-proto` entry when `FELIX_TRUSTED_CLIENT_IP_HEADER` declares a proxy.
+  The docs page carries a per-response nonce CSP with `'strict-dynamic'` and no CDN
+  allowlist; ReDoc, which had an inline script and no CSP, is no longer served. The
+  reference takes the API's credential and is rate limited unless `FELIX_DOCS_PUBLIC=true`;
+  a browser cannot send that credential, so on an authenticated deployment the reference
+  is reached by curl or through an authenticating proxy, and opening it is warned at
+  startup outside development.
 
 ### Changed
 

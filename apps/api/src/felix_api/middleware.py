@@ -22,8 +22,14 @@ from collections.abc import Callable
 from fastapi.responses import JSONResponse
 from felix.config import Settings
 from felix.logging_setup import REQUEST_ID_HEADER, new_request_id, reset_request_id, set_request_id
-from felix.security.rate_limit import RateLimitConfig, check_rate_limit, client_key, should_skip_rate_limit
-from starlette.datastructures import Headers
+from felix.security.rate_limit import (
+    RateLimitConfig,
+    check_rate_limit,
+    client_key,
+    should_skip_rate_limit,
+    trusted_proxy_header,
+)
+from starlette.datastructures import Headers, MutableHeaders
 from starlette.requests import ClientDisconnect, Request
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -222,4 +228,67 @@ def _too_large() -> JSONResponse:
     return JSONResponse({"error": "payload_too_large"}, status_code=413)
 
 
-__all__ = ["BodyLimitMiddleware", "RateLimitMiddleware", "RequestIdMiddleware"]
+class SecurityHeadersMiddleware:
+    """Response headers a browser needs to be told, on every response, pure ASGI.
+
+    The API is JSON and SSE served to programs, but the docs page is HTML served to a
+    browser, and every response can be loaded by one. Fixed headers cost nothing per
+    request: `nosniff` stops a JSON body being sniffed into a script, `DENY` keeps the
+    docs page out of a frame, `no-referrer` keeps `x-request-id`-bearing URLs off other
+    origins' logs, `no-store` keeps responses that vary on a credential out of shared
+    caches. HSTS is sent only on a response that arrived over TLS — `scope["scheme"]`, or
+    `x-forwarded-proto: https` when the operator has declared a proxy through
+    FELIX_TRUSTED_CLIENT_IP_HEADER (`trusted_proxy_header`, the same decision the
+    rate-limit key makes) — because on a plaintext response it is ignored at best and,
+    on a shared hostname, pins a policy the operator did not choose. The docs page's
+    Content-Security-Policy is set by the docs route, which knows its script nonce.
+    """
+
+    def __init__(self, app: ASGIApp, *, settings: Settings) -> None:
+        self.app = app
+        max_age = settings.hsts_max_age_seconds
+        self._hsts_enabled = max_age > 0
+        self._hsts = f"max-age={max_age}" + (
+            "; includeSubDomains" if settings.hsts_include_subdomains else ""
+        )
+        self._proxy_scheme_trusted = bool(trusted_proxy_header(settings))
+
+    def _over_tls(self, scope: Scope) -> bool:
+        if scope.get("scheme") == "https":
+            return True
+        if not self._proxy_scheme_trusted:
+            return False
+        # A proxy appends to a forwarded header; the entry it wrote is the last one, and
+        # the first is whatever the client sent. Joined across repeated header lines
+        # too: `get` returns only the first line, which is again the client's.
+        proto = ",".join(Headers(scope=scope).getlist("x-forwarded-proto"))
+        return proto.rsplit(",", 1)[-1].strip().lower() == "https"
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        hsts = self._hsts_enabled and self._over_tls(scope)
+
+        async def send_with_headers(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                # `headers` is optional in the ASGI spec and a raw mounted app may omit it.
+                message.setdefault("headers", [])
+                headers = MutableHeaders(scope=message)
+                headers.setdefault("x-content-type-options", "nosniff")
+                headers.setdefault("x-frame-options", "DENY")
+                headers.setdefault("referrer-policy", "no-referrer")
+                headers.setdefault("cache-control", "no-store")
+                if hsts:
+                    headers.setdefault("strict-transport-security", self._hsts)
+            await send(message)
+
+        await self.app(scope, receive, send_with_headers)
+
+
+__all__ = [
+    "BodyLimitMiddleware",
+    "RateLimitMiddleware",
+    "RequestIdMiddleware",
+    "SecurityHeadersMiddleware",
+]

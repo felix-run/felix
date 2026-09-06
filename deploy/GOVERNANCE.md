@@ -532,6 +532,27 @@ takes the replica out of rotation — and is logged at warning once per subsyste
 (waiters, steer, thread notifications, session leases), on the first failed connection and
 again when a command fails on a client that had connected, rather than silently degraded.
 The same channel carries UI prompts and client-tool answers.
+## Browser-facing posture
+
+Every response carries `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`,
+`Referrer-Policy: no-referrer` and `Cache-Control: no-store`; a response that arrived over
+TLS carries `Strict-Transport-Security` for `FELIX_HSTS_MAX_AGE_SECONDS`, with
+`includeSubDomains` unless `FELIX_HSTS_INCLUDE_SUBDOMAINS=false` (on an apex or shared
+parent hostname it pins every sibling for the whole max-age). "Arrived over TLS" is the
+connection's own scheme, or the **last** `x-forwarded-proto` entry — the one the proxy
+wrote — and that header is believed only when `FELIX_TRUSTED_CLIENT_IP_HEADER` declares a
+proxy you operate; the same setting drives the rate-limit key, so declaring one is both.
+
+The API reference (`/docs`, `/openapi.json`) is a map of every route including the
+management ones, so under `api_key` and `jwt` it takes the same credential as the API and
+counts against the rate limit like any other path. A browser cannot send that credential
+(there is no cookie or query-string path, and the page's own fetch of the spec carries
+none), so on an authenticated deployment the reference is read by `curl`, through an
+authenticating reverse proxy or SSO in front of the origin, or by `FELIX_DOCS_PUBLIC=true`
+— which republishes the route map anonymously and is warned at startup outside
+development. The docs page sets a per-response nonce-based Content-Security-Policy with
+`'strict-dynamic'`, so only the pinned Scalar bundle and its inline config run and no CDN
+origin is allowlisted; ReDoc is not served, so there is one reference surface with one CSP.
 
 ## Request limits
 

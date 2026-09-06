@@ -173,7 +173,7 @@ still setting them at the top level fails the render and says where they went. D
 
 ```bash
 curl -sS https://api.felix.run/health
-curl -sS https://api.felix.run/openapi.json | jq '.info.version, (.paths | length)'   # 0.2.0, 68
+curl -sS -H "authorization: Bearer $KEY" https://api.felix.run/openapi.json | jq '.info.version, (.paths | length)'   # 0.2.0, 68
 ```
 
 Then the checks that would catch an RLS blackout, which `/health` will not:
