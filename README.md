@@ -426,7 +426,10 @@ than sent, because an unverifiable signature rejects the whole turn.
 `bundled` is for a single-tenant or self-hosted deployment with no use for runtime
 authoring. The write routes are never registered, so the verbs are absent from the app and
 from `/openapi.json` rather than present and refusing, and no manifest store is constructed
-at all. `felix doctor` reports which posture is active.
+at all. `felix doctor` reports which posture is active — and, outside development, whether a
+claim-mode JWT verifier pins `FELIX_ALLOWED_TENANTS`, whether the OTLP exporter is private or
+TLS, whether prompts are kept out of spans, and whether the database schema is at the code's
+Alembic head.
 
 Two things to know before flipping an existing deployment:
 

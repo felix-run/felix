@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import typer
 from rich import print as rprint
 
 from felix_cli import __version__
+
+if TYPE_CHECKING:
+    from felix.config import Settings
 
 app = typer.Typer(
     name="felix",
@@ -59,11 +63,9 @@ def migrate(
 ) -> None:
     """Apply Alembic migrations."""
     from alembic import command
-    from alembic.config import Config
+    from felix.db.migrations import alembic_config
 
-    root = Path(__file__).resolve().parents[4]
-    cfg = Config(str(root / "alembic.ini"))
-    command.upgrade(cfg, revision)
+    command.upgrade(alembic_config(), revision)
     rprint(f"[green]migrated to {revision}[/green]")
 
 
@@ -245,6 +247,99 @@ def validate_manifest_cmd(
     rprint(f"[green]ok[/green] {path} ({manifest.metadata.name})")
 
 
+@dataclass(frozen=True)
+class Finding:
+    """One doctor row. `detail` is a value and prints either way; `remedy` prints on FAIL."""
+
+    label: str
+    passed: bool
+    detail: str = ""
+    remedy: str = ""
+
+
+def _otel_private_or_tls(settings: Settings) -> tuple[bool, str]:
+    """Whether spans leave over TLS or stay on the host, judged by the exporters' own rule."""
+    from urllib.parse import urlsplit
+
+    from felix.config import _is_loopback_host
+    from felix.observability.tracing import otel_transport
+
+    protocol, tls = otel_transport(settings)
+    endpoint = settings.otel_endpoint
+    # The gRPC exporter accepts a schemeless `host:port`; urlsplit needs the `//` to see a host.
+    host = urlsplit(endpoint if "//" in endpoint else f"//{endpoint}").hostname or ""
+    where = f"{protocol} to {host or settings.otel_endpoint}"
+    return tls or _is_loopback_host(host), f"{'tls' if tls else 'plaintext'} ({where})"
+
+
+def _posture_findings(settings: Settings) -> list[Finding]:
+    """What doctor says about the deployment's posture.
+
+    Each of these is legal to configure and quietly weakens the deployment, so doctor
+    says so rather than leaving it to a reader of `.env` to notice. `validate_runtime`
+    refuses the combinations that are never right; these are the ones that are right
+    only in development, or right only with a companion setting.
+    """
+    from felix.auth.jwt import parse_verifiers
+    from felix.config import _is_loopback_host
+
+    rows: list[Finding] = []
+    development = settings.environment == "development"
+    if settings.auth_mode == "none":
+        # Under `none`, allow_insecure is the acknowledgement the boot guard demands; under
+        # real auth the flag has no effect outside development, so there is nothing to judge.
+        rows.append(
+            Finding(
+                "allow_insecure (required for auth_mode=none outside development)",
+                settings.allow_insecure or development,
+                f"allow_insecure={settings.allow_insecure}",
+                "set FELIX_ALLOW_INSECURE=true, or FELIX_AUTH_MODE=api_key|jwt",
+            )
+        )
+        rows.append(
+            Finding(
+                "auth_mode=none binds loopback only",
+                _is_loopback_host(settings.host),
+                f"host={settings.host}",
+            )
+        )
+    if development:
+        return rows
+    if settings.auth_mode == "jwt":
+        # Only a verifier in `claim` mode reads a tenant claim; `fixed` and `issuer` never do.
+        claim_mode = any(v.tenant_mode == "claim" for v in parse_verifiers(settings.jwt_verifiers))
+        if claim_mode:
+            rows.append(
+                Finding(
+                    "allowed_tenants pins the tenant claim",
+                    bool(settings.allowed_tenants.strip()),
+                    f"FELIX_ALLOWED_TENANTS={settings.allowed_tenants or '(empty)'}",
+                    "any tenant a JWT claims is accepted; list the tenants, or use ;tenant=fixed:<tenant>",
+                )
+            )
+    if settings.otel_enabled:
+        tls, transport = _otel_private_or_tls(settings)
+        rows.append(
+            Finding(
+                "otel exporter is private or TLS",
+                tls,
+                transport,
+                "spans carry user and tenant ids; use https://, FELIX_OTEL_INSECURE=false, or a local "
+                "collector",
+            )
+        )
+        rows.append(
+            Finding(
+                "otel spans exclude prompts",
+                not settings.otel_capture_content,
+                f"FELIX_OTEL_CAPTURE_CONTENT={str(settings.otel_capture_content).lower()}",
+                "prompts and completions in spans are outside content screening; turn it off outside "
+                "development",
+            )
+        )
+    return rows
+
+
 @app.command("doctor")
 def doctor_cmd() -> None:
     """Check runtime configuration (read-only)."""
@@ -256,12 +351,15 @@ def doctor_cmd() -> None:
     settings = get_settings()
     ok = True
 
-    def check(label: str, passed: bool, detail: str = "") -> None:
+    def check(label: str, passed: bool, detail: str = "", *, remedy: str = "") -> None:
         nonlocal ok
         mark = "[green]ok[/green]" if passed else "[red]FAIL[/red]"
         if not passed:
             ok = False
         suffix = f" — {detail}" if detail else ""
+        # A remedy is a sentence about the failure; on a passing row it would be a lie.
+        if remedy and not passed:
+            suffix += f" — {remedy}"
         rprint(f"  {mark}  {label}{suffix}")
 
     rprint("[bold]Felix doctor[/bold]")
@@ -297,19 +395,10 @@ def doctor_cmd() -> None:
         check("backends resolve", True)
     except RuntimeError as exc:
         check("backends resolve", False, str(exc))
-    if settings.auth_mode == "none":
-        from felix.config import _is_loopback_host
-
-        check(
-            "allow_insecure (required for auth_mode=none outside loopback)",
-            settings.allow_insecure or settings.environment == "development",
-            f"allow_insecure={settings.allow_insecure}",
-        )
-        check(
-            "auth_mode=none binds loopback only",
-            _is_loopback_host(settings.host),
-            f"host={settings.host}",
-        )
+    for row in _posture_findings(settings):
+        check(row.label, row.passed, row.detail, remedy=row.remedy)
+    if settings.environment == "development":
+        rprint("  [dim]posture[/dim]  production posture checks skipped — FELIX_ENVIRONMENT=development")
     from felix.security.stdio_policy import allowed_commands, describe_allowlist
 
     # Not a failure either way — stdio off is the safe default; on is a deliberate choice.
@@ -327,7 +416,6 @@ def doctor_cmd() -> None:
             "consumer_shared_secret (for /internal)",
             bool(settings.consumer_shared_secret.strip()),
         )
-
     check(
         "object_store",
         settings.object_store in {"fs", "s3", "gcs", "memory"},
@@ -431,6 +519,22 @@ def doctor_cmd() -> None:
                     )
             except Exception as exc:
                 check("database", False, str(exc)[:120])
+
+        # "Reachable" said nothing about the schema: a deploy that skipped `felix migrate
+        # head` looked healthy until the first query hit a missing column. Outside the
+        # block above so a memory:// run reports it too (trivially at head).
+        try:
+            from felix.db.migrations import migration_state
+
+            state = await migration_state(settings)
+            check(
+                "migrations at head",
+                state.at_head,
+                f"database={state.current or 'unmigrated'} code={state.head}",
+                remedy="run `felix migrate head`",
+            )
+        except Exception as exc:
+            check("migrations at head", False, str(exc)[:120])
 
         # Redis / Valkey. Not optional outside development: approvals and client-tool
         # answers cross from the API to the worker through it, and the in-process fallback
