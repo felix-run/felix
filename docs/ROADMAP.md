@@ -479,10 +479,24 @@ cycle's, and the route contracts below are the next capability-adjacent step.
 
 - [~] **Route contracts through the e2e harness.** The nine `/chat/sessions/*` routes and both
       lease endpoints are covered (`tests/e2e/test_chat_sessions.py`), and the fixture now serves
-      one shared script queue so a multi-request flow can be written at all. Still open: the run
-      controls (steer, abort, continue, fork, rewind, compact, thinking, ui) and the management
-      routers — `routes/jobs.py` and `routes/eval.py` still receive zero requests anywhere in
-      `tests/`. `patterns/delegating.py` also still has no named test.
+      one shared script queue so a multi-request flow can be written at all. The run controls
+      (steer, follow-up, abort, continue, fork, rewind, thinking, ui) followed, and the spy now
+      records the prompts and the model specs. `/chat/compact` is covered on all three paths,
+      including the one that actually summarises — which only became reachable once the route
+      stopped reading `keep_recent_tokens: 0` as 20000. Still open: the `/chat/continue` success
+      path (both tests are its 400 guards), `/chat/rewind` at its default `summarize: true`,
+      `/chat/fork` with `from_event_id`, a steer against a run genuinely in flight, and the
+      management routers — `routes/jobs.py` and `routes/eval.py` still receive zero requests anywhere in
+      `tests/`. `patterns/delegating.py` also still has no named test, and needs a per-client
+      sub-queue in the fixture before it can have one.
+- [ ] **Decide what a steer queued on an idle thread should do.** Today it is accepted with
+      200, counted on the snapshot, then dropped before reaching the model or the transcript —
+      `kind: follow_up` is the path that works. Found by asserting on what reached the model
+      rather than on the reply. Options: refuse it, promote it to a follow-up, or hold it until
+      a run starts. Pinned as-is by
+      `tests/e2e/test_chat_run_control.py::test_a_steer_queued_while_idle_is_dropped_without_reaching_anyone`,
+      which should fail and be rewritten when this is decided.
+
 - [ ] **Postgres arms for the ten stores that have none.** audit, approvals, jobs, manifests,
       plans, eval, a2a tasks, fibers, queues, skills — each has a `memory://` twin whose SQL
       counterpart runs only under the migration test, which creates the schema and never queries
