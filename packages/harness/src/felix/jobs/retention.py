@@ -231,6 +231,7 @@ def _sweep_memory_sessions(cutoff_ms: int) -> int:
     first night. `thread_state.updated_at` moves on every write to the thread, so a thread
     is idle only when both say so.
     """
+    from felix.session import search as session_search
     from felix.session import store as session_store
     from felix.session import thread_state, tree
 
@@ -251,6 +252,10 @@ def _sweep_memory_sessions(cutoff_ms: int) -> int:
             sessions.pop(thread_id, None)
             thread_state._meta_by_thread.pop(thread_id, None)
             tree._leaf_by_thread.pop(thread_id, None)
+            # The search index holds a copy of the content, so a purged thread that stayed
+            # searchable would defeat the retention this sweep exists to enforce. On Postgres
+            # the generated `content_tsv` goes with the deleted row.
+            session_search.drop_thread_index(tenant_id=store.tenant_id, thread_id=thread_id)
     return dropped
 
 

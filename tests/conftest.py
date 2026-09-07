@@ -62,6 +62,7 @@ def _isolate_process_global_stores():
     from felix.durability.fibers import reset_memory_fibers
     from felix.manifests import store as manifest_store
     from felix.manifests.resolver import clear_resolver_cache
+    from felix.session.search import reset_search_index_for_tests
 
     def _clear() -> None:
         manifest_store.reset_memory_store()
@@ -70,6 +71,10 @@ def _isolate_process_global_stores():
         # A corpus that survives a test becomes another test's mysterious extra hit, and
         # retrieval tests assert on result *counts*, so the leak would look like a ranking bug.
         reset_documents_for_tests()
+        # The session search index is another module-level list, and now that the in-memory
+        # store actually writes to it, a thread's events would otherwise be found by every
+        # later test that searched for them.
+        reset_search_index_for_tests()
 
     _clear()
     yield

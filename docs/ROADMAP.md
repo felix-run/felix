@@ -477,21 +477,22 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       covers a single call site, not the eight its docstring named — `record_model_usage`
       absorbed the rest — and the docstring now says so.
 
-- [ ] **Route contracts through the e2e harness.** 17 of 27 `/chat` endpoints have no test —
-      steer, abort, continue, fork, rewind, compact, thinking, ui, and all nine `/sessions/*` —
-      and several are verified only by `smoke.yml` against production every six hours.
-      `routes/jobs.py` and `routes/eval.py` receive zero requests anywhere in `tests/`. Porting
-      the smoke sequences in-process also gives `patterns/delegating.py` (699 lines, executed
-      only incidentally by three unrelated files), `session/thread_state.py` and `session/lease.py`
-      their first named tests. Needs one fixture change first: `boot` replays the same script for
-      every request, so a multi-request test cannot vary the turns — let the spy own the queue.
+- [~] **Route contracts through the e2e harness.** The nine `/chat/sessions/*` routes and both
+      lease endpoints are covered (`tests/e2e/test_chat_sessions.py`), and the fixture now serves
+      one shared script queue so a multi-request flow can be written at all. Still open: the run
+      controls (steer, abort, continue, fork, rewind, compact, thinking, ui) and the management
+      routers — `routes/jobs.py` and `routes/eval.py` still receive zero requests anywhere in
+      `tests/`. `patterns/delegating.py` also still has no named test.
 - [ ] **Postgres arms for the ten stores that have none.** audit, approvals, jobs, manifests,
       plans, eval, a2a tasks, fibers, queues, skills — each has a `memory://` twin whose SQL
       counterpart runs only under the migration test, which creates the schema and never queries
       it. The invariant proves a twin *exists*, not that it behaves like the store it stands in
       for. Extend the indirect-fixture pattern in `tests/conformance/conftest.py`; one contract
       file per seam, ordered by how much SQL the twin does not do. `test_migrations.py` also wants
-      an autogenerate-empty check and stepwise per-revision up/down.
+      an autogenerate-empty check and stepwise per-revision up/down. **Session search is now the
+      first candidate**: the in-memory index had no writer at all until it was fixed, and nothing
+      compares it against the Postgres `content_tsv` column — the `store` fixture yields a store
+      where a search contract needs settings too, so it wants a paired fixture.
 - [ ] **Worker cron bodies and CLI commands.** Six of eight Taskiq tasks never execute in a test
       and no test pins the cron strings; `migrate`, `eval`, `mint-jwt`, `bundle-manifests`,
       `version` and `temporal-worker` are never invoked.

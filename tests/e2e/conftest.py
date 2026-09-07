@@ -37,7 +37,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
-from felix_ai.providers.scripted import ScriptedClient, ScriptedTurn, scripted_factory
+from felix_ai.providers.scripted import ScriptedClient, ScriptedTurn
 from httpx import ASGITransport, AsyncClient
 
 # The route every manifest whose spec names no model resolves to, because the fixture pins
@@ -78,14 +78,33 @@ class ProviderSpy:
         """Model calls across every client, in order: `chat`, `stream`, or `stream_turn`."""
         return [call for client in self.clients for call in client.calls]
 
-    def wrap(self, inner: Callable[..., ScriptedClient]) -> Callable[..., ScriptedClient]:
-        def factory(model_id: str, route: Any, spec: Any, settings: Any) -> ScriptedClient:
-            client = inner(model_id, route, spec, settings)
+    #: The turns not yet consumed, shared by every client this spy builds.
+    #:
+    #: `scripted_factory` copies the script per client, which is right for a one-request
+    #: test and wrong for every multi-request one: a second request replays the first
+    #: request's turns instead of continuing past them, so a test of steer, fork or rewind
+    #: cannot say what the model answers the second time. Handing every client the *same*
+    #: list makes `ScriptedClient._next`'s `pop(0)` draw from one queue, so a script reads
+    #: as the turns the run will take, in order, however many requests it spans.
+    #:
+    #: One queue assumes one model call at a time, which holds for every pattern that runs a
+    #: loop. It does not hold for a fan-out: `patterns/delegating.py` gathers its sub-agents,
+    #: so each builds a client and they draw from this list in whatever order they suspend.
+    #: A test of that pattern wants a sub-queue per client, not this.
+    queue: list[ScriptedTurn] = field(default_factory=list)
+
+    def push(self, *turns: ScriptedTurn) -> None:
+        """Add turns for the next request, mid-test."""
+        self.queue.extend(turns)
+
+    def factory(self) -> Callable[..., ScriptedClient]:
+        def build(model_id: str, route: Any, spec: Any, settings: Any) -> ScriptedClient:
+            client = ScriptedClient(model_id=model_id, route=route, script=self.queue)
             _make_strict(client)
             self.clients.append(client)
             return client
 
-        return factory
+        return build
 
 
 def _make_strict(client: ScriptedClient) -> None:
@@ -95,6 +114,10 @@ def _make_strict(client: ScriptedClient) -> None:
     11/7 — which is right for the conformance arm and wrong here: an under-specified script
     would answer plausibly, and the metering assertions would be reading a fabricated default
     rather than the turn the test wrote. Left in the fixture so the shared double is untouched.
+
+    It matters more now that the queue is shared across requests: without this, a test whose
+    first request consumed a turn too many would be answered by an invented one on the second,
+    and the failure would surface as a puzzling content mismatch two requests later.
 
     The raise does not become a 4xx: the react loop catches a failing model call and degrades to
     an error reply, so the request still returns 200 with no scripted content. That is enough —
@@ -121,6 +144,10 @@ class Booted:
     client: AsyncClient
     spy: ProviderSpy
     settings: Any
+
+    def push(self, *turns: ScriptedTurn) -> None:
+        """Queue turns for the next request in this boot."""
+        self.spy.push(*turns)
 
 
 def _provider_registry() -> dict[str, Any]:
@@ -198,13 +225,13 @@ def boot(monkeypatch: pytest.MonkeyPatch) -> Iterator[Callable[..., Any]]:
         # of pokes above it.
         usage_store.clear_memory()
 
-        spy = ProviderSpy()
+        spy = ProviderSpy(queue=list(script or []))
         # Snapshot rather than `reset + register_builtin_providers()`: that idiom restores the
         # builtins and silently drops every plugin-registered provider, because
         # `load_optional_plugins` has already run and will not run again. Inert in the lean CI
         # venv, not inert under `make install-full`. `felix.patterns.model` documents the bug.
         saved_providers = dict(_provider_registry())
-        register_model_provider("scripted", spy.wrap(scripted_factory(script)))
+        register_model_provider("scripted", spy.factory())
         try:
             from felix_api.main import create_application
 
