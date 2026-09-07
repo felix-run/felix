@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Session search found nothing under `memory://`, which is the path CI runs.**
+  `index_event_memory` had no production caller: the in-memory search index was written by
+  exactly one unit test, which seeded it by hand and then queried it, so it tested the query
+  function and not the wiring. On Postgres `session_events.content_tsv` is a generated column,
+  so every append is searchable with no call site at all — the twin had the index and nothing
+  filled it. `GET /chat/sessions/search` therefore returned no hits for anything the product
+  had actually stored, and the only thing exercising it was the smoke workflow against
+  production every six hours. The in-memory session store now indexes on append, and
+  `tests/conftest.py` resets the index between tests alongside the other process globals.
+
+### Added
+
+- **The session surfaces are tested over the wire.** Twelve tests in
+  `tests/e2e/test_chat_sessions.py` cover the nine `/chat/sessions/*` routes plus the two lease
+  endpoints, on threads a scripted turn genuinely created. They assert on state rather than on
+  acknowledgement: a rename comes back from both the listing and the snapshot, a labelled event
+  carries its label, a custom entry's `in_context` flag is read back off the stored event
+  rather than from the response that echoes it, the export parses as JSONL and contains both
+  sides of the turn, an exclusive lease refuses a second holder and releases the lock
+  afterwards, and every write route refuses a thread id carrying a tenant separator. Each is
+  proved by mutation.
+- **The e2e model script is a queue, not a per-request replay.** `scripted_factory` copies the
+  script per client, so a second request in one boot replayed the first request's turns and no
+  multi-request flow could be scripted. Every client a boot builds now draws from one queue, and
+  `Booted.push` adds turns mid-test — which is what the steer, fork, rewind and continue tests
+  need next. One queue assumes one model call at a time; a fan-out pattern like `delegating`
+  builds a client per sub-agent and would need a sub-queue per client.
+
 ### Removed
 
 - **`oauth_token_cache`, `FELIX_OAUTH_CACHE_KEY`, `felix.security.encrypt_at_rest` /

@@ -47,18 +47,33 @@ class _MemorySession:
             if isinstance(content, str):
                 content = redact_text(content)
             allocated.append(len(self._events))
-            self._events.append(
-                SessionEvent(
-                    seq=len(self._events),
-                    ts=ev.ts if ev.ts is not None else now,
-                    kind=ev.kind,
-                    role=ev.role,
-                    content=content,
-                    tool_call_id=ev.tool_call_id,
-                    name=ev.name,
-                    tool_calls=redact_json(ev.tool_calls) if ev.tool_calls else ev.tool_calls,
-                    metadata=redact_json(ev.metadata) if ev.metadata else ev.metadata,
-                )
+            stored = SessionEvent(
+                seq=len(self._events),
+                ts=ev.ts if ev.ts is not None else now,
+                kind=ev.kind,
+                role=ev.role,
+                content=content,
+                tool_call_id=ev.tool_call_id,
+                name=ev.name,
+                tool_calls=redact_json(ev.tool_calls) if ev.tool_calls else ev.tool_calls,
+                metadata=redact_json(ev.metadata) if ev.metadata else ev.metadata,
+            )
+            self._events.append(stored)
+            # Feed the search index the way Postgres does. `session_events.content_tsv` is a
+            # generated column, so on the system of record every append is searchable with no
+            # call site at all -- while `index_event_memory` had no production caller, so the
+            # twin's index was written by exactly one unit test and `GET /chat/sessions/search`
+            # returned nothing for anything the product had actually stored. The twin has to
+            # behave like what it stands in for, not merely exist.
+            _index_for_search(
+                tenant_id=self.tenant_id,
+                thread_id=self.id,
+                seq=allocated[-1],
+                content=content if isinstance(content, str) else None,
+                # The stored metadata, not `ev.metadata`: the line above deliberately indexes
+                # the redacted content, and the index should be fed from what the row holds
+                # in both fields rather than only in the one that obviously matters.
+                event_id=(stored.metadata or {}).get("event_id"),
             )
         await _announce(self.id, tenant_id=self.tenant_id)
         return allocated
@@ -82,6 +97,11 @@ class _MemorySession:
 
     async def reset(self) -> None:
         self._events.clear()
+        # The search index is a second copy of this thread's content, so it goes too. On
+        # Postgres `DELETE FROM session_events` takes the generated `content_tsv` with it;
+        # without this the twin would answer a search with text the caller had just deleted,
+        # at `seq` numbers the next append immediately re-uses.
+        _drop_search_index(tenant_id=self.tenant_id, thread_id=self.id)
 
     async def wake(self) -> WakeState:
         return analyze_wake(self._events)
@@ -107,6 +127,43 @@ class InMemorySessionStore:
         if thread_id not in self._sessions:
             self._sessions[thread_id] = _MemorySession(id=thread_id, tenant_id=self.tenant_id)
         return self._sessions[thread_id]
+
+
+def _drop_search_index(*, tenant_id: str, thread_id: str) -> None:
+    """Best effort, for the same reason as `_index_for_search`."""
+    if not thread_id:
+        return
+    try:
+        from felix.session.search import drop_thread_index
+
+        drop_thread_index(tenant_id=tenant_id, thread_id=thread_id)
+    except Exception:  # pragma: no cover — the index is a plain list; nothing here raises
+        logger.debug("in-memory search index drop failed", exc_info=True)
+
+
+def _index_for_search(
+    *,
+    tenant_id: str,
+    thread_id: str,
+    seq: int,
+    content: str | None,
+    event_id: str | None,
+) -> None:
+    """Best effort: an unsearchable event must never fail the append that wrote it."""
+    if not thread_id or not content:
+        return
+    try:
+        from felix.session.search import index_event_memory
+
+        index_event_memory(
+            tenant_id=tenant_id,
+            thread_id=thread_id,
+            seq=seq,
+            content=content,
+            event_id=event_id,
+        )
+    except Exception:  # pragma: no cover — the index is a plain list; nothing here raises
+        logger.debug("in-memory search indexing failed", exc_info=True)
 
 
 async def _announce(thread_id: str, *, tenant_id: str) -> None:

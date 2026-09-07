@@ -34,6 +34,25 @@ def index_event_memory(
     )
 
 
+def drop_thread_index(*, tenant_id: str, thread_id: str) -> int:
+    """Forget everything indexed for one thread. Returns how many entries went.
+
+    The index is a second copy of event content, so it has to be deleted wherever the events
+    are. On Postgres that is free — `content_tsv` is a generated column and goes with the row
+    — which is exactly why this is easy to miss on the twin: adding the writer without this
+    turns `DELETE /chat/history/{id}` into a delete that leaves the text findable, and lets
+    the re-used `seq` numbers point a client at the wrong event.
+    """
+    before = len(_memory_index)
+    # Filtered in place rather than rebound: the list is a module global, and anything holding
+    # a reference to it — a test, a future reader — would keep the pre-delete copy alive and
+    # disagree with `search_sessions` about what the index contains.
+    _memory_index[:] = [
+        row for row in _memory_index if not (row["tenant_id"] == tenant_id and row["thread_id"] == thread_id)
+    ]
+    return before - len(_memory_index)
+
+
 def reset_search_index_for_tests() -> None:
     _memory_index.clear()
 
@@ -125,6 +144,7 @@ async def search_sessions(
 
 
 __all__ = [
+    "drop_thread_index",
     "index_event_memory",
     "reset_search_index_for_tests",
     "search_sessions",
