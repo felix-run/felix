@@ -97,14 +97,55 @@ class ProviderSpy:
         """Add turns for the next request, mid-test."""
         self.queue.extend(turns)
 
+    #: Every message list the model was handed, one entry per call, in order.
+    #:
+    #: What reached the model is the only evidence for a whole class of behaviour that is
+    #: otherwise invisible from outside: that a steer was delivered rather than merely
+    #: dequeued, that compaction actually shortened the context, that a recalled memory was
+    #: injected. Asserting on the reply cannot distinguish those from a model that ignored
+    #: them, because the reply is scripted.
+    prompts: list[list[Any]] = field(default_factory=list)
+
+    #: The `ModelSpec` each client was built from, one per client, in order.
+    #:
+    #: This is how a *setting* is asserted rather than its rendering. The thinking level, for
+    #: instance, is written to thread metadata and also announced as an event: the snapshot
+    #: resolves it from the event, while the next turn resolves it from the metadata and turns
+    #: it into a thinking budget on this spec. A thread can therefore display "high" and run
+    #: with thinking off, and only the spec can tell.
+    specs: list[Any] = field(default_factory=list)
+
+    def texts_seen(self) -> list[str]:
+        """Every message content the model has been shown, flattened."""
+        return [str(getattr(m, "content", "") or "") for call in self.prompts for m in call]
+
     def factory(self) -> Callable[..., ScriptedClient]:
         def build(model_id: str, route: Any, spec: Any, settings: Any) -> ScriptedClient:
             client = ScriptedClient(model_id=model_id, route=route, script=self.queue)
             _make_strict(client)
+            self._record_prompts(client)
+            self.specs.append(spec)
             self.clients.append(client)
             return client
 
         return build
+
+    def _record_prompts(self, client: ScriptedClient) -> None:
+        """Capture the messages handed to each model call, without changing what it returns.
+
+        `*args` rather than the Protocol's current three parameters: pinning the signature here
+        would turn the day someone adds a parameter into a `TypeError` across every e2e test,
+        which is a long way from the change that caused it.
+        """
+        for name in ("chat", "stream_turn", "stream"):
+            inner = getattr(client, name)
+
+            def wrapper(*args: Any, _inner: Any = inner, **kwargs: Any) -> Any:
+                messages = args[0] if args else kwargs.get("messages") or []
+                self.prompts.append(list(messages))
+                return _inner(*args, **kwargs)
+
+            setattr(client, name, wrapper)
 
 
 def _make_strict(client: ScriptedClient) -> None:

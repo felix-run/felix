@@ -63,6 +63,9 @@ def _isolate_process_global_stores():
     from felix.manifests import store as manifest_store
     from felix.manifests.resolver import clear_resolver_cache
     from felix.session.search import reset_search_index_for_tests
+    from felix.session.store import _memory_session_stores
+    from felix.session.thread_state import _meta_by_thread
+    from felix.session.tree import _leaf_by_thread
 
     def _clear() -> None:
         manifest_store.reset_memory_store()
@@ -75,6 +78,13 @@ def _isolate_process_global_stores():
         # store actually writes to it, a thread's events would otherwise be found by every
         # later test that searched for them.
         reset_search_index_for_tests()
+        # Thread state is three more process globals, and nothing reset them: a test reusing
+        # another test's thread id inherited its transcript, its leaf pointer and its `phase`.
+        # The suite was correct only because every id in it happened to be unique, and the
+        # failure when one was not would have looked like a product bug rather than a leak.
+        _memory_session_stores.clear()
+        _meta_by_thread.clear()
+        _leaf_by_thread.clear()
 
     _clear()
     yield

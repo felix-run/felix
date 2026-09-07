@@ -1539,10 +1539,22 @@ async def chat_compact(body: CompactRequest, request: Request) -> dict[str, Any]
     store = get_session_store(settings, tenant_id=auth.tenant_id)
     session = store.open(thread)
     strategy_spec = getattr(resolved.manifest.spec, "session", None)
+
+    def _budget(field: str, default: int) -> int:
+        """A declared zero is a value, not an absent one.
+
+        `int(getattr(spec, field, default) or default)` treats `0` as unset, so a manifest
+        setting `keep_recent_tokens: 0` -- which the schema allows, `ge=0` -- silently ran with
+        20000 and compaction never had anything to cut. The declared window was not what the
+        route used, and nothing said so: this repo's signature defect shape.
+        """
+        value = getattr(strategy_spec, field, None)
+        return default if value is None else int(value)
+
     strategy = CompactingSessionStrategy(
-        reserve_tokens=int(getattr(strategy_spec, "reserve_tokens", 16384) or 16384),
-        keep_recent_tokens=int(getattr(strategy_spec, "keep_recent_tokens", 20000) or 20000),
-        context_window_tokens=int(getattr(strategy_spec, "context_window_tokens", 128000) or 128000),
+        reserve_tokens=_budget("reserve_tokens", 16384),
+        keep_recent_tokens=_budget("keep_recent_tokens", 20000),
+        context_window_tokens=_budget("context_window_tokens", 128000),
         enabled=True,
     )
     model = build_model(settings, resolved.manifest.spec.model)
