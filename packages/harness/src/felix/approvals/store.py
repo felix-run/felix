@@ -17,6 +17,11 @@ now_ms = lambda: int(time.time() * 1000)
 _memory_approvals: dict[tuple[str, str], dict[str, Any]] = {}
 
 
+def reset_approvals_for_tests() -> None:
+    """Clear the in-memory approvals."""
+    _memory_approvals.clear()
+
+
 def _approval_dict(row: Approval | dict[str, Any]) -> dict[str, Any]:
     if isinstance(row, dict):
         data = dict(row)
@@ -331,4 +336,5 @@ __all__ = [
     "find_approved",
     "get_approval",
     "list_approvals",
+    "reset_approvals_for_tests",
 ]
