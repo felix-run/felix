@@ -443,6 +443,9 @@ rather than from re-reading a file. The wave itself is written up in [HISTORY.md
       `validate_runtime` refuses the unguarded claim mode outside development and colliding
       `tenant=issuer` verifiers everywhere, sixty seconds of leeway, and a `jwks` row on
       `/ready` that fails when no verifier is usable (refresh 300s, retry 30s).
+- [x] **`Idempotency-Key` on `POST /chat`** (readiness pass, 2026-09-04) — one turn per key per
+      tenant, Redis-backed claims across replicas, replay with `Idempotent-Replayed: true`,
+      `FELIX_IDEMPOTENCY_TTL_SECONDS`.
 - [ ] **A tenant is a string.** There is no `Tenant` table and no `ApiKey` table; `tenant_id` is a
       column on every row and never a foreign key. Minting a key means editing
       `FELIX_AUTH_API_KEYS` JSON and restarting. Manifest CRUD, canary and rollback are real and

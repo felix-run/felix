@@ -16,6 +16,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tenant. Migration `0013` drops it (`IF EXISTS`; irreversible for data, of which there was
   none), and the setting, model, helper and Helm `secrets.oauthCacheKey` go with it. An
   out-of-tree plugin importing any of these needs its own table and policy.
+### Added
+
+- **`Idempotency-Key` on `POST /chat`.** A client that timed out on a turn and retried ran the
+  turn twice — two model calls, two usage rows, two session events — because nothing tied the
+  retry to the first attempt. With the header the first request claims the key per
+  principal `(tenant, sub, key)` and stores its response on completion; a retry with the same
+  key and body gets that response back with `Idempotent-Replayed: true`, the same key with a
+  different body is `422 idempotency_key_reused`, a retry during the first attempt is
+  `409 idempotency_in_progress`, and a failed attempt releases the key. Scoped to the
+  principal because a replay returns before the manifest's inbound auth runs. Claims live in
+  Redis when `FELIX_REDIS_URL` is set (`SET NX EX`, so exactly one request wins across replicas;
+  `finish`/`release` compare-and-set on the holder's token so a claim that outlived its TTL
+  cannot touch the next one) through the shared `RedisConnection`, and in a bounded in-process
+  store otherwise or while Redis is away. `FELIX_IDEMPOTENCY_TTL_SECONDS` (default 24h) bounds
+  the replay window; responses over 256 KiB are not stored.
 
 ### Fixed
 

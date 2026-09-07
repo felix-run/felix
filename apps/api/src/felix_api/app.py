@@ -12,6 +12,7 @@ from fastapi import FastAPI
 from felix import __version__ as harness_version
 from felix.auth.middleware import AuthMiddleware
 from felix.config import Settings, get_settings
+from felix.idempotency import build_idempotency_store
 from felix.logging_setup import (
     configure_logging,
 )
@@ -197,6 +198,8 @@ def create_app(
     app.state.settings = cfg
     app.state.tools = tool_provider
     app.state.plugins = plugin_list
+    # Per app, not per process: two apps in one process (tests) must not share claims.
+    app.state.idempotency_store = build_idempotency_store(cfg)
 
     # Middleware order. Starlette's add_middleware inserts at index 0, so the LAST one
     # registered is the OUTERMOST. Auth was once registered last and therefore ran

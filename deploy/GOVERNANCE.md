@@ -599,6 +599,16 @@ never returns a credential a stored manifest still carries. `cowork.yaml` no lon
 anonymous callers: it binds a shell on the developer's machine, and under
 `FELIX_AUTH_MODE=none` the approvals that gate that shell are anonymous too — which means
 `make dev` (auth `none`) cannot drive cowork; the Compose stack, which mints a key, can.
+`POST /chat` honours `Idempotency-Key`: one turn per key per **principal** (the authenticated
+subject within its tenant), replayed for `FELIX_IDEMPOTENCY_TTL_SECONDS`. A replay returns
+before the manifest's inbound auth (`required_scopes`, `schemes`) runs, which is why the scope
+is the principal and not the tenant — a response one caller earned is never handed to another.
+Claims are `SET NX EX` in Redis when `FELIX_REDIS_URL` is set and in-process otherwise; while
+Redis is unreachable the store degrades to in-process (one log line per transition, as the
+rate limiter does), so a retry then dedupes only within one replica. The in-process store is
+bounded (50 000 keys, oldest evicted) and a response over 256 KiB is not stored, so the
+header cannot be used to grow a process; the client key is hashed into the Redis keyspace, so
+it cannot pick a cluster slot.
 
 `/health`, `/live` and `/ready` are public and unthrottled, because kubelet presents no
 credential and treats a 429 as a failed probe (`PROBE_PATHS` in `felix/security/rate_limit.py`

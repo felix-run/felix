@@ -87,6 +87,10 @@ class Settings(BaseSettings):
     # --- request limits ---
     rate_limit: int = 120
     rate_limit_window_seconds: int = 60
+    # How long a `POST /chat` response is replayable under its `Idempotency-Key`. A
+    # client that times out and retries inside this window gets the first attempt's
+    # response instead of a second turn (and a second bill).
+    idempotency_ttl_seconds: int = Field(default=86_400, ge=1)
     # Header carrying the real client IP behind a trusted proxy (e.g.
     # "cf-connecting-ip", "x-forwarded-for"). EMPTY by default: the header is
     # attacker-controlled unless a proxy you operate overwrites it, and trusting
