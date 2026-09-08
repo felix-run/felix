@@ -7,36 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- **An expired approval hid a live one, and only on Postgres.** `find_approved` took the newest
-  approved row with `LIMIT 1` and checked expiry *afterwards*, so one lapsed grant could hide a
-  still-valid older grant and the call was denied. The in-memory twin scanned every row and
-  skipped expired ones, so it authorised the same call. `create_pending` reuses only *pending*
-  rows, so approved grants accumulate per signature — an operator re-approving after a short
-  TTL lapsed produced exactly that pair, and got a working tool on `memory://` and a refusal on
-  the system of record. Expiry is now part of the `WHERE` clause.
-- **The two backends disagreed about which grant authorises when several match.** Postgres
-  ordered `decided_at DESC LIMIT 1`; the twin scanned a dict and returned the first row it met,
-  which is the *oldest*. With two live grants for one call signature they handed back different
-  rows — and with them a different `principal_subj` binding and a different `edited_args`, so a
-  tool would run with the arguments an operator had substituted on one backend and without them
-  on the other. Both arms now order by `(decided_at, created_at, id)` descending, so ties
-  resolve identically too.
-
-
-- **The management stores leaked between tests.** `_memory_datasets`, `_memory_items`,
-  `_memory_runs`, `_memory_jobs` and `_memory_approvals` are process globals that nothing
-  cleared. Writing an eval dataset named `smoke` in one test changed the item count another
-  test asserted against the bundled `smoke` fixture, and the failure surfaced as an off-by-one
-  in a file that had not changed. Each store now exports its own
-  `reset_*_for_tests()` beside the globals it clears, following the convention
-  `reset_documents_for_tests` and `reset_search_index_for_tests` already set, and the autouse
-  fixture calls those rather than reaching across the package for six private dicts. The
-  session-state reset added last cycle now uses the `reset_thread_meta_for_tests()` that
-  already existed and had no caller.
-
 ### Added
+
+- **A conformance contract for the fiber claim path** (`tests/conformance/test_fiber_claim.py`).
+  `test_fiber_store.py` already covered attempts through backoff and burial; this covers the
+  step before it — which fibers a scheduler tick picks up and what claiming does to the row.
+  That is where the two implementations are least alike: Postgres selects with
+  `ORDER BY updated_at ... LIMIT ... FOR UPDATE SKIP LOCKED` and filters in Python, the twin
+  scans a dict and filters as it goes. Both defects above were found by writing it. Covers due
+  and terminal states (parametrized over `FIBER_TERMINAL_STATUSES` rather than one arbitrary
+  string), the lease and its expiry, Temporal rows and the batch bound, oldest-first ordering,
+  and that the sweep is deliberately cross-tenant.
 
 - **Conformance contracts for the approvals store and for session search.** Both seams had a
   `memory://` twin whose Postgres counterpart ran only under `test_migrations.py`, which creates
