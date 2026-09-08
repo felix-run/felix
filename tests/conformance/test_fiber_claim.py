@@ -217,27 +217,26 @@ async def test_the_sweep_claims_across_tenants(fiber_settings: Any) -> None:
 
 @parametrized
 @pytest.mark.asyncio
-async def test_claiming_moves_a_fiber_to_the_back_of_the_queue(fiber_settings: Any) -> None:
+async def test_claiming_advances_the_field_the_queue_is_ordered_by(fiber_settings: Any) -> None:
     """Fairness, and the reason `updated_at` is not just bookkeeping.
 
     The claim orders by `updated_at`, so advancing it on claim is what turns the queue into
-    round-robin. Postgres did this and the twin did not, so on the twin a re-claimed fiber
-    stayed at the front and could be picked ahead of everything else indefinitely — one fiber
-    monopolising a scheduler that on the system of record would have shared it out.
+    round-robin: a fiber that has just run sorts behind everything waiting. The twin did not
+    advance it, so there one fiber could be re-picked ahead of the rest indefinitely.
+
+    Asserted on the single row rather than by comparing two claimed fibers. An earlier version
+    claimed a pair and expected their order to survive — but a batch claim stamps every row it
+    takes with the *same* `ts`, so the two then tie and Postgres resolves the tie arbitrarily.
+    That version passed on memory and failed in CI against a real database, which is the
+    divergence direction this file is least able to see from here.
     """
-    import asyncio
+    created = await fibers.create_fiber(fiber_settings, TENANT, status="pending")
 
-    first = await fibers.create_fiber(fiber_settings, TENANT, status="pending")
-    await asyncio.sleep(0.01)
-    second = await fibers.create_fiber(fiber_settings, TENANT, status="pending")
+    # An explicit later instant rather than "now": creating and claiming inside one millisecond
+    # leaves `updated_at` equal, and the assertion would then be about clock resolution.
+    later = fibers.now_ms() + 1000
+    claimed = await _claim(fiber_settings, ts=later)
 
-    claimed = await _claim(fiber_settings)
-    assert {row["id"] for row in claimed} == {first["id"], second["id"]}
-
-    # Both leases expire together; the one claimed first must now sort last.
-    later = fibers.now_ms() + fibers.FIBER_LEASE_MS + 1
-    again = await _claim(fiber_settings, ts=later)
-    assert again[0]["id"] == first["id"], (
-        "the fiber claimed first is the oldest by updated_at and must come first again"
-    )
-    assert all(row["version"] >= 1 for row in again), again
+    assert [row["id"] for row in claimed] == [created["id"]]
+    assert claimed[0]["updated_at"] == later, (created, claimed)
+    assert claimed[0]["version"] > int(created["version"] or 0), (created, claimed)
