@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The worker's per-tenant sweeps read nothing under row-level security.** Every HTTP request
+  is wrapped in `async_run_with_context`, which binds `rls_tenant(...)`, so the fifty-odd
+  tenant-scoped store functions inherit `app.tenant_id` and none of them binds explicitly. The
+  worker has no request context and nothing supplied one, so `run_due_jobs_all_tenants`,
+  `run_anomaly_scan_all_tenants` and `run_continuous_eval_all_tenants` ran with the policy
+  unable to match any tenant. It filters rather than errors, so each sweep read an empty table
+  and reported success: scheduled jobs never fired, the anomaly scan found nothing, and no
+  canary was ever benchmarked — silently, and only on deployments where RLS is the isolation
+  mechanism. The bundled compose role is a superuser and skips the policy entirely, which is
+  why local development and CI never showed it. Each sweep now binds the tenant it is sweeping.
+- **`create_fiber` and `get_fiber` bind their tenant too.** They take one as an argument and
+  were the only writes in `durability/fibers.py` that neither bound nor bypassed. On the HTTP
+  path the ambient context covered them; the fiber scheduler reaches `get_fiber` without one.
+  Bound rather than bypassed, so the policy still enforces and a create cannot land under the
+  wrong tenant.
+
 - **The two backends disagreed about which grant authorises when several match.** Postgres
   ordered `decided_at DESC LIMIT 1`; the twin scanned a dict and returned the first row it met,
   which is the *oldest*. With two live grants for one call signature they handed back different
@@ -51,12 +67,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   called no model at all. The declared window was not the one the route used and nothing said
   so, which is this repo's signature defect shape. Found while trying to write a test for the
   summarising branch and being unable to make it fire.
-
 - **The thinking level was written twice and only one copy was read by the run.** The snapshot
   resolves it from a `thinking_level_change` event; the next turn resolves it from thread
   metadata and turns it into a thinking budget on the model spec. Nothing covered the second
   path, so a thread could display "high" and run with thinking off. Now pinned on the spec the
   provider is built from, which is the only place the difference is visible.
+
 
 - **The management stores leaked between tests.** `_memory_datasets`, `_memory_items`,
   `_memory_runs`, `_memory_jobs` and `_memory_approvals` are process globals that nothing
@@ -71,6 +87,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A regression guard for the binding** (`tests/unit/test_worker_sweeps_bind_the_tenant.py`).
+  It observes the context variable at the moment each sweep calls into its per-tenant worker,
+  which needs no database — the failure this catches is the absence of a binding, not anything
+  Postgres does with it. It also pins that the binding is unwound between tenants: a leaked one
+  would be worse than none, since the next tenant's queries would run under the previous
+  tenant's policy.
 - **A conformance contract for the fiber claim path** (`tests/conformance/test_fiber_claim.py`).
   `test_fiber_store.py` already covered attempts through backoff and burial; this covers the
   step before it — which fibers a scheduler tick picks up and what claiming does to the row.
@@ -152,7 +174,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `test_a_steer_queued_while_idle_is_dropped_without_reaching_anyone` pins it so that making it
   error, redirect, or hold the message is a deliberate act with a failing test to rewrite.
   What it should do is a product decision, tracked in `docs/ROADMAP.md`.
-
 ## [0.2.2] — 2026-08-25
 
 ### Fixed

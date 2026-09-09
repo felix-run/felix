@@ -109,11 +109,18 @@ async def run_anomaly_scan_all_tenants(settings: Settings) -> list[dict]:
     covered a single tenant. Same fix, and same shape, as `run_due_jobs_all_tenants`.
     """
     from felix.audit.store import list_tenants_with_events
+    from felix.db.session import rls_tenant
 
     findings: list[dict] = []
     for tenant_id in await list_tenants_with_events(settings):
         try:
-            findings.extend(await run_anomaly_scan(settings, tenant_id=tenant_id))
+            # Bind the tenant for the sweep. The worker has no request context, so nothing
+            # else supplies `app.tenant_id`: under `FELIX_DATABASE_RLS` the policy then has no
+            # tenant to match, filters every row, and this sweep reads an empty table and
+            # reports success. Silent, and only on deployments where RLS is the isolation
+            # mechanism -- the bundled compose role is superuser and skips the policy entirely.
+            with rls_tenant(tenant_id):
+                findings.extend(await run_anomaly_scan(settings, tenant_id=tenant_id))
         except Exception:
             # One tenant's bad data must not stop the scan for everyone else.
             logger.exception("anomaly_scan_failed tenant=%s", tenant_id)

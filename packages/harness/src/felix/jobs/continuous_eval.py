@@ -93,6 +93,7 @@ async def run_continuous_eval_all_tenants(settings: Settings) -> dict[str, Any]:
     `run_continuous_eval` defaults to ``tenant_id="default"``, so a canary in any
     other tenant was never scored — the rollout looked clean because nothing looked.
     """
+    from felix.db.session import rls_tenant
     from felix.manifests.store import list_tenants_with_active
 
     runs = 0
@@ -100,7 +101,13 @@ async def run_continuous_eval_all_tenants(settings: Settings) -> dict[str, Any]:
     for tenant_id in await list_tenants_with_active(settings):
         scanned += 1
         try:
-            result = await run_continuous_eval(settings, tenant_id=tenant_id)
+            # Bind the tenant for the sweep. The worker has no request context, so nothing
+            # else supplies `app.tenant_id`: under `FELIX_DATABASE_RLS` the policy then has no
+            # tenant to match, filters every row, and this sweep reads an empty table and
+            # reports success. Silent, and only on deployments where RLS is the isolation
+            # mechanism -- the bundled compose role is superuser and skips the policy entirely.
+            with rls_tenant(tenant_id):
+                result = await run_continuous_eval(settings, tenant_id=tenant_id)
             runs += int(result.get("runs") or 0)
         except Exception:
             logger.exception("continuous_eval_failed tenant=%s", tenant_id)
