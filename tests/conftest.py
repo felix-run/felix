@@ -58,13 +58,16 @@ def _scrub_ambient_git_environment():
 @pytest.fixture(autouse=True)
 def _isolate_process_global_stores():
     """Clear the in-memory manifest store, corpus and resolver caches around every test."""
+    from felix.approvals.store import reset_approvals_for_tests
     from felix.documents.store import reset_documents_for_tests
     from felix.durability.fibers import reset_memory_fibers
+    from felix.eval.store import reset_eval_for_tests
+    from felix.jobs.store import reset_jobs_for_tests
     from felix.manifests import store as manifest_store
     from felix.manifests.resolver import clear_resolver_cache
     from felix.session.search import reset_search_index_for_tests
     from felix.session.store import _memory_session_stores
-    from felix.session.thread_state import _meta_by_thread
+    from felix.session.thread_state import reset_thread_meta_for_tests
     from felix.session.tree import _leaf_by_thread
 
     def _clear() -> None:
@@ -83,8 +86,16 @@ def _isolate_process_global_stores():
         # The suite was correct only because every id in it happened to be unique, and the
         # failure when one was not would have looked like a product bug rather than a leak.
         _memory_session_stores.clear()
-        _meta_by_thread.clear()
+        reset_thread_meta_for_tests()
         _leaf_by_thread.clear()
+        # The management stores are the same shape of process global, and the same hazard: a
+        # dataset named `smoke` written by one test was counted by another test's assertion on
+        # the bundled `smoke` fixture, and it failed as an off-by-one in a file that had not
+        # changed. Each store exports its own reset, so the private names stay next to the
+        # globals they clear and a store refactor touches one file rather than this one.
+        reset_eval_for_tests()
+        reset_jobs_for_tests()
+        reset_approvals_for_tests()
 
     _clear()
     yield

@@ -271,6 +271,13 @@ comment explaining exactly that. It is conditional, not inert.
       satisfy their own rubrics (`_mock_answer` returns `rubric["expect"]` when none is given), so
       it proves the plumbing executes and scores nothing about the agent. Optional nightly against
       `api.felix.run` that does not block PRs.
+- [ ] **Validate eval dataset items, or document that they are free-form.** An item whose keys
+      are not `user_input` / `rubric` is accepted with 200 and stored with an empty prompt, so
+      the dataset looks configured and scores nothing — the bundled JSON fixtures use
+      `input`/`expect`, which is exactly the spelling that silently produces nothing. Pinned by
+      `tests/e2e/test_mgmt_routes.py::test_an_eval_item_with_unrecognised_keys_is_stored_empty`.
+      Pairs with the item below.
+
 - [ ] **Eval scoring depth** — four string rules (`equals` / `contains` / `min_chars` / non-empty)
       plus one judge. No regex, no schema check, no tool-call or trajectory assertions, no numeric
       tolerance, no significance test on comparative runs. Nobody can gate a model change on this
@@ -485,10 +492,14 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       including the one that actually summarises — which only became reachable once the route
       stopped reading `keep_recent_tokens: 0` as 20000. Still open: the `/chat/continue` success
       path (both tests are its 400 guards), `/chat/rewind` at its default `summarize: true`,
-      `/chat/fork` with `from_event_id`, a steer against a run genuinely in flight, and the
-      management routers — `routes/jobs.py` and `routes/eval.py` still receive zero requests anywhere in
-      `tests/`. `patterns/delegating.py` also still has no named test, and needs a per-client
-      sub-queue in the fixture before it can have one.
+      `/chat/fork` with `from_event_id`, and a steer against a run genuinely in flight. The
+      management routers are covered (`tests/e2e/test_mgmt_routes.py`): jobs, eval datasets and
+      runs, audit and its metrics rollup, and approvals including a decide, under
+      `auth_mode=api_key` so the scope gates are exercised rather than skipped. Two things
+      there remain unpinned and are marked as such in the tests: the eval route's `tools`
+      hand-off (no dataset item calls a tool) and its `use_llm_judge` inversion.
+      `POST /eval/runs/compare` still has no caller at all. `patterns/delegating.py` still has no named test, and needs a per-client
+      sub-queue in the fixture before it can have one — the last piece of this item.
 - [ ] **Decide what a steer queued on an idle thread should do.** Today it is accepted with
       200, counted on the snapshot, then dropped before reaching the model or the transcript —
       `kind: follow_up` is the path that works. Found by asserting on what reached the model
@@ -497,16 +508,31 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       `tests/e2e/test_chat_run_control.py::test_a_steer_queued_while_idle_is_dropped_without_reaching_anyone`,
       which should fail and be rewritten when this is decided.
 
-- [ ] **Postgres arms for the ten stores that have none.** audit, approvals, jobs, manifests,
-      plans, eval, a2a tasks, fibers, queues, skills — each has a `memory://` twin whose SQL
-      counterpart runs only under the migration test, which creates the schema and never queries
-      it. The invariant proves a twin *exists*, not that it behaves like the store it stands in
-      for. Extend the indirect-fixture pattern in `tests/conformance/conftest.py`; one contract
-      file per seam, ordered by how much SQL the twin does not do. `test_migrations.py` also wants
-      an autogenerate-empty check and stepwise per-revision up/down. **Session search is now the
-      first candidate**: the in-memory index had no writer at all until it was fixed, and nothing
-      compares it against the Postgres `content_tsv` column — the `store` fixture yields a store
-      where a search contract needs settings too, so it wants a paired fixture.
+- [~] **Postgres arms for the ten stores that have none.** Approvals, session search and the
+      fiber *claim* path are done (`tests/conformance/test_approvals_store.py`,
+      `test_session_search.py`, `test_fiber_claim.py`) behind a generic `store_settings`
+      fixture, and each of them found a real divergence: the approvals twin returned the oldest
+      matching grant where Postgres returns the newest, an expired grant could hide a live one
+      on Postgres only, and a batch of Temporal-backed fibers starved a tenant's ordinary ones.
+      Still open, in the order their SQL diverges most from the twin: manifests (active pointer
+      and canary), audit (query filters), then jobs, plans, eval and a2a tasks.
+
+- [ ] **`test_migrations.py` still wants an autogenerate-empty check** (models versus
+      migrations drift) **and stepwise per-revision up/down**; today it only goes base to head
+      in one hop.
+
+- [ ] **`create_fiber` cannot insert under an enforcing RLS role.** It is the one write in
+      `durability/fibers.py` that neither wraps `rls_bypass()` nor binds the tenant GUC, so with
+      `FELIX_DATABASE_RLS=true` and a non-superuser it fails with "new row violates row-level
+      security policy". `get_fiber` has the same gap. Invisible to the conformance suite because
+      that connects as a superuser with RLS off. Found while verifying the fiber claim contract
+      against a live database; fixed in a separate change.
+
+- [ ] **An index for the fiber claim's ordering.** `ORDER BY updated_at LIMIT 50` has no
+      supporting index; measured at 200k rows it is 11 ms, and a partial index matching the
+      claim's WHERE takes it to 0.15 ms at a fifth the size of `idx_fibers_due`. Worth doing now
+      that the WHERE clause is stable.
+
 - [ ] **Worker cron bodies and CLI commands.** Six of eight Taskiq tasks never execute in a test
       and no test pins the cron strings; `migrate`, `eval`, `mint-jwt`, `bundle-manifests`,
       `version` and `temporal-worker` are never invoked.

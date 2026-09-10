@@ -9,6 +9,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The worker's per-tenant sweeps read nothing under row-level security.** Every HTTP request
+  is wrapped in `async_run_with_context`, which binds `rls_tenant(...)`, so the fifty-odd
+  tenant-scoped store functions inherit `app.tenant_id` and none of them binds explicitly. The
+  worker has no request context and nothing supplied one, so `run_due_jobs_all_tenants`,
+  `run_anomaly_scan_all_tenants` and `run_continuous_eval_all_tenants` ran with the policy
+  unable to match any tenant. It filters rather than errors, so each sweep read an empty table
+  and reported success: scheduled jobs never fired, the anomaly scan found nothing, and no
+  canary was ever benchmarked — silently, and only on deployments where RLS is the isolation
+  mechanism. The bundled compose role is a superuser and skips the policy entirely, which is
+  why local development and CI never showed it. Each sweep now binds the tenant it is sweeping.
+- **`create_fiber` and `get_fiber` bind their tenant too.** They take one as an argument and
+  were the only writes in `durability/fibers.py` that neither bound nor bypassed. On the HTTP
+  path the ambient context covered them; the fiber scheduler reaches `get_fiber` without one.
+  Bound rather than bypassed, so the policy still enforces and a create cannot land under the
+  wrong tenant.
+
+- **The two backends disagreed about which grant authorises when several match.** Postgres
+  ordered `decided_at DESC LIMIT 1`; the twin scanned a dict and returned the first row it met,
+  which is the *oldest*. With two live grants for one call signature they handed back different
+  rows — and with them a different `principal_subj` binding and a different `edited_args`, so a
+  tool would run with the arguments an operator had substituted on one backend and without them
+  on the other. Both arms now order by `(decided_at, created_at, id)` descending, so ties
+  resolve identically too.
+
+- **An expired approval hid a live one, and only on Postgres.** `find_approved` took the newest
+  approved row with `LIMIT 1` and checked expiry *afterwards*, so one lapsed grant could hide a
+  still-valid older grant and the call was denied. The in-memory twin scanned every row and
+  skipped expired ones, so it authorised the same call. `create_pending` reuses only *pending*
+  rows, so approved grants accumulate per signature — an operator re-approving after a short
+  TTL lapsed produced exactly that pair, and got a working tool on `memory://` and a refusal on
+  the system of record. Expiry is now part of the `WHERE` clause.
+
+- **A tenant holding a batch of Temporal-backed fibers starved its own ordinary ones, on
+  Postgres only.** `_claim_due_postgres` applied `LIMIT FIBER_BATCH` in SQL and dropped
+  Temporal rows afterwards in Python, so 50 or more of them filled the batch with rows that
+  were then discarded and the claim returned nothing at all — that tenant's real fibers never
+  ran. The in-memory twin skips Temporal rows while scanning and never counts them toward the
+  batch, so it had no such problem and nothing compared the two. The filter is now part of the
+  `WHERE` clause. Measured on a live database: starvation begins at exactly 50 Temporal rows,
+  and the fix also halves the query time at 200k rows by discarding rows before the sort rather
+  than after, removing a 16 MB on-disk spill.
+
+- **A re-claimed fiber stayed at the front of the queue on the in-memory twin.** The claim
+  orders by `updated_at`, and the Postgres path advances it while the twin did not — so on the
+  twin one fiber could be re-picked ahead of everything else indefinitely, where the system of
+  record shares the scheduler out round-robin. The twin now advances `updated_at` and `version`
+  on claim, as Postgres does. (The test for this was itself wrong first time and CI caught it:
+  a batch claim stamps every row it takes with the same instant, so two fibers claimed together
+  tie and Postgres resolves the tie arbitrarily. It asserts the advance on one row now.)
+
 - **A manifest declaring `keep_recent_tokens: 0` silently ran with 20000.**
   `POST /chat/compact` built its strategy with `int(getattr(spec, field, default) or default)`,
   which treats a declared `0` as absent — and the schema allows `0` (`ge=0`) for both
@@ -23,7 +73,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   path, so a thread could display "high" and run with thinking off. Now pinned on the spec the
   provider is built from, which is the only place the difference is visible.
 
+
+- **The management stores leaked between tests.** `_memory_datasets`, `_memory_items`,
+  `_memory_runs`, `_memory_jobs` and `_memory_approvals` are process globals that nothing
+  cleared. Writing an eval dataset named `smoke` in one test changed the item count another
+  test asserted against the bundled `smoke` fixture, and the failure surfaced as an off-by-one
+  in a file that had not changed. Each store now exports its own
+  `reset_*_for_tests()` beside the globals it clears, following the convention
+  `reset_documents_for_tests` and `reset_search_index_for_tests` already set, and the autouse
+  fixture calls those rather than reaching across the package for six private dicts. The
+  session-state reset added last cycle now uses the `reset_thread_meta_for_tests()` that
+  already existed and had no caller.
+
 ### Added
+
+- **A regression guard for the binding** (`tests/unit/test_worker_sweeps_bind_the_tenant.py`).
+  It observes the context variable at the moment each sweep calls into its per-tenant worker,
+  which needs no database — the failure this catches is the absence of a binding, not anything
+  Postgres does with it. It also pins that the binding is unwound between tenants: a leaked one
+  would be worse than none, since the next tenant's queries would run under the previous
+  tenant's policy.
+- **A conformance contract for the fiber claim path** (`tests/conformance/test_fiber_claim.py`).
+  `test_fiber_store.py` already covered attempts through backoff and burial; this covers the
+  step before it — which fibers a scheduler tick picks up and what claiming does to the row.
+  That is where the two implementations are least alike: Postgres selects with
+  `ORDER BY updated_at ... LIMIT ... FOR UPDATE SKIP LOCKED` and filters in Python, the twin
+  scans a dict and filters as it goes. Both defects above were found by writing it. Covers due
+  and terminal states (parametrized over `FIBER_TERMINAL_STATUSES` rather than one arbitrary
+  string), the lease and its expiry, Temporal rows and the batch bound, oldest-first ordering,
+  and that the sweep is deliberately cross-tenant.
+
+- **Conformance contracts for the approvals store and for session search.** Both seams had a
+  `memory://` twin whose Postgres counterpart ran only under `test_migrations.py`, which creates
+  the schema and never queries it — so everything asserted about them was asserted about the
+  twin, while `tests/unit/test_invariants.py` requires only that a twin *exists*. Both defects
+  above were found by writing these contracts, not by reading either implementation.
+
+  The approvals contract covers the semantics that are security properties rather than storage
+  details: which grant authorises when several match, expiry, `bind_principal`, `one_shot` and
+  its consume-once check-and-set, and the tenant boundary. The search contract covers what both
+  engines can be held to — an appended event becoming findable, deletion removing it, the tenant
+  and thread boundaries, and masking surviving into the index. Ranking, stemming and the hit
+  shape are named as *not* covered rather than left for a reader to assume: the Postgres arm
+  returns a `rank` key the twin never produces, which is visible through
+  `GET /chat/sessions/search`.
+
+  A generic `store_settings` fixture replaces the per-seam pattern, so adding a seam is now a
+  contract file rather than another fixture.
+
+- **The management routers are tested over the wire, with real scopes.** `routes/jobs.py` and
+  `routes/eval.py` received zero requests anywhere in the suite and `routes/audit.py` had one;
+  between them they are the operator's whole view of what the harness scheduled, evaluated and
+  refused. Nineteen tests in `tests/e2e/test_mgmt_routes.py` cover jobs CRUD and its runs list,
+  eval datasets and runs, the audit log and its metrics rollup, and approvals through to a
+  decide that records who made it. They run under `auth_mode=api_key` rather than the suite's
+  usual `none`, because `require_mgmt_scopes` is skipped entirely when auth is off: a scoped
+  route tested without auth proves the handler works and says nothing about who may reach it.
+  Each positive case uses a key holding only the scope under test rather than `admin`, which
+  satisfies every gate by design — so a deleted `require_mgmt_scopes` call fails the test
+  instead of passing it. Proved by mutation.
 
 - **The run controls are tested over the wire.** Sixteen tests in
   `tests/e2e/test_chat_run_control.py` cover steer, follow-up, abort, continue, fork, rewind,
@@ -34,16 +142,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   leaf and a 404 moves nothing, compaction of a short thread calls no model while a real one
   summarises and is billed, and answering a pending UI prompt releases the waiter that was
   blocking on it. Each is proved by mutation.
+
 - **The e2e spy records the prompts and the model specs.** `ProviderSpy.prompts` /
   `texts_seen()` and `ProviderSpy.specs` make assertable a class of behaviour the reply cannot
   show: the reply is scripted, so a run that ignored a steer, skipped compaction or ran with
   the wrong thinking budget answers identically.
+
 - **Thread state is reset between tests.** `_memory_session_stores`, `_meta_by_thread` and
   `_leaf_by_thread` are process globals that nothing cleared, so a test reusing another's
   thread id inherited its transcript, leaf and phase. The suite was correct only because every
   id in it happened to be unique.
 
 ### Known and deliberately unfixed
+
+- **An eval dataset item written with unrecognised keys is stored empty.** `items` is
+  `list[dict[str, Any]]` and `put_dataset` reads only `user_input` and `rubric`, so an item
+  spelled any other way — including the `input`/`expect` the bundled JSON fixtures use — is
+  accepted with 200, listed as present, and stored with an empty prompt and an empty rubric.
+  The dataset then looks configured and scores nothing.
+  `test_an_eval_item_with_unrecognised_keys_is_stored_empty` pins it. Rejecting unknown keys is
+  an API decision rather than a bug fix, so it is raised in `docs/ROADMAP.md` next to the
+  eval-scoring-depth item rather than changed here.
 
 - **A steer queued on an idle thread is dropped without reaching anyone.**
   `POST /chat/steer` with the default `kind: steer` answers 200 with `{"queued": "steer"}` and
@@ -55,7 +174,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `test_a_steer_queued_while_idle_is_dropped_without_reaching_anyone` pins it so that making it
   error, redirect, or hold the message is a deliberate act with a failing test to rewrite.
   What it should do is a product decision, tracked in `docs/ROADMAP.md`.
-
 ## [0.2.2] — 2026-08-25
 
 ### Fixed

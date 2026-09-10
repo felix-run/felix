@@ -120,8 +120,13 @@ async def create_fiber(
         _memory_fibers[(tenant_id, fiber_id)] = row
         return _fiber_dict(row)
 
-    factory = get_session_factory(settings=settings)
-    async with factory() as db:
+    # Bound to this tenant rather than bypassing: the caller named the tenant, so the policy
+    # can enforce it instead of being switched off. The HTTP path already supplies one --
+    # `AuthMiddleware` wraps every request in `async_run_with_context`, which binds it -- but
+    # the worker has no request context, and `fiber_scheduler` reaches here.
+    from felix.db.session import tenant_session
+
+    async with tenant_session(settings, tenant_id) as db:
         db.add(Fiber(**row))
         await db.commit()
         return row
@@ -415,6 +420,12 @@ async def _claim_due_memory(settings: Settings, ts: int) -> list[dict[str, Any]]
         row["wake_at"] = None
         row["lease_owner"] = str(getattr(settings, "replica_id", "local") or "local")
         row["lease_until"] = ts + FIBER_LEASE_MS
+        # Bumped the way the Postgres claim bumps them. `updated_at` is not bookkeeping here:
+        # the claim orders by it, so a re-claimed fiber goes to the back of the queue. Leaving
+        # it alone kept the twin re-picking the same fiber ahead of everything else, which is
+        # round-robin on the system of record and starvation on the twin.
+        row["updated_at"] = ts
+        row["version"] = int(row.get("version") or 0) + 1
         claimed.append(dict(row))
         if len(claimed) >= FIBER_BATCH:
             break
@@ -444,6 +455,14 @@ async def _claim_due_postgres(settings: Settings, ts: int) -> list[dict[str, Any
                     (Fiber.status != "sleeping") | (Fiber.wake_at.is_not(None) & (Fiber.wake_at <= ts)),
                     # unclaimed, or the previous claim expired (crashed worker)
                     Fiber.lease_until.is_(None) | (Fiber.lease_until <= ts),
+                    # Temporal drives its own workflows, so those rows are not ours to claim.
+                    # Filtered in SQL rather than after the fetch: `LIMIT` applies to the rows
+                    # the WHERE returns, so dropping them in Python meant a tenant holding a
+                    # batch's worth of Temporal fibers filled the batch with rows that were
+                    # then discarded and claimed nothing at all -- its ordinary fibers never
+                    # ran. The twin skips them while scanning, so it never had that problem,
+                    # and starvation on the system of record is the harder one to notice.
+                    Fiber.state_json["backend"].astext.is_distinct_from("temporal"),
                 )
                 .order_by(Fiber.updated_at)
                 .limit(FIBER_BATCH)
@@ -452,8 +471,6 @@ async def _claim_due_postgres(settings: Settings, ts: int) -> list[dict[str, Any
             rows = (await db.scalars(stmt)).all()
             claimed: list[dict[str, Any]] = []
             for row in rows:
-                if (row.state_json or {}).get("backend") == "temporal":
-                    continue
                 row.status = "running"
                 row.wake_at = None
                 row.lease_owner = owner
@@ -664,8 +681,11 @@ async def get_fiber(settings: Settings, tenant_id: str, fiber_id: str) -> dict[s
     if _use_memory(settings):
         row = _memory_fibers.get((tenant_id, fiber_id))
         return _fiber_dict(row) if row else None
-    factory = get_session_factory(settings=settings)
-    async with factory() as db:
+    # Same reasoning as `create_fiber`. Unbound under an enforcing policy this returns None
+    # for a fiber that exists, so a resume token reads as an unknown run rather than an error.
+    from felix.db.session import tenant_session
+
+    async with tenant_session(settings, tenant_id) as db:
         fiber = await db.get(Fiber, (tenant_id, fiber_id))
         return _fiber_dict(fiber) if fiber else None
 

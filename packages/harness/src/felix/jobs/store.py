@@ -18,6 +18,12 @@ _memory_jobs: dict[tuple[str, str], dict[str, Any]] = {}
 _memory_runs: dict[tuple[str, str, str], dict[str, Any]] = {}
 
 
+def reset_jobs_for_tests() -> None:
+    """Clear the in-memory jobs and their run history."""
+    _memory_jobs.clear()
+    _memory_runs.clear()
+
+
 def _job_dict(row: Job | dict[str, Any]) -> dict[str, Any]:
     if isinstance(row, dict):
         return {
@@ -290,5 +296,6 @@ __all__ = [
     "list_runs",
     "put_job",
     "record_run",
+    "reset_jobs_for_tests",
     "touch_run",
 ]
