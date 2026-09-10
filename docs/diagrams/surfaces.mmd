@@ -1,0 +1,29 @@
+---
+title: Protocol surfaces
+---
+%% Source of truth: every caller of felix.runtime:build_tenant_agent —
+%% routes/chat.py, routes/openai_compat.py, a2a/server.py, mcp/server.py,
+%% jobs/scheduler.py, eval/runner.py, durability/fibers.py
+flowchart LR
+    accTitle: Five protocols and two schedulers reach the same compiled agent
+    accDescr: Felix serves the same manifest over REST and SSE, an OpenAI-compatible /v1, A2A JSON-RPC, and MCP, and the worker reaches it again for scheduled jobs, continuous eval, and durable fiber resume. None of them has its own agent construction: all seven call felix.runtime.build_tenant_agent, which is why a governance wrapper cannot be applied on one surface and skipped on another. The e2e suite boots the same zero-argument create_application production uses to keep that true.
+
+    rest([REST + SSE<br/>/chat]) -->|"streams a turn as SSE"| rt
+    oai([OpenAI-compatible<br/>/v1/chat/completions]) -->|"existing OpenAI SDKs, unchanged"| rt
+    a2a([A2A JSON-RPC<br/>/a2a]) -->|"message/send, tasks/get"| rt
+    mcp([MCP<br/>/mcp]) -->|"tools/list, tools/call"| rt
+
+    cron["felix-scheduler<br/>scheduled jobs"] -->|"fires due cron rows"| rt
+    ev["Continuous eval<br/>eval/runner.py"] -->|"scores a dataset against a version"| rt
+    fib["Fiber resume<br/>durability/fibers.py"] -->|"resumes a durable run"| rt
+
+    rt["felix.runtime<br/>build_tenant_agent"] -->|"compiles per request"| build[[Manifest compile pipeline]]
+    build -->|"returns"| agent(["Governed Agent"])
+
+    class rt focal
+    class rest,oai,a2a,mcp external
+    class cron,ev,fib,build,agent primary
+
+    classDef focal    fill:#dbeaf5,stroke:#0072B2,stroke-width:2px,color:#062033
+    classDef primary  fill:#f4f6f9,stroke:#5a6272,stroke-width:1px,color:#10203a
+    classDef external fill:#ffffff,stroke:#767676,stroke-width:1px,stroke-dasharray:4 3,color:#3b414d

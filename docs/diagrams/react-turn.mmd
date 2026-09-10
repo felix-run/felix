@@ -1,0 +1,47 @@
+---
+title: One ReAct turn, streaming
+---
+%% Source of truth: packages/harness/src/felix/patterns/react.py:_ReactAgent._run
+sequenceDiagram
+    accTitle: A single streaming turn through the ReAct loop
+    accDescr: The loop takes the run queue for the thread, clears any stale abort flag, and renders history through the session strategy. Each step compacts if the window demands it, calls the model, and either finishes or runs the tool batch. A context overflow is retried exactly once, and only while nothing has been streamed to the client, because a client that has already rendered deltas cannot un-render them. After the batch the loop drains steering messages, so a user can redirect a run between tool calls without starting a new turn. Every model response and tool result is appended to the session log whether or not display events were emitted.
+
+    participant C as SSE client
+    participant R as ReAct loop
+    participant S as Session store
+    participant M as Model client
+    participant T as ToolRunner
+
+    C->>R: invoke or stream_events
+    R->>S: ensure_run_queue, clear_abort
+    R->>S: render history via session strategy
+    S-->>R: messages + recalled prelude
+
+    loop until recursion_limit, budget, or end_turn
+        R->>R: compact if over context window
+        R->>M: chat(messages, active tools)
+        alt context overflow, nothing streamed yet
+            M-->>R: ModelGatewayError
+            R->>S: rebuild from a shorter render
+            R->>M: retry once
+        end
+        M-->>R: assistant message + stop_reason
+        R->>C: text_delta events
+        R->>S: append assistant + usage
+
+        alt stop_reason is max_tokens with tool calls
+            R->>S: quarantine truncated calls, never run them
+        else assistant made tool calls
+            R->>C: tool_start
+            R->>T: run_batch through the governance stack
+            T-->>R: tool results, fatal flag, terminate flag
+            R->>C: tool_end
+            R->>S: append tool results
+            R->>S: drain steering messages
+        else no tool calls
+            R->>S: append final, exit loop
+        end
+    end
+
+    R->>S: release_run_queue, capture memory
+    R->>C: done

@@ -1,0 +1,34 @@
+---
+title: Durable run (fiber) lifecycle
+---
+%% Source of truth: packages/harness/src/felix/durability/fibers.py —
+%% FIBER_TERMINAL_STATUSES, _park, _retry_or_dead, _claim_due.
+stateDiagram-v2
+    accTitle: States a durable fiber moves through, including the retry ladder
+    accDescr: A manifest with spec.execution.mode durable answers POST /chat with 202 and a resume token instead of running the turn inline. The fiber row starts pending; the worker's fiber_scheduler task claims due rows under a lease, oldest first, so two replicas cannot run the same step and no tenant starves; rows backed by Temporal are excluded because Temporal drives those itself, and each step either advances the cursor or parks the fiber for a backoff. The backoff doubles from one minute to a ceiling of one hour, and after FELIX_FIBER_MAX_ATTEMPTS consecutive failures the fiber is buried as dead rather than retried forever. A step that reached a terminal status and then failed only at its save keeps that status, because coercing it back to sleeping would re-enter the step loop with the cursor past the end and report a failed invoke as completed.
+
+    [*] --> Pending : start_durable_chat writes the row, API returns 202
+    Pending --> Running : fiber_scheduler claims it under a lease
+
+    Running --> Running : step advances the cursor
+    Running --> Sleeping : _park for a timer or a screener outage
+    Sleeping --> Running : wake_at passes and the lease is free
+
+    Running --> Completed : cursor reaches the end of the plan
+    Running --> Failed : the invoke itself errored, terminal
+    Running --> Retrying : the step raised out of _run_step
+    Retrying --> Sleeping : backoff, 1m doubling to a 1h ceiling
+    Retrying --> Dead : attempts reach fiber_max_attempts
+
+    Running --> Expired : run TTL elapsed
+
+    Completed --> [*]
+    Dead --> [*]
+    Failed --> [*]
+    Expired --> [*]
+
+    note right of Dead
+        Terminal. The last error is
+        kept on the row so GET
+        /chat/runs/{token} can explain it.
+    end note

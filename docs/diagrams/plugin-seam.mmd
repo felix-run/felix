@@ -1,0 +1,35 @@
+---
+title: Plugin seam
+---
+%% Source of truth: packages/harness/src/felix/plugins.py and
+%% apps/api/src/felix_api/composition.py. tests/unit/test_plugin_boundary.py fails
+%% the build if core imports a plugin package by name.
+flowchart LR
+    accTitle: How an optional feature attaches without core knowing its name
+    accDescr: composition.py is the only file in core allowed to name plugins, and it names them exactly once, through installed_plugins. Everything else goes through the registry: a plugin package registers routes, tools, authenticators, cron tasks, rate-limit keys and session strategies at import time, discovered either by explicit registration or by a felix.plugins entry point. A test asserts core never imports felix_commerce or felix_enterprise, which is what keeps the lean default install genuinely lean — heavy dependencies live behind extras and are imported inside the function that needs them, never at module scope.
+
+    pkg([Optional package<br/>felix_commerce, felix_enterprise]) -->|"discovered by load_optional_plugins"| reg["felix/plugins.py<br/>registry"]
+
+    reg -->|"routers"| routes["Mounted FastAPI routers"]
+    reg -->|"tools"| tools["register_plugin_tools<br/>into the ToolProvider"]
+    reg -->|"authenticator builders"| authn["FELIX_AUTH_MODE beyond the built-ins"]
+    reg -->|"cron_tasks"| cron["Taskiq tasks, registered at worker startup"]
+    reg -->|"pattern + session strategy factories"| pat["register_pattern,<br/>register_session_strategy"]
+
+    comp["composition.py<br/>the only core file that may name a plugin"] -->|"calls installed_plugins once"| reg
+    routes --> app(["create_app"])
+    tools --> app
+    authn --> app
+    cron --> wrk(["felix-worker"])
+    pat --> build(["build_agent"])
+
+    core["felix core"] -.->|"MUST NOT import a plugin package<br/>test_plugin_boundary asserts this"| pkg
+
+    class reg focal
+    class comp focal
+    class pkg,app,wrk,build external
+    class routes,tools,authn,cron,pat,core primary
+
+    classDef focal    fill:#dbeaf5,stroke:#0072B2,stroke-width:2px,color:#062033
+    classDef primary  fill:#f4f6f9,stroke:#5a6272,stroke-width:1px,color:#10203a
+    classDef external fill:#ffffff,stroke:#767676,stroke-width:1px,stroke-dasharray:4 3,color:#3b414d

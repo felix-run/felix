@@ -1,0 +1,32 @@
+---
+title: Manifest compile pipeline
+---
+%% Source of truth: packages/harness/src/felix/manifests/builder.py:build_agent
+%% and packages/harness/src/felix/runtime.py
+flowchart TB
+    accTitle: How a felix/v1 manifest becomes a governed Agent
+    accDescr: Every request compiles its agent from scratch. resolve_tenant_manifest picks a manifest version, prepare_tenant_invoke enforces the manifest's own inbound auth rule and pins the version to the thread, then build_agent resolves base tools from the ToolProvider, binds outbound tools named in the spec — MCP servers, A2A peers, browsers, sandboxes, queues — appends the Agent Skills catalog to the prompt and a recalled-facts prelude beside it, wraps every resolved tool in the governance stack, and hands the result to a pattern builder from the open registry. Nothing in core enumerates patterns; build_react_agent is simply the one most manifests name.
+
+    resolve["resolve_tenant_manifest<br/>see manifest-resolution"]
+    resolve -->|"checks inbound auth, pins version to thread"| prep[prepare_tenant_invoke]
+    prep -->|"spec.tools ids"| base["ToolProvider.resolve<br/>base + plugin tools"]
+
+    base -->|"spec.mcp_servers, peers, sandboxes, queues"| bind["Outbound binders<br/>server__tool, peer__name"]
+    bind -->|"appends catalog XML to prompt"| skills["load_manifest_skills"]
+    skills -->|"injects active facts as a run prelude"| facts["active_facts_prompt"]
+
+    facts -->|"wraps every tool, order fixed"| gov[["Governance stack<br/>see governance-stack"]]
+    gov -->|"PatternBuildContext dict"| registry{"get_pattern<br/>spec.pattern"}
+    registry -->|"react (default)"| react[build_react_agent]
+    registry -->|"delegating, or a registered plugin pattern"| other[Registered pattern builder]
+
+    react --> agent(["Governed Agent"])
+    other --> agent
+
+    class agent focal
+    class gov focal
+    class resolve,prep,base,bind,skills,facts,react,other primary
+    class registry primary
+
+    classDef focal    fill:#dbeaf5,stroke:#0072B2,stroke-width:2px,color:#062033
+    classDef primary  fill:#f4f6f9,stroke:#5a6272,stroke-width:1px,color:#10203a
