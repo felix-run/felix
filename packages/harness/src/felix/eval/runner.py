@@ -51,7 +51,7 @@ def _score_answer(answer: str, rubric: dict[str, Any]) -> tuple[bool, float, str
     if min_chars_raw is not None and min_chars_raw != "":
         try:
             min_chars = int(min_chars_raw)
-        except TypeError, ValueError:
+        except TypeError, ValueError, OverflowError:
             # A rubric nobody can score. Raising here would make the item an *error* rather
             # than a failure, and an errored item is indistinguishable from a rejected one in
             # the counts — so a malformed dataset would read as a working gate.
@@ -278,7 +278,7 @@ def _mock_answer(rubric: dict[str, Any]) -> str:
         return f"Felix mock reply containing {contains}"
     try:
         min_chars = int(rubric.get("min_chars") or 0)
-    except TypeError, ValueError:
+    except TypeError, ValueError, OverflowError:
         # Unscoreable, and `_score_answer` says so as `invalid_rubric`. Raising here would make
         # the item an error instead, which the counts cannot tell from an honest rejection.
         return "ok"

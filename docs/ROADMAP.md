@@ -267,10 +267,11 @@ comment explaining exactly that. It is conditional, not inert.
       be constructed, and there is no integration test against a dev server. It does fix the
       one-op-per-tick problem — which item B1 fixes for everyone. Either invest properly or
       document it as a compatibility shim.
-- [ ] **Live-model eval (optional CI)** — the current gate is 3 fixture items whose mock answers
-      satisfy their own rubrics (`_mock_answer` returns `rubric["expect"]` when none is given), so
-      it proves the plumbing executes and scores nothing about the agent. Optional nightly against
-      `api.felix.run` that does not block PRs.
+- [ ] **Live-model eval (optional CI)** — the gate is now a pair of mock fixtures: `smoke.json`
+      passes by construction and `negative.json` must fail, checked by
+      `scripts/eval-counter-smoke.sh` in both CI and `make check-ci`. That proves the scorer can
+      say no, which it could not before, but both halves still score a canned answer — nothing
+      here scores the agent. Optional nightly against `api.felix.run` that does not block PRs.
 - [ ] **Validate eval dataset items, or document that they are free-form.** An item whose keys
       are not `user_input` / `rubric` is accepted with 200 and stored with an empty prompt, so
       the dataset looks configured and scores nothing — the bundled JSON fixtures use
@@ -279,9 +280,12 @@ comment explaining exactly that. It is conditional, not inert.
       Pairs with the item below.
 
 - [ ] **Eval scoring depth** — four string rules (`equals` / `contains` / `min_chars` / non-empty)
-      plus one judge. No regex, no schema check, no tool-call or trajectory assertions, no numeric
-      tolerance, no significance test on comparative runs. Nobody can gate a model change on this
-      without writing their own scorer.
+      plus one judge, and `invalid_rubric` for a rule that could never reject. No regex, no schema
+      check, no tool-call or trajectory assertions, no numeric tolerance, no significance test on
+      comparative runs. Nobody can gate a model change on this without writing their own scorer.
+      A new rule inherits two things: `_score_answer`'s docstring states the empty-value policy,
+      and `tests/unit/test_eval_gate_can_fail.py` reads the rule names off the function, so the
+      rule fails there until `negative.json` has an item that has seen it reject something.
 - [ ] **Long-context price tiers** — `estimate_cost` supports request-wide tiers but no bundled
       entry sets one. Needs current rates per deployment via a manifest price override. Folded
       into C where it touches `max_cost_usd`.

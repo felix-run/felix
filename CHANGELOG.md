@@ -38,7 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pointed at the wrong fixture, the CLI printing a summary instead of the run dict, a fixture
   item edited to satisfy its rubric, one removed, a new scoring rule with no item to cover it,
   the same rule delegated to a helper so a filtering scanner would miss it, the `min_chars`
-  guard reverted, and the shared script losing its exit-code and errored-row checks.
+  guard reverted, and the shared script losing its exit-code and its errored-row check.
 
   The scorer also stopped disagreeing with the answer generator it scores. `_score_answer` read
   its rubric keys with `or` while `_mock_answer` reads the same keys with `is not None`, so

@@ -20,10 +20,15 @@ set -uo pipefail
 
 FIXTURE="${1:-fixtures/eval/negative.json}"
 
-export FELIX_ALLOW_INSECURE="${FELIX_ALLOW_INSECURE:-true}"
-export FELIX_AUTH_MODE="${FELIX_AUTH_MODE:-none}"
-export FELIX_DATABASE_URL="${FELIX_DATABASE_URL:-memory://ci}"
-export FELIX_OBJECT_STORE="${FELIX_OBJECT_STORE:-memory}"
+# Set, not defaulted. The recipe lines this replaced hard-set these four, and the smoke run
+# beside it in `make check-ci` still does — so deferring to the caller would mean a developer
+# with FELIX_DATABASE_URL exported to a real Postgres had one half of the pair writing a dataset
+# and a run row there while the other half stayed in memory. It cannot produce a false pass, but
+# a gate should not touch a database because of where it was run from.
+export FELIX_ALLOW_INSECURE=true
+export FELIX_AUTH_MODE=none
+export FELIX_DATABASE_URL=memory://ci
+export FELIX_OBJECT_STORE=memory
 # The checks below read the printed run dict, so rich must not wrap it in colour escapes.
 # TERM=dumb is the load-bearing one: it turns rich's colour system off outright, where NO_COLOR
 # alone still leaves bold escapes around numbers — which would land between `: ` and `0`.

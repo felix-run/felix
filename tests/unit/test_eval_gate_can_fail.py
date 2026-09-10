@@ -230,6 +230,52 @@ def test_the_smoke_fixture_exits_zero_through_the_cli() -> None:
     assert result.exit_code == 0, result.output
 
 
+def test_the_shared_counter_smoke_script_rejects_a_run_that_did_not_reject(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The gate's own gate, run rather than read.
+
+    `scripts/eval-counter-smoke.sh` is the one home of the four checks the CI eval job and
+    `make check-ci` both make. An invariant asserts both callers run it, which stops them
+    drifting from each other but not the shared copy being hollowed out: `[ "$rc" -eq 1 ] ||
+    true` keeps every string a structural check would look for.
+
+    So the two cases it exists to reject are executed here. A fixture whose items all pass must
+    be refused, and so must one whose item *errors* — `start_run` counts a raised item as a
+    failure, so it exits 1 with a pass count of 0 exactly like an honest rejection, and telling
+    the two apart is the whole reason the fourth check exists.
+    """
+    import subprocess
+
+    root = FIXTURES.parents[1]
+    script = root / "scripts" / "eval-counter-smoke.sh"
+
+    # A rubric that is not a mapping: `start_run` fails converting it and writes an error row.
+    erroring = tmp_path / "erroring.json"
+    erroring.write_text(
+        json.dumps(
+            {
+                "name": "negative",
+                "items": [{"item_id": "boom", "user_input": "hi", "rubric": "not-a-mapping"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    for fixture, why in (
+        (FIXTURES / "smoke.json", "a fixture whose every item passes"),
+        (erroring, "a fixture whose item errors instead of being scored down"),
+    ):
+        done = subprocess.run(
+            [str(script), str(fixture)],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert done.returncode == 1, f"the counter-smoke accepted {why}:\n{done.stdout}\n{done.stderr}"
+
+
 def test_each_scoring_rule_is_exercised_in_both_directions() -> None:
     """Per rule, not just in aggregate.
 
@@ -282,6 +328,9 @@ def test_a_rubric_that_could_never_say_no_fails_closed() -> None:
         # item is indistinguishable from a rejected one in the counts, so a malformed dataset
         # read as a working gate.
         {"min_chars": "abc"},
+        # JSON parses `1e999` to infinity, which `int()` refuses with OverflowError rather than
+        # the ValueError the first version of the guard caught.
+        {"min_chars": float("inf")},
     )
     for rubric in malformed:
         for answer in ("anything at all", ""):
