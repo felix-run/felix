@@ -67,8 +67,10 @@ disappears or ratchets down.
 It used to live in `.github/workflows/ci.yml`, which meant `make check` measured no coverage at all
 and enforced nothing — a local run could not tell you what CI would say. It deliberately does *not*
 live in `[tool.coverage.report]` as `fail_under`, because a floor there arms on **every** run that
-measures coverage, including the single-module `--cov` run below: eight passing tests would exit 1
-at 17%, and a guard that fires when nothing is wrong is how `--no-cov` becomes muscle memory.
+measures coverage — and `[tool.coverage.run] source` names all five roots however few tests were
+selected. Add `--cov` to a one-file run and it reports the whole tree at ~17% and exits 1 with
+every test passing. A guard that fires when nothing is wrong is how `--no-cov` becomes muscle
+memory. Use the full-suite form below when reading coverage for shape.
 
 `[tool.coverage.run]` covers the five source roots with `branch = false`, and
 `[tool.coverage.report]` excludes `if TYPE_CHECKING:`, `raise NotImplementedError`, and `@overload`.

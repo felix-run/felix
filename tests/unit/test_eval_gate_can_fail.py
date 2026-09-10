@@ -33,8 +33,50 @@ from felix.eval.runner import start_run
 FIXTURES = pathlib.Path(__file__).resolve().parents[2] / "fixtures" / "eval"
 
 
+@pytest.fixture(autouse=True)
+def _isolate_process_settings() -> Any:
+    """The CLI stamps a process role onto the cached `Settings` and loads optional plugins.
+
+    Both are process-global and this is the only file here that invokes the CLI, so the cache is
+    cleared on the way out rather than left for whatever runs next.
+    """
+    from felix.config import get_settings
+
+    yield
+    get_settings.cache_clear()
+
+
 def _settings() -> Settings:
     return Settings(database_url="memory://eval-gate", object_store="memory")
+
+
+def _scorer_rule_names() -> set[str]:
+    """Every rule `_score_answer` can return, read off its own source.
+
+    A hardcoded list here would let a new scoring rule land with the counter-smoke silently
+    partial: the fixture would still cover the four old rules, every assertion would pass, and
+    nothing would say the new rule had never been rejected by anything. Deriving the set means
+    adding a rule to the scorer fails this file until a negative item exercises it.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from felix.eval import runner as runner_module
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(runner_module._score_answer)))
+    names = {
+        node.value.elts[-1].value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Return)
+        and isinstance(node.value, ast.Tuple)
+        and isinstance(node.value.elts[-1], ast.Constant)
+        and isinstance(node.value.elts[-1].value, str)
+    }
+    # A scanner that finds nothing passes every "== []" it feeds; this one would make the
+    # assertions below vacuous instead, so it states its own floor.
+    assert len(names) >= 4, f"the scorer-rule scanner found only {names}; has _score_answer moved?"
+    return names
 
 
 def _fixture(name: str) -> dict[str, Any]:
@@ -45,7 +87,7 @@ async def _run_fixture(name: str) -> tuple[dict[str, Any], list[dict[str, Any]]]
     """Load a bundled fixture and score it exactly as `felix eval --mock` does.
 
     Returns the completed run alongside the fixture's items, so counts are asserted against
-    the fixture's own length — adding an item should never turn one of these red on its own.
+    the fixture's own length rather than a literal that a new item would falsify.
     """
     settings = _settings()
     payload = _fixture(name)
@@ -105,7 +147,7 @@ async def test_the_negative_items_are_scored_down_rather_than_erroring() -> None
     rows = result["scores"]
     assert [row["pass"] for row in rows] == [False] * len(items), rows
     assert [row for row in rows if row.get("error")] == [], rows
-    assert {row["rule"] for row in rows} == {"equals", "contains", "min_chars", "nonempty"}, rows
+    assert {row["rule"] for row in rows} == _scorer_rule_names(), rows
 
 
 def test_a_failed_run_exits_non_zero_through_the_cli() -> None:
@@ -133,8 +175,14 @@ def test_a_failed_run_exits_non_zero_through_the_cli() -> None:
         ],
     )
 
+    # CliRunner reports exit_code 1 for *any* uncaught exception, so a FileNotFoundError from a
+    # renamed fixture looks identical to the gate working. The exception type is the assertion.
+    assert isinstance(result.exception, SystemExit), result.exception
+    assert result.exception.code == 1, result.exception
     assert result.exit_code == 1, result.output
-    assert "fail_count" in result.output, result.output
+    # The CI step parses this same printed dict, so the shape it reads is pinned here.
+    assert "'fail_count'" in result.output, result.output
+    assert "'rule'" in result.output, result.output
 
 
 def test_the_smoke_fixture_exits_zero_through_the_cli() -> None:
@@ -177,6 +225,10 @@ def test_each_scoring_rule_is_exercised_in_both_directions() -> None:
         # generator it is scoring.
         ({"expect": ""}, "", "something", "equals"),
         ({"contains": "hello"}, "well hello there", "goodbye", "contains"),
+        # Precedence: every other row names one key, so reordering the branches in
+        # `_score_answer` would go unnoticed — and `_mock_answer` has a matching order it
+        # would then contradict.
+        ({"expect": "ok", "contains": "zzz"}, "ok", "not ok", "equals"),
         ({"min_chars": 32}, "x" * 32, "tiny", "min_chars"),
         ({}, "anything", "", "nonempty"),
     ]
@@ -197,8 +249,64 @@ def test_a_rubric_that_could_never_say_no_fails_closed() -> None:
     """
     from felix.eval.runner import _score_answer
 
-    for answer in ("anything at all", ""):
-        assert _score_answer(answer, {"contains": ""}) == (False, 0.0, "invalid_rubric"), answer
+    for rubric in ({"contains": ""}, {"contains": "   "}, {"min_chars": -1}):
+        for answer in ("anything at all", ""):
+            assert _score_answer(answer, rubric) == (False, 0.0, "invalid_rubric"), (rubric, answer)
+
+
+@pytest.mark.parametrize(
+    "rubric",
+    [
+        {"expect": "ok"},
+        {"equals": "ok"},
+        {"expect": ""},
+        {"contains": "hello"},
+        {"min_chars": 32},
+        {"min_chars": 0},
+        {},
+    ],
+)
+def test_the_mock_answer_satisfies_the_rubric_it_came_from(rubric: dict[str, Any]) -> None:
+    """`_mock_answer` and `_score_answer` have to agree on what a rubric says.
+
+    They did not. One read a key as present when it was not None, the other when it was truthy,
+    so an item whose right answer was the empty string got scored against a rule nobody wrote.
+    That is a property of every rubric shape rather than of the one that happened to break, and
+    a key added to one function and not the other reproduces it exactly.
+
+    The documented exceptions are the rubrics that could never say no — an empty `contains` and
+    a negative `min_chars` — which fail closed by design and are pinned just below.
+    """
+    from felix.eval.runner import _mock_answer, _score_answer
+
+    ok, score, _rule = _score_answer(_mock_answer(rubric), rubric)
+
+    assert (ok, score) == (True, 1.0), rubric
+
+
+def test_the_smoke_fixture_is_positive_by_construction() -> None:
+    """The mirror of the guard below, for the half that is supposed to pass.
+
+    Rewrite every smoke rubric to `{"mock_answer": "x"}` and the CI smoke step, `make check-ci`
+    and both smoke assertions above all stay green — while the fixture stops exercising
+    `equals`, `contains` and `min_chars` entirely. The pair only means something for as long as
+    both halves reach the same rules.
+    """
+    from felix.eval.runner import _mock_answer, _score_answer
+
+    payload = _fixture("smoke")
+    assert payload["items"], "the smoke fixture is empty"
+
+    rules = set()
+    for item in payload["items"]:
+        rubric = item["rubric"]
+        ok, _score, rule = _score_answer(_mock_answer(rubric), rubric)
+        assert ok is True, f"{item['item_id']} would fail; the smoke fixture must pass every item"
+        rules.add(rule)
+
+    # A subset by necessity, unlike the negative half: the rules that only ever reject —
+    # `invalid_rubric` today — cannot appear in a fixture whose every item must pass.
+    assert {"equals", "contains", "min_chars"} <= rules, rules
 
 
 def test_the_negative_fixture_is_negative_by_construction() -> None:
@@ -221,6 +329,7 @@ def test_the_negative_fixture_is_negative_by_construction() -> None:
         assert ok is False, f"{item['item_id']} would pass; the fixture must fail every item"
         rules.add(rule)
 
-    # Diversity, not just presence: five items all rejected by `contains` would satisfy every
-    # assertion above while leaving three of the scorer's four branches unproven.
-    assert rules == {"equals", "contains", "min_chars", "nonempty"}, rules
+    # Diversity, not just presence: items all rejected by one rule would satisfy every
+    # assertion above while leaving the scorer's other branches unproven. Every rule the scorer
+    # can return has to be a rule this fixture has seen it return.
+    assert rules == _scorer_rule_names(), rules

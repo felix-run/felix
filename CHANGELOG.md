@@ -19,8 +19,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   part of the gate CI reads, and the three lines that produce it had no test at all. The counter-
   smoke also asserts *why* each item failed, since `start_run` counts a raised item as a failure
   too, so a scorer that crashed on everything read exactly like one that rejected everything.
-  Proved by mutation: an always-passing scorer turns six of the eight tests red, deleting the
-  CLI's exit-code mapping turns one red, and an item edited to satisfy its rubric turns three red.
+  The set of rules the counter-smoke must exercise is read off `_score_answer` by AST rather
+  than written down, so adding a scoring rule fails until a fixture item has seen it reject
+  something — otherwise a new rule lands with the gate silently partial.
+
+  Proved by mutation, seventeen of them, each red: an always-passing scorer, a deleted CLI
+  exit-code mapping, a deleted coverage floor, `check` pointed back at the coverage-free target,
+  a CI step no longer running it, an empty `contains` passing again, a negative `min_chars`
+  accepted, `contains` reordered above `expect`, the answer generator drifting back to
+  truthiness, the smoke rubrics flattened, the floor moved back into pyproject, the CI step
+  pointed at the wrong fixture, the CLI printing a summary instead of the run dict, a fixture
+  item edited to satisfy its rubric, one removed, and a new scoring rule with no item to cover
+  it.
 
   The scorer also stopped disagreeing with the answer generator it scores. `_score_answer` read
   its rubric keys with `or` while `_mock_answer` reads the same keys with `is not None`, so
@@ -32,10 +42,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The coverage floor moved off the `.github/workflows/ci.yml` command line onto one `make test-cov`
   recipe that `make check` and CI both run. Before this, `make check` measured no coverage at all,
   so the floor existed only inside CI and a local run could not tell you what CI would say. It is
-  deliberately not `fail_under` in `[tool.coverage.report]`, which would arm on every partial
-  `--cov` run — including the single-module ones the test-quality docs prescribe, where a handful
-  of passing tests exits 1 at 17% and teaches people `--no-cov`. Ratcheted to 79 against a measured
-  80.90% with extras and 80.36% lean. An invariant now fails if the floor disappears, ratchets
+  deliberately not `fail_under` in `[tool.coverage.report]`, which arms on every run that measures
+  coverage while `[tool.coverage.run]` still names all five roots — so adding `--cov` to a one-file
+  run exits 1 at 17% with every test passing, and a guard that fires when nothing is wrong teaches
+  people `--no-cov`. Ratcheted to 79 against a measured
+  80.96% with extras and 80.36% lean. An invariant now fails if the floor disappears, ratchets
   down, or stops being what `make check` and CI run.
 
 - **The worker's periodic tasks are executed by tests, and their schedules are pinned**

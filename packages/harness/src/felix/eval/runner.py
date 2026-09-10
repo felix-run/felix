@@ -21,6 +21,12 @@ def _score_answer(answer: str, rubric: dict[str, Any]) -> tuple[bool, float, str
     reads the same keys. Reading them with `or` meant `{"expect": ""}` fell through to the
     non-empty check and scored the item against a rule its author never wrote, while
     `_mock_answer` cheerfully produced the empty answer that rubric asked for.
+
+    The rule for an empty value, which a new scoring rule should follow: honour it when the rule
+    still discriminates (`{"expect": ""}` asks for an empty answer and rejects every other one),
+    and return `invalid_rubric` when it would match everything (`{"contains": ""}`, a negative
+    `min_chars`). The second kind is a rubric that could never say no, and it fails in the
+    direction that hides problems — so it fails closed instead.
     """
     expect = rubric.get("expect")
     if expect is None:
@@ -38,10 +44,16 @@ def _score_answer(answer: str, rubric: dict[str, Any]) -> tuple[bool, float, str
             return False, 0.0, "invalid_rubric"
         ok = needle.lower() in answer.lower()
         return ok, 1.0 if ok else 0.0, "contains"
-    min_chars = int(rubric.get("min_chars") or 0)
-    if min_chars:
-        ok = len(answer.strip()) >= min_chars
-        return ok, 1.0 if ok else 0.0, "min_chars"
+    min_chars_raw = rubric.get("min_chars")
+    if min_chars_raw is not None:
+        min_chars = int(min_chars_raw)
+        if min_chars < 0:
+            # `len(answer) >= -1` holds for every answer, the empty one included — the same
+            # rubric-that-cannot-reject as an empty `contains`, one branch down.
+            return False, 0.0, "invalid_rubric"
+        if min_chars:
+            ok = len(answer.strip()) >= min_chars
+            return ok, 1.0 if ok else 0.0, "min_chars"
     # Default: non-empty answer passes.
     ok = bool(answer.strip())
     return ok, 1.0 if ok else 0.0, "nonempty"

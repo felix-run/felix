@@ -108,10 +108,11 @@ branch = false
 
 [tool.coverage.report]
 # The floor is not here: `fail_under` in this table applies to every run that measures coverage,
-# and both `.claude/skills/test-quality/` and the test-quality reviewer prescribe
-# `./scripts/test.sh <one file> --cov` for reading a module's branches. That run would report
-# ~17% and exit 1 with every test passing — a guard firing when nothing is wrong, which teaches
-# people `--no-cov`. It lives on the `test-cov` recipe in the Makefile instead.
+# and `[tool.coverage.run] source` names all five roots however few tests were selected. So any
+# ad-hoc `--cov` over part of the suite — one module while reading its branches, say — reports the
+# whole tree at a fraction of its real number and exits 1 with every test passing. A guard firing
+# when nothing is wrong is how `--no-cov` becomes muscle memory. The floor lives on the `test-cov`
+# recipe in the Makefile instead, which only ever runs the whole suite.
 skip_covered = false
 show_missing = true
 exclude_also = [

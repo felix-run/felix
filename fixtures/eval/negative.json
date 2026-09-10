@@ -1,6 +1,6 @@
 {
   "name": "negative",
-  "description": "CI counter-smoke — every item must FAIL. Proves the scorer can say no.",
+  "description": "CI counter-smoke \u2014 every item must FAIL. Proves the scorer can say no.",
   "items": [
     {
       "item_id": "equals-mismatch",
@@ -39,6 +39,14 @@
       "user_input": "Say something",
       "rubric": {
         "mock_answer": ""
+      }
+    },
+    {
+      "item_id": "unfillable-rubric",
+      "user_input": "Say anything",
+      "rubric": {
+        "contains": "",
+        "mock_answer": "anything at all"
       }
     }
   ]

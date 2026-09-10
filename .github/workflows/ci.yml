@@ -167,7 +167,8 @@ jobs:
       # `make test-cov` is the same target `make check` runs, and it wraps
       # ./scripts/test.sh, which owns the in-memory test environment — so the command,
       # the environment and the coverage floor cannot drift between CI and a local run.
-      # The floor itself lives in pyproject ([tool.coverage.report] fail_under) and is the
+      # The floor itself is the --cov-fail-under on that recipe (deliberately not pyproject's
+      # [tool.coverage.report] fail_under, which would also arm partial --cov runs) and is the
       # measured number, ratcheted deliberately — never an aspirational one, which only
       # teaches people to bypass it.
       # REQUIRE_OPTIONAL_EXTRAS turns a missing extra into a failure instead of a
@@ -286,6 +287,14 @@ jobs:
           case "$flat" in
             *"'pass_count': 0"*) ;;
             *) echo "::error::the negative run printed no pass_count of 0; it did not score" >&2
+               exit 1 ;;
+          esac
+          # The check below is a negative one, so it needs the rows to be present to mean
+          # anything: replace the printed run dict with a summary line and "no 'error' in the
+          # output" becomes unfalsifiable. Pin that the score rows are there first.
+          case "$flat" in
+            *"'rule'"*) ;;
+            *) echo "::error::the run printed no score rows; the check below cannot see errors" >&2
                exit 1 ;;
           esac
           case "$flat" in

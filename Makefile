@@ -70,7 +70,7 @@ test:
 # all and the number lived only in ci.yml. It is here rather than in pyproject's
 # [tool.coverage.report] because a floor there also arms every ad-hoc `--cov` run on part of
 # the suite, which fails at ~17% with everything passing and teaches people `--no-cov`.
-# Measured 2026-09-10: 80.79% with the extras, 80.36% lean — the floor sits under both, since
+# Measured 2026-09-10: 80.96% with the extras, 80.36% lean — the floor sits under both, since
 # the extras carry code a lean run cannot reach. Was 70 when the gate was written and 77 when
 # this audit started; ratchet it deliberately, never aspirationally.
 # `check` runs this and not `test` so the bare `test` stays fast for the edit loop.
@@ -103,12 +103,16 @@ check-ci: check
 			--fixture fixtures/eval/smoke.json --mock
 	# The counter-smoke: the run above passes by construction, so on its own it proves the
 	# pipeline executes and nothing about whether the scorer can reject an answer.
-	@FELIX_ALLOW_INSECURE=true FELIX_AUTH_MODE=none \
+	@out=$$(FELIX_ALLOW_INSECURE=true FELIX_AUTH_MODE=none \
 		FELIX_DATABASE_URL=memory://ci FELIX_OBJECT_STORE=memory \
 		uv run felix eval --dataset negative --manifest quick \
-			--fixture fixtures/eval/negative.json --mock; \
+			--fixture fixtures/eval/negative.json --mock 2>&1); \
 	rc=$$?; \
-	test "$$rc" -eq 1 || { echo "negative eval fixture exited $$rc, want 1; the scorer cannot say no"; exit 1; }
+	echo "$$out"; \
+	test "$$rc" -eq 1 || { echo "negative eval fixture exited $$rc, want 1; the scorer cannot say no"; exit 1; }; \
+	case "$$out" in *"'pass_count': 0"*) ;; \
+	  *) echo "negative eval fixture exited 1 without scoring — a missing fixture or a bad flag exits 1 too"; exit 1 ;; \
+	esac
 	uv run pre-commit run --all-files
 
 # Needs a reachable Postgres; CI runs this as its own job against a service container.

@@ -585,35 +585,17 @@ def test_ci_installs_every_extra_the_tests_gate_on() -> None:
     # job added above it with its own `--extra` would otherwise silently become the thing
     # this invariant reads, and it would pass while asserting about the wrong install.
     lines = workflow.splitlines()
-    # The `run:` line, not any line naming the target: the comment block above the step says
-    # `make test-cov` too, and anchoring on that walked the install lookup below past this
-    # job's `uv sync` into the `--all-extras` one belonging to the job above — which returns
-    # early and makes the whole invariant assert nothing.
+    # The command line, not any line naming the target: the comment block above the step says
+    # `make test-cov` too, and anchoring on that walked the install lookup below past this job's
+    # `uv sync` into the `--all-extras` one belonging to the job above — which returns early and
+    # makes this whole invariant assert nothing. Both `run: make test-cov` and the same command
+    # inside a `run: |` block count; what the target then does is
+    # `test_the_coverage_floor_is_what_check_and_ci_both_run`'s business, not this test's.
     runs_suite = next(
-        (i for i, line in enumerate(lines) if re.fullmatch(r"\s*run:\s*make test-cov\s*", line)),
+        (i for i, line in enumerate(lines) if line.strip() in ("run: make test-cov", "make test-cov")),
         None,
     )
     assert runs_suite is not None, "no CI step runs `make test-cov` — has ci.yml moved?"
-    # CI runs the suite through a Makefile target, so the anchor above is one level removed
-    # from the command it stands for, and the coverage floor is one level removed again — it
-    # lives in pyproject. Re-derive the rest of the chain: emptying the target, pointing
-    # `check` back at the coverage-free `test`, or deleting the floor would each leave a green
-    # invariant guarding a gate that measures nothing.
-    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
-    target = re.search(r"^test-cov:\n((?:\t.*\n)+)", makefile, re.MULTILINE)
-    assert target is not None, "Makefile has no `test-cov` target — CI's Pytest step points at it"
-    assert "./scripts/test.sh" in target.group(1) and "--cov" in target.group(1), (
-        f"`make test-cov` no longer runs the suite with coverage:\n{target.group(1)}"
-    )
-    assert re.search(r"^check:.*\btest-cov\b", makefile, re.MULTILINE), (
-        "`make check` no longer runs `test-cov`, so the coverage floor stopped applying locally"
-    )
-    floor = re.search(r"--cov-fail-under=(\d+)", target.group(1))
-    assert floor is not None, (
-        "`make test-cov` measures coverage with no floor — measuring without a floor gates "
-        "nothing, and the floor is the whole reason CI measures it"
-    )
-    assert int(floor.group(1)) >= 79, f"coverage floor ratcheted down to {floor.group(1)}"
     install = next(
         (line for line in reversed(lines[:runs_suite]) if "uv sync" in line),
         "",
@@ -642,6 +624,68 @@ def test_ci_installs_every_extra_the_tests_gate_on() -> None:
         f"tests gate on extras the CI test job does not install: {missing}. "
         f"Add `--extra {' --extra '.join(missing)}` to the Pytest job's uv sync, "
         f"or the tests behind them will silently not run."
+    )
+
+
+def test_the_coverage_floor_is_what_check_and_ci_both_run() -> None:
+    """The floor only means something while every link from CI to the number holds.
+
+    CI runs `make test-cov`; `make check` runs the same target; the target runs the suite with
+    coverage; the recipe carries the floor. Break any one link and coverage is still measured,
+    every gate is still green, and nothing is enforced — which is the state this replaced, where
+    the number lived on the CI command line and `make check` measured no coverage at all.
+    """
+    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+
+    target = re.search(r"^test-cov:\n((?:\t.*\n)+)", makefile, re.MULTILINE)
+    assert target is not None, "Makefile has no `test-cov` target — CI's Pytest step points at it"
+    recipe = target.group(1)
+    assert "./scripts/test.sh" in recipe and "--cov" in recipe, (
+        f"`make test-cov` no longer runs the suite with coverage:\n{recipe}"
+    )
+    assert re.search(r"^check:.*\btest-cov\b", makefile, re.MULTILINE), (
+        "`make check` no longer runs `test-cov`, so the coverage floor stopped applying locally"
+    )
+    # Both `--cov-fail-under=79` and `--cov-fail-under 79` are valid; accept either.
+    floor = re.search(r"--cov-fail-under[= ](\d+)", recipe)
+    assert floor is not None, (
+        "`make test-cov` measures coverage with no floor — measuring without a floor gates "
+        "nothing, and the floor is the whole reason CI measures it"
+    )
+    assert int(floor.group(1)) >= 79, f"coverage floor ratcheted down to {floor.group(1)}"
+
+
+def test_the_eval_counter_smoke_runs_in_both_gates() -> None:
+    """The smoke eval passes by construction, so the negative half is what makes the pair a gate.
+
+    Every item in `fixtures/eval/smoke.json` carries a `mock_answer` satisfying its own rubric,
+    so that run proves the pipeline executes and nothing about whether the scorer can reject an
+    answer. `CLAUDE.md` and the changelog both claim CI runs the pair; deleting either
+    invocation left nothing red, so the claim was documentation rather than a gate.
+    """
+    fixture = "fixtures/eval/negative.json"
+    assert (ROOT / fixture).is_file(), "the negative eval fixture is gone; both gates now pass vacuously"
+
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert fixture in workflow, "the CI eval job no longer runs the negative fixture"
+
+    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+    assert fixture in makefile, "`make check-ci` no longer runs the negative fixture"
+
+
+def test_the_coverage_floor_does_not_arm_partial_runs() -> None:
+    """`fail_under` in `[tool.coverage.report]` applies to *every* run that measures coverage.
+
+    `[tool.coverage.run] source` names all five roots however few tests were selected, so adding
+    `--cov` to a one-file run measures the whole tree and reports around 17%. With a floor in that
+    table it then exits 1 with every test passing — a guard firing when nothing is wrong, which is
+    how `--no-cov` becomes muscle memory. The floor belongs on the `test-cov` recipe, which only
+    ever runs the whole suite.
+    """
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert not re.search(r"^fail_under\s*=", pyproject, re.MULTILINE), (
+        "fail_under is back in pyproject, where it arms every partial --cov run. "
+        "The coverage floor lives on the `test-cov` recipe in the Makefile."
     )
 
 
