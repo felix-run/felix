@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A conformance arm where the tenant policy is actually enforced**
+  (`tests/conformance/test_rls_enforcement.py`). Every other contract in that directory connects
+  as the database owner, which is a superuser in CI and in the bundled compose image — and a
+  superuser bypasses row-level security, FORCE included. So the policy was unreachable from the
+  whole suite, and everything it protects was asserted only by reading the SQL: deleting
+  `rls_bypass()` from a cross-tenant sweep left every test green.
+
+  That blind spot had already cost something. The worker's per-tenant sweeps bound no tenant and
+  therefore read nothing under an enforcing policy, and no test could see it. This arm connects
+  as a `NOSUPERUSER NOBYPASSRLS` role with the listener told `database_rls=True` — the shape of a
+  managed-Postgres application role — and pins the states that differ: an unbound write is
+  refused, an unbound read is silently empty (which is why the worker bug survived), a bound
+  tenant cannot reach another tenant's rows, and the bypass that maintenance sweeps declare is
+  what lets them cross.
+
+  Verified against a cluster built from the CI service images: 8 of 8 pass, the full conformance
+  suite is unaffected, and no role, schema or policy leaks. Proved by mutation in both
+  directions — removing `rls_bypass()` from `list_tenants_with_events` fails exactly the sweep
+  test, and granting the role `BYPASSRLS` fails the guard that exists to catch it.
+
 ### Fixed
 
 - **The manifest twin accepted a canary weight the database refuses.** `0001_baseline` carries

@@ -79,6 +79,125 @@ async def drop_everything(url: str) -> None:
         await engine.dispose()
 
 
+RLS_ROLE = "felix_conformance_rls"
+# Interpolated into `CREATE ROLE` as a SQL literal, because DDL takes no bind parameters —
+# so it must contain no apostrophe. A throwaway value for a throwaway role on a test database.
+RLS_PASSWORD = "conformance-rls-not-a-secret"
+
+
+async def _grant_restricted_role(admin_url: str) -> None:
+    """Create a role the tenant policy actually applies to, and let it use the schema.
+
+    Every other arm connects as the database owner, which is a superuser in CI and in the
+    bundled compose image. Migration 0006 applies FORCE, but a superuser bypasses even that —
+    so the policy is unreachable from the rest of this suite and everything it protects is
+    asserted only by reading the SQL. This role is `NOSUPERUSER NOBYPASSRLS` and owns nothing,
+    which is the shape of a managed-Postgres application role.
+    """
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    engine = create_async_engine(admin_url, future=True, isolation_level="AUTOCOMMIT")
+    try:
+        async with engine.connect() as conn:
+            # `DROP OWNED BY` first, so setup is idempotent however the previous run died.
+            # The teardown's swallow self-heals only when `drop_everything` ran after it; if
+            # the process was killed between the grant and the `try:`, both the role and the
+            # tables survive and `DROP ROLE` then fails with DependentObjectsStillExist —
+            # wedging every later run with eight setup errors that look nothing like the cause.
+            # CI never sees it (fresh container per job); a developer would, until they cleaned
+            # the cluster by hand. `DROP OWNED BY` has no IF EXISTS, hence the guard.
+            await conn.execute(
+                text(
+                    "DO $$ BEGIN "
+                    f"IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{RLS_ROLE}') THEN "
+                    f"EXECUTE 'DROP OWNED BY {RLS_ROLE}'; "
+                    "END IF; END $$"
+                )
+            )
+            await conn.execute(text(f"DROP ROLE IF EXISTS {RLS_ROLE}"))
+            # A literal, not a bind parameter: `CREATE ROLE` is utility DDL and the extended
+            # query protocol cannot parameterise it — psycopg reports `syntax error at or near
+            # "$1"`. The password is a fixed constant in this file, so there is no injection
+            # surface.
+            await conn.execute(
+                text(f"CREATE ROLE {RLS_ROLE} LOGIN PASSWORD '{RLS_PASSWORD}' NOSUPERUSER NOBYPASSRLS")
+            )
+            # After `migrate_to_head`, so every migrated table is covered. Anything created
+            # *later* is not, and the failure is a bare `permission denied for table ...` that
+            # looks nothing like a policy problem.
+            await conn.execute(text(f"GRANT USAGE ON SCHEMA public TO {RLS_ROLE}"))
+            await conn.execute(
+                text(f"GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO {RLS_ROLE}")
+            )
+            await conn.execute(text(f"GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO {RLS_ROLE}"))
+    finally:
+        await engine.dispose()
+
+
+async def _drop_restricted_role(admin_url: str) -> None:
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    engine = create_async_engine(admin_url, future=True, isolation_level="AUTOCOMMIT")
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(text(f"REVOKE ALL ON ALL TABLES IN SCHEMA public FROM {RLS_ROLE}"))
+            await conn.execute(text(f"REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM {RLS_ROLE}"))
+            await conn.execute(text(f"REVOKE USAGE ON SCHEMA public FROM {RLS_ROLE}"))
+            await conn.execute(text(f"DROP ROLE IF EXISTS {RLS_ROLE}"))
+    except Exception:  # pragma: no cover — teardown must not mask a test failure
+        # Tolerable because it self-heals: the grants are what a `DROP ROLE` depends on, and
+        # `drop_everything` removes the tables carrying them straight after, so the next run's
+        # `DROP ROLE IF EXISTS` succeeds. The cost of a silent failure here is a role left in
+        # the cluster until then, not a wedged suite.
+        pass
+    finally:
+        await engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def rls_settings(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[Any]:
+    """`Settings` for a connection the tenant policy is actually enforced on.
+
+    Postgres only, and deliberately so: `memory://` has no policy to enforce, and a memory arm
+    here would assert that nothing happens. What this covers is the configuration every other
+    arm cannot reach — `database_rls=True` on a role that cannot bypass — which is where the
+    difference between "the query layer scopes this" and "the database scopes this" shows up.
+    """
+    import felix.db.session as db_session
+    from felix.config import Settings
+    from felix.db.session import dispose_engine
+    from sqlalchemy.engine import make_url
+
+    admin_url = postgres_url_or_skip("the RLS enforcement contract")
+    await migrate_to_head(admin_url)
+    await _grant_restricted_role(admin_url)
+
+    # `render_as_string(hide_password=False)`, never `str(...)`: `URL.__str__` masks the
+    # password as `***`, so the role authenticates with the literal string `***` and every test
+    # fails on `password authentication failed` rather than on anything about the policy. It
+    # also URL-encodes correctly, which hand-assembling the string would not.
+    restricted = (
+        make_url(admin_url)
+        .set(username=RLS_ROLE, password=RLS_PASSWORD)
+        .render_as_string(hide_password=False)
+    )
+    settings = Settings(database_url=restricted, database_rls=True)
+    # `_rls_after_begin` reads the *process-global* `get_settings()`, not the settings the store
+    # was handed, and neither `scripts/test.sh` nor CI sets `FELIX_DATABASE_RLS`. Without this
+    # every transaction declares `app.rls_bypass='on'` and the policy never filters anything —
+    # the fixture would connect as a restricted role and prove nothing.
+    # `tests/unit/test_rls_gucs.py` patches the same seam.
+    monkeypatch.setattr(db_session, "get_settings", lambda: settings)
+    try:
+        yield settings
+    finally:
+        await dispose_engine()
+        await _drop_restricted_role(admin_url)
+        await drop_everything(admin_url)
+
+
 @pytest_asyncio.fixture
 async def store_settings(request: pytest.FixtureRequest) -> AsyncIterator[Any]:
     """`Settings` for a module-function store, on the backend named by the parametrization.

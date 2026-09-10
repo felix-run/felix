@@ -526,12 +526,11 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       between its max and its write, so the contract cannot state a shared behaviour until one
       is chosen. Measured against a live database while verifying the manifest contract.
 
-- [ ] **An enforcing-RLS arm for the conformance suite.** Every store contract runs as a
-      superuser with `FELIX_DATABASE_RLS` unset, so the policy never engages and neither does
-      `rls_bypass()` — removing it from `list_tenants_with_active` leaves the suite green. Under
-      a non-superuser role with RLS on, `manifests/store.py` cannot write or read without an
-      ambient `rls_tenant`, which is a dependency the twin has no concept of. Needs a second
-      conformance role; would cover every store rather than one.
+- [x] **An enforcing-RLS arm for the conformance suite.** Done
+      (`tests/conformance/test_rls_enforcement.py`): a `NOSUPERUSER NOBYPASSRLS` role with
+      `database_rls=True`, which is the configuration no other arm can reach. It is the
+      regression guard for every `rls_bypass()` in the tree — removing one now fails a test
+      rather than passing silently.
 
 - [ ] **`test_migrations.py` still wants an autogenerate-empty check** (models versus
       migrations drift) **and stepwise per-revision up/down**; today it only goes base to head
