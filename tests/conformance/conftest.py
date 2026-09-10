@@ -80,6 +80,41 @@ async def drop_everything(url: str) -> None:
 
 
 @pytest_asyncio.fixture
+async def store_settings(request: pytest.FixtureRequest) -> AsyncIterator[Any]:
+    """`Settings` for a module-function store, on the backend named by the parametrization.
+
+    The seams these contracts cover are module-level functions taking `settings` rather than
+    store objects, so the contract is parametrized on settings the way `memory_settings` and
+    `usage_settings` already are. This one is generic: adding a seam means a contract file,
+    not another fixture.
+    """
+    from felix.config import Settings
+    from felix.db.session import dispose_engine
+
+    # Nothing to clear here: the autouse fixture in `tests/conftest.py` already resets every
+    # in-memory twin these contracts touch, for every test in the repo. Duplicating it would
+    # suggest it does not.
+    #
+    # `dispose_engine` below is process-global and disposes engines other fixtures made, so
+    # this is safe only while the suite runs serially. There is no xdist today; if that
+    # changes, this fixture needs its own engine rather than the shared cache.
+    backend = request.param
+    if backend == "memory":
+        yield Settings(database_url="memory://conformance")
+        return
+
+    url = postgres_url_or_skip("the store contract")
+    await migrate_to_head(url)
+    try:
+        yield Settings(database_url=url)
+    finally:
+        # `get_engine` is lru_cached per URL, so pooled connections outlive this fixture and
+        # would hold locks on the schema the teardown drops.
+        await dispose_engine()
+        await drop_everything(url)
+
+
+@pytest_asyncio.fixture
 async def memory_settings(request: pytest.FixtureRequest) -> AsyncIterator[Any]:
     """`Settings` pointed at the backend named by the parametrization.
 

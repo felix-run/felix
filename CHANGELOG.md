@@ -7,7 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **An expired approval hid a live one, and only on Postgres.** `find_approved` took the newest
+  approved row with `LIMIT 1` and checked expiry *afterwards*, so one lapsed grant could hide a
+  still-valid older grant and the call was denied. The in-memory twin scanned every row and
+  skipped expired ones, so it authorised the same call. `create_pending` reuses only *pending*
+  rows, so approved grants accumulate per signature — an operator re-approving after a short
+  TTL lapsed produced exactly that pair, and got a working tool on `memory://` and a refusal on
+  the system of record. Expiry is now part of the `WHERE` clause.
+- **The two backends disagreed about which grant authorises when several match.** Postgres
+  ordered `decided_at DESC LIMIT 1`; the twin scanned a dict and returned the first row it met,
+  which is the *oldest*. With two live grants for one call signature they handed back different
+  rows — and with them a different `principal_subj` binding and a different `edited_args`, so a
+  tool would run with the arguments an operator had substituted on one backend and without them
+  on the other. Both arms now order by `(decided_at, created_at, id)` descending, so ties
+  resolve identically too.
+
+
+- **The management stores leaked between tests.** `_memory_datasets`, `_memory_items`,
+  `_memory_runs`, `_memory_jobs` and `_memory_approvals` are process globals that nothing
+  cleared. Writing an eval dataset named `smoke` in one test changed the item count another
+  test asserted against the bundled `smoke` fixture, and the failure surfaced as an off-by-one
+  in a file that had not changed. Each store now exports its own
+  `reset_*_for_tests()` beside the globals it clears, following the convention
+  `reset_documents_for_tests` and `reset_search_index_for_tests` already set, and the autouse
+  fixture calls those rather than reaching across the package for six private dicts. The
+  session-state reset added last cycle now uses the `reset_thread_meta_for_tests()` that
+  already existed and had no caller.
+
 ### Added
+
+- **Conformance contracts for the approvals store and for session search.** Both seams had a
+  `memory://` twin whose Postgres counterpart ran only under `test_migrations.py`, which creates
+  the schema and never queries it — so everything asserted about them was asserted about the
+  twin, while `tests/unit/test_invariants.py` requires only that a twin *exists*. Both defects
+  above were found by writing these contracts, not by reading either implementation.
+
+  The approvals contract covers the semantics that are security properties rather than storage
+  details: which grant authorises when several match, expiry, `bind_principal`, `one_shot` and
+  its consume-once check-and-set, and the tenant boundary. The search contract covers what both
+  engines can be held to — an appended event becoming findable, deletion removing it, the tenant
+  and thread boundaries, and masking surviving into the index. Ranking, stemming and the hit
+  shape are named as *not* covered rather than left for a reader to assume: the Postgres arm
+  returns a `rank` key the twin never produces, which is visible through
+  `GET /chat/sessions/search`.
+
+  A generic `store_settings` fixture replaces the per-seam pattern, so adding a seam is now a
+  contract file rather than another fixture.
 
 - **The management routers are tested over the wire, with real scopes.** `routes/jobs.py` and
   `routes/eval.py` received zero requests anywhere in the suite and `routes/audit.py` had one;
@@ -20,19 +67,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Each positive case uses a key holding only the scope under test rather than `admin`, which
   satisfies every gate by design — so a deleted `require_mgmt_scopes` call fails the test
   instead of passing it. Proved by mutation.
-
-### Fixed
-
-- **The management stores leaked between tests.** `_memory_datasets`, `_memory_items`,
-  `_memory_runs`, `_memory_jobs` and `_memory_approvals` are process globals that nothing
-  cleared. Writing an eval dataset named `smoke` in one test changed the item count another
-  test asserted against the bundled `smoke` fixture, and the failure surfaced as an off-by-one
-  in a file that had not changed. Each store now exports its own
-  `reset_*_for_tests()` beside the globals it clears, following the convention
-  `reset_documents_for_tests` and `reset_search_index_for_tests` already set, and the autouse
-  fixture calls those rather than reaching across the package for six private dicts. The
-  session-state reset added last cycle now uses the `reset_thread_meta_for_tests()` that
-  already existed and had no caller.
 
 ### Known and deliberately unfixed
 

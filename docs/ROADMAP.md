@@ -508,16 +508,20 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       `tests/e2e/test_chat_run_control.py::test_a_steer_queued_while_idle_is_dropped_without_reaching_anyone`,
       which should fail and be rewritten when this is decided.
 
-- [ ] **Postgres arms for the ten stores that have none.** audit, approvals, jobs, manifests,
-      plans, eval, a2a tasks, fibers, queues, skills — each has a `memory://` twin whose SQL
-      counterpart runs only under the migration test, which creates the schema and never queries
-      it. The invariant proves a twin *exists*, not that it behaves like the store it stands in
-      for. Extend the indirect-fixture pattern in `tests/conformance/conftest.py`; one contract
-      file per seam, ordered by how much SQL the twin does not do. `test_migrations.py` also wants
-      an autogenerate-empty check and stepwise per-revision up/down. **Session search is now the
-      first candidate**: the in-memory index had no writer at all until it was fixed, and nothing
-      compares it against the Postgres `content_tsv` column — the `store` fixture yields a store
-      where a search contract needs settings too, so it wants a paired fixture.
+- [~] **Postgres arms for the ten stores that have none.** Approvals and session search are
+      done (`tests/conformance/test_approvals_store.py`, `test_session_search.py`) behind a
+      generic `store_settings` fixture, and the first of them found a real divergence: the
+      approvals twin returned the oldest matching grant where Postgres returns the newest, and
+      an expired grant could hide a live one on Postgres only.
+      Still open, in the order their SQL diverges most from the twin: the fiber *claim* path
+      (`_claim_due_postgres` uses SKIP LOCKED; `test_fiber_store.py` covers backoff, not claiming),
+      manifests (active pointer and canary), audit (query filters), then
+      jobs, plans, eval and a2a tasks.
+
+- [ ] **`test_migrations.py` still wants an autogenerate-empty check** (models versus
+      migrations drift) **and stepwise per-revision up/down**; today it only goes base to head
+      in one hop.
+
 - [ ] **Worker cron bodies and CLI commands.** Six of eight Taskiq tasks never execute in a test
       and no test pins the cron strings; `migrate`, `eval`, `mint-jwt`, `bundle-manifests`,
       `version` and `temporal-worker` are never invoked.
