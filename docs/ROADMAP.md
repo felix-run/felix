@@ -514,8 +514,24 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       fixture, and each of them found a real divergence: the approvals twin returned the oldest
       matching grant where Postgres returns the newest, an expired grant could hide a live one
       on Postgres only, and a batch of Temporal-backed fibers starved a tenant's ordinary ones.
-      Still open, in the order their SQL diverges most from the twin: manifests (active pointer
-      and canary), audit (query filters), then jobs, plans, eval and a2a tasks.
+      Manifests are done too, and found two more: the twin accepted a canary weight the CHECK
+      constraint refuses, and handed back the stored document by reference. Still open, in the
+      order their SQL diverges most from the twin: audit (query filters), then jobs, plans, eval
+      and a2a tasks.
+
+- [ ] **`put_version` has a read-modify-write race on Postgres only.** It computes
+      `SELECT coalesce(max(version),0)` then inserts, with no lock and no retry, so four
+      concurrent publishes of one manifest name leave one winner and three `UniqueViolation`s —
+      a 500 for a concurrent double-publish. The twin cannot race at all, since nothing awaits
+      between its max and its write, so the contract cannot state a shared behaviour until one
+      is chosen. Measured against a live database while verifying the manifest contract.
+
+- [ ] **An enforcing-RLS arm for the conformance suite.** Every store contract runs as a
+      superuser with `FELIX_DATABASE_RLS` unset, so the policy never engages and neither does
+      `rls_bypass()` — removing it from `list_tenants_with_active` leaves the suite green. Under
+      a non-superuser role with RLS on, `manifests/store.py` cannot write or read without an
+      ambient `rls_tenant`, which is a dependency the twin has no concept of. Needs a second
+      conformance role; would cover every store rather than one.
 
 - [ ] **`test_migrations.py` still wants an autogenerate-empty check** (models versus
       migrations drift) **and stepwise per-revision up/down**; today it only goes base to head
