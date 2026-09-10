@@ -15,14 +15,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to `return True, 1.0, "x"` left the step green, and so would one that never ran. There is now a
   counter-smoke, `fixtures/eval/negative.json`, whose every item violates its own rubric and whose
   run must exit non-zero, plus `tests/unit/test_eval_gate_can_fail.py` asserting the same pair
-  locally, per rule and in both directions. Proved by mutation: an always-passing scorer turns
-  three of the four tests red and drops the CI step's exit code to 0.
+  locally, per rule and in both directions, including through the CLI — the exit code is the only
+  part of the gate CI reads, and the three lines that produce it had no test at all. The counter-
+  smoke also asserts *why* each item failed, since `start_run` counts a raised item as a failure
+  too, so a scorer that crashed on everything read exactly like one that rejected everything.
+  Proved by mutation: an always-passing scorer turns six of the eight tests red, deleting the
+  CLI's exit-code mapping turns one red, and an item edited to satisfy its rubric turns three red.
 
-  The coverage floor moved from a `--cov-fail-under=70` flag in `.github/workflows/ci.yml` to
-  `fail_under` under `[tool.coverage.report]` in `pyproject.toml`, and `make check` now runs the
-  suite through the new `make test-cov` target, which CI runs too. Before this, `make check`
-  measured no coverage at all, so the floor existed only inside CI and a local run could not tell
-  you what CI would say. Ratcheted to the measured number, 79 against a measured 80.36%.
+  The scorer also stopped disagreeing with the answer generator it scores. `_score_answer` read
+  its rubric keys with `or` while `_mock_answer` reads the same keys with `is not None`, so
+  `{"expect": ""}` — an item whose right answer is the empty string — was scored against the
+  non-empty rule its author never wrote. And an empty `contains`, one unfilled field away in any
+  hand-authored dataset, matched every answer: a rubric that could never say no, passing silently
+  in the direction that hides problems. It now fails closed as `invalid_rubric`.
+
+  The coverage floor moved off the `.github/workflows/ci.yml` command line onto one `make test-cov`
+  recipe that `make check` and CI both run. Before this, `make check` measured no coverage at all,
+  so the floor existed only inside CI and a local run could not tell you what CI would say. It is
+  deliberately not `fail_under` in `[tool.coverage.report]`, which would arm on every partial
+  `--cov` run — including the single-module ones the test-quality docs prescribe, where a handful
+  of passing tests exits 1 at 17% and teaches people `--no-cov`. Ratcheted to 79 against a measured
+  80.90% with extras and 80.36% lean. An invariant now fails if the floor disappears, ratchets
+  down, or stops being what `make check` and CI run.
 
 - **The worker's periodic tasks are executed by tests, and their schedules are pinned**
   (`tests/unit/test_worker_cron_tasks.py`). Six of the eight had never been run by anything:

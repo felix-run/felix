@@ -15,14 +15,28 @@ logger = logging.getLogger("felix.eval.runner")
 
 
 def _score_answer(answer: str, rubric: dict[str, Any]) -> tuple[bool, float, str]:
-    """Heuristic scorer — expects / contains / min_chars."""
-    expect = rubric.get("expect") or rubric.get("equals")
+    """Heuristic scorer — expects / contains / min_chars.
+
+    A rubric key counts as present when it is not None, which is how `_mock_answer` already
+    reads the same keys. Reading them with `or` meant `{"expect": ""}` fell through to the
+    non-empty check and scored the item against a rule its author never wrote, while
+    `_mock_answer` cheerfully produced the empty answer that rubric asked for.
+    """
+    expect = rubric.get("expect")
+    if expect is None:
+        expect = rubric.get("equals")
     if expect is not None:
         ok = answer.strip() == str(expect).strip()
         return ok, 1.0 if ok else 0.0, "equals"
     contains = rubric.get("contains")
     if contains is not None:
-        ok = str(contains).lower() in answer.lower()
+        needle = str(contains)
+        if not needle.strip():
+            # Every answer contains the empty string, so this rubric could never say no —
+            # an unfilled field far more often than an intent. Passing everything is the
+            # failure direction that hides problems, so it fails closed instead.
+            return False, 0.0, "invalid_rubric"
+        ok = needle.lower() in answer.lower()
         return ok, 1.0 if ok else 0.0, "contains"
     min_chars = int(rubric.get("min_chars") or 0)
     if min_chars:

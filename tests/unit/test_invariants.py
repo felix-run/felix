@@ -585,17 +585,35 @@ def test_ci_installs_every_extra_the_tests_gate_on() -> None:
     # job added above it with its own `--extra` would otherwise silently become the thing
     # this invariant reads, and it would pass while asserting about the wrong install.
     lines = workflow.splitlines()
-    runs_suite = next((i for i, line in enumerate(lines) if "make test-cov" in line), None)
+    # The `run:` line, not any line naming the target: the comment block above the step says
+    # `make test-cov` too, and anchoring on that walked the install lookup below past this
+    # job's `uv sync` into the `--all-extras` one belonging to the job above — which returns
+    # early and makes the whole invariant assert nothing.
+    runs_suite = next(
+        (i for i, line in enumerate(lines) if re.fullmatch(r"\s*run:\s*make test-cov\s*", line)),
+        None,
+    )
     assert runs_suite is not None, "no CI step runs `make test-cov` — has ci.yml moved?"
     # CI runs the suite through a Makefile target, so the anchor above is one level removed
-    # from the command it stands for. Re-derive that the target still runs the suite with
-    # coverage, or emptying it would leave this invariant reading a step that tests nothing.
+    # from the command it stands for, and the coverage floor is one level removed again — it
+    # lives in pyproject. Re-derive the rest of the chain: emptying the target, pointing
+    # `check` back at the coverage-free `test`, or deleting the floor would each leave a green
+    # invariant guarding a gate that measures nothing.
     makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
     target = re.search(r"^test-cov:\n((?:\t.*\n)+)", makefile, re.MULTILINE)
     assert target is not None, "Makefile has no `test-cov` target — CI's Pytest step points at it"
     assert "./scripts/test.sh" in target.group(1) and "--cov" in target.group(1), (
         f"`make test-cov` no longer runs the suite with coverage:\n{target.group(1)}"
     )
+    assert re.search(r"^check:.*\btest-cov\b", makefile, re.MULTILINE), (
+        "`make check` no longer runs `test-cov`, so the coverage floor stopped applying locally"
+    )
+    floor = re.search(r"--cov-fail-under=(\d+)", target.group(1))
+    assert floor is not None, (
+        "`make test-cov` measures coverage with no floor — measuring without a floor gates "
+        "nothing, and the floor is the whole reason CI measures it"
+    )
+    assert int(floor.group(1)) >= 79, f"coverage floor ratcheted down to {floor.group(1)}"
     install = next(
         (line for line in reversed(lines[:runs_suite]) if "uv sync" in line),
         "",

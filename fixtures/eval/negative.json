@@ -11,6 +11,14 @@
       }
     },
     {
+      "item_id": "equals-alias-mismatch",
+      "user_input": "Reply with exactly: ok",
+      "rubric": {
+        "equals": "ok",
+        "mock_answer": "not ok"
+      }
+    },
+    {
       "item_id": "contains-missing",
       "user_input": "Say hello",
       "rubric": {
@@ -24,6 +32,13 @@
       "rubric": {
         "min_chars": 32,
         "mock_answer": "tiny"
+      }
+    },
+    {
+      "item_id": "empty-answer",
+      "user_input": "Say something",
+      "rubric": {
+        "mock_answer": ""
       }
     }
   ]

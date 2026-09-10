@@ -15,7 +15,7 @@ Granian (API), Taskiq (worker/scheduler), Postgres+pgvector, Valkey/Redis, plugg
 make install            # uv sync --dev (lean core; what CI uses)
 make install-full       # uv sync --all-extras --dev (aws/gcp/mcp/browser/embeddings/…)
 make check              # ruff check + ty check + pytest w/ coverage floor + ruff format --check
-make test-cov           # the suite with coverage; the floor is pyproject fail_under, CI runs this
+make test-cov           # the suite with coverage against the floor; `check` and CI both run this
 make check-ci           # check + manifest bundle/schema, toolkit, mock eval, pre-commit
 make conformance        # store contract vs Postgres (needs FELIX_CONFORMANCE_DATABASE_URL)
 make lint / fmt / type / test

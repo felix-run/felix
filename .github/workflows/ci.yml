@@ -267,19 +267,38 @@ jobs:
       - name: Mock eval fixture must be able to fail
         run: |
           set +e
-          uv run felix eval \
+          out=$(uv run felix eval \
             --dataset negative \
             --manifest quick \
             --fixture fixtures/eval/negative.json \
-            --mock
+            --mock 2>&1)
           status=$?
           set -e
-          if [ "$status" -eq 0 ]; then
-            echo "::error::the negative eval fixture passed; the scorer cannot fail" >&2
+          echo "$out"
+          # A missing fixture, an import error and a bad flag all exit non-zero too, so status
+          # alone cannot tell "the scorer said no" from "the command never got that far".
+          # Require the run to have completed and reported every item scored down.
+          if [ "$status" -ne 1 ]; then
+            echo "::error::expected exit 1 from the negative fixture, got $status" >&2
             exit 1
           fi
-          echo "negative fixture failed as required (exit $status)"
+          flat=$(printf '%s' "$out" | tr '\n' ' ')
+          case "$flat" in
+            *"'pass_count': 0"*) ;;
+            *) echo "::error::the negative run printed no pass_count of 0; it did not score" >&2
+               exit 1 ;;
+          esac
+          case "$flat" in
+            *"'error'"*) echo "::error::negative items errored instead of being scored down" >&2
+                         exit 1 ;;
+          esac
+          echo "negative fixture scored every item down and exited 1, as required"
         env:
+          # The assertions above read the printed run dict, so rich must not wrap it in colour
+          # escapes: a runner that ever sets FORCE_COLOR would otherwise fail this step for a
+          # reason that has nothing to do with the scorer.
+          NO_COLOR: "1"
+          TERM: dumb
           FELIX_ALLOW_INSECURE: "true"
           FELIX_AUTH_MODE: none
           FELIX_DATABASE_URL: memory://ci

@@ -107,12 +107,11 @@ source = [
 branch = false
 
 [tool.coverage.report]
-# The floor lives here rather than on the CI command line, so `make check` enforces the same
-# number CI does — locally it enforced nothing before, because `check` ran the suite without
-# coverage at all and the number lived only in ci.yml. Measured 80% on 2026-09-10 (was 70 when the
-# gate was written and 77 when this audit started); ratcheted deliberately, never aspirationally,
-# because a floor nobody meets only teaches people to pass `--no-cov`.
-fail_under = 79
+# The floor is not here: `fail_under` in this table applies to every run that measures coverage,
+# and both `.claude/skills/test-quality/` and the test-quality reviewer prescribe
+# `./scripts/test.sh <one file> --cov` for reading a module's branches. That run would report
+# ~17% and exit 1 with every test passing — a guard firing when nothing is wrong, which teaches
+# people `--no-cov`. It lives on the `test-cov` recipe in the Makefile instead.
 skip_covered = false
 show_missing = true
 exclude_also = [

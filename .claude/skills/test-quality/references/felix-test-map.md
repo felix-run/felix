@@ -55,17 +55,23 @@ CI's `test` job runs the lean install and then `make test-cov`, which is also wh
 runs:
 
 ```bash
-./scripts/test.sh -q --cov --cov-report=term:skip-covered
+./scripts/test.sh -q --cov --cov-report=term:skip-covered --cov-fail-under=79
 ```
 
-The floor is `fail_under` under `[tool.coverage.report]` in `pyproject.toml`, and the comment there
-is the policy: *the coverage floor is the measured number, ratcheted up deliberately — never an
+The floor is that flag on the `test-cov` recipe in the `Makefile`, and the comment beside it is the
+policy: *the coverage floor is the measured number, ratcheted up deliberately — never an
 aspirational one, which only teaches people to bypass it.* Raising it means editing that one value
-after the measured number rises. It used to be a `--cov-fail-under` flag in
-`.github/workflows/ci.yml` instead, which meant `make check` measured no coverage at all and
-enforced nothing — a local run could not tell you what CI would say. `[tool.coverage.run]` covers
-the five source roots with `branch = false`, and `[tool.coverage.report]` excludes
-`if TYPE_CHECKING:`, `raise NotImplementedError`, and `@overload`.
+after the measured number rises, and `test_ci_installs_every_extra_the_tests_gate_on` fails if it
+disappears or ratchets down.
+
+It used to live in `.github/workflows/ci.yml`, which meant `make check` measured no coverage at all
+and enforced nothing — a local run could not tell you what CI would say. It deliberately does *not*
+live in `[tool.coverage.report]` as `fail_under`, because a floor there arms on **every** run that
+measures coverage, including the single-module `--cov` run below: eight passing tests would exit 1
+at 17%, and a guard that fires when nothing is wrong is how `--no-cov` becomes muscle memory.
+
+`[tool.coverage.run]` covers the five source roots with `branch = false`, and
+`[tool.coverage.report]` excludes `if TYPE_CHECKING:`, `raise NotImplementedError`, and `@overload`.
 
 Read shape, not the number:
 
