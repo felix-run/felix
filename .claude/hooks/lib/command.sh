@@ -36,14 +36,52 @@ hook_executable_text() {
   '
 }
 
-# One shell segment per line: split on ; && || | and newlines.
+# One shell segment per line: split on ; && || | and newlines, outside quotes.
 #
 # Guards ask "does this command do X", and the honest unit for that question is the
 # segment, not the line. `git stash push -q f && rm -f /tmp/x` contains "push" and
 # "-f " and is not a force-push; as two segments neither one looks like one.
+#
+# Quote-aware, because a blind `sed s/|/;/g` also split inside quoted arguments. An
+# alternation is the everyday case: `grep -nE '(pip|python|PYTEST)=' ~/.zshrc` became a
+# segment starting with the watched word, so the test guard blocked a grep -- and then
+# blocked the attempt to investigate itself. `hook_words` already applies the shell's
+# quoting rules via xargs; this is the same correction one level up.
+#
+# The quote and escape characters are built with sprintf rather than written, so this awk
+# program contains no quote or backslash of its own and needs no shell escaping dance.
+# The previous attempt at this function died on exactly that.
 hook_segments() {
-  hook_executable_text | tr '\n' ';' | sed 's/&&/;/g; s/||/;/g; s/|/;/g' | tr ';' '\n' |
-    sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep -v '^$'
+  hook_executable_text | awk '
+    BEGIN { SQ = sprintf("%c", 39); DQ = sprintf("%c", 34); BS = sprintf("%c", 92) }
+    function flush(   s) {
+      s = seg
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", s)
+      if (s != "") print s
+      seg = ""
+    }
+    {
+      n = length($0)
+      for (i = 1; i <= n; i++) {
+        c = substr($0, i, 1)
+        if (esc)              { seg = seg c; esc = 0; continue }
+        if (c == BS && !insq) { seg = seg c; esc = 1; continue }
+        if (c == SQ && !indq) { insq = !insq; seg = seg c; continue }
+        if (c == DQ && !insq) { indq = !indq; seg = seg c; continue }
+        if (!insq && !indq) {
+          if (c == ";") { flush(); continue }
+          if (c == "|") { if (substr($0, i + 1, 1) == "|") i++; flush(); continue }
+          if (c == "&" && substr($0, i + 1, 1) == "&") { i++; flush(); continue }
+        }
+        seg = seg c
+      }
+      # An unterminated quote means the segment continues on the next line, as it would
+      # in a shell; only an unquoted end-of-line ends a segment.
+      if (insq || indq) seg = seg sprintf("%c", 10)
+      else flush()
+    }
+    END { flush() }
+  '
 }
 
 # One word per line, honouring shell quoting.

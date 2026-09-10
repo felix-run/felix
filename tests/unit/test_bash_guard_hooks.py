@@ -90,6 +90,15 @@ CASES: list[tuple[str, str, int]] = [
     (f"{PYTEST}-env-guard", f"FELIX_DATABASE_URL=memory://x {PYTEST} -q", ALLOWED),
     # A heredoc body is input, not commands.
     (f"{PYTEST}-env-guard", f"python3 - <<'PY'\n# mentions {PYTEST} here\nPY", ALLOWED),
+    # An alternation inside a quoted argument is not a pipe. `hook_segments` split on
+    # `|` blindly, so this became a segment beginning with the watched word and the guard
+    # blocked a grep — then blocked the attempt to investigate itself.
+    (f"{PYTEST}-env-guard", f"grep -nE '(pip|python|{PYTEST})=' ~/.zshrc", ALLOWED),
+    (f"{PYTEST}-env-guard", f'echo "a | {PYTEST} b"', ALLOWED),
+    (f"{PYTEST}-env-guard", f"awk '/{PYTEST}|ruff/ {{print}}' notes.txt", ALLOWED),
+    # ...but a real pipe still segments, so a bare run after one is still caught.
+    (f"{PYTEST}-env-guard", f"echo hi | grep h && {PYTEST} -q", BLOCKED),
+    ("git-guard", "git log --grep 'push --force|reset --hard'", ALLOWED),
 ]
 
 
