@@ -11,6 +11,7 @@ costs nothing at runtime and cannot be satisfied by mocking.
 from __future__ import annotations
 
 import ast
+import os
 import re
 from pathlib import Path
 
@@ -591,11 +592,13 @@ def test_ci_installs_every_extra_the_tests_gate_on() -> None:
     # makes this whole invariant assert nothing. Both `run: make test-cov` and the same command
     # inside a `run: |` block count; what the target then does is
     # `test_the_coverage_floor_is_what_check_and_ci_both_run`'s business, not this test's.
-    runs_suite = next(
-        (i for i, line in enumerate(lines) if line.strip() in ("run: make test-cov", "make test-cov")),
-        None,
-    )
-    assert runs_suite is not None, "no CI step runs `make test-cov` — has ci.yml moved?"
+    matches = [i for i, line in enumerate(lines) if line.strip() in ("run: make test-cov", "make test-cov")]
+    assert matches, "no CI step runs `make test-cov` — has ci.yml moved?"
+    # Exactly one, because the lookup below reads backwards from it: a second call site earlier
+    # in the file would make `matches[0]` some other job, and the install this asserts about
+    # would be that job's.
+    assert len(matches) == 1, f"`make test-cov` is run from {len(matches)} CI steps; ambiguous anchor"
+    runs_suite = matches[0]
     install = next(
         (line for line in reversed(lines[:runs_suite]) if "uv sync" in line),
         "",
@@ -663,14 +666,35 @@ def test_the_eval_counter_smoke_runs_in_both_gates() -> None:
     answer. `CLAUDE.md` and the changelog both claim CI runs the pair; deleting either
     invocation left nothing red, so the claim was documentation rather than a gate.
     """
-    fixture = "fixtures/eval/negative.json"
-    assert (ROOT / fixture).is_file(), "the negative eval fixture is gone; both gates now pass vacuously"
+    assert (ROOT / "fixtures" / "eval" / "negative.json").is_file(), (
+        "the negative eval fixture is gone; both gates would pass vacuously"
+    )
+    script = ROOT / "scripts" / "eval-counter-smoke.sh"
+    assert script.is_file() and os.access(script, os.X_OK), (
+        "scripts/eval-counter-smoke.sh is missing or not executable; both gates call it"
+    )
 
+    # Both callers run the *script*, not their own copy of its checks. Asserting they merely
+    # mention the fixture path would be satisfied by a comment — and by two copies that had
+    # drifted, which is what this replaced: the local one accepted a bare exit 1, so an item
+    # that errored instead of being scored down passed before a push and failed in CI.
+    called = re.escape("./scripts/eval-counter-smoke.sh")
     workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    assert fixture in workflow, "the CI eval job no longer runs the negative fixture"
-
+    assert re.search(rf"run:\s*{called}", workflow), "the CI eval job no longer runs the counter-smoke script"
     makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
-    assert fixture in makefile, "`make check-ci` no longer runs the negative fixture"
+    assert re.search(rf"^\t@?{called}", makefile, re.MULTILINE), (
+        "`make check-ci` no longer runs the counter-smoke script"
+    )
+
+    # And the script still makes all four of its checks. Sharing it stops the two callers
+    # drifting from each other; it does not stop the shared copy being hollowed out, and each
+    # of these covers a way the run can exit non-zero without the scorer having rejected
+    # anything: a bad flag or missing fixture (exit code), a run that never scored (pass_count),
+    # a printed summary with no rows to search (rule), and items that raised rather than being
+    # scored down (error), which the counts alone cannot distinguish from an honest rejection.
+    body = script.read_text(encoding="utf-8")
+    for check in ('"$rc" -eq 1', "'pass_count': 0", "'rule'", "'error'"):
+        assert check in body, f"the counter-smoke no longer checks {check}; it can pass on a broken run"
 
 
 def test_the_coverage_floor_does_not_arm_partial_runs() -> None:
@@ -683,7 +707,13 @@ def test_the_coverage_floor_does_not_arm_partial_runs() -> None:
     ever runs the whole suite.
     """
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert not re.search(r"^fail_under\s*=", pyproject, re.MULTILINE), (
+    # The positive premise first: the reasoning above only holds while coverage measures the
+    # whole tree regardless of which tests were selected, which is what `source` does.
+    assert "[tool.coverage.run]" in pyproject and "source = [" in pyproject, (
+        "coverage no longer declares its source roots; re-derive whether a partial --cov run "
+        "still measures the whole tree before trusting the assertion below"
+    )
+    assert not re.search(r"^\s*fail_under\s*=", pyproject, re.MULTILINE), (
         "fail_under is back in pyproject, where it arms every partial --cov run. "
         "The coverage floor lives on the `test-cov` recipe in the Makefile."
     )

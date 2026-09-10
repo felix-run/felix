@@ -102,17 +102,9 @@ check-ci: check
 		uv run felix eval --dataset smoke --manifest quick \
 			--fixture fixtures/eval/smoke.json --mock
 	# The counter-smoke: the run above passes by construction, so on its own it proves the
-	# pipeline executes and nothing about whether the scorer can reject an answer.
-	@out=$$(FELIX_ALLOW_INSECURE=true FELIX_AUTH_MODE=none \
-		FELIX_DATABASE_URL=memory://ci FELIX_OBJECT_STORE=memory \
-		uv run felix eval --dataset negative --manifest quick \
-			--fixture fixtures/eval/negative.json --mock 2>&1); \
-	rc=$$?; \
-	echo "$$out"; \
-	test "$$rc" -eq 1 || { echo "negative eval fixture exited $$rc, want 1; the scorer cannot say no"; exit 1; }; \
-	case "$$out" in *"'pass_count': 0"*) ;; \
-	  *) echo "negative eval fixture exited 1 without scoring — a missing fixture or a bad flag exits 1 too"; exit 1 ;; \
-	esac
+	# pipeline executes and nothing about whether the scorer can reject an answer. Shared with
+	# the CI eval job so the two cannot drift; the script's header explains its four checks.
+	./scripts/eval-counter-smoke.sh
 	uv run pre-commit run --all-files
 
 # Needs a reachable Postgres; CI runs this as its own job against a service container.

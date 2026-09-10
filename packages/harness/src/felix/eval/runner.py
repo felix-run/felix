@@ -17,10 +17,13 @@ logger = logging.getLogger("felix.eval.runner")
 def _score_answer(answer: str, rubric: dict[str, Any]) -> tuple[bool, float, str]:
     """Heuristic scorer — expects / contains / min_chars.
 
-    A rubric key counts as present when it is not None, which is how `_mock_answer` already
-    reads the same keys. Reading them with `or` meant `{"expect": ""}` fell through to the
-    non-empty check and scored the item against a rule its author never wrote, while
-    `_mock_answer` cheerfully produced the empty answer that rubric asked for.
+    `expect`, `equals` and `contains` count as present when they are not None, which is how
+    `_mock_answer` already reads them. Reading them with `or` instead meant `{"expect": ""}`
+    fell through to the non-empty check and scored the item against a rule its author never
+    wrote, while `_mock_answer` cheerfully produced the empty answer that rubric asked for.
+
+    `min_chars` is the exception in both functions: 0 and "" mean no minimum rather than a
+    minimum of nothing, so they fall through to the non-empty rule.
 
     The rule for an empty value, which a new scoring rule should follow: honour it when the rule
     still discriminates (`{"expect": ""}` asks for an empty answer and rejects every other one),
@@ -45,8 +48,14 @@ def _score_answer(answer: str, rubric: dict[str, Any]) -> tuple[bool, float, str
         ok = needle.lower() in answer.lower()
         return ok, 1.0 if ok else 0.0, "contains"
     min_chars_raw = rubric.get("min_chars")
-    if min_chars_raw is not None:
-        min_chars = int(min_chars_raw)
+    if min_chars_raw is not None and min_chars_raw != "":
+        try:
+            min_chars = int(min_chars_raw)
+        except TypeError, ValueError:
+            # A rubric nobody can score. Raising here would make the item an *error* rather
+            # than a failure, and an errored item is indistinguishable from a rejected one in
+            # the counts — so a malformed dataset would read as a working gate.
+            return False, 0.0, "invalid_rubric"
         if min_chars < 0:
             # `len(answer) >= -1` holds for every answer, the empty one included — the same
             # rubric-that-cannot-reject as an empty `contains`, one branch down.
@@ -267,9 +276,14 @@ def _mock_answer(rubric: dict[str, Any]) -> str:
     contains = rubric.get("contains")
     if contains is not None:
         return f"Felix mock reply containing {contains}"
-    min_chars = int(rubric.get("min_chars") or 0)
-    if min_chars:
-        return ("x" * min_chars) if min_chars else "ok"
+    try:
+        min_chars = int(rubric.get("min_chars") or 0)
+    except TypeError, ValueError:
+        # Unscoreable, and `_score_answer` says so as `invalid_rubric`. Raising here would make
+        # the item an error instead, which the counts cannot tell from an honest rejection.
+        return "ok"
+    if min_chars > 0:
+        return "x" * min_chars
     return "ok"
 
 

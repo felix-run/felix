@@ -65,17 +65,36 @@ def _scorer_rule_names() -> set[str]:
     from felix.eval import runner as runner_module
 
     tree = ast.parse(textwrap.dedent(inspect.getsource(runner_module._score_answer)))
-    names = {
-        node.value.elts[-1].value
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Return)
-        and isinstance(node.value, ast.Tuple)
-        and isinstance(node.value.elts[-1], ast.Constant)
-        and isinstance(node.value.elts[-1].value, str)
-    }
-    # A scanner that finds nothing passes every "== []" it feeds; this one would make the
-    # assertions below vacuous instead, so it states its own floor.
-    assert len(names) >= 4, f"the scorer-rule scanner found only {names}; has _score_answer moved?"
+    returns = [node for node in ast.walk(tree) if isinstance(node, ast.Return)]
+    assert returns, "no returns found in _score_answer; has it moved or been renamed?"
+
+    names: set[str] = set()
+    unreadable: list[str] = []
+    for node in returns:
+        value = node.value
+        if (
+            isinstance(value, ast.Tuple)
+            and value.elts
+            and isinstance(value.elts[-1], ast.Constant)
+            and isinstance(value.elts[-1].value, str)
+        ):
+            names.add(value.elts[-1].value)
+        else:
+            unreadable.append(ast.unparse(value) if value is not None else "return")
+
+    # Every return, not merely the ones this recognises. A scanner that *filters* is how a rule
+    # goes missing: `return _score_regex(answer, rubric)` or a rule name held in a variable
+    # would each be dropped silently, the derived set would not grow, and the assertions built
+    # on it would pass with the new rule never once seen rejecting anything — which is the
+    # state deriving the set exists to make impossible.
+    assert not unreadable, (
+        f"_score_answer has returns this scanner cannot read a rule name from: {unreadable}. "
+        "Return the rule as a literal in the tuple, or teach this helper the new shape — "
+        "leaving it unread would quietly drop the rule from the counter-smoke's coverage."
+    )
+    # Ratcheted like the coverage floor, not a count that already trails reality: a rule
+    # disappearing from the scorer should fail here rather than one rule below here.
+    assert {"equals", "contains", "min_chars", "nonempty", "invalid_rubric"} <= names, names
     return names
 
 
@@ -180,9 +199,13 @@ def test_a_failed_run_exits_non_zero_through_the_cli() -> None:
     assert isinstance(result.exception, SystemExit), result.exception
     assert result.exception.code == 1, result.exception
     assert result.exit_code == 1, result.output
-    # The CI step parses this same printed dict, so the shape it reads is pinned here.
+    # `scripts/eval-counter-smoke.sh` parses this same printed dict, so every string it greps
+    # for is pinned here — otherwise the local half is a strict subset of the shell half and
+    # the gate breaks in CI first, which is the arrangement this file exists to invert.
     assert "'fail_count'" in result.output, result.output
+    assert "'pass_count': 0" in result.output, result.output
     assert "'rule'" in result.output, result.output
+    assert "'error'" not in result.output, result.output
 
 
 def test_the_smoke_fixture_exits_zero_through_the_cli() -> None:
@@ -225,10 +248,12 @@ def test_each_scoring_rule_is_exercised_in_both_directions() -> None:
         # generator it is scoring.
         ({"expect": ""}, "", "something", "equals"),
         ({"contains": "hello"}, "well hello there", "goodbye", "contains"),
-        # Precedence: every other row names one key, so reordering the branches in
-        # `_score_answer` would go unnoticed — and `_mock_answer` has a matching order it
-        # would then contradict.
+        # Precedence, boundary by boundary: every other row names one key, so reordering the
+        # branches in `_score_answer` would go unnoticed — and `_mock_answer` has a matching
+        # order it would then contradict. One row per adjacent pair, so no swap is invisible.
         ({"expect": "ok", "contains": "zzz"}, "ok", "not ok", "equals"),
+        ({"contains": "hello", "min_chars": 99}, "hello", "goodbye", "contains"),
+        ({"min_chars": 4}, "long enough", "", "min_chars"),
         ({"min_chars": 32}, "x" * 32, "tiny", "min_chars"),
         ({}, "anything", "", "nonempty"),
     ]
@@ -249,7 +274,16 @@ def test_a_rubric_that_could_never_say_no_fails_closed() -> None:
     """
     from felix.eval.runner import _score_answer
 
-    for rubric in ({"contains": ""}, {"contains": "   "}, {"min_chars": -1}):
+    malformed = (
+        {"contains": ""},
+        {"contains": "   "},
+        {"min_chars": -1},
+        # Not a number at all. It used to raise, which made the item an *error* — and an errored
+        # item is indistinguishable from a rejected one in the counts, so a malformed dataset
+        # read as a working gate.
+        {"min_chars": "abc"},
+    )
+    for rubric in malformed:
         for answer in ("anything at all", ""):
             assert _score_answer(answer, rubric) == (False, 0.0, "invalid_rubric"), (rubric, answer)
 
@@ -263,6 +297,9 @@ def test_a_rubric_that_could_never_say_no_fails_closed() -> None:
         {"contains": "hello"},
         {"min_chars": 32},
         {"min_chars": 0},
+        # An unfilled `min_chars` means no minimum, in both functions; it must not become a
+        # minimum of nothing, and it must not raise.
+        {"min_chars": ""},
         {},
     ],
 )

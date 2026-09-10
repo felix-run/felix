@@ -260,58 +260,13 @@ jobs:
           FELIX_AUTH_MODE: none
           FELIX_DATABASE_URL: memory://ci
           FELIX_OBJECT_STORE: memory
-      # The counter-smoke. Every item in `negative.json` carries a `mock_answer` that violates
-      # its own rubric, so the run must exit non-zero. Without it the step above proves only
-      # that the pipeline executes: a scorer rewritten to always pass leaves it green, and so
-      # does one that never runs. `tests/unit/test_eval_gate_can_fail.py` asserts the same pair
-      # locally, so this is the CI-shaped half rather than the only half.
+      # The counter-smoke, in scripts/eval-counter-smoke.sh because `make check-ci` runs it too.
+      # The step above passes by construction, so on its own it proves the pipeline executes and
+      # nothing about whether the scorer can reject an answer. The script's header explains the
+      # four checks; it lives there rather than here so the two callers cannot drift, which they
+      # did — the local copy accepted a bare exit 1 and passed on a renamed fixture.
       - name: Mock eval fixture must be able to fail
-        run: |
-          set +e
-          out=$(uv run felix eval \
-            --dataset negative \
-            --manifest quick \
-            --fixture fixtures/eval/negative.json \
-            --mock 2>&1)
-          status=$?
-          set -e
-          echo "$out"
-          # A missing fixture, an import error and a bad flag all exit non-zero too, so status
-          # alone cannot tell "the scorer said no" from "the command never got that far".
-          # Require the run to have completed and reported every item scored down.
-          if [ "$status" -ne 1 ]; then
-            echo "::error::expected exit 1 from the negative fixture, got $status" >&2
-            exit 1
-          fi
-          flat=$(printf '%s' "$out" | tr '\n' ' ')
-          case "$flat" in
-            *"'pass_count': 0"*) ;;
-            *) echo "::error::the negative run printed no pass_count of 0; it did not score" >&2
-               exit 1 ;;
-          esac
-          # The check below is a negative one, so it needs the rows to be present to mean
-          # anything: replace the printed run dict with a summary line and "no 'error' in the
-          # output" becomes unfalsifiable. Pin that the score rows are there first.
-          case "$flat" in
-            *"'rule'"*) ;;
-            *) echo "::error::the run printed no score rows; the check below cannot see errors" >&2
-               exit 1 ;;
-          esac
-          case "$flat" in
-            *"'error'"*) echo "::error::negative items errored instead of being scored down" >&2
-                         exit 1 ;;
-          esac
-          echo "negative fixture scored every item down and exited 1, as required"
-        env:
-          # The assertions above read the printed run dict, so rich must not wrap it in colour
-          # escapes: a runner that ever sets FORCE_COLOR would otherwise fail this step for a
-          # reason that has nothing to do with the scorer.
-          NO_COLOR: "1"
-          TERM: dumb
-          FELIX_ALLOW_INSECURE: "true"
-          FELIX_AUTH_MODE: none
-          FELIX_DATABASE_URL: memory://ci
-          FELIX_OBJECT_STORE: memory
+        run: ./scripts/eval-counter-smoke.sh
 
   lean:
     needs: changes

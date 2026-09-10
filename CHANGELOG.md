@@ -23,14 +23,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   than written down, so adding a scoring rule fails until a fixture item has seen it reject
   something — otherwise a new rule lands with the gate silently partial.
 
-  Proved by mutation, seventeen of them, each red: an always-passing scorer, a deleted CLI
+  The counter-smoke's four checks live in `scripts/eval-counter-smoke.sh`, which the CI job and
+  `make check-ci` both call. They started as two copies of the same shell and drifted within a
+  day: the local one accepted a bare exit 1, so an item that *errored* instead of being scored
+  down passed before a push and failed in CI. `start_run` counts a raised item as a failure, so
+  the counts alone cannot tell a scorer that rejects everything from one that crashes on
+  everything — which is why the scorer no longer raises on an unparseable `min_chars` either.
+
+  Proved by mutation, twenty-two of them, each red: an always-passing scorer, a deleted CLI
   exit-code mapping, a deleted coverage floor, `check` pointed back at the coverage-free target,
   a CI step no longer running it, an empty `contains` passing again, a negative `min_chars`
   accepted, `contains` reordered above `expect`, the answer generator drifting back to
   truthiness, the smoke rubrics flattened, the floor moved back into pyproject, the CI step
   pointed at the wrong fixture, the CLI printing a summary instead of the run dict, a fixture
-  item edited to satisfy its rubric, one removed, and a new scoring rule with no item to cover
-  it.
+  item edited to satisfy its rubric, one removed, a new scoring rule with no item to cover it,
+  the same rule delegated to a helper so a filtering scanner would miss it, the `min_chars`
+  guard reverted, and the shared script losing its exit-code and errored-row checks.
 
   The scorer also stopped disagreeing with the answer generator it scores. `_score_answer` read
   its rubric keys with `or` while `_mock_answer` reads the same keys with `is not None`, so
