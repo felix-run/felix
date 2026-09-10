@@ -508,19 +508,30 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       `tests/e2e/test_chat_run_control.py::test_a_steer_queued_while_idle_is_dropped_without_reaching_anyone`,
       which should fail and be rewritten when this is decided.
 
-- [~] **Postgres arms for the ten stores that have none.** Approvals and session search are
-      done (`tests/conformance/test_approvals_store.py`, `test_session_search.py`) behind a
-      generic `store_settings` fixture, and the first of them found a real divergence: the
-      approvals twin returned the oldest matching grant where Postgres returns the newest, and
-      an expired grant could hide a live one on Postgres only.
-      Still open, in the order their SQL diverges most from the twin: the fiber *claim* path
-      (`_claim_due_postgres` uses SKIP LOCKED; `test_fiber_store.py` covers backoff, not claiming),
-      manifests (active pointer and canary), audit (query filters), then
-      jobs, plans, eval and a2a tasks.
+- [~] **Postgres arms for the ten stores that have none.** Approvals, session search and the
+      fiber *claim* path are done (`tests/conformance/test_approvals_store.py`,
+      `test_session_search.py`, `test_fiber_claim.py`) behind a generic `store_settings`
+      fixture, and each of them found a real divergence: the approvals twin returned the oldest
+      matching grant where Postgres returns the newest, an expired grant could hide a live one
+      on Postgres only, and a batch of Temporal-backed fibers starved a tenant's ordinary ones.
+      Still open, in the order their SQL diverges most from the twin: manifests (active pointer
+      and canary), audit (query filters), then jobs, plans, eval and a2a tasks.
 
 - [ ] **`test_migrations.py` still wants an autogenerate-empty check** (models versus
       migrations drift) **and stepwise per-revision up/down**; today it only goes base to head
       in one hop.
+
+- [ ] **`create_fiber` cannot insert under an enforcing RLS role.** It is the one write in
+      `durability/fibers.py` that neither wraps `rls_bypass()` nor binds the tenant GUC, so with
+      `FELIX_DATABASE_RLS=true` and a non-superuser it fails with "new row violates row-level
+      security policy". `get_fiber` has the same gap. Invisible to the conformance suite because
+      that connects as a superuser with RLS off. Found while verifying the fiber claim contract
+      against a live database; fixed in a separate change.
+
+- [ ] **An index for the fiber claim's ordering.** `ORDER BY updated_at LIMIT 50` has no
+      supporting index; measured at 200k rows it is 11 ms, and a partial index matching the
+      claim's WHERE takes it to 0.15 ms at a fifth the size of `idx_fibers_due`. Worth doing now
+      that the WHERE clause is stable.
 
 - [ ] **Worker cron bodies and CLI commands.** Six of eight Taskiq tasks never execute in a test
       and no test pins the cron strings; `migrate`, `eval`, `mint-jwt`, `bundle-manifests`,
