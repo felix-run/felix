@@ -585,10 +585,17 @@ def test_ci_installs_every_extra_the_tests_gate_on() -> None:
     # job added above it with its own `--extra` would otherwise silently become the thing
     # this invariant reads, and it would pass while asserting about the wrong install.
     lines = workflow.splitlines()
-    runs_suite = next(
-        (i for i, line in enumerate(lines) if "./scripts/test.sh" in line and "--cov" in line), None
+    runs_suite = next((i for i, line in enumerate(lines) if "make test-cov" in line), None)
+    assert runs_suite is not None, "no CI step runs `make test-cov` — has ci.yml moved?"
+    # CI runs the suite through a Makefile target, so the anchor above is one level removed
+    # from the command it stands for. Re-derive that the target still runs the suite with
+    # coverage, or emptying it would leave this invariant reading a step that tests nothing.
+    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+    target = re.search(r"^test-cov:\n((?:\t.*\n)+)", makefile, re.MULTILINE)
+    assert target is not None, "Makefile has no `test-cov` target — CI's Pytest step points at it"
+    assert "./scripts/test.sh" in target.group(1) and "--cov" in target.group(1), (
+        f"`make test-cov` no longer runs the suite with coverage:\n{target.group(1)}"
     )
-    assert runs_suite is not None, "no CI step runs the suite with coverage — has ci.yml moved?"
     install = next(
         (line for line in reversed(lines[:runs_suite]) if "uv sync" in line),
         "",

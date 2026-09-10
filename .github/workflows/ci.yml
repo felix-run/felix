@@ -164,10 +164,12 @@ jobs:
         run: uv sync --locked --dev --extra temporal --extra warehouse --extra sandbox --extra otel
       - name: Bundle manifests
         run: uv run felix bundle-manifests
-      # ./scripts/test.sh owns the in-memory test environment — the same
-      # entry point `make test` uses, so CI and local runs cannot drift.
-      # Coverage floor is the measured number, ratcheted up deliberately —
-      # never an aspirational one, which only teaches people to bypass it.
+      # `make test-cov` is the same target `make check` runs, and it wraps
+      # ./scripts/test.sh, which owns the in-memory test environment — so the command,
+      # the environment and the coverage floor cannot drift between CI and a local run.
+      # The floor itself lives in pyproject ([tool.coverage.report] fail_under) and is the
+      # measured number, ratcheted deliberately — never an aspirational one, which only
+      # teaches people to bypass it.
       # REQUIRE_OPTIONAL_EXTRAS turns a missing extra into a failure instead of a
       # collect-time skip: a module-level importorskip removes a whole file from the
       # run without touching the skip count, which reads exactly like a pass.
@@ -177,7 +179,7 @@ jobs:
           # ubuntu-latest ships helm; if it ever stops, the topology tests must fail
           # here rather than skip — the helm job below only runs when the chart changes.
           FELIX_REQUIRE_HELM: "1"
-        run: ./scripts/test.sh -q --cov --cov-report=term:skip-covered --cov-fail-under=70
+        run: make test-cov
 
   # The in-memory stores are the CI test path, and nothing compared them against the
   # Postgres ones they stand in for — so a green suite was evidence about the twin, not
@@ -252,6 +254,31 @@ jobs:
           --manifest quick
           --fixture fixtures/eval/smoke.json
           --mock
+        env:
+          FELIX_ALLOW_INSECURE: "true"
+          FELIX_AUTH_MODE: none
+          FELIX_DATABASE_URL: memory://ci
+          FELIX_OBJECT_STORE: memory
+      # The counter-smoke. Every item in `negative.json` carries a `mock_answer` that violates
+      # its own rubric, so the run must exit non-zero. Without it the step above proves only
+      # that the pipeline executes: a scorer rewritten to always pass leaves it green, and so
+      # does one that never runs. `tests/unit/test_eval_gate_can_fail.py` asserts the same pair
+      # locally, so this is the CI-shaped half rather than the only half.
+      - name: Mock eval fixture must be able to fail
+        run: |
+          set +e
+          uv run felix eval \
+            --dataset negative \
+            --manifest quick \
+            --fixture fixtures/eval/negative.json \
+            --mock
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "::error::the negative eval fixture passed; the scorer cannot fail" >&2
+            exit 1
+          fi
+          echo "negative fixture failed as required (exit $status)"
         env:
           FELIX_ALLOW_INSECURE: "true"
           FELIX_AUTH_MODE: none

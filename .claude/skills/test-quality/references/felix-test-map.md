@@ -51,17 +51,21 @@ Same principle for models: use the eval fixture path (`--mock`) rather than asse
 
 ## Coverage: one number, ratcheted
 
-CI's `test` job runs the lean install and then:
+CI's `test` job runs the lean install and then `make test-cov`, which is also what `make check`
+runs:
 
 ```bash
-./scripts/test.sh -q --cov --cov-report=term:skip-covered --cov-fail-under=70
+./scripts/test.sh -q --cov --cov-report=term:skip-covered
 ```
 
-The comment on that line is the policy: *the coverage floor is the measured number, ratcheted up
-deliberately — never an aspirational one, which only teaches people to bypass it.* Raising it means
-editing that single flag in `.github/workflows/ci.yml` after the measured number rises.
-`[tool.coverage.run]` covers the five source roots with `branch = false`, and
-`[tool.coverage.report]` excludes `if TYPE_CHECKING:`, `raise NotImplementedError`, and `@overload`.
+The floor is `fail_under` under `[tool.coverage.report]` in `pyproject.toml`, and the comment there
+is the policy: *the coverage floor is the measured number, ratcheted up deliberately — never an
+aspirational one, which only teaches people to bypass it.* Raising it means editing that one value
+after the measured number rises. It used to be a `--cov-fail-under` flag in
+`.github/workflows/ci.yml` instead, which meant `make check` measured no coverage at all and
+enforced nothing — a local run could not tell you what CI would say. `[tool.coverage.run]` covers
+the five source roots with `branch = false`, and `[tool.coverage.report]` excludes
+`if TYPE_CHECKING:`, `raise NotImplementedError`, and `@overload`.
 
 Read shape, not the number:
 

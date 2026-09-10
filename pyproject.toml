@@ -94,8 +94,8 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["E501", "RUF012", "RUF034"]
 
-# Coverage is measured in CI with `--cov --cov-fail-under`; it is deliberately
-# not in pytest addopts so a single-test run stays fast.
+# Coverage is measured by `make test-cov` (what `make check` and CI both run); it is
+# deliberately not in pytest addopts so a single-test run stays fast.
 [tool.coverage.run]
 source = [
     "packages/ai/src/felix_ai",
@@ -107,6 +107,12 @@ source = [
 branch = false
 
 [tool.coverage.report]
+# The floor lives here rather than on the CI command line, so `make check` enforces the same
+# number CI does — locally it enforced nothing before, because `check` ran the suite without
+# coverage at all and the number lived only in ci.yml. Measured 80% on 2026-09-10 (was 70 when the
+# gate was written and 77 when this audit started); ratcheted deliberately, never aspirationally,
+# because a floor nobody meets only teaches people to pass `--no-cov`.
+fail_under = 79
 skip_covered = false
 show_missing = true
 exclude_also = [

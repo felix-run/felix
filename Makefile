@@ -65,12 +65,18 @@ type:
 test:
 	./scripts/test.sh
 
+# The coverage floor lives in pyproject ([tool.coverage.report] fail_under), so it has one
+# home instead of two. It only bites when coverage is actually measured, which is why
+# `check` runs this target and not `test` — the bare `test` stays fast for the edit loop.
+test-cov:
+	./scripts/test.sh -q --cov --cov-report=term:skip-covered
+
 schema:
 	# schemas/manifest.schema.json backs the yaml-language-server header in
 	# manifests/*.yaml; test_invariants.py fails when it drifts from the models.
 	uv run python scripts/gen-manifest-schema.py
 
-check: lint type test
+check: lint type test-cov
 	uv run ruff format --check .
 
 # Everything CI gates on that `check` does not: the structural and packaging jobs.

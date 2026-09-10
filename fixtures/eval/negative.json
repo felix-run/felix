@@ -1,0 +1,30 @@
+{
+  "name": "negative",
+  "description": "CI counter-smoke — every item must FAIL. Proves the scorer can say no.",
+  "items": [
+    {
+      "item_id": "equals-mismatch",
+      "user_input": "Reply with exactly: ok",
+      "rubric": {
+        "expect": "ok",
+        "mock_answer": "not ok"
+      }
+    },
+    {
+      "item_id": "contains-missing",
+      "user_input": "Say hello",
+      "rubric": {
+        "contains": "hello",
+        "mock_answer": "goodbye"
+      }
+    },
+    {
+      "item_id": "too-short",
+      "user_input": "Write a short note",
+      "rubric": {
+        "min_chars": 32,
+        "mock_answer": "tiny"
+      }
+    }
+  ]
+}

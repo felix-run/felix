@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The eval gate can now fail, and the coverage floor now applies locally.** Two CI gates were
+  passing without testing anything. `fixtures/eval/smoke.json` gives every item a `mock_answer`
+  that satisfies its own rubric, so the mock eval run passed by construction: a scorer rewritten
+  to `return True, 1.0, "x"` left the step green, and so would one that never ran. There is now a
+  counter-smoke, `fixtures/eval/negative.json`, whose every item violates its own rubric and whose
+  run must exit non-zero, plus `tests/unit/test_eval_gate_can_fail.py` asserting the same pair
+  locally, per rule and in both directions. Proved by mutation: an always-passing scorer turns
+  three of the four tests red and drops the CI step's exit code to 0.
+
+  The coverage floor moved from a `--cov-fail-under=70` flag in `.github/workflows/ci.yml` to
+  `fail_under` under `[tool.coverage.report]` in `pyproject.toml`, and `make check` now runs the
+  suite through the new `make test-cov` target, which CI runs too. Before this, `make check`
+  measured no coverage at all, so the floor existed only inside CI and a local run could not tell
+  you what CI would say. Ratcheted to the measured number, 79 against a measured 80.36%.
+
 - **The worker's periodic tasks are executed by tests, and their schedules are pinned**
   (`tests/unit/test_worker_cron_tasks.py`). Six of the eight had never been run by anything:
   `test_worker_instrumentation.py` asserts each is *wrapped* and `test_worker_tenant_sweeps.py`
