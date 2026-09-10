@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The manifest twin accepted a canary weight the database refuses.** `0001_baseline` carries
+  `CHECK (canary_weight BETWEEN 0 AND 100)`, and `set_canary`'s in-memory branch validated
+  nothing — so a weight of 150 stored happily on `memory://` and raised an `IntegrityError` on
+  Postgres. The value is not inert: it feeds the canary hash router, so that weight diverted
+  every request to the canary on one backend and was unreachable on the other. The REST route
+  already bounds the field; the store now does too, because plugins and worker jobs call it
+  directly.
+- **The manifest twin handed back the stored document by reference.** `get_version` returned
+  the dict it holds, so a caller that edited what it was given silently rewrote what every
+  later reader of that version saw. Postgres deserialises fresh JSONB per read and never had
+  the problem — a corruption with no write in sight, on the backend the whole suite runs
+  against. It returns a copy now.
+
+### Added
+
+- **A conformance contract for the manifest store** (`tests/conformance/test_manifest_store.py`).
+  The active pointer is what every request resolves through and the canary beside it decides
+  what fraction of traffic gets a different agent, and until now the Postgres half of both ran
+  only under `test_migrations.py` — which creates the schema and never queries it. Eighteen
+  tests over versioning, the active pointer, the canary and the tenant boundary; both defects
+  above were found by writing it, and both are proved by mutation.
+
+### Fixed
+
 - **The worker's per-tenant sweeps read nothing under row-level security.** Every HTTP request
   is wrapped in `async_run_with_context`, which binds `rls_tenant(...)`, so the fifty-odd
   tenant-scoped store functions inherit `app.tenant_id` and none of them binds explicitly. The

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from copy import deepcopy
 from typing import Any
 
 from sqlalchemy import func, select
@@ -39,7 +40,12 @@ def _version_dict(row: ManifestRow | dict[str, Any]) -> dict[str, Any]:
             "tenant_id": row["tenant_id"],
             "name": row["name"],
             "version": row["version"],
-            "manifest": row["manifest_json"],
+            # Copied, not aliased. Postgres deserialises fresh JSONB on every read, so a
+            # caller that edits the manifest it got back changes nothing; the twin handed out
+            # the stored dict itself, and the same edit silently rewrote what every later
+            # reader of that version would see. A divergence that only bites in memory is the
+            # kind that makes a test pass and production fail.
+            "manifest": deepcopy(row["manifest_json"]),
             "created_at": row["created_at"],
             "created_by": row.get("created_by", ""),
             "comment": row.get("comment", ""),
@@ -197,6 +203,15 @@ async def set_canary(
     updated_by: str = "",
 ) -> dict[str, Any] | None:
     ts = now_ms()
+
+    # `0001_baseline` carries CHECK (canary_weight BETWEEN 0 AND 100), so Postgres refuses an
+    # out-of-range weight with an IntegrityError while the twin stored it happily. The stored
+    # value is not inert: it feeds the canary hash router, so a weight of 150 diverted every
+    # request to the canary on `memory://` and was unreachable on the system of record. The
+    # REST route already bounds the field; this is the store saying the same thing, because
+    # plugins and worker jobs call it directly.
+    if not 0 <= canary_weight <= 100:
+        raise ValueError(f"canary_weight must be between 0 and 100, got {canary_weight}")
 
     if canary_version is not None:
         version_row = await get_version(settings, tenant_id, name, canary_version)
