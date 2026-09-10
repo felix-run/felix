@@ -120,8 +120,13 @@ async def create_fiber(
         _memory_fibers[(tenant_id, fiber_id)] = row
         return _fiber_dict(row)
 
-    factory = get_session_factory(settings=settings)
-    async with factory() as db:
+    # Bound to this tenant rather than bypassing: the caller named the tenant, so the policy
+    # can enforce it instead of being switched off. The HTTP path already supplies one --
+    # `AuthMiddleware` wraps every request in `async_run_with_context`, which binds it -- but
+    # the worker has no request context, and `fiber_scheduler` reaches here.
+    from felix.db.session import tenant_session
+
+    async with tenant_session(settings, tenant_id) as db:
         db.add(Fiber(**row))
         await db.commit()
         return row
@@ -676,8 +681,11 @@ async def get_fiber(settings: Settings, tenant_id: str, fiber_id: str) -> dict[s
     if _use_memory(settings):
         row = _memory_fibers.get((tenant_id, fiber_id))
         return _fiber_dict(row) if row else None
-    factory = get_session_factory(settings=settings)
-    async with factory() as db:
+    # Same reasoning as `create_fiber`. Unbound under an enforcing policy this returns None
+    # for a fiber that exists, so a resume token reads as an unknown run rather than an error.
+    from felix.db.session import tenant_session
+
+    async with tenant_session(settings, tenant_id) as db:
         fiber = await db.get(Fiber, (tenant_id, fiber_id))
         return _fiber_dict(fiber) if fiber else None
 
