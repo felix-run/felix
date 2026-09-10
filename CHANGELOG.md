@@ -7,55 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- **A manifest declaring `keep_recent_tokens: 0` silently ran with 20000.**
-  `POST /chat/compact` built its strategy with `int(getattr(spec, field, default) or default)`,
-  which treats a declared `0` as absent — and the schema allows `0` (`ge=0`) for both
-  `reserve_tokens` and `keep_recent_tokens`. So compaction kept 20000 tokens of recent context
-  whatever the manifest asked for, found nothing older to summarise, and answered `ok` having
-  called no model at all. The declared window was not the one the route used and nothing said
-  so, which is this repo's signature defect shape. Found while trying to write a test for the
-  summarising branch and being unable to make it fire.
-- **The thinking level was written twice and only one copy was read by the run.** The snapshot
-  resolves it from a `thinking_level_change` event; the next turn resolves it from thread
-  metadata and turns it into a thinking budget on the model spec. Nothing covered the second
-  path, so a thread could display "high" and run with thinking off. Now pinned on the spec the
-  provider is built from, which is the only place the difference is visible.
-
 ### Added
 
-- **The run controls are tested over the wire.** Sixteen tests in
-  `tests/e2e/test_chat_run_control.py` cover steer, follow-up, abort, continue, fork, rewind,
-  compact, thinking and the UI prompt bridge — endpoints where "returned 200" is least like
-  "did the thing", and which until now had no test at all. Each reads the state back: abort
-  sets both the rendered `phase` and the flag the loop actually checks, a fork copies the log
-  and records its parent and does not move when the branch is written to, a rewind moves the
-  leaf and a 404 moves nothing, compaction of a short thread calls no model while a real one
-  summarises and is billed, and answering a pending UI prompt releases the waiter that was
-  blocking on it. Each is proved by mutation.
-- **The e2e spy records the prompts and the model specs.** `ProviderSpy.prompts` /
-  `texts_seen()` and `ProviderSpy.specs` make assertable a class of behaviour the reply cannot
-  show: the reply is scripted, so a run that ignored a steer, skipped compaction or ran with
-  the wrong thinking budget answers identically.
-- **Thread state is reset between tests.** `_memory_session_stores`, `_meta_by_thread` and
-  `_leaf_by_thread` are process globals that nothing cleared, so a test reusing another's
-  thread id inherited its transcript, leaf and phase. The suite was correct only because every
-  id in it happened to be unique.
+- **The management routers are tested over the wire, with real scopes.** `routes/jobs.py` and
+  `routes/eval.py` received zero requests anywhere in the suite and `routes/audit.py` had one;
+  between them they are the operator's whole view of what the harness scheduled, evaluated and
+  refused. Nineteen tests in `tests/e2e/test_mgmt_routes.py` cover jobs CRUD and its runs list,
+  eval datasets and runs, the audit log and its metrics rollup, and approvals through to a
+  decide that records who made it. They run under `auth_mode=api_key` rather than the suite's
+  usual `none`, because `require_mgmt_scopes` is skipped entirely when auth is off: a scoped
+  route tested without auth proves the handler works and says nothing about who may reach it.
+  Each positive case uses a key holding only the scope under test rather than `admin`, which
+  satisfies every gate by design — so a deleted `require_mgmt_scopes` call fails the test
+  instead of passing it. Proved by mutation.
+
+### Fixed
+
+- **The management stores leaked between tests.** `_memory_datasets`, `_memory_items`,
+  `_memory_runs`, `_memory_jobs` and `_memory_approvals` are process globals that nothing
+  cleared. Writing an eval dataset named `smoke` in one test changed the item count another
+  test asserted against the bundled `smoke` fixture, and the failure surfaced as an off-by-one
+  in a file that had not changed. Each store now exports its own
+  `reset_*_for_tests()` beside the globals it clears, following the convention
+  `reset_documents_for_tests` and `reset_search_index_for_tests` already set, and the autouse
+  fixture calls those rather than reaching across the package for six private dicts. The
+  session-state reset added last cycle now uses the `reset_thread_meta_for_tests()` that
+  already existed and had no caller.
 
 ### Known and deliberately unfixed
 
-- **A steer queued on an idle thread is dropped without reaching anyone.**
-  `POST /chat/steer` with the default `kind: steer` answers 200 with `{"queued": "steer"}` and
-  the snapshot then reports one queued item; the next turn clears the count and the text
-  reaches neither the model nor the transcript. From the client's side that is
-  indistinguishable from delivery: accepted, counted, gone. `kind: follow_up` is the idle path
-  and is delivered. A steer is meant to interrupt a run already in flight, so having nothing to
-  interrupt is arguably the caller's mistake — but nothing tells them.
-  `test_a_steer_queued_while_idle_is_dropped_without_reaching_anyone` pins it so that making it
-  error, redirect, or hold the message is a deliberate act with a failing test to rewrite.
-  What it should do is a product decision, tracked in `docs/ROADMAP.md`.
-
+- **An eval dataset item written with unrecognised keys is stored empty.** `items` is
+  `list[dict[str, Any]]` and `put_dataset` reads only `user_input` and `rubric`, so an item
+  spelled any other way — including the `input`/`expect` the bundled JSON fixtures use — is
+  accepted with 200, listed as present, and stored with an empty prompt and an empty rubric.
+  The dataset then looks configured and scores nothing.
+  `test_an_eval_item_with_unrecognised_keys_is_stored_empty` pins it. Rejecting unknown keys is
+  an API decision rather than a bug fix, so it is raised in `docs/ROADMAP.md` next to the
+  eval-scoring-depth item rather than changed here.
 ## [0.2.2] — 2026-08-25
 
 ### Fixed

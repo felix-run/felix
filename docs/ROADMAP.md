@@ -271,6 +271,13 @@ comment explaining exactly that. It is conditional, not inert.
       satisfy their own rubrics (`_mock_answer` returns `rubric["expect"]` when none is given), so
       it proves the plumbing executes and scores nothing about the agent. Optional nightly against
       `api.felix.run` that does not block PRs.
+- [ ] **Validate eval dataset items, or document that they are free-form.** An item whose keys
+      are not `user_input` / `rubric` is accepted with 200 and stored with an empty prompt, so
+      the dataset looks configured and scores nothing — the bundled JSON fixtures use
+      `input`/`expect`, which is exactly the spelling that silently produces nothing. Pinned by
+      `tests/e2e/test_mgmt_routes.py::test_an_eval_item_with_unrecognised_keys_is_stored_empty`.
+      Pairs with the item below.
+
 - [ ] **Eval scoring depth** — four string rules (`equals` / `contains` / `min_chars` / non-empty)
       plus one judge. No regex, no schema check, no tool-call or trajectory assertions, no numeric
       tolerance, no significance test on comparative runs. Nobody can gate a model change on this
@@ -485,10 +492,14 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       including the one that actually summarises — which only became reachable once the route
       stopped reading `keep_recent_tokens: 0` as 20000. Still open: the `/chat/continue` success
       path (both tests are its 400 guards), `/chat/rewind` at its default `summarize: true`,
-      `/chat/fork` with `from_event_id`, a steer against a run genuinely in flight, and the
-      management routers — `routes/jobs.py` and `routes/eval.py` still receive zero requests anywhere in
-      `tests/`. `patterns/delegating.py` also still has no named test, and needs a per-client
-      sub-queue in the fixture before it can have one.
+      `/chat/fork` with `from_event_id`, and a steer against a run genuinely in flight. The
+      management routers are covered (`tests/e2e/test_mgmt_routes.py`): jobs, eval datasets and
+      runs, audit and its metrics rollup, and approvals including a decide, under
+      `auth_mode=api_key` so the scope gates are exercised rather than skipped. Two things
+      there remain unpinned and are marked as such in the tests: the eval route's `tools`
+      hand-off (no dataset item calls a tool) and its `use_llm_judge` inversion.
+      `POST /eval/runs/compare` still has no caller at all. `patterns/delegating.py` still has no named test, and needs a per-client
+      sub-queue in the fixture before it can have one — the last piece of this item.
 - [ ] **Decide what a steer queued on an idle thread should do.** Today it is accepted with
       200, counted on the snapshot, then dropped before reaching the model or the transcript —
       `kind: follow_up` is the path that works. Found by asserting on what reached the model
