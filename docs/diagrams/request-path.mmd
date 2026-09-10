@@ -1,0 +1,39 @@
+---
+title: POST /chat request path
+---
+%% Source of truth: apps/api/src/felix_api/app.py:create_app (middleware order)
+%% and apps/api/src/felix_api/routes/chat.py:_chat_turn
+flowchart TB
+    accTitle: How a chat request reaches the model and the session log
+    accDescr: Four pure-ASGI middlewares run outermost to innermost — request id, security headers, body limit, rate limit, auth — so every response including a 413 or a 401 carries a correlation id, an oversized body is rejected before any other work, and a request that will fail authentication is still counted against the rate limit. The route then resolves the manifest, applies inbound screening to the user's messages, and branches on spec.execution.mode: a durable manifest enqueues a fiber and returns 202 with a resume token, while a transient one compiles the agent and runs the turn inline. Either way the turn appends to the Postgres session event log.
+
+    subgraph mw["ASGI middleware — outermost first"]
+        direction TB
+        rid[RequestIdMiddleware] --> sec[SecurityHeadersMiddleware]
+        sec -->|"413 before any parsing"| body[BodyLimitMiddleware]
+        body -->|"counts even a request that will 401"| rate[RateLimitMiddleware]
+        rate -->|"none, api_key, jwt, or a registered mode"| auth[AuthMiddleware]
+    end
+
+    auth -->|"404 on unknown manifest"| resolve[["_chat_turn<br/>resolve, pin, screen"]]
+    resolve --> mode{"spec.execution.mode"}
+
+    mode -->|"durable"| fiber["start_durable_chat<br/>202 + resume_token"]
+    mode -->|"transient"| build[[build_tenant_agent]]
+    build -->|"agent.invoke or stream_events"| loop["ReAct turn loop<br/>see react-turn"]
+
+    loop -->|"appends events, reads history"| pg[("Postgres<br/>session_events")]
+    fiber -->|"writes a pending fiber row"| pg
+    loop -->|"chat completion over HTTPS"| model([Model provider])
+
+    class loop focal
+    class mode focal
+    class model external
+    class pg store
+    class rid,sec,body,rate,auth,resolve,fiber,build primary
+
+    classDef focal    fill:#dbeaf5,stroke:#0072B2,stroke-width:2px,color:#062033
+    classDef primary  fill:#f4f6f9,stroke:#5a6272,stroke-width:1px,color:#10203a
+    classDef external fill:#ffffff,stroke:#767676,stroke-width:1px,stroke-dasharray:4 3,color:#3b414d
+    classDef store    fill:#f4f6f9,stroke:#4a7a52,stroke-width:1px,color:#14261a
+    style mw fill:none,stroke:#c3c9d4,stroke-width:1px,color:#3b414d

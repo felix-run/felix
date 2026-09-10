@@ -1,0 +1,36 @@
+---
+title: Workspace dependency rule
+---
+%% Source of truth: pyproject.toml workspace members and
+%% tests/unit/test_invariants.py, which fails the build if felix_ai imports felix.
+flowchart TB
+    accTitle: Which package may import which, and the one rule that is enforced
+    accDescr: felix_ai holds the model layer — the OpenAI and Anthropic wire formats, the model catalog, and the neutral turn types — and it may not import felix. A repo invariant test enforces that, and it is what makes Felix model-agnostic rather than merely claiming to be. Anything the harness needs to inject arrives as a Protocol such as ToolSchema or ModelConfig, or through a sink that patterns/model_sinks.py installs at build time. Everything else depends downward: the API and worker apps and the CLI all import felix, and felix imports felix_ai.
+
+    subgraph apps["Deployables"]
+        direction LR
+        api["apps/api<br/>felix-api"]
+        worker["apps/worker<br/>felix-worker, felix-scheduler"]
+        cli["packages/cli<br/>felix"]
+    end
+
+    api -->|"imports"| harness
+    worker -->|"imports"| harness
+    cli -->|"imports"| harness
+
+    harness["packages/harness — felix<br/>the whole harness"]
+    harness -->|"imports wire formats + turn types"| ai
+
+    ai["packages/ai — felix_ai<br/>wire/, catalog, ModelProvider"]
+    ai -.->|"MUST NOT import felix<br/>enforced by test_invariants"| harness
+
+    harness -->|"installs observability + context sinks"| sinks["patterns/model_sinks.py"]
+    sinks -.->|"fills the seams felix_ai leaves open"| ai
+
+    class ai focal
+    class harness focal
+    class api,worker,cli,sinks primary
+
+    classDef focal    fill:#dbeaf5,stroke:#0072B2,stroke-width:2px,color:#062033
+    classDef primary  fill:#f4f6f9,stroke:#5a6272,stroke-width:1px,color:#10203a
+    style apps fill:none,stroke:#c3c9d4,stroke-width:1px,color:#3b414d

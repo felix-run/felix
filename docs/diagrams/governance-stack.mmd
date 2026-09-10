@@ -1,0 +1,40 @@
+---
+title: Governance wrapper order
+---
+%% Source of truth: packages/harness/src/felix/manifests/builder.py, the block
+%% commented "Governance pipeline (order matters)". Each apply_* clones the tool
+%% with a new executor, so registration order IS call-path nesting: the LAST one
+%% applied runs FIRST on the way in, and LAST on the way out.
+flowchart TB
+    accTitle: What a tool call passes through, inbound and outbound
+    accDescr: A model's tool call enters at the outermost wrapper and unwinds back out through the same stack. Artifact spill is outermost, so it sees the final content; secret masking is innermost, so it redacts before any other wrapper reads output. Approvals can suspend the call and wait for a human decision, and policies, command screening, content screening, limits and guardrails can each deny it outright — a denial short-circuits the rest of the stack and returns a deny_output to the model. Command screening can also require approval rather than deny outright, so a run can be suspended from two places in the stack. Only controls the manifest enables are installed, with one exception: limits is always applied, because gating it on any_limit() once left manifests with no tool-call cap, no wall clock, and no spend ceiling.
+
+    subgraph stack["Governance stack — outermost to innermost"]
+        direction TB
+        spill["apply_artifact_spill<br/>spec.artifacts"] -->|"pauses run, writes approvals row"| appr["apply_approvals<br/>spec.approvals"]
+        appr --> judges["apply_judges<br/>spec.guardrails.judges"]
+        judges --> guard["apply_guardrails<br/>spec.guardrails"]
+        guard -->|"tool-call count, wall clock, tokens, spend"| limits["apply_limits<br/>always installed"]
+        limits --> content["apply_content_screening<br/>PII + injection"]
+        content -->|"command text of sandbox and container tools"| command["apply_command_screening"]
+        command -->|"first matching rule wins"| policies["apply_policies<br/>spec.policies"]
+        policies --> mask["apply_secret_masking<br/>innermost"]
+    end
+
+    mask -->|"runs the real executor"| exec(["Bound tool executor"])
+    exec -.->|"output unwinds back up, masked first"| mask
+
+    appr -.->|"denied, blocked, or over budget"| deny["deny_output<br/>returned to the model"]
+    policies -.-> deny
+    content -.-> deny
+    limits -.-> deny
+
+    class mask focal
+    class deny risk
+    class exec primary
+    class spill,appr,judges,guard,limits,content,command,policies primary
+
+    classDef focal    fill:#dbeaf5,stroke:#0072B2,stroke-width:2px,color:#062033
+    classDef primary  fill:#f4f6f9,stroke:#5a6272,stroke-width:1px,color:#10203a
+    classDef risk     fill:#fbe4dc,stroke:#D55E00,stroke-width:2px,color:#5a2000
+    style stack fill:none,stroke:#c3c9d4,stroke-width:1px,color:#3b414d
