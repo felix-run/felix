@@ -68,8 +68,15 @@ across the set:
 | `{Diamond}` | A branch: a config value or a condition decides the path |
 | `([Stadium])` | Something outside Felix, or a terminal |
 | `[[Subroutine]]` | A step drawn in full in its own diagram |
-| Blue fill | The one or two nodes the diagram exists to point at |
+| Blue outline, heavier | The one or two nodes the diagram exists to point at |
 | Dashed border | Called but not controlled |
+| Green outline | Durable state |
+
+Roles are carried by **outline color and weight, never by fill**, and no diagram sets a text
+color. That is what lets the same source read correctly on a light and a dark background — labels
+inherit the viewer's theme instead of being pinned to one canvas. Every stroke color clears the WCAG
+3:1 non-text threshold against both a white and a `#0d1117` page. If you add a role, check it the
+same way before using it.
 
 Every diagram carries `accTitle` and `accDescr`. The description is written to be the thing a reader
 gets if the image never loads, which is also the fastest way to find out that a diagram has no
