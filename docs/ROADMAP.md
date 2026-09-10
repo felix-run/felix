@@ -548,23 +548,10 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       claim's WHERE takes it to 0.15 ms at a fifth the size of `idx_fibers_due`. Worth doing now
       that the WHERE clause is stable.
 
-- [ ] **Worker cron bodies and CLI commands.** Six of eight Taskiq tasks never execute in a test
-      and no test pins the cron strings; `migrate`, `eval`, `mint-jwt`, `bundle-manifests`,
-      `version` and `temporal-worker` are never invoked.
-- [ ] **A negative eval fixture.** The three smoke items each carry a `mock_answer` that satisfies
-      its own rubric, so a scorer mutated to `return True` passes CI unchanged. One item that must
-      fail proves the scorer can say no. Pairs with the eval-scoring-depth item above, and does
-      not need it.
-- [ ] **Coverage floor in one place.** The 70 lives only in `.github/workflows/ci.yml:173`, so
-      `make check` enforces none. Move it to `[tool.coverage.report] fail_under` at the measured
-      number and register pytest markers (`e2e`, `structural`, `live`) with `--strict-markers`.
-      `tests/test_smoke.py:62-88` still makes a live model call and skips on any exception, which
-      makes it a permanent no-op; mark it `live` and drop it from the default run.
-- [ ] **One provider-registry restore helper.** `reset_model_provider_registry()` +
-      `register_builtin_providers()` appears in three test files and drops every plugin-registered
-      provider for the rest of the session, which `patterns/model.py:501-508` documents as a bug.
-      `tests/e2e/conftest.py` snapshots and restores the dict instead; the other two should share
-      that helper.
+- [~] **Worker cron bodies and CLI commands.** The eight cron bodies are covered and their
+      schedules pinned (`tests/unit/test_worker_cron_tasks.py`). Still open: the CLI, where
+      `migrate`, `eval`, `mint-jwt`, `bundle-manifests`, `version` and `temporal-worker` are
+      never invoked by a test.
 
 ### Repo / release hygiene
 

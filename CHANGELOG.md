@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The worker's periodic tasks are executed by tests, and their schedules are pinned**
+  (`tests/unit/test_worker_cron_tasks.py`). Six of the eight had never been run by anything:
+  `test_worker_instrumentation.py` asserts each is *wrapped* and `test_worker_tenant_sweeps.py`
+  runs two, so the rest were covered only by importing. That is worse than an ordinary coverage
+  gap, because the worker is the only thing that runs periodic work — audit and usage flush,
+  retention, memory consolidation, the job scheduler and the fiber resume live here and nowhere
+  else, and a body that stops working takes its whole responsibility with it silently, since
+  nothing downstream complains about work that never happened.
+
+  Each body now runs for effect: the flushes drain their buffer into the store, a due job fires
+  and a disabled one does not, retention prunes what is past its TTL and leaves what is not, and
+  the fiber scheduler advances a due fiber. The eight cron strings are read off the source by
+  AST and compared against a written-out table, so a schedule changed from `*/1` to `0 3` — a
+  one-character edit turning a minute into a day — fails instead of shipping. Each proved by
+  mutation.
+
+### Added
+
 - **A conformance arm where the tenant policy is actually enforced**
   (`tests/conformance/test_rls_enforcement.py`). Every other contract in that directory connects
   as the database owner, which is a superuser in CI and in the bundled compose image — and a
