@@ -266,6 +266,11 @@ async def test_paging_survives_events_sharing_a_timestamp(store_settings: Any) -
     written = [{"ts": 100, "principal_subj": f"user-{i}"} for i in range(5)]
     await _record_many(store_settings, [dict(e) for e in written])
 
+    # The precondition, stated separately: if the flush wrote fewer rows than were recorded,
+    # the walk below reports a paging bug for something that went wrong two steps earlier.
+    stored, _ = await audit.query(store_settings, TENANT, limit=100)
+    assert len(stored) == len(written), f"the flush stored {len(stored)} of {len(written)} events"
+
     seen: list[dict[str, Any]] = []
     cursor: str | None = None
     for _ in range(10):
@@ -278,3 +283,35 @@ async def test_paging_survives_events_sharing_a_timestamp(store_settings: Any) -
 
     subjects = sorted(e["principal_subj"] for e in seen)
     assert subjects == sorted(e["principal_subj"] for e in written), subjects
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_a_filter_and_a_tie_together(store_settings: Any) -> None:
+    """The two paging hazards at once, which neither other test reaches.
+
+    `test_a_filter_still_applies_on_the_second_page` gives every event a distinct timestamp, so
+    the pair comparison degenerates to the timestamp comparison the old cursor already got
+    right. `test_paging_survives_events_sharing_a_timestamp` has no filter. Real traffic has
+    both: one turn's events share a millisecond, and an operator looking for refusals filters
+    by status while paging through them.
+    """
+    written = [
+        {"ts": 100, "principal_subj": f"user-{i}", "status": "denied" if i % 2 else "allowed"}
+        for i in range(6)
+    ]
+    denied = sorted(e["principal_subj"] for e in written if e["status"] == "denied")
+    await _record_many(store_settings, [dict(e) for e in written])
+
+    seen: list[dict[str, Any]] = []
+    cursor: str | None = None
+    for _ in range(10):
+        page, cursor = await audit.query(store_settings, TENANT, status="denied", limit=1, cursor=cursor)
+        seen.extend(page)
+        if cursor is None:
+            break
+    else:  # pragma: no cover - only on a cursor that does not terminate
+        pytest.fail("the cursor never reported the end of the filtered history")
+
+    assert [e["status"] for e in seen] == ["denied"] * len(seen), seen
+    assert sorted(e["principal_subj"] for e in seen) == denied

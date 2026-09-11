@@ -558,11 +558,24 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       that connects as a superuser with RLS off. Found while verifying the fiber claim contract
       against a live database; fixed in a separate change.
 
+- [ ] **The keyset cursor's tie-break is collation-dependent.** `felix/cursors.py` pairs the
+      timestamp with the row id, and `id` is text — so Postgres orders it by the database
+      collation while the in-memory twin orders it by Python code point. The ids actually
+      written are `uuid4().hex`, which sorts the same under every common collation, and
+      `record_event` accepts a caller-supplied id only. Paging stays complete on both, since
+      each backend is self-consistent; the exposure is the order of two rows in one
+      millisecond differing between them, which no contract would catch because every test
+      asserts set equality over pages. Fix if a caller-supplied id ever becomes ordinary.
+
 - [ ] **An index for the audit and usage listings' new ordering.** Both now
       `ORDER BY ts DESC, id DESC` so the keyset cursor has a total order to page on, while
-      `idx_audit_tenant_ts` covers `(tenant_id, ts)` only. Postgres can still use it and sort
-      `id` within each millisecond, which is cheap because ties are few — but the covering
-      index is `(tenant_id, ts, id)` and it is one migration. Measure before adding it.
+      `idx_audit_tenant_ts` and `idx_usage_tenant_ts` cover `(tenant_id, ts)` only. Measured at
+      100k rows, 50 per distinct `ts`, the plan is an `Index Scan Backward` on that index under
+      an `Incremental Sort` with `ts` presorted — correct, and cheap while a single
+      `(tenant_id, ts)` group stays small, because only the group holding the page boundary is
+      sorted. It degrades when one millisecond's group gets large. A `(tenant_id, ts DESC,
+      id DESC)` index removes the sort node and makes the cursor a pure index seek; that is one
+      revision, and a refinement rather than a correctness gap.
 
 - [ ] **An index for the fiber claim's ordering.** `ORDER BY updated_at LIMIT 50` has no
       supporting index; measured at 200k rows it is 11 ms, and a partial index matching the

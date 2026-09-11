@@ -12,6 +12,14 @@ way for a compliance record to be wrong.
 The fix is to make the sort key unique by pairing the timestamp with the row id, and to
 compare the pair. Both stores order by `(ts, id)` descending and page on `(ts, id) < (last_ts,
 last_id)`, which is a strict total order, so every row is on exactly one page.
+
+One caveat, latent rather than live: `id` is text, so Postgres orders it by the database
+collation and the in-memory twin orders it by Python code point. Those agree for the ids
+actually written — `uuid4().hex` is lowercase hex, which sorts identically under every common
+collation — but `record_event` accepts a caller-supplied id, and under a non-C collation an id
+outside that alphabet could order differently on the two backends. Paging stays correct and
+complete either way, because each backend is self-consistent; only the order between two rows
+in the same millisecond could differ.
 """
 
 from __future__ import annotations

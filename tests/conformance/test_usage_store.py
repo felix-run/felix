@@ -39,6 +39,18 @@ def _record(settings: Any, *, manifest: str, model: str, tokens: int, tenant: st
     )
 
 
+@pytest.fixture
+def one_millisecond(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stop the clock, so every row recorded under it shares a timestamp.
+
+    `record_tokens` stamps `now_ms()` itself — there is no timestamp argument, which is
+    right — so this is how the tie the paging tests need is produced. It is not contrived:
+    several model calls inside one turn are metered microseconds apart, and `ts` is
+    milliseconds.
+    """
+    monkeypatch.setattr(usage_store, "now_ms", lambda: 100)
+
+
 @parametrized
 @pytest.mark.asyncio
 async def test_cost_and_wire_id_survive_the_round_trip(usage_settings: Any) -> None:
@@ -116,3 +128,65 @@ async def test_summary_window_is_half_open_in_epoch_ms(usage_settings: Any) -> N
     assert (await usage_store.summary(usage_settings, TENANT, since_ms=ts - DAY_MS, until_ms=ts))["totals"][
         "calls"
     ] == 0
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_paging_usage_returns_every_row_once(usage_settings: Any, one_millisecond: None) -> None:
+    """Nothing called `query` with a cursor — on either arm, anywhere in the repo.
+
+    So the usage listing's pagination shipped unexercised, and the `(ts, id)` fix that stopped
+    the audit listing losing rows to a tied millisecond ran zero assertions here even though
+    the store is the same shape. Usage rows tie for the same reason audit rows do: several
+    model calls inside one turn, metered microseconds apart.
+    """
+    for i in range(5):
+        _record(usage_settings, manifest=f"m-{i}", model="fast", tokens=1_000)
+    assert await usage_store.flush_pending(usage_settings) == 5
+
+    stored, _ = await usage_store.query(usage_settings, TENANT, limit=100)
+    assert len(stored) == 5, f"the flush stored {len(stored)} of 5 rows"
+
+    seen: list[dict[str, Any]] = []
+    cursor: str | None = None
+    for _ in range(10):
+        page, cursor = await usage_store.query(usage_settings, TENANT, limit=2, cursor=cursor)
+        seen.extend(page)
+        if cursor is None:
+            break
+    else:  # pragma: no cover - only on a cursor that does not terminate
+        pytest.fail("the cursor never reported the end of the history")
+
+    manifests = sorted(e["manifest_id"] for e in seen)
+    assert manifests == [f"m-{i}" for i in range(5)], manifests
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_the_manifest_filter_survives_a_tied_page_boundary(
+    usage_settings: Any, one_millisecond: None
+) -> None:
+    """The filter and the tie together, which is what a per-manifest cost view pages through."""
+    for i in range(6):
+        _record(
+            usage_settings,
+            manifest="watched" if i % 2 else "other",
+            model=f"model-{i}",
+            tokens=1_000,
+        )
+    await usage_store.flush_pending(usage_settings)
+
+    seen: list[dict[str, Any]] = []
+    cursor: str | None = None
+    for _ in range(10):
+        page, cursor = await usage_store.query(
+            usage_settings, TENANT, manifest_id="watched", limit=1, cursor=cursor
+        )
+        seen.extend(page)
+        if cursor is None:
+            break
+    else:  # pragma: no cover - only on a cursor that does not terminate
+        pytest.fail("the cursor never reported the end of the filtered history")
+
+    assert [e["manifest_id"] for e in seen] == ["watched"] * len(seen), seen
+    assert len(seen) == 3, seen
