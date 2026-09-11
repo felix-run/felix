@@ -62,7 +62,11 @@ if passed != 0:
 rows = run.get("scores") or []
 if not rows:
     sys.exit("no score rows, so the error check below would have nothing to look at")
-errored = [row.get("item_id") for row in rows if row.get("error")]
+# Key presence, not truthiness. `start_run` writes `str(exc)`, which is "" for any
+# exception raised with no arguments — TimeoutError(), a bare `raise SomeError` — so a
+# truthiness test reads a crashed item as an honest rejection, which is the one confusion
+# this check exists to resolve.
+errored = [row.get("item_id") for row in rows if "error" in row]
 if errored:
     sys.exit("items errored instead of being scored down: %s" % errored)
 print("eval counter-smoke: %d items scored down, exit 1, no errors — as required" % len(rows))

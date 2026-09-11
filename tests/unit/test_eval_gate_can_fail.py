@@ -166,7 +166,9 @@ async def test_the_negative_items_are_scored_down_rather_than_erroring() -> None
 
     rows = result["scores"]
     assert [row["pass"] for row in rows] == [False] * len(items), rows
-    assert [row for row in rows if row.get("error")] == [], rows
+    # Key presence: `str(exc)` is "" for an exception raised with no arguments, so a
+    # truthiness test would read one of those as an item the scorer honestly rejected.
+    assert [row for row in rows if "error" in row] == [], rows
     assert {row["rule"] for row in rows} == _scorer_rule_names(), rows
 
 
@@ -207,7 +209,7 @@ def test_a_failed_run_exits_non_zero_through_the_cli() -> None:
     assert record["pass_count"] == 0, record
     assert record["fail_count"] == len(_fixture("negative")["items"]), record
     assert [row["rule"] for row in record["scores"]], record
-    assert not [row for row in record["scores"] if row.get("error")], record
+    assert not [row for row in record["scores"] if "error" in row], record
 
 
 def test_the_smoke_fixture_exits_zero_through_the_cli() -> None:
