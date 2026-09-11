@@ -136,22 +136,10 @@ async def list_documents(
     from felix.documents import store as doc_store
 
     require_mgmt_scopes(request, SCOPE_DOCUMENTS_READ)
-    items = await doc_store.list_documents(
+    items = await doc_store.list_document_rows(
         request.app.state.settings, tenant_id_from_request(request), limit=limit
     )
-    return {
-        "items": [
-            {
-                "doc_id": d.doc_id,
-                "title": d.title,
-                "source": d.source,
-                "chunks": d.chunks,
-                "created_at": d.created_at,
-            }
-            for d in items
-        ],
-        "count": len(items),
-    }
+    return {"items": items, "count": len(items)}
 
 
 @router.get("/search")
@@ -169,29 +157,14 @@ async def search_documents(
     from felix.documents import store as doc_store
 
     require_mgmt_scopes(request, SCOPE_DOCUMENTS_READ)
-    hits = await doc_store.search_documents(
+    hits = await doc_store.search_document_rows(
         request.app.state.settings,
         tenant_id=tenant_id_from_request(request),
         query=q,
         limit=limit,
         embedder=_embedder(request),
     )
-    return {
-        "items": [
-            {
-                "doc_id": h.doc_id,
-                "chunk_id": h.chunk_id,
-                "chunk_index": h.chunk_index,
-                "title": h.title,
-                "source": h.source,
-                "content": h.content,
-                "score": h.score,
-                "channels": list(h.channels),
-            }
-            for h in hits
-        ],
-        "count": len(hits),
-    }
+    return {"items": hits, "count": len(hits)}
 
 
 @router.post("")
