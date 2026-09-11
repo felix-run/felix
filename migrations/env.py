@@ -8,6 +8,7 @@ from logging.config import fileConfig
 from alembic import context
 from felix.config import get_settings
 from felix.db.models import Base
+from felix.db.session import _connect_args
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
@@ -51,11 +52,15 @@ def do_run_migrations(connection: Connection) -> None:
 
 async def run_async_migrations() -> None:
     configuration = config.get_section(config.config_ini_section) or {}
-    configuration["sqlalchemy.url"] = get_url()
+    url = get_url()
+    configuration["sqlalchemy.url"] = url
     connectable = async_engine_from_config(
         configuration,
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        # The same driver bounds and name as the runtime engines: a migration against a
+        # blackholed host must give up too, and show as felix-cli in pg_stat_activity.
+        connect_args=_connect_args(get_settings(), url),
     )
     async with connectable.connect() as connection:
         await connection.run_sync(do_run_migrations)

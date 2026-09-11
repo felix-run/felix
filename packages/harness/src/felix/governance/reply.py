@@ -93,7 +93,11 @@ def _output_from_terminal(item: Any) -> InvokeOutput | None:
         messages = [
             ChatMessage.model_validate(m) for m in item.data.get("messages") or [] if isinstance(m, dict)
         ]
-        return InvokeOutput(messages=messages, final=ChatMessage.model_validate(final))
+        return InvokeOutput(
+            messages=messages,
+            final=ChatMessage.model_validate(final),
+            stop_reason=item.data.get("stop_reason") or "end_turn",
+        )
     return None
 
 
@@ -172,10 +176,15 @@ class ReplyControlsAgent:
                 m = screened.setdefault(id(m), screened_message(m, self._screen_pii(m.content)))
             messages.append(m)
         final = out.final
+        stop_reason = out.stop_reason
         if final is not None:
             content = self._screen_pii(final.content or "")
             denial = await self._judge(content)
             replacement = screened_message(final, denial if denial is not None else content)
+            if denial is not None or (self._block_pii and content == PII_BLOCKED_REPLY):
+                # The client is not reading the model's answer. On the OpenAI wire this
+                # is `content_filter`, which is also what a provider refusal maps to.
+                stop_reason = "refusal"
             if replacement is not final:
                 messages = [
                     replacement if m is final or m is screened.get(id(final)) else m for m in messages
@@ -188,7 +197,7 @@ class ReplyControlsAgent:
                     screened_message(m, "") if m.role == "assistant" and m is not final and m.content else m
                     for m in messages
                 ]
-        return InvokeOutput(messages=messages, final=final), changed
+        return InvokeOutput(messages=messages, final=final, stop_reason=stop_reason), changed
 
     # --- the Agent surface --------------------------------------------------------------
 
@@ -247,6 +256,7 @@ class ReplyControlsAgent:
                     if screened.final is not None
                     else item.data.get("final"),
                     "messages": [m.model_dump() for m in screened.messages],
+                    "stop_reason": screened.stop_reason,
                 }
                 yield Event(event=item.event, data=data) if changed else item
         if held and not released:

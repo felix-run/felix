@@ -303,6 +303,22 @@ def _signal_endpoint(endpoint: str, signal: str) -> str:
     return base if base.endswith(suffix) else base + suffix
 
 
+def otel_transport(settings: Any) -> tuple[str, bool]:
+    """The wire the exporters use: ``(protocol, tls)``.
+
+    One rule for both exporters and for `felix doctor`, which judges the posture: over
+    OTLP/HTTP the endpoint's scheme is the whole answer and `otel_insecure` is not read;
+    over gRPC the flag decides. Keeping doctor on this function is what stops it judging
+    the transport one way while the exporter behaves another.
+    """
+    from urllib.parse import urlsplit
+
+    protocol = (getattr(settings, "otel_protocol", "grpc") or "grpc").lower()
+    if protocol == "http":
+        return "http", urlsplit(getattr(settings, "otel_endpoint", "") or "").scheme == "https"
+    return "grpc", not bool(getattr(settings, "otel_insecure", True))
+
+
 def _build_exporter(settings: Any, endpoint: str, headers: dict[str, str]) -> Any:
     """OTLP exporter for the configured protocol.
 
@@ -310,7 +326,7 @@ def _build_exporter(settings: Any, endpoint: str, headers: dict[str, str]) -> An
     header is how hosted collectors are reached, and the gRPC-only exporter could not
     talk to one at all.
     """
-    protocol = (getattr(settings, "otel_protocol", "grpc") or "grpc").lower()
+    protocol, tls = otel_transport(settings)
     if protocol == "http":
         from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
             OTLPSpanExporter as HttpExporter,
@@ -321,8 +337,7 @@ def _build_exporter(settings: Any, endpoint: str, headers: dict[str, str]) -> An
         OTLPSpanExporter as GrpcExporter,
     )
 
-    insecure = bool(getattr(settings, "otel_insecure", True))
-    return GrpcExporter(endpoint=endpoint, insecure=insecure, headers=headers or None)
+    return GrpcExporter(endpoint=endpoint, insecure=not tls, headers=headers or None)
 
 
 def _build_sampler(settings: Any) -> Any | None:
@@ -435,7 +450,7 @@ def setup_observability(settings: Any) -> bool:
 
 def _build_log_exporter(settings: Any, endpoint: str, headers: dict[str, str]) -> Any:
     """OTLP log exporter matching the configured protocol."""
-    protocol = (getattr(settings, "otel_protocol", "grpc") or "grpc").lower()
+    protocol, tls = otel_transport(settings)
     if protocol == "http":
         from opentelemetry.exporter.otlp.proto.http._log_exporter import (
             OTLPLogExporter as HttpLogExporter,
@@ -446,8 +461,7 @@ def _build_log_exporter(settings: Any, endpoint: str, headers: dict[str, str]) -
         OTLPLogExporter as GrpcLogExporter,
     )
 
-    insecure = bool(getattr(settings, "otel_insecure", True))
-    return GrpcLogExporter(endpoint=endpoint, insecure=insecure, headers=headers or None)
+    return GrpcLogExporter(endpoint=endpoint, insecure=not tls, headers=headers or None)
 
 
 def setup_log_export(settings: Any) -> bool:

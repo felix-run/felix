@@ -11,7 +11,16 @@ from typing import Any, Literal
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from felix.context import AuthContext, RequestContext, async_run_with_context, get_context, try_get_context
+from felix.durability.fibers import FIBER_TERMINAL_STATUSES
 from felix.governance.inbound import INBOUND_SCREENED_EXTRA
+from felix.idempotency import (
+    IdempotencyConflict,
+    StoredResponse,
+    once,
+    principal_scope,
+    request_fingerprint,
+    valid_key,
+)
 from felix.logging_setup import loggable
 from felix.patterns.model import ModelGatewayError
 from felix.patterns.types import ChatMessage, InvokeInput
@@ -23,7 +32,7 @@ from felix.session.types import GetEventsOpts
 from felix.steer import enqueue
 from pydantic import BaseModel, Field
 
-from felix_api.errors import client_safe_message
+from felix_api.errors import client_safe_message, log_gateway_error
 from felix_api.routes._sse import (
     DONE,
     HEARTBEAT,
@@ -276,9 +285,52 @@ async def _apply_template(
     return [*messages, ChatMessage(role="user", content=text)]
 
 
+IDEMPOTENCY_HEADER = "idempotency-key"
+
+
 @router.post("")
 @router.post("/")
 async def chat(body: ChatRequest, request: Request) -> Any:
+    """Run a turn. With an `Idempotency-Key`, run it once per key per principal.
+
+    A client that times out and retries otherwise runs the turn twice — two model
+    calls, two usage rows, two session events. The first request claims the key and
+    stores its response on completion; a retry with the same key and body gets that
+    response back with `Idempotent-Replayed: true`; the same key with a different body
+    is `422 idempotency_key_reused`; a retry while the first is still running is
+    `409 idempotency_in_progress`. A failed attempt releases the key so the retry runs.
+    """
+    key = request.headers.get(IDEMPOTENCY_HEADER)
+    if key is None:
+        status, payload = await _chat_turn(body, request)
+        return JSONResponse(payload, status_code=status)
+    if not valid_key(key):
+        raise HTTPException(status_code=400, detail="invalid_idempotency_key")
+    auth = _auth_from_request(request)
+
+    async def run() -> StoredResponse:
+        status, payload = await _chat_turn(body, request)
+        return StoredResponse(status, payload)
+
+    try:
+        response, replayed = await once(
+            request.app.state.idempotency_store,
+            principal_scope(auth.tenant_id, auth.principal_sub),
+            key,
+            request_fingerprint("/chat", body.model_dump(mode="json")),
+            run,
+        )
+    except IdempotencyConflict as exc:
+        status = 409 if exc.kind == "in_progress" else 422
+        raise HTTPException(
+            status_code=status, detail=f"idempotency_{'in_progress' if status == 409 else 'key_reused'}"
+        ) from exc
+    headers = {"idempotent-replayed": "true"} if replayed else None
+    return JSONResponse(response.body, status_code=response.status, headers=headers)
+
+
+async def _chat_turn(body: ChatRequest, request: Request) -> tuple[int, dict[str, Any]]:
+    """The turn itself: `(202, accepted)` for a durable manifest, `(200, result)` otherwise."""
     settings = request.app.state.settings
     tools = request.app.state.tools
     auth = _auth_from_request(request)
@@ -335,7 +387,7 @@ async def chat(body: ChatRequest, request: Request) -> Any:
             execution=execution,
             pin=pin_fields(resolved.manifest, version=resolved.version),
         )
-        return JSONResponse(payload, status_code=202)
+        return 202, payload
 
     req_ctx = RequestContext(
         settings=settings,
@@ -366,12 +418,7 @@ async def chat(body: ChatRequest, request: Request) -> Any:
             # CodeQL does not flag it -- its taint source is the network rather than
             # the request -- but a gateway body is shaped by prompt content, which
             # makes it as forgeable as anything the client sends directly.
-            logger.warning(
-                "model gateway error label=%s status=%s body=%s",
-                loggable(exc.label, limit=80),
-                exc.status,
-                loggable(exc.body),
-            )
+            log_gateway_error(logger, exc)
             raise HTTPException(status_code=502, detail=client_safe_message(exc)) from exc
         except Exception as exc:
             http = _http_from_invoke_prep(exc)
@@ -380,7 +427,7 @@ async def chat(body: ChatRequest, request: Request) -> Any:
             raise
 
     final = result.final
-    return {
+    return 200, {
         "messages": [m.model_dump() for m in result.messages],
         "final": final.model_dump() if hasattr(final, "model_dump") else final,
         "thread_id": thread,
@@ -684,6 +731,10 @@ async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
             # The client hung up. Nothing to send; let the cancellation propagate so the
             # run is torn down instead of continuing to burn model tokens.
             raise
+        except ModelGatewayError as exc:
+            # Typed like the non-streaming 502, with the upstream body kept to the log.
+            log_gateway_error(logger, exc)
+            yield error_frame(client_safe_message(exc), kind="model_gateway_error")
         except Exception as exc:
             # Without this the body simply stopped under an already-sent 200 OK, with no
             # error event and no [DONE] — the client could not tell success from failure.
@@ -946,7 +997,8 @@ async def chat_history_delete(thread_id: str, request: Request) -> dict[str, str
 # that has been silent past that decays. The load this finding is about comes from tabs
 # left open for minutes, not from the first few seconds of one.
 # Fiber statuses that mean the run will not change again.
-_RUN_TERMINAL = frozenset({"completed", "failed", "expired", "cancelled"})
+# The fiber store's terminal set, plus the client-side cancel the stream reports itself.
+_RUN_TERMINAL = FIBER_TERMINAL_STATUSES | {"cancelled"}
 
 # The ceiling a stream may decay to once notifications are actually being delivered.
 # Far above the un-notified ceiling because the poll is then a safety net against a
@@ -1413,12 +1465,7 @@ async def chat_continue(body: ContinueRequest, request: Request) -> Any:
             # CodeQL does not flag it -- its taint source is the network rather than
             # the request -- but a gateway body is shaped by prompt content, which
             # makes it as forgeable as anything the client sends directly.
-            logger.warning(
-                "model gateway error label=%s status=%s body=%s",
-                loggable(exc.label, limit=80),
-                exc.status,
-                loggable(exc.body),
-            )
+            log_gateway_error(logger, exc)
             raise HTTPException(status_code=502, detail=client_safe_message(exc)) from exc
         except Exception as exc:
             http = _http_from_invoke_prep(exc)
@@ -1492,10 +1539,22 @@ async def chat_compact(body: CompactRequest, request: Request) -> dict[str, Any]
     store = get_session_store(settings, tenant_id=auth.tenant_id)
     session = store.open(thread)
     strategy_spec = getattr(resolved.manifest.spec, "session", None)
+
+    def _budget(field: str, default: int) -> int:
+        """A declared zero is a value, not an absent one.
+
+        `int(getattr(spec, field, default) or default)` treats `0` as unset, so a manifest
+        setting `keep_recent_tokens: 0` -- which the schema allows, `ge=0` -- silently ran with
+        20000 and compaction never had anything to cut. The declared window was not what the
+        route used, and nothing said so: this repo's signature defect shape.
+        """
+        value = getattr(strategy_spec, field, None)
+        return default if value is None else int(value)
+
     strategy = CompactingSessionStrategy(
-        reserve_tokens=int(getattr(strategy_spec, "reserve_tokens", 16384) or 16384),
-        keep_recent_tokens=int(getattr(strategy_spec, "keep_recent_tokens", 20000) or 20000),
-        context_window_tokens=int(getattr(strategy_spec, "context_window_tokens", 128000) or 128000),
+        reserve_tokens=_budget("reserve_tokens", 16384),
+        keep_recent_tokens=_budget("keep_recent_tokens", 20000),
+        context_window_tokens=_budget("context_window_tokens", 128000),
         enabled=True,
     )
     model = build_model(settings, resolved.manifest.spec.model)

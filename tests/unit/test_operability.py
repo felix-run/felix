@@ -76,7 +76,7 @@ async def test_a_hanging_probe_fails_rather_than_hanging(monkeypatch: pytest.Mon
     async def _hang(settings):
         await asyncio.sleep(60)
 
-    monkeypatch.setattr(health, "_probe_redis", _hang)
+    monkeypatch.setattr(health, "probe_redis", _hang)
     monkeypatch.setattr(health, "PROBE_TIMEOUT_S", 0.1)
     report = await asyncio.wait_for(check_readiness(_settings()), 5)
     assert report.ready is False

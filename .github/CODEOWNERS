@@ -1,0 +1,22 @@
+# Review ownership. GitHub requests a review from the owners of every path a PR touches.
+# This file only *requests*; it is enforced by the branch-protection setting "require
+# review from code owners", which is a repo setting (off until turned on) and, with a
+# single owner who is also the usual author, blocks self-merge on these paths without an
+# admin bypass — docs/RELEASING.md carries that decision. One maintainer today; the
+# sections are where a second one would be added.
+
+# Everything, by default.
+*                                   @blakebauman
+
+# The controls: governance pipeline, auth, tenancy, secrets, egress.
+/packages/harness/src/felix/governance/   @blakebauman
+/packages/harness/src/felix/auth/         @blakebauman
+/packages/harness/src/felix/secrets.py    @blakebauman
+/packages/harness/src/felix/security/     @blakebauman
+/packages/harness/src/felix/manifests/builder.py  @blakebauman
+/migrations/                              @blakebauman
+
+# Deploy surfaces and the supply chain.
+/deploy/                                  @blakebauman
+/.github/                                 @blakebauman
+/uv.lock                                  @blakebauman

@@ -104,7 +104,9 @@ def _coerce_output(data: Any) -> InvokeOutput | None:
     final = final_raw if isinstance(final_raw, ChatMessage) else ChatMessage.model_validate(final_raw)
     msgs_raw = data.get("messages") or []
     messages = [m if isinstance(m, ChatMessage) else ChatMessage.model_validate(m) for m in msgs_raw]
-    return InvokeOutput(messages=messages or [final], final=final)
+    return InvokeOutput(
+        messages=messages or [final], final=final, stop_reason=data.get("stop_reason") or "end_turn"
+    )
 
 
 def _output_from_event(ev: Event) -> InvokeOutput | None:

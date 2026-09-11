@@ -152,3 +152,47 @@ async def test_a_dead_loop_never_compares_equal_to_a_live_one() -> None:
     del dead  # the loop goes away, its address free for reuse
 
     assert conn._loop() is None, "a collected loop should dereference to None"
+
+
+@pytest.mark.asyncio
+async def test_a_configured_redis_that_is_down_warns_once_with_the_callers_consequence(
+    unreachable, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A debug line made a configured Redis that was down look like one that was working.
+    One warning per subsystem per process, saying what that subsystem loses — not a
+    sentence about approvals on the steer queue's log line."""
+    import logging
+
+    conn = RedisConnection("steer", retry_after_seconds=0.0, fallback_consequence="a stop went nowhere")
+    with caplog.at_level(logging.DEBUG, logger="felix.redis"):
+        assert await conn.get() is None
+        assert await conn.get() is None
+
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1, "one warning per process, not one per call"
+    assert "does not cross processes" in warnings[0] and "a stop went nowhere" in warnings[0]
+
+
+@pytest.mark.asyncio
+async def test_a_command_failure_drops_the_client_so_the_next_get_reconnects(unreachable) -> None:
+    """A Redis that dies after the client connected was never noticed: `get()` handed back
+    the cached client forever and every command failed into the caller's fallback."""
+
+    class _Dead:
+        closed = False
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    import weakref
+
+    conn = RedisConnection("waiters", retry_after_seconds=0.0)
+    dead = _Dead()
+    conn._client = dead  # a client that connected earlier, on this loop
+    conn._loop = weakref.ref(asyncio.get_running_loop())
+
+    await conn.report_failure()
+    assert await conn.get() is None, "the next get must try to reconnect, not hand back the dead client"
+
+    assert dead.closed, "the dropped client is closed"
+    assert len(unreachable) == 1, "one reconnect attempt was made"

@@ -15,19 +15,54 @@ logger = logging.getLogger("felix.eval.runner")
 
 
 def _score_answer(answer: str, rubric: dict[str, Any]) -> tuple[bool, float, str]:
-    """Heuristic scorer — expects / contains / min_chars."""
-    expect = rubric.get("expect") or rubric.get("equals")
+    """Heuristic scorer — expects / contains / min_chars.
+
+    `expect`, `equals` and `contains` count as present when they are not None, which is how
+    `_mock_answer` already reads them. Reading them with `or` instead meant `{"expect": ""}`
+    fell through to the non-empty check and scored the item against a rule its author never
+    wrote, while `_mock_answer` cheerfully produced the empty answer that rubric asked for.
+
+    `min_chars` is the exception in both functions: 0 and "" mean no minimum rather than a
+    minimum of nothing, so they fall through to the non-empty rule.
+
+    The rule for an empty value, which a new scoring rule should follow: honour it when the rule
+    still discriminates (`{"expect": ""}` asks for an empty answer and rejects every other one),
+    and return `invalid_rubric` when it would match everything (`{"contains": ""}`, a negative
+    `min_chars`). The second kind is a rubric that could never say no, and it fails in the
+    direction that hides problems — so it fails closed instead.
+    """
+    expect = rubric.get("expect")
+    if expect is None:
+        expect = rubric.get("equals")
     if expect is not None:
         ok = answer.strip() == str(expect).strip()
         return ok, 1.0 if ok else 0.0, "equals"
     contains = rubric.get("contains")
     if contains is not None:
-        ok = str(contains).lower() in answer.lower()
+        needle = str(contains)
+        if not needle.strip():
+            # Every answer contains the empty string, so this rubric could never say no —
+            # an unfilled field far more often than an intent. Passing everything is the
+            # failure direction that hides problems, so it fails closed instead.
+            return False, 0.0, "invalid_rubric"
+        ok = needle.lower() in answer.lower()
         return ok, 1.0 if ok else 0.0, "contains"
-    min_chars = int(rubric.get("min_chars") or 0)
-    if min_chars:
-        ok = len(answer.strip()) >= min_chars
-        return ok, 1.0 if ok else 0.0, "min_chars"
+    min_chars_raw = rubric.get("min_chars")
+    if min_chars_raw is not None and min_chars_raw != "":
+        try:
+            min_chars = int(min_chars_raw)
+        except TypeError, ValueError, OverflowError:
+            # A rubric nobody can score. Raising here would make the item an *error* rather
+            # than a failure, and an errored item is indistinguishable from a rejected one in
+            # the counts — so a malformed dataset would read as a working gate.
+            return False, 0.0, "invalid_rubric"
+        if min_chars < 0:
+            # `len(answer) >= -1` holds for every answer, the empty one included — the same
+            # rubric-that-cannot-reject as an empty `contains`, one branch down.
+            return False, 0.0, "invalid_rubric"
+        if min_chars:
+            ok = len(answer.strip()) >= min_chars
+            return ok, 1.0 if ok else 0.0, "min_chars"
     # Default: non-empty answer passes.
     ok = bool(answer.strip())
     return ok, 1.0 if ok else 0.0, "nonempty"
@@ -154,9 +189,6 @@ async def start_run(
     for item in items:
         item_id = str(item.get("item_id") or item.get("id") or "")
         user_input = str(item.get("user_input") or "")
-        rubric = dict(item.get("rubric") or item.get("rubric_json") or {})
-        if use_llm_judge and "llm_judge" not in rubric:
-            rubric = {**rubric, "llm_judge": True}
         req_ctx = RequestContext(
             settings=settings,
             auth=auth,
@@ -164,6 +196,18 @@ async def start_run(
             thread_id=f"{tenant_id}:eval:{run['id']}:{item_id}",
         )
         try:
+            # Inside the try: a rubric that is not a mapping used to raise here and abandon the
+            # whole run, so one malformed item in a stored dataset took every other item's score
+            # with it and the run reported nothing. It is this item's error now.
+            raw_rubric = item.get("rubric") or item.get("rubric_json") or {}
+            if not isinstance(raw_rubric, dict):
+                # Named, because this row is what the dataset author reads. `dict()` on a
+                # string raises "dictionary update sequence element #0 has length 1", which
+                # restates the exception and never mentions which field was wrong.
+                raise TypeError(f"rubric must be a mapping, got {type(raw_rubric).__name__}")
+            rubric = dict(raw_rubric)
+            if use_llm_judge and "llm_judge" not in rubric:
+                rubric = {**rubric, "llm_judge": True}
             if mock:
                 answer = _mock_answer(rubric)
             else:
@@ -241,9 +285,14 @@ def _mock_answer(rubric: dict[str, Any]) -> str:
     contains = rubric.get("contains")
     if contains is not None:
         return f"Felix mock reply containing {contains}"
-    min_chars = int(rubric.get("min_chars") or 0)
-    if min_chars:
-        return ("x" * min_chars) if min_chars else "ok"
+    try:
+        min_chars = int(rubric.get("min_chars") or 0)
+    except TypeError, ValueError, OverflowError:
+        # Unscoreable, and `_score_answer` says so as `invalid_rubric`. Raising here would make
+        # the item an error instead, which the counts cannot tell from an honest rejection.
+        return "ok"
+    if min_chars > 0:
+        return "x" * min_chars
     return "ok"
 
 

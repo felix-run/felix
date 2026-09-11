@@ -332,7 +332,7 @@ async def test_react_injects_procedures() -> None:
     class _Model:
         model_id = "test"
 
-        async def chat(self, messages: list[ChatMessage], tools: list) -> _Result:
+        async def chat(self, messages: list[ChatMessage], tools: list, opts: Any = None) -> _Result:
             assert any(m.role == "system" and "known procedures" in (m.content or "") for m in messages)
             return _Result()
 

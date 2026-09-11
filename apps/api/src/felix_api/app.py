@@ -12,6 +12,7 @@ from fastapi import FastAPI
 from felix import __version__ as harness_version
 from felix.auth.middleware import AuthMiddleware
 from felix.config import Settings, get_settings
+from felix.idempotency import build_idempotency_store
 from felix.logging_setup import (
     configure_logging,
 )
@@ -24,7 +25,12 @@ from starlette.responses import Response
 
 from felix_api.composition import compose, installed_plugins
 from felix_api.docs import register_docs
-from felix_api.middleware import BodyLimitMiddleware, RateLimitMiddleware, RequestIdMiddleware
+from felix_api.middleware import (
+    BodyLimitMiddleware,
+    RateLimitMiddleware,
+    RequestIdMiddleware,
+    SecurityHeadersMiddleware,
+)
 from felix_api.routes import (
     a2a,
     approvals,
@@ -70,6 +76,7 @@ def create_app(
     """
     cfg = settings or get_settings()
     cfg.validate_runtime()
+    cfg.stamp_process_role("api")
     # FELIX_LOG_LEVEL was never applied to the logging module, and structlog was a
     # dependency nothing imported.
     configure_logging(cfg)
@@ -120,11 +127,13 @@ def create_app(
         # cache. Without this the `access` and `cognito` schemes have no key source at
         # all and every token from them fails closed.
         jwks_task = None
-        if cfg.auth_mode == "jwt":
+        from felix.auth.jwt import uses_jwt_verifiers
+
+        if uses_jwt_verifiers(cfg):
             from felix.auth.jwt import refresh_all_jwks, run_jwks_refresh_loop
 
             await refresh_all_jwks(cfg)
-            jwks_task = asyncio.create_task(run_jwks_refresh_loop(cfg, interval_s=600.0))
+            jwks_task = asyncio.create_task(run_jwks_refresh_loop(cfg))
         app.state.jwks_task = jwks_task
         try:
             yield
@@ -170,9 +179,11 @@ def create_app(
             "url": "https://github.com/felix-run/felix/blob/main/LICENSE",
         },
         lifespan=lifespan,
-        # Swagger UI gives up the /docs path to the Scalar reference mounted below.
-        # /openapi.json and /redoc are unchanged.
+        # Swagger UI gives up the /docs path to the Scalar reference mounted below, and
+        # ReDoc goes with it: one reference surface, with one CSP. /openapi.json is
+        # unchanged.
         docs_url=None,
+        redoc_url=None,
     )
     # Must be here and not in the lifespan: this installs ASGI middleware, and Starlette
     # has finalised its middleware stack by the time the lifespan runs. Instrumenting
@@ -187,6 +198,8 @@ def create_app(
     app.state.settings = cfg
     app.state.tools = tool_provider
     app.state.plugins = plugin_list
+    # Per app, not per process: two apps in one process (tests) must not share claims.
+    app.state.idempotency_store = build_idempotency_store(cfg)
 
     # Middleware order. Starlette's add_middleware inserts at index 0, so the LAST one
     # registered is the OUTERMOST. Auth was once registered last and therefore ran
@@ -214,6 +227,9 @@ def create_app(
         key_resolvers=rate_key_resolvers,
     )
     app.add_middleware(BodyLimitMiddleware, limit=body_limit)
+    # Headers on every response, including a 413 and a 401: registered after body limit
+    # so it wraps it, before request id so the correlation id is still outermost.
+    app.add_middleware(SecurityHeadersMiddleware, settings=cfg)
     app.add_middleware(RequestIdMiddleware)
 
     def _liveness() -> dict[str, Any]:

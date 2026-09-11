@@ -58,10 +58,17 @@ def _scrub_ambient_git_environment():
 @pytest.fixture(autouse=True)
 def _isolate_process_global_stores():
     """Clear the in-memory manifest store, corpus and resolver caches around every test."""
+    from felix.approvals.store import reset_approvals_for_tests
     from felix.documents.store import reset_documents_for_tests
     from felix.durability.fibers import reset_memory_fibers
+    from felix.eval.store import reset_eval_for_tests
+    from felix.jobs.store import reset_jobs_for_tests
     from felix.manifests import store as manifest_store
     from felix.manifests.resolver import clear_resolver_cache
+    from felix.session.search import reset_search_index_for_tests
+    from felix.session.store import _memory_session_stores
+    from felix.session.thread_state import reset_thread_meta_for_tests
+    from felix.session.tree import _leaf_by_thread
 
     def _clear() -> None:
         manifest_store.reset_memory_store()
@@ -70,6 +77,25 @@ def _isolate_process_global_stores():
         # A corpus that survives a test becomes another test's mysterious extra hit, and
         # retrieval tests assert on result *counts*, so the leak would look like a ranking bug.
         reset_documents_for_tests()
+        # The session search index is another module-level list, and now that the in-memory
+        # store actually writes to it, a thread's events would otherwise be found by every
+        # later test that searched for them.
+        reset_search_index_for_tests()
+        # Thread state is three more process globals, and nothing reset them: a test reusing
+        # another test's thread id inherited its transcript, its leaf pointer and its `phase`.
+        # The suite was correct only because every id in it happened to be unique, and the
+        # failure when one was not would have looked like a product bug rather than a leak.
+        _memory_session_stores.clear()
+        reset_thread_meta_for_tests()
+        _leaf_by_thread.clear()
+        # The management stores are the same shape of process global, and the same hazard: a
+        # dataset named `smoke` written by one test was counted by another test's assertion on
+        # the bundled `smoke` fixture, and it failed as an off-by-one in a file that had not
+        # changed. Each store exports its own reset, so the private names stay next to the
+        # globals they clear and a store refactor touches one file rather than this one.
+        reset_eval_for_tests()
+        reset_jobs_for_tests()
+        reset_approvals_for_tests()
 
     _clear()
     yield

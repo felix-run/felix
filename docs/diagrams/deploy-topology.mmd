@@ -1,0 +1,56 @@
+---
+title: Deployment topology
+---
+%% Source of truth: deploy/docker/compose.yml and its overlays.
+%% CI asserts every Felix service waits on `migrate` (scripts/check-compose-render.py).
+flowchart TB
+    accTitle: What runs where in a Felix deployment, and what each part needs
+    accDescr: Three Felix processes share one image and one database. The API serves every protocol surface; the worker executes periodic tasks; the scheduler holds the cron labels and does nothing else — omit it and no task ever fires. A one-shot migrate container runs Alembic to head and every other service waits for it to complete, which CI asserts against the rendered compose config rather than trusting the YAML. Postgres with pgvector is the system of record; Valkey carries the broker, rate limits, run queues, steering and cross-replica session wakes. The object store is pluggable and defaults to the filesystem, so the base stack pulls no cloud SDK.
+
+    subgraph edge["Public edge"]
+        lb([TLS terminator or CDN])
+    end
+
+    subgraph felix["Felix services — one image, four commands"]
+        direction TB
+        migrate["migrate<br/>felix migrate head"]
+        api["api<br/>felix-api on Granian :8080"]
+        worker["worker<br/>felix-worker"]
+        sched["scheduler<br/>felix-scheduler"]
+    end
+
+    subgraph state["Stateful dependencies"]
+        direction LR
+        pg[("Postgres + pgvector<br/>system of record")]
+        cache[("Valkey / Redis<br/>broker, leases, rate limits")]
+        obj[("Object store<br/>fs, S3, or GCS")]
+    end
+
+    lb -->|"HTTPS to /chat, /v1, /a2a, /mcp"| api
+    migrate -->|"every service waits on completion"| api
+    migrate --> worker
+    migrate --> sched
+
+    api -->|"reads and writes session, audit, usage"| pg
+    worker --> pg
+    sched -->|"enqueues cron tasks"| cache
+    cache --> worker
+    api -->|"run queues, steer, cross-replica wake"| cache
+    api -->|"manifest bundles, artifact spill"| obj
+    worker --> obj
+
+    api -->|"outbound HTTPS, egress-guarded"| models([Model providers, MCP servers, A2A peers])
+
+    class migrate focal
+    class api focal
+    class lb,models external
+    class worker,sched primary
+    class pg,cache,obj store
+
+    classDef focal    fill:none,stroke:#2F81F7,stroke-width:3px
+    classDef primary  fill:none,stroke:#6e7781,stroke-width:1px
+    classDef external fill:none,stroke:#7d8590,stroke-width:1px,stroke-dasharray:4 3
+    classDef store    fill:none,stroke:#2EA043,stroke-width:1.5px
+    style edge fill:none,stroke:#7d8590,stroke-width:1px
+    style felix fill:none,stroke:#7d8590,stroke-width:1px
+    style state fill:none,stroke:#7d8590,stroke-width:1px

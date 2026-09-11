@@ -173,13 +173,26 @@ def assert_sandbox_image_allowed(image: str, settings: Any | None = None) -> Non
         )
 
 
+def sandbox_image_for(ref: SandboxRef) -> str:
+    return ref.binding or DEFAULT_SANDBOX_IMAGE
+
+
+def assert_sandbox_images_allowed(refs: list[SandboxRef], settings: Any | None = None) -> None:
+    """Every image a manifest's sandboxes name is on the allowlist.
+
+    `binding` is manifest-supplied and reaches `docker run`, so an unrestricted value is
+    arbitrary image pull-and-run on the host holding the Docker socket. Checked at manifest
+    write as well as at compile, so a bad image is a 400 once rather than a 500 per request.
+    """
+    for ref in refs:
+        assert_sandbox_image_allowed(sandbox_image_for(ref), settings)
+
+
 def tools_from_sandboxes(refs: list[SandboxRef], *, settings: Any | None = None) -> list[Tool]:
+    assert_sandbox_images_allowed(refs, settings)
     out: list[Tool] = []
     for ref in refs:
-        image = ref.binding or DEFAULT_SANDBOX_IMAGE
-        # `binding` is manifest-supplied and reaches `docker run`, so an unrestricted
-        # value is arbitrary image pull-and-run on the host holding the Docker socket.
-        assert_sandbox_image_allowed(image, settings)
+        image = sandbox_image_for(ref)
         timeout_s = timeout_seconds(ref.timeout_ms, default_s=DEFAULT_SANDBOX_TIMEOUT_S)
         name = ref.sandbox_tool_name or ref.name
         out.append(

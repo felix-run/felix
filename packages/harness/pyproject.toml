@@ -17,6 +17,8 @@ dependencies = [
     "pgvector>=0.5.0",
     "httpx>=0.28.1",
     "joserfc>=1.7.4",
+    # No direct importer since the at-rest helper went; kept as an explicit floor for
+    # joserfc's RSA/EC signature path so a resolver cannot pick an older wheel.
     "cryptography>=50.0.0",
     "structlog>=26.1.0",
     "prometheus-client>=0.26.0",

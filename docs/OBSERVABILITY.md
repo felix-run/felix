@@ -32,7 +32,11 @@ never publish it.
 The probe paths are the opposite case: `/health`, `/live` and `/ready` are public and
 unthrottled (`PROBE_PATHS` in `felix/security/rate_limit.py`), because kubelet sends no
 credential. `/ready` answers with up/down per dependency and no detail; the exception
-text is logged.
+text is logged. The rows are `database`, `redis`, `object_store`, and — under
+`auth_mode=jwt` — `jwks`, which fails when **no** configured verifier is usable (a remote
+key set never fetched or past its TTL, a shared issuer with no audience, a local key that
+does not import) and stays ok but logs a warning when only some are, because a stale set is
+not served and every token from that issuer would 401 while everything else stayed green.
 
 ## Metrics
 
@@ -91,6 +95,19 @@ worth having at all — each one means a control did not do what the manifest im
 | `felix_worker_task` | `task`, `status` | One per periodic sweep. A `task` whose rate drops to zero has stopped firing — which otherwise looks identical to one that runs and finds nothing. |
 | `felix_worker_task_seconds` | `task` | Sweep duration. |
 | `felix_buffer_dropped` | `buffer` | **Watch this.** Audit or usage rows were dropped because a buffer hit `DEFAULT_MAX_PENDING`. Silent data loss otherwise. |
+
+### Alerting rules
+
+`deploy/helm/felix/files/prometheus-rules.yml` is the one rules file: the Compose
+observability overlay mounts it into Prometheus (`rule_files` in
+`deploy/docker/config/prometheus.yml`) and the Helm chart embeds it in a `PrometheusRule`
+when `prometheusRule.enabled` is set. It alerts on the rows above marked **watch this**
+(`felix_buffer_dropped`, `felix_model_unmetered`, `felix_model_unpriced`,
+`felix_control_unavailable`), on a worker task that stops firing or keeps failing
+(`felix_worker_task`), on an unscrapable API or worker, on repeated provider timeouts, and
+on Postgres connections nearing `max_connections` (from postgres-exporter).
+`tests/unit/test_prometheus_rules.py` re-derives every Felix metric a rule names from the
+source, so a rule cannot quietly watch a metric that no longer exists.
 
 ## Spans
 
@@ -153,6 +170,12 @@ detection, so a credential a user types into a chat is exported verbatim. That b
 the reason this defaults to off.
 
 ## Logs
+
+Every line carries `request_id`, `tenant_id` and `trace_id` — injected once by
+`LogIdsFilter` in `logging_setup.py`, so the ~200 stdlib `logging` call sites need no
+change. `tenant_id` is what a multi-tenant operator filters by; `trace_id` is the active
+OTel trace as 32 hex digits, or `-` when no span is recording. `FELIX_LOG_FORMAT` is
+`auto` (JSON in production, readable text elsewhere), `json` or `text`.
 
 `FELIX_OTEL_LOGS=true` ships the standard-library log stream over OTLP alongside traces.
 The SDK stamps `trace_id` and `span_id` onto each record from the active context, so a log

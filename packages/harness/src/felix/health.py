@@ -19,10 +19,13 @@ endpoint cannot drift apart on what "reachable" means.
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from dataclasses import dataclass, field
 from functools import partial
 from typing import Any
+
+logger = logging.getLogger("felix.health")
 
 # A probe that hangs is a probe that fails. Kubernetes gives up on its own timeout
 # anyway; bounding here makes the failure legible instead of a client-side timeout.
@@ -73,7 +76,7 @@ _cached_report: tuple[Any, float, ReadinessReport] | None = None
 _inflight: tuple[Any, asyncio.Task[ReadinessReport]] | None = None
 
 
-async def _timed(name: str, coro: Any) -> ProbeResult:
+async def timed_probe(name: str, coro: Any) -> ProbeResult:
     start = time.monotonic()
     try:
         detail = await asyncio.wait_for(coro, PROBE_TIMEOUT_S)
@@ -99,7 +102,7 @@ async def _probe_database(settings: Any) -> str:
     return "reachable"
 
 
-async def _probe_redis(settings: Any) -> str:
+async def probe_redis(settings: Any) -> str:
     url = (getattr(settings, "redis_url", "") or "").strip()
     if not url:
         return "not configured"
@@ -121,6 +124,30 @@ async def _probe_object_store(settings: Any) -> str:
     # cleanup and no write permission.
     await store.exists("__felix_readiness_probe__")
     return getattr(settings, "object_store", "") or "ok"
+
+
+async def _probe_jwks(settings: Any) -> str:
+    """Every configured verifier can verify a token right now.
+
+    A remote key set never fetched or past its TTL is not served, a shared issuer with no
+    audience is refused, a local key that does not import verifies nothing: in each the
+    pod 401s every token from that issuer while its database and Redis probes stay
+    green. The probe fails only when *no* verifier is usable — then the pod cannot
+    authenticate anyone and leaves rotation; a partial failure stays ready and is
+    logged, so one issuer's outage (or a blip past the TTL on one replica) does not take
+    the deployment off the Service for the issuers that still work.
+    """
+    from felix.auth.jwt import verifier_status
+
+    status = verifier_status(settings)
+    unusable = [(cfg, why) for cfg, why in status if why is not None]
+    detail = "; ".join(f"{cfg.scheme}:{cfg.issuer}: {why}" for cfg, why in unusable)
+    if unusable and len(unusable) == len(status):
+        raise RuntimeError(detail)
+    if unusable:
+        logger.warning("jwt verifiers degraded: %s", detail)
+        return f"degraded: {detail}"
+    return "every verifier usable"
 
 
 async def check_readiness(settings: Any, *, max_age_s: float = READINESS_CACHE_S) -> ReadinessReport:
@@ -155,13 +182,25 @@ def _store_report(settings: Any, task: asyncio.Task[ReadinessReport]) -> None:
 
 
 async def _probe_dependencies(settings: Any) -> ReadinessReport:
-    results = await asyncio.gather(
-        _timed("database", _probe_database(settings)),
-        _timed("redis", _probe_redis(settings)),
-        _timed("object_store", _probe_object_store(settings)),
-    )
-    probes = list(results)
+    from felix.auth.jwt import uses_jwt_verifiers
+
+    timed = [
+        timed_probe("database", _probe_database(settings)),
+        timed_probe("redis", probe_redis(settings)),
+        timed_probe("object_store", _probe_object_store(settings)),
+    ]
+    if uses_jwt_verifiers(settings):
+        timed.append(timed_probe("jwks", _probe_jwks(settings)))
+    probes = list(await asyncio.gather(*timed))
     return ReadinessReport(ready=all(p.ok for p in probes), probes=probes)
 
 
-__all__ = ["PROBE_TIMEOUT_S", "READINESS_CACHE_S", "ProbeResult", "ReadinessReport", "check_readiness"]
+__all__ = [
+    "PROBE_TIMEOUT_S",
+    "READINESS_CACHE_S",
+    "ProbeResult",
+    "ReadinessReport",
+    "check_readiness",
+    "probe_redis",
+    "timed_probe",
+]

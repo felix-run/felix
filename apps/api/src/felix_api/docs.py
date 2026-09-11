@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import html
 import json
+import secrets
 
 from fastapi import FastAPI, Request
 from starlette.responses import HTMLResponse
@@ -29,7 +30,7 @@ def _script_safe(payload: object) -> str:
     return json.dumps(payload).replace("</", "<\\/")
 
 
-def scalar_html(*, openapi_url: str, title: str, root_path: str = "") -> str:
+def scalar_html(*, openapi_url: str, title: str, nonce: str, root_path: str = "") -> str:
     config = _script_safe(
         {
             "url": f"{root_path}{openapi_url}",
@@ -53,8 +54,9 @@ def scalar_html(*, openapi_url: str, title: str, root_path: str = "") -> str:
       src="{SCALAR_JS_URL}"
       integrity="{SCALAR_JS_SRI}"
       crossorigin="anonymous"
+      nonce="{nonce}"
     ></script>
-    <script>
+    <script nonce="{nonce}">
       // The spec carries no `servers` block — Felix is self-hosted, so the base URL
       // is whatever host served this page. Without it every curl snippet renders as
       // a bare path and is not copy-pasteable.
@@ -68,30 +70,60 @@ def scalar_html(*, openapi_url: str, title: str, root_path: str = "") -> str:
 """
 
 
+def docs_csp(nonce: str) -> str:
+    """The docs page's Content-Security-Policy value.
+
+    Two scripts run on the page — the pinned Scalar bundle and the inline config — and
+    both carry the per-response nonce, so no other script can. `'strict-dynamic'` lets
+    the nonced bundle load its own chunks and drops the host allowlist a nonce would
+    otherwise be undercut by: jsdelivr serves any npm package, so naming the origin is
+    naming every script an attacker can publish. Scalar injects its own styles inline,
+    hence `'unsafe-inline'` for styles only; it fetches the spec from this origin.
+    `frame-ancestors 'none'` is the CSP spelling of `X-Frame-Options: DENY`.
+    """
+    return (
+        "default-src 'self'; "
+        f"script-src 'nonce-{nonce}' 'strict-dynamic'; "
+        "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com; "
+        "font-src 'self' data: https://fonts.gstatic.com; "
+        "img-src 'self' data: https:; "
+        "connect-src 'self'; "
+        "object-src 'none'; "
+        "frame-ancestors 'none'; "
+        "base-uri 'self'; "
+        "form-action 'none'"
+    )
+
+
 def register_docs(app: FastAPI) -> None:
     """Mount the Scalar reference at `/docs`.
 
     `create_app` passes `docs_url=None` so FastAPI does not claim the path with
-    Swagger UI first. The spec path comes from the app rather than a default of our
-    own: FastAPI's own `/redoc` reads `app.openapi_url`, and a second source of that
-    truth is how `/docs` ends up pointing at a 404 the day one of them moves.
+    Swagger UI first, and `redoc_url=None` so there is one reference surface: ReDoc
+    was HTML with an inline script and a CDN bundle and no CSP, gated like this page
+    but not protected like it. The spec path comes from the app rather than a default
+    of our own: a second source of that truth is how `/docs` ends up pointing at a 404
+    the day one of them moves.
 
-    `root_path` comes from the request for the same reason. Swagger UI and `/redoc`
-    both resolve the spec per request, so mounting the API under a proxy prefix left
-    `/redoc` working and a precomputed `/docs` pointing at a 404 — with the curl
-    snippets missing the prefix too.
+    `root_path` comes from the request for the same reason. Swagger UI resolved the
+    spec per request, so mounting the API under a proxy prefix left a precomputed
+    `/docs` pointing at a 404 — with the curl snippets missing the prefix too.
     """
     openapi_url = app.openapi_url or "/openapi.json"
     title = f"{app.title} · API reference"
 
     @app.get("/docs", include_in_schema=False)
     async def scalar_reference(request: Request) -> HTMLResponse:
-        # rstrip mirrors FastAPI's own get_redoc_html wiring, so the two cannot
-        # disagree on a prefix. (A trailing-slash root_path does not route at all.)
+        # rstrip mirrors FastAPI's own docs wiring. (A trailing-slash root_path does
+        # not route at all.)
         root_path = request.scope.get("root_path", "").rstrip("/")
-        page = scalar_html(openapi_url=openapi_url, title=title, root_path=root_path)
+        nonce = secrets.token_urlsafe(16)
+        page = scalar_html(openapi_url=openapi_url, title=title, root_path=root_path, nonce=nonce)
         # `private`, not `public`: the body varies on a prefix no shared cache can key
         # on — behind a prefix-stripping proxy every variant is `/docs` at the origin.
         # The browser keys on the public URL, and it is the only cache that matters for
         # a page a human loads by hand.
-        return HTMLResponse(page, headers={"cache-control": "private, max-age=300"})
+        return HTMLResponse(
+            page,
+            headers={"cache-control": "private, max-age=300", "content-security-policy": docs_csp(nonce)},
+        )

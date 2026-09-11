@@ -116,6 +116,23 @@ _OPENAI_STOP: dict[str, StopReason] = {
     "function_call": "tool_use",
     "content_filter": "refusal",
 }
+# The other direction, for serving the OpenAI wire. Every `StopReason` member is named so
+# a new one fails here rather than quietly reporting `stop`. Tool calls are executed
+# inside the run and never surface to a `/v1` client, so `tool_use` ends in `stop`.
+_FINISH_REASON: dict[StopReason, str] = {
+    "end_turn": "stop",
+    "tool_use": "stop",
+    "max_tokens": "length",
+    "stop_sequence": "stop",
+    "pause_turn": "stop",
+    "refusal": "content_filter",
+    "unknown": "stop",
+}
+
+
+def finish_reason_for(stop: str | None) -> str:
+    """The OpenAI `finish_reason` for a provider-neutral stop reason."""
+    return _FINISH_REASON.get(stop or "end_turn", "stop")  # type: ignore[arg-type]
 
 
 def _openai_usage(usage_raw: dict[str, Any]) -> TokenUsage:

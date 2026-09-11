@@ -68,7 +68,7 @@ async def test_unparseable_reply_is_unavailable(monkeypatch: pytest.MonkeyPatch)
     class _Model:
         model_id = "m"
 
-        async def chat(self, messages, tools):
+        async def chat(self, messages, tools, opts=None):
             class _R:
                 message = ChatMessage(role="assistant", content="I cannot rate this.")
 
@@ -224,7 +224,7 @@ def _reflect_agent():
 class _DeadVerifier:
     model_id = "dead"
 
-    async def chat(self, messages, tools):
+    async def chat(self, messages, tools, opts=None):
         raise RuntimeError("verifier unreachable")
 
 
@@ -236,7 +236,7 @@ class _ChattyVerifier:
     def __init__(self, text: str) -> None:
         self.text = text
 
-    async def chat(self, messages, tools):
+    async def chat(self, messages, tools, opts=None):
         from felix.patterns.model import ModelChatResult
         from felix.patterns.types import ChatMessage
 

@@ -58,11 +58,11 @@ class _MeteredModel:
             usage=TokenUsage(input=10 * self.calls, output=4 * self.calls),
         )
 
-    async def chat(self, messages: list[ChatMessage], tools: list) -> ModelChatResult:
+    async def chat(self, messages: list[ChatMessage], tools: list, opts: Any = None) -> ModelChatResult:
         self.calls += 1
         return self._result()
 
-    async def stream_turn(self, messages: list[ChatMessage], tools: list) -> Any:
+    async def stream_turn(self, messages: list[ChatMessage], tools: list, opts: Any = None) -> Any:
         self.calls += 1
         yield StreamDelta(kind="text", text=self.text)
         yield self._result()
@@ -77,7 +77,7 @@ class _ChatOnlyModel:
         self.text = text
         self.calls = 0
 
-    async def chat(self, messages: list[ChatMessage], tools: list) -> ModelChatResult:
+    async def chat(self, messages: list[ChatMessage], tools: list, opts: Any = None) -> ModelChatResult:
         self.calls += 1
         return ModelChatResult(
             message=ChatMessage(role="assistant", content=self.text),
@@ -316,7 +316,7 @@ class _ScriptedVerifier:
         self.scores = list(scores)
         self.calls = 0
 
-    async def chat(self, messages: list[ChatMessage], tools: list) -> ModelChatResult:
+    async def chat(self, messages: list[ChatMessage], tools: list, opts: Any = None) -> ModelChatResult:
         self.calls += 1
         text = self.scores.pop(0) if self.scores else "1.0"
         return ModelChatResult(
@@ -382,3 +382,22 @@ async def test_an_unparseable_reply_is_still_billed(monkeypatch: pytest.MonkeyPa
 
     assert score == 0.0, "an unparseable reply falls through to the heuristic"
     assert ctx.limit_state.tokens_input == 10, "and the call is billed anyway"
+
+
+@pytest.mark.asyncio
+async def test_cached_prompt_tokens_are_counted_on_the_limit_state() -> None:
+    """`tokens_cached` feeds `usage.prompt_tokens_details.cached_tokens` on the OpenAI wire;
+    it is the part of `tokens_input` the provider served from its prompt cache."""
+    from felix.patterns.model import record_usage
+
+    ctx = _ctx()
+    result = ModelChatResult(
+        message=ChatMessage(role="assistant", content="ok"),
+        stop_reason="end_turn",
+        usage=TokenUsage(input=6, output=2, cache_read=4),
+    )
+    async with async_run_with_context(ctx):
+        record_usage(result, manifest_id="m", model_id="metered")
+
+    assert ctx.limit_state.tokens_input == 10
+    assert ctx.limit_state.tokens_cached == 4

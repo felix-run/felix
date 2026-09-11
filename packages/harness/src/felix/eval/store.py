@@ -19,6 +19,13 @@ _memory_items: dict[tuple[str, str, str], dict[str, Any]] = {}
 _memory_runs: dict[tuple[str, str], dict[str, Any]] = {}
 
 
+def reset_eval_for_tests() -> None:
+    """Clear the in-memory datasets, items and runs."""
+    _memory_datasets.clear()
+    _memory_items.clear()
+    _memory_runs.clear()
+
+
 def _dataset_dict(
     row: EvalDataset | dict[str, Any], *, items: list[dict[str, Any]] | None = None
 ) -> dict[str, Any]:
@@ -315,4 +322,5 @@ __all__ = [
     "list_datasets",
     "list_runs",
     "put_dataset",
+    "reset_eval_for_tests",
 ]

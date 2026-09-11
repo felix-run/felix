@@ -17,6 +17,11 @@ now_ms = lambda: int(time.time() * 1000)
 _memory_approvals: dict[tuple[str, str], dict[str, Any]] = {}
 
 
+def reset_approvals_for_tests() -> None:
+    """Clear the in-memory approvals."""
+    _memory_approvals.clear()
+
+
 def _approval_dict(row: Approval | dict[str, Any]) -> dict[str, Any]:
     if isinstance(row, dict):
         data = dict(row)
@@ -121,6 +126,7 @@ async def find_approved(
     """
     ts = now_ms()
     if _use_memory(settings):
+        matches = []
         for row in _memory_approvals.values():
             if (
                 row["tenant_id"] == tenant_id
@@ -136,11 +142,25 @@ async def find_approved(
                     continue
                 if unconsumed_only and row.get("consumed_at") is not None:
                     continue
-                return _approval_dict(row)
-        return None
+                matches.append(row)
+        if not matches:
+            return None
+        # Most recently decided wins, which is what Postgres does with
+        # `ORDER BY decided_at DESC LIMIT 1`. The twin used to return the first row the dict
+        # happened to yield -- the *oldest* match -- so with two live grants for one call the
+        # two backends handed back different rows, and with them a different `principal_subj`
+        # binding and a different `edited_args`. A tool would then run with the arguments an
+        # operator had substituted on one backend and not on the other.
+        matches.sort(
+            key=lambda r: (r.get("decided_at") or 0, r.get("created_at") or 0, r.get("id") or ""),
+            reverse=True,
+        )
+        return _approval_dict(matches[0])
 
     factory = get_session_factory(settings=settings)
     async with factory() as db:
+        from sqlalchemy import or_
+
         stmt = (
             select(Approval)
             .where(
@@ -149,8 +169,20 @@ async def find_approved(
                 Approval.tool_name == tool_name,
                 Approval.call_signature == call_signature,
                 Approval.status == "approved",
+                # Expiry belongs in the WHERE, not after the LIMIT. Filtering it afterwards
+                # meant one expired grant *hid* a still-valid older one: `LIMIT 1` took the
+                # newest row, the expiry check then discarded it, and the call was denied even
+                # though a live grant existed. The twin scanned every row and skipped expired
+                # ones, so it authorised where Postgres refused -- reachable in production,
+                # because `create_pending` only reuses *pending* rows, so approved grants
+                # accumulate per signature and an operator re-approving after a short TTL
+                # lapsed produced exactly this pair.
+                or_(Approval.expires_at.is_(None), Approval.expires_at >= ts),
             )
-            .order_by(Approval.decided_at.desc())
+            # A tiebreaker, so "the most recent decision wins" is a contract rather than a
+            # coincidence: `decided_at` is milliseconds and two decisions inside one tie,
+            # which `ORDER BY` alone leaves to physical row order.
+            .order_by(Approval.decided_at.desc(), Approval.created_at.desc(), Approval.id.desc())
             .limit(1)
         )
         if principal_subj is not None:
@@ -159,8 +191,6 @@ async def find_approved(
             stmt = stmt.where(Approval.consumed_at.is_(None))
         row = (await db.scalars(stmt)).first()
         if row is None:
-            return None
-        if row.expires_at is not None and row.expires_at < ts:
             return None
         return _approval_dict(row)
 
@@ -331,4 +361,5 @@ __all__ = [
     "find_approved",
     "get_approval",
     "list_approvals",
+    "reset_approvals_for_tests",
 ]

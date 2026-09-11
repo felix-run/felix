@@ -38,7 +38,9 @@ class _RunQueue:
 
 
 _queues: dict[str, _RunQueue] = {}
-_conn = RedisConnection("steer")
+_conn = RedisConnection(
+    "steer", fallback_consequence="a steer or stop queued on another replica never reaches the running turn"
+)
 
 
 def _key(tenant_id: str, thread_id: str) -> str:
@@ -85,7 +87,7 @@ async def enqueue(
             await client.expire(_redis_key(tenant_id, thread_id, qk.value), 3600)
             return {"queued": qk.value, "thread_id": thread_id}
         except Exception:
-            logger.debug("steer redis enqueue failed", exc_info=True)
+            await _conn.fallback("steer redis enqueue")
 
     q = await ensure_run_queue(tenant_id, thread_id)
     msg = QueuedMessage(kind=qk, text=text)
@@ -105,7 +107,7 @@ async def request_abort(tenant_id: str, thread_id: str) -> dict[str, Any]:
             await client.set(_redis_key(tenant_id, thread_id, "cancel"), "1", ex=3600)
             await client.set(_redis_key(tenant_id, thread_id, "abort"), "1", ex=3600)
         except Exception:
-            logger.debug("abort redis set failed", exc_info=True)
+            await _conn.fallback("abort redis set")
     q = await ensure_run_queue(tenant_id, thread_id)
     q.cancel_remaining_tools = True
     q.aborted = True
@@ -127,7 +129,7 @@ async def is_aborted(tenant_id: str, thread_id: str) -> bool:
             if await client.get(_redis_key(tenant_id, thread_id, "abort")):
                 return True
         except Exception:
-            logger.debug("abort redis read failed", exc_info=True)
+            await _conn.fallback("abort redis read")
     q = await ensure_run_queue(tenant_id, thread_id)
     return q.aborted
 
@@ -166,7 +168,7 @@ async def _drain_redis(tenant_id: str, thread_id: str, kind: str) -> list[Queued
             data = json.loads(raw)
             out.append(QueuedMessage(kind=QueueKind(data["kind"]), text=str(data["text"])))
     except Exception:
-        logger.debug("steer redis drain failed", exc_info=True)
+        await _conn.fallback("steer redis drain")
     return out
 
 
@@ -223,7 +225,7 @@ async def should_cancel_remaining_tools(tenant_id: str, thread_id: str) -> bool:
         try:
             return bool(await client.get(_redis_key(tenant_id, thread_id, "cancel")))
         except Exception:
-            logger.debug("steer redis cancel read failed", exc_info=True)
+            await _conn.fallback("steer redis cancel read")
     q = await ensure_run_queue(tenant_id, thread_id)
     return q.cancel_remaining_tools
 
@@ -234,7 +236,7 @@ async def clear_cancel_flag(tenant_id: str, thread_id: str) -> None:
         try:
             await client.delete(_redis_key(tenant_id, thread_id, "cancel"))
         except Exception:
-            logger.debug("steer redis cancel clear failed", exc_info=True)
+            await _conn.fallback("steer redis cancel clear")
     q = await ensure_run_queue(tenant_id, thread_id)
     q.cancel_remaining_tools = False
 

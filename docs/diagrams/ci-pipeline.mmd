@@ -1,0 +1,31 @@
+---
+title: CI job graph
+---
+%% Source of truth: .github/workflows/ci.yml — `needs:` and `if:` on each job.
+flowchart LR
+    accTitle: What CI runs on a push, and what decides whether each job runs
+    accDescr: A paths-filter job runs first and emits five booleans; every other job except pre-commit gates on one of them, so a docs-only change skips the Python matrix entirely. The jobs then run flat and in parallel — there is no second tier, so no job waits on another's result. Two of them exist specifically to turn a silent skip into a failure: conformance sets FELIX_CONFORMANCE_REQUIRE_POSTGRES so a missing database fails instead of skipping an arm, and test sets FELIX_REQUIRE_OPTIONAL_EXTRAS so a missing extra fails instead of quietly collecting nothing.
+
+    push([push or pull_request]) --> changes
+
+    changes{"changes<br/>dorny/paths-filter"} -->|"python"| lint["lint<br/>ruff check + format"]
+    changes -->|"python"| typecheck["typecheck<br/>ty check packages apps"]
+    changes -->|"python"| test["test<br/>pytest, all extras"]
+    changes -->|"python"| conf["conformance<br/>store + provider contracts"]
+    changes -->|"python"| evaljob["eval<br/>mock fixture, no model calls"]
+    changes -->|"python"| lean["lean<br/>no-extras install, import every module"]
+    changes -->|"toolkit"| toolkit["toolkit<br/>validate .claude hooks and skills"]
+    changes -->|"helm"| helm["helm<br/>lint + topology test"]
+    changes -->|"docker"| docker["docker<br/>compose config, every overlay"]
+    changes -.->|"scalar, gates one step inside lint"| lint
+
+    push -->|"ungated, runs on every push"| pre["pre-commit"]
+
+    class changes focal
+    class test focal
+    class push external
+    class lint,typecheck,conf,evaljob,lean,toolkit,helm,docker,pre primary
+
+    classDef focal    fill:none,stroke:#2F81F7,stroke-width:3px
+    classDef primary  fill:none,stroke:#6e7781,stroke-width:1px
+    classDef external fill:none,stroke:#7d8590,stroke-width:1px,stroke-dasharray:4 3

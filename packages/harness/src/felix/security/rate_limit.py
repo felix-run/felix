@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import time
 from collections import OrderedDict, deque
@@ -134,9 +135,10 @@ PROBE_PATHS = frozenset({"/health", "/live", "/ready"})
 
 # /metrics is deliberately NOT skipped: it is a scrape target with unbounded label
 # cardinality, so an unauthenticated caller polling it is a real amplification path.
-SKIP_EXACT = PROBE_PATHS | {"/docs", "/openapi.json", "/redoc"}
-# `/docs/` was here for Swagger UI's /docs/oauth2-redirect, which went with it; the
-# Scalar reference is the single exact path above.
+# Only the probes: kubelet sends no credential and treats a 429 as a failed probe. The
+# API reference used to be here too, which under `api_key`/`jwt` left three paths where a
+# credential could be guessed unthrottled; a request to `/docs` now counts like any other.
+SKIP_EXACT = PROBE_PATHS
 SKIP_PREFIX = ("/.well-known/",)
 
 
@@ -218,6 +220,66 @@ def build_rate_limit_config(settings: Any) -> RateLimitConfig:
     )
 
 
+def trusted_proxy_header(settings: Any) -> str:
+    """The header name a proxy the operator runs writes the client address into, or "".
+
+    Empty means "no proxy is declared" — the one decision behind both the rate-limit
+    key and whether `x-forwarded-proto` is believed (HSTS). Both read it here so the
+    rule has one home.
+    """
+    return (getattr(settings, "trusted_client_ip_header", "") or "").strip().lower()
+
+
+def forwarded_client(raw: str, *, hops: int = 1) -> str:
+    """The client address in a forwarding header, given ``hops`` proxies you operate.
+
+    X-Forwarded-For is a list that every proxy on the path *appends* to, so the entry a
+    trusted proxy wrote is counted from the right — the last one with a single proxy,
+    the one before it with two. The leftmost entry was taken before, and it is whatever
+    the client put in the header it sent: one client could present as unlimited
+    distinct clients, which is the exact thing the empty-by-default setting guards.
+    A single-valued header (cf-connecting-ip) is the one-entry case of the same rule.
+
+    Fewer entries than declared hops means the header was not written by the chain the
+    operator described, so nothing in it is trusted: "" sends the caller to the socket
+    peer, which is the one address a client cannot choose. The chosen entry must parse
+    as an IP (a port suffix is tolerated) for the same reason.
+    """
+    entries = [part.strip() for part in raw.split(",") if part.strip()]
+    if len(entries) < hops:
+        return ""
+    return _ip_or_empty(entries[-hops])
+
+
+def _ip_or_empty(candidate: str) -> str:
+    """``candidate`` as a canonical IP string, or "" when it is not one.
+
+    `host:port`, `[v6]:port` and a bare v6 all parse; anything else — an attacker-shaped
+    string on a misconfigured chain, a hostname a proxy wrote — falls back to the peer.
+    """
+    host = candidate
+    if host.startswith("["):
+        host = host[1:].split("]", 1)[0]
+    elif host.count(":") == 1:
+        host = host.split(":", 1)[0]
+    try:
+        return str(ipaddress.ip_address(host))
+    except ValueError:
+        return ""
+
+
+def _joined_header(headers: Any, name: str) -> str:
+    """Every line of a repeated header, comma-joined as RFC 7230 reads it.
+
+    `Headers.get` returns only the first line, and a proxy that *adds* a line
+    (HAProxy `option forwardfor`) rather than extending the list leaves the client's
+    line first — the leftmost-entry bug again, one field line over.
+    """
+    getlist = getattr(headers, "getlist", None)
+    values = getlist(name) if callable(getlist) else [headers.get(name) or ""]
+    return ",".join(v for v in values if v)
+
+
 def client_key(request: Any, settings: Any) -> str:
     """Rate-limit key for one request.
 
@@ -226,11 +288,11 @@ def client_key(request: Any, settings: Any) -> str:
     previous per-tenant key also meant that under `auth_mode=none` every caller shared
     one `tenant:default` bucket, so a single client could 429 the whole deployment.
     """
-    header = (getattr(settings, "trusted_client_ip_header", "") or "").strip().lower()
+    header = trusted_proxy_header(settings)
     if header:
-        raw = request.headers.get(header) or ""
-        # X-Forwarded-For is a list; the first entry is the origin client.
-        candidate = raw.split(",")[0].strip()
+        candidate = forwarded_client(
+            _joined_header(request.headers, header), hops=settings.trusted_proxy_hops
+        )
         if candidate:
             return f"ip:{candidate}"
     client = getattr(request, "client", None)
@@ -248,5 +310,7 @@ __all__ = [
     "build_rate_limit_config",
     "check_rate_limit",
     "client_key",
+    "forwarded_client",
     "should_skip_rate_limit",
+    "trusted_proxy_header",
 ]

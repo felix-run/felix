@@ -109,6 +109,7 @@ request context needs the same.
 | `0007_approval_consumed_at` | add/drop column, one index | Metadata-only, fast. |
 | `0008_fiber_leases` | 3 add, 3 drop, one index | Metadata-only, fast. |
 | `0009_memory_recall` | 9 `ADD COLUMN`, 5 indexes, drops a `NOT NULL` | Looks heavy; should be trivial. Its docstring records that `memory_vectors.embedding` was `NOT NULL` with no default while `put_memory` never supplied one, so *every insert has failed on real Postgres since `0001`*. Confirm with `select count(*) from memory_vectors` — expect `0`, and if it is not `0`, re-cost this row before proceeding. |
+| `0013_drop_oauth_token_cache` | `DROP TABLE IF EXISTS oauth_token_cache` | The first migration that drops a table. Unconditional and, through `downgrade()`, irreversible for data — the table recreates empty. Safe because no released version ever wrote to it (`select count(*) from oauth_token_cache` before upgrading is `0` on every deployment built from this repo). |
 
 If `session_events` is large enough that the `0005` index build is not acceptable as downtime,
 build it by hand `CONCURRENTLY` first and then `alembic stamp` past it — but that is a deliberate
@@ -131,6 +132,7 @@ All default safely; none is required.
 
 ```bash
 # 0. Take a backup and verify you can restore it. Not a snapshot you have never restored.
+#    docs/BACKUP.md has the commands and the drill.
 
 # 1. Move the checkout to the tag (it supplies the migrations and compose files).
 cd /opt/felix && git fetch --tags && git checkout vX.Y.Z
@@ -172,7 +174,7 @@ still setting them at the top level fails the render and says where they went. D
 
 ```bash
 curl -sS https://api.felix.run/health
-curl -sS https://api.felix.run/openapi.json | jq '.info.version, (.paths | length)'   # 0.2.0, 68
+curl -sS -H "authorization: Bearer $KEY" https://api.felix.run/openapi.json | jq '.info.version, (.paths | length)'   # 0.2.0, 68
 ```
 
 Then the checks that would catch an RLS blackout, which `/health` will not:
@@ -197,7 +199,7 @@ Rolling the image back is easy. Rolling the schema back is not, and the two are 
 - **Image only.** Safe *only* while the older image tolerates the newer schema. For v0.1.0 against a
   v0.2.0 database this holds — except that a v0.1.0 image never sets the RLS GUCs, so on a plain
   role it lands in the blackout described above. Superuser: fine. Plain role: not.
-- **Schema.** Every one of `0005`–`0009` defines a `downgrade()`, so `alembic downgrade 0004` is
+- **Schema.** Every one of `0005`–`0013` defines a `downgrade()` (`0013`'s recreates `oauth_token_cache` empty), so `alembic downgrade 0004` is
   available — via alembic directly, since the `felix migrate` CLI only calls `command.upgrade`.
   Several of those downgrades drop columns, which discards whatever was written into them.
 - **Restore.** The only option that undoes data loss, and the reason step 0 is step 0.

@@ -105,6 +105,18 @@ spec:
 | `soc2` | No anonymous inbound outside development; trace + anomaly on; scopes/schemes; policies **or** approvals **or** limits; plaintext forbid + pin |
 | `eu_ai_act` | Transparency notice; content screening or input guardrails; if `risk_tier: high`, approvals required with `allow_unattended: false` |
 
+`retention_days` is the manifest's data-retention policy for its own audit trail: the nightly
+sweep deletes this manifest's `audit_events` older than that many days. It can only shorten the
+operator's `FELIX_AUDIT_RETENTION_DAYS` (30 by default), never extend it — the deployment's TTL
+is the ceiling, and a manifest keeps less than the deployment, not more. The rule is read off
+the manifest that *governs* the rows — resolved exactly as a request resolves it, so a bundled
+manifest's value (`governed.yaml` says 30) applies to every tenant that serves the bundled copy,
+and a tenant's own stored version of that name replaces it for that tenant. Usage (the billing
+record, 365 days), fibers and A2A tasks (7 days, terminal rows only) and session threads (off:
+the event log is the chat record) have deployment-wide TTLs, `FELIX_*_RETENTION_DAYS`, `0`
+keeping forever. Session retention drops whole idle threads and their metadata; it does not
+reach the facts memory capture extracted from them, which are governed by memory's own rules.
+
 Runtime also enforces `spec.auth.inbound`, routes inbound MCP through the
 compiled agent, emits audit events from the agent loop, and redacts durable
 state. User turns are screened when `content_screening.enabled` and/or
@@ -129,7 +141,11 @@ transcript (tracked in `docs/ROADMAP.md`); and `thinking_delta` is reasoning, no
 reply, and passes through unscreened. Tenant
 isolation is application-level `tenant_id` by default; enable Postgres RLS
 with migration `0006_tenant_rls` and `FELIX_DATABASE_RLS=true`
-(sets `app.tenant_id` / `app.rls_bypass` GUCs per transaction).
+(sets `app.tenant_id` / `app.rls_bypass` GUCs per transaction). Every table except
+`memory_vector_config` (one deployment-wide row, no tenant data, RLS never enabled) carries
+a `tenant_id` and the `felix_tenant_isolation` policy — `ENABLE`d, `FORCE`d, and comparing
+`tenant_id` to the session GUC with a bypass arm, and the only policy on the table;
+`tests/unit/test_rls_coverage.py` renders the migrations and fails when a new table does not.
 
 ## Inbound and outbound constraints
 
@@ -327,6 +343,17 @@ Closing the call out is also what makes the thread resumable at all: the provide
 transcript containing a tool call with no answer, so before this an interrupted run could
 not be continued.
 
+A durable step that raises *outside* the invoke's own handler — its save cannot land, the
+lease write fails, a store is down — is not retried forever. The fiber sleeps for a delay
+that doubles per consecutive failure (1m, 2m, 4m, 8m at the default; capped at an hour from
+the eighth) and after `FELIX_FIBER_MAX_ATTEMPTS` (5) it is `dead` — fifteen minutes after
+the first failure at the default: never claimed again, the last error (first line, no
+statement text) on `GET /chat/runs/{resume_token}`, terminal to every consumer. When the
+save is what fails, the count is written on its own columns so the bound still holds; only
+a store that is entirely down leaves the fiber released for the next tick, as before. A
+step that completes resets the count. An `invoke` that fails is `failed` in one tick, as
+before.
+
 ## Run budgets
 
 `spec.limits` bounds a single run. Every field is enforced at two points — before each
@@ -346,6 +373,11 @@ budget alone.
 | `max_wall_clock_seconds` | Elapsed time since the run started. |
 | `max_input_tokens` / `max_output_tokens` | Accumulated tokens, including cache reads and writes. |
 | `max_cost_usd` | Accumulated spend, priced from the model catalog. |
+
+A caller on `/v1/chat/completions` may pass `max_tokens`; it only ever *lowers* the manifest's
+per-turn ceiling (`spec.model.max_tokens`, or `limits.max_output_tokens` when that is tighter),
+never raises it — the output budget is checked at the top of a turn, so a caller-sized turn
+would otherwise run a full turn past the declared bound before it tripped.
 
 Side requests are metered but deliberately uncached. Compaction, memory capture, inbound
 screening and branch summarisation each issue a model call in the middle of a turn, and
@@ -413,8 +445,8 @@ Two things to know before relying on it:
 
   Two things this does **not** bound. `expires_at` gates step *entry*, so a step that starts
   just inside the horizon runs to completion — cap it with `limits.max_wall_clock_seconds`.
-  And the fiber *row* is not swept by `jobs/retention.py`, so the record of who started a run
-  outlives the run's usability; only its usability expires.
+  The fiber *row* outlives the run's usability by `FELIX_FIBER_RETENTION_DAYS` (7): the nightly
+  sweep deletes terminal fibers older than that, and with them the record of who started the run.
 
   A fiber enqueued with no request context, from a different tenant than the run, or before
   this existed, records nothing and resumes with no scopes. When it *does* carry authority,
@@ -493,6 +525,39 @@ Approvals are matched on `(tenant, manifest, tool, sha256(args))` and stored in 
 `command_screening` rules with `decision: require_approval` go through the same flow and
 wait up to `command_screening.approval_ttl_seconds` (default 300).
 
+**Across processes.** The run that is waiting and the request that decides are usually in
+different processes — a durable fiber waits on the worker, the operator approves through the
+API. The wait is a Redis list (`BLPOP`), so the decision crosses. Without Redis the waiter is
+a process-local future: the decision lands in the API's memory, the fiber times out and
+denies, and the operator was told the approval worked. `FELIX_REDIS_URL` may therefore not
+be empty outside `development` (`validate_runtime` refuses to start; `felix doctor` says
+why). A URL that is set but unreachable still starts — `/ready` fails on it, which is what
+takes the replica out of rotation — and is logged at warning once per subsystem per process
+(waiters, steer, thread notifications, session leases), on the first failed connection and
+again when a command fails on a client that had connected, rather than silently degraded.
+The same channel carries UI prompts and client-tool answers.
+## Browser-facing posture
+
+Every response carries `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`,
+`Referrer-Policy: no-referrer` and `Cache-Control: no-store`; a response that arrived over
+TLS carries `Strict-Transport-Security` for `FELIX_HSTS_MAX_AGE_SECONDS`, with
+`includeSubDomains` unless `FELIX_HSTS_INCLUDE_SUBDOMAINS=false` (on an apex or shared
+parent hostname it pins every sibling for the whole max-age). "Arrived over TLS" is the
+connection's own scheme, or the **last** `x-forwarded-proto` entry — the one the proxy
+wrote — and that header is believed only when `FELIX_TRUSTED_CLIENT_IP_HEADER` declares a
+proxy you operate; the same setting drives the rate-limit key, so declaring one is both.
+
+The API reference (`/docs`, `/openapi.json`) is a map of every route including the
+management ones, so under `api_key` and `jwt` it takes the same credential as the API and
+counts against the rate limit like any other path. A browser cannot send that credential
+(there is no cookie or query-string path, and the page's own fetch of the spec carries
+none), so on an authenticated deployment the reference is read by `curl`, through an
+authenticating reverse proxy or SSO in front of the origin, or by `FELIX_DOCS_PUBLIC=true`
+— which republishes the route map anonymously and is warned at startup outside
+development. The docs page sets a per-response nonce-based Content-Security-Policy with
+`'strict-dynamic'`, so only the pinned Scalar bundle and its inline config run and no CDN
+origin is allowlisted; ReDoc is not served, so there is one reference surface with one CSP.
+
 ## Request limits
 
 Rate limiting runs **outside** authentication, so a failed credential is counted — it
@@ -502,16 +567,48 @@ previously ran inside, and a 401 returned before the limiter was reached.
 FELIX_RATE_LIMIT=120
 FELIX_RATE_LIMIT_WINDOW_SECONDS=60
 FELIX_TRUSTED_CLIENT_IP_HEADER=      # e.g. cf-connecting-ip, behind a proxy you operate
+FELIX_TRUSTED_PROXY_HOPS=1           # proxies you operate that append to that header
 ```
 
 Keyed per client address. Redis-backed when `FELIX_REDIS_URL` is reachable; if it is not,
 limiting **degrades to per-process** with a logged error rather than failing requests or
 skipping the control. Leave `FELIX_TRUSTED_CLIENT_IP_HEADER` empty unless a proxy you
-operate overwrites that header — otherwise a client can present as unlimited distinct
-clients.
+operate writes that header — otherwise a client can present as unlimited distinct
+clients. A forwarding proxy *appends* the peer it saw to `X-Forwarded-For`, so the
+client is read from the **right**, `FELIX_TRUSTED_PROXY_HOPS` entries deep: the last
+entry with one proxy, the one before it with two. Repeated header lines (HAProxy
+`option forwardfor` adds a line rather than extending the list) are joined first, so the
+rule holds across them. The leftmost entry is whatever the client chose to send and is
+never used. A header with fewer entries than the declared hops, or whose chosen entry is
+not an IP address, is not trusted at all: the key falls back to the socket peer, the one
+address a client cannot choose. A single-valued header (`cf-connecting-ip`) is the
+one-entry case of the same rule.
 
 `/metrics` requires authentication: its label values include tenant-supplied manifest ids
 and remote MCP tool names.
+
+`PUT /manifests/{name}` and `felix validate-manifest` run the same write-time validator.
+Always refused: an outbound `auth` or `env` value that looks like a credential, a URL
+carrying `user:password@`, a stdio MCP command outside `FELIX_MCP_STDIO_ALLOWED_COMMANDS`,
+and a sandbox image outside `FELIX_SANDBOX_ALLOWED_IMAGES` — each of these stored fine
+before and failed, or executed, on the next request. Under `forbid_plaintext_secrets` (forced
+by any framework, and by `FELIX_ENVIRONMENT=production`) every non-ref `env` value is
+refused too. On read, `GET /manifests/{name}` and the write's own echo replace any literal
+`auth`, any non-ref `env` value and any URL userinfo with `[REDACTED]`, so `manifests:read`
+never returns a credential a stored manifest still carries. `cowork.yaml` no longer allows
+anonymous callers: it binds a shell on the developer's machine, and under
+`FELIX_AUTH_MODE=none` the approvals that gate that shell are anonymous too — which means
+`make dev` (auth `none`) cannot drive cowork; the Compose stack, which mints a key, can.
+`POST /chat` honours `Idempotency-Key`: one turn per key per **principal** (the authenticated
+subject within its tenant), replayed for `FELIX_IDEMPOTENCY_TTL_SECONDS`. A replay returns
+before the manifest's inbound auth (`required_scopes`, `schemes`) runs, which is why the scope
+is the principal and not the tenant — a response one caller earned is never handed to another.
+Claims are `SET NX EX` in Redis when `FELIX_REDIS_URL` is set and in-process otherwise; while
+Redis is unreachable the store degrades to in-process (one log line per transition, as the
+rate limiter does), so a retry then dedupes only within one replica. The in-process store is
+bounded (50 000 keys, oldest evicted) and a response over 256 KiB is not stored, so the
+header cannot be used to grow a process; the client key is hashed into the Redis keyspace, so
+it cannot pick a cluster slot.
 
 `/health`, `/live` and `/ready` are public and unthrottled, because kubelet presents no
 credential and treats a 429 as a failed probe (`PROBE_PATHS` in `felix/security/rate_limit.py`
@@ -536,6 +633,19 @@ comma-separated. What is enforced:
   cached (15 min TTL), refreshed by the API on a timer. `FELIX_JWKS_PUBLIC` is used for
   the `self` scheme only — it must never verify a token that claims a remote issuer.
 - **Algorithms are asymmetric-only**; there is no HS256 or `none` path.
+- **Clock skew of sixty seconds is tolerated** on `exp`, `nbf` and `iat` (`JWT_LEEWAY_S`);
+  a token past that is `expired`.
+- **An unusable verifier is visible on `/ready`.** A cached `access`/`cognito` key set past
+  its TTL is not served, a shared issuer with no `;aud=` is refused, a `FELIX_JWKS_PUBLIC`
+  that does not import verifies nothing — in each, every token from that issuer fails while
+  the database and Redis probes stay green. `/ready` carries a `jwks` row under
+  `auth_mode=jwt`; it **fails only when no configured verifier is usable** (the pod cannot
+  authenticate anyone and leaves rotation) and otherwise stays ready and logs which issuer
+  is out, so one issuer's outage does not take the deployment off the Service for the
+  issuers that still work. Remote key sets refresh every five minutes against a fifteen-minute
+  TTL, and a failed refresh retries after thirty seconds, so one IdP blip cannot age a set
+  past its TTL. An IdP outage longer than the TTL still 401s that issuer's tokens; the
+  deployment stays up for the others.
 
 ## Tenant resolution
 
@@ -546,9 +656,21 @@ token claim. Constrain it:
 FELIX_ALLOWED_TENANTS=acme,globex     # empty = accept any claimed tenant
 ```
 
-Prefer `;tenant=fixed:<tenant>` for a single-tenant deployment. On Cognito, `custom:*`
+`felix doctor` fails a claim-mode verifier with an empty allowlist outside development (it
+says nothing for `fixed` and `issuer`, which read no claim). Prefer `;tenant=fixed:<tenant>` for a single-tenant deployment. On Cognito, `custom:*`
 attributes are frequently user-writable, so a claim alone is not an authorization
-decision. A token with **no** tenant claim in `claim` mode is now rejected — it
+decision — which is why, outside `FELIX_ENVIRONMENT=development`, a `tenant=claim`
+verifier with an empty `FELIX_ALLOWED_TENANTS` is refused at startup (`validate_runtime`)
+rather than accepting whatever tenant the token names. `fixed` and `issuer` verifiers never
+read the claim and need no allowlist — but `issuer` takes the **first DNS label of the
+issuer host** and discards the path, so two Cognito user pools or two Keycloak realms
+(`…/us-east-1_A` and `…/us-east-1_B`, `…/realms/acme` and `…/realms/globex`) would
+collapse into one tenant; that configuration — or an issuer-derived label that equals another
+verifier's `fixed:` tenant — is refused at startup in every environment.
+Pin path-scoped issuers with `;tenant=fixed:<tenant>`. The allowlist is global, not
+per-verifier: with two `claim` verifiers and `FELIX_ALLOWED_TENANTS=acme,globex`, a token
+from either issuer may claim either tenant. If one issuer must not be able to name the
+other's tenant, give it `;tenant=fixed:` instead. A token with **no** tenant claim in `claim` mode is now rejected — it
 previously fell back to the issuer host's first DNS label, silently putting every such
 user in the same tenant.
 
@@ -592,6 +714,32 @@ implies the matching `*:read`.
 felix mint-jwt --sub ops --tenant default \
   --scopes audit:read,manifests:write,approvals:write,jobs:write
 ```
+
+## Supply chain: what proves an image is the one Felix published
+
+Every published image (`ghcr.io/felix-run/felix:X.Y.Z` and `:X.Y.Z-gcp`, each for
+`linux/amd64` and `linux/arm64`) is signed by digest with cosign under the release
+workflow's OIDC identity, carries an SPDX SBOM attestation per platform and SLSA provenance
+from buildx, and was scanned for CRITICAL/HIGH findings before its version tag existed.
+How that pipeline works, what it refuses, and the repository settings it depends on are in
+[`docs/RELEASING.md`](../docs/RELEASING.md). An operator verifies:
+
+```bash
+cosign verify ghcr.io/felix-run/felix:X.Y.Z \
+  --certificate-identity-regexp '^https://github.com/felix-run/felix/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+cosign verify-attestation --type spdxjson ghcr.io/felix-run/felix:X.Y.Z \
+  --certificate-identity-regexp '^https://github.com/felix-run/felix/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+The signature says the image was built by that workflow at that tag; the SLSA provenance
+attached by buildx says from which Dockerfile, sources and build args; the SBOM says what is
+in it. What the workflow cannot prove is who was allowed to push the tag — that is the tag
+ruleset and environment protection described in `docs/RELEASING.md`, repo settings rather
+than code. Dependencies are held for 48 hours after publication before CI accepts them
+(`scripts/check-dependency-age.py`), and every action the workflows run is pinned by commit
+SHA, every scanner and base image by digest.
 
 ## GitOps check
 

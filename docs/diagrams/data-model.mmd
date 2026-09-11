@@ -1,0 +1,89 @@
+---
+title: Postgres data model
+---
+%% Source of truth: packages/harness/src/felix/db/models.py.
+%% Note: the schema declares ZERO foreign keys. Every relationship drawn here is by
+%% shared key convention, enforced by RLS and application code, not by the catalog.
+erDiagram
+    accTitle: The tenant-scoped tables that hold Felix state
+    accDescr: Every table carries tenant_id as the first column of its primary key, and isolation is enforced by row-level security policies rather than by foreign keys — the schema declares none. That means the relationships shown here are conventions the application upholds: session_events and thread_state share (tenant_id, thread_id), and manifest_active points at a row in manifests by name and version without a constraint saying so. The tables shown are the core set; eval, documents, jobs, plans and skill_activation follow the same tenant-first shape.
+
+    MANIFESTS ||--o{ MANIFEST_ACTIVE : "pointed at by name and version"
+    MANIFESTS ||--o{ SESSION_EVENTS : "manifest_id recorded per turn"
+    SESSION_EVENTS }o--|| THREAD_STATE : "shares tenant_id and thread_id"
+    SESSION_EVENTS ||--o{ USAGE_EVENTS : "a turn writes tokens and cost"
+    SESSION_EVENTS ||--o{ AUDIT_EVENTS : "a turn writes user_input and final_response"
+    THREAD_STATE ||--o{ FIBERS : "a durable run resumes a thread"
+    THREAD_STATE ||--o{ APPROVALS : "a suspended tool call awaits a decision"
+    THREAD_STATE ||--o{ MEMORY_VECTORS : "capture extracts facts from a thread"
+    MANIFESTS ||--o{ A2A_TASKS : "a peer call names a manifest"
+
+    MANIFESTS {
+        text tenant_id PK "first column of every PK in the schema"
+        text name PK
+        int version PK
+        jsonb manifest_json
+    }
+    MANIFEST_ACTIVE {
+        text tenant_id PK
+        text name PK
+        int version "no FK enforces this"
+        int canary_version "split by canary_weight"
+    }
+    SESSION_EVENTS {
+        text tenant_id PK
+        text thread_id PK
+        bigint seq PK "append-only, never updated"
+        text kind
+        text role
+        text content
+        jsonb tool_calls
+    }
+    THREAD_STATE {
+        text tenant_id PK
+        text thread_id PK
+        text leaf_event_id "fork and rewind move this"
+        jsonb labels_json
+    }
+    USAGE_EVENTS {
+        text tenant_id PK
+        text id PK
+        text model_id "logical route name"
+        text wire_model_id "provider id it was priced by"
+        numeric cost_usd "fixed at write time"
+    }
+    AUDIT_EVENTS {
+        text tenant_id PK
+        text id PK
+        text event_type
+        text principal_subj
+        jsonb payload_json
+    }
+    FIBERS {
+        text tenant_id PK
+        text id PK
+        text status "pending, running, sleeping, completed, failed, dead, expired"
+        bigint wake_at
+        text lease_owner "reclaimable when the lease lapses"
+    }
+    APPROVALS {
+        text tenant_id PK
+        text id PK
+        text status "pending, approved, denied"
+        bigint expires_at
+        bigint consumed_at "one_shot grants are spent once"
+    }
+    MEMORY_VECTORS {
+        text tenant_id PK
+        text id PK
+        text content "the extracted fact"
+        text status "active, superseded, forgotten"
+        bigint superseded_seq "closes validity in turn time"
+        float importance
+    }
+    A2A_TASKS {
+        text tenant_id PK
+        text id PK
+        text manifest_id
+        jsonb status_json
+    }

@@ -42,6 +42,8 @@ class LimitState:
     audit_count: int = 0
     tokens_input: int = 0
     tokens_output: int = 0
+    # The part of `tokens_input` served from the prompt cache, for wires that report it.
+    tokens_cached: int = 0
     cost_usd: float = 0.0
     aborted: bool = False
     # Why the run was aborted, surfaced to the model and the caller.

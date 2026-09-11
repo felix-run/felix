@@ -37,8 +37,15 @@ HOOKS = Path(__file__).resolve().parents[2] / ".claude" / "hooks"
 # have blocked this file from being collected at all.
 PYTEST = "py" + "test"
 
+_HAS_JQ = subprocess.run(["which", "jq"], capture_output=True).returncode == 0
+# A silently skipped file looks exactly like a passing one. Locally a missing jq is a fair
+# skip; in CI it means every guard assertion below stopped running and nobody was told.
+# `test_pr_quality_gate_hook.py` already carries this hatch — this file is the one that did not.
+if not _HAS_JQ and os.environ.get("FELIX_REQUIRE_OPTIONAL_EXTRAS") == "1":
+    raise RuntimeError("jq is required in CI: without it this whole file skips and reads as a pass")
+
 pytestmark = pytest.mark.skipif(
-    subprocess.run(["which", "jq"], capture_output=True).returncode != 0,
+    not _HAS_JQ,
     reason="the guards no-op without jq, so there is nothing to assert",
 )
 
@@ -83,6 +90,15 @@ CASES: list[tuple[str, str, int]] = [
     (f"{PYTEST}-env-guard", f"FELIX_DATABASE_URL=memory://x {PYTEST} -q", ALLOWED),
     # A heredoc body is input, not commands.
     (f"{PYTEST}-env-guard", f"python3 - <<'PY'\n# mentions {PYTEST} here\nPY", ALLOWED),
+    # An alternation inside a quoted argument is not a pipe. `hook_segments` split on
+    # `|` blindly, so this became a segment beginning with the watched word and the guard
+    # blocked a grep — then blocked the attempt to investigate itself.
+    (f"{PYTEST}-env-guard", f"grep -nE '(pip|python|{PYTEST})=' ~/.zshrc", ALLOWED),
+    (f"{PYTEST}-env-guard", f'echo "a | {PYTEST} b"', ALLOWED),
+    (f"{PYTEST}-env-guard", f"awk '/{PYTEST}|ruff/ {{print}}' notes.txt", ALLOWED),
+    # ...but a real pipe still segments, so a bare run after one is still caught.
+    (f"{PYTEST}-env-guard", f"echo hi | grep h && {PYTEST} -q", BLOCKED),
+    ("git-guard", "git log --grep 'push --force|reset --hard'", ALLOWED),
 ]
 
 

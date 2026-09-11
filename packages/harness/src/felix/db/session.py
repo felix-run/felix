@@ -147,6 +147,13 @@ async def apply_tenant_rls(session: AsyncSession, settings: Settings, tenant_id:
 # Engines created through get_engine, so dispose_engine can actually close them.
 _ENGINES: list[AsyncEngine] = []
 
+
+def engines_exist() -> bool:
+    """Whether this process has built an engine yet — after which the driver options,
+    `application_name` among them, are fixed for the life of the process."""
+    return bool(_ENGINES)
+
+
 # Recycle before a pooler or cloud proxy drops an idle connection server-side. Without
 # it, PgBouncer / RDS Proxy / Cloud SQL close connections the pool still believes are
 # live, and pool_pre_ping pays a round trip to discover that on every checkout.
@@ -156,14 +163,21 @@ POOL_RECYCLE_SECONDS = 1800
 def _connect_args(settings: Settings, url: str) -> dict[str, object]:
     """Driver options, which only exist for the driver they belong to.
 
-    Guarded on the URL rather than assumed: `prepare_threshold` is a psycopg option,
-    and passing it to any other driver is a connection-time error rather than a
-    no-op.
+    Guarded on the URL rather than assumed: every key here is a psycopg / libpq
+    option, and passing one to any other driver is a connection-time error rather
+    than a no-op.
     """
-    if not settings.db_prepared_statements and "+psycopg" in url:
+    if "+psycopg" not in url:
+        return {}
+    args: dict[str, object] = {
+        # libpq takes whole seconds; a fraction would round down to "no timeout".
+        "connect_timeout": max(1, int(settings.db_connect_timeout_seconds)),
+        "application_name": settings.application_name(),
+    }
+    if not settings.db_prepared_statements:
         # None disables auto-preparation entirely; 0 would prepare *everything*.
-        return {"prepare_threshold": None}
-    return {}
+        args["prepare_threshold"] = None
+    return args
 
 
 def _engine_kwargs(settings: Settings, url: str) -> dict[str, object]:

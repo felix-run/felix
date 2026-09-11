@@ -13,7 +13,12 @@ from felix.auth.middleware import AuthMiddleware
 from felix.config import Settings
 from felix.logging_setup import REQUEST_ID_HEADER
 from felix_api.app import CORE_BODY_LIMIT_BYTES, create_app
-from felix_api.middleware import BodyLimitMiddleware, RateLimitMiddleware, RequestIdMiddleware
+from felix_api.middleware import (
+    BodyLimitMiddleware,
+    RateLimitMiddleware,
+    RequestIdMiddleware,
+    SecurityHeadersMiddleware,
+)
 from httpx import ASGITransport, AsyncClient
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -80,10 +85,17 @@ def test_middleware_runtime_order() -> None:
     chain = [type(n).__name__ for n in _stack(_app("order"))]
     positions = {
         cls.__name__: chain.index(cls.__name__)
-        for cls in (RequestIdMiddleware, BodyLimitMiddleware, RateLimitMiddleware, AuthMiddleware)
+        for cls in (
+            RequestIdMiddleware,
+            SecurityHeadersMiddleware,
+            BodyLimitMiddleware,
+            RateLimitMiddleware,
+            AuthMiddleware,
+        )
     }
     assert (
         positions["RequestIdMiddleware"]
+        < positions["SecurityHeadersMiddleware"]
         < positions["BodyLimitMiddleware"]
         < positions["RateLimitMiddleware"]
         < positions["AuthMiddleware"]

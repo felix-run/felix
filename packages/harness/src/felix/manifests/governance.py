@@ -163,6 +163,42 @@ def assert_cost_limit_is_measurable(manifest: Manifest, settings: Any | None = N
         )
 
 
+def validate_for_write(manifest: Manifest, settings: Any | None = None) -> None:
+    """Every check a manifest must pass before it is *stored*, in one place.
+
+    The route and the CLI used to keep their own chains of these and drifted: the CLI
+    said `ok` in development to a manifest the route refused. A stored manifest that
+    fails any of these is worse than a refused one — it compiles into a spawned command,
+    a 500 per request, or a credential served to `manifests:read`.
+    """
+    from felix.manifests.secret_refs import PlaintextSecretError, assert_no_plaintext_secrets
+    from felix.session.store import validate_checkpointer_config
+    from felix.tools.sandboxes import SandboxImageNotAllowed, assert_sandbox_images_allowed
+
+    assert_stdio_allowed(manifest, settings)
+    # `memory.checkpointer` is an open string resolved against a registry, so pydantic no
+    # longer catches a typo — and stored, it would raise inside every build.
+    spec = manifest.spec
+    try:
+        validate_checkpointer_config(
+            spec.memory.checkpointer,
+            session_strategy=spec.session.strategy,
+            compact_after_turn=spec.session.compact_after_turn,
+            memory_capture=spec.memory.capture.enabled,
+            memory_recall_tools=spec.memory.recall.tools,
+        )
+    except ValueError as exc:
+        raise GovernanceError(str(exc)) from exc
+    try:
+        assert_no_plaintext_secrets(manifest, strict=_effective_forbid_plaintext(manifest, settings))
+    except PlaintextSecretError as exc:
+        raise GovernanceError(str(exc)) from exc
+    try:
+        assert_sandbox_images_allowed(manifest.spec.sandboxes, settings)
+    except SandboxImageNotAllowed as exc:
+        raise GovernanceError(str(exc)) from exc
+
+
 def validate_governance(manifest: Manifest, settings: Any | None = None) -> None:
     """Fail closed when ``spec.governance.frameworks`` require missing controls.
 
@@ -226,5 +262,6 @@ __all__ = [
     "assert_outbound_providers_allowed",
     "assert_stdio_allowed",
     "transparency_notice_text",
+    "validate_for_write",
     "validate_governance",
 ]

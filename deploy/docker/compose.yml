@@ -78,6 +78,9 @@ services:
   api:
     <<: *felix-build
     command: ["felix-api"]
+    # Compose kills a container 10s after `stop` by default; the API drains in-flight
+    # turns for FELIX_GRACEFUL_SHUTDOWN_SECONDS (120), so give it that long here too.
+    stop_grace_period: 120s
     ports:
       - "${FELIX_BIND_ADDR:-127.0.0.1}:${FELIX_PORT:-8080}:8080"
     environment:
@@ -216,8 +219,9 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-felix}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in .env for profile=full}
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      # Loopback like every other service; MinIO holds spilled artifacts and uploads.
+      - "${FELIX_BIND_ADDR:-127.0.0.1}:9000:9000"
+      - "${FELIX_BIND_ADDR:-127.0.0.1}:9001:9001"
     volumes:
       - minio-data:/data
     healthcheck:

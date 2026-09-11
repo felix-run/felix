@@ -3,19 +3,33 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import typer
 from rich import print as rprint
 
 from felix_cli import __version__
 
+if TYPE_CHECKING:
+    from felix.config import Settings
+
 app = typer.Typer(
     name="felix",
     help="Felix agents harness CLI.",
     no_args_is_help=True,
 )
+
+
+@app.callback()
+def _root() -> None:
+    """Felix agents harness CLI."""
+    from felix.config import get_settings
+
+    # One more process against the same database: name its connections. In a callback
+    # rather than at import, so importing this module for a helper stamps nothing.
+    get_settings().stamp_process_role("cli")
 
 
 def _load_plugins() -> list[str]:
@@ -49,11 +63,9 @@ def migrate(
 ) -> None:
     """Apply Alembic migrations."""
     from alembic import command
-    from alembic.config import Config
+    from felix.db.migrations import alembic_config
 
-    root = Path(__file__).resolve().parents[4]
-    cfg = Config(str(root / "alembic.ini"))
-    command.upgrade(cfg, revision)
+    command.upgrade(alembic_config(), revision)
     rprint(f"[green]migrated to {revision}[/green]")
 
 
@@ -111,6 +123,9 @@ def eval_cmd(
             use_llm_judge=llm_judge and not mock,
             deterministic_judge=not llm_judge,
         )
+        # The `eval` CI job parses this dict — it asserts a pass_count of 0, the presence of
+        # score rows and the absence of errors on the negative fixture. Replacing it with a
+        # summary line means updating `.github/workflows/ci.yml` in the same change.
         rprint(result)
         fails = int(result.get("fail_count") or 0)
         if fails:
@@ -202,31 +217,23 @@ def validate_manifest_cmd(
 ) -> None:
     """Validate a manifest schema + opt-in governance frameworks (GitOps CI)."""
     from felix.config import Settings
-    from felix.manifests.governance import GovernanceError, validate_governance
+    from felix.manifests.governance import GovernanceError, validate_for_write, validate_governance
     from felix.manifests.loader import load_manifest_file
     from felix.patterns.registry import list_patterns
-    from felix.session.store import validate_checkpointer_config
 
     _load_plugins()
     settings = Settings(environment=environment)  # type: ignore[arg-type]
     try:
         manifest = load_manifest_file(path)
         validate_governance(manifest, settings)
+        # The same refusals `PUT /manifests` makes, so `ok` here means the store would take it.
+        validate_for_write(manifest, settings)
         # The registry is open, so this is the only place a bad pattern name can be
         # caught before build time.
         pattern = manifest.spec.pattern
         if pattern not in list_patterns():
             known = ", ".join(sorted(list_patterns()))
             raise ValueError(f"unknown pattern {pattern!r} (registered: {known})")
-        # Same reason: `checkpointer` is an open string resolved against a registry,
-        # so an unknown one is only catchable here or at build time.
-        validate_checkpointer_config(
-            manifest.spec.memory.checkpointer,
-            session_strategy=manifest.spec.session.strategy,
-            compact_after_turn=manifest.spec.session.compact_after_turn,
-            memory_capture=manifest.spec.memory.capture.enabled,
-            memory_recall_tools=manifest.spec.memory.recall.tools,
-        )
         # The schema validators are syntactic — resolving there meant a blocking
         # getaddrinfo on the API event loop for every ref on every read and write, and it
         # never failed closed anyway. The resolving check belongs here, where an author is
@@ -243,6 +250,99 @@ def validate_manifest_cmd(
     rprint(f"[green]ok[/green] {path} ({manifest.metadata.name})")
 
 
+@dataclass(frozen=True)
+class Finding:
+    """One doctor row. `detail` is a value and prints either way; `remedy` prints on FAIL."""
+
+    label: str
+    passed: bool
+    detail: str = ""
+    remedy: str = ""
+
+
+def _otel_private_or_tls(settings: Settings) -> tuple[bool, str]:
+    """Whether spans leave over TLS or stay on the host, judged by the exporters' own rule."""
+    from urllib.parse import urlsplit
+
+    from felix.config import _is_loopback_host
+    from felix.observability.tracing import otel_transport
+
+    protocol, tls = otel_transport(settings)
+    endpoint = settings.otel_endpoint
+    # The gRPC exporter accepts a schemeless `host:port`; urlsplit needs the `//` to see a host.
+    host = urlsplit(endpoint if "//" in endpoint else f"//{endpoint}").hostname or ""
+    where = f"{protocol} to {host or settings.otel_endpoint}"
+    return tls or _is_loopback_host(host), f"{'tls' if tls else 'plaintext'} ({where})"
+
+
+def _posture_findings(settings: Settings) -> list[Finding]:
+    """What doctor says about the deployment's posture.
+
+    Each of these is legal to configure and quietly weakens the deployment, so doctor
+    says so rather than leaving it to a reader of `.env` to notice. `validate_runtime`
+    refuses the combinations that are never right; these are the ones that are right
+    only in development, or right only with a companion setting.
+    """
+    from felix.auth.jwt import parse_verifiers
+    from felix.config import _is_loopback_host
+
+    rows: list[Finding] = []
+    development = settings.environment == "development"
+    if settings.auth_mode == "none":
+        # Under `none`, allow_insecure is the acknowledgement the boot guard demands; under
+        # real auth the flag has no effect outside development, so there is nothing to judge.
+        rows.append(
+            Finding(
+                "allow_insecure (required for auth_mode=none outside development)",
+                settings.allow_insecure or development,
+                f"allow_insecure={settings.allow_insecure}",
+                "set FELIX_ALLOW_INSECURE=true, or FELIX_AUTH_MODE=api_key|jwt",
+            )
+        )
+        rows.append(
+            Finding(
+                "auth_mode=none binds loopback only",
+                _is_loopback_host(settings.host),
+                f"host={settings.host}",
+            )
+        )
+    if development:
+        return rows
+    if settings.auth_mode == "jwt":
+        # Only a verifier in `claim` mode reads a tenant claim; `fixed` and `issuer` never do.
+        claim_mode = any(v.tenant_mode == "claim" for v in parse_verifiers(settings.jwt_verifiers))
+        if claim_mode:
+            rows.append(
+                Finding(
+                    "allowed_tenants pins the tenant claim",
+                    bool(settings.allowed_tenants.strip()),
+                    f"FELIX_ALLOWED_TENANTS={settings.allowed_tenants or '(empty)'}",
+                    "any tenant a JWT claims is accepted; list the tenants, or use ;tenant=fixed:<tenant>",
+                )
+            )
+    if settings.otel_enabled:
+        tls, transport = _otel_private_or_tls(settings)
+        rows.append(
+            Finding(
+                "otel exporter is private or TLS",
+                tls,
+                transport,
+                "spans carry user and tenant ids; use https://, FELIX_OTEL_INSECURE=false, or a local "
+                "collector",
+            )
+        )
+        rows.append(
+            Finding(
+                "otel spans exclude prompts",
+                not settings.otel_capture_content,
+                f"FELIX_OTEL_CAPTURE_CONTENT={str(settings.otel_capture_content).lower()}",
+                "prompts and completions in spans are outside content screening; turn it off outside "
+                "development",
+            )
+        )
+    return rows
+
+
 @app.command("doctor")
 def doctor_cmd() -> None:
     """Check runtime configuration (read-only)."""
@@ -254,12 +354,15 @@ def doctor_cmd() -> None:
     settings = get_settings()
     ok = True
 
-    def check(label: str, passed: bool, detail: str = "") -> None:
+    def check(label: str, passed: bool, detail: str = "", *, remedy: str = "") -> None:
         nonlocal ok
         mark = "[green]ok[/green]" if passed else "[red]FAIL[/red]"
         if not passed:
             ok = False
         suffix = f" — {detail}" if detail else ""
+        # A remedy is a sentence about the failure; on a passing row it would be a lie.
+        if remedy and not passed:
+            suffix += f" — {remedy}"
         rprint(f"  {mark}  {label}{suffix}")
 
     rprint("[bold]Felix doctor[/bold]")
@@ -295,19 +398,10 @@ def doctor_cmd() -> None:
         check("backends resolve", True)
     except RuntimeError as exc:
         check("backends resolve", False, str(exc))
-    if settings.auth_mode == "none":
-        from felix.config import _is_loopback_host
-
-        check(
-            "allow_insecure (required for auth_mode=none outside loopback)",
-            settings.allow_insecure or settings.environment == "development",
-            f"allow_insecure={settings.allow_insecure}",
-        )
-        check(
-            "auth_mode=none binds loopback only",
-            _is_loopback_host(settings.host),
-            f"host={settings.host}",
-        )
+    for row in _posture_findings(settings):
+        check(row.label, row.passed, row.detail, remedy=row.remedy)
+    if settings.environment == "development":
+        rprint("  [dim]posture[/dim]  production posture checks skipped — FELIX_ENVIRONMENT=development")
     from felix.security.stdio_policy import allowed_commands, describe_allowlist
 
     # Not a failure either way — stdio off is the safe default; on is a deliberate choice.
@@ -325,7 +419,6 @@ def doctor_cmd() -> None:
             "consumer_shared_secret (for /internal)",
             bool(settings.consumer_shared_secret.strip()),
         )
-
     check(
         "object_store",
         settings.object_store in {"fs", "s3", "gcs", "memory"},
@@ -385,7 +478,18 @@ def doctor_cmd() -> None:
                             text("SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user")
                         )
                     )
+                    statement_timeout = str(await conn.scalar(text("SHOW statement_timeout")) or "0")
                 check("database", True, "reachable")
+                # Reported, not judged: the only place a statement timeout can be set is the
+                # server or the role — a client-side one does not survive a pooler.
+                rprint(
+                    f"  [dim]statement_timeout[/dim] {statement_timeout}"
+                    + (
+                        " (none — set it on the role: ALTER ROLE ... SET statement_timeout)"
+                        if statement_timeout == "0"
+                        else ""
+                    )
+                )
 
                 # RLS coherence. The schema half (migration 0006) and the runtime
                 # half (FELIX_DATABASE_RLS) can disagree, and both directions are
@@ -419,16 +523,50 @@ def doctor_cmd() -> None:
             except Exception as exc:
                 check("database", False, str(exc)[:120])
 
-        # Redis / Valkey
+        # "Reachable" said nothing about the schema: a deploy that skipped `felix migrate
+        # head` looked healthy until the first query hit a missing column. Outside the
+        # block above so a memory:// run reports it too (trivially at head).
         try:
-            import redis.asyncio as redis
+            from felix.db.migrations import migration_state
 
-            client = redis.from_url(settings.redis_url)
-            await client.ping()
-            await client.aclose()
-            check("redis", True, "reachable")
+            state = await migration_state(settings)
+            check(
+                "migrations at head",
+                state.at_head,
+                f"database={state.current or 'unmigrated'} code={state.head}",
+                remedy="run `felix migrate head`",
+            )
         except Exception as exc:
-            check("redis", False, str(exc)[:120])
+            check("migrations at head", False, str(exc)[:120])
+
+        # Redis / Valkey. Not optional outside development: approvals and client-tool
+        # answers cross from the API to the worker through it, and the in-process fallback
+        # that takes over when it is missing or down cannot deliver them.
+        redis_label = "redis (cross-process approvals, prompts, rate limits)"
+        if not settings.redis_url.strip():
+            if settings.environment == "development":
+                check(
+                    redis_label,
+                    True,
+                    "FELIX_REDIS_URL empty — single process only; required outside development",
+                )
+            else:
+                check(
+                    redis_label,
+                    False,
+                    "FELIX_REDIS_URL empty — durable runs waiting on an approval would time out",
+                )
+        else:
+            # The same bounded probe `/ready` runs, so the two cannot disagree on "reachable".
+            from felix.health import probe_redis, timed_probe
+
+            probe = await timed_probe("redis", probe_redis(settings))
+            detail = (
+                probe.detail
+                if probe.ok
+                else f"unreachable, approvals will not cross processes: {probe.detail}"
+            )
+            check(redis_label, probe.ok, detail)
 
         # Object store factory
         try:

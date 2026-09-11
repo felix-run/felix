@@ -96,6 +96,8 @@ services:
       - --web.enable-lifecycle
     volumes:
       - ./deploy/docker/config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # The alerting rules, shared with the Helm chart's PrometheusRule.
+      - ./deploy/helm/felix/files/prometheus-rules.yml:/etc/prometheus/rules/felix.yml:ro
       # File-based discovery for optional overlays (compose.temporal.yml drops a file in).
       - ./deploy/docker/config/prometheus-targets:/etc/prometheus/targets:ro
       # Minted by scripts/metrics-token.sh; `make up-observability` depends on it, the way

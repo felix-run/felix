@@ -14,7 +14,8 @@ Granian (API), Taskiq (worker/scheduler), Postgres+pgvector, Valkey/Redis, plugg
 ```bash
 make install            # uv sync --dev (lean core; what CI uses)
 make install-full       # uv sync --all-extras --dev (aws/gcp/mcp/browser/embeddings/…)
-make check              # ruff check + ty check + pytest + ruff format --check
+make check              # ruff check + ty check + pytest w/ coverage floor + ruff format --check
+make test-cov           # the suite with coverage against the floor; `check` and CI both run this
 make check-ci           # check + manifest bundle/schema, toolkit, mock eval, pre-commit
 make conformance        # store contract vs Postgres (needs FELIX_CONFORMANCE_DATABASE_URL)
 make lint / fmt / type / test
@@ -74,6 +75,14 @@ without touching the skip count; that is how six Temporal tests went unexecuted 
 `--extra temporal --extra warehouse` and sets `FELIX_REQUIRE_OPTIONAL_EXTRAS=1`, which turns a
 missing extra into a failure. Locally, without that variable, these still skip as before.
 
+End-to-end (`tests/e2e/`) boots the zero-argument `create_application()` production uses, sends
+real HTTP through it, and points the model at `felix_ai.providers.scripted`. Nothing between the
+socket and the model is replaced, so a governance wrapper that stops being applied fails here
+rather than in a deployment. `conftest.py:boot` yields a client plus a spy over every model client
+built; never monkeypatch `build_tenant_agent` in a new test. `scripts/test.sh` blanks
+`FELIX_ANTHROPIC_API_KEY` and `FELIX_OPENAI_API_KEY` so a mis-routed model call fails closed
+instead of billing a vendor — the repo `.env` carries real keys and pydantic-settings reads it.
+
 Conformance (`tests/conformance/`) runs one contract against every implementation of a seam.
 `test_model_provider.py` does it for model providers — three arms (`scripted`, `openai`,
 `anthropic`), none needing infrastructure, so a skip there is a bug rather than a missing
@@ -95,6 +104,11 @@ failure. A silently skipped arm looks exactly like a pass. Adding a backend to `
 `tests/conformance/test_session_store.py` makes it inherit every assertion in the contract.
 
 Eval smoke (no model calls): `uv run felix eval --dataset smoke --manifest quick --fixture fixtures/eval/smoke.json --mock`.
+Every item in `fixtures/eval/smoke.json` carries a `mock_answer` satisfying its own rubric, so that
+run passes by construction and a scorer rewritten to `return True` would leave it green.
+`fixtures/eval/negative.json` is its counter-smoke — every item's `mock_answer` violates its rubric,
+so the run must exit non-zero. CI runs both, and `tests/unit/test_eval_gate_can_fail.py` asserts the
+same pair locally. Neither fixture means anything without the other.
 
 ## Architecture
 

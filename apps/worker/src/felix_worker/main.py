@@ -24,6 +24,10 @@ def scheduler_main() -> None:
     """Start the Taskiq scheduler (enqueues labeled cron tasks)."""
     import asyncio
 
+    from felix.config import get_settings
+
+    get_settings().stamp_process_role("scheduler")
+
     from taskiq.cli.common_args import LogLevel
     from taskiq.cli.scheduler.args import SchedulerArgs
     from taskiq.cli.scheduler.run import run_scheduler
@@ -45,7 +49,9 @@ def temporal_main() -> None:
     from felix.config import get_settings
     from felix.durability.temporal import run_worker
 
-    asyncio.run(run_worker(get_settings()))
+    settings = get_settings()
+    settings.stamp_process_role("temporal-worker")
+    asyncio.run(run_worker(settings))
 
 
 if __name__ == "__main__":

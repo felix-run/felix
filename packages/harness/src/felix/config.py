@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import ipaddress
+import logging
 from functools import lru_cache
 from typing import Any, Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = logging.getLogger("felix.config")
 
 
 def _is_loopback_host(host: str) -> bool:
@@ -28,6 +31,9 @@ def _is_loopback_host(host: str) -> bool:
         return False
 
 
+ProcessRole = Literal["api", "worker", "scheduler", "temporal-worker", "cli"]
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="FELIX_",
@@ -43,6 +49,9 @@ class Settings(BaseSettings):
     host: str = "127.0.0.1"
     port: int = 8080
     log_level: str = "INFO"
+    # `auto` renders JSON in production and readable text elsewhere; set it explicitly
+    # when a staging stack ships to a log store, or a production one is read by a person.
+    log_format: Literal["auto", "json", "text"] = "auto"
     allow_insecure: bool = False  # required if auth_mode=none and host binds public
 
     # --- auth ---
@@ -59,15 +68,39 @@ class Settings(BaseSettings):
     # accepted, which is only safe when the IdP is the sole writer of that claim.
     allowed_tenants: str = ""
 
+    # --- HTTP posture ---
+    # `/docs` and `/openapi.json` describe every route and are behind auth in `api_key`
+    # and `jwt` modes. A browser cannot send the API credential, so the reference is then
+    # reachable from one only through an authenticating proxy in front of the origin — or
+    # by opening it here, which republishes the route map anonymously (warned at startup
+    # outside development). Under `auth_mode=none` everything is public.
+    docs_public: bool = False
+    # Strict-Transport-Security is sent only on responses that arrived over TLS — either
+    # directly, or behind a proxy that says so via `x-forwarded-proto` when the trusted
+    # proxy header is configured — because an HSTS header on a plaintext response is either
+    # ignored or, on a shared hostname, pins a policy the operator did not choose.
+    # `includeSubDomains` pins every sibling of the hostname too; on an apex or shared
+    # parent that is a 180-day decision, so it is its own switch.
+    hsts_max_age_seconds: int = Field(default=15_552_000, ge=0)  # 180 days; 0 disables
+    hsts_include_subdomains: bool = True
+
     # --- request limits ---
     rate_limit: int = 120
     rate_limit_window_seconds: int = 60
+    # How long a `POST /chat` response is replayable under its `Idempotency-Key`. A
+    # client that times out and retries inside this window gets the first attempt's
+    # response instead of a second turn (and a second bill).
+    idempotency_ttl_seconds: int = Field(default=86_400, ge=1)
     # Header carrying the real client IP behind a trusted proxy (e.g.
     # "cf-connecting-ip", "x-forwarded-for"). EMPTY by default: the header is
     # attacker-controlled unless a proxy you operate overwrites it, and trusting
     # it blindly lets one client masquerade as unlimited distinct clients.
     trusted_client_ip_header: str = ""
-    oauth_cache_key: str = ""  # base64 32-byte AES key
+    # How many proxies you operate append to that header on the way in. A forwarding
+    # proxy *appends* the peer it saw, so the client is counted from the RIGHT: with one
+    # proxy the last entry, with two the one before it. The leftmost entry is whatever
+    # the client chose to send.
+    trusted_proxy_hops: int = Field(default=1, ge=1)
     # Comma-separated commands MCP stdio servers may spawn. Empty (default) disables
     # stdio entirely — manifest-supplied argv would otherwise be arbitrary code execution.
     mcp_stdio_allowed_commands: str = ""
@@ -123,10 +156,33 @@ class Settings(BaseSettings):
     # separately, so raising this does not also raise the ceiling on reaching a dead host.
     model_timeout_seconds: float = Field(default=120.0, gt=0)
 
+    # --- process identity ---
+    # Which of the deployment's processes this is. Each console script stamps it at start
+    # (`stamp_process_role`), before any engine exists, so every connection presents
+    # `application_name=felix-<role>` to pg_stat_activity; FELIX_PROCESS_ROLE overrides
+    # (a deployment that runs two differently-tuned API pools, say). Empty = unnamed.
+    process_role: ProcessRole | Literal[""] = ""
+
     # --- durability ---
     durability: Literal["fibers", "temporal"] = "fibers"
     temporal_host: str = "localhost:7233"
     temporal_namespace: str = "default"
+    # Consecutive step failures (outside the invoke's own handler) before a fiber is
+    # marked `dead` instead of retried. Retries back off 1m, 2m, 4m … up to an hour.
+    fiber_max_attempts: int = Field(default=5, ge=1)
+
+    # --- retention (worker `retention_sweep`, nightly) ---
+    # Days a row is kept; 0 keeps forever. Every table the harness appends to has one of
+    # these — a table with no bound grows for the life of the deployment. A manifest's
+    # `governance.retention_days` can shorten the audit TTL for its own rows, never extend it.
+    audit_retention_days: int = Field(default=30, ge=0)
+    usage_retention_days: int = Field(default=365, ge=0)
+    # Terminal fibers carry the caller's principal and scopes in `state_json`; finished
+    # A2A tasks share this TTL. Live rows are never swept.
+    fiber_retention_days: int = Field(default=7, ge=0)
+    # The session event log is the chat record, so the default keeps it. When set, a
+    # thread is dropped whole once its last event is this old.
+    session_retention_days: int = Field(default=0, ge=0)
 
     # --- scale-out ---
     scale_out: bool = False
@@ -241,6 +297,15 @@ class Settings(BaseSettings):
     # server-side. It earns that behind PgBouncer / RDS Proxy / Cloud SQL and wastes it
     # against a direct Postgres, which is why it is a setting rather than a constant.
     db_pool_pre_ping: bool = True
+    # Driver-level bound, psycopg only (other drivers are handed none of these): a connect
+    # that hangs on a blackholed host waits this long, not the OS default of minutes.
+    # Every connection presents `application_name=felix-<role>` so pg_stat_activity can
+    # say which process holds it. There is deliberately no statement-timeout setting: as a
+    # libpq startup option it is rejected by PgBouncer, and with PgBouncer told to ignore
+    # it the connection succeeds and nothing is ever cancelled — a control that reports on
+    # and does nothing. Set it on the role (`ALTER ROLE felix SET statement_timeout`);
+    # `felix doctor` reports what applies.
+    db_connect_timeout_seconds: float = Field(default=10.0, gt=0)
     # Whether the driver may prepare statements server-side.
     #
     # Must be `false` behind a transaction-mode pooler that does not itself track
@@ -259,6 +324,22 @@ class Settings(BaseSettings):
     # now, which is the one thing the conventions say not to do with configuration:
     # invisible to `felix doctor`, absent from .env.example, and unvalidated.
     workers: int = Field(default=1, ge=1)
+    # HTTP server (Granian; uvicorn takes the same where it has an equivalent).
+    # `backlog` is the listen queue; `runtime_threads` the async runtime's threads per
+    # worker. On SIGTERM a worker gets `graceful_shutdown_seconds` to finish in-flight
+    # requests — and to flush its audit/usage buffers at lifespan shutdown — before it is
+    # killed. The default matches the Helm chart's `terminationGracePeriodSeconds`; the
+    # chart sets this from that value so one number governs. A worker that dies is
+    # respawned by default (Granian exits on a fast crash loop; a slow one shows only in
+    # its log line, so watch the log or turn this off to surface it as a container exit).
+    http_backlog: int = Field(default=1024, ge=1)
+    http_runtime_threads: int = Field(default=1, ge=1)
+    graceful_shutdown_seconds: int = Field(default=120, ge=1)
+    respawn_failed_workers: bool = True
+    # Taskiq keeps every task's result in Valkey/Redis until it expires. Cron tasks
+    # return nothing but still write a result per tick; without a TTL they accumulate
+    # against a store that is usually a small LRU.
+    task_result_ttl_seconds: int = Field(default=3600, ge=1)
 
     # --- misc ---
     default_manifest: str = "quick"
@@ -386,6 +467,86 @@ class Settings(BaseSettings):
                 f"(registered: {', '.join(sorted(known))})"
             )
 
+    def application_name(self) -> str:
+        """What this process calls itself to Postgres."""
+        return f"felix-{self.process_role}" if self.process_role else "felix"
+
+    def stamp_process_role(self, role: ProcessRole) -> None:
+        """Name this process once, at start. The environment's choice, if any, wins.
+
+        The name is read when an engine is built and engines are cached for the life of
+        the process, so a stamp that arrives after the first engine is a name nothing
+        will carry; that is logged rather than silently accepted. Engines read the
+        cached `get_settings()` instance, so a stamp on any other `Settings` (one handed
+        to `create_app` by a test, say) is also applied to that instance.
+        """
+        from felix.db.session import engines_exist
+
+        if engines_exist():
+            logging.getLogger("felix.config").warning(
+                "process role %r stamped after an engine was built; connections keep application_name=%s",
+                role,
+                self.application_name(),
+            )
+        if not self.process_role:
+            self.process_role = role
+        singleton = get_settings()
+        if singleton is not self and not singleton.process_role:
+            singleton.process_role = role
+
+    def _validate_jwt_tenant_posture(self) -> None:
+        """Where a JWT deployment's tenant comes from, and whether that is constrained."""
+        from felix.auth.jwt import (
+            allowed_tenants,
+            claim_mode_verifiers,
+            parse_verifiers,
+            tenant_collisions,
+            uses_jwt_verifiers,
+        )
+
+        if (
+            self.auth_mode not in {"none", "api_key"}
+            and self.jwt_verifiers.strip()
+            and not parse_verifiers(self.jwt_verifiers)
+        ):
+            # `parse_verifiers` drops an entry with an unknown scheme with one warning, so
+            # a typo (`oidc:`) left a process that started, reported ready with no
+            # `jwks` row, and 401ed every request.
+            raise RuntimeError(
+                "FELIX_JWT_VERIFIERS is set but no entry parsed (scheme must be access|cognito|self); "
+                "nothing can verify a token."
+            )
+        if not uses_jwt_verifiers(self):
+            return
+        # A claim is the least trustworthy source of a tenant id (Cognito `custom:*`
+        # attributes are often user-writable), and with no allowlist any claimed tenant
+        # is accepted; outside development the process refuses to start on it.
+        # `allowed_tenants()` is the runtime's definition of "empty" — a value of
+        # separators alone must not pass here and be empty there.
+        if (
+            self.environment != "development"
+            and claim_mode_verifiers(self.jwt_verifiers)
+            and not allowed_tenants(self)
+        ):
+            raise RuntimeError(
+                "FELIX_JWT_VERIFIERS resolves the tenant from a token claim "
+                "(tenant=claim) and FELIX_ALLOWED_TENANTS is empty, so any claimed tenant "
+                "would be accepted. Set FELIX_ALLOWED_TENANTS, or pin the verifier with "
+                ";tenant=fixed:<tenant>."
+            )
+        collisions = tenant_collisions(self.jwt_verifiers)
+        if collisions:
+            # Two issuers becoming one tenant is a cross-tenant data path, in every
+            # environment.
+            described = "; ".join(
+                f"{tenant!r} <- {', '.join(issuers)}" for tenant, issuers in collisions.items()
+            )
+            raise RuntimeError(
+                "FELIX_JWT_VERIFIERS: tenant=issuer derives the tenant from the issuer host's "
+                f"first label, and these issuers collapse into one tenant: {described}. "
+                "Pin each with ;tenant=fixed:<tenant>."
+            )
+
     def validate_runtime(self) -> None:
         """Fail fast on unsafe or incomplete configuration."""
         self._validate_registry_backed_settings()
@@ -401,6 +562,22 @@ class Settings(BaseSettings):
                     f"FELIX_AUTH_MODE=none may only bind loopback; FELIX_HOST={self.host!r} "
                     "is reachable off-host. Set FELIX_AUTH_MODE=api_key|jwt, or bind 127.0.0.1."
                 )
+        if not self.redis_url.strip() and self.environment != "development":
+            # Approvals, client-tool answers and UI prompts are delivered between processes
+            # (API to worker) over Redis; without it the waiter is a process-local future,
+            # so a decision made on the API never reaches the fiber and the run times out
+            # with "denied" after a human clicked Approve.
+            raise RuntimeError(
+                "FELIX_REDIS_URL is required outside development (approvals cross API→worker through it). "
+                "Point it at Valkey/Redis, or set FELIX_ENVIRONMENT=development."
+            )
+        if self.docs_public and self.auth_mode != "none" and self.environment != "development":
+            logger.warning(
+                "FELIX_DOCS_PUBLIC=true serves /docs and /openapi.json — every route, management "
+                "ones included — anonymously on an authenticated deployment"
+            )
+
+        self._validate_jwt_tenant_posture()
         if self.scale_out:
             if "sqlite" in self.database_url:
                 raise RuntimeError("Scale-out requires Postgres (FELIX_DATABASE_URL).")

@@ -58,13 +58,18 @@ async def _call_authenticator(
 # rate limiter has to skip the same paths — see `PROBE_PATHS` for the incident.
 # /metrics is NOT public: its counters carry tenant-supplied manifest ids and remote
 # MCP tool names as label values, so an anonymous scrape discloses every tenant's
-# manifest and tool names.
-_PUBLIC_EXACT = PROBE_PATHS | {"/docs", "/openapi.json", "/redoc"}
+# manifest and tool names. The API reference is not public either unless the operator
+# says so (`FELIX_DOCS_PUBLIC`): it describes every route, including the management
+# ones, and was the one map of the surface an unauthenticated caller could read.
+_PUBLIC_EXACT = PROBE_PATHS
 _PUBLIC_PREFIX = ("/.well-known/",)
+DOCS_PATHS = frozenset({"/docs", "/openapi.json"})
 
 
-def _is_public_path(path: str) -> bool:
+def _is_public_path(path: str, *, docs_public: bool = False) -> bool:
     if path in _PUBLIC_EXACT:
+        return True
+    if docs_public and path in DOCS_PATHS:
         return True
     return any(path.startswith(p) for p in _PUBLIC_PREFIX)
 
@@ -115,7 +120,7 @@ async def authenticate_request(
     if mode == "none":
         return ANONYMOUS
 
-    if _is_public_path(path):
+    if _is_public_path(path, docs_public=settings.docs_public):
         return ANONYMOUS
 
     # A plugin-registered mode wins over the built-ins, so an optional package can

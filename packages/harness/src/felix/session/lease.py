@@ -6,8 +6,6 @@ in-process state for single-process / unit tests.
 
 from __future__ import annotations
 
-import asyncio
-import contextlib
 import json
 import logging
 import secrets
@@ -15,14 +13,20 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from felix.redis_conn import RedisConnection
+
 logger = logging.getLogger("felix.session.lease")
 
 # thread_id -> Lease (in-process fallback)
 _leases: dict[str, SessionLease] = {}
 _force_memory = False
-_redis: Any | None = None
-_redis_loop: int | None = None
-_redis_failed = False
+# Was a hand-rolled client that latched `_redis_failed = True` for the life of the process
+# after one blip, at debug — the two defects `RedisConnection` exists to remove, one module
+# over from the three it already covered.
+_conn = RedisConnection(
+    "session leases",
+    fallback_consequence="an exclusive lease is granted per replica, so two replicas can each hold it",
+)
 
 
 @dataclass(slots=True)
@@ -63,43 +67,10 @@ def _assert_tenant_scoped(thread_id: str) -> None:
 
 
 async def _get_redis() -> Any | None:
-    global _redis, _redis_loop, _redis_failed
+    """The shared client, or None under `_force_memory` (tests) and on the fallback."""
     if _force_memory:
         return None
-    loop_id = id(asyncio.get_running_loop())
-    if _redis is not None and _redis_loop != loop_id:
-        with contextlib.suppress(Exception):
-            await _redis.aclose()
-        _redis = None
-        _redis_loop = None
-        _redis_failed = False
-    if _redis_failed:
-        return None
-    if _redis is not None:
-        return _redis
-    try:
-        from felix.config import get_settings
-
-        settings = get_settings()
-        url = getattr(settings, "redis_url", "") or ""
-        if not url:
-            return None
-        import redis.asyncio as redis
-
-        client = redis.from_url(
-            url,
-            decode_responses=True,
-            socket_connect_timeout=1.0,
-            socket_timeout=2.0,
-        )
-        await client.ping()
-        _redis = client
-        _redis_loop = loop_id
-        return _redis
-    except Exception:
-        logger.debug("lease redis unavailable; using in-process", exc_info=True)
-        _redis_failed = True
-        return None
+    return await _conn.get()
 
 
 def _status_from_payload(data: dict[str, Any] | None) -> dict[str, Any]:
@@ -262,7 +233,7 @@ async def lease_status(thread_id: str) -> dict[str, Any]:
         data = await _load_remote(client, thread_id)
         return _status_from_payload(data)
     except Exception:
-        logger.debug("lease redis status failed", exc_info=True)
+        await _conn.fallback("lease redis status")
         return _memory_status(thread_id)
 
 
@@ -358,7 +329,7 @@ async def acquire_lease(
             "status": _status_from_payload(payload),
         }
     except Exception:
-        logger.debug("lease redis acquire failed; using in-process", exc_info=True)
+        await _conn.fallback("lease redis acquire")
         return _memory_acquire(
             thread_id,
             holder_id=holder_id,
@@ -409,16 +380,15 @@ async def release_lease(
         await client.delete(_redis_key(thread_id))
         return {"ok": True, "released": True, "status": _status_from_payload(None)}
     except Exception:
-        logger.debug("lease redis release failed; using in-process", exc_info=True)
+        await _conn.fallback("lease redis release")
         return _memory_release(thread_id, holder_id=holder_id, token=token)
 
 
 def reset_leases_for_tests() -> None:
     """Clear in-process leases and force memory backend for deterministic unit tests."""
-    global _force_memory, _redis_failed
+    global _force_memory
     _leases.clear()
     _force_memory = True
-    _redis_failed = False
 
 
 __all__ = [

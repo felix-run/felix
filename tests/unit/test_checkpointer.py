@@ -243,7 +243,8 @@ def test_the_cli_rejects_a_bad_checkpointer(tmp_path: Any) -> None:
     result = CliRunner().invoke(app, ["validate-manifest", str(path)])
 
     assert result.exit_code == 1
-    assert "unknown checkpointer" in result.output
+    # Rich wraps the line at the runner's width, which differs between a terminal and CI.
+    assert "unknown checkpointer" in " ".join(result.output.split())
 
 
 async def _put_manifest(checkpointer: str, *, strategy: str = "full_replay") -> tuple[int, str]:

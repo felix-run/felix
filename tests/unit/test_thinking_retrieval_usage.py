@@ -139,7 +139,12 @@ def test_usage_payload_from_limit_state() -> None:
     ctx = RequestContext(
         settings=Settings(database_url="memory://u", object_store="memory", allow_insecure=True),
         auth=AuthContext(),
-        limit_state=LimitState(tokens_input=12, tokens_output=8),
+        limit_state=LimitState(tokens_input=12, tokens_output=8, tokens_cached=5),
     )
     usage = _usage_payload(ctx)
-    assert usage == {"prompt_tokens": 12, "completion_tokens": 8, "total_tokens": 20}
+    assert usage == {
+        "prompt_tokens": 12,
+        "completion_tokens": 8,
+        "total_tokens": 20,
+        "prompt_tokens_details": {"cached_tokens": 5},
+    }

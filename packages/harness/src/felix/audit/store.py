@@ -106,6 +106,25 @@ async def list_tenants_with_events(settings: Settings) -> list[str]:
             return sorted({str(r) for r in rows})
 
 
+async def list_manifests_with_events(settings: Settings) -> list[tuple[str, str]]:
+    """Every ``(tenant_id, manifest_id)`` pair with at least one audit event.
+
+    What retention resolves a manifest for: the pairs that have rows, rather than the
+    manifests a store lists — a manifest served from the object store or the image has
+    rows too, and only the resolver knows which document governs a pair.
+    """
+    if _use_memory(settings):
+        return sorted({(str(e["tenant_id"]), str(e.get("manifest_id") or "")) for e in _memory_events})
+
+    from felix.db.session import rls_bypass
+
+    factory = get_session_factory(settings=settings)
+    with rls_bypass():
+        async with factory() as db:
+            rows = (await db.execute(select(AuditEvent.tenant_id, AuditEvent.manifest_id).distinct())).all()
+            return sorted({(str(t), str(m or "")) for t, m in rows})
+
+
 async def query(
     settings: Settings,
     tenant_id: str,
@@ -232,7 +251,15 @@ async def _write_batch(settings: Settings, batch: list[dict[str, Any]]) -> None:
         await export_audit_events(settings, spill)
 
 
-__all__ = ["flush_pending", "list_events", "pending_buffer", "query", "record_event"]
+__all__ = [
+    "flush_pending",
+    "list_events",
+    "list_manifests_with_events",
+    "list_tenants_with_events",
+    "pending_buffer",
+    "query",
+    "record_event",
+]
 
 
 def pending_buffer() -> DurableBuffer:

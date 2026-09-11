@@ -24,8 +24,8 @@ egress**, **auth bypass on management surfaces**, **sandbox escape**.
 - `manifests/inbound_auth.py` — per-manifest inbound schemes, `allow_anonymous`, required scopes.
 - `governance/{inbound,content_screening,pii}.py` — injection screening on inbound turns, output
   screening, Presidio PII (optional extra).
-- `security/{ssrf,expr,rate_limit,constant_time,at_rest}.py` — egress guards, safe expression
-  evaluation, limiter, comparisons, at-rest encryption.
+- `security/{ssrf,expr,rate_limit,constant_time}.py` — egress guards, safe expression
+  evaluation, limiter, comparisons.
 - `manifests/secret_refs.py` + `secrets.py` — `secret:NAME` resolution and the masking list.
 - `db/session.py` RLS + `rls_bypass()` — tenant isolation; every bypass needs a justification.
 - `tools/{sandboxes,queues,transports,client_bridge}.py`, `mcp/`, `a2a/peers.py` — outbound and

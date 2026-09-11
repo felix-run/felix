@@ -138,16 +138,23 @@ live again. Revisit after the first three land, on evidence, not before.
       `dict[str, asyncio.Queue]`, so on a fiber the `approval_required` emit lands in the
       worker's own memory and is unreachable by construction — on precisely the path where a
       human would have time to respond. Route it through the Redis layer `session/notify.py`
-      already built in `#93`.
+      already built in `#93`. Correction from the 2026-09-04 readiness audit: the *decision*
+      does cross — `waiters.py` is a Redis `BLPOP` and the API's approve reaches the worker's
+      fiber. What did not was the no-Redis case, where the waiter silently became a
+      process-local future; `FELIX_REDIS_URL` is now required outside development and a
+      configured Redis that is down is logged at warning. The event-side gap above stands.
 - [ ] **Signed completion webhooks**, delivered from the **worker** — the fiber reaches terminal
       state under its cron and the API replica that accepted the request may be gone. Dead letter
       is `status='dead'` on the same durable row, not a second store. `spec.webhooks` selects
       operator-registered endpoint ids and **never carries URLs**: a manifest author holds a
       tenant scope, and a tenant-supplied URL on a path carrying run output is an exfiltration
       channel SSRF checks do not address.
-- [ ] **Bound the retry.** A step that raises is caught, logged at `warning`, and released — with
-      no attempt counter, no backoff, and no dead letter, so a deterministically failing fiber
-      retries every 60 seconds until `expires_at`.
+- [x] **Bound the retry.** Correction to the entry as written: an `invoke` that raises is
+      terminal in one tick (`status: failed`); it was the failures *outside* that handler — a
+      save, a lease write, a store down — that were released and re-claimed once a minute until
+      `expires_at`. Now: `fibers.attempts` (migration `0013`), backoff 1m→1h doubling, and
+      `status: dead` at `FELIX_FIBER_MAX_ATTEMPTS` (5), with the error on the run view and every
+      terminal-status set (`sdk.py`, the resume stream) agreeing under an invariant.
 - [ ] **Non-streaming `/chat` approval visibility.** `invoke()` never drains `side_events`, so a
       caller blocked on an approval hangs for the full TTL and then receives a deny, never
       learning an approval was requested.
@@ -169,11 +176,6 @@ and fixed; the comment at `fibers.py:36-46` is the record.
       call in a long thread escaped `max_cost_usd`; `summarizing:N` recorded nothing. Both go
       through `record_model_usage` now, and the react loop's reported usage block is priced by
       the wire id (it was the logical name, so every custom route reported `$0` on the turn).
-- [ ] **Persist cost.** `usage/pricing.py` has a real `estimate_cost` with cache and
-      long-context tiers; `record_tokens` takes no cost argument and writes none, so `GET /usage`
-      (30 lines) returns raw token rows and nothing can answer "what did tenant X spend last
-      month". Add cost at write time and return it.
-- [ ] **`GET /usage/summary`** — group by manifest / model / day, with totals.
 - [x] **Persist cost.** Migration `0011_usage_cost`: `cost_usd` and `wire_model_id` on every
       row, priced at write time by the wire id and any `spec.model.price` override (which was
       documented as doing this and decorated only the `/v1/models` listing). Stored `model_id`
@@ -204,10 +206,10 @@ and fixed; the comment at `fibers.py:36-46` is the record.
 Small, and blocking for the adopter goal: anyone evaluating Felix on its governance claims reads
 `governed.yaml` first. Enforce or delete, per item.
 
-- [ ] **`governed.yaml:142 retention_days: 30` is inert** — defined in `schema.py:595` and read
-      by nothing; `jobs/retention.py:17` hardcodes the TTL. Already named in
-      `test_inert_manifest_fields.py`. The flagship governed manifest declares a data-retention
-      policy that changes nothing.
+- [x] **`governed.yaml retention_days: 30` is inert.** Wired: the nightly sweep prunes the
+      manifest's own `audit_events` past that many days, capped by `FELIX_AUDIT_RETENTION_DAYS`
+      (a manifest shortens the deployment TTL, never extends it). Removed from
+      `test_inert_manifest_fields.py`.
 - [x] **`governed.yaml:128 guardrails.targets: [input, output]` does not scrub replies.**
       Implemented: the reply-path wrapper redacts (or blocks) PII in the agent's reply on
       `invoke` and on the streaming path; `output` covers tool output and the reply,
@@ -265,14 +267,33 @@ comment explaining exactly that. It is conditional, not inert.
       be constructed, and there is no integration test against a dev server. It does fix the
       one-op-per-tick problem — which item B1 fixes for everyone. Either invest properly or
       document it as a compatibility shim.
-- [ ] **Live-model eval (optional CI)** — the current gate is 3 fixture items whose mock answers
-      satisfy their own rubrics (`_mock_answer` returns `rubric["expect"]` when none is given), so
-      it proves the plumbing executes and scores nothing about the agent. Optional nightly against
-      `api.felix.run` that does not block PRs.
+- [ ] **Live-model eval (optional CI)** — the gate is now a pair of mock fixtures: `smoke.json`
+      passes by construction and `negative.json` must fail, checked by
+      `scripts/eval-counter-smoke.sh` in both CI and `make check-ci`. That proves the scorer can
+      say no, which it could not before, but both halves still score a canned answer — nothing
+      here scores the agent. Optional nightly against `api.felix.run` that does not block PRs.
+- [ ] **Validate eval dataset items, or document that they are free-form.** An item whose keys
+      are not `user_input` / `rubric` is accepted with 200 and stored with an empty prompt, so
+      the dataset looks configured and scores nothing — the bundled JSON fixtures use
+      `input`/`expect`, which is exactly the spelling that silently produces nothing. Pinned by
+      `tests/e2e/test_mgmt_routes.py::test_an_eval_item_with_unrecognised_keys_is_stored_empty`.
+      Pairs with the item below. A malformed item no longer abandons the run — it is scored as
+      that item's error — so this is now about telling the author, not about salvaging the run.
+
+- [ ] **An eval run cannot report how many items errored.** `fail_count` counts an item the
+      scorer rejected and an item that raised as the same thing, and the run row carries no
+      `error_count`. That is the ambiguity `scripts/eval-counter-smoke.sh` resolves out of band
+      for CI — it greps the printed rows for `error` — and nothing on the API surface offers the
+      equivalent, so an operator reading a failing run cannot tell a model regression from a
+      malformed dataset. Pairs with the item above.
+
 - [ ] **Eval scoring depth** — four string rules (`equals` / `contains` / `min_chars` / non-empty)
-      plus one judge. No regex, no schema check, no tool-call or trajectory assertions, no numeric
-      tolerance, no significance test on comparative runs. Nobody can gate a model change on this
-      without writing their own scorer.
+      plus one judge, and `invalid_rubric` for a rule that could never reject. No regex, no schema
+      check, no tool-call or trajectory assertions, no numeric tolerance, no significance test on
+      comparative runs. Nobody can gate a model change on this without writing their own scorer.
+      A new rule inherits two things: `_score_answer`'s docstring states the empty-value policy,
+      and `tests/unit/test_eval_gate_can_fail.py` reads the rule names off the function, so the
+      rule fails there until `negative.json` has an item that has seen it reject something.
 - [ ] **Long-context price tiers** — `estimate_cost` supports request-wide tiers but no bundled
       entry sets one. Needs current rates per deployment via a manifest price override. Folded
       into C where it touches `max_cost_usd`.
@@ -346,8 +367,12 @@ rather than from re-reading a file. The wave itself is written up in [HISTORY.md
       approval timeout (#150), resolution outside the tenant context (#150). **B6** above
       proposes step memoization and an append-only `fiber_steps` table, which is an activity
       model by another name. **Decide before starting that item.**
-- [ ] **`cowork.yaml` sets `auth.inbound.allow_anonymous: true` on a manifest that binds a
-      local shell.** The `client-shell` approval rule and the `thread_id`/`tool_call_id`
+- [x] **`cowork.yaml` sets `auth.inbound.allow_anonymous: true` on a manifest that binds a
+      local shell.** Now `false`, with the reason in the manifest. Checked at the same time:
+      `validate_runtime` already confines `auth_mode=none` to loopback, so the reachable case
+      was the developer's own machine. Also landed: `PUT /manifests` refuses plaintext
+      credentials and disallowed sandbox images at write time, and `GET /manifests/{name}`
+      redacts an embedded credential — `manifests:read` could read one before. The `client-shell` approval rule and the `thread_id`/`tool_call_id`
       requirement are what stand between an anonymous caller and command execution on a
       developer's machine. Untouched by the audit; wants a conscious yes or no.
 - [ ] **A per-tool screener cost lever.** `content_screening.tools` became additive in #146, so
@@ -361,10 +386,13 @@ rather than from re-reading a file. The wave itself is written up in [HISTORY.md
       discovery binds nothing). At author time the builtins plus declared refs are statically
       known, so `github__*` against a builtin-only agent is a typo with no runtime excuse.
       Author-friction call.
-- [ ] **Fiber rows are never swept.** `jobs/retention.py` covers `audit_events`, `plans` and
-      `memory_vectors`, not `fibers`. So `state.auth` — principal, scopes, scheme — accumulates
-      indefinitely, outliving both the run's usability and the 30-day audit TTL that motivated
-      it. Retention for `fibers` is the fix.
+- [x] **Fiber rows are never swept** — and neither were `usage_events`, `a2a_tasks` or
+      `session_events`; four tables grew for the life of a deployment. The sweep now covers
+      every appended table on both backends, with `FELIX_{AUDIT,USAGE,FIBER,SESSION}_RETENTION_DAYS`
+      in place of module constants (`0` keeps; sessions keep by default). The memory:// arm
+      never pruned audit rows at all — it filtered the `DurableBuffer` as if it were the list —
+      and swept plans for tenant `default` only; both fixed, and `tests/conformance/test_retention.py`
+      runs the contract against both arms.
 - [ ] **Temporal carries `state["auth"]` into workflow history.** `start_fiber_workflow` passes
       the whole fiber dict as the workflow argument, and the activity re-passes it per step, so
       `{principal_sub, scopes, scheme}` for every tenant accumulates in one namespace outside
@@ -394,13 +422,11 @@ rather than from re-reading a file. The wave itself is written up in [HISTORY.md
 
 ### Headless / contract
 
-- [ ] **Nothing enforces RLS coverage for a new tenant table.** `0006_tenant_rls` applied a
-      policy to a fixed list; a table added later is covered only if whoever added it
-      remembered, and the failure is silent — the table simply is not isolated.
-      `document_chunks` (migration `0010`) carries its policy because it was written by hand,
-      which is the argument, not the reassurance. An invariant comparing tables with a
-      `tenant_id` column against those carrying `felix_tenant_isolation` is ~15 lines and is
-      the natural candidate for this cycle's one hardening item.
+- [x] **Nothing enforces RLS coverage for a new tenant table** (readiness pass, 2026-09-04).
+      `tests/unit/test_rls_coverage.py` renders every migration offline and checks the DDL:
+      every `tenant_id` table carries `felix_tenant_isolation` and `FORCE`, every table has a
+      `tenant_id` (allowlist: `memory_vector_config`), one Alembic head. `oauth_token_cache`,
+      tenant-less and never read or written, is dropped in `0013` with its setting and helper.
 
 - [ ] **Headless invariant is prose only** — CLAUDE.md asserts it; nothing fails when it stops
       being true. An AST/file check over `apps/api` for `StaticFiles`, `Jinja2Templates` and
@@ -428,6 +454,17 @@ rather than from re-reading a file. The wave itself is written up in [HISTORY.md
 
 ### Control plane
 
+- [x] **Edge posture behind a proxy and an IdP** (readiness pass, 2026-09-04). The rate-limit
+      key read the *leftmost* `X-Forwarded-For` entry, the one the client wrote; a `tenant=claim`
+      verifier with no `FELIX_ALLOWED_TENANTS` accepted any claimed tenant; `exp` had zero
+      clock leeway; and a remote JWKS past its TTL 401ed every token from that issuer while
+      `/ready` stayed green. Now: `FELIX_TRUSTED_PROXY_HOPS` counts from the right,
+      `validate_runtime` refuses the unguarded claim mode outside development and colliding
+      `tenant=issuer` verifiers everywhere, sixty seconds of leeway, and a `jwks` row on
+      `/ready` that fails when no verifier is usable (refresh 300s, retry 30s).
+- [x] **`Idempotency-Key` on `POST /chat`** (readiness pass, 2026-09-04) — one turn per key per
+      tenant, Redis-backed claims across replicas, replay with `Idempotent-Replayed: true`,
+      `FELIX_IDEMPOTENCY_TTL_SECONDS`.
 - [ ] **A tenant is a string.** There is no `Tenant` table and no `ApiKey` table; `tenant_id` is a
       column on every row and never a foreign key. Minting a key means editing
       `FELIX_AUTH_API_KEYS` JSON and restarting. Manifest CRUD, canary and rollback are real and
@@ -437,7 +474,105 @@ rather than from re-reading a file. The wave itself is written up in [HISTORY.md
       enumerates what exists, so rollback requires knowing the number already.
 - [ ] **Run a job now** — `jobs.py` is CRUD plus run history; you can only wait for cron.
 
+### Testing strategy
+
+From the audit of 2026-09-05. Phase 1 (the `tests/e2e/` harness), the vendor-credential hole in
+`scripts/test.sh` and the invariant that pins it shipped together; the rest are queued in leverage
+order. One hardening item per cycle under the meta-work budget; the scanner guards were this
+cycle's, and the route contracts below are the next capability-adjacent step.
+
+- [x] **Guard the structural scanners.** Fifteen scanners could pass by finding nothing:
+      `_python_files()` and `_py_files()` answered `[]` for a directory that had moved, so a
+      renamed package would have silenced the whole family at once. Both helpers now fail on a
+      missing or empty root, and every scanner without a positive control gained one at its
+      measured count — including the `httpx` timeout scanner the `test-quality` skill cites as
+      having been green-on-broken once. `test_bash_guard_hooks.py` gained the
+      `FELIX_REQUIRE_OPTIONAL_EXTRAS` hatch its sibling already had, and
+      `test_resume_poll_backoff.py` now imports the symbol under test directly, so a rename
+      fails collection instead of silently skipping the nineteen tests that carried the
+      condition. Each guard proved by mutation, and two floors were corrected after review:
+      one counted only non-exempt files, and both were re-derived from measurement.
+      One overclaim surfaced while measuring: `test_every_record_usage_call_prices_by_the_wire_model`
+      covers a single call site, not the eight its docstring named — `record_model_usage`
+      absorbed the rest — and the docstring now says so.
+
+- [~] **Route contracts through the e2e harness.** The nine `/chat/sessions/*` routes and both
+      lease endpoints are covered (`tests/e2e/test_chat_sessions.py`), and the fixture now serves
+      one shared script queue so a multi-request flow can be written at all. The run controls
+      (steer, follow-up, abort, continue, fork, rewind, thinking, ui) followed, and the spy now
+      records the prompts and the model specs. `/chat/compact` is covered on all three paths,
+      including the one that actually summarises — which only became reachable once the route
+      stopped reading `keep_recent_tokens: 0` as 20000. Still open: the `/chat/continue` success
+      path (both tests are its 400 guards), `/chat/rewind` at its default `summarize: true`,
+      `/chat/fork` with `from_event_id`, and a steer against a run genuinely in flight. The
+      management routers are covered (`tests/e2e/test_mgmt_routes.py`): jobs, eval datasets and
+      runs, audit and its metrics rollup, and approvals including a decide, under
+      `auth_mode=api_key` so the scope gates are exercised rather than skipped. Two things
+      there remain unpinned and are marked as such in the tests: the eval route's `tools`
+      hand-off (no dataset item calls a tool) and its `use_llm_judge` inversion.
+      `POST /eval/runs/compare` still has no caller at all. `patterns/delegating.py` still has no named test, and needs a per-client
+      sub-queue in the fixture before it can have one — the last piece of this item.
+- [ ] **Decide what a steer queued on an idle thread should do.** Today it is accepted with
+      200, counted on the snapshot, then dropped before reaching the model or the transcript —
+      `kind: follow_up` is the path that works. Found by asserting on what reached the model
+      rather than on the reply. Options: refuse it, promote it to a follow-up, or hold it until
+      a run starts. Pinned as-is by
+      `tests/e2e/test_chat_run_control.py::test_a_steer_queued_while_idle_is_dropped_without_reaching_anyone`,
+      which should fail and be rewritten when this is decided.
+
+- [~] **Postgres arms for the ten stores that have none.** Approvals, session search and the
+      fiber *claim* path are done (`tests/conformance/test_approvals_store.py`,
+      `test_session_search.py`, `test_fiber_claim.py`) behind a generic `store_settings`
+      fixture, and each of them found a real divergence: the approvals twin returned the oldest
+      matching grant where Postgres returns the newest, an expired grant could hide a live one
+      on Postgres only, and a batch of Temporal-backed fibers starved a tenant's ordinary ones.
+      Manifests are done too, and found two more: the twin accepted a canary weight the CHECK
+      constraint refuses, and handed back the stored document by reference. Still open, in the
+      order their SQL diverges most from the twin: audit (query filters), then jobs, plans, eval
+      and a2a tasks.
+
+- [ ] **`put_version` has a read-modify-write race on Postgres only.** It computes
+      `SELECT coalesce(max(version),0)` then inserts, with no lock and no retry, so four
+      concurrent publishes of one manifest name leave one winner and three `UniqueViolation`s —
+      a 500 for a concurrent double-publish. The twin cannot race at all, since nothing awaits
+      between its max and its write, so the contract cannot state a shared behaviour until one
+      is chosen. Measured against a live database while verifying the manifest contract.
+
+- [x] **An enforcing-RLS arm for the conformance suite.** Done
+      (`tests/conformance/test_rls_enforcement.py`): a `NOSUPERUSER NOBYPASSRLS` role with
+      `database_rls=True`, which is the configuration no other arm can reach. It is the
+      regression guard for every `rls_bypass()` in the tree — removing one now fails a test
+      rather than passing silently.
+
+- [ ] **`test_migrations.py` still wants an autogenerate-empty check** (models versus
+      migrations drift) **and stepwise per-revision up/down**; today it only goes base to head
+      in one hop.
+
+- [ ] **`create_fiber` cannot insert under an enforcing RLS role.** It is the one write in
+      `durability/fibers.py` that neither wraps `rls_bypass()` nor binds the tenant GUC, so with
+      `FELIX_DATABASE_RLS=true` and a non-superuser it fails with "new row violates row-level
+      security policy". `get_fiber` has the same gap. Invisible to the conformance suite because
+      that connects as a superuser with RLS off. Found while verifying the fiber claim contract
+      against a live database; fixed in a separate change.
+
+- [ ] **An index for the fiber claim's ordering.** `ORDER BY updated_at LIMIT 50` has no
+      supporting index; measured at 200k rows it is 11 ms, and a partial index matching the
+      claim's WHERE takes it to 0.15 ms at a fifth the size of `idx_fibers_due`. Worth doing now
+      that the WHERE clause is stable.
+
+- [~] **Worker cron bodies and CLI commands.** The eight cron bodies are covered and their
+      schedules pinned (`tests/unit/test_worker_cron_tasks.py`). Still open: the CLI, where
+      `migrate`, `eval`, `mint-jwt`, `bundle-manifests`, `version` and `temporal-worker` are
+      never invoked by a test.
+
 ### Repo / release hygiene
+
+- [ ] **Credentials survive a `repr`.** `Settings` renders `anthropic_api_key` / `openai_api_key`
+      in clear, `RequestContext` carries `Settings` on every request, and `HttpModelClient` keeps
+      `api_key` as a plain dataclass field — no call site logs any of them today, so this is one
+      `logger.debug("%r", client)` away rather than live. `SecretStr` on the credential fields
+      and `field(repr=False)` on the client close it (`_ReactAgent.settings` got the latter in
+      the `/v1` streaming change). Found by the 2026-09-04 readiness security review.
 
 - [~] **Required status checks + `CODEOWNERS`** — the status-check half is **done** and this
       entry was wrong: `main` requires 13 contexts, all bound to the Actions app, and the
@@ -450,13 +585,17 @@ rather than from re-reading a file. The wave itself is written up in [HISTORY.md
       nothing stops the next rename elsewhere, and an invariant comparing required contexts
       against the names the workflows actually produce is ~20 lines
       (`.github/workflows/*.yml` → job `name`, matrix expanded).
-- [ ] **Tag-driven release** — build, push to GHCR, attach an SBOM, sign with cosign via OIDC,
-      then point `deploy/` at the published image. CI already builds and scans the image and
-      throws it away.
-- [ ] **Single-source the version** — `0.2.2` lives in four `pyproject.toml` files, the root, and
-      the Helm `appVersion`. Releasing means editing six files correctly from memory.
-- [ ] **`uv --exclude-newer`** — refuse dependency versions published in the last day or two, the
-      analogue of an npm `min-release-age`. Cheap; the rest of the supply-chain posture is covered.
+- [x] **Tag-driven release** — `release.yml` on `v*.*.*`: version verified against the tree,
+      both images for both architectures to GHCR, Trivy on the pushed digest, SPDX SBOM attached
+      and attested, cosign keyless signing, GitHub release from the changelog section.
+- [x] **Single-source the version** — every workspace member's `pyproject.toml` and
+      `__init__.py` plus `Chart.yaml` `version` + `appVersion` and `values.yaml` `image.tag`
+      (more than the six this entry counted). `scripts/bump-version.py` is the list, a test
+      proves it matches the tree, the release workflow refuses a tag that disagrees.
+- [x] **`uv --exclude-newer`** — the CI lock check refuses anything published in the last 48h.
+- [x] **CODEOWNERS** — `.github/CODEOWNERS` covers the controls, migrations, deploy and the
+      supply chain; with branch protection's code-owner review, nothing on those paths merges
+      without one.
 - [ ] **Postgres 18** — `pgvector/pgvector:0.8.6-pg18-trixie` exists. Own branch with a rollback
       plan: compatibility pass over the revisions, FTS index, RLS, and a dump/restore path.
 - [ ] **`.cursor/plans/` decision** — tracked but ungitignored. Keep as versioned planning notes

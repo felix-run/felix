@@ -64,7 +64,8 @@ def test_valid_token_is_accepted() -> None:
 
 
 def test_expired_token_is_reported_as_expired() -> None:
-    result = _verify(_mint(tenant_id="t1", exp=int(time.time()) - 10))
+    # Past the clock leeway (test_jwt_proxy_posture pins the boundary itself).
+    result = _verify(_mint(tenant_id="t1", exp=int(time.time()) - 600))
     assert result.reason == "expired"  # type: ignore[union-attr]
 
 
