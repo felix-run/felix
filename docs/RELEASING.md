@@ -41,10 +41,12 @@ python scripts/bump-version.py 0.3.0          # sets every location, then `uv lo
 
    ```bash
    make install-full
-   make check                       # ruff check + ty check + pytest + ruff format --check
+   make check                       # ruff + ty + pytest w/ coverage floor + format check
    uv run felix bundle-manifests
    uv run felix eval --dataset smoke --manifest quick \
      --fixture fixtures/eval/smoke.json --mock
+   ./scripts/eval-counter-smoke.sh   # the run above passes by construction; this is the half
+                                     # that proves the scorer can still reject an answer
    uv sync --locked --no-dev && uv run --no-sync python scripts/lean-import-check.py
    make install-full                # restore the full venv afterwards
    ```
