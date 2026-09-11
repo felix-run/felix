@@ -14,7 +14,8 @@ Granian (API), Taskiq (worker/scheduler), Postgres+pgvector, Valkey/Redis, plugg
 ```bash
 make install            # uv sync --dev (lean core; what CI uses)
 make install-full       # uv sync --all-extras --dev (aws/gcp/mcp/browser/embeddings/…)
-make check              # ruff check + ty check + pytest + ruff format --check
+make check              # ruff check + ty check + pytest w/ coverage floor + ruff format --check
+make test-cov           # the suite with coverage against the floor; `check` and CI both run this
 make check-ci           # check + manifest bundle/schema, toolkit, mock eval, pre-commit
 make conformance        # store contract vs Postgres (needs FELIX_CONFORMANCE_DATABASE_URL)
 make lint / fmt / type / test
@@ -103,6 +104,11 @@ failure. A silently skipped arm looks exactly like a pass. Adding a backend to `
 `tests/conformance/test_session_store.py` makes it inherit every assertion in the contract.
 
 Eval smoke (no model calls): `uv run felix eval --dataset smoke --manifest quick --fixture fixtures/eval/smoke.json --mock`.
+Every item in `fixtures/eval/smoke.json` carries a `mock_answer` satisfying its own rubric, so that
+run passes by construction and a scorer rewritten to `return True` would leave it green.
+`fixtures/eval/negative.json` is its counter-smoke — every item's `mock_answer` violates its rubric,
+so the run must exit non-zero. CI runs both, and `tests/unit/test_eval_gate_can_fail.py` asserts the
+same pair locally. Neither fixture means anything without the other.
 
 ## Architecture
 

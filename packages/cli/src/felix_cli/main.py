@@ -123,6 +123,9 @@ def eval_cmd(
             use_llm_judge=llm_judge and not mock,
             deterministic_judge=not llm_judge,
         )
+        # The `eval` CI job parses this dict — it asserts a pass_count of 0, the presence of
+        # score rows and the absence of errors on the negative fixture. Replacing it with a
+        # summary line means updating `.github/workflows/ci.yml` in the same change.
         rprint(result)
         fails = int(result.get("fail_count") or 0)
         if fails:

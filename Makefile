@@ -1,4 +1,4 @@
-.PHONY: help schema install install-full install-warehouse lint fmt type test check check-ci conformance dev dev-key up up-lite up-gcp up-full up-pooled up-replicas up-observability up-temporal up-memoturn metrics-token down cli seed migrate doctor docker-build
+.PHONY: help schema install install-full install-warehouse lint fmt type test test-cov check check-ci conformance dev dev-key up up-lite up-gcp up-full up-pooled up-replicas up-observability up-temporal up-memoturn metrics-token down cli seed migrate doctor docker-build
 
 COMPOSE := docker compose -f deploy/docker/compose.yml --project-directory .
 COMPOSE_LITE := $(COMPOSE) -f deploy/docker/compose.lite.yml
@@ -65,12 +65,24 @@ type:
 test:
 	./scripts/test.sh
 
+# The coverage floor lives on this recipe: one home, and `make check` enforces the number CI
+# does. Locally it enforced nothing before, because `check` ran the suite without coverage at
+# all and the number lived only in ci.yml. It is here rather than in pyproject's
+# [tool.coverage.report] because a floor there also arms every ad-hoc `--cov` run on part of
+# the suite, which fails at ~17% with everything passing and teaches people `--no-cov`.
+# Measured 2026-09-10: 80.96% with the extras, 80.36% lean — the floor sits under both, since
+# the extras carry code a lean run cannot reach. Was 70 when the gate was written and 77 when
+# this audit started; ratchet it deliberately, never aspirationally.
+# `check` runs this and not `test` so the bare `test` stays fast for the edit loop.
+test-cov:
+	./scripts/test.sh -q --cov --cov-report=term:skip-covered --cov-fail-under=79
+
 schema:
 	# schemas/manifest.schema.json backs the yaml-language-server header in
 	# manifests/*.yaml; test_invariants.py fails when it drifts from the models.
 	uv run python scripts/gen-manifest-schema.py
 
-check: lint type test
+check: lint type test-cov
 	uv run ruff format --check .
 
 # Everything CI gates on that `check` does not: the structural and packaging jobs.
@@ -89,6 +101,10 @@ check-ci: check
 		FELIX_DATABASE_URL=memory://ci FELIX_OBJECT_STORE=memory \
 		uv run felix eval --dataset smoke --manifest quick \
 			--fixture fixtures/eval/smoke.json --mock
+	# The counter-smoke: the run above passes by construction, so on its own it proves the
+	# pipeline executes and nothing about whether the scorer can reject an answer. Shared with
+	# the CI eval job so the two cannot drift; the script's header explains its four checks.
+	./scripts/eval-counter-smoke.sh
 	uv run pre-commit run --all-files
 
 # Needs a reachable Postgres; CI runs this as its own job against a service container.

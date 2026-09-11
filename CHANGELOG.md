@@ -9,6 +9,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The eval gate can now fail, and the coverage floor now applies locally.** Two CI gates were
+  passing without testing anything. `fixtures/eval/smoke.json` gives every item a `mock_answer`
+  that satisfies its own rubric, so the mock eval run passed by construction: a scorer rewritten
+  to `return True, 1.0, "x"` left the step green, and so would one that never ran. There is now a
+  counter-smoke, `fixtures/eval/negative.json`, whose every item violates its own rubric and whose
+  run must exit non-zero, plus `tests/unit/test_eval_gate_can_fail.py` asserting the same pair
+  locally, per rule and in both directions, including through the CLI — the exit code is the only
+  part of the gate CI reads, and the three lines that produce it had no test at all. The counter-
+  smoke also asserts *why* each item failed, since `start_run` counts a raised item as a failure
+  too, so a scorer that crashed on everything read exactly like one that rejected everything.
+  The set of rules the counter-smoke must exercise is read off `_score_answer` by AST rather
+  than written down, so adding a scoring rule fails until a fixture item has seen it reject
+  something — otherwise a new rule lands with the gate silently partial.
+
+  One malformed item no longer abandons the whole eval run. `start_run` converted each item's
+  rubric *outside* the per-item `try`, so a rubric that was not a mapping raised past the
+  handler and took every other item's score with it — the run reported nothing rather than
+  reporting one error and scoring the rest. It is that item's error now, which is also what
+  makes the counter-smoke's fourth check reachable at all.
+
+  The counter-smoke's four checks live in `scripts/eval-counter-smoke.sh`, which the CI job and
+  `make check-ci` both call. They started as two copies of the same shell and drifted within a
+  day: the local one accepted a bare exit 1, so an item that *errored* instead of being scored
+  down passed before a push and failed in CI. `start_run` counts a raised item as a failure, so
+  the counts alone cannot tell a scorer that rejects everything from one that crashes on
+  everything — which is why the scorer no longer raises on an unparseable `min_chars` either.
+
+  Proved by mutation, twenty-two of them, each red: an always-passing scorer, a deleted CLI
+  exit-code mapping, a deleted coverage floor, `check` pointed back at the coverage-free target,
+  a CI step no longer running it, an empty `contains` passing again, a negative `min_chars`
+  accepted, `contains` reordered above `expect`, the answer generator drifting back to
+  truthiness, the smoke rubrics flattened, the floor moved back into pyproject, the CI step
+  pointed at the wrong fixture, the CLI printing a summary instead of the run dict, a fixture
+  item edited to satisfy its rubric, one removed, a new scoring rule with no item to cover it,
+  the same rule delegated to a helper so a filtering scanner would miss it, the `min_chars`
+  guard reverted, and the shared script losing its exit-code and its errored-row check.
+
+  The scorer also stopped disagreeing with the answer generator it scores. `_score_answer` read
+  its rubric keys with `or` while `_mock_answer` reads the same keys with `is not None`, so
+  `{"expect": ""}` — an item whose right answer is the empty string — was scored against the
+  non-empty rule its author never wrote. And an empty `contains`, one unfilled field away in any
+  hand-authored dataset, matched every answer: a rubric that could never say no, passing silently
+  in the direction that hides problems. It now fails closed as `invalid_rubric`.
+
+  The coverage floor moved off the `.github/workflows/ci.yml` command line onto one `make test-cov`
+  recipe that `make check` and CI both run. Before this, `make check` measured no coverage at all,
+  so the floor existed only inside CI and a local run could not tell you what CI would say. It is
+  deliberately not `fail_under` in `[tool.coverage.report]`, which arms on every run that measures
+  coverage while `[tool.coverage.run]` still names all five roots — so adding `--cov` to a one-file
+  run exits 1 at 17% with every test passing, and a guard that fires when nothing is wrong teaches
+  people `--no-cov`. Ratcheted to 79 against a measured
+  80.96% with extras and 80.36% lean. An invariant now fails if the floor disappears, ratchets
+  down, or stops being what `make check` and CI run.
+
 - **The worker's periodic tasks are executed by tests, and their schedules are pinned**
   (`tests/unit/test_worker_cron_tasks.py`). Six of the eight had never been run by anything:
   `test_worker_instrumentation.py` asserts each is *wrapped* and `test_worker_tenant_sweeps.py`

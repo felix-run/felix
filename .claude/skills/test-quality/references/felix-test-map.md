@@ -51,15 +51,27 @@ Same principle for models: use the eval fixture path (`--mock`) rather than asse
 
 ## Coverage: one number, ratcheted
 
-CI's `test` job runs the lean install and then:
+CI's `test` job runs the lean install and then `make test-cov`, which is also what `make check`
+runs:
 
 ```bash
-./scripts/test.sh -q --cov --cov-report=term:skip-covered --cov-fail-under=70
+./scripts/test.sh -q --cov --cov-report=term:skip-covered --cov-fail-under=79
 ```
 
-The comment on that line is the policy: *the coverage floor is the measured number, ratcheted up
-deliberately — never an aspirational one, which only teaches people to bypass it.* Raising it means
-editing that single flag in `.github/workflows/ci.yml` after the measured number rises.
+The floor is that flag on the `test-cov` recipe in the `Makefile`, and the comment beside it is the
+policy: *the coverage floor is the measured number, ratcheted up deliberately — never an
+aspirational one, which only teaches people to bypass it.* Raising it means editing that one value
+after the measured number rises, and `test_the_coverage_floor_is_what_check_and_ci_both_run` fails
+if it disappears, ratchets down, or stops being what `make check` and CI run.
+
+It used to live in `.github/workflows/ci.yml`, which meant `make check` measured no coverage at all
+and enforced nothing — a local run could not tell you what CI would say. It deliberately does *not*
+live in `[tool.coverage.report]` as `fail_under`, because a floor there arms on **every** run that
+measures coverage — and `[tool.coverage.run] source` names all five roots however few tests were
+selected. Add `--cov` to a one-file run and it reports the whole tree at ~17% and exits 1 with
+every test passing. A guard that fires when nothing is wrong is how `--no-cov` becomes muscle
+memory. Use the full-suite form below when reading coverage for shape.
+
 `[tool.coverage.run]` covers the five source roots with `branch = false`, and
 `[tool.coverage.report]` excludes `if TYPE_CHECKING:`, `raise NotImplementedError`, and `@overload`.
 
@@ -110,5 +122,8 @@ is cheaper than catching it in review forever.
 uv run felix bundle-manifests                       # runs before the suite in CI
 uv run felix eval --dataset smoke --manifest quick \
   --fixture fixtures/eval/smoke.json --mock         # eval smoke, no model calls
+./scripts/eval-counter-smoke.sh                     # its counter-smoke: the run above passes
+                                                    # by construction, so alone it proves only
+                                                    # that the pipeline executes
 uv sync --locked --no-dev && uv run --no-sync python scripts/lean-import-check.py
 ```
