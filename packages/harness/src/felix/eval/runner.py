@@ -189,9 +189,6 @@ async def start_run(
     for item in items:
         item_id = str(item.get("item_id") or item.get("id") or "")
         user_input = str(item.get("user_input") or "")
-        rubric = dict(item.get("rubric") or item.get("rubric_json") or {})
-        if use_llm_judge and "llm_judge" not in rubric:
-            rubric = {**rubric, "llm_judge": True}
         req_ctx = RequestContext(
             settings=settings,
             auth=auth,
@@ -199,6 +196,12 @@ async def start_run(
             thread_id=f"{tenant_id}:eval:{run['id']}:{item_id}",
         )
         try:
+            # Inside the try: a rubric that is not a mapping used to raise here and abandon the
+            # whole run, so one malformed item in a stored dataset took every other item's score
+            # with it and the run reported nothing. It is this item's error now.
+            rubric = dict(item.get("rubric") or item.get("rubric_json") or {})
+            if use_llm_judge and "llm_judge" not in rubric:
+                rubric = {**rubric, "llm_judge": True}
             if mock:
                 answer = _mock_answer(rubric)
             else:

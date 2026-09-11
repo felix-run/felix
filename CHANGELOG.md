@@ -23,6 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   than written down, so adding a scoring rule fails until a fixture item has seen it reject
   something — otherwise a new rule lands with the gate silently partial.
 
+  One malformed item no longer abandons the whole eval run. `start_run` converted each item's
+  rubric *outside* the per-item `try`, so a rubric that was not a mapping raised past the
+  handler and took every other item's score with it — the run reported nothing rather than
+  reporting one error and scoring the rest. It is that item's error now, which is also what
+  makes the counter-smoke's fourth check reachable at all.
+
   The counter-smoke's four checks live in `scripts/eval-counter-smoke.sh`, which the CI job and
   `make check-ci` both call. They started as two copies of the same shell and drifted within a
   day: the local one accepted a bare exit 1, so an item that *errored* instead of being scored

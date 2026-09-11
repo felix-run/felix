@@ -277,7 +277,8 @@ comment explaining exactly that. It is conditional, not inert.
       the dataset looks configured and scores nothing — the bundled JSON fixtures use
       `input`/`expect`, which is exactly the spelling that silently produces nothing. Pinned by
       `tests/e2e/test_mgmt_routes.py::test_an_eval_item_with_unrecognised_keys_is_stored_empty`.
-      Pairs with the item below.
+      Pairs with the item below. A malformed item no longer abandons the run — it is scored as
+      that item's error — so this is now about telling the author, not about salvaging the run.
 
 - [ ] **Eval scoring depth** — four string rules (`equals` / `contains` / `min_chars` / non-empty)
       plus one judge, and `invalid_rubric` for a rule that could never reject. No regex, no schema

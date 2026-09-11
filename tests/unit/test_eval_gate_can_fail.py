@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import subprocess
 from typing import Any
 
 import pytest
@@ -236,44 +237,57 @@ def test_the_shared_counter_smoke_script_rejects_a_run_that_did_not_reject(
     """The gate's own gate, run rather than read.
 
     `scripts/eval-counter-smoke.sh` is the one home of the four checks the CI eval job and
-    `make check-ci` both make. An invariant asserts both callers run it, which stops them
-    drifting from each other but not the shared copy being hollowed out: `[ "$rc" -eq 1 ] ||
-    true` keeps every string a structural check would look for.
+    `make check-ci` both make. An invariant asserts all four are present in it, which catches a
+    check being deleted but not one hollowed to `|| true`, so the two cases they exist to
+    refuse are executed here.
 
-    So the two cases it exists to reject are executed here. A fixture whose items all pass must
-    be refused, and so must one whose item *errors* — `start_run` counts a raised item as a
-    failure, so it exits 1 with a pass count of 0 exactly like an honest rejection, and telling
-    the two apart is the whole reason the fourth check exists.
+    Each case asserts the *message*, not just the exit status: every check in that script exits
+    1, and so does the script when the eval never ran at all. A script hollowed the other way —
+    refusing everything, including the real negative fixture — would pass a status-only
+    assertion twice while turning CI permanently red.
     """
-    import subprocess
-
     root = FIXTURES.parents[1]
     script = root / "scripts" / "eval-counter-smoke.sh"
 
-    # A rubric that is not a mapping: `start_run` fails converting it and writes an error row.
+    # One item the scorer rejects honestly, one whose rubric is not a mapping so it errors.
+    # That mix is the case the counts cannot see: the run still exits 1 with a pass count of 0
+    # and prints score rows, and only the fourth check tells it from an honest rejection.
     erroring = tmp_path / "erroring.json"
     erroring.write_text(
         json.dumps(
             {
                 "name": "negative",
-                "items": [{"item_id": "boom", "user_input": "hi", "rubric": "not-a-mapping"}],
+                "items": [
+                    {
+                        "item_id": "rejected",
+                        "user_input": "hi",
+                        "rubric": {"expect": "ok", "mock_answer": "no"},
+                    },
+                    {"item_id": "boom", "user_input": "hi", "rubric": "not-a-mapping"},
+                ],
             }
         ),
         encoding="utf-8",
     )
 
-    for fixture, why in (
-        (FIXTURES / "smoke.json", "a fixture whose every item passes"),
-        (erroring, "a fixture whose item errors instead of being scored down"),
-    ):
+    cases = [
+        (FIXTURES / "smoke.json", "expected exit 1 from the negative fixture, got 0"),
+        (erroring, "errored instead of being scored down"),
+    ]
+    for fixture, expected in cases:
         done = subprocess.run(
             [str(script), str(fixture)],
             cwd=root,
             capture_output=True,
             text=True,
             check=False,
+            timeout=120,
         )
-        assert done.returncode == 1, f"the counter-smoke accepted {why}:\n{done.stdout}\n{done.stderr}"
+        assert done.returncode == 1, f"the counter-smoke accepted {fixture.name}:\n{done.stdout}"
+        assert expected in done.stderr, (
+            f"{fixture.name} was refused, but not by the check this case exists for.\n"
+            f"wanted: {expected}\ngot: {done.stderr}"
+        )
 
 
 def test_each_scoring_rule_is_exercised_in_both_directions() -> None:
