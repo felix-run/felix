@@ -129,3 +129,65 @@ async def test_apply_approvals_waits_for_decide(tmp_path) -> None:
         )
     await helper
     assert str(out) == "echo:ok"
+
+
+@pytest.mark.asyncio
+async def test_approval_frame_names_the_rule_and_says_why() -> None:
+    """`description` is the one field in `ApprovalRule` written to be read by a person.
+
+    It used to reach no client by any route: the frame carried `rule_id` and nothing
+    else, and the `/approvals` row does not carry the description either — so a banner
+    asking an operator to authorize a write could only name `workspace-write`.
+    """
+    from felix.manifests.builder import apply_approvals
+    from felix.manifests.schema import ApprovalRule
+    from felix.tools.types import define_tool
+
+    async def _echo(args: dict) -> str:
+        return "written"
+
+    tool = define_tool(name="write_file", description="w", handler=_echo)
+    wrapped = apply_approvals(
+        [tool],
+        [
+            ApprovalRule(
+                id="workspace-write",
+                description="Confirm writes to the workspace",
+                tools=["write_file"],
+                ttl_seconds=5,
+            )
+        ],
+        "cowork",
+    )[0]
+
+    settings = Settings(allow_insecure=True, auth_mode="none", environment="development")
+    req = RequestContext(
+        settings=settings,
+        auth=AuthContext(tenant_id="default"),
+        manifest_id="cowork",
+        thread_id="default:t4",
+    )
+
+    async def _deny_soon() -> None:
+        from felix.approvals import store as approvals_store
+        from felix.approvals.interrupt import signal_decision
+
+        await asyncio.sleep(0.1)
+        pending = await approvals_store.list_approvals(settings, "default", status="pending")
+        assert pending, "expected pending approval"
+        aid = pending[0]["id"]
+        await approvals_store.decide(settings, "default", aid, decision="denied", decided_by="test")
+        await signal_decision(aid, "denied")
+
+    helper = asyncio.create_task(_deny_soon())
+    async with async_run_with_context(req):
+        await wrapped.executor.execute(
+            {"path": "notes.txt"},
+            ToolInvocationCtx(thread_id="default:t4", tool_call_id="c1"),
+        )
+    await helper
+
+    frames = [f for f in await drain("default:t4") if f["event"] == "approval_required"]
+    assert frames, "the gate emitted no approval_required"
+    assert frames[0]["data"]["rule_id"] == "workspace-write"
+    assert frames[0]["data"]["reason"] == "Confirm writes to the workspace"

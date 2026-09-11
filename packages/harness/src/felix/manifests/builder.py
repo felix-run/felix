@@ -762,6 +762,12 @@ def apply_approvals(tools: list[Tool], rules: list[ApprovalRule], manifest_id: s
                         "tool_name": tool.name,
                         "args": dict(args),
                         "rule_id": rule.id,
+                        # The operator's own words for why this gate exists. Without it the
+                        # frame named the rule and nothing else, and `description` -- the one
+                        # field in `ApprovalRule` written to be read by a person -- reached no
+                        # client by any route: the `/approvals` row does not carry it either.
+                        # A banner had `workspace-write` to explain itself with.
+                        "reason": rule.description,
                         "thread_id": thread_id,
                         "tool_call_id": ctx.tool_call_id if ctx else None,
                     },

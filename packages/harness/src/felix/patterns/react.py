@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from collections.abc import AsyncIterator
@@ -52,6 +53,12 @@ from felix.tools.types import Tool
 logger = logging.getLogger("felix.patterns.react")
 
 DEFAULT_RECURSION = 10
+
+# How long to wait on a running tool batch before checking the side-event queue again.
+# The queue has one reader (`drain`), so this is a poll rather than a wakeup; a quarter
+# second is imperceptible against a decision a person has to make, and bounds the idle
+# wakeups a blocked run costs to four a second.
+SIDE_EVENT_POLL_SECONDS = 0.25
 
 
 def _status_for_stop(stop: str) -> str:
@@ -937,14 +944,36 @@ class _ReactAgent:
                             data={"name": call.name, "id": call.id, "status": "running"},
                         )
 
-                tool_msgs, had_fatal, all_terminate = await self._tools.run_batch(
-                    list(assistant.tool_calls),
-                    thread_id=input.thread_id,
-                    tenant_id=tenant_id,
+                # Side events are drained *while* the batch runs, not after it. A gated
+                # tool blocks inside `run_batch` in `wait_for_decision` for up to its
+                # rule's TTL, and the `approval_required` frame that asks for the
+                # decision is queued at block time -- so draining afterwards flushed it
+                # in the same beat as `tool_end`, after the answer had already been
+                # given. Measured: a stream blocked on a gated call for 75s carried no
+                # `approval_required` at all, and the client showed a tool card sitting
+                # at `running` with nothing to say why. The same applies to
+                # `tool_request` and `ui_request`, which block the same way.
+                batch = asyncio.create_task(
+                    self._tools.run_batch(
+                        list(assistant.tool_calls),
+                        thread_id=input.thread_id,
+                        tenant_id=tenant_id,
+                    )
                 )
-                if emit_events:
-                    for side in await drain_side_events(input.thread_id):
-                        yield Event(event=str(side["event"]), data=dict(side["data"]))
+                try:
+                    if emit_events:
+                        while True:
+                            for side in await drain_side_events(input.thread_id):
+                                yield Event(event=str(side["event"]), data=dict(side["data"]))
+                            if batch.done():
+                                break
+                            await asyncio.wait({batch}, timeout=SIDE_EVENT_POLL_SECONDS)
+                    tool_msgs, had_fatal, all_terminate = await batch
+                except BaseException:
+                    # The batch no longer inherits cancellation from this frame, so a
+                    # client that hangs up mid-tool would otherwise leave it running.
+                    batch.cancel()
+                    raise
                 for tool_msg in tool_msgs:
                     if emit_events:
                         yield Event(
