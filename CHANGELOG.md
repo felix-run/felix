@@ -15,23 +15,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   captured seven lines of base64 with newlines through the middle. The command exited 0, the
   token looked right on screen, and every request made with it was rejected as an invalid
   token. It is printed plainly now, and a test mints one and verifies it through the same
-  `verify_jwt` the API uses, asserting the subject, tenant and scopes that come back.
+  `verify_jwt` the API uses.
+
+  Two more of the same shape in the same command: `--tenant` accepted a value the verifier
+  always refuses, minting a plausible token that answered `tenant_not_allowed` on every
+  request; and with no signing key configured it died on an unhandled `RuntimeError` naming
+  neither the setting nor what to put in it. Both now exit 2 with a message.
+
+- **`felix eval` printed its run record through the same renderer.** Any value longer than the
+  console width was split mid-token with a newline after the key, so the record of a real run
+  — where model answers are much longer than 80 characters — was corrupt. CI parses this
+  output, and survived only because the mock fixtures are short.
+
+- **`felix temporal-worker` named its database connections `felix-cli`.** The CLI's root
+  callback stamps the process role, `stamp_process_role` is first-write-wins, and this
+  subcommand runs a worker for as long as the process lives — so a durable-execution worker
+  appeared in `pg_stat_activity` as indistinguishable from somebody's shell, which is the one
+  thing that stamp exists to prevent. The root callback now leaves long-running subcommands to
+  name themselves, matching the `felix-temporal-worker` console script.
 
 - **`felix migrate` met the in-memory database URL with a stack trace.** `memory://` is what
   `.env` ships for tests, so arriving at `migrate` with it set is ordinary, and the result was
   `NoSuchModuleError: Can't load plugin: sqlalchemy.dialects:memory` under a rich traceback
-  that named neither the setting nor a value to use. It now exits 2 and says which setting is
-  wrong and what Postgres URL to point it at.
+  that named neither the setting nor a value to use. The refusal lives in `migrations/env.py`,
+  the one funnel every Alembic entry point passes through — `alembic current`, which
+  `docs/UPGRADING.md` tells operators to run, hit the same traceback — with a friendly exit 2
+  on the CLI path on top of it.
+
+- **`felix bundle-manifests` stdout was not machine-readable.** The summary line shared the
+  stream with the JSON, so `felix bundle-manifests | jq .` failed. The summary goes to stderr
+  now. Its JSON went through rich as well; unlike the token, that one never corrupted anything
+  — today's bundle is short enough to survive rendering — so it is printed plainly as a
+  precaution rather than a fix.
 
 ### Added
 
 - **Every `felix` subcommand is invoked by a test** (`tests/unit/test_cli_commands.py`).
   `tests/unit/test_entrypoint_wiring.py` proved each `[project.scripts]` target resolves to a
   callable, which is where the console script ends; nothing ran the bodies, and `version`,
-  `migrate`, `mint-jwt`, `bundle-manifests` and `temporal-worker` had no test at all. The two
-  fixes above are what running them found. Each test asserts the contract the command has with
-  whatever consumes it — a shell capturing a token, a parser reading the bundle, an operator
-  reading an error — rather than the exit code alone.
+  `migrate`, `mint-jwt`, `bundle-manifests` and `temporal-worker` had no test at all. Every fix
+  above is what running them found. Each test asserts the contract the command has with
+  whatever consumes it — a shell capturing a token, a parser reading the bundle, Postgres
+  reading a connection name, an operator reading an error — rather than the exit code alone.
 
 - **The eval gate can now fail, and the coverage floor now applies locally.** Two CI gates were
   passing without testing anything. `fixtures/eval/smoke.json` gives every item a `mock_answer`

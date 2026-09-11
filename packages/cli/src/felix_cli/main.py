@@ -23,13 +23,25 @@ app = typer.Typer(
 
 
 @app.callback()
-def _root() -> None:
+def _root(ctx: typer.Context) -> None:
     """Felix agents harness CLI."""
     from felix.config import get_settings
 
     # One more process against the same database: name its connections. In a callback
     # rather than at import, so importing this module for a helper stamps nothing.
+    #
+    # Except for the subcommands that are not a CLI invocation at all but a long-lived
+    # process. `stamp_process_role` is first-write-wins, so stamping "cli" here left
+    # `felix temporal-worker` showing up in pg_stat_activity as felix-cli for as long as it
+    # ran — indistinguishable from someone's shell, which is what the stamp exists to avoid.
+    if ctx.invoked_subcommand in _LONG_RUNNING:
+        return
     get_settings().stamp_process_role("cli")
+
+
+# Subcommands that run a server rather than doing a thing and exiting. They stamp their own
+# process role, so the root callback must not claim it first.
+_LONG_RUNNING = frozenset({"temporal-worker"})
 
 
 def _load_plugins() -> list[str]:
@@ -65,17 +77,21 @@ def migrate(
     from alembic import command
     from felix.config import get_settings
     from felix.db.migrations import alembic_config
+    from felix.db.session import _use_memory
 
-    # `memory://` is the in-memory test path, not a database Alembic can reach. Without this
-    # the command died on `NoSuchModuleError: Can't load plugin: sqlalchemy.dialects:memory`
-    # under a rich traceback, which names neither the setting nor what to set it to — and
-    # `.env` pointing at `memory://` is exactly how someone arrives here.
-    if get_settings().database_url.strip().startswith("memory://"):
-        rprint(
-            "[red]FELIX_DATABASE_URL is memory://[/red] — the in-memory test path has no "
-            "schema to migrate. Point it at Postgres, e.g. "
-            "postgresql+psycopg://felix:felix@localhost:5432/felix"
+    # The friendly half of the refusal. `migrations/env.py:get_url` refuses it too, for the
+    # three other ways into Alembic (`alembic current`, offline SQL, the conformance
+    # override) — this one exists so the common path gets a message rather than a traceback.
+    # `_use_memory` rather than a fourth spelling of the same predicate.
+    if _use_memory(get_settings()):
+        typer.echo(
+            "FELIX_DATABASE_URL is memory:// — the in-memory test path has no schema to "
+            "migrate. Point it at Postgres, e.g. "
+            "postgresql+psycopg://felix:felix@localhost:5432/felix",
+            err=True,
         )
+        # 2, not 1: click's convention for "the invocation was wrong", which this is — the
+        # command did not fail, it was asked to migrate something that cannot be migrated.
         raise typer.Exit(2)
 
     command.upgrade(alembic_config(), revision)
@@ -126,7 +142,9 @@ def eval_cmd(
                 description=str(payload.get("description") or ""),
                 items=list(payload.get("items") or []),
             )
-            rprint(f"[green]loaded fixture[/green] {fixture} → dataset={name}")
+            # stderr: stdout is the run dict below, which CI parses. A progress line sharing
+            # that stream is one more thing between a caller and the result.
+            typer.echo(f"loaded fixture {fixture} → dataset={name}", err=True)
         result = await start_run(
             settings,
             tenant_id=tenant,
@@ -139,7 +157,11 @@ def eval_cmd(
         # The `eval` CI job parses this dict — it asserts a pass_count of 0, the presence of
         # score rows and the absence of errors on the negative fixture. Replacing it with a
         # summary line means updating `.github/workflows/ci.yml` in the same change.
-        rprint(result)
+        # Plain print, and this is the one that matters: `scripts/eval-counter-smoke.sh`
+        # parses this dict in CI. Through rich it came out pretty-printed across 38 lines with
+        # any value longer than the console width split mid-token — the CI fixtures have short
+        # answers so it survived, but a real run's model answers do not. The repr is one line.
+        typer.echo(result)
         fails = int(result.get("fail_count") or 0)
         if fails:
             raise SystemExit(1)
@@ -159,10 +181,29 @@ def mint_jwt(
     ttl_seconds: int = typer.Option(3600, "--ttl"),
 ) -> None:
     """Mint a self-issued JWT using FELIX_JWKS_PRIVATE."""
+    from felix.auth.context import assert_valid_tenant_id
     from felix.auth.jwt import mint_token
     from felix.config import get_settings
 
     settings = get_settings()
+    # `mint_token` does not check the tenant, but `payload_to_principal` does at verification.
+    # Without this the command exited 0 and printed a plausible token for `--tenant "acme:1"`
+    # that every request answered with tenant_not_allowed — the same shape as the wrapping
+    # bug: a successful-looking mint that nothing will accept.
+    try:
+        assert_valid_tenant_id(tenant)
+    except ValueError as exc:
+        typer.echo(f"--tenant is not usable: {exc}", err=True)
+        raise typer.Exit(2) from exc
+    if not settings.jwks_private.strip():
+        # `mint_token` raises here, which reached the operator as a traceback naming neither
+        # the setting nor what to put in it.
+        typer.echo(
+            "FELIX_JWKS_PRIVATE is empty — minting a self-issued token needs an RSA private "
+            "key in PEM form. Generate one, or use FELIX_AUTH_API_KEYS for local access.",
+            err=True,
+        )
+        raise typer.Exit(2)
     token = mint_token(
         settings,
         sub=sub,
@@ -181,26 +222,32 @@ def mint_jwt(
 def bundle_manifests(
     out: Path | None = typer.Option(None, "--out", "-o", help="Write JSON Schema / bundle summary here."),
 ) -> None:
-    """Validate bundled manifests and optionally emit JSON Schema."""
+    """Validate bundled manifests and list them as JSON on stdout.
+
+    `--out` writes the same list plus the generated JSON Schema; stdout carries the list
+    alone, because the schema is large and this stream is usually read by a human. The
+    summary line goes to stderr either way, so stdout stays parseable.
+    """
     from felix.manifests.loader import list_bundled, load_bundled
     from felix.manifests.schema import Manifest
 
     names = list_bundled()
     for name in names:
         load_bundled(name)
-    rprint(f"[green]validated {len(names)} manifests:[/green] {', '.join(names)}")
+    # stderr: stdout is the JSON below, and `felix bundle-manifests > bundle.json` should be
+    # a file a parser can read rather than a summary line with JSON stuck to it.
+    typer.echo(f"validated {len(names)} manifests: {', '.join(names)}", err=True)
     schema = Manifest.model_json_schema()
     payload = {"manifests": names, "json_schema": schema}
     if out is not None:
         out.write_text(json.dumps(payload, indent=2))
-        rprint(f"wrote {out}")
+        typer.echo(f"wrote {out}", err=True)
     else:
-        # Plain print, because this is machine-readable output and rich both wraps to the
-        # console width and reads `[` as a markup tag. Today's bundle is short enough to
-        # survive rendering — unlike the token in `mint-jwt`, which did not — so this is
-        # keeping a hazard away from output that will grow, not a fix for a live break.
-        # `--out` remains the machine path: the human summary above shares this stdout.
-        print(json.dumps({"manifests": names}, indent=2))
+        # Plain, because this is machine-readable output and rich both wraps to the console
+        # width and reads `[` as a markup tag. Today's bundle is short enough to survive
+        # rendering — unlike the token in `mint-jwt`, which did not — so this keeps a hazard
+        # away from output that will grow rather than fixing a live break.
+        typer.echo(json.dumps({"manifests": names}, indent=2))
 
 
 def _assert_outbound_hosts_resolve(manifest: Any, _settings: Any = None) -> None:
@@ -620,7 +667,12 @@ def temporal_worker_cmd() -> None:
     from felix.config import get_settings
     from felix.durability.temporal import run_worker
 
-    asyncio.run(run_worker(get_settings()))
+    settings = get_settings()
+    # Named here rather than by the root callback, which skips this subcommand for exactly
+    # this reason. Matches `felix_worker.main:temporal_main`, the console script that runs the
+    # same worker under Compose.
+    settings.stamp_process_role("temporal-worker")
+    asyncio.run(run_worker(settings))
 
 
 if __name__ == "__main__":

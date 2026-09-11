@@ -563,11 +563,15 @@ cycle's, and the route contracts below are the next capability-adjacent step.
 - [x] **Worker cron bodies and CLI commands.** The eight cron bodies are covered and their
       schedules pinned (`tests/unit/test_worker_cron_tasks.py`), and every subcommand is now
       invoked (`tests/unit/test_cli_commands.py`, plus `eval` in
-      `tests/unit/test_eval_gate_can_fail.py`). Running them found three defects reading them
-      had not: `mint-jwt` printed its token through rich, which wraps at the console width, so
-      a captured token carried newlines and was rejected as `invalid_token`; `migrate` met a
-      `memory://` URL with a raw SQLAlchemy dialect traceback; and `bundle-manifests` handed
-      its JSON to the same renderer.
+      `tests/unit/test_eval_gate_can_fail.py`). Running them found five defects, four of the
+      same shape — exit 0, looks right, nothing downstream accepts it. `mint-jwt` wrapped its
+      token at the console width so a captured one was rejected as `invalid_token`, accepted a
+      `--tenant` the verifier refuses, and died on an unhandled `RuntimeError` with no signing
+      key; `migrate` met `memory://` with a raw SQLAlchemy dialect traceback; and
+      `temporal-worker` named its Postgres connections `felix-cli` for as long as it ran.
+      `eval` printed its run dict through the same renderer, which splits any value longer
+      than the console width mid-token — the fixtures are short so CI survived it, a real run
+      would not.
 
 ### Repo / release hygiene
 

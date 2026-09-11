@@ -3,16 +3,27 @@
 `tests/unit/test_entrypoint_wiring.py` proves each `[project.scripts]` target resolves to a
 callable. That is where the console script ends and where this file starts: nothing ran the
 bodies. `doctor` and `validate-manifest` had tests of their own; `version`, `migrate`,
-`mint-jwt`, `bundle-manifests` and `temporal-worker` had none, and running them found three
-defects that a reading would not have.
+`mint-jwt`, `bundle-manifests` and `temporal-worker` had none.
 
-The assertions are about the contract each command has with whatever consumes it — a shell
-capturing a token, a JSON parser reading a bundle, an operator reading an error — not about
-the exit code alone.
+Running them found five defects, four of them the same shape — a command that exits 0, looks
+right on screen, and hands back something nothing downstream accepts:
+
+- `mint-jwt` printed its token through a renderer that wraps at the console width, so a
+  captured token carried newlines and every request with it was rejected.
+- `mint-jwt` accepted a `--tenant` that the verifier refuses, and minted a token for it.
+- `mint-jwt` with no signing key died on an unhandled `RuntimeError`.
+- `migrate` met the in-memory URL with a raw SQLAlchemy dialect traceback.
+- `temporal-worker` ran for as long as the process lived naming its Postgres connections
+  `felix-cli`, because the root callback stamps first and the stamp is first-write-wins.
+
+So the assertions here are about the contract each command has with whatever consumes it — a
+shell capturing a token, a parser reading the bundle, Postgres reading a connection name, an
+operator reading an error — rather than the exit code alone.
 """
 
 from __future__ import annotations
 
+import inspect
 import json
 import pathlib
 import re
@@ -23,18 +34,23 @@ from felix.config import Settings, get_settings
 from felix_cli.main import app
 from typer.testing import CliRunner
 
-pytestmark = pytest.mark.usefixtures("_reset_process_settings")
-
 ISSUER = "felix-self"
 VERIFIERS = f"self:{ISSUER}"
 
 
 @pytest.fixture(autouse=True)
-def _reset_process_settings() -> Any:
-    """`_root` stamps a process role on the cached `Settings`, and these tests rewrite the env.
+def _cli_environment(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Pin the console width, and keep the process-role stamp out of the next test.
 
-    Clearing on the way out keeps that out of whatever runs next.
+    `COLUMNS` is the load-bearing half. Rich wraps to it whether or not stdout is a tty, and
+    the wrapping is what broke `mint-jwt` — so on a machine that exports a `COLUMNS` wider
+    than a 550-character token, the test guarding that fix would pass against the unfixed
+    code. Pinning it makes the assertion mean the same thing everywhere.
+
+    `_root` also stamps a process role on the cached `Settings`, and these tests rewrite the
+    environment under it.
     """
+    monkeypatch.setenv("COLUMNS", "80")
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
@@ -63,11 +79,11 @@ def _verify(token: str, public_pem: str) -> Any:
 
 
 def test_version_names_the_harness_it_is_installed_beside() -> None:
-    """`version` falls back to "unknown" when `felix` cannot be imported.
+    """Both versions resolve, which is the complement of the fallback below.
 
-    That fallback is the interesting branch: the CLI and the harness are separate workspace
-    members, so a packaging change can leave the CLI installed without the harness, and the
-    command would keep exiting 0 while reporting a version nobody can act on.
+    The CLI and the harness are separate workspace members, so this goes red if `felix`
+    grows a module-scope import that a lean install cannot satisfy — the command would keep
+    exiting 0 while reporting a version nobody can act on.
     """
     from felix_cli import __version__ as cli_version
 
@@ -76,6 +92,24 @@ def test_version_names_the_harness_it_is_installed_beside() -> None:
     assert result.exit_code == 0, result.output
     assert cli_version in result.output, result.output
     assert "unknown" not in result.output, result.output
+
+
+def test_version_says_unknown_rather_than_failing_without_the_harness(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The fallback branch itself, which the test above is the complement of.
+
+    A CLI installed without `felix` beside it should still answer `version` — that is the
+    one command someone runs to find out what they have.
+    """
+    import sys
+
+    monkeypatch.setitem(sys.modules, "felix", None)
+
+    result = CliRunner().invoke(app, ["version"])
+
+    assert result.exit_code == 0, result.output
+    assert "unknown" in result.output, result.output
 
 
 def test_mint_jwt_emits_one_line_that_the_api_would_accept(
@@ -136,7 +170,12 @@ def test_mint_jwt_applies_the_requested_ttl(
     stale = runner.invoke(app, ["mint-jwt", "--sub", "ops", "--ttl", "-300"])
     assert stale.exit_code == 0, stale.output
     refused = _verify(stale.output.strip(), public_pem)
+    # The reason, not just the absence of a principal: `VerifyFail` has no `principal`
+    # attribute at all, so a `getattr(..., None) is None` check also passes for a bad
+    # signature or no matching verifier, and would keep passing if the ttl stopped being
+    # applied for some other reason entirely.
     assert getattr(refused, "principal", None) is None, "an expired token verified"
+    assert refused.reason == "expired", refused.reason
 
 
 def test_mint_jwt_without_a_signing_key_prints_no_token(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -151,10 +190,35 @@ def test_mint_jwt_without_a_signing_key_prints_no_token(monkeypatch: pytest.Monk
 
     result = CliRunner().invoke(app, ["mint-jwt", "--sub", "ops"])
 
-    assert result.exit_code != 0, result.output
+    # 2 like `migrate`, not merely non-zero: an unhandled exception also exits non-zero, and
+    # that is what this used to be — a RuntimeError traceback naming neither the setting nor
+    # what to put in it, which is the defect shape the `migrate` guard exists to remove.
+    assert result.exit_code == 2, result.output
+    assert "FELIX_JWKS_PRIVATE" in result.output, result.output
 
     # Nothing token-shaped anywhere in the output: three dot-separated base64url segments is
     # what a capturing script would take for a token.
+    jws = re.compile(r"[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")
+    assert jws.search(result.output) is None, result.output
+
+
+def test_mint_jwt_refuses_a_tenant_the_verifier_would_reject(
+    rsa_keypair: tuple[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same shape as the wrapping bug: a mint that succeeds and a token nothing accepts.
+
+    `mint_token` puts the tenant straight into the claims, while `payload_to_principal`
+    resolves it through `assert_valid_tenant_id` at verification — so a tenant carrying a
+    delimiter produced a plausible token, exit 0, and `tenant_not_allowed` on every request.
+    """
+    private_pem, _public_pem = rsa_keypair
+    monkeypatch.setenv("FELIX_JWKS_PRIVATE", private_pem)
+    get_settings.cache_clear()
+
+    result = CliRunner().invoke(app, ["mint-jwt", "--sub", "ops", "--tenant", "acme:one"])
+
+    assert result.exit_code == 2, result.output
+    assert "--tenant" in result.output, result.output
     jws = re.compile(r"[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")
     assert jws.search(result.output) is None, result.output
 
@@ -168,8 +232,12 @@ def test_bundle_manifests_writes_every_bundled_manifest(tmp_path: pathlib.Path) 
 
     assert result.exit_code == 0, result.output
     payload = json.loads(out.read_text(encoding="utf-8"))
+    from felix.manifests.schema import Manifest
+
     assert payload["manifests"] == list(list_bundled()), payload["manifests"]
-    assert payload["json_schema"]["properties"], "the emitted schema has no properties"
+    # The schema itself, not that it has properties: one generated from the wrong model
+    # satisfies a truthiness check, and `schemas/manifest.schema.json` is generated from this.
+    assert payload["json_schema"] == Manifest.model_json_schema(), "the emitted schema drifted"
 
 
 def test_bundle_manifests_prints_json_a_parser_can_read() -> None:
@@ -186,9 +254,9 @@ def test_bundle_manifests_prints_json_a_parser_can_read() -> None:
     result = CliRunner().invoke(app, ["bundle-manifests"])
 
     assert result.exit_code == 0, result.output
-    # The human summary shares this stdout; the JSON is everything from its first brace.
-    body = result.output[result.output.index("{") :]
-    assert json.loads(body)["manifests"] == list(list_bundled()), body
+    # The whole of stdout, with no slicing: the summary line goes to stderr so that
+    # `felix bundle-manifests > bundle.json` is a file a parser can read.
+    assert json.loads(result.stdout)["manifests"] == list(list_bundled()), result.stdout
 
 
 def test_migrate_refuses_the_in_memory_url(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -209,6 +277,27 @@ def test_migrate_refuses_the_in_memory_url(monkeypatch: pytest.MonkeyPatch) -> N
     assert "NoSuchModuleError" not in result.output, result.output
 
 
+def test_migrate_upgrades_to_head_against_a_real_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The other direction, without which the guard could refuse every URL and stay green.
+
+    `scripts/test.sh` exports `memory://`, so the refusal above is the environment's default
+    answer — mutating the guard to fire unconditionally passed. Alembic is substituted here
+    because the assertion is about what the command asks for, not about migrating anything.
+    """
+    from alembic import command as alembic_command
+
+    monkeypatch.setenv("FELIX_DATABASE_URL", "postgresql+psycopg://felix:felix@localhost:5432/felix")
+    get_settings.cache_clear()
+    upgrades: list[str] = []
+    monkeypatch.setattr(alembic_command, "upgrade", lambda _cfg, rev: upgrades.append(rev))
+
+    result = CliRunner().invoke(app, ["migrate"])
+
+    assert result.exit_code == 0, result.output
+    # "head" is the default argument, which is how every deploy invokes it.
+    assert upgrades == ["head"], upgrades
+
+
 def test_temporal_worker_runs_the_worker_with_the_process_settings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -226,19 +315,24 @@ def test_temporal_worker_runs_the_worker_with_the_process_settings(
 
     monkeypatch.setenv("FELIX_DATABASE_URL", "memory://temporal-cli")
     get_settings.cache_clear()
-    seen: list[Any] = []
+    real_signature = inspect.signature(temporal_module.run_worker)
+    calls: list[inspect.BoundArguments] = []
 
-    async def _capture(settings: Any) -> None:
-        seen.append(settings)
+    async def _capture(*args: Any, **kwargs: Any) -> None:
+        # Bound against the *real* signature, so a parameter added to `run_worker` and not to
+        # the call site fails here instead of at a worker's first start. A fake with a fixed
+        # parameter list would accept the stale call forever.
+        calls.append(real_signature.bind(*args, **kwargs))
 
     monkeypatch.setattr(temporal_module, "run_worker", _capture)
 
     result = CliRunner().invoke(app, ["temporal-worker"])
 
     assert result.exit_code == 0, result.output
-    assert len(seen) == 1, seen
-    # Identity, not equality: `Settings()` reads the same environment, so a freshly built one
-    # compares equal on every field while being a different object — which is exactly the
-    # substitution this is here to catch, and the one that loses the `stamp_process_role`
-    # the root callback applied.
-    assert seen[0] is get_settings(), "the worker was handed settings the process does not share"
+    assert len(calls) == 1, calls
+    settings = calls[0].arguments["settings"]
+    assert settings is get_settings(), "the worker was handed settings the process does not share"
+    # The property the stamp exists for. The root callback stamps "cli" and the stamp is
+    # first-write-wins, so this command used to run for days showing up in pg_stat_activity
+    # as felix-cli — indistinguishable from somebody's shell.
+    assert settings.process_role == "temporal-worker", settings.process_role
