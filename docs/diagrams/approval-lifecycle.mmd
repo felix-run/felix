@@ -1,0 +1,30 @@
+---
+title: Tool approval lifecycle
+---
+%% Source of truth: packages/harness/src/felix/approvals/store.py and
+%% approvals/interrupt.py; the wrapper is builder.py:apply_approvals.
+stateDiagram-v2
+    accTitle: States a tool-call approval moves through
+    accDescr: When a manifest's approval rule matches a tool call, the wrapper looks for an existing approved grant for the same call signature before creating anything. A grant marked one_shot is searched with unconsumed_only, so it authorises exactly one call; without that flag one approval would authorise unlimited replays until it expired. Denied and expired are both terminal, and neither can become approved. Consuming a grant is a single conditional UPDATE, so two concurrent identical calls cannot both spend it. An approver may substitute the call's arguments when deciding, and the tool then runs with the edited ones.
+
+    [*] --> Matched : approval rule matches the tool call
+    Matched --> Approved : find_approved returns a live grant
+    Matched --> Pending : no grant, create_pending writes a row
+
+    Pending --> Approved : decide(approved), optionally with edited_args
+    Pending --> Denied : POST /approvals decide(denied)
+    Pending --> Expired : expires_at passes
+
+    Approved --> Consumed : one_shot grant spent by this call
+    Approved --> Approved : reusable grant, replayed until expiry
+    Approved --> Expired : expires_at passes
+
+    Consumed --> [*] : tool executes once
+    Denied --> [*] : deny_output returned to the model
+    Expired --> [*] : treated as no grant, re-prompts
+
+    note right of Pending
+        The run is suspended here.
+        Nothing executes until a
+        human decides or it expires.
+    end note

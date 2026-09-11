@@ -1,0 +1,36 @@
+---
+title: Session event log and render strategies
+---
+%% Source of truth: packages/harness/src/felix/session/store.py and
+%% session/strategies.py:get_session_strategy
+flowchart LR
+    accTitle: How chat state is stored and how it is turned back into messages
+    accDescr: Chat state is an append-only event log keyed by tenant and thread, never a mutable message array. Every user message, assistant reply, tool result and steering message is appended; nothing is edited in place. What the model sees is produced at read time by a session strategy named in spec.session.strategy, and swapping the strategy changes only the render, never the log. Fork and rewind write new branches rather than deleting events, which is what makes them safe. A memory:// database URL swaps the Postgres store for an in-memory twin with the same contract, and the conformance suite runs both arms against one set of assertions.
+
+    turn([Turn produces events]) -->|"append-only, never edits"| log[("session_events<br/>tenant_id, thread_id, seq")]
+
+    log -->|"fork writes a new branch"| tree["Branch tree<br/>session/tree.py"]
+    log -->|"rewind moves the leaf pointer"| tree
+    tree -->|"names the active leaf"| state[("thread_state<br/>leaf, pin, thinking level")]
+
+    log --> strat{"spec.session.strategy"}
+    strat -->|"full_replay"| replay["Every event, in order"]
+    strat -->|"windowed:N"| win["Last N turns"]
+    strat -->|"compacting or summarizing:N"| comp["Summarise older turns,<br/>keep the last N"]
+    strat -->|"semantic:N"| sem["Top N by relevance<br/>to the current turn"]
+
+    replay --> msgs(["Messages handed to the model"])
+    win --> msgs
+    comp --> msgs
+    sem --> msgs
+
+    class log focal
+    class strat focal
+    class turn,msgs external
+    class tree,replay,win,comp,sem primary
+    class state store
+
+    classDef focal    fill:none,stroke:#2F81F7,stroke-width:3px
+    classDef primary  fill:none,stroke:#6e7781,stroke-width:1px
+    classDef external fill:none,stroke:#7d8590,stroke-width:1px,stroke-dasharray:4 3
+    classDef store    fill:none,stroke:#2EA043,stroke-width:1.5px

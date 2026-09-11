@@ -1,0 +1,35 @@
+---
+title: Manifest resolution order
+---
+%% Source of truth: packages/harness/src/felix/manifests/resolver.py:resolve_manifest
+flowchart TB
+    accTitle: The four layers a manifest name resolves through
+    accDescr: A manifest name is looked up in four places in order, and the first hit wins — the tenant's Postgres active pointer, a tenant-scoped object in the object store, a global object, then the YAML bundled into the image. Under FELIX_BUNDLED_ONLY the upper three layers do not exist and are not consulted at all, expressed by passing no store rather than by a branch in the deepest function on the path. A caller that names a version means it: an unknown version raises instead of falling back, because a silent fall-back to the active version is what once made a canary look benchmarked.
+
+    ask([resolve_manifest<br/>tenant + name]) --> pin{"pin_version given?"}
+    pin -->|"yes"| exact["get_version<br/>raises if unknown"]
+    pin -->|"no"| pg
+
+    pg{"tenant Postgres<br/>manifest_active pointer"} -->|"hit"| out
+    pg -->|"miss"| tobj
+
+    tobj{"tenant object<br/>object store key"} -->|"hit"| out
+    tobj -->|"miss"| gobj
+
+    gobj{"global object"} -->|"hit"| out
+    gobj -->|"miss"| bundled["Bundled YAML<br/>manifests/*.yaml"]
+
+    bundled --> out
+    exact --> out
+    out(["ResolvedManifest<br/>carries source + version"])
+
+    lean["FELIX_BUNDLED_ONLY=1"] -.->|"passes no manifest store,<br/>collapsing the upper three layers"| bundled
+
+    class out focal
+    class pg focal
+    class ask external
+    class pin,tobj,gobj,bundled,exact,lean primary
+
+    classDef focal    fill:none,stroke:#2F81F7,stroke-width:3px
+    classDef primary  fill:none,stroke:#6e7781,stroke-width:1px
+    classDef external fill:none,stroke:#7d8590,stroke-width:1px,stroke-dasharray:4 3

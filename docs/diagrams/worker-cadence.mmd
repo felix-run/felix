@@ -1,0 +1,37 @@
+---
+title: Worker and scheduler cadence
+---
+%% Source of truth: apps/worker/src/felix_worker/tasks.py — Taskiq cron labels.
+flowchart LR
+    accTitle: Everything periodic in Felix, and what fires it
+    accDescr: felix-scheduler holds the cron labels and felix-worker executes the tasks; running the worker without the scheduler means nothing fires at all, which is the most common deployment mistake. Seven built-in tasks run on their own cadences, and plugins that expose cron_tasks are registered at worker startup on a one-minute tick. The audit and usage flushes are the two that matter most for correctness — every other subsystem writes into their buffers and depends on this drain to reach Postgres.
+
+    sched["felix-scheduler<br/>Taskiq cron labels"] -->|"enqueues due tasks"| broker[("Valkey / Redis<br/>broker")]
+    broker --> worker["felix-worker"]
+
+    worker -->|"every 1m"| audit["flush_audit"]
+    worker -->|"every 1m"| usage["flush_usage"]
+    worker -->|"every 1m"| jobs["run_scheduled_jobs<br/>fires enabled cron rows"]
+    worker -->|"every 1m"| fibers["fiber_scheduler<br/>claims and steps durable runs"]
+    worker -->|"every 15m"| mem["consolidate_memory"]
+    worker -->|"every 30m"| anom["anomaly_scan"]
+    worker -->|"every 10m"| ceval["continuous_eval"]
+    worker -->|"daily at 03:00"| ret["retention_sweep"]
+
+    audit --> pg[("Postgres")]
+    usage --> pg
+    jobs --> pg
+    fibers --> pg
+    mem --> pg
+    anom --> pg
+    ceval --> pg
+    ret --> pg
+
+    class sched focal
+    class worker focal
+    class broker,pg store
+    class audit,usage,jobs,fibers,mem,anom,ceval,ret primary
+
+    classDef focal    fill:none,stroke:#2F81F7,stroke-width:3px
+    classDef primary  fill:none,stroke:#6e7781,stroke-width:1px
+    classDef store    fill:none,stroke:#2EA043,stroke-width:1.5px
