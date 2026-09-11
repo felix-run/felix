@@ -558,6 +558,17 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       that connects as a superuser with RLS off. Found while verifying the fiber claim contract
       against a live database; fixed in a separate change.
 
+- [ ] **One unwritable audit event blocks every later one.** `flush_pending` requeues a batch
+      whose write failed, so the compliance record survives a transient outage — and so a
+      *permanently* unwritable event is retried forever, with every subsequent event stuck
+      behind it until the 10k ceiling starts dropping the oldest. Two concrete triggers, both
+      invisible to the in-memory twin, which stores anything: a `payload_json` Postgres refuses
+      (a `\u0000` in a string, a non-JSON value), and a caller-supplied `id` that collides with
+      an existing row on the `(tenant_id, id)` primary key. `tests/conformance/test_audit_store.py`
+      now pins that a failed flush keeps its batch; what is missing is telling a transient
+      failure from a poisonous one — quarantine the offending event, count it the way
+      `DurableBuffer` counts drops, and let the rest through.
+
 - [ ] **The keyset cursor's tie-break is collation-dependent.** `felix/cursors.py` pairs the
       timestamp with the row id, and `id` is text — so Postgres orders it by the database
       collation while the in-memory twin orders it by Python code point. The ids actually

@@ -7,6 +7,9 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from felix.auth.mgmt import SCOPE_AUDIT_READ, require_mgmt_scopes, tenant_id_from_request
+from felix.cursors import InvalidCursor
+
+from felix_api.errors import client_safe_message
 
 router = APIRouter(tags=["Audit"])
 
@@ -32,11 +35,19 @@ async def list_audit(
             event_type=event_type,
             status=status,
         )
-    except ValueError as exc:
+    except InvalidCursor as exc:
         # A cursor is a query parameter, so it arrives from the client and can be anything.
         # Unhandled, a malformed one reached the caller as a 500 — a server error for what is
         # a bad request, and one that pages an operator for someone else's typo.
-        raise HTTPException(status_code=400, detail=f"invalid cursor: {exc}") from exc
+        #
+        # `InvalidCursor`, not `ValueError`: the wider catch would report the next `ValueError`
+        # the store grows — a JSON decode, a conversion — as a bad request, telling the client
+        # something false and hiding a server bug. And the message is relayed through
+        # `client_safe_message(authored_for_clients=True)` because `InvalidCursor` writes its
+        # own; `errors.py` exists to keep an uncurated builtin's `str()` out of a response.
+        raise HTTPException(
+            status_code=400, detail=client_safe_message(exc, authored_for_clients=True)
+        ) from exc
     # `events` alias keeps chat-ui clients that expect the TS shape working.
     return {"items": items, "events": items, "next_cursor": next_cursor}
 

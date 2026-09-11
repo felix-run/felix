@@ -299,6 +299,7 @@ async def test_paging_the_audit_log_returns_every_event_once(boot: Any) -> None:
     no page ever returned them. The route reported 200 each time and the operator saw a
     shorter history than the one that happened.
     """
+    from felix.audit import store as audit_store
     from felix.flush import flush_all
 
     async with boot([_answer()], env=_keys(reader=["audit:read"])) as app:
@@ -308,6 +309,11 @@ async def test_paging_the_audit_log_returns_every_event_once(boot: Any) -> None:
             headers=_as(ADMIN),
         )
         assert turn.status_code == 200, turn.text
+        # Two events pinned to one millisecond. The turn's own events are stamped with the
+        # real clock, so whether any of them tie is timing — and on a run where none did, this
+        # walk would pass against the cursor it exists to rule out.
+        for subject in ("tied-a", "tied-b"):
+            audit_store.record_event(app.settings, "default", "tool_call", ts=1_000, principal_subj=subject)
         await flush_all(app.settings)
 
         whole = await app.client.get("/audit", params={"limit": 500}, headers=_as(ADMIN))

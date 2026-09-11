@@ -146,6 +146,10 @@ async def test_paging_usage_returns_every_row_once(usage_settings: Any, one_mill
 
     stored, _ = await usage_store.query(usage_settings, TENANT, limit=100)
     assert len(stored) == 5, f"the flush stored {len(stored)} of 5 rows"
+    # The positive control for the fixture: if `record_tokens` ever stops going through
+    # `now_ms`, the patch goes inert, the tie disappears and this test quietly becomes the
+    # distinct-timestamp case the old cursor already handled.
+    assert len({row["ts"] for row in stored}) == 1, "the clock was not frozen; this is not a tie"
 
     seen: list[dict[str, Any]] = []
     cursor: str | None = None
@@ -174,7 +178,10 @@ async def test_the_manifest_filter_survives_a_tied_page_boundary(
             model=f"model-{i}",
             tokens=1_000,
         )
-    await usage_store.flush_pending(usage_settings)
+    assert await usage_store.flush_pending(usage_settings) == 6
+
+    stored, _ = await usage_store.query(usage_settings, TENANT, limit=100)
+    assert len({row["ts"] for row in stored}) == 1, "the clock was not frozen; this is not a tie"
 
     seen: list[dict[str, Any]] = []
     cursor: str | None = None

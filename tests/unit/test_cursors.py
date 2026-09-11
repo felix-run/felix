@@ -12,7 +12,7 @@ lossy behaviour rather than raise or re-read — is a decision, not an accident.
 from __future__ import annotations
 
 import pytest
-from felix.cursors import decode_cursor, encode_cursor
+from felix.cursors import decode_cursor, encode_cursor, order_and_seek
 
 
 def test_a_cursor_round_trips() -> None:
@@ -21,13 +21,13 @@ def test_a_cursor_round_trips() -> None:
 
 def test_the_pair_orders_rows_sharing_a_timestamp() -> None:
     """The property the stores rely on: comparable, and total within one millisecond."""
-    rows = [(100, "c"), (100, "a"), (99, "z"), (100, "b")]
+    rows = [{"ts": 100, "id": "c"}, {"ts": 100, "id": "a"}, {"ts": 99, "id": "z"}, {"ts": 100, "id": "b"}]
 
-    assert sorted(rows, reverse=True) == [(100, "c"), (100, "b"), (100, "a"), (99, "z")]
-    # And the decoded cursor compares against those pairs directly, which is what both stores
-    # do — in Python for the twin and as a Postgres row comparison for the store.
-    position = decode_cursor(encode_cursor(100, "b"))
-    assert [r for r in sorted(rows, reverse=True) if r < position] == [(100, "a"), (99, "z")]
+    ordered = order_and_seek(rows, encode_cursor(100, "b"))
+
+    # Everything strictly below the cursor position, newest first — including the two rows in
+    # the same millisecond as the cursor, which a timestamp-only cursor would have skipped.
+    assert [(r["ts"], r["id"]) for r in ordered] == [(100, "a"), (99, "z")]
 
 
 def test_a_timestamp_only_cursor_still_reads() -> None:

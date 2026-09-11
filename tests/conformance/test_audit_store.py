@@ -32,25 +32,29 @@ OTHER = "other-tenant"
 
 async def _record(settings: Any, **fields: Any) -> None:
     """Record one event and flush it, so both arms are read back from their real store."""
-    audit.record_event(
-        settings,
-        fields.pop("tenant_id", TENANT),
-        fields.pop("event_type", "tool_call"),
-        **fields,
-    )
-    await audit.flush_pending(settings)
+    await _record_many(settings, [fields])
 
 
 async def _record_many(settings: Any, events: list[dict[str, Any]]) -> None:
-    """Buffer a batch and flush once — the shape the worker's `flush_audit` produces."""
+    """Buffer a batch and flush once — the shape the worker's `flush_audit` produces.
+
+    The flush's return count is asserted here rather than discarded, so every test in the file
+    inherits it. It is the instrument that tells a lost batch from a paging bug: `flush_pending`
+    drains a process-global buffer, and `felix.flush.run_flush_loop` drains that same buffer on
+    an interval with whatever settings started it — so a flush task leaked from an earlier test
+    could take part of this batch and write it to a different backend.
+
+    `get`, not `pop`: mutating the caller's dicts made two call sites defend with `dict(e)`.
+    """
     for event in events:
         audit.record_event(
             settings,
-            event.pop("tenant_id", TENANT),
-            event.pop("event_type", "tool_call"),
-            **event,
+            event.get("tenant_id", TENANT),
+            event.get("event_type", "tool_call"),
+            **{k: v for k, v in event.items() if k not in ("tenant_id", "event_type")},
         )
-    await audit.flush_pending(settings)
+    assert await audit.flush_pending(settings) == len(events), "the flush wrote a different count"
+    assert len(audit.pending_buffer()) == 0, "the buffer kept rows after a successful flush"
 
 
 # --- the record itself ----------------------------------------------------------------------
@@ -234,22 +238,34 @@ async def test_a_filter_still_applies_on_the_second_page(store_settings: Any) ->
 
 @parametrized
 @pytest.mark.asyncio
-async def test_the_tenant_filter_is_not_defeated_by_another_tenants_cursor(store_settings: Any) -> None:
-    """A cursor is a timestamp, so it is forgeable and shared across tenants by construction.
+async def test_the_tenant_scope_is_not_defeated_by_another_tenants_cursor(store_settings: Any) -> None:
+    """Handing one tenant's cursor to another must page that tenant's own history.
 
-    Handing one tenant's cursor to another must page that other tenant's history, never leak
-    the first one's rows — the cursor narrows, the tenant scopes.
+    The cursor narrows, the tenant scopes, and the two are independent — a cursor is a
+    position, not an authorisation. The other tenant is given a row *below* the cursor
+    position on purpose: with only a row above it, the cursor alone excludes the leak and the
+    tenant predicate never participates, so the test passes with the scoping removed.
+
+    The cursor is taken from a real query rather than written by hand, which also keeps this
+    on the current encoding instead of quietly testing the legacy decode path.
     """
     await _record_many(
         store_settings,
         [
-            {"ts": 100, "tenant_id": OTHER, "principal_subj": "mallory"},
+            {"ts": 100, "tenant_id": OTHER, "principal_subj": "mallory-newest"},
+            {"ts": 30, "tenant_id": OTHER, "principal_subj": "mallory-older"},
             {"ts": 50, "tenant_id": TENANT, "principal_subj": "alice"},
         ],
     )
 
-    page, _ = await audit.query(store_settings, TENANT, cursor="100")
+    # `OTHER`'s own first page, so the cursor is a position inside `OTHER`'s history.
+    first, cursor = await audit.query(store_settings, OTHER, limit=1)
+    assert [e["principal_subj"] for e in first] == ["mallory-newest"]
+    assert cursor is not None
 
+    page, _ = await audit.query(store_settings, TENANT, cursor=cursor)
+
+    # `mallory-older` is below the cursor, so only the tenant scope keeps it out.
     assert [e["principal_subj"] for e in page] == ["alice"]
 
 
@@ -315,3 +331,51 @@ async def test_a_filter_and_a_tie_together(store_settings: Any) -> None:
 
     assert [e["status"] for e in seen] == ["denied"] * len(seen), seen
     assert sorted(e["principal_subj"] for e in seen) == denied
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_a_failed_flush_keeps_the_batch(store_settings: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The store's strongest claim, and nothing asserted it.
+
+    "Never drop the compliance record because a commit failed" is why `flush_pending` requeues
+    rather than drains-then-writes. Neither backend can be made to fail a commit on demand, so
+    the write is replaced for exactly one call — the one boundary where a fake is the only way
+    to reach the behaviour, rather than a substitute for a real store.
+    """
+    calls: list[int] = []
+    real = audit._write_batch
+
+    async def _fail_once(settings: Any, batch: list[dict[str, Any]]) -> None:
+        calls.append(len(batch))
+        if len(calls) == 1:
+            raise RuntimeError("commit failed")
+        await real(settings, batch)
+
+    monkeypatch.setattr(audit, "_write_batch", _fail_once)
+
+    audit.record_event(store_settings, TENANT, "tool_call", ts=10, principal_subj="alice")
+    with pytest.raises(RuntimeError):
+        await audit.flush_pending(store_settings)
+
+    # Still buffered, not written and not lost.
+    assert len(audit.pending_buffer()) == 1
+    assert await audit.query(store_settings, TENANT) == ([], None)
+
+    assert await audit.flush_pending(store_settings) == 1
+    events, _ = await audit.query(store_settings, TENANT)
+    assert [e["principal_subj"] for e in events] == ["alice"]
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_a_zero_limit_is_an_empty_page_on_both_arms(store_settings: Any) -> None:
+    """Both routes bound `limit` at one, but `query` is a public function others call directly.
+
+    The twin returned `([], None)` and the store raised `IndexError` computing the cursor of an
+    empty page — a divergence reachable from `jobs/anomaly.py` and `jobs/continuous_eval.py`,
+    which call these functions rather than the HTTP surface.
+    """
+    await _record_many(store_settings, [{"ts": 10}, {"ts": 20}])
+
+    assert await audit.query(store_settings, TENANT, limit=0) == ([], None)

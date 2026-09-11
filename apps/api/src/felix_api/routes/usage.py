@@ -6,6 +6,9 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from felix.auth.mgmt import SCOPE_USAGE_READ, require_mgmt_scopes, tenant_id_from_request
+from felix.cursors import InvalidCursor
+
+from felix_api.errors import client_safe_message
 
 router = APIRouter(tags=["Usage"])
 
@@ -28,9 +31,11 @@ async def list_usage(
             cursor=cursor,
             manifest_id=manifest_id,
         )
-    except ValueError as exc:
-        # Same as `/audit`: a client-supplied cursor is a bad request, not a server error.
-        raise HTTPException(status_code=400, detail=f"invalid cursor: {exc}") from exc
+    except InvalidCursor as exc:
+        # Same as `/audit`, including why the catch is narrow and the message is relayed.
+        raise HTTPException(
+            status_code=400, detail=client_safe_message(exc, authored_for_clients=True)
+        ) from exc
     return {"items": items, "next_cursor": next_cursor}
 
 
