@@ -791,3 +791,49 @@ async def test_document_text_may_contain_newlines() -> None:
             "/documents", json=_doc(text="para one\n\npara two"), headers=_auth("sk-write")
         )
         assert created.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_the_wire_row_is_a_literal_a_guard_can_read() -> None:
+    """The corpus's row shape lives in the store, and says exactly what it sends.
+
+    felix-web mirrors every one of these fields by hand, and its
+    `check-payload-shapes` guard reads response shapes out of `_<row>_dict` literals. While the
+    routes built these dicts inline in a comprehension there was no literal to read, so
+    `/documents` was the one area no guard covered — a client field spelled wrong typechecked,
+    linted, passed the drift check and rendered `undefined` forever. That is precisely what
+    `AuditEvent.payload` did.
+
+    Asserting the exact key set is the point: a field added to `DocumentSummary` that nobody
+    meant to publish fails here rather than appearing on the wire unannounced.
+    """
+    settings = Settings(allow_insecure=True, auth_mode="none", environment="development")
+    await doc_store.put_document(
+        settings,
+        tenant_id="default",
+        title="Runbook",
+        source="wiki",
+        text="restart the worker when fibers stop",
+        metadata={"team": "platform"},
+    )
+
+    rows = await doc_store.list_document_rows(settings, "default")
+    assert [sorted(r) for r in rows] == [["chunks", "created_at", "doc_id", "source", "title"]]
+    # Stored per document and up to 16 KiB; no caller of the listing has ever needed it.
+    assert "metadata" not in rows[0]
+
+    hits = await doc_store.search_document_rows(settings, tenant_id="default", query="fibers")
+    assert hits, "expected the lexical channel to match"
+    assert sorted(hits[0]) == [
+        "channels",
+        "chunk_id",
+        "chunk_index",
+        "content",
+        "doc_id",
+        "score",
+        "source",
+        "title",
+    ]
+    # A tuple on the dataclass, a list on the wire — JSON has no tuple, and a client reading
+    # `channels[0]` off a value that serialised as a string would be a quiet bug.
+    assert isinstance(hits[0]["channels"], list)

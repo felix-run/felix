@@ -85,6 +85,49 @@ class DocumentSummary:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+def _document_dict(d: DocumentSummary) -> dict[str, Any]:
+    """One document as the wire carries it.
+
+    Here rather than in the route for the reason every other area keeps its row shape in the
+    store: `scripts/check-payload-shapes.mjs` in felix-web reads response shapes out of these
+    `_<row>_dict` literals, and a shape built inline in a route comprehension has no literal to
+    read. `/documents` was the one area no guard could see, so a client field spelled wrong
+    typechecked, linted, passed the drift check and rendered `undefined` forever — which is
+    exactly what `AuditEvent.payload` did before anyone noticed.
+
+    `metadata` is deliberately not here. It is stored per document and can be 16 KiB, and no
+    caller of the listing has ever needed it; leaving it off keeps the listing cheap rather
+    than making every row carry a blob nothing reads.
+    """
+    return {
+        "doc_id": d.doc_id,
+        "title": d.title,
+        "source": d.source,
+        "chunks": d.chunks,
+        "created_at": d.created_at,
+    }
+
+
+def _hit_dict(h: DocumentHit) -> dict[str, Any]:
+    """One retrieval hit as the wire carries it.
+
+    A *chunk*, not a document — which is why `content` and `chunk_index` are here and why a
+    client renders the passage rather than the title. `channels` is a tuple in the dataclass
+    and a list on the wire: JSON has no tuple, and a client reading `channels[0]` on a value
+    that serialised as a string would be a quiet bug rather than a loud one.
+    """
+    return {
+        "doc_id": h.doc_id,
+        "chunk_id": h.chunk_id,
+        "chunk_index": h.chunk_index,
+        "title": h.title,
+        "source": h.source,
+        "content": h.content,
+        "score": h.score,
+        "channels": list(h.channels),
+    }
+
+
 def _first_chunk(rows: list[dict[str, Any]]) -> dict[str, Any]:
     """The `chunk_index == 0` row, which is the one carrying the document's metadata."""
     return min(rows, key=lambda r: int(r.get("chunk_index") or 0))
@@ -543,6 +586,30 @@ async def _channels_in_postgres(
     return ranked, rows
 
 
+async def list_document_rows(settings: Settings, tenant_id: str, *, limit: int = 100) -> list[dict[str, Any]]:
+    """The listing as the wire carries it.
+
+    Separate from `list_documents` rather than replacing it: the dataclass is the store's typed
+    contract and the conformance suite asserts against it, while the route wants the row. Every
+    other area keeps its wire shape in the store for the same reason this one now does — see
+    `_document_dict`.
+    """
+    return [_document_dict(d) for d in await list_documents(settings, tenant_id, limit=limit)]
+
+
+async def search_document_rows(
+    settings: Settings,
+    *,
+    tenant_id: str,
+    query: str,
+    limit: int = 5,
+    embedder: Any | None = None,
+) -> list[dict[str, Any]]:
+    """Retrieval hits as the wire carries them. See `_hit_dict` — a hit is a chunk."""
+    hits = await search_documents(settings, tenant_id=tenant_id, query=query, limit=limit, embedder=embedder)
+    return [_hit_dict(h) for h in hits]
+
+
 __all__ = [
     "CHANNEL_DEPTH",
     "MAX_CHUNKS_PER_DOC",
@@ -551,8 +618,10 @@ __all__ = [
     "count_documents",
     "delete_document",
     "document_id",
+    "list_document_rows",
     "list_documents",
     "put_document",
     "reset_documents_for_tests",
+    "search_document_rows",
     "search_documents",
 ]

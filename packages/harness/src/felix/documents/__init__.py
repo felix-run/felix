@@ -12,9 +12,11 @@ from felix.documents.store import (
     count_documents,
     delete_document,
     document_id,
+    list_document_rows,
     list_documents,
     put_document,
     reset_documents_for_tests,
+    search_document_rows,
     search_documents,
 )
 
@@ -26,8 +28,10 @@ __all__ = [
     "count_documents",
     "delete_document",
     "document_id",
+    "list_document_rows",
     "list_documents",
     "put_document",
     "reset_documents_for_tests",
+    "search_document_rows",
     "search_documents",
 ]
