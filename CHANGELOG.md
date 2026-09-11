@@ -27,6 +27,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   — where model answers are much longer than 80 characters — was corrupt. CI parses this
   output, and survived only because the mock fixtures are short.
 
+  The record is now JSON on one line, and the progress line moved to stderr, so stdout is the
+  record and nothing else: `felix eval … | jq .` works. `scripts/eval-counter-smoke.sh` parses
+  it instead of matching substrings against a Python repr — including a negative match for
+  `error` scanned across the whole blob, which any score row quoting that word would have
+  tripped. This changes the shape of `felix eval`'s stdout; anything reading it as a Python
+  repr needs updating.
+
 - **`felix temporal-worker` named its database connections `felix-cli`.** The CLI's root
   callback stamps the process role, `stamp_process_role` is first-write-wins, and this
   subcommand runs a worker for as long as the process lives — so a durable-execution worker

@@ -42,15 +42,25 @@ VERIFIERS = f"self:{ISSUER}"
 def _cli_environment(monkeypatch: pytest.MonkeyPatch) -> Any:
     """Pin the console width, and keep the process-role stamp out of the next test.
 
-    `COLUMNS` is the load-bearing half. Rich wraps to it whether or not stdout is a tty, and
-    the wrapping is what broke `mint-jwt` — so on a machine that exports a `COLUMNS` wider
-    than a 550-character token, the test guarding that fix would pass against the unfixed
-    code. Pinning it makes the assertion mean the same thing everywhere.
+    Rich wraps to the console width whether or not stdout is a tty, and that wrapping is what
+    broke `mint-jwt` — so on a machine exporting a `COLUMNS` wider than a 536-character token,
+    the test guarding that fix would pass against the unfixed code.
+
+    Setting `COLUMNS` alone does not pin it. Rich reads the variable once, in
+    `Console.__init__`, and caches it; `rich.print` uses one process-global console built on
+    first use, which in a full-suite run is some earlier file's `validate-manifest`
+    invocation. By the time this fixture runs the width is already frozen. So the console is
+    pinned directly, and `COLUMNS` is kept for click's own formatter.
 
     `_root` also stamps a process role on the cached `Settings`, and these tests rewrite the
     environment under it.
     """
+    import rich
+
     monkeypatch.setenv("COLUMNS", "80")
+    # `_width`, not the public setter: `setattr(console, "width", 80)` reads the computed
+    # value first, so monkeypatch's undo would freeze the console at an int for the session.
+    monkeypatch.setattr(rich.get_console(), "_width", 80)
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
@@ -286,7 +296,10 @@ def test_migrate_upgrades_to_head_against_a_real_url(monkeypatch: pytest.MonkeyP
     """
     from alembic import command as alembic_command
 
-    monkeypatch.setenv("FELIX_DATABASE_URL", "postgresql+psycopg://felix:felix@localhost:5432/felix")
+    # Port 1, not 5432: `command.upgrade` is substituted below, and if a refactor ever slips
+    # that substitution the test should fail to connect rather than reach whatever Postgres
+    # the developer has running on the port Compose publishes.
+    monkeypatch.setenv("FELIX_DATABASE_URL", "postgresql+psycopg://felix:felix@127.0.0.1:1/felix")
     get_settings.cache_clear()
     upgrades: list[str] = []
     monkeypatch.setattr(alembic_command, "upgrade", lambda _cfg, rev: upgrades.append(rev))

@@ -157,11 +157,14 @@ def eval_cmd(
         # The `eval` CI job parses this dict — it asserts a pass_count of 0, the presence of
         # score rows and the absence of errors on the negative fixture. Replacing it with a
         # summary line means updating `.github/workflows/ci.yml` in the same change.
-        # Plain print, and this is the one that matters: `scripts/eval-counter-smoke.sh`
-        # parses this dict in CI. Through rich it came out pretty-printed across 38 lines with
-        # any value longer than the console width split mid-token — the CI fixtures have short
-        # answers so it survived, but a real run's model answers do not. The repr is one line.
-        typer.echo(result)
+        # JSON on one line, because this output has a parser: `scripts/eval-counter-smoke.sh`
+        # reads it in CI. Through rich it was pretty-printed across 38 lines with any value
+        # longer than the console width split mid-token — the fixtures have short answers so
+        # CI survived, a real run's would not. A Python repr fixed that but left a format only
+        # Python reads, so the gate matched substrings; this one it can parse. `default=str`
+        # so a field that is not serializable degrades instead of failing the run at the last
+        # step, after the work is done.
+        typer.echo(json.dumps(result, default=str))
         fails = int(result.get("fail_count") or 0)
         if fails:
             raise SystemExit(1)

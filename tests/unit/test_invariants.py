@@ -693,8 +693,9 @@ def test_the_eval_counter_smoke_runs_in_both_gates() -> None:
     # a printed summary with no rows to search (rule), and items that raised rather than being
     # scored down (error), which the counts alone cannot distinguish from an honest rejection.
     body = script.read_text(encoding="utf-8")
-    for check in ('"$rc" -eq 1', "'pass_count': 0", "'rule'", "'error'"):
-        assert check in body, f"the counter-smoke no longer checks {check}; it can pass on a broken run"
+    checks = ('[ "$rc" -eq 1 ]', "passed != 0", "if not rows:", 'if row.get("error")')
+    for check in checks:
+        assert check in body, f"the counter-smoke no longer checks `{check}`; it can pass on a broken run"
 
 
 def test_the_coverage_floor_does_not_arm_partial_runs() -> None:

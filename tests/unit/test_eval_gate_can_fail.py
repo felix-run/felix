@@ -200,13 +200,14 @@ def test_a_failed_run_exits_non_zero_through_the_cli() -> None:
     assert isinstance(result.exception, SystemExit), result.exception
     assert result.exception.code == 1, result.exception
     assert result.exit_code == 1, result.output
-    # `scripts/eval-counter-smoke.sh` parses this same printed dict, so every string it greps
-    # for is pinned here — otherwise the local half is a strict subset of the shell half and
-    # the gate breaks in CI first, which is the arrangement this file exists to invert.
-    assert "'fail_count'" in result.output, result.output
-    assert "'pass_count': 0" in result.output, result.output
-    assert "'rule'" in result.output, result.output
-    assert "'error'" not in result.output, result.output
+    # `scripts/eval-counter-smoke.sh` parses this same stdout, so the shape it reads is pinned
+    # here — otherwise the local half is a strict subset of the shell half, and the gate breaks
+    # in CI first, which is the arrangement this file exists to invert.
+    record = json.loads(result.stdout)
+    assert record["pass_count"] == 0, record
+    assert record["fail_count"] == len(_fixture("negative")["items"]), record
+    assert [row["rule"] for row in record["scores"]], record
+    assert not [row for row in record["scores"] if row.get("error")], record
 
 
 def test_the_smoke_fixture_exits_zero_through_the_cli() -> None:

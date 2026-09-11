@@ -8,7 +8,10 @@ is not — a blackholed host, a runaway query with no owner, a Valkey full of `N
 
 from __future__ import annotations
 
+import os
 import pathlib
+import subprocess
+import sys
 from typing import Any
 
 import pytest
@@ -92,6 +95,38 @@ def test_migrations_get_the_same_driver_bounds() -> None:
     Alembic script, not an importable module."""
     source = pathlib.Path("migrations/env.py").read_text(encoding="utf-8")
     assert "connect_args=_connect_args(get_settings(), url)" in source
+
+
+def test_alembic_refuses_the_in_memory_url_on_every_entry_point() -> None:
+    """`memory://` is not a database Alembic can reach, and `.env` ships it for tests.
+
+    `felix migrate` refuses it with a friendly message, but the CLI is one of four ways in:
+    `alembic current` — which `docs/UPGRADING.md` tells operators to run — offline SQL
+    generation, and the conformance suite's in-process override all reach Alembic without
+    passing the CLI. They used to arrive at `NoSuchModuleError: Can't load plugin:
+    sqlalchemy.dialects:memory`, which names neither the setting nor a value to use. The
+    refusal lives in `get_url`, the funnel all four share.
+
+    In a subprocess, and not only for isolation's sake: this is the command the upgrade guide
+    prints, run the way an operator runs it. In-process it also reconfigures logging —
+    `migrations/env.py` calls `fileConfig`, which disables every existing logger — and takes
+    every `caplog` assertion in the rest of the session with it.
+    """
+    env = {**os.environ, "FELIX_DATABASE_URL": "memory://alembic"}
+    done = subprocess.run(
+        [sys.executable, "-m", "alembic", "current"],
+        cwd=pathlib.Path(__file__).resolve().parents[2],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=120,
+        env=env,
+    )
+
+    assert done.returncode != 0, done.stdout
+    combined = done.stdout + done.stderr
+    assert "FELIX_DATABASE_URL is memory://" in combined, combined
+    assert "NoSuchModuleError" not in combined, combined
 
 
 def test_granian_gets_the_server_settings(monkeypatch: pytest.MonkeyPatch) -> None:
