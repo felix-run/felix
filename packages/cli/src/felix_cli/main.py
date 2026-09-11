@@ -63,7 +63,20 @@ def migrate(
 ) -> None:
     """Apply Alembic migrations."""
     from alembic import command
+    from felix.config import get_settings
     from felix.db.migrations import alembic_config
+
+    # `memory://` is the in-memory test path, not a database Alembic can reach. Without this
+    # the command died on `NoSuchModuleError: Can't load plugin: sqlalchemy.dialects:memory`
+    # under a rich traceback, which names neither the setting nor what to set it to — and
+    # `.env` pointing at `memory://` is exactly how someone arrives here.
+    if get_settings().database_url.strip().startswith("memory://"):
+        rprint(
+            "[red]FELIX_DATABASE_URL is memory://[/red] — the in-memory test path has no "
+            "schema to migrate. Point it at Postgres, e.g. "
+            "postgresql+psycopg://felix:felix@localhost:5432/felix"
+        )
+        raise typer.Exit(2)
 
     command.upgrade(alembic_config(), revision)
     rprint(f"[green]migrated to {revision}[/green]")
@@ -157,7 +170,11 @@ def mint_jwt(
         scopes=[s.strip() for s in scopes.split(",") if s.strip()],
         ttl_seconds=ttl_seconds,
     )
-    rprint(token)
+    # Not rprint: rich wraps to the console width, and a 2048-bit RS256 token is about
+    # 550 characters, so `TOKEN=$(felix mint-jwt …)` captured seven lines of base64 with
+    # newlines through the middle and every request with it was rejected as invalid_token.
+    # The token is the entire output of this command and exists to be piped.
+    typer.echo(token)
 
 
 @app.command("bundle-manifests")
@@ -178,7 +195,12 @@ def bundle_manifests(
         out.write_text(json.dumps(payload, indent=2))
         rprint(f"wrote {out}")
     else:
-        rprint(json.dumps({"manifests": names}, indent=2))
+        # Plain print, because this is machine-readable output and rich both wraps to the
+        # console width and reads `[` as a markup tag. Today's bundle is short enough to
+        # survive rendering — unlike the token in `mint-jwt`, which did not — so this is
+        # keeping a hazard away from output that will grow, not a fix for a live break.
+        # `--out` remains the machine path: the human summary above shares this stdout.
+        print(json.dumps({"manifests": names}, indent=2))
 
 
 def _assert_outbound_hosts_resolve(manifest: Any, _settings: Any = None) -> None:

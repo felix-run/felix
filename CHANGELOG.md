@@ -7,7 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`felix mint-jwt` printed a token you could not use.** It went through rich, which wraps to
+  the console width, and a 2048-bit RS256 token is around 550 characters — so
+  `TOKEN=$(felix mint-jwt --sub ops …)`, the invocation `deploy/GOVERNANCE.md` documents,
+  captured seven lines of base64 with newlines through the middle. The command exited 0, the
+  token looked right on screen, and every request made with it was rejected as an invalid
+  token. It is printed plainly now, and a test mints one and verifies it through the same
+  `verify_jwt` the API uses, asserting the subject, tenant and scopes that come back.
+
+- **`felix migrate` met the in-memory database URL with a stack trace.** `memory://` is what
+  `.env` ships for tests, so arriving at `migrate` with it set is ordinary, and the result was
+  `NoSuchModuleError: Can't load plugin: sqlalchemy.dialects:memory` under a rich traceback
+  that named neither the setting nor a value to use. It now exits 2 and says which setting is
+  wrong and what Postgres URL to point it at.
+
 ### Added
+
+- **Every `felix` subcommand is invoked by a test** (`tests/unit/test_cli_commands.py`).
+  `tests/unit/test_entrypoint_wiring.py` proved each `[project.scripts]` target resolves to a
+  callable, which is where the console script ends; nothing ran the bodies, and `version`,
+  `migrate`, `mint-jwt`, `bundle-manifests` and `temporal-worker` had no test at all. The two
+  fixes above are what running them found. Each test asserts the contract the command has with
+  whatever consumes it — a shell capturing a token, a parser reading the bundle, an operator
+  reading an error — rather than the exit code alone.
 
 - **The eval gate can now fail, and the coverage floor now applies locally.** Two CI gates were
   passing without testing anything. `fixtures/eval/smoke.json` gives every item a `mock_answer`
