@@ -29,7 +29,20 @@ def get_url() -> str:
     than mutating the environment and clearing the settings cache.
     """
     override = config.attributes.get("felix_url")
-    return str(override) if override else get_settings().database_url
+    url = str(override) if override else get_settings().database_url
+    # The one funnel every Alembic entry point passes through — `felix migrate`, a bare
+    # `alembic current` (which docs/UPGRADING.md tells operators to run), offline SQL
+    # generation, and the conformance override above. `memory://` is the in-memory test path
+    # with no schema to migrate, and left to reach SQLAlchemy it surfaced as
+    # `NoSuchModuleError: Can't load plugin: sqlalchemy.dialects:memory`, which names neither
+    # the setting that was wrong nor a value to use.
+    if url.startswith("memory://"):
+        raise RuntimeError(
+            "FELIX_DATABASE_URL is memory:// — the in-memory test path has no schema to "
+            "migrate. Point it at Postgres, e.g. "
+            "postgresql+psycopg://felix:felix@localhost:5432/felix"
+        )
+    return url
 
 
 def run_migrations_offline() -> None:
