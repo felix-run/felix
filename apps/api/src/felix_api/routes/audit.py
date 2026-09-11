@@ -5,7 +5,7 @@ from __future__ import annotations
 import contextlib
 from typing import Any
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from felix.auth.mgmt import SCOPE_AUDIT_READ, require_mgmt_scopes, tenant_id_from_request
 
 router = APIRouter(tags=["Audit"])
@@ -23,14 +23,20 @@ async def list_audit(
     from felix.audit import store as audit_store
 
     require_mgmt_scopes(request, SCOPE_AUDIT_READ)
-    items, next_cursor = await audit_store.list_events(
-        request.app.state.settings,
-        tenant_id_from_request(request),
-        limit=limit,
-        cursor=cursor,
-        event_type=event_type,
-        status=status,
-    )
+    try:
+        items, next_cursor = await audit_store.list_events(
+            request.app.state.settings,
+            tenant_id_from_request(request),
+            limit=limit,
+            cursor=cursor,
+            event_type=event_type,
+            status=status,
+        )
+    except ValueError as exc:
+        # A cursor is a query parameter, so it arrives from the client and can be anything.
+        # Unhandled, a malformed one reached the caller as a 500 — a server error for what is
+        # a bad request, and one that pages an operator for someone else's typo.
+        raise HTTPException(status_code=400, detail=f"invalid cursor: {exc}") from exc
     # `events` alias keeps chat-ui clients that expect the TS shape working.
     return {"items": items, "events": items, "next_cursor": next_cursor}
 

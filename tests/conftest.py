@@ -59,6 +59,7 @@ def _scrub_ambient_git_environment():
 def _isolate_process_global_stores():
     """Clear the in-memory manifest store, corpus and resolver caches around every test."""
     from felix.approvals.store import reset_approvals_for_tests
+    from felix.audit import store as audit_store
     from felix.documents.store import reset_documents_for_tests
     from felix.durability.fibers import reset_memory_fibers
     from felix.eval.store import reset_eval_for_tests
@@ -69,6 +70,7 @@ def _isolate_process_global_stores():
     from felix.session.store import _memory_session_stores
     from felix.session.thread_state import reset_thread_meta_for_tests
     from felix.session.tree import _leaf_by_thread
+    from felix.usage import store as usage_store
 
     def _clear() -> None:
         manifest_store.reset_memory_store()
@@ -96,6 +98,13 @@ def _isolate_process_global_stores():
         reset_eval_for_tests()
         reset_jobs_for_tests()
         reset_approvals_for_tests()
+        # Audit and usage are the same shape again — a process buffer plus an in-memory twin —
+        # and were the two this list missed. Each has *two* globals, so a test that recorded
+        # an event without flushing left it in the buffer for whatever flushed next, and the
+        # rows themselves outlived every test that wrote them. Two of the worker cron tests
+        # found this the hard way: they passed alone and failed in the suite.
+        audit_store.clear_memory()
+        usage_store.clear_memory()
 
     _clear()
     yield

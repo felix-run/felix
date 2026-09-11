@@ -6,10 +6,11 @@ import time
 import uuid
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, tuple_
 
 from felix.buffers import DurableBuffer
 from felix.config import Settings
+from felix.cursors import decode_cursor, encode_cursor
 from felix.db.models import UsageEvent
 from felix.db.session import _use_memory, get_session_factory
 
@@ -96,11 +97,13 @@ async def query(
         if manifest_id is not None:
             items = [e for e in items if e["manifest_id"] == manifest_id]
         if cursor is not None:
-            cursor_ts = int(cursor)
-            items = [e for e in items if e["ts"] < cursor_ts]
-        items.sort(key=lambda e: e["ts"], reverse=True)
+            # `(ts, id)`, not `ts`: a bare timestamp steps over every row sharing the boundary
+            # millisecond, and those rows are then returned by no page at all.
+            position = decode_cursor(cursor)
+            items = [e for e in items if (e["ts"], e["id"]) < position]
+        items.sort(key=lambda e: (e["ts"], e["id"]), reverse=True)
         page = items[:limit]
-        next_cursor = str(page[-1]["ts"]) if len(items) > limit and page else None
+        next_cursor = encode_cursor(page[-1]["ts"], page[-1]["id"]) if len(items) > limit and page else None
         return [_event_dict(e) for e in page], next_cursor
 
     factory = get_session_factory(settings=settings)
@@ -108,16 +111,19 @@ async def query(
         stmt = (
             select(UsageEvent)
             .where(UsageEvent.tenant_id == tenant_id)
-            .order_by(UsageEvent.ts.desc())
+            # `id` breaks the tie, and it is the second half of the primary key, so the
+            # order is total. Without it `ORDER BY ts DESC` leaves rows in one millisecond in
+            # whatever order the plan produces, and the cursor below cannot address them.
+            .order_by(UsageEvent.ts.desc(), UsageEvent.id.desc())
             .limit(limit + 1)
         )
         if manifest_id is not None:
             stmt = stmt.where(UsageEvent.manifest_id == manifest_id)
         if cursor is not None:
-            stmt = stmt.where(UsageEvent.ts < int(cursor))
+            stmt = stmt.where(tuple_(UsageEvent.ts, UsageEvent.id) < decode_cursor(cursor))
         rows = (await db.scalars(stmt)).all()
         page = rows[:limit]
-        next_cursor = str(page[-1].ts) if len(rows) > limit else None
+        next_cursor = encode_cursor(page[-1].ts, page[-1].id) if len(rows) > limit else None
         return [_event_dict(r) for r in page], next_cursor
 
 

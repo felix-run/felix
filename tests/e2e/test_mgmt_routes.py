@@ -291,6 +291,66 @@ async def test_reading_the_audit_log_needs_a_read_scope(boot: Any) -> None:
         assert (await app.client.get("/audit", headers=_as(WRITER))).status_code == 200
 
 
+async def test_paging_the_audit_log_returns_every_event_once(boot: Any) -> None:
+    """Over the wire, because the cursor is a query parameter and a client round-trips it.
+
+    A turn writes several events inside the same millisecond, which is what broke this: the
+    cursor carried only a timestamp, so `ts < last_seen` stepped over every sibling event and
+    no page ever returned them. The route reported 200 each time and the operator saw a
+    shorter history than the one that happened.
+    """
+    from felix.flush import flush_all
+
+    async with boot([_answer()], env=_keys(reader=["audit:read"])) as app:
+        turn = await app.client.post(
+            "/chat",
+            json={"manifest": "quick", "messages": [{"role": "user", "content": "hello"}]},
+            headers=_as(ADMIN),
+        )
+        assert turn.status_code == 200, turn.text
+        await flush_all(app.settings)
+
+        whole = await app.client.get("/audit", params={"limit": 500}, headers=_as(ADMIN))
+        assert whole.status_code == 200, whole.text
+        expected = {e["id"] for e in whole.json()["items"]}
+        assert len(expected) >= 2, expected
+
+        seen: set[str] = set()
+        cursor: str | None = None
+        for _ in range(20):  # bounded, so a cursor that never advances fails rather than hangs
+            params: dict[str, Any] = {"limit": 1}
+            if cursor is not None:
+                params["cursor"] = cursor
+            page = await app.client.get("/audit", params=params, headers=_as(ADMIN))
+            assert page.status_code == 200, page.text
+            body = page.json()
+            for event in body["items"]:
+                assert event["id"] not in seen, f"{event['id']} was returned on two pages"
+                seen.add(event["id"])
+            cursor = body["next_cursor"]
+            if cursor is None:
+                break
+        else:  # pragma: no cover - only on a cursor that does not terminate
+            raise AssertionError("the audit cursor never reported the end of the history")
+
+        assert seen == expected, expected - seen
+
+
+async def test_a_malformed_audit_cursor_is_a_bad_request(boot: Any) -> None:
+    """A cursor arrives from the client, so it can be anything.
+
+    Unhandled it reached the caller as a 500 — a server error for someone else's typo, and a
+    page for whoever watches the error rate.
+    """
+    async with boot([], env=_keys(reader=["audit:read"])) as app:
+        bad = await app.client.get("/audit", params={"cursor": "not-a-cursor"}, headers=_as(ADMIN))
+        assert bad.status_code == 400, bad.text
+        assert "cursor" in bad.json()["detail"], bad.text
+
+        usage = await app.client.get("/usage", params={"cursor": "nope"}, headers=_as(ADMIN))
+        assert usage.status_code == 400, usage.text
+
+
 # --- approvals -----------------------------------------------------------------------------
 
 

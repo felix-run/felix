@@ -528,8 +528,11 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       on Postgres only, and a batch of Temporal-backed fibers starved a tenant's ordinary ones.
       Manifests are done too, and found two more: the twin accepted a canary weight the CHECK
       constraint refuses, and handed back the stored document by reference. Still open, in the
-      order their SQL diverges most from the twin: audit (query filters), then jobs, plans, eval
-      and a2a tasks.
+      order their SQL diverges most from the twin: jobs, plans, eval and a2a tasks.
+
+      Audit is done (`test_audit_store.py`). It found a defect both arms shared rather than a
+      divergence: the cursor carried only a millisecond timestamp, so paging stepped over every
+      event sharing the boundary millisecond and returned them on no page at all.
 
 - [ ] **`put_version` has a read-modify-write race on Postgres only.** It computes
       `SELECT coalesce(max(version),0)` then inserts, with no lock and no retry, so four
@@ -554,6 +557,12 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       security policy". `get_fiber` has the same gap. Invisible to the conformance suite because
       that connects as a superuser with RLS off. Found while verifying the fiber claim contract
       against a live database; fixed in a separate change.
+
+- [ ] **An index for the audit and usage listings' new ordering.** Both now
+      `ORDER BY ts DESC, id DESC` so the keyset cursor has a total order to page on, while
+      `idx_audit_tenant_ts` covers `(tenant_id, ts)` only. Postgres can still use it and sort
+      `id` within each millisecond, which is cheap because ties are few — but the covering
+      index is `(tenant_id, ts, id)` and it is one migration. Measure before adding it.
 
 - [ ] **An index for the fiber claim's ordering.** `ORDER BY updated_at LIMIT 50` has no
       supporting index; measured at 200k rows it is 11 ms, and a partial index matching the

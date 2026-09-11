@@ -9,6 +9,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The audit and usage listings silently dropped rows.** Their cursor carried only a
+  timestamp, and `ts` is milliseconds — so paging asked for `ts < last_seen` and stepped over
+  every other event sharing that millisecond. Those events were returned by no page at all.
+  A single turn writes a user event, a tool call and a final response microseconds apart, so
+  this is the ordinary case, not an edge one: five events in one millisecond read two at a
+  time returned two, with a well-formed 200 each time. An audit trail that quietly loses rows
+  is worse than one that is missing, because it is still believed.
+
+  Both stores now order by `(ts, id)` — `id` is the second half of the primary key, so the
+  order is total — and page on that pair (`felix/cursors.py`). A cursor issued by the previous
+  version still decodes, to the position it used to mean, because one may be in a client's
+  hands. Found by a new conformance contract, and pinned over the wire as well as in the
+  stores, since the cursor is a query parameter a client round-trips.
+
+- **A malformed cursor was a 500.** `/audit` and `/usage` passed a client-supplied string
+  straight to `int()`, so `?cursor=abc` was a server error for what is a bad request — and a
+  page for whoever watches the error rate. Both return 400 now.
+
+### Added
+
+- **A conformance contract for the audit store** (`tests/conformance/test_audit_store.py`),
+  run against the in-memory twin and Postgres. Audit's Postgres half ran only under
+  `test_migrations.py`, which creates the schema and never queries it, so everything asserted
+  about the compliance record was asserted about a list of dicts. The contract covers what a
+  dict scan and a `SELECT` are easy to differ on and what the `/audit` route depends on:
+  ordering, filters composing with a cursor, and paging a history exactly once.
+
+- **`felix.audit.store.clear_memory()`**, and audit and usage added to the suite-wide reset in
+  `tests/conftest.py`. Audit was the one management store with no way to reset it, and both
+  have two process globals apiece — a buffer and an in-memory twin — so an event recorded
+  without a flush waited for whatever flushed next. Two worker cron tests found this the hard
+  way: they passed alone and failed in the suite.
+
+
+### Fixed
+
 - **`felix mint-jwt` printed a token you could not use.** It went through rich, which wraps to
   the console width, and a 2048-bit RS256 token is around 550 characters — so
   `TOKEN=$(felix mint-jwt --sub ops …)`, the invocation `deploy/GOVERNANCE.md` documents,

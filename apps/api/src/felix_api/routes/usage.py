@@ -20,13 +20,17 @@ async def list_usage(
     from felix.usage.store import query
 
     require_mgmt_scopes(request, SCOPE_USAGE_READ)
-    items, next_cursor = await query(
-        request.app.state.settings,
-        tenant_id_from_request(request),
-        limit=limit,
-        cursor=cursor,
-        manifest_id=manifest_id,
-    )
+    try:
+        items, next_cursor = await query(
+            request.app.state.settings,
+            tenant_id_from_request(request),
+            limit=limit,
+            cursor=cursor,
+            manifest_id=manifest_id,
+        )
+    except ValueError as exc:
+        # Same as `/audit`: a client-supplied cursor is a bad request, not a server error.
+        raise HTTPException(status_code=400, detail=f"invalid cursor: {exc}") from exc
     return {"items": items, "next_cursor": next_cursor}
 
 
