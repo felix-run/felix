@@ -199,7 +199,13 @@ async def start_run(
             # Inside the try: a rubric that is not a mapping used to raise here and abandon the
             # whole run, so one malformed item in a stored dataset took every other item's score
             # with it and the run reported nothing. It is this item's error now.
-            rubric = dict(item.get("rubric") or item.get("rubric_json") or {})
+            raw_rubric = item.get("rubric") or item.get("rubric_json") or {}
+            if not isinstance(raw_rubric, dict):
+                # Named, because this row is what the dataset author reads. `dict()` on a
+                # string raises "dictionary update sequence element #0 has length 1", which
+                # restates the exception and never mentions which field was wrong.
+                raise TypeError(f"rubric must be a mapping, got {type(raw_rubric).__name__}")
+            rubric = dict(raw_rubric)
             if use_llm_judge and "llm_judge" not in rubric:
                 rubric = {**rubric, "llm_judge": True}
             if mock:

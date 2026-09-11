@@ -280,6 +280,13 @@ comment explaining exactly that. It is conditional, not inert.
       Pairs with the item below. A malformed item no longer abandons the run — it is scored as
       that item's error — so this is now about telling the author, not about salvaging the run.
 
+- [ ] **An eval run cannot report how many items errored.** `fail_count` counts an item the
+      scorer rejected and an item that raised as the same thing, and the run row carries no
+      `error_count`. That is the ambiguity `scripts/eval-counter-smoke.sh` resolves out of band
+      for CI — it greps the printed rows for `error` — and nothing on the API surface offers the
+      equivalent, so an operator reading a failing run cannot tell a model regression from a
+      malformed dataset. Pairs with the item above.
+
 - [ ] **Eval scoring depth** — four string rules (`equals` / `contains` / `min_chars` / non-empty)
       plus one judge, and `invalid_rubric` for a rule that could never reject. No regex, no schema
       check, no tool-call or trajectory assertions, no numeric tolerance, no significance test on
