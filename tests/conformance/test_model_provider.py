@@ -917,3 +917,93 @@ async def test_a_structured_answer_is_json_text_on_either_wire(arm: _Arm) -> Non
     # and no content. Whole rather than incremental: half a JSON document is not an answer.
     text = "".join(i.text for i in streamed if isinstance(i, StreamDelta) and i.kind == "text")
     assert json.loads(text) == payload
+
+
+# --- images, where "the same message" means two different request bodies --------------------
+
+# A JPEG, not a PNG, on purpose. `ContentBlock.media_type` defaults to `image/png` for an
+# unlabelled part, so with a PNG fixture the parse default and the encoded type are the same
+# string and a wire that ignored the data URL's media type entirely stays green.
+PAYLOAD = "/9j/4AAQSkZJRg=="
+INLINE_JPEG = f"data:image/jpeg;base64,{PAYLOAD}"
+
+
+def _with_image(url: str = INLINE_JPEG, *, role: str = "user") -> list[ChatMessage]:
+    """The message an OpenAI SDK sends for an image, through the real parser."""
+    return [
+        ChatMessage.model_validate(
+            {
+                "role": role,
+                "content": [
+                    {"type": "text", "text": "what is this?"},
+                    {"type": "image_url", "image_url": {"url": url}},
+                ],
+            }
+        )
+    ]
+
+
+def _sent_content(arm: _Arm) -> Any:
+    assert arm.transport is not None
+    return arm.transport.sent[-1]["messages"][-1]["content"]
+
+
+@pytest.mark.parametrize("arm", ["openai", "anthropic"], indirect=True)
+@pytest.mark.asyncio
+async def test_an_inline_image_reaches_the_provider_whole(arm: _Arm) -> None:
+    """Both wires had an image encoder and only one of them worked.
+
+    The contract cannot name one payload shape — OpenAI takes a data URL verbatim, Anthropic
+    has no URL form for inline bytes and needs the media type and the payload apart — so each
+    arm names its own, and the statement is that the caller's bytes and the caller's media
+    type arrive in the form that provider accepts, with the question they came with.
+
+    Asserted against the parsed body rather than a substring of the serialised one: three of
+    the four substring assertions this replaces were also true of the *broken* body, since the
+    rejected `url` source contained the payload and the media type too.
+    """
+    arm.program_turn(content="a logo")
+    await arm.client.chat(_with_image(), [])
+
+    text, image = _sent_content(arm)
+    assert text == {"type": "text", "text": "what is this?"}
+    if arm.wire == "openai":
+        assert image == {"type": "image_url", "image_url": {"url": INLINE_JPEG}}
+    else:
+        assert image == {
+            "type": "image",
+            "source": {"type": "base64", "media_type": "image/jpeg", "data": PAYLOAD},
+        }
+
+
+@pytest.mark.parametrize("arm", ["openai", "anthropic"], indirect=True)
+@pytest.mark.asyncio
+async def test_an_image_renders_on_a_user_turn_only(arm: _Arm) -> None:
+    """Both APIs accept an image on a user turn and nowhere else, and the two wires disagreed:
+    the OpenAI one sent the image on an assistant turn too, which that API rejects, while the
+    Anthropic one did not. A caller reaches this by replaying a vision thread.
+
+    The statement both must satisfy: the text of such a message survives, and the image is not
+    in the request. The payload is the discriminator — asserting merely that the content is
+    non-empty passes on the wire that sends the image as well.
+    """
+    arm.program_turn(content="ok")
+    await arm.client.chat(_with_image(role="assistant"), [])
+
+    body = json.dumps(arm.transport.sent[-1]) if arm.transport else ""
+    assert "what is this?" in body, "the text of a non-user turn must survive"
+    assert PAYLOAD not in body, "an image may not be sent on a non-user turn"
+
+
+@pytest.mark.parametrize("arm", ["openai", "anthropic"], indirect=True)
+@pytest.mark.asyncio
+async def test_a_text_only_turn_stays_a_plain_string(arm: _Arm) -> None:
+    """The counterpart, so the tests above cannot pass by attaching something to every request.
+
+    A string rather than a one-element parts list, because that is what every text turn sends
+    and what a provider's prompt cache keys on — asserting the *type* is what keeps the
+    multimodal branch off the path every ordinary turn takes.
+    """
+    arm.program_turn(content="hello")
+    await arm.client.chat(_user(), [])
+    assert isinstance(_sent_content(arm), str)
