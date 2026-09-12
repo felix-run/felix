@@ -22,18 +22,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the plan produced, so an operator's inventory could differ between two consecutive calls and
   the twin could not stand in for the store. Both order by name.
 
-### Added
-
-- **A conformance contract for the jobs store** (`tests/conformance/test_jobs_store.py`), run
-  against the in-memory twin and Postgres. Its Postgres half ran only under
-  `test_migrations.py`, which creates the schema and never queries it. The contract covers the
-  semantics the scheduler depends on: that re-publishing a job keeps its run history rather
-  than resetting it, that deleting a job takes its runs with it so a name reused later does not
-  inherit a stranger's history, and that truncating a run list keeps the newest.
-
-
-### Fixed
-
 - **The audit and usage listings silently dropped rows.** Their cursor carried only a
   timestamp, and `ts` is milliseconds — so paging asked for `ts < last_seen` and stepped over
   every other event sharing that millisecond. Those events were returned by no page at all.
@@ -61,7 +49,103 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   straight to `int()`, so `?cursor=abc` was a server error for what is a bad request — and a
   page for whoever watches the error rate. Both return 400 now.
 
+- **The manifest twin accepted a canary weight the database refuses.** `0001_baseline` carries
+  `CHECK (canary_weight BETWEEN 0 AND 100)`, and `set_canary`'s in-memory branch validated
+  nothing — so a weight of 150 stored happily on `memory://` and raised an `IntegrityError` on
+  Postgres. The value is not inert: it feeds the canary hash router, so that weight diverted
+  every request to the canary on one backend and was unreachable on the other. The REST route
+  already bounds the field; the store now does too, because plugins and worker jobs call it
+  directly.
+- **The manifest twin handed back the stored document by reference.** `get_version` returned
+  the dict it holds, so a caller that edited what it was given silently rewrote what every
+  later reader of that version saw. Postgres deserialises fresh JSONB per read and never had
+  the problem — a corruption with no write in sight, on the backend the whole suite runs
+  against. It returns a copy now.
+
+- **The worker's per-tenant sweeps read nothing under row-level security.** Every HTTP request
+  is wrapped in `async_run_with_context`, which binds `rls_tenant(...)`, so the fifty-odd
+  tenant-scoped store functions inherit `app.tenant_id` and none of them binds explicitly. The
+  worker has no request context and nothing supplied one, so `run_due_jobs_all_tenants`,
+  `run_anomaly_scan_all_tenants` and `run_continuous_eval_all_tenants` ran with the policy
+  unable to match any tenant. It filters rather than errors, so each sweep read an empty table
+  and reported success: scheduled jobs never fired, the anomaly scan found nothing, and no
+  canary was ever benchmarked — silently, and only on deployments where RLS is the isolation
+  mechanism. The bundled compose role is a superuser and skips the policy entirely, which is
+  why local development and CI never showed it. Each sweep now binds the tenant it is sweeping.
+- **`create_fiber` and `get_fiber` bind their tenant too.** They take one as an argument and
+  were the only writes in `durability/fibers.py` that neither bound nor bypassed. On the HTTP
+  path the ambient context covered them; the fiber scheduler reaches `get_fiber` without one.
+  Bound rather than bypassed, so the policy still enforces and a create cannot land under the
+  wrong tenant.
+
+- **The two backends disagreed about which grant authorises when several match.** Postgres
+  ordered `decided_at DESC LIMIT 1`; the twin scanned a dict and returned the first row it met,
+  which is the *oldest*. With two live grants for one call signature they handed back different
+  rows — and with them a different `principal_subj` binding and a different `edited_args`, so a
+  tool would run with the arguments an operator had substituted on one backend and without them
+  on the other. Both arms now order by `(decided_at, created_at, id)` descending, so ties
+  resolve identically too.
+
+- **An expired approval hid a live one, and only on Postgres.** `find_approved` took the newest
+  approved row with `LIMIT 1` and checked expiry *afterwards*, so one lapsed grant could hide a
+  still-valid older grant and the call was denied. The in-memory twin scanned every row and
+  skipped expired ones, so it authorised the same call. `create_pending` reuses only *pending*
+  rows, so approved grants accumulate per signature — an operator re-approving after a short
+  TTL lapsed produced exactly that pair, and got a working tool on `memory://` and a refusal on
+  the system of record. Expiry is now part of the `WHERE` clause.
+
+- **A tenant holding a batch of Temporal-backed fibers starved its own ordinary ones, on
+  Postgres only.** `_claim_due_postgres` applied `LIMIT FIBER_BATCH` in SQL and dropped
+  Temporal rows afterwards in Python, so 50 or more of them filled the batch with rows that
+  were then discarded and the claim returned nothing at all — that tenant's real fibers never
+  ran. The in-memory twin skips Temporal rows while scanning and never counts them toward the
+  batch, so it had no such problem and nothing compared the two. The filter is now part of the
+  `WHERE` clause. Measured on a live database: starvation begins at exactly 50 Temporal rows,
+  and the fix also halves the query time at 200k rows by discarding rows before the sort rather
+  than after, removing a 16 MB on-disk spill.
+
+- **A re-claimed fiber stayed at the front of the queue on the in-memory twin.** The claim
+  orders by `updated_at`, and the Postgres path advances it while the twin did not — so on the
+  twin one fiber could be re-picked ahead of everything else indefinitely, where the system of
+  record shares the scheduler out round-robin. The twin now advances `updated_at` and `version`
+  on claim, as Postgres does. (The test for this was itself wrong first time and CI caught it:
+  a batch claim stamps every row it takes with the same instant, so two fibers claimed together
+  tie and Postgres resolves the tie arbitrarily. It asserts the advance on one row now.)
+
+- **A manifest declaring `keep_recent_tokens: 0` silently ran with 20000.**
+  `POST /chat/compact` built its strategy with `int(getattr(spec, field, default) or default)`,
+  which treats a declared `0` as absent — and the schema allows `0` (`ge=0`) for both
+  `reserve_tokens` and `keep_recent_tokens`. So compaction kept 20000 tokens of recent context
+  whatever the manifest asked for, found nothing older to summarise, and answered `ok` having
+  called no model at all. The declared window was not the one the route used and nothing said
+  so, which is this repo's signature defect shape. Found while trying to write a test for the
+  summarising branch and being unable to make it fire.
+- **The thinking level was written twice and only one copy was read by the run.** The snapshot
+  resolves it from a `thinking_level_change` event; the next turn resolves it from thread
+  metadata and turns it into a thinking budget on the model spec. Nothing covered the second
+  path, so a thread could display "high" and run with thinking off. Now pinned on the spec the
+  provider is built from, which is the only place the difference is visible.
+
+
+- **The management stores leaked between tests.** `_memory_datasets`, `_memory_items`,
+  `_memory_runs`, `_memory_jobs` and `_memory_approvals` are process globals that nothing
+  cleared. Writing an eval dataset named `smoke` in one test changed the item count another
+  test asserted against the bundled `smoke` fixture, and the failure surfaced as an off-by-one
+  in a file that had not changed. Each store now exports its own
+  `reset_*_for_tests()` beside the globals it clears, following the convention
+  `reset_documents_for_tests` and `reset_search_index_for_tests` already set, and the autouse
+  fixture calls those rather than reaching across the package for six private dicts. The
+  session-state reset added last cycle now uses the `reset_thread_meta_for_tests()` that
+  already existed and had no caller.
+
 ### Added
+
+- **A conformance contract for the jobs store** (`tests/conformance/test_jobs_store.py`), run
+  against the in-memory twin and Postgres. Its Postgres half ran only under
+  `test_migrations.py`, which creates the schema and never queries it. The contract covers the
+  semantics the scheduler depends on: that re-publishing a job keeps its run history rather
+  than resetting it, that deleting a job takes its runs with it so a name reused later does not
+  inherit a stranger's history, and that truncating a run list keeps the newest.
 
 - **A conformance contract for the audit store** (`tests/conformance/test_audit_store.py`),
   run against the in-memory twin and Postgres. Audit's Postgres half ran only under
@@ -75,9 +159,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   have two process globals apiece — a buffer and an in-memory twin — so an event recorded
   without a flush waited for whatever flushed next. Two worker cron tests found this the hard
   way: they passed alone and failed in the suite.
-
-
-### Fixed
 
 - **`felix mint-jwt` printed a token you could not use.** It went through rich, which wraps to
   the console width, and a 2048-bit RS256 token is around 550 characters — so
@@ -124,8 +205,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now. Its JSON went through rich as well; unlike the token, that one never corrupted anything
   — today's bundle is short enough to survive rendering — so it is printed plainly as a
   precaution rather than a fix.
-
-### Added
 
 - **Every `felix` subcommand is invoked by a test** (`tests/unit/test_cli_commands.py`).
   `tests/unit/test_entrypoint_wiring.py` proved each `[project.scripts]` target resolves to a
@@ -205,8 +284,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one-character edit turning a minute into a day — fails instead of shipping. Each proved by
   mutation.
 
-### Added
-
 - **A conformance arm where the tenant policy is actually enforced**
   (`tests/conformance/test_rls_enforcement.py`). Every other contract in that directory connects
   as the database owner, which is a superuser in CI and in the bundled compose image — and a
@@ -227,109 +304,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   directions — removing `rls_bypass()` from `list_tenants_with_events` fails exactly the sweep
   test, and granting the role `BYPASSRLS` fails the guard that exists to catch it.
 
-### Fixed
-
-- **The manifest twin accepted a canary weight the database refuses.** `0001_baseline` carries
-  `CHECK (canary_weight BETWEEN 0 AND 100)`, and `set_canary`'s in-memory branch validated
-  nothing — so a weight of 150 stored happily on `memory://` and raised an `IntegrityError` on
-  Postgres. The value is not inert: it feeds the canary hash router, so that weight diverted
-  every request to the canary on one backend and was unreachable on the other. The REST route
-  already bounds the field; the store now does too, because plugins and worker jobs call it
-  directly.
-- **The manifest twin handed back the stored document by reference.** `get_version` returned
-  the dict it holds, so a caller that edited what it was given silently rewrote what every
-  later reader of that version saw. Postgres deserialises fresh JSONB per read and never had
-  the problem — a corruption with no write in sight, on the backend the whole suite runs
-  against. It returns a copy now.
-
-### Added
-
 - **A conformance contract for the manifest store** (`tests/conformance/test_manifest_store.py`).
   The active pointer is what every request resolves through and the canary beside it decides
   what fraction of traffic gets a different agent, and until now the Postgres half of both ran
   only under `test_migrations.py` — which creates the schema and never queries it. Eighteen
   tests over versioning, the active pointer, the canary and the tenant boundary; both defects
   above were found by writing it, and both are proved by mutation.
-
-### Fixed
-
-- **The worker's per-tenant sweeps read nothing under row-level security.** Every HTTP request
-  is wrapped in `async_run_with_context`, which binds `rls_tenant(...)`, so the fifty-odd
-  tenant-scoped store functions inherit `app.tenant_id` and none of them binds explicitly. The
-  worker has no request context and nothing supplied one, so `run_due_jobs_all_tenants`,
-  `run_anomaly_scan_all_tenants` and `run_continuous_eval_all_tenants` ran with the policy
-  unable to match any tenant. It filters rather than errors, so each sweep read an empty table
-  and reported success: scheduled jobs never fired, the anomaly scan found nothing, and no
-  canary was ever benchmarked — silently, and only on deployments where RLS is the isolation
-  mechanism. The bundled compose role is a superuser and skips the policy entirely, which is
-  why local development and CI never showed it. Each sweep now binds the tenant it is sweeping.
-- **`create_fiber` and `get_fiber` bind their tenant too.** They take one as an argument and
-  were the only writes in `durability/fibers.py` that neither bound nor bypassed. On the HTTP
-  path the ambient context covered them; the fiber scheduler reaches `get_fiber` without one.
-  Bound rather than bypassed, so the policy still enforces and a create cannot land under the
-  wrong tenant.
-
-- **The two backends disagreed about which grant authorises when several match.** Postgres
-  ordered `decided_at DESC LIMIT 1`; the twin scanned a dict and returned the first row it met,
-  which is the *oldest*. With two live grants for one call signature they handed back different
-  rows — and with them a different `principal_subj` binding and a different `edited_args`, so a
-  tool would run with the arguments an operator had substituted on one backend and without them
-  on the other. Both arms now order by `(decided_at, created_at, id)` descending, so ties
-  resolve identically too.
-
-- **An expired approval hid a live one, and only on Postgres.** `find_approved` took the newest
-  approved row with `LIMIT 1` and checked expiry *afterwards*, so one lapsed grant could hide a
-  still-valid older grant and the call was denied. The in-memory twin scanned every row and
-  skipped expired ones, so it authorised the same call. `create_pending` reuses only *pending*
-  rows, so approved grants accumulate per signature — an operator re-approving after a short
-  TTL lapsed produced exactly that pair, and got a working tool on `memory://` and a refusal on
-  the system of record. Expiry is now part of the `WHERE` clause.
-
-- **A tenant holding a batch of Temporal-backed fibers starved its own ordinary ones, on
-  Postgres only.** `_claim_due_postgres` applied `LIMIT FIBER_BATCH` in SQL and dropped
-  Temporal rows afterwards in Python, so 50 or more of them filled the batch with rows that
-  were then discarded and the claim returned nothing at all — that tenant's real fibers never
-  ran. The in-memory twin skips Temporal rows while scanning and never counts them toward the
-  batch, so it had no such problem and nothing compared the two. The filter is now part of the
-  `WHERE` clause. Measured on a live database: starvation begins at exactly 50 Temporal rows,
-  and the fix also halves the query time at 200k rows by discarding rows before the sort rather
-  than after, removing a 16 MB on-disk spill.
-
-- **A re-claimed fiber stayed at the front of the queue on the in-memory twin.** The claim
-  orders by `updated_at`, and the Postgres path advances it while the twin did not — so on the
-  twin one fiber could be re-picked ahead of everything else indefinitely, where the system of
-  record shares the scheduler out round-robin. The twin now advances `updated_at` and `version`
-  on claim, as Postgres does. (The test for this was itself wrong first time and CI caught it:
-  a batch claim stamps every row it takes with the same instant, so two fibers claimed together
-  tie and Postgres resolves the tie arbitrarily. It asserts the advance on one row now.)
-
-- **A manifest declaring `keep_recent_tokens: 0` silently ran with 20000.**
-  `POST /chat/compact` built its strategy with `int(getattr(spec, field, default) or default)`,
-  which treats a declared `0` as absent — and the schema allows `0` (`ge=0`) for both
-  `reserve_tokens` and `keep_recent_tokens`. So compaction kept 20000 tokens of recent context
-  whatever the manifest asked for, found nothing older to summarise, and answered `ok` having
-  called no model at all. The declared window was not the one the route used and nothing said
-  so, which is this repo's signature defect shape. Found while trying to write a test for the
-  summarising branch and being unable to make it fire.
-- **The thinking level was written twice and only one copy was read by the run.** The snapshot
-  resolves it from a `thinking_level_change` event; the next turn resolves it from thread
-  metadata and turns it into a thinking budget on the model spec. Nothing covered the second
-  path, so a thread could display "high" and run with thinking off. Now pinned on the spec the
-  provider is built from, which is the only place the difference is visible.
-
-
-- **The management stores leaked between tests.** `_memory_datasets`, `_memory_items`,
-  `_memory_runs`, `_memory_jobs` and `_memory_approvals` are process globals that nothing
-  cleared. Writing an eval dataset named `smoke` in one test changed the item count another
-  test asserted against the bundled `smoke` fixture, and the failure surfaced as an off-by-one
-  in a file that had not changed. Each store now exports its own
-  `reset_*_for_tests()` beside the globals it clears, following the convention
-  `reset_documents_for_tests` and `reset_search_index_for_tests` already set, and the autouse
-  fixture calls those rather than reaching across the package for six private dicts. The
-  session-state reset added last cycle now uses the `reset_thread_meta_for_tests()` that
-  already existed and had no caller.
-
-### Added
 
 - **A regression guard for the binding** (`tests/unit/test_worker_sweeps_bind_the_tenant.py`).
   It observes the context variable at the moment each sweep calls into its per-tenant worker,
@@ -418,6 +398,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `test_a_steer_queued_while_idle_is_dropped_without_reaching_anyone` pins it so that making it
   error, redirect, or hold the message is a deliberate act with a failing test to rewrite.
   What it should do is a product decision, tracked in `docs/ROADMAP.md`.
+
 ## [0.2.2] — 2026-08-25
 
 ### Fixed

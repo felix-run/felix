@@ -62,6 +62,15 @@ async def test_a_job_round_trips_with_every_field(store_settings: Any) -> None:
     assert fetched["last_status"] == ""
     assert fetched["last_error"] == ""
 
+    # A read is a copy, not a window onto the store. The twin was handing back the dict it
+    # held, so a caller editing the payload it read edited the stored job; Postgres
+    # deserializes a fresh dict per read, which is the archetypal dict-versus-SELECT
+    # divergence this contract exists to find.
+    fetched["payload"]["prompt"] = "tampered"
+    again = await jobs.get_job(store_settings, TENANT, JOB)
+    assert again is not None
+    assert again["payload"]["prompt"] == "summarise", again
+
 
 @parametrized
 @pytest.mark.asyncio
@@ -80,7 +89,7 @@ async def test_republishing_a_job_keeps_its_run_state(store_settings: Any) -> No
         last_run_at=1_000,
         next_run_at=2_000,
         last_status="ok",
-        last_error="",
+        last_error="upstream timed out",
     )
 
     updated = await _put(store_settings, schedule="*/5 * * * *", payload={"prompt": "other"}, enabled=False)
@@ -92,6 +101,9 @@ async def test_republishing_a_job_keeps_its_run_state(store_settings: Any) -> No
     assert updated["last_run_at"] == 1_000
     assert updated["next_run_at"] == 2_000
     assert updated["last_status"] == "ok"
+    # `last_error` too: the reset value is `""`, so asserting the empty string would have
+    # passed whether it was carried or cleared.
+    assert updated["last_error"] == "upstream timed out"
     assert updated["created_at"] == first["created_at"]
 
 
@@ -116,7 +128,9 @@ async def test_one_tenants_jobs_are_invisible_to_another(store_settings: Any) ->
     assert [j["manifest_id"] for j in mine] == ["quick"]
     assert [j["manifest_id"] for j in theirs] == ["deep"]
     assert await jobs.get_job(store_settings, OTHER, JOB) is not None
-    assert sorted(await jobs.list_tenants_with_jobs(store_settings)) == sorted([TENANT, OTHER])
+    # Not `sorted(...)` on the result: both implementations promise sorted output, and this is
+    # the third listing in the module whose order this branch is about.
+    assert await jobs.list_tenants_with_jobs(store_settings) == sorted([TENANT, OTHER])
 
 
 # --- deletion -------------------------------------------------------------------------------
@@ -186,13 +200,17 @@ async def test_a_run_round_trips_with_every_field(store_settings: Any) -> None:
     )
 
     runs = await jobs.list_runs(store_settings, TENANT, JOB)
-    assert [r for r in runs] == [recorded]
+    assert runs == [recorded]
     row = runs[0]
     assert row["status"] == "error"
     assert row["error"] == "upstream timed out"
     assert row["result"] == {"attempted": 3, "nested": {"k": "v"}}
     assert (row["started_at"], row["finished_at"]) == (100, 250)
     assert row["run_id"]
+
+    # Same for a run's result, and for the same reason.
+    row["result"]["attempted"] = 99
+    assert (await jobs.list_runs(store_settings, TENANT, JOB))[0]["result"]["attempted"] == 3
 
 
 @parametrized
@@ -205,6 +223,11 @@ async def test_runs_come_back_newest_first(store_settings: Any) -> None:
     runs = await jobs.list_runs(store_settings, TENANT, JOB)
 
     assert [r["started_at"] for r in runs] == [30, 20, 10]
+    # The defaults, which every other call here supplies and so never exercises: the twin
+    # reads `status` through `.get("status", "ok")` and Postgres through a server default, and
+    # an absent `result` has to arrive as `{}` rather than `None` on both.
+    assert [r["status"] for r in runs] == ["ok", "ok", "ok"]
+    assert [r["result"] for r in runs] == [{}, {}, {}]
 
 
 @parametrized
@@ -251,13 +274,22 @@ async def test_runs_sharing_a_timestamp_truncate_the_same_way(store_settings: An
 @parametrized
 @pytest.mark.asyncio
 async def test_one_jobs_runs_are_not_anothers(store_settings: Any) -> None:
+    """By job *and* by tenant, because job names are chosen per tenant and collide freely.
+
+    Nothing in the repo pinned the tenant half: every other test here records runs under one
+    tenant at a time, so dropping `tenant_id` from the query left all of them green while
+    `GET /jobs/{name}/runs` returned another tenant's history.
+    """
     await _put(store_settings, name="a")
     await _put(store_settings, name="b")
+    await _put(store_settings, tenant_id=OTHER, name="a")
     await jobs.record_run(store_settings, TENANT, "a", started_at=10, error="from-a")
     await jobs.record_run(store_settings, TENANT, "b", started_at=20, error="from-b")
+    await jobs.record_run(store_settings, OTHER, "a", started_at=30, error="from-other-tenant")
 
     assert [r["error"] for r in await jobs.list_runs(store_settings, TENANT, "a")] == ["from-a"]
     assert [r["error"] for r in await jobs.list_runs(store_settings, TENANT, "b")] == ["from-b"]
+    assert [r["error"] for r in await jobs.list_runs(store_settings, OTHER, "a")] == ["from-other-tenant"]
 
 
 @parametrized
@@ -274,10 +306,16 @@ async def test_jobs_are_listed_in_a_stable_order(store_settings: Any) -> None:
     insertion order and would fail. The fix is still right and still necessary; this arm just
     cannot prove it, and should not be read as having done so.
     """
-    for name in ("zeta", "alpha", "mu"):
+    # Mixed case and punctuation on purpose. All-lowercase names sort identically under
+    # Python and under every Postgres collation, so a corpus of them shows each arm is
+    # self-consistent and nothing about the arms agreeing. CI's image initdb's to en_US.utf8,
+    # where `Zeta` sorts *before* `alpha` — so this is what the `COLLATE "C"` in the store is
+    # for, and what would go red without it. Job names are unvalidated URL path segments.
+    for name in ("zeta", "Zeta", "alpha", "_mu", "m-1", "m1"):
         await _put(store_settings, name=name)
 
+    expected = sorted(("zeta", "Zeta", "alpha", "_mu", "m-1", "m1"))
     listed = await jobs.list_jobs(store_settings, TENANT)
 
-    assert [j["name"] for j in listed] == ["alpha", "mu", "zeta"]
-    assert [j["name"] for j in await jobs.list_jobs(store_settings, TENANT)] == ["alpha", "mu", "zeta"]
+    assert [j["name"] for j in listed] == expected
+    assert [j["name"] for j in await jobs.list_jobs(store_settings, TENANT)] == expected

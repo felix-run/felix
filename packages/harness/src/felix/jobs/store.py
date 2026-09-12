@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import time
 import uuid
+from copy import deepcopy
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import collate, delete, select
 
 from felix.config import Settings
-from felix.cursors import keyset_order
 from felix.db.models import Job, JobRun
 from felix.db.session import _use_memory, get_session_factory
 
@@ -37,7 +37,10 @@ def _job_dict(row: Job | dict[str, Any]) -> dict[str, Any]:
             "last_status": row.get("last_status", ""),
             "last_error": row.get("last_error", ""),
             "created_at": row["created_at"],
-            "payload": row.get("payload_json") or row.get("payload") or {},
+            # `deepcopy`, because this branch is handing back the object it stored: a caller
+            # that edits the payload it read would edit the store. Postgres deserializes a
+            # fresh dict per read, so without this the twin is a different kind of object.
+            "payload": deepcopy(row.get("payload_json") or row.get("payload") or {}),
             "enabled": row.get("enabled", False),
         }
     return {
@@ -65,7 +68,7 @@ def _run_dict(row: JobRun | dict[str, Any]) -> dict[str, Any]:
             "finished_at": row.get("finished_at"),
             "status": row.get("status", "ok"),
             "error": row.get("error", ""),
-            "result": row.get("result_json") or row.get("result") or {},
+            "result": deepcopy(row.get("result_json") or row.get("result") or {}),
         }
     return {
         "tenant_id": row.tenant_id,
@@ -89,7 +92,13 @@ async def list_jobs(settings: Settings, tenant_id: str) -> list[dict[str, Any]]:
 
     factory = get_session_factory(settings=settings)
     async with factory() as db:
-        found = (await db.scalars(select(Job).where(Job.tenant_id == tenant_id).order_by(Job.name))).all()
+        # `COLLATE "C"` so the two arms agree. `ORDER BY name` uses the database collation,
+        # and CI's image initdb's to en_US.utf8, where `Zeta` sorts before `alpha` — the
+        # opposite of Python's code-point sort on the twin. Job names are unvalidated URL path
+        # segments, so mixed case and punctuation are reachable, unlike the `uuid4().hex` ids
+        # the same hazard is documented as benign for in `felix/cursors.py`.
+        ordered = select(Job).where(Job.tenant_id == tenant_id).order_by(collate(Job.name, "C"))
+        found = (await db.scalars(ordered)).all()
         return [_job_dict(r) for r in found]
 
 
@@ -229,10 +238,19 @@ async def delete_job(settings: Settings, tenant_id: str, name: str) -> bool:
 async def list_runs(
     settings: Settings, tenant_id: str, name: str, *, limit: int = 20
 ) -> list[dict[str, Any]]:
+    # Clamped here rather than at the route, so both arms inherit it. The route takes an
+    # unbounded `limit`, and a negative one sliced the twin's list from the end (a 200 with
+    # the wrong rows) while Postgres refused it outright (a 500) — the same request, two
+    # answers, depending only on which backend was configured.
+    limit = max(0, limit)
     if _use_memory(settings):
         items = [_run_dict(row) for (t, j, _), row in _memory_runs.items() if t == tenant_id and j == name]
         # `run_id` breaks the tie, and it is the third part of the primary key, so the order
-        # is total. `started_at` is milliseconds and a sweep records a burst of runs, so ties
+        # is total. It is also always `uuid4().hex` from `record_run` — lowercase hex, which
+        # sorts identically under every collation — so unlike `Job.name` above, the two arms
+        # agree here without a `COLLATE`.
+        #
+        # `started_at` is milliseconds and a sweep records a burst of runs, so ties
         # are ordinary — and with none, "the most recent two of five" was whichever two the
         # backend happened to return. Python's sort is stable, so on this arm it was the two
         # *oldest*: the operator reading a job's recent history got its first attempts.
@@ -245,7 +263,7 @@ async def list_runs(
             await db.scalars(
                 select(JobRun)
                 .where(JobRun.tenant_id == tenant_id, JobRun.job_name == name)
-                .order_by(*keyset_order(JobRun.started_at, JobRun.run_id))
+                .order_by(JobRun.started_at.desc(), JobRun.run_id.desc())
                 .limit(limit)
             )
         ).all()

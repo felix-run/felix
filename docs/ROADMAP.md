@@ -562,15 +562,24 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       that connects as a superuser with RLS off. Found while verifying the fiber claim contract
       against a live database; fixed in a separate change.
 
-- [ ] **Five more listings order on a key that is not unique.** The jobs contract found this
-      shape twice and fixed it there; the same one-line hazard is in `approvals/store.py:82`
-      and `:90` (`created_at`), `plans/store.py:44` and `:51` (`updated_at`, and it takes a
-      `limit`, so ties can drop rows), `eval/store.py:204` and `:211` (`started_at`), and
-      `memory/store.py:719`, `:739` and `:770` (`created_at`). Each pairs a stable Python sort
-      on the twin with an unordered tie on Postgres, so the two arms disagree and two identical
-      reads need not match. `approvals/store.py:185` already does it right — `decided_at`,
-      `created_at`, then `id` — and is the pattern to copy. Fix each with its conformance
-      contract rather than in one sweep, so every change lands with the arm that proves it.
+- [ ] **More listings whose two arms can disagree about order.** Not one shape but three, and
+      the first survey found only the first: a tie the twin breaks by insertion order and
+      Postgres by nothing; a text key ordered by database collation on one arm and code point
+      on the other; and the two arms sorting the same keys in *opposite directions*. The jobs
+      contract found the first two and `list_jobs` now uses `COLLATE "C"`; the usage summary
+      was the third, reversing `manifest_id` and `model_id` where the SQL ascended them, and
+      is fixed with the jobs work because it already had a contract to assert it in.
+
+      Remaining, ranked by what a wrong answer costs: `memory/store.py:719`, `:739` and `:770`
+      (`created_at`, and it takes a `limit`, so a tie drops rows — these are the facts injected
+      into a compiled prompt); `approvals/store.py:82` and `:90` (`created_at`, also limited);
+      `plans/store.py:44` and `:51` (`updated_at`, also limited); `eval/store.py:204` and `:211`
+      (`started_at`, unlimited, so ties only reorder). `approvals/store.py:185` already does it
+      right — `decided_at`, `created_at`, then `id` — and is the pattern to copy.
+
+      Approvals and memory have conformance files already, so those are cases to add rather
+      than files to write; plans and eval are covered by the seam bullet above. Fix each with
+      the arm that proves it rather than in one sweep.
 
 - [ ] **The audit and usage reads do not set the tenant GUC, so RLS empties them.** Both open
       their read session through `get_session_factory(...)` without `rls_tenant(tenant_id)`,

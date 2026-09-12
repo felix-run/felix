@@ -198,13 +198,19 @@ def _summary_memory(
         bucket["calls"] += 1
         for k in _SUMMED_COLUMNS:
             bucket[k] += e.get(k) or 0
-    return sorted(buckets.values(), key=lambda b: (b["day"], b["manifest_id"], b["model_id"]), reverse=True)
+    # Day descending, then manifest and model *ascending* — which is what the SQL arm does.
+    # `reverse=True` over the whole tuple reversed all three, so the two arms disagreed about
+    # the order of every row sharing a day. Two sorts rather than one because a string key
+    # cannot be negated, and Python's sort is stable so the inner order survives the outer.
+    rows = sorted(buckets.values(), key=lambda b: (b["manifest_id"], b["model_id"]))
+    rows.sort(key=lambda b: b["day"], reverse=True)
+    return rows
 
 
 async def _summary_sql(
     settings: Settings, tenant_id: str, since_ms: int, until_ms: int, manifest_id: str | None
 ) -> list[dict[str, Any]]:
-    from sqlalchemy import func
+    from sqlalchemy import collate, func
 
     # UTC explicitly: `to_timestamp` yields a timestamptz and `to_char` would otherwise
     # render it in the session's time zone, splitting a day differently from the twin.
@@ -219,7 +225,10 @@ async def _summary_sql(
         )
         .where(UsageEvent.tenant_id == tenant_id, UsageEvent.ts >= since_ms, UsageEvent.ts < until_ms)
         .group_by(UsageEvent.manifest_id, UsageEvent.model_id, day)
-        .order_by(day.desc(), UsageEvent.manifest_id, UsageEvent.model_id)
+        # `COLLATE "C"` for the same reason `jobs.list_jobs` uses it: these are text keys, and
+        # `ORDER BY` on text uses the database collation while the twin sorts by code point.
+        # `manifest_id` is tenant-supplied, so mixed case is reachable.
+        .order_by(day.desc(), collate(UsageEvent.manifest_id, "C"), collate(UsageEvent.model_id, "C"))
     )
     if manifest_id is not None:
         stmt = stmt.where(UsageEvent.manifest_id == manifest_id)

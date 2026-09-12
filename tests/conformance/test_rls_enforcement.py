@@ -175,12 +175,17 @@ async def test_a_read_bound_to_another_tenant_sees_nothing(rls_settings: Any) ->
 
 
 async def test_a_cross_tenant_sweep_still_sees_every_tenant(rls_settings: Any) -> None:
-    """The regression guard for every `rls_bypass()` in the tree.
+    """The regression guard for `list_tenants_with_events`'s `rls_bypass()`.
 
-    `list_tenants_with_events` declares its own bypass, as do retention, the fiber claim and the
-    other `list_tenants_with_*` helpers. This goes red the moment one of them loses it — which
-    is exactly the change no other arm of this suite can detect, because there the policy never
-    applies in the first place.
+    Retention, the fiber claim and the other `list_tenants_with_*` helpers declare their own,
+    and this covers none of them — `list_tenants_with_jobs` can lose its bypass with this file
+    and the jobs contract both green, because the contract runs as the schema owner where a
+    bypass is a no-op. Under `FELIX_DATABASE_RLS` that removal makes the sweep read an empty
+    tenant list and report success, which is the silent no-op the bypass was added to fix.
+    Parametrising this over the helpers is on the roadmap.
+
+    What it does cover is real, and is the change no other arm of this suite can detect,
+    because there the policy never applies in the first place.
 
     The contrast below is what gives it meaning: the same query through a plain session, with
     no tenant and no bypass, sees nothing at all.
