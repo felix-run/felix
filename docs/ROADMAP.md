@@ -116,14 +116,19 @@ First, because everything else governs it.
       equivalent, sends the schema as a tool the model must call and folds the call back into the
       reply, so `message.content` is a JSON document on either. `tool_choice` is `any` rather than
       naming that tool whenever real tools are also bound, so a react loop can still reach them.
-      - Not done, and deliberately separate items: **the composite patterns.** `router`,
-        `parallel`, `groupchat`, `reflect` and `plan_execute` reach a model for the answering
-        turn through `_DelegatingAgent`, which passes no `ModelChatOptions` at all — and on
-        `reflect`/`plan_execute` the schema would otherwise shape the inner react turn nobody
-        sees while the synthesis stayed free text. `build_agent` refuses the combination for
-        now (`PatternDescriptor.honours_output_schema`). Supporting one means threading options
-        onto its answering turn and flipping its flag, which is also what `_child_input`
-        (`delegating.py:401`) needs for a caller's `/v1` `response_format` to reach a child.
+      - **The composite patterns** — done for four of five. `router`, `parallel`, `reflect`
+        and `plan_execute` now thread `ModelChatOptions` onto the one turn whose output the
+        caller receives, and declare `honours_output_schema`. Placement is per pattern and
+        explicit at each call site: the parallel synthesis but not its specialists, the
+        plan_execute synthesis but not the plan or the steps — which needed the schema
+        stripped from the context its executor is built from, since `build_react_agent` reads
+        it onto the agent itself — the routed child but not the classifier, and every reflect
+        draft because the loop exits early. The manifest outranks a request's
+        `response_format`, matching react. `_child_input` no longer
+        drops `model_options`, so a caller's `/v1` `response_format` reaches a child too.
+        `groupchat` stays refused with the reason recorded next to its registration: its answer
+        is the last speaker's message stamped `[name] …`, so a child's JSON comes back with a
+        prefix on it. Supporting it means dropping the stamp or adding a synthesis turn.
       - Not done, and deliberately a separate item: **validation with a repair retry.** The
         provider is what enforces the shape here, which is the guarantee worth having and is why
         this shipped without a retry loop. Extended thinking is the hole — Anthropic forbids a

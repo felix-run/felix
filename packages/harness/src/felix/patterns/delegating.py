@@ -12,13 +12,14 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import AsyncIterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 # `felix.manifests.schema` is a leaf — it imports only `felix.security.ssrf` — so this is
 # safe at module scope even though `manifests/builder.py` imports `felix.patterns`.
 from felix.manifests.schema import PlanExecuteSpec, ReflectSpec
 from felix.patterns.model import (
+    ModelChatOptions,
     ModelChatResult,
     ModelClient,
     build_model,
@@ -161,7 +162,12 @@ def _terminal_events(result: InvokeOutput) -> list[Event]:
 
 
 async def _yield_model_stream(
-    model: ModelClient, messages: list[ChatMessage], collected: list[str], *, manifest_id: str
+    model: ModelClient,
+    messages: list[ChatMessage],
+    collected: list[str],
+    *,
+    manifest_id: str,
+    options: ModelChatOptions | None = None,
 ) -> AsyncIterator[Event]:
     """Stream a text-only model call as display events, and meter it.
 
@@ -184,7 +190,7 @@ async def _yield_model_stream(
     """
     if supports_stream_turn(model):
         stream_turn = model.stream_turn
-        async for item in stream_turn(messages, []):
+        async for item in stream_turn(messages, [], opts=options):
             if isinstance(item, ModelChatResult):
                 record_model_usage(item, model, manifest_id=manifest_id)
                 continue
@@ -207,7 +213,7 @@ async def _yield_model_stream(
             yield Event(event="on_chat_model_stream", data={"chunk": {"content": item.text}})
         return
 
-    result = await model.chat(messages, [])
+    result = await model.chat(messages, [], opts=options)
     record_model_usage(result, model, manifest_id=manifest_id)
     text = result.message.content or ""
     if text:
@@ -268,6 +274,10 @@ class _DelegatingAgent:
     settings: Any = None
     max_turns: int = 4
     aggregator_prompt: str = ""
+    # `spec.output_schema`: the shape the *final* answer must have. Held here rather than
+    # read from the manifest at call time for the same reason react holds it — one place
+    # that knows the contract, and a build that cannot silently forget to apply it.
+    output_schema: dict[str, Any] | None = None
     # Typed, not `Any`: these are the same strict pydantic models the governance
     # wrappers were just converted away from reading through `getattr` defaults. Every
     # such read restated a schema default at the read site, free to disagree with the
@@ -359,7 +369,12 @@ class _DelegatingAgent:
         yield tap.output if tap.output is not None else _empty_output(input)
 
     async def _generate(
-        self, model: ModelClient, messages: list[ChatMessage], *, emit_events: bool
+        self,
+        model: ModelClient,
+        messages: list[ChatMessage],
+        *,
+        emit_events: bool,
+        options: ModelChatOptions | None = None,
     ) -> AsyncIterator[Event | ChatMessage]:
         """Produce an assistant message from `model`, ending with the complete one.
 
@@ -375,12 +390,14 @@ class _DelegatingAgent:
         gives it nothing else to carry.
         """
         if not emit_events:
-            result = await model.chat(messages, [])
+            result = await model.chat(messages, [], opts=options)
             record_model_usage(result, model, manifest_id=self.manifest_id)
             yield result.message
             return
         collected: list[str] = []
-        async for ev in _yield_model_stream(model, messages, collected, manifest_id=self.manifest_id):
+        async for ev in _yield_model_stream(
+            model, messages, collected, manifest_id=self.manifest_id, options=options
+        ):
             yield ev
         yield ChatMessage(role="assistant", content="".join(collected))
 
@@ -398,13 +415,60 @@ class _DelegatingAgent:
             ctx["recursion_limit"] = recursion_limit
         return build_react_agent(ctx)
 
-    def _child_input(self, input: InvokeInput, messages: list[ChatMessage]) -> InvokeInput:
-        """A turn for a sub-agent: no thread_id, so children cannot race the session."""
+    def _answer_options(self, input: InvokeInput) -> ModelChatOptions | None:
+        """Options for the one turn whose output becomes the answer.
+
+        A composite reaches a model several times — routing, planning, critiquing,
+        scoring — and only one of those produces what the caller receives. Applying the
+        schema to all of them would shape a planner's scratch output and leave the
+        synthesis free text, which is the failure `honours_output_schema` exists to
+        prevent, arrived at from the other direction.
+
+        So this is never applied implicitly: each call site says whether its turn is the
+        answering one. `_run_parallel` and `_run_plan_execute` pass it to their synthesis;
+        `_run_router` and `_run_reflect` pass it to the child whose draft *is* the answer;
+        `_choose_child`, `_score` and the planning turn deliberately do not.
+
+        The manifest wins where both specify one, matching `react._chat_options`: an agent
+        published with an answer contract keeps answering to it rather than to whichever
+        shape the last request preferred. A caller's `response_format` still reaches a
+        composite's answering turn — and, through `_child_input`, a child — whenever the
+        manifest declares none, which it could not do at all before.
+
+        Returns `None` unless a schema is actually in play, so a composite without one
+        behaves exactly as it did. Forwarding a caller's `temperature`/`max_tokens` to a
+        synthesis turn that never received them would be a quiet behaviour change, and
+        worse than quiet: `_DelegatingAgent` has no `limits`, so unlike `react` it cannot
+        clamp `max_tokens` down to `limits.max_output_tokens`, and the turn that composes
+        the answer would size itself to whatever the request asked for.
+        """
+        caller = input.model_options
+        schema = self.output_schema or (caller.output_schema if caller else None)
+        if schema is None:
+            return None
+        return replace(caller or ModelChatOptions(), output_schema=schema)
+
+    def _child_input(
+        self,
+        input: InvokeInput,
+        messages: list[ChatMessage],
+        *,
+        options: ModelChatOptions | None = None,
+    ) -> InvokeInput:
+        """A turn for a sub-agent: no thread_id, so children cannot race the session.
+
+        `options` defaults to None rather than forwarding `input.model_options`, and that
+        is the whole design. A parallel specialist and a plan_execute step produce *input
+        to* the answer, not the answer; forcing a schema on them would return JSON
+        fragments to a synthesis prompt that wanted prose. Only a call site whose child
+        output is returned verbatim passes it.
+        """
         return InvokeInput(
             messages=messages,
             thread_id=None,
             model_id=input.model_id,
             tenant_id=input.tenant_id,
+            model_options=options,
         )
 
     # --- router ---------------------------------------------------------------------
@@ -438,7 +502,13 @@ class _DelegatingAgent:
                 yield item
             return
         child = await self._choose_child(input)
-        async for item in self._forward(child, input, emit_events=emit_events):
+        # The child answers the caller directly — `_forward` hands over its terminal
+        # events too — so the contract belongs on its turn. `_choose_child` above routes
+        # and deliberately does not carry it: a router that replied with the classifier's
+        # JSON would satisfy the schema and answer nothing.
+        async for item in self._forward(
+            child, replace(input, model_options=self._answer_options(input)), emit_events=emit_events
+        ):
             yield item
 
     # --- parallel -------------------------------------------------------------------
@@ -474,6 +544,9 @@ class _DelegatingAgent:
                 ),
             ],
             emit_events=emit_events,
+            # The answering turn. The specialists above deliberately get none: their
+            # answers are raw material for this prompt, not the reply.
+            options=self._answer_options(input),
         ):
             if isinstance(item, ChatMessage):
                 final = item
@@ -537,7 +610,12 @@ class _DelegatingAgent:
         verifier_id = cfg.verifier_model
 
         messages = list(input.messages)
-        current = input
+        # Every iteration's draft can be the answer — the loop exits early once the score
+        # clears the threshold — so the contract goes on all of them rather than on a
+        # "last" one that is not known in advance. The critique then reviews a shaped
+        # draft, which is the honest trade: the alternative is a free-text loop whose
+        # winner is reshaped by an extra turn nobody asked for.
+        current = replace(input, model_options=self._answer_options(input))
         draft = _empty_output(input)
 
         for iteration in range(max_iter):
@@ -563,6 +641,7 @@ class _DelegatingAgent:
                 thread_id=input.thread_id,
                 model_id=input.model_id,
                 tenant_id=input.tenant_id,
+                model_options=self._answer_options(input),
             )
 
         async for item in self._finish(draft, emit_events=emit_events):
@@ -689,6 +768,9 @@ class _DelegatingAgent:
                 ChatMessage(role="user", content="Notes:\n" + "\n".join(notes)),
             ],
             emit_events=emit_events,
+            # The answering turn. The planning call above and each executor step below
+            # stay free-form — a plan shaped like the answer schema is not a plan.
+            options=self._answer_options(input),
         ):
             if isinstance(item, ChatMessage):
                 final = item

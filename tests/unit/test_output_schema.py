@@ -500,18 +500,20 @@ async def test_a_pattern_that_honours_the_schema_compiles(pattern: str) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("pattern", ["router", "parallel", "groupchat", "reflect", "plan_execute"])
+@pytest.mark.parametrize("pattern", ["groupchat"])
 async def test_a_pattern_that_cannot_honour_the_schema_is_refused(pattern: str) -> None:
     """Refused at compile, not dropped at runtime.
 
-    Every pattern receives `output_schema` in its build context and only two read it, so
-    without this a manifest declares an answer contract, validates, compiles, runs, and returns
-    free text. `plan_execute` and `reflect` are worse than silent: the schema reaches the inner
-    react agent, shaping an intermediate turn, while the synthesis turn the caller actually
-    sees goes through `_DelegatingAgent` with no options at all.
+    Every pattern receives `output_schema` in its build context and only some read it, so
+    without this a manifest declares an answer contract, validates, compiles, runs, and
+    returns free text.
 
-    Flipping one of these to supported means threading `output_schema` onto that answering
-    turn first — at which point this parametrisation is what says so.
+    `groupchat` is the one that stays refused, and not for want of plumbing: its answer is
+    the last speaker's message *stamped with its name* (`[researcher] …`), so a child
+    returning perfect JSON would still be handed back with a prefix in front of it.
+    Supporting it means dropping the stamp — losing who spoke, which is the pattern's
+    point — or adding a synthesis turn it does not have. Until one of those is chosen,
+    refusing is the honest answer, and this parametrisation is what says so.
     """
     from felix.manifests.builder import build_agent
     from felix.tools.provider import InMemoryToolProvider
@@ -543,7 +545,11 @@ def test_the_honouring_set_is_declared_by_the_registry_not_a_name_list() -> None
         assert registry.honours_output_schema("never-registered") is False
         # The builtins are the live answer, not a copy of the list in this file.
         assert registry.honours_output_schema("react") is True
-        assert registry.honours_output_schema("plan_execute") is False
+        # A composite that threads the contract onto its answering turn, and the one that
+        # structurally cannot — read from the live registry, so flipping a flag without
+        # doing the threading (or the reverse) shows up here.
+        assert registry.honours_output_schema("plan_execute") is True
+        assert registry.honours_output_schema("groupchat") is False
     finally:
         for name in ("plugin-quiet", "plugin-shaped"):
             registry._patterns.pop(name, None)
