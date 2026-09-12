@@ -31,7 +31,9 @@ identity is captured by default and content is not.
 
 `felix doctor` reports whether the exporter is installed at all, in every environment:
 enabling export without `felix-harness[otel]` logs one warning and sends nothing, which
-otherwise surfaces as an empty dashboard. Outside `FELIX_ENVIRONMENT=development` it adds
+otherwise surfaces as an empty dashboard. It is an import probe, so it answers for the
+process running it — under Compose, ask the container (`docker compose exec api felix
+doctor`) rather than a lean host venv. Outside `FELIX_ENVIRONMENT=development` it adds
 two posture rows — whether the destination is private or TLS, and whether prompts are
 excluded from spans. It has no row for identity capture.
 
