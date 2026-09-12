@@ -141,23 +141,73 @@ hook_segment_verb() {
   }'
 }
 
-# The value of a global `git -C <path>`, if the segment passes one.
+# The global options a git segment passes before its subcommand, one per line.
 #
-# Global options come before the subcommand, and only there does `-C` mean a directory:
-# `git commit -C HEAD` reuses a commit message, and reading that as a path would point a
-# guard at a directory that does not exist and silently answer "not on main". So the scan
-# starts at the verb, walks the global options the way `hook_subcommand` does, and stops
-# the moment the subcommand appears.
-hook_git_dir_flag() {
-  hook_words "$1" | awk '
-    !seen { if ($0 == "git" || $0 ~ /\/git$/) seen = 1; next }
-    take { print; exit }
+# Emitted so a guard can *replay* them on its own `git` call rather than reimplement
+# what they mean. Reimplementing was wrong twice over: `git -C a -C b` is cumulative, so
+# git ends in `b` while a first-match parser answered `a`, and `GIT_DIR` outranks `-C`
+# entirely. Both divergences let a guard describe a repository the command would not
+# touch — and both failed open, which is the direction that matters for a block.
+#
+# Only before the subcommand, because that is the only place these mean what they look
+# like: `git commit -C HEAD` reuses a commit message and names no directory.
+#
+# `--exec-path` is deliberately not replayed: it selects the binaries git runs, which is
+# no part of "which repository is this", and a guard should not be talked into a
+# different git than the one it meant to ask.
+hook_git_globals() {
+  hook_words "$1" | awk -v verb="${2:-git}" '
+    !seen { if ($0 == verb || $0 ~ "/" verb "$") seen = 1; next }
+    take { print; take = 0; next }
     skip { skip = 0; next }
-    /^-C$/ { take = 1; next }
-    /^-c$|^--git-dir$|^--work-tree$|^--namespace$|^--exec-path$/ { skip = 1; next }
+    # Dropped, not replayed, and its value with it.
+    /^--exec-path$/ { skip = 1; next }
+    /^--exec-path=/ { next }
+    # Separate-value options: emit the flag, then whatever follows it.
+    /^-C$|^-c$|^--git-dir$|^--work-tree$|^--namespace$/ { print; take = 1; next }
+    # ...and their inline spellings, which carry the value already.
+    /^--git-dir=|^--work-tree=|^--namespace=/ { print; next }
     /^-/ { next }
     { exit }
   '
+}
+
+# A path as written in a command, resolved against `base`.
+#
+# Shared so the spellings are understood in one place: two half-copies meant `cd ~/x` was
+# handled and `git -C ~/x` was not, and the unhandled one fell back to the project root --
+# which is the "judged against a repository you are not in" behaviour these helpers exist
+# to remove, reintroduced for one spelling.
+#
+# A hook must never eval command text, so the expansion here is deliberately partial: `~`
+# and `~/`, one matched quote pair, and relative paths. A `$VAR` stays literal and will
+# simply not be a directory, which callers must treat as "cannot tell" rather than as an
+# answer. Peeling both quote pairs unconditionally resolved `cd "'"'"'/path'"'"'"` to /path,
+# which is not where bash goes -- bash fails that cd and stays put, and the hook and the
+# shell disagreeing about the directory is the bypass, not the quoting.
+hook_resolve_path() {
+  local base=$1 target=$2
+  target=${target%"${target##*[![:space:]]}"}   # trailing whitespace
+  case "$target" in
+    \"*\") target=${target#\"}; target=${target%\"} ;;
+    \'*\') target=${target#\'}; target=${target%\'} ;;
+  esac
+  target=$(hook_expand_tilde "$target")
+  case "$target" in /*) ;; *) target="$base/$target" ;; esac
+  printf '%s' "$target"
+}
+
+# `~` and `~/…`, which the shell expands before any command sees them.
+#
+# Split out because a caller that replays a path to git needs exactly this and nothing
+# else: git resolves a relative path itself, against the cumulative `-C` before it, and a
+# hook doing the same job a second time is a second thing to keep correct.
+hook_expand_tilde() {
+  case "$1" in
+    "~") printf '%s' "$HOME" ;;
+    "~/"*) printf '%s' "$HOME/${1#\~/}" ;;
+    *) printf '%s' "$1" ;;
+  esac
 }
 
 # Which directory will the command actually run in?
@@ -171,15 +221,19 @@ hook_git_dir_flag() {
 # on one. A guard that cries wolf gets worked around.
 #
 # Takes the raw hook payload and the command. The payload's `cwd` is the starting point;
-# `cd`s on the first line move it, in order, keeping the last one that exists -- which is
-# what bash does for a `&&` or `;` chain, and makes relative chains fall out for free.
+# every `cd` in the command moves it, in order, keeping the last target that exists --
+# which is what bash does for a `&&` or `;` chain, and makes relative chains fall out for
+# free.
 #
-# First line only: `^` in sed anchors per line, so scanning the whole command follows a
-# `cd` inside a heredoc, where "cd /tmp/repro" is ordinary reproduction prose. A guard
-# that redirects itself depending on whether a path named in a PR description happens to
-# exist locally is harder to notice than one that is plainly broken.
+# Heredoc bodies are excluded rather than everything past the first line. The hazard is a
+# `cd` inside a heredoc, where "cd /tmp/repro" is ordinary reproduction prose in a PR
+# body: a guard that redirects itself depending on whether a path named in a PR
+# description happens to exist locally is harder to notice than one that is plainly
+# broken. `hook_executable_text` removes those structurally, so there is no need to also
+# discard line two onward -- and discarding it was its own bug, since a multi-line
+# command starting with `cd <dir>` is the everyday shape from the Bash tool.
 hook_workdir() {
-  local input=$1 cmd=$2 workdir target first
+  local input=$1 cmd=$2 workdir target
   workdir=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null)
   # Fallbacks, in order, for a payload that carries no cwd: the project root, then the
   # hook's own directory. The project root before `pwd`, because a hook's process cwd is
@@ -188,23 +242,18 @@ hook_workdir() {
   # to end rather than relocate.
   [ -n "$workdir" ] || workdir=${CLAUDE_PROJECT_DIR:-}
   [ -n "$workdir" ] || workdir=$(pwd -P)
-  first=$(printf '%s' "$cmd" | head -n 1)
+  # Heredoc bodies dropped rather than everything past line one truncated. The hazard
+  # being avoided is a `cd` inside a heredoc, where "cd /tmp/repro" is ordinary
+  # reproduction prose in a PR body -- `hook_executable_text` removes those structurally,
+  # so there is no need to also throw away line two onward. A multi-line command is the
+  # everyday shape from the Bash tool, and `cd <dir>` on its own line is how half of them
+  # start; truncating lost every one of those, which for git-guard meant a skipped block.
   while IFS= read -r target; do
     [ -n "$target" ] || continue
-    target=${target%"${target##*[![:space:]]}"}   # trailing whitespace
-    # One matched pair, peeled by hand -- a hook must never eval command text. Peeling
-    # both pairs unconditionally resolved `cd "'/path'"` to /path, which is not where
-    # bash goes: bash fails that cd and stays put. The hook and the shell disagreeing
-    # about which directory a command runs in is the bypass, not the quoting itself.
-    case "$target" in
-      \"*\") target=${target#\"}; target=${target%\"} ;;
-      \'*\') target=${target#\'}; target=${target%\'} ;;
-    esac
-    case "$target" in "~") target="$HOME" ;; "~/"*) target="$HOME/${target#\~/}" ;; esac
-    case "$target" in /*) ;; *) target="$workdir/$target" ;; esac
+    target=$(hook_resolve_path "$workdir" "$target")
     [ -d "$target" ] && workdir=$target
   done <<TARGETS
-$(printf '%s' "$first" | tr ';&|' '\n\n\n' | sed -n 's/^[[:space:]]*cd[[:space:]]\{1,\}\(.*\)$/\1/p')
+$(printf '%s' "$cmd" | hook_executable_text | tr ';&|' '\n\n\n' | sed -n 's/^[[:space:]]*cd[[:space:]]\{1,\}\(.*\)$/\1/p')
 TARGETS
   printf '%s\n' "$workdir"
 }
