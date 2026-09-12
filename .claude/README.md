@@ -79,6 +79,30 @@ skill or subagent.
 | `SubagentStop` | `subagent-log.sh` | Appends a delegation audit line to `.claude/logs/` |
 | statusLine | `statusline.sh` | branch · dirty count · model · local API health |
 
+### A hook must ask the tree the session is in
+
+`CLAUDE_PROJECT_DIR` is the main checkout, and this repo is routinely worked in from a git
+worktree under `.claude/worktrees/`. A hook that treats the project root as the working tree
+gets a different repository than the one the session is touching, and every one that did was
+wrong in a way nobody noticed:
+
+- `protect-files.sh` failed **open** — `.env`, `uv.lock` and applied migrations were
+  editable inside a worktree, because `.claude/worktrees/x/.env` does not match `.env`.
+- `quality-ratchet.sh` reported every file as a "new file", because `git show HEAD:<rel>`
+  looked for a worktree-prefixed path in the main checkout and found nothing.
+- `doc-drift-stop.sh` and `git-guard.sh` reported *another session's* state as this one's.
+
+Two rules follow, and `lib/command.sh` has the helper for each:
+
+- **Given a `file_path`, ask the file's own repository.** `hook_repo_root` / `hook_repo_rel`
+  resolve against the worktree that owns the path, not against the project root.
+- **Given no path, take `cwd` from the payload.** `hook_workdir` does this (and follows a
+  leading `cd`); `cwd` is a documented field on every hook event, `Stop` included.
+
+`tests/unit/test_bash_guard_hooks.py` and `tests/unit/test_file_guard_hooks.py` assert both
+in both trees. A guard asserted only in the main checkout is a guard that is absent exactly
+where the work happens.
+
 The two quality reviewers also run on pull requests, via
 `.github/workflows/quality-review.yml` — it delegates to `felix-quality-reviewer` (and
 `felix-test-quality-reviewer` when `tests/` changed) and posts surviving findings as inline PR
