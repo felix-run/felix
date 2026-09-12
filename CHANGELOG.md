@@ -35,13 +35,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `FELIX_OTEL_PROTOCOL`, so an environment carrying only the http exporter under `grpc` is
   reported as broken rather than fine.
 
-- **`make up-observability` no longer forwards `FELIX_OTEL_HEADERS`.** Now that the base
-  stack passes that variable through, an operator with a hosted-ingest credential in `.env`
-  who then ran the overlay would have sent that `Authorization` header to a local collector
-  that never asked for one. The overlay redirects the destination; the credential does not
-  follow it. `migrate` and `scheduler` pin export off and drop the header for the same
-  reason — neither calls `setup_observability`, so both would have been carrying a secret
-  they cannot use.
+- **`make up-observability` pins the whole transport.** Now that the base stack passes every
+  `FELIX_OTEL_*` setting through, an operator whose `.env` held the documented hosted config
+  — `FELIX_OTEL_PROTOCOL=http`, `FELIX_OTEL_INSECURE=false`, a credential in
+  `FELIX_OTEL_HEADERS` — would have carried all three into the overlay: a TLS handshake
+  against the collector's plaintext port, or an HTTP POST to its gRPC one, and a vendor
+  header sent to a collector that never asked for it. Every span dropped, silently, with the
+  stack looking healthy. The overlay owns the destination, so it now owns the protocol, the
+  TLS flag and the headers too. `migrate` and `scheduler` drop the credential as well —
+  neither calls `setup_observability`, so it was a secret in `docker inspect` for nothing.
 
 ### Fixed
 
