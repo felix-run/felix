@@ -580,11 +580,13 @@ async def test_truncating_the_active_facts_drops_the_same_one_on_both_arms(
     written = [await _put(memory_settings, f"Fact 0-{i}.") for i in range(5)]
     stored = await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST, limit=50)
     assert len(stored) == 5, f"{len(stored)} of 5 writes landed; the ids below will not line up"
-    # The tie is asserted on what came back from the *store*, not on what `put_memory`
-    # returned: on the Postgres arm that return value is a locally built dict, and
-    # `created_at` is deliberately excluded from the upsert set, so the two already diverge
-    # for any content that collides. Checking the caller's copy would pass whether or not the
-    # rows actually tie, which is exactly the failure this control exists to catch.
+    # Asserted on what came back from the *store*, not on what `put_memory` returned. That
+    # return value is a locally built dict which is never read back, so it cannot see a
+    # divergence between what was handed to the database and what the database kept — a
+    # server-side default, or `created_at` entering the `on_conflict_do_update` set it is
+    # currently excluded from. That hole is latent rather than live: with the clock unfrozen
+    # the returned dicts carry five distinct stamps, so the weaker form would have gone red
+    # too. This is the right place to assert it, not a bug being fixed.
     assert len({r["created_at"] for r in stored}) == 1, "the clock was not frozen; this is not a tie"
 
     first = await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST, limit=3)
@@ -603,6 +605,11 @@ async def test_truncating_the_active_facts_drops_the_same_one_on_both_arms(
     # Both degenerate answers, not one. Every key above `id` ties, so a backend ignoring the
     # tiebreak returns either physical order or its reverse; excluding only the first leaves
     # the next content edit free to satisfy the guard and still not discriminate.
+    #
+    # The margin is thin by arithmetic, not by choice: any three of five share at least one
+    # member with any other three, and no corpus searched does better than sharing two. So
+    # this guard is load-bearing rather than belt-and-braces — it is what tells whoever edits
+    # the contents that they have made the test stop discriminating.
     degenerate = ({r["id"] for r in written[:3]}, {r["id"] for r in written[-3:]})
     assert set(expected) not in degenerate, "the corpus stopped discriminating"
 
@@ -625,11 +632,13 @@ async def test_the_prioritised_order_is_total_too(memory_settings: Any, one_mill
     written = [await _put(memory_settings, f"Prioritised 0-{i}.") for i in range(5)]
     stored = await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST, limit=50)
     assert len(stored) == 5, f"{len(stored)} of 5 writes landed; the ids below will not line up"
-    # The tie is asserted on what came back from the *store*, not on what `put_memory`
-    # returned: on the Postgres arm that return value is a locally built dict, and
-    # `created_at` is deliberately excluded from the upsert set, so the two already diverge
-    # for any content that collides. Checking the caller's copy would pass whether or not the
-    # rows actually tie, which is exactly the failure this control exists to catch.
+    # Asserted on what came back from the *store*, not on what `put_memory` returned. That
+    # return value is a locally built dict which is never read back, so it cannot see a
+    # divergence between what was handed to the database and what the database kept — a
+    # server-side default, or `created_at` entering the `on_conflict_do_update` set it is
+    # currently excluded from. That hole is latent rather than live: with the clock unfrozen
+    # the returned dicts carry five distinct stamps, so the weaker form would have gone red
+    # too. This is the right place to assert it, not a bug being fixed.
     assert len({r["created_at"] for r in stored}) == 1, "the clock was not frozen; this is not a tie"
 
     first = await memory_store.list_active(
