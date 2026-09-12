@@ -325,6 +325,16 @@ _UNTRUSTED_SOURCE_PREFIXES = (
     "http",
     # A search result's title and snippet are written by whoever ranked for the query.
     "search",
+    # A retrieved chunk is text somebody ingested. The model chose neither the destination
+    # nor the endpoint here — but it did not write the document either, and an agent that
+    # quotes a chunk into its answer is relaying it.
+    #
+    # Redundant today, and listed anyway: `_TRUSTED_TRANSPORTS` is an allowlist of `local`,
+    # so the transport check above already catches this and no test can tell this entry from
+    # its absence. It earns its place by covering the case that check cannot — a tool whose
+    # transport is `local` but whose source is a retrieval binding — which is what the `http`
+    # and `search` entries beside it are also for.
+    "documents",
 )
 
 
@@ -1126,6 +1136,24 @@ async def build_agent(
                 )
             except Exception:
                 logger.warning("search tool binding failed", exc_info=True)
+
+        # Retrieval over the operator's own corpus. Unlike the two above it reaches nothing
+        # outbound, so there is no egress to guard — but it needs the tenant, because the
+        # corpus is per-tenant and resolving it from anywhere else would read another's.
+        if m.spec.document_tools and deps.settings is not None:
+            try:
+                from felix.tools.document_search import tools_from_document_refs
+
+                _append_unique_tools(
+                    resolved,
+                    tools_from_document_refs(
+                        list(m.spec.document_tools),
+                        settings=deps.settings,
+                        tenant_id=tenant_id,
+                    ),
+                )
+            except Exception:
+                logger.warning("document search tool binding failed", exc_info=True)
 
         # Client-executed tools (browser/desktop float posts results back).
         if m.spec.client_tools:
