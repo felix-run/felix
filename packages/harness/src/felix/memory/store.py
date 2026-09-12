@@ -740,6 +740,11 @@ async def list_active(
                 _trust_of_column(MemoryVector.metadata_json).desc(),
                 MemoryVector.importance.desc(),
                 MemoryVector.created_at.desc(),
+                # `COLLATE "C"` is defensive here rather than load-bearing: `memory_id` is a
+                # sha256 prefix, and over lowercase hex every common collation agrees with
+                # Python's code-point order. It makes the order independent of the
+                # deployment's `datcollate` — and of a restore into a differently-collated
+                # cluster — which no test can currently observe.
                 collate(MemoryVector.id, "C").desc(),
             )
         else:

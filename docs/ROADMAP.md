@@ -636,6 +636,16 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       millisecond differing between them, which no contract would catch because every test
       asserts set equality over pages. Fix if a caller-supplied id ever becomes ordinary.
 
+- [ ] **An index for the active-memory ordering's new tiebreak.** `idx_memory_active` is
+      `(tenant_id, manifest_id, status, created_at DESC)` and does not carry `id`, so the
+      tiebreak adds an Incremental Sort over each `created_at` group. Bounded and cheap in the
+      common case — but the case the tiebreak exists for is the batch write where one group is
+      large (`consolidate_pools`, the memory writer), which is exactly when it is not. An index
+      on `(tenant_id, manifest_id, status, created_at DESC, id DESC)` would make the
+      unprioritised read a pure index scan, and would have to match the `COLLATE "C"`
+      expression to be used at all. The prioritised branch leads on a `metadata`-derived trust
+      expression no btree covers, so it benefits from none of this. Measured plan, not a guess.
+
 - [ ] **An index for the job run history's ordering.** `list_runs` filters
       `(tenant_id, job_name)` and orders by `(started_at DESC, run_id DESC)`, while the only
       index on `job_runs` is the primary key `(tenant_id, job_name, run_id)` — so the ordering

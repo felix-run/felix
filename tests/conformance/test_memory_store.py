@@ -573,7 +573,11 @@ async def test_truncating_the_active_facts_drops_the_same_one_on_both_arms(
     between two identical requests to the same one. `id` is the second half of the primary
     key, so adding it makes the order total.
     """
-    written = [await _put(memory_settings, f"Fact number {i}.") for i in range(5)]
+    # These five contents are chosen so the three highest ids are not the three written
+    # first — `memory_id` is a content hash, so that is a property of the strings. Without
+    # it the tiebreak only reorders the same three facts, and the test would pin the order
+    # while its docstring claims it pins which fact survives.
+    written = [await _put(memory_settings, f"Fact 0-{i}.") for i in range(5)]
     assert len({r["created_at"] for r in written}) == 1, "the clock was not frozen; this is not a tie"
 
     first = await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST, limit=3)
@@ -584,7 +588,12 @@ async def test_truncating_the_active_facts_drops_the_same_one_on_both_arms(
     # Which three is arbitrary with respect to *when* they were written — there is no finer
     # recency signal than `created_at` to recover — but it is the same arbitrary three
     # everywhere, which is what the twin standing in for the store requires.
-    assert [r["id"] for r in first] == sorted((r["id"] for r in written), reverse=True)[:3], first
+    expected = sorted((r["id"] for r in written), reverse=True)[:3]
+    assert [r["id"] for r in first] == expected, first
+    # Membership, not just order: these three are not the three written first, so a backend
+    # returning insertion order keeps a different set of facts, which is what "falls off the
+    # end" means.
+    assert set(expected) != {r["id"] for r in written[:3]}, "the corpus stopped discriminating"
 
 
 @parametrized
@@ -598,7 +607,11 @@ async def test_the_prioritised_order_is_total_too(memory_settings: Any, one_mill
     feeds the agent unpinned; the two sorts are written out separately, so a tiebreak added to
     one is not added to the other.
     """
-    written = [await _put(memory_settings, f"Prioritised fact {i}.") for i in range(5)]
+    # These five contents are chosen so the three highest ids are not the three written
+    # first — `memory_id` is a content hash, so that is a property of the strings. Without
+    # it the tiebreak only reorders the same three facts, and the test would pin the order
+    # while its docstring claims it pins which fact survives.
+    written = [await _put(memory_settings, f"Prioritised 0-{i}.") for i in range(5)]
     assert len({r["created_at"] for r in written}) == 1, "the clock was not frozen; this is not a tie"
 
     first = await memory_store.list_active(
@@ -609,4 +622,9 @@ async def test_the_prioritised_order_is_total_too(memory_settings: Any, one_mill
     )
 
     assert [r["id"] for r in first] == [r["id"] for r in again], "two identical reads disagreed"
-    assert [r["id"] for r in first] == sorted((r["id"] for r in written), reverse=True)[:3], first
+    expected = sorted((r["id"] for r in written), reverse=True)[:3]
+    assert [r["id"] for r in first] == expected, first
+    # Membership, not just order: these three are not the three written first, so a backend
+    # returning insertion order keeps a different set of facts, which is what "falls off the
+    # end" means.
+    assert set(expected) != {r["id"] for r in written[:3]}, "the corpus stopped discriminating"
