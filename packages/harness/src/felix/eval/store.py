@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import time
 import uuid
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from felix.config import Settings
 from felix.db.models import EvalDataset, EvalDatasetItem, EvalRun
@@ -124,13 +125,17 @@ async def put_dataset(
         _memory_datasets[(tenant_id, name)] = row
         for item in item_rows:
             item_id = item.get("item_id") or uuid.uuid4().hex
+            prior = _memory_items.get((tenant_id, name, item_id))
             _memory_items[(tenant_id, name, item_id)] = {
                 "tenant_id": tenant_id,
                 "dataset_name": name,
                 "item_id": item_id,
                 "user_input": item.get("user_input", ""),
                 "rubric_json": item.get("rubric") or item.get("rubric_json") or {},
-                "created_at": ts,
+                # When the item first appeared, not when it was last written — the
+                # Postgres arm leaves the column alone on conflict, and the two
+                # backends answer the same question or they are not twins.
+                "created_at": prior["created_at"] if prior else ts,
             }
         stored_items = [
             _item_dict(i) for (t, d, _), i in _memory_items.items() if t == tenant_id and d == name
@@ -150,16 +155,32 @@ async def put_dataset(
             db.add(row)
         else:
             row.description = description
+        # Upsert, not `db.add`. `put_dataset` is the only way an item is written, and it
+        # is called repeatedly with the same ids by design: `felix eval --fixture` on every
+        # run, the continuous-eval job on every tick, an edited dataset re-`PUT` to the
+        # management route. A plain insert made the second of those a `UniqueViolation` on
+        # (tenant_id, dataset_name, item_id) — while the in-memory twin overwrote happily,
+        # so every test passed and only a real deployment raised.
         for item in item_rows:
             item_id = item.get("item_id") or uuid.uuid4().hex
-            db.add(
-                EvalDatasetItem(
-                    tenant_id=tenant_id,
-                    dataset_name=name,
-                    item_id=item_id,
-                    user_input=item.get("user_input", ""),
-                    rubric_json=item.get("rubric") or item.get("rubric_json") or {},
-                    created_at=ts,
+            values = {
+                "tenant_id": tenant_id,
+                "dataset_name": name,
+                "item_id": item_id,
+                "user_input": item.get("user_input", ""),
+                "rubric_json": item.get("rubric") or item.get("rubric_json") or {},
+                "created_at": ts,
+            }
+            stmt = pg_insert(cast(Any, EvalDatasetItem.__table__)).values(values)
+            await db.execute(
+                stmt.on_conflict_do_update(
+                    index_elements=["tenant_id", "dataset_name", "item_id"],
+                    # `created_at` is deliberately absent: it records when the item first
+                    # appeared, so re-writing a rubric does not reset the item's age.
+                    set_={
+                        "user_input": stmt.excluded["user_input"],
+                        "rubric_json": stmt.excluded["rubric_json"],
+                    },
                 )
             )
         await db.commit()
