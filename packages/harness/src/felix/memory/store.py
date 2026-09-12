@@ -805,8 +805,13 @@ async def consolidate_pools(settings: Settings, *, max_facts: int = 500) -> int:
     """Exact content-hash dedupe of active facts (not LLM summarization).
 
     Largely vestigial now that ids are content hashes — a duplicate collapses on write
-    rather than accumulating — but it still cleans up rows written before that, and
-    rows whose text differs only by whitespace or case.
+    rather than accumulating — so the only rows it can still catch are byte-identical ones
+    written before that, with pre-hash ids.
+
+    It does *not* catch rows differing only by whitespace or case, which this said until
+    2026-09-11: its dedupe key is the raw `content` on both arms, while `memory_id` hashes a
+    whitespace-collapsed, lowercased form. Rows that differ only that way already share an id
+    and collapsed on write; rows whose raw text differs never match the key.
 
     ``max_facts`` caps how many active rows are scanned per pass. Returns rows
     superseded.

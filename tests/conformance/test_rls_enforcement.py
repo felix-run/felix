@@ -182,7 +182,7 @@ async def test_a_cross_tenant_sweep_still_sees_every_tenant(rls_settings: Any) -
     and the jobs contract both green, because the contract runs as the schema owner where a
     bypass is a no-op. Under `FELIX_DATABASE_RLS` that removal makes the sweep read an empty
     tenant list and report success, which is the silent no-op the bypass was added to fix.
-    Parametrising this over all eleven is a roadmap item, next to this one's entry.
+    Parametrising this over all twelve is a roadmap item, next to this one's entry.
 
     What it does cover is real, and is the change no other arm of this suite can detect,
     because there the policy never applies in the first place.

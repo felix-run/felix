@@ -74,12 +74,22 @@ async def test_a_job_round_trips_with_every_field(store_settings: Any) -> None:
     # And the write side, which aliased in the same way the read side did: the twin kept the
     # caller's dict, so editing what you passed in edited the stored job, while Postgres had
     # serialized it at commit and was unaffected.
-    handed_in = {"prompt": "handed in"}
+    # Nested on purpose: a shallow `dict(payload)` passes a top-level mutation, so only a
+    # nested one pins the deepcopy the store actually does. Job payloads nest in practice —
+    # this is an arbitrary JSON body off `PUT /jobs/{name}`.
+    handed_in = {"prompt": "handed in", "opts": {"depth": 1}}
     await _put(store_settings, name="written", payload=handed_in)
-    handed_in["prompt"] = "tampered after the write"
+    handed_in["opts"]["depth"] = 99
     written = await jobs.get_job(store_settings, TENANT, "written")
     assert written is not None
-    assert written["payload"]["prompt"] == "handed in", written
+    assert written["payload"]["opts"]["depth"] == 1, written
+
+    # The worker-written half, which had the same fix and no test.
+    handed_result = {"counts": {"scanned": 2}}
+    await jobs.record_run(store_settings, TENANT, "written", started_at=5, result=handed_result)
+    handed_result["counts"]["scanned"] = 99
+    runs = await jobs.list_runs(store_settings, TENANT, "written")
+    assert runs[0]["result"]["counts"]["scanned"] == 2, runs
 
 
 @parametrized
@@ -315,12 +325,16 @@ async def test_jobs_are_listed_in_a_stable_order(store_settings: Any) -> None:
     The twin returned dict insertion order and Postgres whatever the plan produced, so two
     consecutive calls could disagree and the twin could not stand in for the store.
 
-    Both arms pin it, now that the corpus is mixed case. It did not always: with three
-    lowercase names the Postgres arm passed for the wrong reason, because `jobs_pkey` is
-    `(tenant_id, name)` and an index-only scan hands back name order for free. `jobs_pkey` is
-    in the database's *default* collation, so on CI's en_US.utf8 an index-order scan now
-    yields roughly `alpha, m-1, m1, _mu, Zeta, zeta` against a code-point expectation — red if
-    the `ORDER BY` is reverted, and red if the `COLLATE "C"` is dropped.
+    The memory arm pins it unconditionally. The Postgres arm pins it *on a cluster whose
+    default collation is not `C`* — which CI is, since `pgvector/pgvector:pg17` inherits
+    en_US.utf8, and where an index-order scan of `jobs_pkey` now yields roughly
+    `alpha, m-1, m1, _mu, Zeta, zeta` against a code-point expectation, red if the `ORDER BY`
+    is reverted and red if the `COLLATE "C"` is dropped.
+
+    On a `C`-collated cluster — an alpine image, an explicit `initdb --locale=C` — that arm
+    silently returns to passing for the wrong reason, because `jobs_pkey` then hands back the
+    expected order for free. The condition is environmental and nothing here checks it, so
+    read this arm as evidence only when you know the cluster's `datcollate`.
     """
     # Mixed case and punctuation on purpose. All-lowercase names sort identically under
     # Python and under every Postgres collation, so a corpus of them shows each arm is
