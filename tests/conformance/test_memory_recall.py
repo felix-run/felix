@@ -14,8 +14,16 @@ candidates, resolves the same way every time and the same way on either backend,
 scores on position and a truncated channel is where an undecided tie turns into a different
 answer rather than a differently-ordered one.
 
-The corpus is chosen to avoid the stemming difference: every token is already its own stem,
-so both backends see the same candidates and the contract is about order rather than recall.
+The corpus is chosen so the stemming difference cannot bite. Mostly that is because a token
+is already its own stem (`alpha`, `beta`, `gamma`, `zeta`); `timezone` is not — it stems to
+`timezon` — and is safe for the different reason that the stemming is *symmetric*, applied to
+the content and the query alike, so both still match. A word like `timezones` would not be.
+Checked against a real `to_tsquery('english', ...)` rather than assumed.
+
+Two more differences the corpus stays clear of rather than resolves: English stopwords
+(`is`, `only`, `theirs`) vanish from `content_tsv` but survive the twin's tokeniser, and the
+twin drops tokens of two characters or fewer where Postgres keeps them. None is a query token
+here.
 """
 
 from __future__ import annotations
@@ -42,6 +50,22 @@ def one_millisecond(monkeypatch: pytest.MonkeyPatch) -> None:
     the same trap the `list_active` cases fell into twice, once on each backend.
     """
     monkeypatch.setattr(memory_store, "now_ms", lambda: 1_700_000_000_000)
+
+
+class _OneAxisEmbedder:
+    """Deterministic embeddings, no model and no network.
+
+    Sized to the real column — `vector(768)` since 0001_baseline — with every text mapped to
+    the same unit vector, so cosine distance ties *exactly* across the corpus. That is the
+    point: the vector channel orders by distance, and a tie there is what the id below it
+    resolves. Real embeddings tie rarely; the channel's truncation still has to be decided.
+    """
+
+    enabled = True
+    dim = 768
+
+    async def embed(self, texts: Any) -> list[list[float]]:
+        return [[1.0, 0.0] + [0.0] * (self.dim - 2) for _ in texts]
 
 
 async def _put(settings: Any, content: str, **kw: Any) -> dict[str, Any]:
@@ -187,3 +211,32 @@ async def test_two_candidates_from_different_channels_resolve_by_id(
     hits = await _recall(memory_settings, "alpha")
 
     assert [h.id for h in hits] == [topic_hit["id"], fts_hit["id"]], [h.content for h in hits]
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_the_vector_channel_truncates_by_the_same_total_order(
+    memory_settings: Any, one_millisecond: None
+) -> None:
+    """The third channel, which no other case reaches.
+
+    Nothing else in this file passes an `embedder`, so `_embed_query` returns `None` and the
+    vector channel is skipped entirely — two of three channels were covered while the
+    docstrings said three. Its `ORDER BY` mixes directions deliberately (distance ascending,
+    id descending), which is worth exercising rather than reasoning about.
+
+    Every fact here embeds to the same unit vector, so the distances tie exactly and the id is
+    the only thing left to decide which survive `per_channel` and then `limit`.
+    """
+    embedder = _OneAxisEmbedder()
+    vectors = await embedder.embed([""] * 6)
+    facts = [await _put(memory_settings, f"unrelated wording {i}", embedding=vectors[i]) for i in range(6)]
+    ids = sorted((f["id"] for f in facts), reverse=True)
+
+    # A query sharing no token with any content, so only the vector channel can match.
+    hits = await _recall(memory_settings, "quixotic", limit=3, embedder=embedder)
+
+    assert [h.id for h in hits] == ids[:3], [h.content for h in hits]
+    assert all("vector" in h.channels for h in hits), [h.channels for h in hits]
+    written = [f["id"] for f in facts]
+    assert {*ids[:3]} not in ({*written[:3]}, {*written[-3:]}), "the corpus stopped discriminating"

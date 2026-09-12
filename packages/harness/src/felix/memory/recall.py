@@ -308,6 +308,10 @@ def _tsquery_or(query: str) -> str | None:
     return " | ".join(tokens) if tokens else None
 
 
+# `id COLLATE "C" DESC` on all three, for the reason `memory/store.py`'s `list_active` gives:
+# it makes the order independent of the deployment's collation. Defensive rather than
+# load-bearing, because `memory_id` is a sha256 prefix and every common collation agrees with
+# Python over lowercase hex — dropping it from these statements would fail no test.
 _VECTOR_SQL = """
     SELECT id FROM memory_vectors
      WHERE tenant_id = :tenant AND status = 'active' AND embedding IS NOT NULL
