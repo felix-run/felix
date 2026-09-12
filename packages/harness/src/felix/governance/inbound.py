@@ -50,16 +50,46 @@ def _message_text(msg: Any) -> str:
 
 
 def _set_message_text(msg: Any, text: str) -> Any:
+    """Put the screened text where the model will actually read it.
+
+    Writing `.content` alone was not enough, and the gap was silent. A multimodal message
+    carries its text in `content_blocks` (or `attachments`), and *both* wire formats prefer
+    those over `.content` — so on an image turn, PII redaction and the `[quarantined]`
+    substitution were computed, audited as applied, and then bypassed: the model saw the
+    caller's original text. A control that reports success and changes nothing.
+
+    The blocks are only rebuilt when screening actually changed the text, so an ordinary turn
+    keeps the caller's interleaving of text and images exactly as sent. When it did change,
+    the screened text becomes one leading text block and the images follow in their original
+    order — text and images may end up differently interleaved than the caller wrote them,
+    which is the right trade against showing the model what was meant to be redacted.
+    """
     if isinstance(msg, dict):
         out = dict(msg)
         out["content"] = text
         return out
+
+    updates: dict[str, Any] = {"content": text}
+    if text != getattr(msg, "content", text):
+        blocks = getattr(msg, "content_blocks", None)
+        if blocks:
+            from felix_ai.types import ContentBlock
+
+            updates["content_blocks"] = [ContentBlock(type="text", text=text)] + [
+                b for b in blocks if b.type != "text"
+            ]
+        elif getattr(msg, "attachments", None):
+            # The older shape carries no text of its own — the text is `.content`, which is
+            # already screened above — so the attachments ride along untouched.
+            pass
+
     if hasattr(msg, "model_copy"):
-        return msg.model_copy(update={"content": text})
+        return msg.model_copy(update=updates)
     import contextlib
 
     with contextlib.suppress(Exception):
-        msg.content = text
+        for field, value in updates.items():
+            setattr(msg, field, value)
     return msg
 
 
