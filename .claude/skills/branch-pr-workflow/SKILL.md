@@ -83,5 +83,9 @@ Commit or push **only when the user asks**.
 - New `FELIX_` setting → `.env.example`, README, `compose*.yml`, Helm values
 - New governance control → `deploy/GOVERNANCE.md`, `manifests/governed.yaml`
 - Model change → an Alembic revision under `migrations/versions/`
-- User-visible behavior → `CHANGELOG.md` (Unreleased) and a `docs/ROADMAP.md` status flip
+- User-visible behavior → a `changelog.d/<section>-<slug>.md` fragment and a `docs/ROADMAP.md`
+  status flip. **Do not edit `CHANGELOG.md`** — every pull request appending to the top of one
+  block is why any two open at once conflicted there, and a botched resolution of that conflict
+  drops an entry silently. `changelog.d/README.md` has the format; `make changelog` shows what
+  the next release would say.
 - Documented surface → the public MDX pages (docs-sync skill)

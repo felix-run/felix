@@ -57,16 +57,21 @@ python scripts/bump-version.py 0.3.0          # sets every location, then `uv lo
 
 4. **Bump the version**: `python scripts/bump-version.py X.Y.Z` (every location, then `uv lock`).
 
-5. **Close out the changelog.** Rename `## [Unreleased]` to `## [X.Y.Z] — YYYY-MM-DD`, open a fresh
-   empty `## [Unreleased]` above it, and add the comparison link at the bottom of the file next to
-   the existing `[0.1.0]:` line:
+5. **Close out the changelog.**
 
-   ```
-   [X.Y.Z]: https://github.com/felix-run/felix/releases/tag/vX.Y.Z
+   ```bash
+   python3 scripts/changelog.py --preview        # read it before you cut it
+   python3 scripts/changelog.py --release X.Y.Z
    ```
 
-   Keep the Keep a Changelog section order: `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`,
-   `Security`. Entries describe what changed for the operator, not which files moved.
+   That folds `changelog.d/` into `## [Unreleased]`, renames it to `## [X.Y.Z] — YYYY-MM-DD`,
+   opens a fresh empty one, adds the comparison link, and deletes the fragments. Sections come
+   out in Keep a Changelog order — `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`,
+   `Security` — and anything already written directly into `[Unreleased]` is carried rather
+   than replaced, so entries predating `changelog.d/` still ship.
+
+   Read what it produced before committing. Entries describe what changed for the operator,
+   not which files moved, and a fragment written in a hurry is easiest to fix here.
 
 6. **Sync the docs before tagging, not after.** Anything user-visible in this release needs its page
    on [docs.felix.run](https://docs.felix.run) updated in the `felix-run/web` repo, plus
