@@ -71,6 +71,16 @@ async def test_a_job_round_trips_with_every_field(store_settings: Any) -> None:
     assert again is not None
     assert again["payload"]["prompt"] == "summarise", again
 
+    # And the write side, which aliased in the same way the read side did: the twin kept the
+    # caller's dict, so editing what you passed in edited the stored job, while Postgres had
+    # serialized it at commit and was unaffected.
+    handed_in = {"prompt": "handed in"}
+    await _put(store_settings, name="written", payload=handed_in)
+    handed_in["prompt"] = "tampered after the write"
+    written = await jobs.get_job(store_settings, TENANT, "written")
+    assert written is not None
+    assert written["payload"]["prompt"] == "handed in", written
+
 
 @parametrized
 @pytest.mark.asyncio
@@ -241,6 +251,11 @@ async def test_the_limit_keeps_the_newest_runs(store_settings: Any) -> None:
     runs = await jobs.list_runs(store_settings, TENANT, JOB, limit=2)
 
     assert [r["started_at"] for r in runs] == [50, 40]
+    # The boundary the store clamps. The route rejects a negative limit, but `list_runs` is a
+    # public function the worker calls directly, and a negative one used to slice the twin's
+    # list from the end while Postgres refused it outright.
+    assert await jobs.list_runs(store_settings, TENANT, JOB, limit=0) == []
+    assert await jobs.list_runs(store_settings, TENANT, JOB, limit=-1) == []
 
 
 @parametrized
@@ -300,17 +315,19 @@ async def test_jobs_are_listed_in_a_stable_order(store_settings: Any) -> None:
     The twin returned dict insertion order and Postgres whatever the plan produced, so two
     consecutive calls could disagree and the twin could not stand in for the store.
 
-    The memory arm is what pins this. The Postgres arm passes for the wrong reason: `jobs_pkey`
-    is `(tenant_id, name)`, so an index-only scan hands back name order for free, and reverting
-    the `ORDER BY` leaves it green — forcing a sequential scan over the same rows returns
-    insertion order and would fail. The fix is still right and still necessary; this arm just
-    cannot prove it, and should not be read as having done so.
+    Both arms pin it, now that the corpus is mixed case. It did not always: with three
+    lowercase names the Postgres arm passed for the wrong reason, because `jobs_pkey` is
+    `(tenant_id, name)` and an index-only scan hands back name order for free. `jobs_pkey` is
+    in the database's *default* collation, so on CI's en_US.utf8 an index-order scan now
+    yields roughly `alpha, m-1, m1, _mu, Zeta, zeta` against a code-point expectation — red if
+    the `ORDER BY` is reverted, and red if the `COLLATE "C"` is dropped.
     """
     # Mixed case and punctuation on purpose. All-lowercase names sort identically under
     # Python and under every Postgres collation, so a corpus of them shows each arm is
-    # self-consistent and nothing about the arms agreeing. CI's image initdb's to en_US.utf8,
-    # where `Zeta` sorts *before* `alpha` — so this is what the `COLLATE "C"` in the store is
-    # for, and what would go red without it. Job names are unvalidated URL path segments.
+    # self-consistent and nothing about the arms agreeing. CI's image inherits en_US.utf8,
+    # which sorts `alpha` before `Zeta` and ignores punctuation at the primary level, where
+    # Python puts every capital first — so this is what the `COLLATE "C"` in the store is for,
+    # and what goes red without it. Job names are unvalidated URL path segments.
     for name in ("zeta", "Zeta", "alpha", "_mu", "m-1", "m1"):
         await _put(store_settings, name=name)
 

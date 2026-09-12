@@ -541,3 +541,54 @@ async def test_a_caller_cannot_supply_the_forgetter_stamp(memory_settings: Any) 
     )
     stored = await memory_store.get_many(memory_settings, TENANT, [row["id"]])
     assert "retired_by" not in (stored[row["id"]].get("metadata") or {})
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_truncating_the_active_facts_drops_the_same_one_on_both_arms(
+    memory_settings: Any,
+) -> None:
+    """These facts go into a compiled prompt, and the list is cut to a limit before they do.
+
+    Every key the sort used ties routinely — facts are written in a batch so `created_at`
+    collides, trust is one of a handful of values, importance is usually the default — and
+    with nothing below them the fact that falls off the end was whichever one the backend
+    happened to return. So the agent's memory could differ between the twin and Postgres, and
+    between two identical requests to the same one. `id` is the second half of the primary
+    key, so adding it makes the order total.
+    """
+    written = [await _put(memory_settings, f"Fact number {i}.") for i in range(5)]
+
+    first = await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST, limit=3)
+    again = await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST, limit=3)
+
+    assert [r["id"] for r in first] == [r["id"] for r in again], "two identical reads disagreed"
+    assert len(first) == 3
+    # Which three is arbitrary with respect to *when* they were written — there is no finer
+    # recency signal than `created_at` to recover — but it is the same arbitrary three
+    # everywhere, which is what the twin standing in for the store requires.
+    assert [r["id"] for r in first] == sorted((r["id"] for r in written), reverse=True)[:3], first
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_the_prioritised_order_is_total_too(memory_settings: Any) -> None:
+    """The branch the compiled prompt actually uses, which is a separate sort.
+
+    `prioritized=True` orders by writer trust, then importance, then recency — three keys that
+    tie even more readily than `created_at` alone, since trust is one of a handful of values
+    and importance defaults. Testing only the unprioritised branch would leave the one that
+    feeds the agent unpinned; the two sorts are written out separately, so a tiebreak added to
+    one is not added to the other.
+    """
+    written = [await _put(memory_settings, f"Prioritised fact {i}.") for i in range(5)]
+
+    first = await memory_store.list_active(
+        memory_settings, TENANT, manifest_id=MANIFEST, limit=3, prioritized=True
+    )
+    again = await memory_store.list_active(
+        memory_settings, TENANT, manifest_id=MANIFEST, limit=3, prioritized=True
+    )
+
+    assert [r["id"] for r in first] == [r["id"] for r in again], "two identical reads disagreed"
+    assert [r["id"] for r in first] == sorted((r["id"] for r in written), reverse=True)[:3], first

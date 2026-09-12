@@ -547,9 +547,23 @@ cycle's, and the route contracts below are the next capability-adjacent step.
 
 - [x] **An enforcing-RLS arm for the conformance suite.** Done
       (`tests/conformance/test_rls_enforcement.py`): a `NOSUPERUSER NOBYPASSRLS` role with
-      `database_rls=True`, which is the configuration no other arm can reach. It is the
-      regression guard for every `rls_bypass()` in the tree — removing one now fails a test
-      rather than passing silently.
+      `database_rls=True`, which is the configuration no other arm can reach — and the only
+      one where a lost `rls_bypass()` is visible at all, since every other arm connects as the
+      schema owner, where a bypass is a no-op. It guards one of the eleven bypasses in the
+      tree; the item below is the rest of them.
+
+- [ ] **Parametrise the cross-tenant sweep arm over every `rls_bypass()`.**
+      `test_a_cross_tenant_sweep_still_sees_every_tenant` covers `list_tenants_with_events`
+      and nothing else. There are eleven bypasses — `memory/store.py`, `durability/fibers.py`
+      (five), `audit/store.py` (two), `manifests/store.py`, `jobs/store.py` and
+      `jobs/retention.py` (two) — and each can lose its bypass with the whole suite green,
+      because only this arm builds a role the policy applies to. The failure mode is not a
+      cross-tenant read: the schedulers re-bind per tenant afterwards, so it degrades to a
+      sweep that reads an empty tenant list and reports success. That is the shape an operator
+      cannot diagnose from outside, and it only bites deployments that opted into
+      `FELIX_DATABASE_RLS`. The `rls_settings` fixture already builds the role, so this is a
+      parametrisation rather than new machinery. Worth a line in `deploy/GOVERNANCE.md` too,
+      beside the RLS guidance, since that is who it happens to.
 
 - [ ] **`test_migrations.py` still wants an autogenerate-empty check** (models versus
       migrations drift) **and stepwise per-revision up/down**; today it only goes base to head
@@ -561,6 +575,16 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       security policy". `get_fiber` has the same gap. Invisible to the conformance suite because
       that connects as a superuser with RLS off. Found while verifying the fiber claim contract
       against a live database; fixed in a separate change.
+
+- [ ] **A read is a copy in one store and a window in three.** The jobs store now deepcopies
+      its JSON columns on read *and* write, because the twin was handing back the dict it held
+      and Postgres deserializes fresh — so a caller editing what it read edited the store, on
+      one backend only. `audit/store.py`, `usage/store.py` and `memory/store.py` still return a
+      shallow `dict(row)`, which aliases their JSON column the same way. Nothing mutates a read
+      today, so this is latent; what makes it worth recording is that the repo now answers the
+      same question two ways in files edited by one commit, and the next store copies whichever
+      neighbour its author opens. The carrier would be a shared conformance assertion that
+      every store's read is mutation-isolated, not four more deepcopies.
 
 - [ ] **More listings whose two arms can disagree about order.** Not one shape but three, and
       the first survey found only the first: a tie the twin breaks by insertion order and
