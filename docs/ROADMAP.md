@@ -528,8 +528,11 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       on Postgres only, and a batch of Temporal-backed fibers starved a tenant's ordinary ones.
       Manifests are done too, and found two more: the twin accepted a canary weight the CHECK
       constraint refuses, and handed back the stored document by reference. Still open, in the
-      order their SQL diverges most from the twin: audit (query filters), then jobs, plans, eval
-      and a2a tasks.
+      order their SQL diverges most from the twin: jobs, plans, eval and a2a tasks.
+
+      Audit is done (`test_audit_store.py`). It found a defect both arms shared rather than a
+      divergence: the cursor carried only a millisecond timestamp, so paging stepped over every
+      event sharing the boundary millisecond and returned them on no page at all.
 
 - [ ] **`put_version` has a read-modify-write race on Postgres only.** It computes
       `SELECT coalesce(max(version),0)` then inserts, with no lock and no retry, so four
@@ -554,6 +557,47 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       security policy". `get_fiber` has the same gap. Invisible to the conformance suite because
       that connects as a superuser with RLS off. Found while verifying the fiber claim contract
       against a live database; fixed in a separate change.
+
+- [ ] **The audit and usage reads do not set the tenant GUC, so RLS empties them.** Both open
+      their read session through `get_session_factory(...)` without `rls_tenant(tenant_id)`,
+      unlike `_write_batch`, which does. With `FELIX_DATABASE_RLS=1` on a role that cannot
+      bypass, `_rls_after_begin` resolves no tenant, sets neither setting, logs its warning,
+      and the policy filters every row — `/audit` and `/usage` return empty pages to an
+      operator whose history is there. Pre-existing, and explicitly *not* covered by the new
+      conformance arm: it connects as the database owner with `database_rls` unset, so that
+      suite must not be read as evidence about this.
+
+- [ ] **One unwritable audit event blocks every later one.** `flush_pending` requeues a batch
+      whose write failed, so the compliance record survives a transient outage — and so a
+      *permanently* unwritable event is retried forever, with every subsequent event stuck
+      behind it until the 10k ceiling starts dropping the oldest. Two concrete triggers, both
+      invisible to the in-memory twin, which stores anything. The `\u0000` trigger is fixed at
+      source — `record_event` strips it, because it was reachable by any authenticated client
+      in one request — but the shape remains for a `payload_json` Postgres refuses for another
+      reason, and for a caller-supplied `id` colliding on the `(tenant_id, id)` primary key
+      (reachable only from tests today: nothing in `packages` or `apps` supplies an id). `tests/conformance/test_audit_store.py`
+      now pins that a failed flush keeps its batch; what is missing is telling a transient
+      failure from a poisonous one — quarantine the offending event, count it the way
+      `DurableBuffer` counts drops, and let the rest through.
+
+- [ ] **The keyset cursor's tie-break is collation-dependent.** `felix/cursors.py` pairs the
+      timestamp with the row id, and `id` is text — so Postgres orders it by the database
+      collation while the in-memory twin orders it by Python code point. The ids actually
+      written are `uuid4().hex`, which sorts the same under every common collation, and
+      `record_event` accepts a caller-supplied id only. Paging stays complete on both, since
+      each backend is self-consistent; the exposure is the order of two rows in one
+      millisecond differing between them, which no contract would catch because every test
+      asserts set equality over pages. Fix if a caller-supplied id ever becomes ordinary.
+
+- [ ] **An index for the audit and usage listings' new ordering.** Both now
+      `ORDER BY ts DESC, id DESC` so the keyset cursor has a total order to page on, while
+      `idx_audit_tenant_ts` and `idx_usage_tenant_ts` cover `(tenant_id, ts)` only. Measured at
+      100k rows, 50 per distinct `ts`, the plan is an `Index Scan Backward` on that index under
+      an `Incremental Sort` with `ts` presorted — correct, and cheap while a single
+      `(tenant_id, ts)` group stays small, because only the group holding the page boundary is
+      sorted. It degrades when one millisecond's group gets large. A `(tenant_id, ts DESC,
+      id DESC)` index removes the sort node and makes the cursor a pure index seek; that is one
+      revision, and a refinement rather than a correctness gap.
 
 - [ ] **An index for the fiber claim's ordering.** `ORDER BY updated_at LIMIT 50` has no
       supporting index; measured at 200k rows it is 11 ms, and a partial index matching the
