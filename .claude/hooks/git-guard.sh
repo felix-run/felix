@@ -15,25 +15,37 @@ CMD=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty')
 
 deny() { printf '%s\n' "$1" >&2; exit 2; }
 
-# Where the command will run, which is not where this hook was invoked from. Resolving
-# the branch from CLAUDE_PROJECT_DIR meant a session in a worktree was judged against the
-# main checkout: every commit on a feature branch was warned about as a commit on main,
-# and `--force-with-lease` on that branch was refused. See `hook_workdir`.
+# The branch of the checkout the command will actually run in, not of `CLAUDE_PROJECT_DIR`.
+# Those differ under a git worktree: the project root stays on `main` while the worktree is
+# on a feature branch, so reading the root made every commit from a worktree warn about
+# committing to main and made `--force-with-lease` -- the remedy this hook recommends --
+# unusable there. A guard that fires on correct work is noise, and this one fired on every
+# commit of a long session. `pr-quality-gate.sh` reads `.cwd` for the same reason, and now
+# through the same `hook_workdir`, which also follows a leading `cd`.
 WORKDIR=$(hook_workdir "$INPUT" "$CMD")
 
 # The branch the segment will act on, asked the way the segment itself would ask.
 #
 # The segment's own global options are replayed rather than interpreted -- `-C`,
-# `--git-dir`, `--work-tree`, `-c` -- so git applies its own precedence and the hook
-# cannot disagree with the shell about which repository that is. Interpreting them was
-# wrong in both directions that matter: `git -C a -C b` is cumulative and a first-match
-# parser answered `a`, and an exported GIT_DIR outranks `-C` entirely, so scrubbing the
-# environment here (as pr-quality-gate.sh rightly does for its *identity* question) made
-# this predictive one answer about a repository the command would not touch. Both of
-# those failed open, which for the one block below is the direction that costs something.
+# `--git-dir`, `--work-tree`, `-c` -- so git applies its own precedence and the hook cannot
+# disagree with the shell about which repository that is. Interpreting them was wrong in
+# every direction tried: `git -C a -C b` is cumulative and a first-match parser answered
+# `a`, and `--git-dir` names a repository as surely as `-C` does.
 #
-# `-C "$WORKDIR"` goes first so a relative `-C` resolves against the working directory,
-# as it would in the shell; a later absolute one simply wins.
+# **GIT_DIR is deliberately NOT scrubbed here**, which reverses the `env -u GIT_DIR
+# -u GIT_WORK_TREE` this function carried when it first learned about worktrees. The
+# reasoning there was that an exported GIT_DIR "would answer about that repo from
+# anywhere" -- true, and that is precisely why it must be honoured: the *command* obeys it
+# too, so a commit made with GIT_DIR set lands in that repo whatever directory the session
+# is sitting in. Scrubbing it makes the hook describe a checkout the command will not
+# touch, and describe it as safe. `pr-quality-gate.sh` scrubs it and is right to: that hook
+# asks an identity question -- "is this checkout this project?" -- where ambient state is
+# noise. This one asks a predictive one. `tests/unit/test_bash_guard_hooks.py` pins both.
+#
+# `-C "$WORKDIR"` goes first so a relative `-C` resolves against the working directory, as
+# it would in the shell -- by git's own cumulative rule rather than a second copy of it
+# here. `--exec-path` is the one global option not replayed: it selects the binaries git
+# runs, which is no part of "which repository is this".
 #
 # The fallback is the project root: an unresolvable path -- a `$VAR` no hook may expand --
 # means "cannot tell", and the honest response to that for a *block* is to judge the repo
@@ -43,13 +55,9 @@ current_branch() {
   local -a globals=()
   while IFS= read -r opt; do
     [ -n "$opt" ] || continue
-    # Only the tilde, and only because the shell would have expanded it before git saw
-    # it -- a literal `~/x` makes git find no repository, and the fallback then answers
-    # about a different one. A relative path is deliberately left alone: `-C` is
-    # cumulative, so the `-C "$WORKDIR"` above is what it resolves against, which is the
-    # same rule the shell applies. Resolving it here as well would be a second mechanism
-    # for one behaviour, and a behaviour with two mechanisms has no single point that can
-    # be tested.
+    # Only the tilde, and only because the shell would have expanded it before git saw it
+    # -- a literal `~/x` makes git find no repository, and the fallback then answers about
+    # a different one.
     case "$prev" in
       -C | --git-dir | --work-tree) opt=$(hook_expand_tilde "$opt") ;;
     esac
@@ -68,7 +76,6 @@ GLOBALS
 
 committing=0
 commit_seg=
-commit_dir=
 while IFS= read -r seg; do
   [ "$(hook_segment_verb "$seg")" = "git" ] || continue
 

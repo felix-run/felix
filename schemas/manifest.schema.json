@@ -541,6 +541,46 @@
       "title": "ContentScreening",
       "type": "object"
     },
+    "DocumentSearchToolRef": {
+      "additionalProperties": false,
+      "description": "Retrieve from the corpus an operator ingested, scoped to the calling tenant.\n\nThe mildest of the three retrieval refs, and for a structural reason rather than a policy\none: `HttpFetchToolRef` needs a `path_prefix` because the model names a destination, and\n`SearchToolRef` needs none because the operator does \u2014 this one reaches no network at all,\nonly rows already in this deployment's own store. What comes back is still untrusted, since\na document is text somebody else wrote.",
+      "properties": {
+        "name": {
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "max_results": {
+          "anyOf": [
+            {
+              "maximum": 10,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Results"
+        },
+        "fatal": {
+          "default": false,
+          "title": "Fatal",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "DocumentSearchToolRef",
+      "type": "object"
+    },
     "ExecutionSpec": {
       "additionalProperties": false,
       "properties": {
@@ -1786,6 +1826,14 @@
           },
           "maxItems": 64,
           "title": "Search Tools",
+          "type": "array"
+        },
+        "document_tools": {
+          "items": {
+            "$ref": "#/$defs/DocumentSearchToolRef"
+          },
+          "maxItems": 64,
+          "title": "Document Tools",
           "type": "array"
         },
         "client_tools": {

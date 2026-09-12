@@ -54,9 +54,17 @@ Commit or push **only when the user asks**.
    mkdir -p .claude/logs/quality-review && touch .claude/logs/quality-review/$(git rev-parse HEAD)
    ```
 
-   `pr-quality-gate.sh` blocks `gh pr create` until that marker exists for the exact commit, so a
-   new or amended commit asks for a fresh review. "Reviewed, nothing compounding" is a normal
-   result — the reviewers are not graded on finding something.
+   `pr-quality-gate.sh` is **advisory**: it notes which reviewers have not run on this exact
+   commit and exits 0. It was a hard block once and was deliberately softened, because
+   re-arming on every amended commit interrupted the flow and "the reviewers it demands are
+   worth running on judgement rather than because the turn will not proceed otherwise."
+
+   So the note reappearing after you act on a finding is not an instruction to review again.
+   Read it, decide, and move on. One round of review per branch is the norm; act on the
+   compounding findings **or say why each one stands**, which is the half of this step that is
+   easy to skip. Re-review when the diff has changed shape, not when it has changed.
+   "Reviewed, nothing compounding" is a normal result — the reviewers are not graded on
+   finding something, and neither is the session.
 
 7. **Open the PR**
 
