@@ -43,52 +43,15 @@ command -v git >/dev/null 2>&1 || exit 0
 # the git binary directly, so this does not recurse into the function.
 git() { env -u GIT_DIR -u GIT_WORK_TREE git "$@"; }
 
-# Which directory will the command actually run in? Not necessarily the one this hook
-# was invoked from: a leading `cd` is how a PR gets opened in a sibling checkout from a
-# session rooted here. Resolving it from the hook's own cwd made the guard below a
-# no-op -- `here` could never differ from `root` -- so a docs PR in another repo was
-# judged against this project's Python, and, worse, would have passed the moment this
-# project's HEAD had a marker. A gate that reads as satisfied when nothing was reviewed
-# is the failure worth spending these lines on.
-workdir=$(printf '%s' "$INPUT" | jq -r '.cwd // empty')
-[ -n "$workdir" ] || workdir=$(pwd -P)
-# First line only. `^` in sed anchors per line, so before this the gate was
-# redirected by a `cd` ANYWHERE in the command -- including one inside a PR body
-# heredoc, where "cd /tmp/repro" is ordinary reproduction prose. That made the
-# control fire or not depending on whether a path mentioned in a PR description
-# happened to exist locally. A gate that intermittently disables itself on prose is
-# harder to notice than one that is plainly broken.
-# Follow every `cd` on the first line in order, keeping the last one that exists --
-# which is what bash does for a `&&` or `;` chain. Relative chains fall out for free,
-# since `workdir` advances as it goes.
-#
-# Two earlier attempts were wrong in opposite directions. Taking the first `cd` and
-# stopping let `cd <sibling> && cd <project> && …` open a PR here with the gate pointed
-# at the sibling. Refusing to resolve when there was more than one `cd` was worse: it
-# was described as conservative, and it is not. `cd <project> && cd <project>/sub` is
-# ordinary navigation, and blanking the target there falls back to the payload cwd --
-# which skips the gate entirely whenever the session cwd is outside the project, as it
-# is in any session with additional working directories. A guard that turns a working
-# block into a skip on a common shape is not conservative; it is a fail-open with a
-# reassuring comment on it.
-first=$(printf '%s' "$cmd" | head -n 1)
-while IFS= read -r target; do
-  [ -n "$target" ] || continue
-  target=${target%"${target##*[![:space:]]}"}   # trailing whitespace
-  # One matched pair, peeled by hand -- a hook must never eval command text. Peeling
-  # both pairs unconditionally resolved `cd "'/path'"` to /path, which is not where
-  # bash goes: bash fails that cd and stays put. The hook and the shell disagreeing
-  # about which directory a command runs in is the bypass, not the quoting itself.
-  case "$target" in
-    \"*\") target=${target#\"}; target=${target%\"} ;;
-    \'*\') target=${target#\'}; target=${target%\'} ;;
-  esac
-  case "$target" in "~") target="$HOME" ;; "~/"*) target="$HOME/${target#\~/}" ;; esac
-  case "$target" in /*) ;; *) target="$workdir/$target" ;; esac
-  [ -d "$target" ] && workdir=$target
-done <<TARGETS
-$(printf '%s' "$first" | tr ';&|' '\n\n\n' | sed -n 's/^[[:space:]]*cd[[:space:]]\{1,\}\(.*\)$/\1/p')
-TARGETS
+# Where the command will run: the payload's cwd, moved by any leading `cd`. Shared with
+# git-guard through `hook_workdir` -- the resolution is subtle (quoting a shell must not
+# disagree with, first line only so a `cd` in a heredoc cannot redirect the gate, last
+# existing target in a chain) and two copies of it would drift apart silently. Resolving
+# it from the hook's own cwd instead made the guard below a no-op -- `here` could never
+# differ from `root` -- so a docs PR in another repo was judged against this project's
+# Python, and would have passed the moment this project's HEAD had a marker. A gate that
+# reads as satisfied when nothing was reviewed is the failure worth spending lines on.
+workdir=$(hook_workdir "$INPUT" "$cmd")
 
 # Only gate this repo: `gh pr create` in another checkout (or a worktree of another
 # project) must not be judged against this project's state.
