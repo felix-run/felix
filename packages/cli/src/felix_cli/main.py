@@ -126,6 +126,7 @@ def eval_cmd(
     from felix.config import get_settings
     from felix.eval import store as eval_store
     from felix.eval.runner import start_run
+    from felix.eval.validation import validate_items
 
     _load_plugins()
     settings = get_settings()
@@ -135,6 +136,17 @@ def eval_cmd(
         if fixture is not None:
             payload = json.loads(fixture.read_text(encoding="utf-8"))
             name = str(payload.get("name") or dataset)
+            # Before the write, not after: an item whose prompt key is misspelled is stored
+            # with an empty prompt and then scored by the non-empty rule, so the run passes
+            # and means nothing. Exit 2 — a usage error, distinct from the exit 1 that means
+            # the eval ran and items failed, which is what CI reads.
+            report = validate_items(list(payload.get("items") or []))
+            for warning in report.warnings:
+                typer.echo(f"warning: {fixture}: {warning}", err=True)
+            if not report.ok:
+                for problem in report.errors:
+                    typer.echo(f"error: {fixture}: {problem}", err=True)
+                raise SystemExit(2)
             await eval_store.put_dataset(
                 settings,
                 tenant,

@@ -303,13 +303,19 @@ comment explaining exactly that. It is conditional, not inert.
       `scripts/eval-counter-smoke.sh` in both CI and `make check-ci`. That proves the scorer can
       say no, which it could not before, but both halves still score a canned answer — nothing
       here scores the agent. Optional nightly against `api.felix.run` that does not block PRs.
-- [ ] **Validate eval dataset items, or document that they are free-form.** An item whose keys
-      are not `user_input` / `rubric` is accepted with 200 and stored with an empty prompt, so
-      the dataset looks configured and scores nothing — the bundled JSON fixtures use
-      `input`/`expect`, which is exactly the spelling that silently produces nothing. Pinned by
-      `tests/e2e/test_mgmt_routes.py::test_an_eval_item_with_unrecognised_keys_is_stored_empty`.
-      Pairs with the item below. A malformed item no longer abandons the run — it is scored as
-      that item's error — so this is now about telling the author, not about salvaging the run.
+- [x] **Validate eval dataset items.** Done: `felix/eval/validation.py`, called by
+      `PUT /eval/datasets/{name}` and by `felix eval --fixture`. An item with no `user_input`
+      is refused and the near-miss key it used is named back (`input` — the spelling the
+      bundled fixtures once used — plus `prompt`, `question`, `query`, `user_message`, `text`);
+      so is a non-object rubric and a repeated `item_id`. A rubric naming no rule is legal and
+      warns instead, because it scores as `nonempty` and passes anything. The rubric stays
+      free-form. `tests/e2e/test_mgmt_routes.py` pinned the old accept-and-store-empty
+      behaviour and said it should fail when this landed; it now pins the refusal.
+
+      One consequence for the item below: an unscoreable rubric no longer reaches the runner
+      through `--fixture`, so the counter-smoke's fourth check is unreachable from a fixture
+      and now guards only the paths that bypass validation — items written straight to the
+      store by the continuous-eval job, and a manifest that fails to resolve.
 
 - [ ] **An eval run cannot report how many items errored.** `fail_count` counts an item the
       scorer rejected and an item that raised as the same thing, and the run row carries no
@@ -559,7 +565,7 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       on Postgres only, and a batch of Temporal-backed fibers starved a tenant's ordinary ones.
       Manifests are done too, and found two more: the twin accepted a canary weight the CHECK
       constraint refuses, and handed back the stored document by reference. Still open, in the
-      order their SQL diverges most from the twin: plans, eval and a2a tasks.
+      order their SQL diverges most from the twin: plans and a2a tasks.
 
       Jobs is done (`test_jobs_store.py`) and found two orderings that were not orders at all:
       `list_runs` broke ties by nothing, so the twin's stable sort returned a job's *oldest*
@@ -568,6 +574,12 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       Audit is done (`test_audit_store.py`). It found a defect both arms shared rather than a
       divergence: the cursor carried only a millisecond timestamp, so paging stepped over every
       event sharing the boundary millisecond and returned them on no page at all.
+
+      Eval is done (`test_eval_store.py`) and found the worst one yet: `put_dataset` overwrote an
+      existing item on the twin and raised `UniqueViolation` on Postgres, so the second run of any
+      eval failed on every real deployment while CI stayed green — and the continuous-eval sweep,
+      which swallows a per-tenant exception, had scored nothing since its first ever tick while
+      reporting a normal result.
 
 - [ ] **`put_version` has a read-modify-write race on Postgres only.** It computes
       `SELECT coalesce(max(version),0)` then inserts, with no lock and no retry, so four
