@@ -579,37 +579,63 @@ cycle's, and the route contracts below are the next capability-adjacent step.
 - [ ] **Promote the ordering rule to a scanner.** It has now been fixed six times — the audit
       and usage cursors, `list_runs`, `list_jobs`'s collation, `list_active` twice — and two
       more shapes are still open below. The repo's own rule is that a lesson learned this often
-      earns a structural gate rather than another round of review. The shape: over
-      `packages/harness/src/felix/**/store.py`, every `order_by(...)` and every `sort(key=...)`
-      whose result is then truncated must end on a primary-key component. It must carry a floor
+      earns a structural gate rather than another round of review. The shape: over *any* module
+      that truncates an ordered list, every `order_by(...)` and every `sort(key=...)` whose
+      result is then cut must end on a primary-key component. Not `**/store.py` — that glob is
+      what let `memory/recall.py` go unexamined through a survey written for exactly this
+      defect, because its channels are hand-rolled `sorted(...)[:n]` rather than an `ORDER BY`.
+      The site floor has to name `memory/recall.py`, `documents/store.py` and the session
+      modules, or the gate will miss the seventh instance the way the survey missed the sixth.
+      It must carry a floor
       on the number of ordering sites it matched, because a scanner that quietly stops matching
       is the failure mode this repo has already shipped once — an AST invariant here matched
       `timeout=<Constant>` while every literal it hunted lived inside `httpx.Timeout(...)`.
       Cheaper than catching the seventh instance in review, and it cannot be satisfied by a fake.
 
-- [ ] **`recall()` has the ordering defect at three levels, and a tiebreak that reads a column
-      nothing writes.** This is the *other* path a fact reaches a prompt by — the `recall` tool
-      and `GET /memory/recall` — and the survey that produced the item below missed it entirely,
-      because it enumerated `ORDER BY` and `.sort` in *store* modules and these are hand-rolled
-      `sorted(...)[:n]` in `memory/recall.py`. There is also no `tests/conformance/` arm for it,
-      and it is the memory read path with the most to hold together: three SQL channels and
-      three Python ones.
+- [x] **`recall()`'s ordering defect, and its tiebreak that read a column nothing writes.**
+      Done (`tests/conformance/test_memory_recall.py`, the first conformance arm this path has
+      had). All three in-memory channels sorted on the score alone and all three SQL channels
+      ordered on rank alone, so the candidate set entering fusion came from insertion order on
+      one backend and the query plan on the other — and reciprocal-rank fusion scores on
+      *position*, so that was amplified rather than absorbed. The ranking pass then tied again
+      on score and recency. All six channels and the ranking now end on the id.
 
-      The per-channel cut sorts on the overlap count alone, which is a small integer, so ties
-      are the normal case and fall back to dict insertion order on the twin; the SQL twin of it
-      orders by `ts_rank_cd` with no tiebreak at all. Different candidate sets therefore enter
-      fusion on the two arms, and reciprocal-rank fusion scores on *position*, so the
-      divergence is amplified rather than absorbed. The fused cut then ties again on score.
+      `_rank`'s recency term read `last_used_at or created_at`, and `last_used_at` has no
+      writer: the migration adds the column, `put_memory` sets it to None, the upsert excludes
+      it. The dead half is gone and the docstring says "newest" means `created_at` — confirmed
+      by mutation, since restoring the dead read changes no test.
 
-      And `_rank`'s recency term reads `last_used_at or created_at`, where `last_used_at` has
-      no writer anywhere in the tree: the migration adds the column, `put_memory` sets it to
-      `None`, and the upsert explicitly excludes it. So the docstring's "newest breaking ties"
-      describes a key that is structurally always `created_at` — a control that looks present
-      and does nothing. Either write it on recall or delete the column and the dead half of the
-      expression; do not leave it reading as implemented.
+      Still open, and deliberately not decided here: whether to write `last_used_at` on recall
+      (a write on a read path) or drop the column in a revision. Until one of those, the column
+      exists and nothing populates it.
 
-      Fix this one *with* a conformance arm rather than before it. Ordering assertions written
-      without a real database have been wrong twice on this branch alone.
+- [ ] **The per-channel savepoint costs a round trip each, and that scales with latency.**
+      Measured: +1.0 to +1.15 ms per recall on loopback, *flat* as the corpus grows from 500 to
+      20,500 rows — six extra round trips (`SAVEPOINT` and `RELEASE` per channel) at ~0.19 ms
+      each, so it is fixed overhead rather than corpus-dependent. On a managed Postgres at
+      ~1 ms RTT that is roughly +6 ms per recall, which is 4–6x the tiebreak cost below and
+      lands inline in a turn. It buys the thing the comment always claimed and did not deliver:
+      one broken channel loses a channel rather than the turn. If the latency matters, the
+      cheaper shape is optimistic — run without savepoints and, on the first failure, roll back
+      once and retry only the remaining channels inside them — which costs nothing on the path
+      that always succeeds. More code for a path that only opens mid-upgrade, so measure the
+      real deployment before taking it.
+
+- [ ] **The recall tiebreak costs an HNSW index scan its selectivity.** Measured at 20,500
+      rows: `ORDER BY embedding <=> :vec` alone is an `Index Scan using idx_memvec_hnsw`
+      pulling 16 rows in ~0.35 ms, while adding any tiebreak turns it into an
+      `Incremental Sort` over that index pulling 391 rows in ~1.25 ms — 4x the time and 5.6x
+      the buffers. Going from one extra key to three is then free (~4%, inside run-to-run
+      spread), so the lever if this ever matters is dropping the tiebreak, not trimming it.
+      It is worth the millisecond today: an undecided cut changes *which* memories a turn
+      gets. Re-measure before changing either way, and note the planner does not choose the
+      index at all below a few thousand rows, so small deployments pay nothing.
+
+- [ ] **`kind` is unindexed, and recall now filters on it.** `memory_vectors` has no index on
+      `kind`, so on the full-text and topic channels `kind = ANY(...)` is a heap recheck after
+      the GIN scan — a selective `kinds` over a broad tsquery walks a long way to fill a
+      `LIMIT 16`. Unmeasured, and expected to be invisible at realistic sizes; measure before
+      adding an index rather than adding one on the strength of this line.
 
 - [ ] **A read is a copy in one store and a window in three.** The jobs store now deepcopies
       its JSON columns on read *and* write, because the twin was handing back the dict it held
@@ -629,10 +655,10 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       was the third, reversing `manifest_id` and `model_id` where the SQL ascended them, and
       is fixed with the jobs work because it already had a contract to assert it in.
 
-      `memory/store.py`'s `list_active` (both sorts) and `as_of` are done. Remaining, ranked by
-      what a wrong answer costs, and by function rather than line so the list stops rotting on
-      every edit: `memory/recall.py` (see the item below — the worst of them, and the one the
-      first survey missed entirely); `approvals/store.py`'s `list_approvals` (`created_at`,
+      `memory/store.py`'s `list_active` (both sorts) and `as_of` are done, and so is
+      `memory/recall.py` — see the item above. Remaining, ranked by what a wrong answer costs,
+      and by function rather than line so the list stops rotting on every edit:
+      `approvals/store.py`'s `list_approvals` (`created_at`,
       limited); `plans/store.py`'s `list_plans` (`updated_at`, limited); `eval/store.py`'s
       `list_runs` (`started_at`, unlimited, so ties only reorder). `approvals/store.py`'s
       `find_approved` already does it right — `decided_at`, `created_at`, then `id` — and is
