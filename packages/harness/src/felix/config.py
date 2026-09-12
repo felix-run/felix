@@ -547,6 +547,28 @@ class Settings(BaseSettings):
                 "Pin each with ;tenant=fixed:<tenant>."
             )
 
+    def _validate_configured_tenant_ids(self) -> None:
+        """Every tenant id the *operator* pins, held to the rule a claimed one is held to.
+
+        Only the claim path validated. So `;tenant=fixed:acme corp` parsed fine,
+        authenticated fine, and then died in `Principal.__post_init__` with a plain
+        `ValueError` — which `verify_jwt`'s `except TenantResolutionError` does not catch
+        and its outer `except Exception: continue` swallows. The result was a blanket 401
+        from that issuer with no log line at all, pointing the operator at signatures and
+        JWKS rather than at one character in their verifier spec.
+
+        Not inside `_validate_jwt_tenant_posture`: that returns early when no JWT verifier
+        is configured, and `FELIX_AUTH_API_KEYS` pins a tenant per key on a deployment
+        that has none. A test caught exactly that.
+        """
+        from felix.auth.context import assert_valid_tenant_id
+
+        for label, value in _configured_tenant_ids(self):
+            try:
+                assert_valid_tenant_id(value)
+            except ValueError as exc:
+                raise RuntimeError(f"{label} is not a usable tenant id: {exc}") from exc
+
     def validate_runtime(self) -> None:
         """Fail fast on unsafe or incomplete configuration."""
         self._validate_registry_backed_settings()
@@ -577,6 +599,7 @@ class Settings(BaseSettings):
                 "ones included — anonymously on an authenticated deployment"
             )
 
+        self._validate_configured_tenant_ids()
         self._validate_jwt_tenant_posture()
         if self.scale_out:
             if "sqlite" in self.database_url:
@@ -611,3 +634,36 @@ DEFAULT_MODEL_ROUTES: dict[str, dict[str, str]] = {
     "llama-3-pro": {"provider": "ollama", "model": "llama3.3:70b"},
     "llama-3-fast": {"provider": "ollama", "model": "llama3.2"},
 }
+
+
+def _configured_tenant_ids(settings: Settings) -> list[tuple[str, str]]:
+    """(setting name, tenant id) for every tenant an operator pins in configuration.
+
+    The claim path checks itself; these do not, and each one fails in a different and
+    unhelpful place if it is malformed — see `_validate_jwt_tenant_posture`.
+    """
+    import json
+
+    from felix.auth.jwt import parse_verifiers
+
+    found: list[tuple[str, str]] = []
+    for verifier in parse_verifiers(settings.jwt_verifiers):
+        if verifier.tenant_mode == "fixed" and verifier.fixed_tenant:
+            label = f"FELIX_JWT_VERIFIERS (;tenant=fixed:{verifier.fixed_tenant})"
+            found.append((label, verifier.fixed_tenant))
+    found.extend(
+        (f"FELIX_ALLOWED_TENANTS ({name})", name)
+        for name in (p.strip() for p in (settings.allowed_tenants or "").split(","))
+        if name
+    )
+    try:
+        keys = json.loads(settings.auth_api_keys) if settings.auth_api_keys.strip() else {}
+    except ValueError, TypeError:
+        keys = {}  # shape errors are reported by the api-key parser, not here
+    if isinstance(keys, dict):
+        found.extend(
+            (f"FELIX_AUTH_API_KEYS ({tenant})", tenant)
+            for entry in keys.values()
+            if isinstance(entry, dict) and isinstance(tenant := entry.get("tenant_id"), str) and tenant
+        )
+    return found

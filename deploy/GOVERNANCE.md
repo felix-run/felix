@@ -147,6 +147,24 @@ a `tenant_id` and the `felix_tenant_isolation` policy — `ENABLE`d, `FORCE`d, a
 `tenant_id` to the session GUC with a bypass arm, and the only policy on the table;
 `tests/unit/test_rls_coverage.py` renders the migrations and fails when a new table does not.
 
+The tenant id itself is validated at every *inbound* door — `assert_valid_tenant_id`, which
+`auth/middleware.py`, `auth/jwt.py` and every `Principal` construction run, and which
+`Settings.validate_runtime` also applies to the tenant ids an operator pins in
+`FELIX_JWT_VERIFIERS`, `FELIX_ALLOWED_TENANTS` and `FELIX_AUTH_API_KEYS` — against the same
+rule `storage/fs.py` applies to an
+object-key segment: letters, digits, `.`, `_`, `-`, at most 128 characters, never `.` or
+`..` alone, and never `:` or `#` (those would break the `{tenant}:{suffix}` thread-id
+prefix). One definition rather than two, because a tenant id is a thread-id prefix *and* a
+path segment in `artifacts/`, `workspace/`, `skills/` and `manifests/` keys *and* a field in
+every log record. Under a claim-mode JWT verifier it arrives from a token claim, which on
+Cognito is frequently user-writable, so it is checked before the `FELIX_ALLOWED_TENANTS`
+allowlist rather than after.
+
+The worker is the exception worth knowing: its sweeps build a `felix.context.AuthContext`
+directly from a tenant id read out of the database, with no `Principal` and so no door. A
+row written before this rule existed still flows through those paths, which is why the
+sweeps escape the value where they log it rather than assuming it is clean.
+
 ## Inbound and outbound constraints
 
 ```yaml

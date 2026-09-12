@@ -103,10 +103,11 @@ def _digest(value: str) -> str:
 
 
 def _redis_key(scope: str, key: str) -> str:
-    # Both halves hashed. The client key so it neither selects a cluster slot nor sizes
-    # the keyspace; the scope because `/` is legal in a tenant id and a `sub` is whatever
-    # the IdP sent, so `acme` + `eu/alice` and `acme/eu` + `alice` would otherwise spell
-    # one scope — and a `{...}` in a sub would put a hash tag back.
+    # Both halves hashed. The client key so it neither selects a cluster slot nor sizes the
+    # keyspace; the scope because a `sub` is whatever the IdP sent, so `acme` + `eu/alice`
+    # and `acme/eu` + `alice` would otherwise spell one scope — and a `{...}` in a sub would
+    # put a hash tag back. (A `/` in the *tenant* half is refused at the door now; the `sub`
+    # half is not, so the hashing still earns its place.)
     return f"felix:idempotency:{_digest(scope)}:{_digest(key)}"
 
 
