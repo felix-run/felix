@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Agents can search the documents an operator ingested.** `spec.document_tools` binds a
+  retrieval tool per ref, and `support` uses it as `search_docs` over whatever this deployment
+  has in its corpus. The corpus landed a while ago — ingestion, a hybrid store, both backends,
+  `/documents` management routes — and nothing agent-facing could read it, so an operator could
+  fill it and no agent could use it.
+
+  It is the mildest of the three retrieval tools by construction: `http_fetch` lets the model
+  choose a destination and `web_search` lets it choose a query against an operator-chosen
+  endpoint, while this reaches only rows already in this deployment's store, in the calling
+  tenant. So there is no address to validate and no egress to guard. The tenant comes from the
+  compile rather than the call, which is the one thing the tool adds over the store it wraps.
+  Its transport is `documents`, absent from the trusted allowlist, so the same content
+  screening covers a retrieved chunk as covers a fetched page.
+
+  This closes the audit finding that opened the capability workstream: `support.yaml` declared
+  `tools: [calculator, list_skills]` — a support agent that could not look anything up.
+  `fetch_docs` gave it a page whose URL it already knew; this gives it the question an operator
+  actually asks, which is where something is written down.
+
 ### Changed
 
 - **Traces can be sent to a backend Felix does not host.** Every `FELIX_OTEL_*` setting is
