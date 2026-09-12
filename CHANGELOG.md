@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Which memories an agent was given could differ between two identical recalls.** `recall()`
+  runs three channels on each backend and fuses them by reciprocal rank. Every channel sorted
+  on its score alone — a small integer for the text channels, so ties are the normal case —
+  and each is then cut to a per-channel budget before fusion. Reciprocal-rank fusion scores on
+  *position*, so a different candidate set entering it is amplified rather than absorbed. The
+  ranking pass then tied again on score and recency. All six channels and the ranking now end
+  on the row id.
+
+  The recency tiebreak also read `last_used_at or created_at`, and `last_used_at` has no writer
+  anywhere: the migration adds the column, `put_memory` sets it to `None`, the upsert excludes
+  it. So "newest breaking ties" named a key that never applied. The dead half is gone, and
+  restoring it changes no test, which is what says it was dead.
+
+### Added
+
+- **A conformance contract for `recall()`** (`tests/conformance/test_memory_recall.py`), the
+  first this path has had. It deliberately does not assert the two backends return the same
+  hits: the twin scores text by raw token overlap while Postgres stems, so the same query can
+  legitimately match different rows. What it pins is that the answer is *decided* — that a tie
+  inside a channel, or between two candidates fused from different channels, resolves the same
+  way every time and on either backend.
+
 - **The facts an agent remembers could differ between two identical requests.** `list_active`
   sorted by writer trust, then importance, then recency, and truncated to a limit — with no
   key below those three, and all three tie routinely: facts are written in a batch so

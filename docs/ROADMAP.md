@@ -587,29 +587,22 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       `timeout=<Constant>` while every literal it hunted lived inside `httpx.Timeout(...)`.
       Cheaper than catching the seventh instance in review, and it cannot be satisfied by a fake.
 
-- [ ] **`recall()` has the ordering defect at three levels, and a tiebreak that reads a column
-      nothing writes.** This is the *other* path a fact reaches a prompt by — the `recall` tool
-      and `GET /memory/recall` — and the survey that produced the item below missed it entirely,
-      because it enumerated `ORDER BY` and `.sort` in *store* modules and these are hand-rolled
-      `sorted(...)[:n]` in `memory/recall.py`. There is also no `tests/conformance/` arm for it,
-      and it is the memory read path with the most to hold together: three SQL channels and
-      three Python ones.
+- [x] **`recall()`'s ordering defect, and its tiebreak that read a column nothing writes.**
+      Done (`tests/conformance/test_memory_recall.py`, the first conformance arm this path has
+      had). All three in-memory channels sorted on the score alone and all three SQL channels
+      ordered on rank alone, so the candidate set entering fusion came from insertion order on
+      one backend and the query plan on the other — and reciprocal-rank fusion scores on
+      *position*, so that was amplified rather than absorbed. The ranking pass then tied again
+      on score and recency. All six channels and the ranking now end on the id.
 
-      The per-channel cut sorts on the overlap count alone, which is a small integer, so ties
-      are the normal case and fall back to dict insertion order on the twin; the SQL twin of it
-      orders by `ts_rank_cd` with no tiebreak at all. Different candidate sets therefore enter
-      fusion on the two arms, and reciprocal-rank fusion scores on *position*, so the
-      divergence is amplified rather than absorbed. The fused cut then ties again on score.
+      `_rank`'s recency term read `last_used_at or created_at`, and `last_used_at` has no
+      writer: the migration adds the column, `put_memory` sets it to None, the upsert excludes
+      it. The dead half is gone and the docstring says "newest" means `created_at` — confirmed
+      by mutation, since restoring the dead read changes no test.
 
-      And `_rank`'s recency term reads `last_used_at or created_at`, where `last_used_at` has
-      no writer anywhere in the tree: the migration adds the column, `put_memory` sets it to
-      `None`, and the upsert explicitly excludes it. So the docstring's "newest breaking ties"
-      describes a key that is structurally always `created_at` — a control that looks present
-      and does nothing. Either write it on recall or delete the column and the dead half of the
-      expression; do not leave it reading as implemented.
-
-      Fix this one *with* a conformance arm rather than before it. Ordering assertions written
-      without a real database have been wrong twice on this branch alone.
+      Still open, and deliberately not decided here: whether to write `last_used_at` on recall
+      (a write on a read path) or drop the column in a revision. Until one of those, the column
+      exists and nothing populates it.
 
 - [ ] **A read is a copy in one store and a window in three.** The jobs store now deepcopies
       its JSON columns on read *and* write, because the twin was handing back the dict it held
@@ -629,10 +622,10 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       was the third, reversing `manifest_id` and `model_id` where the SQL ascended them, and
       is fixed with the jobs work because it already had a contract to assert it in.
 
-      `memory/store.py`'s `list_active` (both sorts) and `as_of` are done. Remaining, ranked by
-      what a wrong answer costs, and by function rather than line so the list stops rotting on
-      every edit: `memory/recall.py` (see the item below — the worst of them, and the one the
-      first survey missed entirely); `approvals/store.py`'s `list_approvals` (`created_at`,
+      `memory/store.py`'s `list_active` (both sorts) and `as_of` are done, and so is
+      `memory/recall.py` — see the item above. Remaining, ranked by what a wrong answer costs,
+      and by function rather than line so the list stops rotting on every edit:
+      `approvals/store.py`'s `list_approvals` (`created_at`,
       limited); `plans/store.py`'s `list_plans` (`updated_at`, limited); `eval/store.py`'s
       `list_runs` (`started_at`, unlimited, so ties only reorder). `approvals/store.py`'s
       `find_approved` already does it right — `decided_at`, `created_at`, then `id` — and is

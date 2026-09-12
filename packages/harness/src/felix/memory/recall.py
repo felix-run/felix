@@ -143,7 +143,21 @@ def _rank(
     kinds: list[str] | None,
     limit: int,
 ) -> list[RecallHit]:
-    """Apply per-kind and importance weighting to fused ranks, newest breaking ties."""
+    """Apply per-kind and importance weighting to fused ranks, newest breaking ties.
+
+    "Newest" is `created_at`. It used to read `last_used_at or created_at`, and
+    `last_used_at` has no writer anywhere in the tree — the migration adds the column,
+    `put_memory` sets it to None and the upsert excludes it — so the first half of that
+    expression was a tiebreak that never applied. Reinstating it means writing the column on
+    recall, which is a write on a read path and a decision of its own; until then the
+    expression says what it does.
+
+    The id is the last key, because both of the ones above it tie: two rows at the same rank
+    in different channels with the same `kind` and default `importance` produce bit-identical
+    scores, and `created_at` ties for anything written in a batch. Without it the order among
+    ties came from `fused.items()` — that is, from the channel lists, which is where the
+    divergence between the two backends enters.
+    """
     hits: list[tuple[float, float, RecallHit]] = []
     for mem_id, rrf_score in fused.items():
         row = rows.get(mem_id)
@@ -153,7 +167,7 @@ def _rank(
             continue
         importance = float(row.get("importance") or 0.5)
         score = rrf_score * KIND_WEIGHTS.get(str(row.get("kind") or ""), 1.0) * (0.5 + importance)
-        recency = float(row.get("last_used_at") or row.get("created_at") or 0)
+        recency = float(row.get("created_at") or 0)
         hits.append(
             (
                 score,
@@ -171,7 +185,7 @@ def _rank(
             )
         )
 
-    hits.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    hits.sort(key=lambda item: (item[0], item[1], item[2].id), reverse=True)
     return [hit for _, _, hit in hits[:limit]]
 
 
@@ -228,15 +242,21 @@ async def _channels_in_memory(
     q_tokens = _tokens(query)
     ranked: dict[str, list[str]] = {}
 
+    # `(score, id)`, not `score`: the overlap count is a small integer, so ties are the normal
+    # case rather than the edge, and sorting on the score alone left the order to come from
+    # `_memory_rows` insertion. Each channel is then cut to `per_channel`, and RRF scores on
+    # *position* — so a different candidate set entering fusion is amplified, not absorbed.
     scored = [(len(q_tokens & _tokens(str(row.get("content") or ""))), row["id"]) for row in rows]
-    ranked["fts"] = [i for n, i in sorted(scored, key=lambda s: s[0], reverse=True) if n][:per_channel]
+    ranked["fts"] = [i for n, i in sorted(scored, key=lambda s: (s[0], s[1]), reverse=True) if n][
+        :per_channel
+    ]
 
     topic_scored = [
         (len(q_tokens & _tokens(str(row.get("topic_key") or "").replace(".", " "))), row["id"])
         for row in rows
         if row.get("topic_key")
     ]
-    ranked["topic"] = [i for n, i in sorted(topic_scored, key=lambda s: s[0], reverse=True) if n][
+    ranked["topic"] = [i for n, i in sorted(topic_scored, key=lambda s: (s[0], s[1]), reverse=True) if n][
         :per_channel
     ]
 
@@ -248,7 +268,7 @@ async def _channels_in_memory(
             (cosine_similarity(qvec, row["embedding"]), row["id"]) for row in rows if row.get("embedding")
         ]
         ranked["vector"] = [
-            i for score, i in sorted(vec_scored, key=lambda s: s[0], reverse=True) if score > 0
+            i for score, i in sorted(vec_scored, key=lambda s: (s[0], s[1]), reverse=True) if score > 0
         ][:per_channel]
     return ranked
 
@@ -268,7 +288,7 @@ _FTS_SQL = """
      WHERE tenant_id = :tenant AND status = 'active'
        AND (:manifest = '' OR manifest_id = :manifest)
        AND content_tsv @@ to_tsquery('english', :tsq)
-     ORDER BY ts_rank_cd(content_tsv, to_tsquery('english', :tsq)) DESC
+     ORDER BY ts_rank_cd(content_tsv, to_tsquery('english', :tsq)) DESC, id COLLATE "C" DESC
      LIMIT :lim
 """
 
@@ -277,7 +297,7 @@ _TOPIC_SQL = """
      WHERE tenant_id = :tenant AND status = 'active' AND topic_key IS NOT NULL
        AND (:manifest = '' OR manifest_id = :manifest)
        AND topic_tsv @@ to_tsquery('simple', :tsq)
-     ORDER BY ts_rank(topic_tsv, to_tsquery('simple', :tsq)) DESC
+     ORDER BY ts_rank(topic_tsv, to_tsquery('simple', :tsq)) DESC, id COLLATE "C" DESC
      LIMIT :lim
 """
 
@@ -292,7 +312,7 @@ _VECTOR_SQL = """
     SELECT id FROM memory_vectors
      WHERE tenant_id = :tenant AND status = 'active' AND embedding IS NOT NULL
        AND (:manifest = '' OR manifest_id = :manifest)
-     ORDER BY embedding <=> CAST(:vec AS vector)
+     ORDER BY embedding <=> CAST(:vec AS vector), id COLLATE "C" DESC
      LIMIT :lim
 """
 
