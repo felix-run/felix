@@ -379,3 +379,32 @@ async def test_a_zero_limit_is_an_empty_page_on_both_arms(store_settings: Any) -
     await _record_many(store_settings, [{"ts": 10}, {"ts": 20}])
 
     assert await audit.query(store_settings, TENANT, limit=0) == ([], None)
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_a_payload_postgres_would_refuse_is_stored_anyway(store_settings: Any) -> None:
+    """The JSONB-hostile payload, which the twin cannot fail on and so could not warn about.
+
+    JSON permits `\u0000` in a string and Postgres text does not, and a turn's audit payload
+    carries the user's own message — so this was a request any authenticated client could make
+    that stopped the process writing audit rows for good: the insert raises, the batch is
+    requeued at the front so nothing is dropped, and the flush loop retries the same poisoned
+    batch every interval until the buffer's ceiling starts discarding the oldest events.
+
+    The contract is the right home precisely because the twin stores anything: on the memory
+    arm this passes either way, and only the Postgres arm can tell the strip is happening.
+    """
+    await _record(
+        store_settings,
+        ts=10,
+        principal_subj="alice",
+        payload_json={"user_input": "before\x00after", "nested": [{"k\x00": "v\x00"}]},
+    )
+
+    events, _ = await audit.query(store_settings, TENANT)
+
+    assert len(events) == 1
+    payload = events[0]["payload_json"]
+    assert payload["user_input"] == "beforeafter", payload
+    assert payload["nested"] == [{"k": "v"}], payload

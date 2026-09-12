@@ -558,13 +558,24 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       that connects as a superuser with RLS off. Found while verifying the fiber claim contract
       against a live database; fixed in a separate change.
 
+- [ ] **The audit and usage reads do not set the tenant GUC, so RLS empties them.** Both open
+      their read session through `get_session_factory(...)` without `rls_tenant(tenant_id)`,
+      unlike `_write_batch`, which does. With `FELIX_DATABASE_RLS=1` on a role that cannot
+      bypass, `_rls_after_begin` resolves no tenant, sets neither setting, logs its warning,
+      and the policy filters every row — `/audit` and `/usage` return empty pages to an
+      operator whose history is there. Pre-existing, and explicitly *not* covered by the new
+      conformance arm: it connects as the database owner with `database_rls` unset, so that
+      suite must not be read as evidence about this.
+
 - [ ] **One unwritable audit event blocks every later one.** `flush_pending` requeues a batch
       whose write failed, so the compliance record survives a transient outage — and so a
       *permanently* unwritable event is retried forever, with every subsequent event stuck
       behind it until the 10k ceiling starts dropping the oldest. Two concrete triggers, both
-      invisible to the in-memory twin, which stores anything: a `payload_json` Postgres refuses
-      (a `\u0000` in a string, a non-JSON value), and a caller-supplied `id` that collides with
-      an existing row on the `(tenant_id, id)` primary key. `tests/conformance/test_audit_store.py`
+      invisible to the in-memory twin, which stores anything. The `\u0000` trigger is fixed at
+      source — `record_event` strips it, because it was reachable by any authenticated client
+      in one request — but the shape remains for a `payload_json` Postgres refuses for another
+      reason, and for a caller-supplied `id` colliding on the `(tenant_id, id)` primary key
+      (reachable only from tests today: nothing in `packages` or `apps` supplies an id). `tests/conformance/test_audit_store.py`
       now pins that a failed flush keeps its batch; what is missing is telling a transient
       failure from a poisonous one — quarantine the offending event, count it the way
       `DurableBuffer` counts drops, and let the rest through.

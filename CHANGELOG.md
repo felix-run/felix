@@ -23,6 +23,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hands. Found by a new conformance contract, and pinned over the wire as well as in the
   stores, since the cursor is a query parameter a client round-trips.
 
+- **A null byte in a message stopped the process writing audit rows.** JSON permits `\u0000`
+  in a string and Postgres text does not, and a turn's audit payload carries the user's own
+  message — so `{"content": "a\u0000b"}` was a request any authenticated client could make
+  that halted the compliance record for the life of the API process. The insert raises, the
+  batch is requeued at the front so nothing is dropped, and the flush loop retries the same
+  poisoned batch every interval until the buffer's ceiling starts discarding the oldest
+  events, with only a repeating warning to show for it. `record_event` strips it now. The
+  in-memory twin stores anything, so only the Postgres arm of the new contract can see this.
+
 - **A malformed cursor was a 500.** `/audit` and `/usage` passed a client-supplied string
   straight to `int()`, so `?cursor=abc` was a server error for what is a bad request — and a
   page for whoever watches the error rate. Both return 400 now.

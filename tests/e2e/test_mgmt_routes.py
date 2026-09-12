@@ -318,8 +318,13 @@ async def test_paging_the_audit_log_returns_every_event_once(boot: Any) -> None:
 
         whole = await app.client.get("/audit", params={"limit": 500}, headers=_as(ADMIN))
         assert whole.status_code == 200, whole.text
-        expected = {e["id"] for e in whole.json()["items"]}
-        assert len(expected) >= 2, expected
+        listed = whole.json()["items"]
+        expected = {e["id"] for e in listed}
+        # The positive control. `flush_all` swallows a failed audit flush by design, and a
+        # single turn writes two audit events of its own — so without this the pinned pair
+        # could fail to land, `expected` and `seen` would both be computed from what *is*
+        # there, and the test would quietly become the real-clock case it exists to rule out.
+        assert {"tied-a", "tied-b"} <= {e["principal_subj"] for e in listed}, listed
 
         seen: set[str] = set()
         cursor: str | None = None

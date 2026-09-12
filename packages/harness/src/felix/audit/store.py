@@ -38,6 +38,29 @@ def _event_dict(row: AuditEvent | dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _json_safe(value: Any) -> Any:
+    """Strip NUL from a payload bound for a JSONB column.
+
+    JSON permits `\u0000` in a string and Postgres text does not, and a turn's audit payload
+    is the user's own message — so `{"content": "a\u0000b"}` was a request any authenticated
+    client could make that stopped this process writing audit rows for good. The insert
+    raises, `flush_pending` requeues the batch at the front so the compliance record is not
+    dropped, and the flush loop retries the same poisoned batch every interval: audit writing
+    halts, the buffer climbs to its ceiling and begins discarding the oldest events, and the
+    only signal is a repeating warning.
+
+    Stripping is the narrow fix — it removes the one trigger a client can pull. Telling a
+    poisonous batch from a transient failure is the general one, and is on the roadmap.
+    """
+    if isinstance(value, str):
+        return value.replace("\x00", "")
+    if isinstance(value, dict):
+        return {_json_safe(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(v) for v in value]
+    return value
+
+
 def record_event(
     settings: Settings,
     tenant_id: str,
@@ -59,7 +82,7 @@ def record_event(
         "manifest_id": fields.get("manifest_id", ""),
         "principal_subj": fields.get("principal_subj", ""),
         "status": fields.get("status", ""),
-        "payload_json": redact_json(payload) if payload else {},
+        "payload_json": _json_safe(redact_json(payload)) if payload else {},
     }
     _pending.append(event)
     _fanout_to_plugin_sink(event)
