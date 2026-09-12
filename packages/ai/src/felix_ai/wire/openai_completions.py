@@ -17,6 +17,7 @@ import httpx
 
 from felix_ai.catalog import known_entry_for
 from felix_ai.context import resolve_cache_key
+from felix_ai.output_schema import is_strict
 from felix_ai.types import (
     ChatMessage,
     ModelChatResult,
@@ -45,6 +46,38 @@ def reasoning_effort_from_budget(budget: int) -> str:
     if budget < 16384:
         return "medium"
     return "high"
+
+
+# OpenAI requires a name for the schema and accepts `^[a-zA-Z0-9_-]{1,64}$`. It is echoed
+# nowhere the caller can see, so it names the source rather than the shape.
+RESPONSE_FORMAT_NAME = "felix_output_schema"
+
+
+def openai_response_format(
+    schema: dict[str, Any], *, model: str = "", allow_strict: bool = True
+) -> dict[str, Any]:
+    """`response_format` for a JSON Schema, strict when both the schema and the endpoint allow.
+
+    Tools and a response format coexist on this wire: the model may still call a tool, and it
+    is only the turn that answers in text that is constrained. That is what makes a schema
+    safe to set once for a whole react loop rather than only on its last turn.
+
+    `strict` is omitted entirely, rather than sent as `false`, for an endpoint that has not
+    declared support. Twelve providers speak this wire and `strict` is an OpenAI extension:
+    on a server that validates its request body, an unknown key is a 400 — which would turn
+    this feature into an outage for the eleven rows nobody has checked. `response_format`
+    itself is part of the chat-completions request, like `tools`, so it goes to all of them.
+    """
+    json_schema: dict[str, Any] = {"name": RESPONSE_FORMAT_NAME, "schema": schema}
+    if allow_strict:
+        json_schema["strict"] = is_strict(schema)
+        if not json_schema["strict"]:
+            logger.warning(
+                "output schema for %s is outside OpenAI strict mode (an object is open or has "
+                "an optional property), so the response shape is requested but not guaranteed",
+                model or "the model",
+            )
+    return {"type": "json_schema", "json_schema": json_schema}
 
 
 def apply_openai_thinking_cache(
@@ -239,6 +272,7 @@ class OpenAICompletionsClient(HttpModelClient):
         max_tokens: int | None,
         *,
         isolate_cache: bool = False,
+        output_schema: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         body: dict[str, Any] = {
             "model": self.route.model,
@@ -249,6 +283,18 @@ class OpenAICompletionsClient(HttpModelClient):
             body["max_tokens"] = max_tokens
         if tools:
             body["tools"] = _tools_to_openai(tools)
+        if output_schema:
+            from felix_ai.providers import provider_spec
+
+            # Imported here, not at module scope: `providers` imports this module for its
+            # wire class, so the dependency only runs one way at import time.
+            spec = provider_spec(self.route.provider)
+            body["response_format"] = openai_response_format(
+                output_schema,
+                model=self.route.model,
+                # An unknown provider is a plugin's, which has claimed nothing.
+                allow_strict=bool(spec and spec.supports_strict_schema),
+            )
         apply_openai_thinking_cache(body, self.spec, self.route.model, isolate_cache=isolate_cache)
         return body
 
@@ -260,8 +306,16 @@ class OpenAICompletionsClient(HttpModelClient):
         max_tokens: int | None,
         *,
         isolate_cache: bool = False,
+        output_schema: dict[str, Any] | None = None,
     ) -> ModelChatResult:
-        body = self._body(messages, tools, temperature, max_tokens, isolate_cache=isolate_cache)
+        body = self._body(
+            messages,
+            tools,
+            temperature,
+            max_tokens,
+            isolate_cache=isolate_cache,
+            output_schema=output_schema,
+        )
         headers = self._headers(self._auth_headers())
         async with httpx.AsyncClient(timeout=self._timeout()) as client:
             resp = await post_with_retry(
@@ -297,8 +351,16 @@ class OpenAICompletionsClient(HttpModelClient):
         max_tokens: int | None,
         *,
         isolate_cache: bool = False,
+        output_schema: dict[str, Any] | None = None,
     ) -> AsyncIterator[StreamDelta | ModelChatResult]:
-        body = self._body(messages, tools, temperature, max_tokens, isolate_cache=isolate_cache)
+        body = self._body(
+            messages,
+            tools,
+            temperature,
+            max_tokens,
+            isolate_cache=isolate_cache,
+            output_schema=output_schema,
+        )
         body["stream"] = True
         # Usage is omitted from a streamed response unless it is asked for, and without
         # it a streaming turn would meter as zero tokens.

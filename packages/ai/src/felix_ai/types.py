@@ -257,6 +257,13 @@ class ModelChatOptions:
     # next real turn misses; on Anthropic it writes a fresh cache entry, billed at a
     # premium, for a prompt that will never be read again.
     isolate_cache: bool = False
+    # A JSON Schema the assistant's final text must satisfy, enforced by the provider rather
+    # than by asking nicely in the prompt. Each wire expresses it in the one way its API
+    # supports — `response_format` on the OpenAI wire, a forced tool call on Anthropic, which
+    # has no `response_format` — so a caller states the shape once and gets it on either.
+    #
+    # `None` means free text, which is every existing call.
+    output_schema: dict[str, Any] | None = None
 
 
 @dataclass(slots=True)

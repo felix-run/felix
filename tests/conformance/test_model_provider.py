@@ -24,7 +24,14 @@ import json
 from typing import Any
 
 import pytest
-from felix_ai.types import ChatMessage, ModelChatOptions, ModelRoute, TokenUsage, ToolCall
+from felix_ai.types import (
+    ChatMessage,
+    ModelChatOptions,
+    ModelRoute,
+    StreamDelta,
+    TokenUsage,
+    ToolCall,
+)
 from felix_ai.wire.transport import ModelGatewayError
 
 WIRE_FORMATS = ["scripted", "openai", "anthropic"]
@@ -197,6 +204,69 @@ class _Arm:
                 f'data: {{"type":"message_delta","delta":{{"stop_reason":"{stop}"}},"usage":{{"output_tokens":{EXPECT_OUTPUT}}}}}',
             ]
         self.transport.status = 200
+
+    def program_structured(self, payload: dict[str, Any]) -> None:
+        """Program the reply a provider gives when an output schema was asked for.
+
+        The two wires answer in shapes with nothing in common — OpenAI returns the JSON as
+        the assistant's text, Anthropic returns a call to the tool the schema became — which
+        is exactly why this lives here. The contract below can then say the one thing that
+        must be true of both: the caller gets a JSON document and no tool call.
+        """
+        assert self.transport is not None
+        if self.wire == "openai":
+            self.program_turn(content=json.dumps(payload))
+            return
+        from felix_ai.wire.anthropic_messages import STRUCTURED_OUTPUT_TOOL
+
+        self.transport.response = _Resp(
+            200,
+            {
+                "content": [
+                    {"type": "tool_use", "id": "so_1", "name": STRUCTURED_OUTPUT_TOOL, "input": payload}
+                ],
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": EXPECT_INPUT, "output_tokens": EXPECT_OUTPUT},
+            },
+        )
+
+    def program_structured_stream(self, payload: dict[str, Any]) -> None:
+        """The same reply, streamed. Anthropic sends it as `input_json_delta`, not text."""
+        assert self.transport is not None
+        if self.wire == "openai":
+            self.program_stream(content=json.dumps(payload).replace('"', '\\"'))
+            return
+        from felix_ai.wire.anthropic_messages import STRUCTURED_OUTPUT_TOOL
+
+        fragment = json.dumps(json.dumps(payload))
+        self.transport.lines = [
+            f'data: {{"type":"message_start","message":{{"usage":{{"input_tokens":{EXPECT_INPUT}}}}}}}',
+            'data: {"type":"content_block_start","index":0,"content_block":'
+            f'{{"type":"tool_use","id":"so_1","name":"{STRUCTURED_OUTPUT_TOOL}"}}}}',
+            'data: {"type":"content_block_delta","index":0,"delta":'
+            f'{{"type":"input_json_delta","partial_json":{fragment}}}}}',
+            'data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},'
+            f'"usage":{{"output_tokens":{EXPECT_OUTPUT}}}}}',
+        ]
+        self.transport.status = 200
+
+    def output_constraint(self, body: dict[str, Any]) -> dict[str, Any] | None:
+        """The schema a request body is making the provider enforce, or `None`.
+
+        Reads the *effective* constraint, not merely a key: an Anthropic body carrying the
+        structured-output tool with `tool_choice: auto` is asking politely, which is the one
+        case this returns `None` for even though the tool is present.
+        """
+        if self.wire == "openai":
+            return ((body.get("response_format") or {}).get("json_schema") or {}).get("schema")
+        from felix_ai.wire.anthropic_messages import STRUCTURED_OUTPUT_TOOL
+
+        if (body.get("tool_choice") or {}).get("type") not in ("any", "tool"):
+            return None
+        for tool in body.get("tools") or []:
+            if tool.get("name") == STRUCTURED_OUTPUT_TOOL:
+                return tool.get("input_schema")
+        return None
 
     def program_error(self, status: int) -> None:
         if self.wire == "scripted":
@@ -745,3 +815,105 @@ async def test_no_credential_means_no_auth_header(arm: _Arm) -> None:
     assert "Authorization" not in headers
     assert "x-api-key" not in headers
     assert headers["Content-Type"] == "application/json"
+
+
+# --- structured output, where the two wires have nothing in common ---------------------------
+
+# Strict-subset on purpose: `is_strict` decides whether OpenAI is asked to *guarantee* the
+# shape or merely prefer it, and a schema that drops out of strict mode would make the
+# assertions below pass while the guarantee they describe was absent.
+OUTPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {"answer": {"type": "string"}, "confidence": {"type": "number"}},
+    "required": ["answer", "confidence"],
+    "additionalProperties": False,
+}
+
+
+@pytest.mark.parametrize("arm", ["openai", "anthropic"], indirect=True)
+@pytest.mark.asyncio
+async def test_an_output_schema_is_enforced_on_every_path(arm: _Arm) -> None:
+    """A schema that reaches only `chat` is a feature that works until the caller streams.
+
+    `isolate_cache` shipped exactly that way — threaded onto `_stream` and missed on
+    `stream_turn`, the path the react loop actually takes — so this asserts both, and asserts
+    the provider is being made to *enforce* the shape rather than merely being shown it.
+    """
+    assert arm.transport is not None
+    opts = ModelChatOptions(output_schema=OUTPUT_SCHEMA)
+
+    arm.program_structured({"answer": "4", "confidence": 1.0})
+    await arm.client.chat(_user(), [], opts)
+    arm.program_structured_stream({"answer": "4", "confidence": 1.0})
+    async for _ in arm.client.stream_turn(_user(), [], opts):
+        pass
+
+    assert len(arm.transport.sent) == 2
+    for body in arm.transport.sent:
+        assert arm.output_constraint(body) == OUTPUT_SCHEMA
+
+
+@pytest.mark.parametrize("arm", ["openai", "anthropic"], indirect=True)
+@pytest.mark.asyncio
+async def test_the_text_only_stream_is_constrained_too(arm: _Arm) -> None:
+    """`stream()` is the third public path — the one `react.py` takes for a provider with no
+    `stream_turn` — and the test above names "every path". It is threaded in the base class, so
+    this is cheap; it is also exactly where `isolate_cache` was dropped once."""
+    assert arm.transport is not None
+    arm.program_structured_stream({"answer": "4", "confidence": 1.0})
+    async for _ in arm.client.stream(_user(), [], ModelChatOptions(output_schema=OUTPUT_SCHEMA)):
+        pass
+    assert arm.output_constraint(arm.transport.sent[-1]) == OUTPUT_SCHEMA
+
+
+@pytest.mark.parametrize("arm", ["openai", "anthropic"], indirect=True)
+@pytest.mark.asyncio
+async def test_a_turn_without_a_schema_constrains_nothing(arm: _Arm) -> None:
+    """The counterpart, so the test above cannot pass by constraining every request.
+
+    It also pins the thing a forced-tool implementation gets wrong most easily: an Anthropic
+    body that always carries `tool_choice` would stop the model answering in text at all.
+    """
+    assert arm.transport is not None
+    arm.program_turn(content="hello")
+    await arm.client.chat(_user(), [])
+    assert arm.output_constraint(arm.transport.sent[-1]) is None
+    assert "tool_choice" not in arm.transport.sent[-1]
+
+
+@pytest.mark.parametrize("arm", ["openai", "anthropic"], indirect=True)
+@pytest.mark.asyncio
+async def test_a_structured_answer_is_json_text_on_either_wire(arm: _Arm) -> None:
+    """The reason the harness can set one option and stop caring which provider answers.
+
+    Without the Anthropic fold the loop would see a call to a tool no manifest bound, fail to
+    find it, and answer with a tool error — so this is the assertion that separates the
+    feature working from it reading as broken.
+    """
+    payload = {"answer": "4", "confidence": 0.5}
+    opts = ModelChatOptions(output_schema=OUTPUT_SCHEMA)
+
+    arm.program_structured(payload)
+    result = await arm.client.chat(_user(), [], opts)
+    # The request as well as the reply. On the OpenAI arm the wire passes content through
+    # untouched, so the three assertions below held even with `response_format` never emitted:
+    # that arm alone said nothing about this feature.
+    assert arm.output_constraint(arm.transport.sent[-1]) == OUTPUT_SCHEMA
+    assert json.loads(result.message.content) == payload
+    assert result.message.tool_calls is None, "the answer must not reach the loop as a tool call"
+    assert result.stop_reason == "end_turn", "a structured answer ends the turn"
+
+    arm.program_structured_stream(payload)
+    streamed = [item async for item in arm.client.stream_turn(_user(), [], opts)]
+    final = streamed[-1]
+    assert json.loads(final.message.content) == payload
+    assert final.message.tool_calls is None
+    assert final.stop_reason == "end_turn"
+
+    # And it must arrive as a text delta, not only on the final result. Anthropic streams a
+    # structured answer as `input_json_delta` on a tool block, and everything downstream
+    # renders text deltas only — react re-emits `text_delta`, `/v1` filters to
+    # `REPLY_TEXT_EVENTS` — so without one a client streaming a structured agent gets `[DONE]`
+    # and no content. Whole rather than incremental: half a JSON document is not an answer.
+    text = "".join(i.text for i in streamed if isinstance(i, StreamDelta) and i.kind == "text")
+    assert json.loads(text) == payload

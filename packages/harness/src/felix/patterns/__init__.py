@@ -133,7 +133,12 @@ async def _build_plan_execute(ctx: PatternBuildContext) -> Agent:
     )
 
 
-register_pattern("deep", _build_deep, kind="single-agent")
+# `deep` alone among the composites: `_run` has no `deep` branch, so it forwards to the inner
+# react agent — which `_build_deep` builds from this same context — and composes nothing of its
+# own afterwards. The other five reach a model for the answering turn through
+# `_DelegatingAgent`, which passes no options, so a schema would shape an intermediate turn at
+# best. Flipping one of these to `True` means threading `output_schema` onto that turn first.
+register_pattern("deep", _build_deep, kind="single-agent", honours_output_schema=True)
 register_pattern("router", _build_router, kind="multi-agent")
 register_pattern("parallel", _build_parallel, kind="multi-agent")
 register_pattern("groupchat", _build_groupchat, kind="multi-agent")
