@@ -28,9 +28,11 @@ from felix_ai.types import (
 )
 from felix_ai.wire.base import (
     HttpModelClient,
+    inline_parts,
     iter_sse_json,
     map_stop,
     parse_tool_arguments,
+    split_data_url,
     tool_json_schema,
 )
 from felix_ai.wire.transport import ModelGatewayError, post_with_retry
@@ -124,41 +126,59 @@ _ANTHROPIC_STOP: dict[str, StopReason] = {
 }
 
 
+def _anthropic_image_block(url: str, media_type: str | None) -> dict[str, Any] | None:
+    """One image block, in whichever of Anthropic's two source forms the URL calls for.
+
+    Anthropic has no URL form for inline bytes: a `data:` URL in a `url` source is a 400, and
+    that is what this wire sent for every inline image — so an image an OpenAI SDK sends the
+    documented way reached `gpt-4o` and failed on `claude-sonnet`, this harness's default.
+    The OpenAI wire needs no equivalent; a data URL is native there.
+
+    `None` only for an empty URL. `inline_parts` has already converted every other data URL to
+    base64, so there is no longer a well-formed image this can decline to send.
+    """
+    if not url:
+        return None
+    inline = split_data_url(url)
+    if inline is not None:
+        media, payload = inline
+        return {"type": "image", "source": {"type": "base64", "media_type": media, "data": payload}}
+    return {
+        "type": "image",
+        "source": {"type": "url", "url": url, "media_type": media_type or "image/png"},
+    }
+
+
 def _anthropic_user_or_plain(m: ChatMessage) -> dict[str, Any]:
-    """Convert a non-tool message for Anthropic, including image blocks."""
-    if m.role == "user" and (m.attachments or m.content_blocks):
-        blocks: list[dict[str, Any]] = []
-        if m.content_blocks:
-            for b in m.content_blocks:
-                if b.type == "text" and b.text:
-                    blocks.append({"type": "text", "text": b.text})
-                elif b.url:
-                    blocks.append(
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "url",
-                                "url": b.url,
-                                "media_type": b.media_type or "image/png",
-                            },
-                        }
-                    )
-        else:
-            if m.content:
-                blocks.append({"type": "text", "text": m.content})
-            for att in m.attachments or []:
-                blocks.append(
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "url",
-                            "url": att.url,
-                            "media_type": att.media_type or "image/png",
-                        },
-                    }
-                )
-        return {"role": "user", "content": blocks or m.content}
-    return {"role": m.role, "content": m.content}
+    """Convert a non-tool message for Anthropic, including image blocks.
+
+    Images render on a user turn only, which is the sole place either API accepts one. That
+    is the half that changed on the *other* wire, which used to send an image on an assistant
+    turn; here a non-user message already resolved to `m.content`, and the parser fills that
+    from the text parts. The join below is for a message built by hand rather than parsed,
+    where the text lives only in the blocks — `content: ""` is itself an Anthropic 400.
+    """
+    parts = inline_parts(m)
+    images = [p for p in parts if p.type != "text" and p.url]
+    if not images:
+        # A plain string, which is what every text turn sends and what the provider's prompt
+        # cache keys on. Normalising unconditionally turned each of those into a one-element
+        # parts list — accepted by the API, and a different request body for every turn in the
+        # repo, for nothing.
+        return {"role": m.role, "content": m.content}
+    if m.role != "user":
+        text = "\n".join(p.text for p in parts if p.type == "text" and p.text)
+        return {"role": m.role, "content": text or m.content}
+
+    blocks: list[dict[str, Any]] = []
+    for part in parts:
+        if part.type == "text" and part.text:
+            blocks.append({"type": "text", "text": part.text})
+        elif part.url:
+            image = _anthropic_image_block(part.url, part.media_type)
+            if image is not None:
+                blocks.append(image)
+    return {"role": "user", "content": blocks or m.content}
 
 
 def _anthropic_thinking_blocks(m: ChatMessage) -> list[dict[str, Any]]:

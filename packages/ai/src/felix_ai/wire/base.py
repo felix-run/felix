@@ -23,6 +23,7 @@ import httpx
 
 from felix_ai.types import (
     ChatMessage,
+    ContentBlock,
     ModelChatOptions,
     ModelChatResult,
     ModelConfig,
@@ -128,6 +129,105 @@ def _repair_json(text: str) -> str:
             continue
         out.append(ch)
     return "".join(out)
+
+
+def split_data_url(url: str) -> tuple[str, str] | None:
+    """`(media_type, base64 payload)` for a base64 `data:` URL, else `None`.
+
+    A data URL is how an image arrives inline — it is the form OpenAI's own API documents,
+    so it is what an SDK sends and what a caller copies from their docs. The two wires then
+    want opposite things with it: OpenAI takes the whole URL verbatim, and Anthropic has no
+    URL form for inline bytes at all and needs the media type and the payload apart.
+
+    `None` for a data URL that is not base64 (`data:text/plain,hi`), because re-labelling
+    percent-encoded bytes as base64 would be a lie the provider catches rather than a
+    conversion. `None` also for anything that is not a data URL, which is the ordinary case.
+    """
+    if not url.startswith("data:"):
+        return None
+    head, separator, payload = url.partition(",")
+    if not separator:
+        return None
+    meta = head[len("data:") :]
+    # Parameters may sit between the type and `;base64` — `data:image/png;charset=x;base64,…`
+    # is well-formed — so the marker is looked for at the end and the type at the front.
+    if not meta.endswith(";base64"):
+        return None
+    return (meta.split(";", 1)[0] or "application/octet-stream"), payload
+
+
+def canonical_inline_url(url: str) -> str:
+    """A `data:` URL in the one form every provider takes: base64.
+
+    A percent-encoded data URL is legal and common — `data:image/svg+xml,<svg …>` is how an
+    SVG is written inline — and neither provider accepts one. Re-*labelling* those bytes as
+    base64 would be a lie; re-*encoding* them is a conversion, and it is the difference
+    between a caller's valid image being sent and being dropped.
+
+    Anything that is not a data URL comes back unchanged, which is every ordinary image.
+    """
+    if not url.startswith("data:") or split_data_url(url) is not None:
+        return url
+    head, separator, payload = url.partition(",")
+    if not separator:
+        return url
+    import base64
+    from urllib.parse import unquote_to_bytes
+
+    media = head[len("data:") :].split(";", 1)[0] or "application/octet-stream"
+    encoded = base64.b64encode(unquote_to_bytes(payload)).decode("ascii")
+    return f"data:{media};base64,{encoded}"
+
+
+def inline_parts(m: ChatMessage) -> list[ContentBlock]:
+    """The content parts a wire should render, from whichever shape the message carries.
+
+    One message can arrive in two shapes and a *conversation* uses both: `content_blocks` is
+    what a request parses into, and `session/types.py` persists and restores only
+    `attachments` — so turn one of a thread takes one branch and every later turn takes the
+    other. Each wire used to implement that precedence itself, which is four renderings of one
+    image and the reason the Anthropic defect this module now guards against sat unnoticed on
+    two of them: a divergence is invisible until the second turn.
+
+    Image URLs come back canonicalised, so a wire decides only how to spell a block, never
+    what one is.
+    """
+    if m.content_blocks:
+        return [
+            ContentBlock(
+                type=b.type,
+                text=b.text,
+                url=canonical_inline_url(b.url) if b.url else b.url,
+                media_type=_declared_media_type(b.url, b.media_type),
+                detail=b.detail,
+            )
+            for b in m.content_blocks
+        ]
+    parts: list[ContentBlock] = []
+    if m.content:
+        parts.append(ContentBlock(type="text", text=m.content))
+    for att in m.attachments or []:
+        url = canonical_inline_url(att.url)
+        parts.append(
+            ContentBlock(
+                type="image_url",
+                url=url,
+                media_type=_declared_media_type(url, att.media_type),
+                detail=att.detail,
+            )
+        )
+    return parts
+
+
+def _declared_media_type(url: str | None, declared: str | None) -> str | None:
+    """The media type the caller actually encoded, preferring the data URL's own.
+
+    `ContentBlock.media_type` is `image/png` for anything that arrived unlabelled — a parse
+    default, not a declaration — so announcing it for a JPEG is a provider error that a test
+    corpus of PNGs cannot see.
+    """
+    inline = split_data_url(url) if url else None
+    return inline[0] if inline else declared
 
 
 def tool_json_schema(tool: ToolSchema) -> dict[str, Any]:
@@ -348,8 +448,11 @@ class HttpModelClient(ABC):
 
 __all__ = [
     "HttpModelClient",
+    "canonical_inline_url",
+    "inline_parts",
     "iter_sse_json",
     "map_stop",
     "parse_tool_arguments",
+    "split_data_url",
     "tool_json_schema",
 ]

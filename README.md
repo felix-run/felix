@@ -512,6 +512,20 @@ A caller can ask for a shape per request too: `POST /v1/chat/completions` accept
 unchanged. A manifest that declares `spec.output_schema` overrides it — an agent published with an
 answer contract keeps answering to it.
 
+Images, on `/chat` and on `/v1/chat/completions`, in OpenAI's content-parts shape:
+
+```json
+{"role": "user", "content": [
+  {"type": "text", "text": "what is in this picture?"},
+  {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="}}
+]}
+```
+
+A `data:` URL is sent to the provider as inline bytes — OpenAI takes the URL verbatim, Anthropic
+gets a `base64` source, since it has no URL form for inline data — and an `https://` URL is
+passed through as a URL for the provider to fetch. A request is bounded by the 1 MiB body limit;
+there is no upload endpoint yet, so an image arrives with the message that uses it.
+
 Storage and execution:
 
 - Large tool outputs spill via `spec.artifacts`

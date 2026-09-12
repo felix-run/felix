@@ -29,6 +29,7 @@ from felix_ai.types import (
 )
 from felix_ai.wire.base import (
     HttpModelClient,
+    inline_parts,
     iter_sse_json,
     map_stop,
     parse_tool_arguments,
@@ -180,26 +181,25 @@ def _messages_to_openai(messages: list[ChatMessage]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for m in messages:
         content: Any = m.content
-        if m.attachments or (m.content_blocks and any(b.type != "text" for b in m.content_blocks)):
+        normalised = inline_parts(m)
+        images = [p for p in normalised if p.type != "text" and p.url]
+        # Only a message that actually carries an image becomes a parts list: a plain string is
+        # what every text turn sends and what the provider's cache keys on.
+        if images and m.role == "user":
             parts: list[dict[str, Any]] = []
-            if m.content_blocks:
-                for b in m.content_blocks:
-                    if b.type == "text" and b.text:
-                        parts.append({"type": "text", "text": b.text})
-                    elif b.type in {"image_url", "image"} and b.url:
-                        img: dict[str, Any] = {"url": b.url}
-                        if b.detail:
-                            img["detail"] = b.detail
-                        parts.append({"type": "image_url", "image_url": img})
-            else:
-                if m.content:
-                    parts.append({"type": "text", "text": m.content})
-                for att in m.attachments or []:
-                    img = {"url": att.url}
-                    if att.detail:
-                        img["detail"] = att.detail
+            for part in normalised:
+                if part.type == "text" and part.text:
+                    parts.append({"type": "text", "text": part.text})
+                elif part.url:
+                    img: dict[str, Any] = {"url": part.url}
+                    if part.detail:
+                        img["detail"] = part.detail
                     parts.append({"type": "image_url", "image_url": img})
             content = parts or m.content
+        elif images:
+            # Images are a user-turn shape on this API too. Rendering the text rather than
+            # dropping to an empty string keeps the two wires saying the same thing.
+            content = "\n".join(p.text for p in normalised if p.type == "text" and p.text) or m.content
         item: dict[str, Any] = {"role": m.role, "content": content}
         if m.tool_call_id:
             item["tool_call_id"] = m.tool_call_id
