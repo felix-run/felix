@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **One broken recall channel silently returned no memories at all.** `recall()` runs three
+  channels in one transaction, and the comment above their error handler promised a deployment
+  mid-upgrade would "lose a channel, not the turn". It did not: the first failure aborted the
+  transaction, so every later channel died on `InFailedSqlTransaction` and the turn got nothing
+  — logged at DEBUG. Reproduced by dropping a generated column, and confirmed to have been
+  position-dependent, which is why it could sit there: breaking the *last* channel looked fine.
+  Each statement now runs in its own savepoint, verified across all eight combinations of
+  broken channels. The failure log line is now `recall channel vector unavailable` rather than
+  `recall vector channel unavailable`; nothing in the tree matched the old string.
+
+- **`recall(kinds=[...])` could return nothing while a matching memory was stored.** The filter
+  ran in the ranking pass, after each channel had been cut to its budget — so a match outside
+  that window was filtered against an answer it had already been excluded from. Reachable by an
+  agent through the recall tool's `kind` argument and by an operator through
+  `GET /memory/recall?kind=`. The predicate is in all six channels now.
+
 - **Which memories an agent was given could differ between two identical recalls.** `recall()`
   runs three channels on each backend and fuses them by reciprocal rank. Every channel sorted
   on its score alone — a small integer for the text channels, so ties are the normal case —

@@ -609,6 +609,18 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       (a write on a read path) or drop the column in a revision. Until one of those, the column
       exists and nothing populates it.
 
+- [ ] **The per-channel savepoint costs a round trip each, and that scales with latency.**
+      Measured: +1.0 to +1.15 ms per recall on loopback, *flat* as the corpus grows from 500 to
+      20,500 rows — six extra round trips (`SAVEPOINT` and `RELEASE` per channel) at ~0.19 ms
+      each, so it is fixed overhead rather than corpus-dependent. On a managed Postgres at
+      ~1 ms RTT that is roughly +6 ms per recall, which is 4–6x the tiebreak cost below and
+      lands inline in a turn. It buys the thing the comment always claimed and did not deliver:
+      one broken channel loses a channel rather than the turn. If the latency matters, the
+      cheaper shape is optimistic — run without savepoints and, on the first failure, roll back
+      once and retry only the remaining channels inside them — which costs nothing on the path
+      that always succeeds. More code for a path that only opens mid-upgrade, so measure the
+      real deployment before taking it.
+
 - [ ] **The recall tiebreak costs an HNSW index scan its selectivity.** Measured at 20,500
       rows: `ORDER BY embedding <=> :vec` alone is an `Index Scan using idx_memvec_hnsw`
       pulling 16 rows in ~0.35 ms, while adding any tiebreak turns it into an
