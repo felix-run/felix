@@ -42,6 +42,31 @@ x-felix-env: &felix-env
   FELIX_SECRETS_BACKEND: ${FELIX_SECRETS_BACKEND:-env}
   FELIX_GCP_PROJECT: ${FELIX_GCP_PROJECT:-}
   FELIX_AWS_REGION: ${FELIX_AWS_REGION:-}
+  # OTLP export, off by default. Reachable from the base stack on purpose: a backend is
+  # something Felix *sends to*, so pointing at one — a collector, a hosted vendor, a
+  # console you self-host elsewhere — must not require running that backend inside this
+  # project. Set these in .env and `make up` exports; no overlay involved.
+  #
+  # The exporter lives behind the otel extra, so set FELIX_DOCKER_EXTRAS=otel as well.
+  # Without it the process logs one warning and exports nothing; `felix doctor` fails the
+  # "otel exporter is installed" row rather than leaving that to be discovered by an
+  # empty dashboard.
+  FELIX_OTEL_ENABLED: ${FELIX_OTEL_ENABLED:-false}
+  FELIX_OTEL_ENDPOINT: ${FELIX_OTEL_ENDPOINT:-http://localhost:4317}
+  FELIX_OTEL_PROTOCOL: ${FELIX_OTEL_PROTOCOL:-grpc}
+  FELIX_OTEL_SERVICE_NAME: ${FELIX_OTEL_SERVICE_NAME:-felix}
+  # `k=v,k2=v2`. The only way to authenticate to a hosted ingest — an Authorization
+  # header, an API-key header, whatever the destination asks for.
+  FELIX_OTEL_HEADERS: ${FELIX_OTEL_HEADERS:-}
+  FELIX_OTEL_INSECURE: ${FELIX_OTEL_INSECURE:-true}
+  FELIX_OTEL_SAMPLE_RATIO: ${FELIX_OTEL_SAMPLE_RATIO:-1.0}
+  # Both mirror `Settings`, and they are not symmetric. Content is OFF: prompts and
+  # completions on spans are outside governance content screening. Identity is ON:
+  # `user.id` and the tenant id DO reach the backend, which is right for a collector you
+  # run and a decision to make deliberately for one you do not — set it false there.
+  FELIX_OTEL_CAPTURE_CONTENT: ${FELIX_OTEL_CAPTURE_CONTENT:-false}
+  FELIX_OTEL_CAPTURE_IDENTITY: ${FELIX_OTEL_CAPTURE_IDENTITY:-true}
+  FELIX_OTEL_LOGS: ${FELIX_OTEL_LOGS:-false}
 
 # One image for every Felix process. Lean by default; FELIX_DOCKER_EXTRAS=aws,gcp adds
 # the cloud SDKs. Overlays that pull a published image `!reset` the build (see gcp).
@@ -66,6 +91,14 @@ services:
       <<: *felix-env
       # Nothing but the database is needed to migrate; the object store is not opened.
       FELIX_OBJECT_STORE: memory
+      # Neither this nor the scheduler calls `setup_observability`, so inheriting an
+      # enabled exporter from the anchor would make `felix doctor` report export posture
+      # for a process that exports nothing. Off explicitly rather than by accident — and
+      # with the credential dropped, since a header no process here can use is a secret
+      # sitting in `docker inspect` for nothing.
+      FELIX_OTEL_ENABLED: "false"
+      FELIX_OTEL_HEADERS: ""
+
     depends_on:
       postgres:
         condition: service_healthy
@@ -140,6 +173,11 @@ services:
     command: ["felix-scheduler"]
     environment:
       <<: *felix-env
+      # Enqueues; it does not run turns and never calls `setup_observability`. See the
+      # note on `migrate` — compose.observability.yml declines to enable it here for the
+      # same reason, and the anchor must not enable it behind that decision's back.
+      FELIX_OTEL_ENABLED: "false"
+      FELIX_OTEL_HEADERS: ""
       FELIX_OBJECT_STORE: ${FELIX_OBJECT_STORE:-fs}
       FELIX_S3_ENDPOINT: ${FELIX_S3_ENDPOINT:-http://minio:9000}
       FELIX_S3_ACCESS_KEY: ${MINIO_ROOT_USER:-felix}

@@ -29,6 +29,11 @@ services:
     environment:
       FELIX_OTEL_ENABLED: "true"
       FELIX_OTEL_ENDPOINT: http://otel-collector:4317
+      # Blanked, not inherited. compose.yml passes FELIX_OTEL_HEADERS through for hosted
+      # ingests, so an operator with a vendor credential in .env who then runs this overlay
+      # would send that Authorization header to a local collector that never asked for one.
+      # This overlay redirects the destination; the credential must not follow it.
+      FELIX_OTEL_HEADERS: ""
       FELIX_OTEL_PROTOCOL: ${FELIX_OTEL_PROTOCOL:-grpc}
       FELIX_OTEL_SAMPLE_RATIO: ${FELIX_OTEL_SAMPLE_RATIO:-1.0}
       # Prompts and completions stay off spans unless you opt in; a tracing backend is an
@@ -51,6 +56,11 @@ services:
     environment:
       FELIX_OTEL_ENABLED: "true"
       FELIX_OTEL_ENDPOINT: http://otel-collector:4317
+      # Blanked, not inherited. compose.yml passes FELIX_OTEL_HEADERS through for hosted
+      # ingests, so an operator with a vendor credential in .env who then runs this overlay
+      # would send that Authorization header to a local collector that never asked for one.
+      # This overlay redirects the destination; the credential must not follow it.
+      FELIX_OTEL_HEADERS: ""
       FELIX_OTEL_PROTOCOL: ${FELIX_OTEL_PROTOCOL:-grpc}
       FELIX_OTEL_SAMPLE_RATIO: ${FELIX_OTEL_SAMPLE_RATIO:-1.0}
       FELIX_OTEL_CAPTURE_CONTENT: ${FELIX_OTEL_CAPTURE_CONTENT:-false}

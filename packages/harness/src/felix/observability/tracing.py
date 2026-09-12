@@ -319,6 +319,34 @@ def otel_transport(settings: Any) -> tuple[str, bool]:
     return "grpc", not bool(getattr(settings, "otel_insecure", True))
 
 
+def exporter_available(settings: Any) -> bool:
+    """Whether `setup_observability` could actually build an exporter for this config.
+
+    Lives here rather than in the caller that wants it (`felix doctor`) for the same
+    reason `otel_transport` does: a second copy of "which module does this protocol
+    need" is a copy that goes stale, and the way it goes stale is silent — a doctor row
+    that says the exporter is present while `_build_exporter` raises ImportError, or the
+    reverse. Protocol-specific on purpose: an environment carrying only the http exporter
+    while `FELIX_OTEL_PROTOCOL=grpc` exports nothing, and answering "one of them is here"
+    would call that healthy.
+
+    The SDK is checked too, because `setup_observability` needs it before it ever reaches
+    the exporter, and it ships in the same extra.
+    """
+    from importlib.util import find_spec
+
+    protocol, _ = otel_transport(settings)
+    modules = (
+        "opentelemetry.sdk.trace",
+        f"opentelemetry.exporter.otlp.proto.{protocol}.trace_exporter",
+    )
+    try:
+        return all(find_spec(name) is not None for name in modules)
+    except ImportError, ValueError:
+        # find_spec raises rather than answering None when a parent package is missing.
+        return False
+
+
 def _build_exporter(settings: Any, endpoint: str, headers: dict[str, str]) -> Any:
     """OTLP exporter for the configured protocol.
 

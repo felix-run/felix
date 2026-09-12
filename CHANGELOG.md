@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Traces can be sent to a backend Felix does not host.** Every `FELIX_OTEL_*` setting is
+  now passed through `deploy/docker/compose.yml`, so `make up` plus a few lines of `.env`
+  exports to any OTLP destination — a collector, a hosted vendor, a console self-hosted
+  elsewhere. `x-felix-env` carried no OTLP key and there is no `env_file`, so the only way
+  to get a span out of the Compose stack was to run an overlay that stood a backend up
+  *inside* the project. That is how `compose.memoturn.yml` came to run one vendor's API,
+  worker and console on Felix's own Postgres, Valkey and MinIO: 8 services, a database
+  bootstrap, a blob bucket and a reverse proxy for a product Felix only sends to. That
+  overlay and `make up-memoturn` are **removed**; point `FELIX_OTEL_ENDPOINT` at the
+  instance instead, and run the product from its own compose project or its cloud.
+
+- **`make down` takes the whole project down.** Every overlay shares the project name
+  `felix`, so services one overlay started are orphans to the next; `down` named only the
+  base file and left them running. A stack accrued four overlays' worth of containers,
+  several receiving nothing because the last `up` had recreated `api` and `worker` without
+  their env. `down` now passes `--remove-orphans`, and `make down-all` adds `--volumes`.
+
+- **`felix doctor` reports whether the OTLP exporter is installed**, in every environment
+  including `development` — which is what Compose defaults to, so a row placed with the
+  production posture checks would have been skipped for exactly the operator it is for.
+  `FELIX_OTEL_ENABLED=true` on a lean image logs one warning at startup and exports nothing
+  while every other signal says the deployment is healthy. The check asks the question the
+  exporter asks — `felix.observability.tracing.exporter_available` selects the module by
+  `FELIX_OTEL_PROTOCOL`, so an environment carrying only the http exporter under `grpc` is
+  reported as broken rather than fine.
+
+- **`make up-observability` no longer forwards `FELIX_OTEL_HEADERS`.** Now that the base
+  stack passes that variable through, an operator with a hosted-ingest credential in `.env`
+  who then ran the overlay would have sent that `Authorization` header to a local collector
+  that never asked for one. The overlay redirects the destination; the credential does not
+  follow it. `migrate` and `scheduler` pin export off and drop the header for the same
+  reason — neither calls `setup_observability`, so both would have been carrying a secret
+  they cannot use.
+
 ### Fixed
 
 - **The facts an agent remembers could differ between two identical requests.** `list_active`
