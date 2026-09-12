@@ -81,22 +81,29 @@ async def _recall(settings: Any, query: str, **kw: Any) -> list[Any]:
 
 @parametrized
 @pytest.mark.asyncio
-async def test_recall_is_deterministic(memory_settings: Any, one_millisecond: None) -> None:
-    """The weakest property, and the one that was not true.
+async def test_the_answer_does_not_depend_on_the_order_facts_were_written(
+    memory_settings: Any, one_millisecond: None
+) -> None:
+    """Two identical calls agreeing proves nothing, so this writes the corpus twice.
 
-    Every candidate here scores identically: same token overlap, same kind, same default
-    importance, same frozen `created_at`. So every key above the id ties, and before the id
-    was added the order came from insertion on one backend and from the query plan on the
-    other.
+    Within one process the twin's dict iteration is fixed and Postgres answers two identical
+    statements from one plan, so back-to-back calls agree whatever the sort key is — the
+    version of this test that asserted that was green under every pre-fix variant. Writing
+    the same facts in the opposite order is what makes insertion order differ, which is the
+    fallback the channels used to have.
     """
-    facts = [await _put(memory_settings, f"alpha beta gamma {i}") for i in range(6)]
-    assert len({f["id"] for f in facts}) == 6, "the corpus collapsed; ids must be distinct"
-
+    forwards = [await _put(memory_settings, f"alpha beta gamma {i}") for i in range(6)]
     first = await _recall(memory_settings, "alpha beta", limit=3)
-    again = await _recall(memory_settings, "alpha beta", limit=3)
 
-    assert [h.id for h in first] == [h.id for h in again], "two identical recalls disagreed"
-    assert len(first) == 3
+    memory_settings_second = memory_settings
+    for fact in forwards:
+        await memory_store.forget(memory_settings_second, TENANT, fact["id"])
+    backwards = [await _put(memory_settings, f"alpha beta gamma {i}") for i in reversed(range(6))]
+
+    second = await _recall(memory_settings, "alpha beta", limit=3)
+
+    assert {f["id"] for f in backwards} == {f["id"] for f in forwards}, "the rewrite changed the corpus"
+    assert [h.id for h in second] == [h.id for h in first], "the answer depended on write order"
 
 
 @parametrized
@@ -145,14 +152,53 @@ async def test_a_tie_inside_one_channel_resolves_the_same_way(
 
 @parametrized
 @pytest.mark.asyncio
-async def test_the_kind_filter_applies_on_both_arms(memory_settings: Any, one_millisecond: None) -> None:
-    await _put(memory_settings, "alpha beta one", kind="fact")
-    await _put(memory_settings, "alpha beta two", kind="preference")
+async def test_the_kind_filter_applies_before_the_channel_cut(
+    memory_settings: Any, one_millisecond: None
+) -> None:
+    """A corpus larger than the over-fetch window, because that is where this broke.
+
+    `kinds` used to be applied only in `_rank`, after each channel had been cut to
+    `per_channel` — so a matching memory outside the window was filtered against an answer it
+    had already been excluded from, and `recall(kinds=["fact"])` returned nothing while the
+    fact was stored and active. Reproduced on the twin with twenty `event` rows and one
+    `fact`; a two-row corpus sits inside the window and cannot fail on it.
+
+    The `fact` here is written *last* and carries the default importance, so nothing but the
+    filter can keep it: it is the least preferred row in the channel's own tie order.
+    """
+    for i in range(20):
+        await _put(memory_settings, f"alpha beta note {i}", kind="event")
+    curated = await _put(memory_settings, "alpha beta curated 7", kind="fact")
 
     facts = await _recall(memory_settings, "alpha beta", kinds=["fact"])
 
-    assert [h.kind for h in facts] == ["fact"]
-    assert {h.kind for h in await _recall(memory_settings, "alpha beta")} == {"fact", "preference"}
+    assert [h.id for h in facts] == [curated["id"]], [h.content for h in facts]
+    assert {h.kind for h in await _recall(memory_settings, "alpha beta", limit=25)} == {"event", "fact"}
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_recall_is_scoped_to_one_manifest_and_can_span_them(
+    memory_settings: Any, one_millisecond: None
+) -> None:
+    """The branch production takes, which nothing exercised.
+
+    `GET /memory/search` declares `manifest_id: str = ""`, so the default is to recall across
+    *every* manifest a tenant has — and `put_memory` hashes the manifest into the id precisely
+    so one tenant can hold two. Every other case here routes through a helper that hard-codes
+    one manifest, so the predicate never excluded anything and never had to include anything.
+    """
+    mine = await _put(memory_settings, "alpha beta shared wording")
+    theirs = await memory_store.put_memory(
+        memory_settings, TENANT, content="alpha beta shared wording", manifest_id="other"
+    )
+    assert mine["id"] != theirs["id"], "the manifest is supposed to be part of the id"
+
+    scoped = await recall_mod.recall(memory_settings, TENANT, "alpha beta", manifest_id=MANIFEST)
+    across = await recall_mod.recall(memory_settings, TENANT, "alpha beta", manifest_id="")
+
+    assert [h.id for h in scoped] == [mine["id"]]
+    assert {h.id for h in across} == {mine["id"], theirs["id"]}
 
 
 @parametrized

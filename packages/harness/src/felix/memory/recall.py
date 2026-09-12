@@ -113,6 +113,7 @@ async def recall(
             query,
             manifest_id=manifest_id,
             per_channel=per_channel,
+            kinds=kinds,
             embedder=embedder,
         )
     else:
@@ -122,6 +123,7 @@ async def recall(
             query,
             manifest_id=manifest_id,
             per_channel=per_channel,
+            kinds=kinds,
             embedder=embedder,
         )
 
@@ -218,6 +220,20 @@ async def _embed_query(embedder: Any | None, query: str) -> list[float] | None:
 # --- in-memory twin --------------------------------------------------------------
 
 
+def _tiebreak(row: dict[str, Any]) -> tuple[float, int, str]:
+    """What decides a channel tie, in the order `_rank` would decide it.
+
+    A channel is cut to `per_channel` *before* fusion, and nothing downstream can recover a
+    candidate the cut removed — so the cut has to prefer what the ranking prefers rather than
+    whatever sorts first. The id is last, and only there to make the order total.
+    """
+    return (
+        float(row.get("importance") or 0.5),
+        int(row.get("created_at") or 0),
+        str(row.get("id") or ""),
+    )
+
+
 async def _channels_in_memory(
     settings: Settings,
     tenant_id: str,
@@ -225,6 +241,7 @@ async def _channels_in_memory(
     *,
     manifest_id: str,
     per_channel: int,
+    kinds: list[str] | None,
     embedder: Any | None,
 ) -> dict[str, list[str]]:
     """The same three channels, over the dict backend.
@@ -238,6 +255,11 @@ async def _channels_in_memory(
         if t == tenant_id
         and str(row.get("status") or memory_store.ACTIVE) == memory_store.ACTIVE
         and (not manifest_id or row.get("manifest_id") == manifest_id)
+        # `kinds` here rather than only in `_rank`: the channel is cut to `per_channel`
+        # *before* fusion, so filtering afterwards could discard every matching row and
+        # return nothing while the memory is stored and active. Reproduced with twenty
+        # `event` rows and one `fact`: `recall(kinds=["fact"])` returned [].
+        and (not kinds or row.get("kind") in kinds)
     ]
     q_tokens = _tokens(query)
     ranked: dict[str, list[str]] = {}
@@ -246,17 +268,22 @@ async def _channels_in_memory(
     # case rather than the edge, and sorting on the score alone left the order to come from
     # `_memory_rows` insertion. Each channel is then cut to `per_channel`, and RRF scores on
     # *position* — so a different candidate set entering fusion is amplified, not absorbed.
-    scored = [(len(q_tokens & _tokens(str(row.get("content") or ""))), row["id"]) for row in rows]
-    ranked["fts"] = [i for n, i in sorted(scored, key=lambda s: (s[0], s[1]), reverse=True) if n][
+    # Ties break by importance, then recency, then id — the order `_rank` states, applied
+    # where it can still change the answer. Ending on the id alone made the cut *decided* but
+    # arbitrary: a curated `importance=1.0` row could be dropped here for having an unlucky
+    # content hash, and nothing downstream can recover a candidate the cut removed. The id
+    # stays last so the result is still total.
+    scored = [(len(q_tokens & _tokens(str(row.get("content") or ""))), _tiebreak(row)) for row in rows]
+    ranked["fts"] = [k[-1] for n, k in sorted(scored, key=lambda s: (s[0], s[1]), reverse=True) if n][
         :per_channel
     ]
 
     topic_scored = [
-        (len(q_tokens & _tokens(str(row.get("topic_key") or "").replace(".", " "))), row["id"])
+        (len(q_tokens & _tokens(str(row.get("topic_key") or "").replace(".", " "))), _tiebreak(row))
         for row in rows
         if row.get("topic_key")
     ]
-    ranked["topic"] = [i for n, i in sorted(topic_scored, key=lambda s: (s[0], s[1]), reverse=True) if n][
+    ranked["topic"] = [k[-1] for n, k in sorted(topic_scored, key=lambda s: (s[0], s[1]), reverse=True) if n][
         :per_channel
     ]
 
@@ -265,10 +292,12 @@ async def _channels_in_memory(
         from felix.embeddings import cosine_similarity
 
         vec_scored = [
-            (cosine_similarity(qvec, row["embedding"]), row["id"]) for row in rows if row.get("embedding")
+            (cosine_similarity(qvec, row["embedding"]), _tiebreak(row))
+            for row in rows
+            if row.get("embedding")
         ]
         ranked["vector"] = [
-            i for score, i in sorted(vec_scored, key=lambda s: (s[0], s[1]), reverse=True) if score > 0
+            k[-1] for score, k in sorted(vec_scored, key=lambda s: (s[0], s[1]), reverse=True) if score > 0
         ][:per_channel]
     return ranked
 
@@ -288,7 +317,9 @@ _FTS_SQL = """
      WHERE tenant_id = :tenant AND status = 'active'
        AND (:manifest = '' OR manifest_id = :manifest)
        AND content_tsv @@ to_tsquery('english', :tsq)
-     ORDER BY ts_rank_cd(content_tsv, to_tsquery('english', :tsq)) DESC, id COLLATE "C" DESC
+       AND (cardinality(CAST(:kinds AS text[])) = 0 OR kind = ANY(CAST(:kinds AS text[])))
+     ORDER BY ts_rank_cd(content_tsv, to_tsquery('english', :tsq)) DESC,
+              importance DESC, created_at DESC, id COLLATE "C" DESC
      LIMIT :lim
 """
 
@@ -297,7 +328,9 @@ _TOPIC_SQL = """
      WHERE tenant_id = :tenant AND status = 'active' AND topic_key IS NOT NULL
        AND (:manifest = '' OR manifest_id = :manifest)
        AND topic_tsv @@ to_tsquery('simple', :tsq)
-     ORDER BY ts_rank(topic_tsv, to_tsquery('simple', :tsq)) DESC, id COLLATE "C" DESC
+       AND (cardinality(CAST(:kinds AS text[])) = 0 OR kind = ANY(CAST(:kinds AS text[])))
+     ORDER BY ts_rank(topic_tsv, to_tsquery('simple', :tsq)) DESC,
+              importance DESC, created_at DESC, id COLLATE "C" DESC
      LIMIT :lim
 """
 
@@ -316,7 +349,9 @@ _VECTOR_SQL = """
     SELECT id FROM memory_vectors
      WHERE tenant_id = :tenant AND status = 'active' AND embedding IS NOT NULL
        AND (:manifest = '' OR manifest_id = :manifest)
-     ORDER BY embedding <=> CAST(:vec AS vector), id COLLATE "C" DESC
+       AND (cardinality(CAST(:kinds AS text[])) = 0 OR kind = ANY(CAST(:kinds AS text[])))
+     ORDER BY embedding <=> CAST(:vec AS vector),
+              importance DESC, created_at DESC, id COLLATE "C" DESC
      LIMIT :lim
 """
 
@@ -328,13 +363,23 @@ async def _channels_in_postgres(
     *,
     manifest_id: str,
     per_channel: int,
+    kinds: list[str] | None,
     embedder: Any | None,
 ) -> dict[str, list[str]]:
     from sqlalchemy import text as sa_text
 
     ranked: dict[str, list[str]] = {}
     tsq = _tsquery_or(query)
-    params = {"tenant": tenant_id, "manifest": manifest_id, "tsq": tsq, "lim": per_channel}
+    # An empty list means "no filter", expressed as a parameter rather than by building two
+    # statements: `:kinds = '{}'` is a comparison Postgres can plan, and one SQL string per
+    # channel is one thing to keep true.
+    params = {
+        "tenant": tenant_id,
+        "manifest": manifest_id,
+        "tsq": tsq,
+        "lim": per_channel,
+        "kinds": list(kinds or []),
+    }
     qvec = await _embed_query(embedder, query)
 
     factory = get_session_factory(settings=settings)

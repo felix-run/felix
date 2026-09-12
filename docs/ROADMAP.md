@@ -579,9 +579,14 @@ cycle's, and the route contracts below are the next capability-adjacent step.
 - [ ] **Promote the ordering rule to a scanner.** It has now been fixed six times — the audit
       and usage cursors, `list_runs`, `list_jobs`'s collation, `list_active` twice — and two
       more shapes are still open below. The repo's own rule is that a lesson learned this often
-      earns a structural gate rather than another round of review. The shape: over
-      `packages/harness/src/felix/**/store.py`, every `order_by(...)` and every `sort(key=...)`
-      whose result is then truncated must end on a primary-key component. It must carry a floor
+      earns a structural gate rather than another round of review. The shape: over *any* module
+      that truncates an ordered list, every `order_by(...)` and every `sort(key=...)` whose
+      result is then cut must end on a primary-key component. Not `**/store.py` — that glob is
+      what let `memory/recall.py` go unexamined through a survey written for exactly this
+      defect, because its channels are hand-rolled `sorted(...)[:n]` rather than an `ORDER BY`.
+      The site floor has to name `memory/recall.py`, `documents/store.py` and the session
+      modules, or the gate will miss the seventh instance the way the survey missed the sixth.
+      It must carry a floor
       on the number of ordering sites it matched, because a scanner that quietly stops matching
       is the failure mode this repo has already shipped once — an AST invariant here matched
       `timeout=<Constant>` while every literal it hunted lived inside `httpx.Timeout(...)`.
