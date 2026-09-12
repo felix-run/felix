@@ -5,7 +5,14 @@
 input=$(cat)
 [ "$(printf '%s' "$input" | jq -r '.stop_hook_active // false')" = "true" ] && exit 0
 
-cd "${CLAUDE_PROJECT_DIR:-.}" 2>/dev/null || exit 0
+# The tree this session is working in, which is not `CLAUDE_PROJECT_DIR` when the session
+# runs in a git worktree -- an everyday shape here. Reading the project root reported
+# *another* session's changes as this one's: it blocked twice in a single session naming
+# files that session had never opened, each time demanding documentation for someone
+# else's work. `cwd` is a documented field on every hook payload, `Stop` included.
+workdir=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null)
+[ -n "$workdir" ] || workdir="${CLAUDE_PROJECT_DIR:-.}"
+cd "$workdir" 2>/dev/null || exit 0
 changed=$({ git diff --name-only HEAD 2>/dev/null; git ls-files --others --exclude-standard 2>/dev/null; } | sort -u)
 [ -z "$changed" ] && exit 0
 
