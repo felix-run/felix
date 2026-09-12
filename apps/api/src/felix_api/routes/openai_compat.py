@@ -286,6 +286,15 @@ async def chat_completions(body: ChatCompletionsRequest, request: Request) -> An
     completion = _Completion.new(body.model)
     try:
         output_schema = _requested_output_schema(body.response_format)
+        if output_schema is not None:
+            # On the same path the user turn just took. This text reaches the model on every
+            # turn of the loop, and it arrived on `model_options` rather than in `messages`,
+            # which is the one place `apply_inbound_screening` does not look.
+            from felix.governance.inbound import screen_output_schema
+
+            await screen_output_schema(resolved.manifest, output_schema, settings)
+    except InboundScreeningError as exc:
+        return _error_json(client_safe_message(exc), "content_filter", exc.detail, exc.status_code)
     except InvalidOutputSchema as exc:
         # 400 like every other client error on this surface: an OpenAI SDK maps it to
         # `BadRequestError`, where 422 lands in a generic `APIStatusError`.

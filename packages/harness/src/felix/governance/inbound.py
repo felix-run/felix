@@ -362,6 +362,67 @@ async def screen_tool_arguments(
     return args
 
 
+# A schema with more strings than this is not describing an answer shape. Lower than the tool
+# bound because a schema's strings are titles and descriptions, not data.
+MAX_SCHEMA_STRINGS = 128
+
+
+async def screen_output_schema(manifest: Manifest, schema: dict[str, Any], settings: Settings) -> None:
+    """Screen the text of a caller-supplied output schema, or refuse the request.
+
+    `response_format` on `/v1` carries a JSON Schema from an unauthenticated client, and every
+    string leaf of it — `title`, `description`, a property name — is serialised verbatim into
+    the provider request. `apply_inbound_screening` iterates *messages*, and this rides on
+    `model_options` instead, so the operator's inbound screening and input guardrails never saw
+    it. A control switched on and bypassed at the field level.
+
+    It is a worse channel than a user turn, not an equal one: options are resolved once and
+    reused for the whole run, so this text sits in front of the model on *every* turn of the
+    loop rather than on one.
+
+    Refused rather than redacted, for the reason `screen_tool_arguments` refuses: there is no
+    model to warn, so quarantining is not available — and rewriting a schema's description
+    would silently change the contract the caller is holding. A schema that trips the screener
+    is not a schema this deployment will enforce.
+    """
+    screening = manifest.spec.content_screening
+    guardrails = manifest.spec.guardrails
+    pii_on_input = input_pii_enabled(guardrails)
+    if not screening.enabled and not pii_on_input:
+        return
+    texts = [t for t in _strings_in(schema) if t]
+    if not texts:
+        return
+    joined = "\n".join(texts)
+    if len(texts) > MAX_SCHEMA_STRINGS or len(joined) > MAX_SCREEN_CHUNKS * SCREEN_CHARS:
+        _note(manifest, "output_schema", "oversize")
+        raise InboundScreeningError("output_schema_too_large", status_code=422)
+    if screening.enabled:
+        for text in texts:
+            verdict = await screen_content(text, settings=settings, block_on_injection=True, redact_pii=False)
+            if verdict.denied:
+                _note(manifest, "output_schema", "denied")
+                raise InboundScreeningError("content_screening_denied", status_code=422)
+        model_id = (screening.model or "").strip()
+        if model_id:
+            result = await _screen_chunks(settings, joined, model_id)
+            if result.unavailable:
+                _note(manifest, "output_schema", "unavailable")
+                if screening.on_flag == "block":
+                    raise InboundScreeningError(
+                        f"content_screening_unavailable:{result.reason}", status_code=503
+                    )
+            elif result.flagged:
+                logger.info("inbound screening flagged an output schema score=%.2f", result.score)
+                _note(manifest, "output_schema", "denied")
+                raise InboundScreeningError("content_screening_denied", status_code=422)
+    if pii_on_input and any(redact_pii(t).matched for t in texts):
+        # Always a refusal, `block_on_match` or not: the redacted alternative is a schema whose
+        # descriptions no longer say what the caller wrote.
+        _note(manifest, "output_schema", "denied")
+        raise InboundScreeningError("pii_blocked", status_code=422)
+
+
 # Set on `RequestContext.extras` by an HTTP route that screened the turn before it built
 # the agent — to answer 422 before a stream opens, or before a durable run is enqueued.
 # The compiled agent then skips its own pass. Forgetting to set it costs a second screen
