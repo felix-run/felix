@@ -14,21 +14,7 @@ CMD=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty')
 . "$(dirname "${BASH_SOURCE[0]}")/lib/command.sh"
 
 deny() { printf '%s\n' "$1" >&2; exit 2; }
-
-# The branch of the checkout the command will actually run in, not of `CLAUDE_PROJECT_DIR`.
-# Those differ under a git worktree: the project root stays on `main` while the worktree is
-# on a feature branch, so reading the root made every commit from a worktree warn about
-# committing to main and made `--force-with-lease` -- the remedy this hook recommends --
-# unusable there. A guard that fires on correct work is noise, and this one fired on every
-# commit of a long session. `pr-quality-gate.sh` reads `.cwd` for the same reason.
-#
-# `-u GIT_DIR -u GIT_WORK_TREE` because an exported GIT_DIR outranks `-C` and would answer
-# about that repo from anywhere.
-hook_cwd=$(printf '%s' "$INPUT" | jq -r '.cwd // empty')
-[ -n "$hook_cwd" ] || hook_cwd="${CLAUDE_PROJECT_DIR:-.}"
-current_branch() {
-  env -u GIT_DIR -u GIT_WORK_TREE git -C "$hook_cwd" rev-parse --abbrev-ref HEAD 2>/dev/null
-}
+current_branch() { git -C "${CLAUDE_PROJECT_DIR:-.}" rev-parse --abbrev-ref HEAD 2>/dev/null; }
 
 committing=0
 while IFS= read -r seg; do
