@@ -319,8 +319,8 @@ def otel_transport(settings: Any) -> tuple[str, bool]:
     return "grpc", not bool(getattr(settings, "otel_insecure", True))
 
 
-def exporter_available(settings: Any) -> bool:
-    """Whether `setup_observability` could actually build an exporter for this config.
+def trace_exporter_available(settings: Any) -> bool:
+    """Whether `setup_observability` could actually build a *span* exporter for this config.
 
     Lives here rather than in the caller that wants it (`felix doctor`) for the same
     reason `otel_transport` does: a second copy of "which module does this protocol

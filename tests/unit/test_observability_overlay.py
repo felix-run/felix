@@ -106,3 +106,35 @@ def test_the_api_scrape_carries_a_credential() -> None:
         "the felix-api scrape has no credential; /metrics is not public because its labels "
         "carry tenant-supplied manifest ids and remote MCP tool names"
     )
+
+
+def test_the_overlay_pins_every_part_of_the_transport() -> None:
+    """A hosted-ingest config in `.env` must not follow the overlay's redirect.
+
+    compose.yml passes every FELIX_OTEL_* setting through, so an operator whose `.env`
+    holds the documented hosted config — protocol http, insecure false, a credential in
+    the headers — would otherwise carry all three into this overlay: a TLS handshake
+    against the collector's plaintext port, or an HTTP POST to its gRPC one, and a vendor
+    Authorization header sent to a collector that never asked for it.
+
+    Every span dropped, with the stack looking healthy — which is the failure this overlay
+    exists to make visible. The overlay owns the destination, so it owns the transport:
+    each of these must be a literal, not an interpolation of the operator's value.
+    """
+    services = _load(OVERLAY)["services"]
+    for name in ("api", "worker"):
+        env = services[name]["environment"]
+        endpoint = str(env["FELIX_OTEL_ENDPOINT"])
+        for key in ("FELIX_OTEL_ENDPOINT", "FELIX_OTEL_PROTOCOL", "FELIX_OTEL_INSECURE"):
+            assert "${" not in str(env[key]), (
+                f"{name} takes {key} from the environment; a hosted-ingest value in .env "
+                "would be applied to the local collector"
+            )
+        assert str(env["FELIX_OTEL_HEADERS"]) == "", (
+            f"{name} would send an ingest credential to a collector that never asked for one"
+        )
+        # The collector's two receivers listen on different ports; the pinned pair must agree.
+        port = "4317" if str(env["FELIX_OTEL_PROTOCOL"]) == "grpc" else "4318"
+        assert endpoint.endswith(f":{port}"), (
+            f"{name} points {env['FELIX_OTEL_PROTOCOL']} at {endpoint}, which is the other receiver's port"
+        )

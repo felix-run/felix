@@ -1,4 +1,4 @@
-.PHONY: help schema install install-full install-warehouse lint fmt type test test-cov check check-ci conformance dev dev-key up up-lite up-gcp up-full up-pooled up-replicas up-observability up-temporal metrics-token down down-all cli seed migrate doctor docker-build
+.PHONY: help schema install install-full install-warehouse lint fmt type test test-cov check check-ci changelog conformance dev dev-key up up-lite up-gcp up-full up-pooled up-replicas up-observability up-temporal metrics-token down down-all cli seed migrate doctor docker-build
 
 COMPOSE := docker compose -f deploy/docker/compose.yml --project-directory .
 COMPOSE_LITE := $(COMPOSE) -f deploy/docker/compose.lite.yml
@@ -78,6 +78,11 @@ test:
 test-cov:
 	./scripts/test.sh -q --cov --cov-report=term:skip-covered --cov-fail-under=79
 
+changelog:
+	# What the next release section would say, from changelog.d/. Entries are files so two
+	# pull requests cannot conflict over one — see changelog.d/README.md.
+	@python3 scripts/changelog.py --preview
+
 schema:
 	# schemas/manifest.schema.json backs the yaml-language-server header in
 	# manifests/*.yaml; test_invariants.py fails when it drifts from the models.
@@ -97,6 +102,7 @@ check-ci: check
 	uv run felix bundle-manifests
 	uv run python scripts/gen-manifest-schema.py --check
 	uv run python scripts/check-scalar-sri.py
+	python3 scripts/changelog.py --check
 	python3 scripts/validate-toolkit.py
 	FELIX_ALLOW_INSECURE=true FELIX_AUTH_MODE=none \
 		FELIX_DATABASE_URL=memory://ci FELIX_OBJECT_STORE=memory \

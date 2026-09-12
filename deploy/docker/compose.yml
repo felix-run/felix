@@ -91,14 +91,12 @@ services:
       <<: *felix-env
       # Nothing but the database is needed to migrate; the object store is not opened.
       FELIX_OBJECT_STORE: memory
-      # Neither this nor the scheduler calls `setup_observability`, so inheriting an
-      # enabled exporter from the anchor would make `felix doctor` report export posture
-      # for a process that exports nothing. Off explicitly rather than by accident — and
-      # with the credential dropped, since a header no process here can use is a secret
-      # sitting in `docker inspect` for nothing.
-      FELIX_OTEL_ENABLED: "false"
+      # No credential: this process never calls `setup_observability`, so an ingest header
+      # here is a secret sitting in `docker inspect` for nothing. Export itself is left
+      # enabled by the anchor rather than pinned off — pinning it would silently drop the
+      # spans of whatever this process emits next, which is the "half a deployment's
+      # spans" failure, inverted.
       FELIX_OTEL_HEADERS: ""
-
     depends_on:
       postgres:
         condition: service_healthy
@@ -173,10 +171,8 @@ services:
     command: ["felix-scheduler"]
     environment:
       <<: *felix-env
-      # Enqueues; it does not run turns and never calls `setup_observability`. See the
-      # note on `migrate` — compose.observability.yml declines to enable it here for the
-      # same reason, and the anchor must not enable it behind that decision's back.
-      FELIX_OTEL_ENABLED: "false"
+      # Enqueues; it does not run turns and never calls `setup_observability`. Same as
+      # `migrate`: no ingest credential it cannot use, and no pin on export itself.
       FELIX_OTEL_HEADERS: ""
       FELIX_OBJECT_STORE: ${FELIX_OBJECT_STORE:-fs}
       FELIX_S3_ENDPOINT: ${FELIX_S3_ENDPOINT:-http://minio:9000}
