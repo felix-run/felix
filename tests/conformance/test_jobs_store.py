@@ -149,6 +149,13 @@ async def test_deleting_a_job_that_is_not_there_reports_it(store_settings: Any) 
 @parametrized
 @pytest.mark.asyncio
 async def test_deleting_one_tenants_job_leaves_anothers(store_settings: Any) -> None:
+    """The tenant predicate *on the cascade*, which is a different property from the cascade.
+
+    Only `OTHER` has a run here, so there is no `TENANT` run for a missing cascade to leave
+    behind — removing the run delete entirely leaves this green. What it catches is the delete
+    losing its tenant filter, which would take another tenant's history with it. The test above
+    is the one that proves runs are deleted at all.
+    """
     await _put(store_settings, tenant_id=TENANT)
     await _put(store_settings, tenant_id=OTHER)
     await jobs.record_run(store_settings, OTHER, JOB, started_at=10)
@@ -260,6 +267,12 @@ async def test_jobs_are_listed_in_a_stable_order(store_settings: Any) -> None:
 
     The twin returned dict insertion order and Postgres whatever the plan produced, so two
     consecutive calls could disagree and the twin could not stand in for the store.
+
+    The memory arm is what pins this. The Postgres arm passes for the wrong reason: `jobs_pkey`
+    is `(tenant_id, name)`, so an index-only scan hands back name order for free, and reverting
+    the `ORDER BY` leaves it green — forcing a sequential scan over the same rows returns
+    insertion order and would fail. The fix is still right and still necessary; this arm just
+    cannot prove it, and should not be read as having done so.
     """
     for name in ("zeta", "alpha", "mu"):
         await _put(store_settings, name=name)

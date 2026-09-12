@@ -603,6 +603,15 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       millisecond differing between them, which no contract would catch because every test
       asserts set equality over pages. Fix if a caller-supplied id ever becomes ordinary.
 
+- [ ] **An index for the job run history's ordering.** `list_runs` filters
+      `(tenant_id, job_name)` and orders by `(started_at DESC, run_id DESC)`, while the only
+      index on `job_runs` is the primary key `(tenant_id, job_name, run_id)` — so the ordering
+      column is unindexed and the plan sorts a job's entire history before the `LIMIT` applies,
+      unbounded in runs per job. A `(tenant_id, job_name, started_at DESC, run_id DESC)` index
+      makes it a plain index scan. Read off the index set rather than measured, so measure
+      first. Same family as the audit and usage item below, and one revision could carry all
+      three.
+
 - [ ] **An index for the audit and usage listings' new ordering.** Both now
       `ORDER BY ts DESC, id DESC` so the keyset cursor has a total order to page on, while
       `idx_audit_tenant_ts` and `idx_usage_tenant_ts` cover `(tenant_id, ts)` only. Measured at
