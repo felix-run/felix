@@ -9,6 +9,7 @@ from typing import Any
 from pydantic import ValidationError as PydanticValidationError
 from ruamel.yaml import YAML
 
+from felix.manifests.compat import drop_retired, log_dropped, one_line
 from felix.manifests.schema import Manifest, assert_valid_manifest_name
 
 _yaml = YAML(typ="safe")
@@ -62,10 +63,40 @@ def _render(exc: PydanticValidationError) -> str:
 
 
 def parse_manifest(raw: Any) -> Manifest:
+    """Validate authored input — strictly, which is the point.
+
+    Every caller here is someone *writing* a manifest: a PUT body, a YAML file, a bundled
+    agent. `extra=forbid` is what makes `spec.toolz` an error instead of a field that
+    silently configures nothing. Reading one back out of a store is a different question;
+    see `parse_stored_manifest`.
+    """
     try:
         return Manifest.model_validate(raw)
     except PydanticValidationError as exc:
         raise ManifestParseError(_render(exc)) from exc
+
+
+def parse_stored_manifest(raw: Any, *, origin: str) -> Manifest:
+    """Validate a manifest that was already accepted once and has been sitting in a store.
+
+    Identical to `parse_manifest` except that fields the schema has since retired are
+    dropped with a warning rather than failing the load. A row written in August cannot
+    be re-authored by its operator retroactively, and refusing to serve it turns a field
+    removal into an outage that surfaces as a failed request — see `compat.RETIRED`.
+
+    Everything else still fails: a typo is not a retired field, and the strictness that
+    catches it is worth keeping on both paths.
+    """
+    cleaned, dropped = drop_retired(raw)
+    log_dropped(dropped, origin=origin)
+    try:
+        return parse_manifest(cleaned)
+    except ManifestParseError as exc:
+        # Named, because the anonymity is what made the original outage invisible: a bare
+        # `spec.model.region: Extra inputs are not permitted` says nothing about *which*
+        # stored manifest is unserviceable, and the operator's next question is always
+        # which one. `parse_manifest` cannot say — only the caller knows the row.
+        raise ManifestParseError(f"stored manifest {one_line(origin)}: {exc}") from exc
 
 
 def load_manifest_data(data: str | bytes, *, source: str = "inline") -> Manifest:
@@ -137,4 +168,5 @@ __all__ = [
     "load_manifest_data",
     "load_manifest_file",
     "parse_manifest",
+    "parse_stored_manifest",
 ]
