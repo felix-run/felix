@@ -15,7 +15,7 @@ from typing import Any
 import pytest
 from felix.config import Settings, get_settings
 from felix.db import migrations
-from felix_cli.main import Finding, _posture_findings
+from felix_cli.main import Finding, _otel_findings, _posture_findings
 
 ROOT = Path(__file__).resolve().parents[2]
 BASE = {
@@ -121,7 +121,7 @@ def test_otel_transport_is_judged_the_way_the_exporter_decides_it(
     protocol: str, endpoint: str, insecure: bool, expect: bool
 ) -> None:
     rows = _by_label(
-        _posture_findings(
+        _otel_findings(
             _settings(
                 environment="production",
                 auth_mode="api_key",
@@ -138,7 +138,7 @@ def test_otel_transport_is_judged_the_way_the_exporter_decides_it(
 
 def test_prompts_in_spans_are_a_finding_outside_development() -> None:
     rows = _by_label(
-        _posture_findings(
+        _otel_findings(
             _settings(
                 environment="staging",
                 auth_mode="api_key",
@@ -213,3 +213,101 @@ def test_doctor_prints_the_findings_the_skip_and_the_schema_state(
         FELIX_ALLOW_INSECURE="true",
     )
     assert "production posture checks skipped — FELIX_ENVIRONMENT=development" in dev
+
+
+@pytest.mark.parametrize("environment", ["development", "production"])
+@pytest.mark.parametrize(("installed", "expect"), [(False, False), (True, True)])
+def test_doctor_reports_whether_the_otel_exporter_is_installed(
+    monkeypatch: pytest.MonkeyPatch, environment: str, installed: bool, expect: bool
+) -> None:
+    """`FELIX_OTEL_ENABLED=true` without the extra exports nothing and logs one warning.
+
+    Both environments, and that is the point rather than thoroughness: `_posture_findings`
+    returns early under `development`, which is what `deploy/docker/compose.yml` defaults
+    to — so a row placed there would be skipped for exactly the operator this exists for
+    (`make up`, forget `FELIX_DOCKER_EXTRAS=otel`, run doctor, see nothing).
+
+    Both arms of `installed`, because a row hardcoded to `False` would be just as green
+    here and would show a permanent FAIL to everyone who installed the extra correctly.
+    """
+    # `_otel_findings` imports it from the harness at call time, which is the name the
+    # running code resolves — patching a copy on felix_cli would pass while doctor did not.
+    monkeypatch.setattr("felix.observability.tracing.exporter_available", lambda _s: installed)
+    rows = _by_label(
+        _otel_findings(
+            _settings(
+                environment=environment,
+                auth_mode="api_key",
+                auth_api_keys="k",
+                otel_enabled=True,
+                otel_protocol="http",
+            )
+        )
+    )
+    assert "otel exporter is installed" in rows, (
+        f"doctor is silent about a missing exporter under FELIX_ENVIRONMENT={environment}"
+    )
+    row = rows["otel exporter is installed"]
+    assert row.passed is expect
+    assert "FELIX_OTEL_PROTOCOL=http" in row.detail
+    assert "FELIX_DOCKER_EXTRAS=otel" in row.remedy
+
+
+@pytest.mark.parametrize(
+    ("protocol", "present", "expect"),
+    [
+        ("grpc", "opentelemetry.exporter.otlp.proto.grpc.trace_exporter", True),
+        ("grpc", "opentelemetry.exporter.otlp.proto.http.trace_exporter", False),
+        ("http", "opentelemetry.exporter.otlp.proto.http.trace_exporter", True),
+        ("http", "opentelemetry.exporter.otlp.proto.grpc.trace_exporter", False),
+    ],
+)
+def test_the_exporter_probe_answers_for_the_configured_protocol(
+    monkeypatch: pytest.MonkeyPatch, protocol: str, present: str, expect: bool
+) -> None:
+    """ "One of the two is installed" would call a broken configuration healthy.
+
+    `_build_exporter` imports exactly one module, chosen by `otel_transport`. An
+    environment carrying only the http exporter under `FELIX_OTEL_PROTOCOL=grpc` exports
+    nothing, which is the failure the row exists to preempt — so the probe has to ask the
+    same question the exporter does.
+    """
+    import importlib.util
+
+    from felix.observability.tracing import exporter_available
+
+    real = importlib.util.find_spec
+
+    def only(name: str) -> object | None:
+        if name.startswith("opentelemetry.exporter") and name != present:
+            return None
+        return real(name)
+
+    monkeypatch.setattr(importlib.util, "find_spec", only)
+    assert exporter_available(_settings(otel_enabled=True, otel_protocol=protocol)) is expect
+
+
+def test_the_exporter_probe_survives_a_missing_parent_package() -> None:
+    """`find_spec` raises rather than answering None when a parent is absent.
+
+    A lean install has no `opentelemetry` package at all, so the probe's own import
+    machinery is the thing most likely to be missing — an unhandled raise there would turn
+    `felix doctor` into a traceback on precisely the deployment it is meant to diagnose.
+    """
+    import importlib.util
+
+    from felix.observability.tracing import exporter_available
+
+    def raiser(name: str) -> object:
+        raise ModuleNotFoundError(f"No module named {name!r}")
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(importlib.util, "find_spec", raiser)
+        assert exporter_available(_settings(otel_enabled=True)) is False
+
+
+def test_the_otel_rows_are_absent_when_export_is_off() -> None:
+    """Every otel row is conditional on export being on; a disabled exporter is not a fault."""
+    from felix_cli.main import _otel_findings
+
+    assert _otel_findings(_settings(environment="production", auth_mode="api_key")) == []
