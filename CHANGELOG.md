@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The facts an agent remembers could differ between two identical requests.** `list_active`
+  sorted by writer trust, then importance, then recency, and truncated to a limit — with no
+  key below those three, and all three tie routinely: facts are written in a batch so
+  `created_at` collides, trust is one of a handful of values, importance usually defaults. So
+  which fact fell off the end was whichever the backend happened to return, and these are the
+  facts injected into a compiled prompt. Both sorts (prioritised and not) and `as_of` now end
+  in the row id, which is the second half of the primary key. Which facts tie is still
+  arbitrary — there is no finer recency signal to recover — but it is the same arbitrary
+  answer on both backends and between calls.
+
 - **A job's "most recent runs" could be its oldest.** `list_runs` ordered by `started_at`
   alone, and `started_at` is milliseconds — a sweep records a burst of runs inside one. With
   no tiebreak, the most recent two of five was whichever two the backend happened to return,

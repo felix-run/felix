@@ -34,10 +34,13 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from sqlalchemy.orm import InstrumentedAttribute
     from sqlalchemy.sql.elements import ColumnElement as _ColumnElement
 
-    # Every caller passes a mapped attribute, which *is* a `ColumnElement` at runtime — `ty`
-    # models the descriptor rather than what it resolves to, so naming both keeps the callers
-    # clean instead of asking each of them for a cast.
-    Column = ColumnElement[Any] | InstrumentedAttribute[Any]
+    # Every caller passes a mapped attribute. `InstrumentedAttribute` is *not* a subclass of
+    # `ColumnElement` — it satisfies Core constructs through the `__clause_element__` coercion
+    # protocol — so the union is the accurate annotation rather than a workaround, and a
+    # reader tempted to collapse it back or add a cast would be writing a bug.
+    #
+    # Not named `Column`: that is the most overloaded identifier in SQLAlchemy.
+    OrderableColumn = ColumnElement[Any] | InstrumentedAttribute[Any]
 
 logger = logging.getLogger("felix.cursors")
 
@@ -101,12 +104,12 @@ def position_of(row: Any) -> Position:
     return int(row.ts), str(row.id)
 
 
-def keyset_order(ts_col: Column, id_col: Column) -> tuple[Any, Any]:
+def keyset_order(ts_col: OrderableColumn, id_col: OrderableColumn) -> tuple[Any, Any]:
     """`ORDER BY ts DESC, id DESC` — the total order the cursor addresses positions in."""
     return ts_col.desc(), id_col.desc()
 
 
-def keyset_before(ts_col: Column, id_col: Column, cursor: str) -> _ColumnElement[bool]:
+def keyset_before(ts_col: OrderableColumn, id_col: OrderableColumn, cursor: str) -> _ColumnElement[bool]:
     """`(ts, id) < (cursor_ts, cursor_id)`, as a Postgres row comparison.
 
     A row constructor, not an `AND` chain: Postgres compares it lexicographically, which is

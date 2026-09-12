@@ -93,10 +93,12 @@ async def list_jobs(settings: Settings, tenant_id: str) -> list[dict[str, Any]]:
     factory = get_session_factory(settings=settings)
     async with factory() as db:
         # `COLLATE "C"` so the two arms agree. `ORDER BY name` uses the database collation,
-        # and CI's image initdb's to en_US.utf8, where `Zeta` sorts before `alpha` — the
-        # opposite of Python's code-point sort on the twin. Job names are unvalidated URL path
-        # segments, so mixed case and punctuation are reachable, unlike the `uuid4().hex` ids
-        # the same hazard is documented as benign for in `felix/cursors.py`.
+        # and CI's image inherits en_US.utf8, which sorts `alpha` before `Zeta` and ignores
+        # punctuation at the primary level — where Python's code-point sort on the twin puts
+        # every capital first. `C` *is* byte order, and UTF-8 byte order is code-point order,
+        # so collating to it makes the two identical for all input rather than just ASCII.
+        # Job names are unvalidated URL path segments, so mixed case and punctuation are
+        # reachable, unlike the `uuid4().hex` ids the same hazard is benign for.
         ordered = select(Job).where(Job.tenant_id == tenant_id).order_by(collate(Job.name, "C"))
         found = (await db.scalars(ordered)).all()
         return [_job_dict(r) for r in found]
@@ -157,7 +159,7 @@ async def put_job(
             "last_status": existing.get("last_status", "") if existing else "",
             "last_error": existing.get("last_error", "") if existing else "",
             "created_at": existing["created_at"] if existing else ts,
-            "payload_json": payload or {},
+            "payload_json": deepcopy(payload) if payload else {},
             "enabled": enabled,
         }
         _memory_jobs[(tenant_id, name)] = row
@@ -173,14 +175,14 @@ async def put_job(
                 schedule=schedule,
                 manifest_id=manifest_id,
                 created_at=ts,
-                payload_json=payload or {},
+                payload_json=deepcopy(payload) if payload else {},
                 enabled=enabled,
             )
             db.add(row)
         else:
             row.schedule = schedule
             row.manifest_id = manifest_id
-            row.payload_json = payload or {}
+            row.payload_json = deepcopy(payload) if payload else {}
             row.enabled = enabled
         await db.commit()
         return _job_dict(row)
@@ -238,17 +240,19 @@ async def delete_job(settings: Settings, tenant_id: str, name: str) -> bool:
 async def list_runs(
     settings: Settings, tenant_id: str, name: str, *, limit: int = 20
 ) -> list[dict[str, Any]]:
-    # Clamped here rather than at the route, so both arms inherit it. The route takes an
-    # unbounded `limit`, and a negative one sliced the twin's list from the end (a 200 with
-    # the wrong rows) while Postgres refused it outright (a 500) — the same request, two
-    # answers, depending only on which backend was configured.
+    # Clamped here as well as at the route, so direct callers get the same answer from both
+    # arms. The route rejects a negative `limit` now, but before it did, one sliced the twin's
+    # list from the end (a 200 with the wrong rows) while Postgres refused it outright (a
+    # 500) — the same request, two answers, depending only on which backend was configured.
     limit = max(0, limit)
     if _use_memory(settings):
         items = [_run_dict(row) for (t, j, _), row in _memory_runs.items() if t == tenant_id and j == name]
         # `run_id` breaks the tie, and it is the third part of the primary key, so the order
         # is total. It is also always `uuid4().hex` from `record_run` — lowercase hex, which
         # sorts identically under every collation — so unlike `Job.name` above, the two arms
-        # agree here without a `COLLATE`.
+        # agree here without a `COLLATE` — under every *common* collation, at least; an ICU
+        # one with `numeric=true` would compare digit runs numerically. The cost of that is
+        # which of two runs sharing a millisecond comes first, so it does not earn one.
         #
         # `started_at` is milliseconds and a sweep records a burst of runs, so ties
         # are ordinary — and with none, "the most recent two of five" was whichever two the
@@ -295,7 +299,7 @@ async def record_run(
             "finished_at": finished,
             "status": status,
             "error": error,
-            "result_json": result or {},
+            "result_json": deepcopy(result) if result else {},
         }
         _memory_runs[(tenant_id, name, run_id)] = row
         return _run_dict(row)
@@ -310,7 +314,7 @@ async def record_run(
             finished_at=finished,
             status=status,
             error=error,
-            result_json=result or {},
+            result_json=deepcopy(result) if result else {},
         )
         db.add(row)
         await db.commit()

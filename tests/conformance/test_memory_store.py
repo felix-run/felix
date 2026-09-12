@@ -24,6 +24,22 @@ TENANT = "conformance"
 MANIFEST = "m"
 
 
+@pytest.fixture
+def one_millisecond(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stop the clock, so every fact written under it shares a `created_at`.
+
+    `created_at` is the leading sort key, so the id tiebreak below it is only consulted when
+    it ties — and a test that does not force the tie tests the leading key instead. On the
+    twin five writes land inside one millisecond about 99.4% of the time, which is not a
+    passing test but a nearly-passing one; on Postgres each write is a round trip, so they
+    never tie and the same test simply asserts the wrong order.
+
+    Ties are not contrived: `consolidate_pools` and the memory writer both write facts in a
+    batch, which is the case the truncation boundary actually meets.
+    """
+    monkeypatch.setattr(memory_store, "now_ms", lambda: 1_700_000_000_000)
+
+
 async def _put(settings: Any, content: str, **kw: Any) -> dict[str, Any]:
     return await memory_store.put_memory(settings, TENANT, content=content, manifest_id=MANIFEST, **kw)
 
@@ -541,3 +557,127 @@ async def test_a_caller_cannot_supply_the_forgetter_stamp(memory_settings: Any) 
     )
     stored = await memory_store.get_many(memory_settings, TENANT, [row["id"]])
     assert "retired_by" not in (stored[row["id"]].get("metadata") or {})
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_truncating_the_active_facts_drops_the_same_one_on_both_arms(
+    memory_settings: Any, one_millisecond: None
+) -> None:
+    """These facts go into a compiled prompt, and the list is cut to a limit before they do.
+
+    Every key the sort used ties routinely — facts are written in a batch so `created_at`
+    collides, trust is one of a handful of values, importance is usually the default — and
+    with nothing below them the fact that falls off the end was whichever one the backend
+    happened to return. So the agent's memory could differ between the twin and Postgres, and
+    between two identical requests to the same one. `id` is the second half of the primary
+    key, so adding it makes the order total.
+    """
+    # These five contents are chosen so the three highest ids are not the three written
+    # first — `memory_id` is a content hash, so that is a property of the strings. Without
+    # it the tiebreak only reorders the same three facts, and the test would pin the order
+    # while its docstring claims it pins which fact survives.
+    written = [await _put(memory_settings, f"Fact 0-{i}.") for i in range(5)]
+    stored = await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST, limit=50)
+    assert len(stored) == 5, f"{len(stored)} of 5 writes landed; the ids below will not line up"
+    # Asserted on what came back from the *store*, not on what `put_memory` returned. That
+    # return value is a locally built dict which is never read back, so it cannot see a
+    # divergence between what was handed to the database and what the database kept — a
+    # server-side default, or `created_at` entering the `on_conflict_do_update` set it is
+    # currently excluded from. That hole is latent rather than live: with the clock unfrozen
+    # the returned dicts carry five distinct stamps, so the weaker form would have gone red
+    # too. This is the right place to assert it, not a bug being fixed.
+    assert len({r["created_at"] for r in stored}) == 1, "the clock was not frozen; this is not a tie"
+
+    first = await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST, limit=3)
+    again = await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST, limit=3)
+
+    assert [r["id"] for r in first] == [r["id"] for r in again], "two identical reads disagreed"
+    assert len(first) == 3
+    # Which three is arbitrary with respect to *when* they were written — there is no finer
+    # recency signal than `created_at` to recover — but it is the same arbitrary three
+    # everywhere, which is what the twin standing in for the store requires.
+    expected = sorted((r["id"] for r in written), reverse=True)[:3]
+    assert [r["id"] for r in first] == expected, first
+    # Membership, not just order: these three are not the three written first, so a backend
+    # returning insertion order keeps a different set of facts, which is what "falls off the
+    # end" means.
+    # Both degenerate answers, not one. Every key above `id` ties, so a backend ignoring the
+    # tiebreak returns either physical order or its reverse; excluding only the first leaves
+    # the next content edit free to satisfy the guard and still not discriminate.
+    #
+    # The margin is thin by arithmetic, not by choice: any three of five share at least one
+    # member with any other three, and no corpus searched does better than sharing two. So
+    # this guard is load-bearing rather than belt-and-braces — it is what tells whoever edits
+    # the contents that they have made the test stop discriminating.
+    degenerate = ({r["id"] for r in written[:3]}, {r["id"] for r in written[-3:]})
+    assert set(expected) not in degenerate, "the corpus stopped discriminating"
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_the_prioritised_order_is_total_too(memory_settings: Any, one_millisecond: None) -> None:
+    """The branch the compiled prompt actually uses, which is a separate sort.
+
+    `prioritized=True` orders by writer trust, then importance, then recency — three keys that
+    tie even more readily than `created_at` alone, since trust is one of a handful of values
+    and importance defaults. Testing only the unprioritised branch would leave the one that
+    feeds the agent unpinned; the two sorts are written out separately, so a tiebreak added to
+    one is not added to the other.
+    """
+    # These five contents are chosen so the three highest ids are not the three written
+    # first — `memory_id` is a content hash, so that is a property of the strings. Without
+    # it the tiebreak only reorders the same three facts, and the test would pin the order
+    # while its docstring claims it pins which fact survives.
+    written = [await _put(memory_settings, f"Prioritised 0-{i}.") for i in range(5)]
+    stored = await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST, limit=50)
+    assert len(stored) == 5, f"{len(stored)} of 5 writes landed; the ids below will not line up"
+    # Asserted on what came back from the *store*, not on what `put_memory` returned. That
+    # return value is a locally built dict which is never read back, so it cannot see a
+    # divergence between what was handed to the database and what the database kept — a
+    # server-side default, or `created_at` entering the `on_conflict_do_update` set it is
+    # currently excluded from. That hole is latent rather than live: with the clock unfrozen
+    # the returned dicts carry five distinct stamps, so the weaker form would have gone red
+    # too. This is the right place to assert it, not a bug being fixed.
+    assert len({r["created_at"] for r in stored}) == 1, "the clock was not frozen; this is not a tie"
+
+    first = await memory_store.list_active(
+        memory_settings, TENANT, manifest_id=MANIFEST, limit=3, prioritized=True
+    )
+    again = await memory_store.list_active(
+        memory_settings, TENANT, manifest_id=MANIFEST, limit=3, prioritized=True
+    )
+
+    assert [r["id"] for r in first] == [r["id"] for r in again], "two identical reads disagreed"
+    expected = sorted((r["id"] for r in written), reverse=True)[:3]
+    assert [r["id"] for r in first] == expected, first
+    # Membership, not just order: these three are not the three written first, so a backend
+    # returning insertion order keeps a different set of facts, which is what "falls off the
+    # end" means.
+    # Both degenerate answers, not one. Every key above `id` ties, so a backend ignoring the
+    # tiebreak returns either physical order or its reverse; excluding only the first leaves
+    # the next content edit free to satisfy the guard and still not discriminate.
+    degenerate = ({r["id"] for r in written[:3]}, {r["id"] for r in written[-3:]})
+    assert set(expected) not in degenerate, "the corpus stopped discriminating"
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_as_of_truncates_by_the_same_total_order(memory_settings: Any, one_millisecond: None) -> None:
+    """`as_of` got the same tiebreak and nothing asserted it.
+
+    It is route-facing (`GET /memory/as-of`) and truncates the same way, so it has the same
+    defect and the same fix — and with two thorough `list_active` cases beside it, a reviewer
+    would reasonably read the module as pinned while a revert of this one stayed green.
+    """
+    written = [await _put(memory_settings, f"Fact 0-{i}.", origin_seq=1) for i in range(5)]
+    stored = await memory_store.as_of(memory_settings, TENANT, turn_seq=9, manifest_id=MANIFEST, limit=50)
+    assert len(stored) == 5, f"{len(stored)} of 5 writes landed"
+    assert len({r["created_at"] for r in stored}) == 1, "the clock was not frozen; this is not a tie"
+
+    page = await memory_store.as_of(memory_settings, TENANT, turn_seq=9, manifest_id=MANIFEST, limit=3)
+
+    expected = sorted((r["id"] for r in written), reverse=True)[:3]
+    assert [r["id"] for r in page] == expected, page
+    degenerate = ({r["id"] for r in written[:3]}, {r["id"] for r in written[-3:]})
+    assert set(expected) not in degenerate, "the corpus stopped discriminating"

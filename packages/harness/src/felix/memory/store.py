@@ -22,7 +22,7 @@ import logging
 import time
 from typing import Any, cast
 
-from sqlalchemy import case, func, null, select, update
+from sqlalchemy import case, collate, func, null, select, update
 from sqlalchemy import cast as sa_cast
 from sqlalchemy.dialects.postgresql import JSONB
 
@@ -710,13 +710,19 @@ async def list_active(
             and (not manifest_id or r.get("manifest_id") == manifest_id)
             and (kind is None or r.get("kind") == kind)
         ]
+        # `id` last on both branches, because every key above it ties routinely and this list
+        # is then truncated: facts are written in batches so `created_at` collides, trust is
+        # one of a handful of values and importance is usually the default. Without a total
+        # order, which fact falls off the end is whatever the backend happened to return —
+        # and these are the facts injected into a compiled prompt, so the agent's memory
+        # differed between the twin and Postgres, and between two identical requests.
         if prioritized:
             items.sort(
-                key=lambda r: (_trust(r), float(r.get("importance") or 0.0), r["created_at"]),
+                key=lambda r: (_trust(r), float(r.get("importance") or 0.0), r["created_at"], r["id"]),
                 reverse=True,
             )
         else:
-            items.sort(key=lambda r: r["created_at"], reverse=True)
+            items.sort(key=lambda r: (r["created_at"], r["id"]), reverse=True)
         return items[:limit]
 
     factory = get_session_factory(settings=settings)
@@ -734,9 +740,15 @@ async def list_active(
                 _trust_of_column(MemoryVector.metadata_json).desc(),
                 MemoryVector.importance.desc(),
                 MemoryVector.created_at.desc(),
+                # `COLLATE "C"` is defensive here rather than load-bearing: `memory_id` is a
+                # sha256 prefix, and over lowercase hex every common collation agrees with
+                # Python's code-point order. It makes the order independent of the
+                # deployment's `datcollate` — and of a restore into a differently-collated
+                # cluster — which no test can currently observe.
+                collate(MemoryVector.id, "C").desc(),
             )
         else:
-            stmt = stmt.order_by(MemoryVector.created_at.desc())
+            stmt = stmt.order_by(MemoryVector.created_at.desc(), collate(MemoryVector.id, "C").desc())
         stmt = stmt.limit(limit)
         return [_row_dict(r) for r in (await db.scalars(stmt)).all()]
 
@@ -767,7 +779,7 @@ async def as_of(
             and int(r.get("origin_seq") or 0) <= turn_seq
             and (r.get("superseded_seq") is None or int(r["superseded_seq"]) > turn_seq)
         ]
-        items.sort(key=lambda r: r["created_at"], reverse=True)
+        items.sort(key=lambda r: (r["created_at"], r["id"]), reverse=True)
         return items[:limit]
 
     from sqlalchemy import or_
@@ -783,7 +795,9 @@ async def as_of(
             stmt = stmt.where(MemoryVector.manifest_id == manifest_id)
         if kind:
             stmt = stmt.where(MemoryVector.kind == kind)
-        stmt = stmt.order_by(MemoryVector.created_at.desc()).limit(limit)
+        stmt = stmt.order_by(MemoryVector.created_at.desc(), collate(MemoryVector.id, "C").desc()).limit(
+            limit
+        )
         return [_row_dict(r) for r in (await db.scalars(stmt)).all()]
 
 
@@ -791,8 +805,13 @@ async def consolidate_pools(settings: Settings, *, max_facts: int = 500) -> int:
     """Exact content-hash dedupe of active facts (not LLM summarization).
 
     Largely vestigial now that ids are content hashes — a duplicate collapses on write
-    rather than accumulating — but it still cleans up rows written before that, and
-    rows whose text differs only by whitespace or case.
+    rather than accumulating — so the only rows it can still catch are byte-identical ones
+    written before that, with pre-hash ids.
+
+    It does *not* catch rows differing only by whitespace or case, which this said until
+    2026-09-11: its dedupe key is the raw `content` on both arms, while `memory_id` hashes a
+    whitespace-collapsed, lowercased form. Rows that differ only that way already share an id
+    and collapsed on write; rows whose raw text differs never match the key.
 
     ``max_facts`` caps how many active rows are scanned per pass. Returns rows
     superseded.

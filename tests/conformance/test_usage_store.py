@@ -201,7 +201,7 @@ async def test_the_manifest_filter_survives_a_tied_page_boundary(
 
 @parametrized
 @pytest.mark.asyncio
-async def test_the_summary_rows_come_back_in_one_order(usage_settings: Any) -> None:
+async def test_the_summary_rows_come_back_in_one_order(usage_settings: Any, one_millisecond: None) -> None:
     """The two arms sorted the same two text keys in opposite directions.
 
     The twin reversed the whole `(day, manifest_id, model_id)` tuple while the SQL ordered
@@ -211,6 +211,10 @@ async def test_the_summary_rows_come_back_in_one_order(usage_settings: Any) -> N
 
     Mixed case on purpose: `manifest_id` is tenant-supplied, `ORDER BY` on text uses the
     database collation, and the twin sorts by code point.
+
+    The frozen clock is not decoration: with the real one, four rows written near UTC midnight
+    can straddle a day boundary, and the outer `day DESC` sort would then split them and fail
+    this for a reason that has nothing to do with collation.
     """
     for manifest in ("Zulu", "alpha", "_edge", "beta"):
         _record(usage_settings, manifest=manifest, model="fast", tokens=1_000)

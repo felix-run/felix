@@ -547,9 +547,23 @@ cycle's, and the route contracts below are the next capability-adjacent step.
 
 - [x] **An enforcing-RLS arm for the conformance suite.** Done
       (`tests/conformance/test_rls_enforcement.py`): a `NOSUPERUSER NOBYPASSRLS` role with
-      `database_rls=True`, which is the configuration no other arm can reach. It is the
-      regression guard for every `rls_bypass()` in the tree — removing one now fails a test
-      rather than passing silently.
+      `database_rls=True`, which is the configuration no other arm can reach — and the only
+      one where a lost `rls_bypass()` is visible at all, since every other arm connects as the
+      schema owner, where a bypass is a no-op. It guards one of the twelve bypasses in the
+      tree; the item below is the rest of them.
+
+- [ ] **Parametrise the cross-tenant sweep arm over every `rls_bypass()`.**
+      `test_a_cross_tenant_sweep_still_sees_every_tenant` covers `list_tenants_with_events`
+      and nothing else. There are twelve bypasses — `memory/store.py`, `durability/fibers.py`
+      (five), `audit/store.py` (two), `manifests/store.py`, `jobs/store.py` and
+      `jobs/retention.py` (two) — and each can lose its bypass with the whole suite green,
+      because only this arm builds a role the policy applies to. The failure mode is not a
+      cross-tenant read: the schedulers re-bind per tenant afterwards, so it degrades to a
+      sweep that reads an empty tenant list and reports success. That is the shape an operator
+      cannot diagnose from outside, and it only bites deployments that opted into
+      `FELIX_DATABASE_RLS`. The `rls_settings` fixture already builds the role, so this is a
+      parametrisation rather than new machinery. Worth a line in `deploy/GOVERNANCE.md` too,
+      beside the RLS guidance, since that is who it happens to.
 
 - [ ] **`test_migrations.py` still wants an autogenerate-empty check** (models versus
       migrations drift) **and stepwise per-revision up/down**; today it only goes base to head
@@ -562,6 +576,51 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       that connects as a superuser with RLS off. Found while verifying the fiber claim contract
       against a live database; fixed in a separate change.
 
+- [ ] **Promote the ordering rule to a scanner.** It has now been fixed six times — the audit
+      and usage cursors, `list_runs`, `list_jobs`'s collation, `list_active` twice — and two
+      more shapes are still open below. The repo's own rule is that a lesson learned this often
+      earns a structural gate rather than another round of review. The shape: over
+      `packages/harness/src/felix/**/store.py`, every `order_by(...)` and every `sort(key=...)`
+      whose result is then truncated must end on a primary-key component. It must carry a floor
+      on the number of ordering sites it matched, because a scanner that quietly stops matching
+      is the failure mode this repo has already shipped once — an AST invariant here matched
+      `timeout=<Constant>` while every literal it hunted lived inside `httpx.Timeout(...)`.
+      Cheaper than catching the seventh instance in review, and it cannot be satisfied by a fake.
+
+- [ ] **`recall()` has the ordering defect at three levels, and a tiebreak that reads a column
+      nothing writes.** This is the *other* path a fact reaches a prompt by — the `recall` tool
+      and `GET /memory/recall` — and the survey that produced the item below missed it entirely,
+      because it enumerated `ORDER BY` and `.sort` in *store* modules and these are hand-rolled
+      `sorted(...)[:n]` in `memory/recall.py`. There is also no `tests/conformance/` arm for it,
+      and it is the memory read path with the most to hold together: three SQL channels and
+      three Python ones.
+
+      The per-channel cut sorts on the overlap count alone, which is a small integer, so ties
+      are the normal case and fall back to dict insertion order on the twin; the SQL twin of it
+      orders by `ts_rank_cd` with no tiebreak at all. Different candidate sets therefore enter
+      fusion on the two arms, and reciprocal-rank fusion scores on *position*, so the
+      divergence is amplified rather than absorbed. The fused cut then ties again on score.
+
+      And `_rank`'s recency term reads `last_used_at or created_at`, where `last_used_at` has
+      no writer anywhere in the tree: the migration adds the column, `put_memory` sets it to
+      `None`, and the upsert explicitly excludes it. So the docstring's "newest breaking ties"
+      describes a key that is structurally always `created_at` — a control that looks present
+      and does nothing. Either write it on recall or delete the column and the dead half of the
+      expression; do not leave it reading as implemented.
+
+      Fix this one *with* a conformance arm rather than before it. Ordering assertions written
+      without a real database have been wrong twice on this branch alone.
+
+- [ ] **A read is a copy in one store and a window in three.** The jobs store now deepcopies
+      its JSON columns on read *and* write, because the twin was handing back the dict it held
+      and Postgres deserializes fresh — so a caller editing what it read edited the store, on
+      one backend only. `audit/store.py`, `usage/store.py` and `memory/store.py` still return a
+      shallow `dict(row)`, which aliases their JSON column the same way. Nothing mutates a read
+      today, so this is latent; what makes it worth recording is that the repo now answers the
+      same question two ways in files edited by one commit, and the next store copies whichever
+      neighbour its author opens. The carrier would be a shared conformance assertion that
+      every store's read is mutation-isolated, not four more deepcopies.
+
 - [ ] **More listings whose two arms can disagree about order.** Not one shape but three, and
       the first survey found only the first: a tie the twin breaks by insertion order and
       Postgres by nothing; a text key ordered by database collation on one arm and code point
@@ -570,12 +629,14 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       was the third, reversing `manifest_id` and `model_id` where the SQL ascended them, and
       is fixed with the jobs work because it already had a contract to assert it in.
 
-      Remaining, ranked by what a wrong answer costs: `memory/store.py:719`, `:739` and `:770`
-      (`created_at`, and it takes a `limit`, so a tie drops rows — these are the facts injected
-      into a compiled prompt); `approvals/store.py:82` and `:90` (`created_at`, also limited);
-      `plans/store.py:44` and `:51` (`updated_at`, also limited); `eval/store.py:204` and `:211`
-      (`started_at`, unlimited, so ties only reorder). `approvals/store.py:185` already does it
-      right — `decided_at`, `created_at`, then `id` — and is the pattern to copy.
+      `memory/store.py`'s `list_active` (both sorts) and `as_of` are done. Remaining, ranked by
+      what a wrong answer costs, and by function rather than line so the list stops rotting on
+      every edit: `memory/recall.py` (see the item below — the worst of them, and the one the
+      first survey missed entirely); `approvals/store.py`'s `list_approvals` (`created_at`,
+      limited); `plans/store.py`'s `list_plans` (`updated_at`, limited); `eval/store.py`'s
+      `list_runs` (`started_at`, unlimited, so ties only reorder). `approvals/store.py`'s
+      `find_approved` already does it right — `decided_at`, `created_at`, then `id` — and is
+      the pattern to copy.
 
       Approvals and memory have conformance files already, so those are cases to add rather
       than files to write; plans and eval are covered by the seam bullet above. Fix each with
@@ -611,6 +672,16 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       each backend is self-consistent; the exposure is the order of two rows in one
       millisecond differing between them, which no contract would catch because every test
       asserts set equality over pages. Fix if a caller-supplied id ever becomes ordinary.
+
+- [ ] **An index for the active-memory ordering's new tiebreak.** `idx_memory_active` is
+      `(tenant_id, manifest_id, status, created_at DESC)` and does not carry `id`, so the
+      tiebreak adds an Incremental Sort over each `created_at` group. Bounded and cheap in the
+      common case — but the case the tiebreak exists for is the batch write where one group is
+      large (`consolidate_pools`, the memory writer), which is exactly when it is not. An index
+      on `(tenant_id, manifest_id, status, created_at DESC, id DESC)` would make the
+      unprioritised read a pure index scan, and would have to match the `COLLATE "C"`
+      expression to be used at all. The prioritised branch leads on a `metadata`-derived trust
+      expression no btree covers, so it benefits from none of this. Measured plan, not a guess.
 
 - [ ] **An index for the job run history's ordering.** `list_runs` filters
       `(tenant_id, job_name)` and orders by `(started_at DESC, run_id DESC)`, while the only
