@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy import delete, select
 
 from felix.config import Settings
+from felix.cursors import keyset_order
 from felix.db.models import Job, JobRun
 from felix.db.session import _use_memory, get_session_factory
 
@@ -80,12 +81,16 @@ def _run_dict(row: JobRun | dict[str, Any]) -> dict[str, Any]:
 
 async def list_jobs(settings: Settings, tenant_id: str) -> list[dict[str, Any]]:
     if _use_memory(settings):
-        return [_job_dict(row) for (t, _), row in _memory_jobs.items() if t == tenant_id]
+        rows = [row for (t, _), row in _memory_jobs.items() if t == tenant_id]
+        # By name on both arms. Neither ordered at all: the twin returned dict insertion order
+        # and Postgres whatever the plan produced, so `GET /jobs` could list an operator's jobs
+        # differently on two consecutive calls, and the twin and the store disagreed.
+        return [_job_dict(row) for row in sorted(rows, key=lambda r: r["name"])]
 
     factory = get_session_factory(settings=settings)
     async with factory() as db:
-        rows = (await db.scalars(select(Job).where(Job.tenant_id == tenant_id))).all()
-        return [_job_dict(r) for r in rows]
+        found = (await db.scalars(select(Job).where(Job.tenant_id == tenant_id).order_by(Job.name))).all()
+        return [_job_dict(r) for r in found]
 
 
 async def list_tenants_with_jobs(settings: Settings) -> list[str]:
@@ -226,7 +231,12 @@ async def list_runs(
 ) -> list[dict[str, Any]]:
     if _use_memory(settings):
         items = [_run_dict(row) for (t, j, _), row in _memory_runs.items() if t == tenant_id and j == name]
-        items.sort(key=lambda r: r["started_at"], reverse=True)
+        # `run_id` breaks the tie, and it is the third part of the primary key, so the order
+        # is total. `started_at` is milliseconds and a sweep records a burst of runs, so ties
+        # are ordinary — and with none, "the most recent two of five" was whichever two the
+        # backend happened to return. Python's sort is stable, so on this arm it was the two
+        # *oldest*: the operator reading a job's recent history got its first attempts.
+        items.sort(key=lambda r: (r["started_at"], r["run_id"]), reverse=True)
         return items[:limit]
 
     factory = get_session_factory(settings=settings)
@@ -235,7 +245,7 @@ async def list_runs(
             await db.scalars(
                 select(JobRun)
                 .where(JobRun.tenant_id == tenant_id, JobRun.job_name == name)
-                .order_by(JobRun.started_at.desc())
+                .order_by(*keyset_order(JobRun.started_at, JobRun.run_id))
                 .limit(limit)
             )
         ).all()

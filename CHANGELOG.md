@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A job's "most recent runs" could be its oldest.** `list_runs` ordered by `started_at`
+  alone, and `started_at` is milliseconds — a sweep records a burst of runs inside one. With
+  no tiebreak, the most recent two of five was whichever two the backend happened to return,
+  and on the in-memory twin Python's stable sort made it the two *oldest*: an operator opening
+  a job's history to see why it failed was shown its first attempts. Both arms order by
+  `(started_at, run_id)` now, which is total because `run_id` is the last part of the primary
+  key. Which runs tie for recency is still arbitrary — there is no finer signal than
+  `started_at` to recover — but it is now the same arbitrary answer on both.
+
+- **`GET /jobs` had no order.** The twin returned dict insertion order and Postgres whatever
+  the plan produced, so an operator's inventory could differ between two consecutive calls and
+  the twin could not stand in for the store. Both order by name.
+
+### Added
+
+- **A conformance contract for the jobs store** (`tests/conformance/test_jobs_store.py`), run
+  against the in-memory twin and Postgres. Its Postgres half ran only under
+  `test_migrations.py`, which creates the schema and never queries it. The contract covers the
+  semantics the scheduler depends on: that re-publishing a job keeps its run history rather
+  than resetting it, that deleting a job takes its runs with it so a name reused later does not
+  inherit a stranger's history, and that truncating a run list keeps the newest.
+
+
+### Fixed
+
 - **The audit and usage listings silently dropped rows.** Their cursor carried only a
   timestamp, and `ts` is milliseconds — so paging asked for `ts < last_seen` and stepped over
   every other event sharing that millisecond. Those events were returned by no page at all.

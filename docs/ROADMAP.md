@@ -528,7 +528,11 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       on Postgres only, and a batch of Temporal-backed fibers starved a tenant's ordinary ones.
       Manifests are done too, and found two more: the twin accepted a canary weight the CHECK
       constraint refuses, and handed back the stored document by reference. Still open, in the
-      order their SQL diverges most from the twin: jobs, plans, eval and a2a tasks.
+      order their SQL diverges most from the twin: plans, eval and a2a tasks.
+
+      Jobs is done (`test_jobs_store.py`) and found two orderings that were not orders at all:
+      `list_runs` broke ties by nothing, so the twin's stable sort returned a job's *oldest*
+      runs as its most recent, and `list_jobs` was unordered on both arms.
 
       Audit is done (`test_audit_store.py`). It found a defect both arms shared rather than a
       divergence: the cursor carried only a millisecond timestamp, so paging stepped over every
@@ -557,6 +561,16 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       security policy". `get_fiber` has the same gap. Invisible to the conformance suite because
       that connects as a superuser with RLS off. Found while verifying the fiber claim contract
       against a live database; fixed in a separate change.
+
+- [ ] **Five more listings order on a key that is not unique.** The jobs contract found this
+      shape twice and fixed it there; the same one-line hazard is in `approvals/store.py:82`
+      and `:90` (`created_at`), `plans/store.py:44` and `:51` (`updated_at`, and it takes a
+      `limit`, so ties can drop rows), `eval/store.py:204` and `:211` (`started_at`), and
+      `memory/store.py:719`, `:739` and `:770` (`created_at`). Each pairs a stable Python sort
+      on the twin with an unordered tie on Postgres, so the two arms disagree and two identical
+      reads need not match. `approvals/store.py:185` already does it right — `decided_at`,
+      `created_at`, then `id` — and is the pattern to copy. Fix each with its conformance
+      contract rather than in one sweep, so every change lands with the arm that proves it.
 
 - [ ] **The audit and usage reads do not set the tenant GUC, so RLS empties them.** Both open
       their read session through `get_session_factory(...)` without `rls_tenant(tenant_id)`,
