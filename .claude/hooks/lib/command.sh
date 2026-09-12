@@ -257,3 +257,40 @@ $(printf '%s' "$cmd" | hook_executable_text | tr ';&|' '\n\n\n' | sed -n 's/^[[:
 TARGETS
   printf '%s\n' "$workdir"
 }
+
+# The working tree a path belongs to — which is not necessarily `CLAUDE_PROJECT_DIR`.
+#
+# A hook that judges a file by its repo-relative path cannot get that path by stripping
+# the project root off an absolute one: under a git worktree the file lives at
+# `<project>/.claude/worktrees/<name>/<rel>`, so the strip leaves the worktree prefix
+# attached and every anchored pattern misses. `protect-files.sh` failed *open* on exactly
+# that — `.env`, `uv.lock` and an applied migration were all editable inside a worktree,
+# because `.claude/worktrees/x/.env` does not match the pattern `.env`. A guard that stops
+# guarding in the environment people actually work in is worse than one that is absent,
+# because its silence reads as approval.
+#
+# Derived from the path itself rather than from the payload: these hooks are handed a
+# `file_path`, and the repository that owns it is the authority on what it is called.
+hook_repo_root() {
+  local dir=$1
+  # A file being created does not exist yet, and neither might its parent. Walk up to the
+  # first directory that does before asking git where it is.
+  while [ -n "$dir" ] && [ "$dir" != "/" ] && [ ! -d "$dir" ]; do
+    dir=$(dirname "$dir")
+  done
+  [ -d "$dir" ] || return 0
+  git -C "$dir" rev-parse --show-toplevel 2>/dev/null
+}
+
+# A path as its own repository names it. Falls back to the input unchanged when the path
+# is in no repository, which leaves a caller's pattern matching exactly what it matched
+# before rather than silently widening it.
+hook_repo_rel() {
+  local path=$1 root
+  root=$(hook_repo_root "$path")
+  if [ -n "$root" ] && [ "$path" != "${path#"$root"/}" ]; then
+    printf '%s' "${path#"$root"/}"
+  else
+    printf '%s' "$path"
+  fi
+}
