@@ -9,6 +9,17 @@ test in the repo runs the twin, so the suite was green and only a deployment fai
 
 `tests/unit/test_invariants.py` asserts every Postgres-touching module *has* a twin. This is
 where the two are held to the same answers.
+
+**Which arm carries the teeth matters here.** The headline case —
+`test_writing_the_same_item_id_again_updates_it_in_place` — passes on the *unfixed* code in
+the memory arm, because the pre-fix twin already overwrote its dict. Only the Postgres arm
+fails without the fix. A local run showing "12 passed, 12 skipped" is therefore not evidence
+about the divergence at all; the `conformance` CI job sets `FELIX_CONFORMANCE_REQUIRE_POSTGRES`
+so a missing database fails rather than skips, and that job is what actually guards it.
+
+Item ordering is deliberately unpinned — every assertion goes through `_by_id` or `sorted`.
+`get_dataset`'s Postgres query carries no `ORDER BY` while the twin is insertion-ordered, so a
+test written to assume an order would pass on one arm and fail on the other.
 """
 
 from __future__ import annotations
@@ -108,6 +119,56 @@ async def test_an_item_the_second_write_omits_survives_it(store_settings: Any) -
 
 @parametrized
 @pytest.mark.asyncio
+async def test_both_rubric_spellings_are_stored_the_same(store_settings: Any) -> None:
+    """`put_dataset` reads `rubric` or `rubric_json`, and both arms must agree on which wins.
+
+    The alias is not decorative: `_item_dict` surfaces the column as `rubric`, so a caller
+    round-tripping a stored item back into `put_dataset` sends `rubric`, while anything built
+    from a database row sends `rubric_json`.
+    """
+    await eval_store.put_dataset(
+        store_settings,
+        TENANT,
+        "d",
+        items=[
+            {"item_id": "a", "user_input": "one", "rubric_json": {"contains": "x"}},
+            {"item_id": "b", "user_input": "two", "rubric": {"contains": "y"}},
+            {"item_id": "c", "user_input": "three", "rubric": {}, "rubric_json": {"contains": "z"}},
+        ],
+    )
+
+    fetched = await eval_store.get_dataset(store_settings, TENANT, "d")
+    assert fetched is not None
+    by_id = _by_id(fetched)
+    assert by_id["a"]["rubric"] == {"contains": "x"}
+    assert by_id["b"]["rubric"] == {"contains": "y"}
+    # An empty `rubric` falls through to `rubric_json` rather than winning as {}.
+    assert by_id["c"]["rubric"] == {"contains": "z"}
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_a_falsy_item_id_gets_its_own_generated_one(store_settings: Any) -> None:
+    """`item.get("item_id") or uuid4().hex` — so `""` is absent, not a shared id.
+
+    Two such items are two rows, and the validator was refusing them as duplicates until it
+    read ids the way this does.
+    """
+    await eval_store.put_dataset(
+        store_settings,
+        TENANT,
+        "d",
+        items=[{"item_id": "", "user_input": "one"}, {"item_id": "", "user_input": "two"}],
+    )
+
+    fetched = await eval_store.get_dataset(store_settings, TENANT, "d")
+    assert fetched is not None
+    assert len(fetched["items"]) == 2
+    assert len({i["item_id"] for i in fetched["items"]}) == 2
+
+
+@parametrized
+@pytest.mark.asyncio
 async def test_an_item_with_no_id_is_given_one(store_settings: Any) -> None:
     await eval_store.put_dataset(store_settings, TENANT, "d", items=[{"user_input": "anonymous"}])
 
@@ -120,13 +181,18 @@ async def test_an_item_with_no_id_is_given_one(store_settings: Any) -> None:
 @parametrized
 @pytest.mark.asyncio
 async def test_re_putting_a_dataset_updates_its_description(store_settings: Any) -> None:
-    await eval_store.put_dataset(store_settings, TENANT, "d", description="before", items=[_item("a", "x")])
+    first = await eval_store.put_dataset(
+        store_settings, TENANT, "d", description="before", items=[_item("a", "x")]
+    )
 
     await eval_store.put_dataset(store_settings, TENANT, "d", description="after", items=[])
 
     fetched = await eval_store.get_dataset(store_settings, TENANT, "d")
     assert fetched is not None
     assert fetched["description"] == "after"
+    # The dataset row keeps its original creation time too — both arms take a deliberate step
+    # to preserve it, and neither had anything asserting they agreed.
+    assert fetched["created_at"] == first["created_at"]
 
 
 @parametrized

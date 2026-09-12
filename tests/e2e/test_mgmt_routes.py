@@ -208,29 +208,46 @@ async def test_an_eval_dataset_round_trips(boot: Any) -> None:
         assert [row["name"] for row in listing.json()["items"]] == ["smoke"], listing.json()
 
 
-async def test_an_eval_item_with_unrecognised_keys_is_stored_empty(boot: Any) -> None:
-    """Pins a sharp edge rather than a guarantee, so changing it is a deliberate act.
+async def test_an_eval_item_with_unrecognised_keys_is_refused(boot: Any) -> None:
+    """The replacement for a test that pinned the opposite, and said so.
 
-    `items` is `list[dict[str, Any]]`, and `put_dataset` reads only `user_input` and `rubric`
-    off each entry. An item written with any other spelling is accepted with 200, listed as
-    present, and stored with an empty prompt and an empty rubric. The dataset then looks
-    configured and scores nothing — the shape of defect this audit keeps finding.
-
-    Not changed here: `items` is deliberately schema-free, so rejecting unknown keys is an API
-    decision rather than a bug fix. If validation is ever added, this test should fail.
+    `items` was `list[dict[str, Any]]` with `put_dataset` reading only `user_input` and
+    `rubric`, so an item written with any other spelling was accepted with 200, listed as
+    present, and stored with an empty prompt — a dataset that looked configured and scored
+    nothing. The rubric is still free-form; only shapes that cannot work are refused, and
+    the message names the key that was found.
     """
     async with boot([], env=_keys(reader=["eval:read"])) as app:
-        created = await app.client.put(
+        refused = await app.client.put(
             "/eval/datasets/mistyped",
             json={"items": [{"input": "what is 2+2?", "expect": "4"}]},
             headers=_as(ADMIN),
         )
-        assert created.status_code == 200, created.text
+        assert refused.status_code == 422, refused.text
+        errors = refused.json()["detail"]["errors"]
+        assert any("user_input" in e and "'input'" in e for e in errors), errors
 
-        stored = (await app.client.get("/eval/datasets/mistyped", headers=_as(ADMIN))).json()
-        assert len(stored["items"]) == 1, stored
-        assert stored["items"][0]["user_input"] == "", stored
-        assert stored["items"][0]["rubric"] == {}, stored
+        # And nothing was written: a refused write that half-applied would be worse than
+        # the behaviour this replaced.
+        missing = await app.client.get("/eval/datasets/mistyped", headers=_as(ADMIN))
+        assert missing.status_code == 404, missing.text
+
+
+async def test_an_eval_rubric_naming_no_rule_is_stored_with_a_warning(boot: Any) -> None:
+    """Legal, and almost never intended — so it lands, and says so.
+
+    A rubric naming none of `expect` / `equals` / `contains` / `min_chars` falls through to
+    the non-empty rule, which passes any answer at all. That is a real rule, so refusing it
+    would be wrong; saying nothing is how a gate that gates nothing gets written.
+    """
+    async with boot([], env=_keys(reader=["eval:read"])) as app:
+        created = await app.client.put(
+            "/eval/datasets/loose",
+            json={"items": [{"item_id": "a", "user_input": "anything", "rubric": {}}]},
+            headers=_as(ADMIN),
+        )
+        assert created.status_code == 200, created.text
+        assert any("non-empty" in w for w in created.json()["warnings"]), created.json()
 
 
 async def test_writing_an_eval_dataset_needs_a_write_scope(boot: Any) -> None:

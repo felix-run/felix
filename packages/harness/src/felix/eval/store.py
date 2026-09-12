@@ -13,6 +13,10 @@ from felix.config import Settings
 from felix.db.models import EvalDataset, EvalDatasetItem, EvalRun
 from felix.db.session import _use_memory, get_session_factory
 
+# One reading of an item, shared with the validator. The two drifting is not
+# hypothetical -- see `ItemFields`.
+from felix.eval.validation import read_item
+
 now_ms = lambda: int(time.time() * 1000)
 
 _memory_datasets: dict[tuple[str, str], dict[str, Any]] = {}
@@ -124,14 +128,15 @@ async def put_dataset(
         }
         _memory_datasets[(tenant_id, name)] = row
         for item in item_rows:
-            item_id = item.get("item_id") or uuid.uuid4().hex
+            fields = read_item(item)
+            item_id = fields.item_id or uuid.uuid4().hex
             prior = _memory_items.get((tenant_id, name, item_id))
             _memory_items[(tenant_id, name, item_id)] = {
                 "tenant_id": tenant_id,
                 "dataset_name": name,
                 "item_id": item_id,
-                "user_input": item.get("user_input", ""),
-                "rubric_json": item.get("rubric") or item.get("rubric_json") or {},
+                "user_input": fields.user_input,
+                "rubric_json": fields.rubric,
                 # When the item first appeared, not when it was last written — the
                 # Postgres arm leaves the column alone on conflict, and the two
                 # backends answer the same question or they are not twins.
@@ -162,13 +167,14 @@ async def put_dataset(
         # (tenant_id, dataset_name, item_id) — while the in-memory twin overwrote happily,
         # so every test passed and only a real deployment raised.
         for item in item_rows:
-            item_id = item.get("item_id") or uuid.uuid4().hex
+            fields = read_item(item)
+            item_id = fields.item_id or uuid.uuid4().hex
             values = {
                 "tenant_id": tenant_id,
                 "dataset_name": name,
                 "item_id": item_id,
-                "user_input": item.get("user_input", ""),
-                "rubric_json": item.get("rubric") or item.get("rubric_json") or {},
+                "user_input": fields.user_input,
+                "rubric_json": fields.rubric,
                 "created_at": ts,
             }
             stmt = pg_insert(cast(Any, EvalDatasetItem.__table__)).values(values)
