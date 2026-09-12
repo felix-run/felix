@@ -24,6 +24,22 @@ TENANT = "conformance"
 MANIFEST = "m"
 
 
+@pytest.fixture
+def one_millisecond(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stop the clock, so every fact written under it shares a `created_at`.
+
+    `created_at` is the leading sort key, so the id tiebreak below it is only consulted when
+    it ties — and a test that does not force the tie tests the leading key instead. On the
+    twin five writes land inside one millisecond about 99.4% of the time, which is not a
+    passing test but a nearly-passing one; on Postgres each write is a round trip, so they
+    never tie and the same test simply asserts the wrong order.
+
+    Ties are not contrived: `consolidate_pools` and the memory writer both write facts in a
+    batch, which is the case the truncation boundary actually meets.
+    """
+    monkeypatch.setattr(memory_store, "now_ms", lambda: 1_700_000_000_000)
+
+
 async def _put(settings: Any, content: str, **kw: Any) -> dict[str, Any]:
     return await memory_store.put_memory(settings, TENANT, content=content, manifest_id=MANIFEST, **kw)
 
@@ -546,7 +562,7 @@ async def test_a_caller_cannot_supply_the_forgetter_stamp(memory_settings: Any) 
 @parametrized
 @pytest.mark.asyncio
 async def test_truncating_the_active_facts_drops_the_same_one_on_both_arms(
-    memory_settings: Any,
+    memory_settings: Any, one_millisecond: None
 ) -> None:
     """These facts go into a compiled prompt, and the list is cut to a limit before they do.
 
@@ -558,6 +574,7 @@ async def test_truncating_the_active_facts_drops_the_same_one_on_both_arms(
     key, so adding it makes the order total.
     """
     written = [await _put(memory_settings, f"Fact number {i}.") for i in range(5)]
+    assert len({r["created_at"] for r in written}) == 1, "the clock was not frozen; this is not a tie"
 
     first = await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST, limit=3)
     again = await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST, limit=3)
@@ -572,7 +589,7 @@ async def test_truncating_the_active_facts_drops_the_same_one_on_both_arms(
 
 @parametrized
 @pytest.mark.asyncio
-async def test_the_prioritised_order_is_total_too(memory_settings: Any) -> None:
+async def test_the_prioritised_order_is_total_too(memory_settings: Any, one_millisecond: None) -> None:
     """The branch the compiled prompt actually uses, which is a separate sort.
 
     `prioritized=True` orders by writer trust, then importance, then recency — three keys that
@@ -582,6 +599,7 @@ async def test_the_prioritised_order_is_total_too(memory_settings: Any) -> None:
     one is not added to the other.
     """
     written = [await _put(memory_settings, f"Prioritised fact {i}.") for i in range(5)]
+    assert len({r["created_at"] for r in written}) == 1, "the clock was not frozen; this is not a tie"
 
     first = await memory_store.list_active(
         memory_settings, TENANT, manifest_id=MANIFEST, limit=3, prioritized=True
