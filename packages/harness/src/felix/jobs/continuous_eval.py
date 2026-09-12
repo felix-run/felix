@@ -9,6 +9,7 @@ from felix.audit import store as audit_store
 from felix.config import Settings
 from felix.eval import store as eval_store
 from felix.eval.runner import start_run
+from felix.logging_setup import loggable
 from felix.manifests import store as manifest_store
 from felix.tools.builtins import default_tool_provider
 
@@ -72,10 +73,14 @@ async def run_continuous_eval(settings: Settings, *, tenant_id: str = "default")
             )
             runs += 1
         except Exception:
-            logger.exception("continuous_eval_failed tenant=%s manifest=%s", tenant_id, name)
+            logger.exception(
+                "continuous_eval_failed tenant=%s manifest=%s",
+                loggable(tenant_id, limit=64),
+                name,
+            )
         logger.info(
             "continuous_eval tenant=%s manifest=%s canary=%s samples=%s",
-            tenant_id,
+            loggable(tenant_id, limit=64),
             name,
             version,
             len(samples),
@@ -110,5 +115,5 @@ async def run_continuous_eval_all_tenants(settings: Settings) -> dict[str, Any]:
                 result = await run_continuous_eval(settings, tenant_id=tenant_id)
             runs += int(result.get("runs") or 0)
         except Exception:
-            logger.exception("continuous_eval_failed tenant=%s", tenant_id)
+            logger.exception("continuous_eval_failed tenant=%s", loggable(tenant_id, limit=64))
     return {"runs": runs, "tenants": scanned}

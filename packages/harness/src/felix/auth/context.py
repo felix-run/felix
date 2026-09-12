@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -24,17 +25,44 @@ BUILTIN_AUTH_MODES = frozenset({"none", "api_key", "jwt"})
 # tenant authenticated fine and failed later at a write. Validating at construction makes an
 # unusable tenant unrepresentable instead.
 TENANT_DELIMS = frozenset(":#")
+
+# The same rule `storage/fs.py` applies to an object-key segment, and deliberately the
+# same expression: charset plus a refusal of `.` and `..` as the whole value.
+#
+# Checking only the thread-id delimiters was a grammar short of enough. A tenant id is not
+# just a thread-id prefix — it is interpolated into object-store keys
+# (`artifacts/{tenant}/…`, `workspace/{tenant}/…`, `skills/{tenant}/…`,
+# `manifests/{tenant}/…`), into idempotency keys, and into log records. Each of those has
+# its own separators, and this repo's own rule is that validating a value for one grammar
+# does not validate it for the next. `acme/../other` and `acme\nWARNING  all clear` both
+# passed the delimiter check.
+#
+# Nothing was exploitable through them. Outside `development` a claim-mode verifier with no
+# `FELIX_ALLOWED_TENANTS` refuses to start, so a claimed tenant must match an allowlist
+# entry exactly; `storage/fs.py` re-validates every segment and re-checks containment with
+# `relative_to`; S3/GCS keys are literal, so `..` is a character rather than a parent; and
+# `LogIdsFilter` escapes the `tenant_id` log field. This closes the gap at the door rather
+# than leaving each far end to hold on its own — the far ends that did not were log
+# *messages* interpolating a tenant id, which is what CodeQL found on #231.
+TENANT_ID_RE = re.compile(r"\A(?!\.\.?\Z)[A-Za-z0-9._-]+\Z")
 MAX_TENANT_ID = 128
 
 
 def assert_valid_tenant_id(tenant_id: str) -> None:
-    """Raise `ValueError` unless `tenant_id` is a single delimiter-free segment."""
+    """Raise `ValueError` unless `tenant_id` is one safe, delimiter-free segment."""
     if not tenant_id or tenant_id.strip() != tenant_id:
         raise ValueError("tenant_id must be a non-empty, unpadded string")
+    # Before the charset check, so the two grammars people actually hit keep the message
+    # that names them rather than a generic "invalid character".
     if any(c in tenant_id for c in TENANT_DELIMS):
         raise ValueError(f"tenant_id may not contain {''.join(sorted(TENANT_DELIMS))!r}")
     if len(tenant_id) > MAX_TENANT_ID:
         raise ValueError(f"tenant_id exceeds {MAX_TENANT_ID} characters")
+    if not TENANT_ID_RE.match(tenant_id):
+        raise ValueError(
+            "tenant_id may contain only letters, digits, '.', '_' and '-', and may not be "
+            f"'.' or '..' — got {tenant_id!r}"
+        )
 
 
 @dataclass(slots=True)

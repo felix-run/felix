@@ -10,6 +10,7 @@ from typing import Any
 from felix.config import Settings
 from felix.context import AuthContext, RequestContext, async_run_with_context
 from felix.jobs import store as jobs_store
+from felix.logging_setup import loggable
 from felix.patterns.types import ChatMessage, InvokeInput
 
 logger = logging.getLogger("felix.jobs.scheduler")
@@ -181,7 +182,7 @@ async def run_due_jobs_all_tenants(settings: Settings) -> int:
                 total += await run_due_jobs(settings, tenant_id=tenant_id)
         except Exception:
             # One tenant's bad job must not stop every other tenant's schedule.
-            logger.exception("job_sweep_failed tenant=%s", tenant_id)
+            logger.exception("job_sweep_failed tenant=%s", loggable(tenant_id, limit=64))
     return total
 
 
