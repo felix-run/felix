@@ -144,13 +144,37 @@ First, because everything else governs it.
         That second one was a live defect rather than a missing feature — both wires had an
         image encoder, and an image reached `gpt-4o` and 400'd on `claude-sonnet`, the default.
         Found by running the encoder, not by reading it.
-      - Remaining: **upload.** An endpoint backed by the object store, plus a `file_id` content
-        block the harness resolves to bytes before the wire — which is the base64 path the above
-        now provides. Shape it on `routes/artifacts.py`: tenant from the caller's credentials
-        and never from the path, scope-gated, 404 rather than 400 for a malformed reference.
-        Worth deciding at the same time: an inline image is persisted into the session event log
-        and replayed on every subsequent turn, which the 1 MiB body limit bounds per request but
-        not per thread.
+      - Landed: **the storage half of upload.** `POST /files` / `GET /files/{file_id}`, backed
+        by the object store and gated on new `files:read` / `files:write` scopes; tenant from the
+        caller's credentials and never from the path, 404 for a malformed reference, server-issued
+        uuid4 id. Capped at 600 KiB decoded and to the image types both wires encode — the cap
+        sits below `CORE_BODY_LIMIT_BYTES` deliberately, since above it the middleware answers 413
+        before the route and hides the real ceiling.
+      - Remaining: **the `file_id` content block**, resolved to bytes at the wire. The decision the
+        split was waiting on is made: resolve *late*, per turn, so the session event log keeps
+        holding the reference rather than the base64 it expands to — which is the whole reason an
+        upload beats an inline `data:` URL, since `full_replay` re-sends the log every turn.
+        `packages/ai` cannot do the resolving (it may not import `felix`), so the harness rewrites
+        the part before the wire call.
+      - **Required before `files:write` is granted to an untrusted tenant**, from the security
+        review: a per-tenant quota. `MAX_ATTACHMENT_BYTES` caps one upload and nothing caps how
+        many — the same argument that produced `documents_max_per_tenant`, which exists because
+        "a per-request cap is not a per-tenant cap". Counting needs Postgres (the object store
+        Protocol has no `list`), so it is a table plus a migration, and `jobs/retention.py` needs
+        an object-store arm: `attachments/` joins `artifacts/` as a prefix nothing ever collects.
+        On the default `fs` backend one tenant filling the disk degrades artifact spill and
+        manifest storage for every tenant on the host. Shipped without it deliberately, because
+        `files:write` is an operator-granted management scope rather than something a chat caller
+        holds — but that is the condition, and it is written here rather than assumed.
+      - **Decide before writing the resolver:** where `file_id` → bytes sits relative to
+        `apply_inbound_screening`. Resolving late (which the log-size argument requires) puts it
+        *after* screening, so a screener would never see the substituted bytes — and text rendered
+        inside an uploaded image is an injection channel. Pre-existing for inline images; the
+        ordering choice is new.
+      - Open, and a change to a security control rather than a feature: uploads are bounded by the
+        single global `BodyLimitMiddleware` limit, so a larger ceiling means per-route limits.
+        That middleware has a bypass in its history; it should not be widened as a side effect of
+        an attachments change. Multipart ingest would also remove the base64 inflation.
 - [x] **Make the bundled manifests use them.** `support` fetches from the docs site and now
       searches the corpus as `search_docs`; `deep` has `search` + `fetch`. Both with screening
       on, which is what keeps the unscreened-tools warning silent on what we ship. A tool no
