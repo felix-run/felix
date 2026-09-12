@@ -230,6 +230,15 @@ def apply_anthropic_output_schema(body: dict[str, Any], schema: dict[str, Any]) 
     Extended thinking is the exception, and a loud one: Anthropic rejects any `tool_choice`
     but `auto` while `thinking` is set, so there the schema can only be offered. Call it after
     `apply_anthropic_thinking_cache`, which is what decides whether `thinking` is on the body.
+
+    A caller's `/v1` `response_format` reaches here too, which means a *request* can set
+    `tool_choice` on a manifest whose author asked for none. That is deliberate and it is the
+    price of the request-supplied case working at all — leaving the choice unset there would
+    make the feature advisory for every caller who is not also the operator. Two things bound
+    it: the schema's text is screened like the turn it rides with
+    (`governance.inbound.screen_output_schema`), and `any` is satisfiable without touching a
+    real tool, since the structured-output tool is always the way to finish. A manifest that
+    declares its own `spec.output_schema` overrides the caller's outright.
     """
     tools = list(body.get("tools") or [])
     if any(t.get("name") == STRUCTURED_OUTPUT_TOOL for t in tools):
@@ -265,7 +274,7 @@ def apply_anthropic_output_schema(body: dict[str, Any], schema: dict[str, Any]) 
 
 
 def fold_structured_output(
-    text: str, tool_calls: list[ToolCall], raw_stop: Any
+    text: str, tool_calls: list[ToolCall], raw_stop: Any, *, requested: bool = True
 ) -> tuple[str, list[ToolCall], Any]:
     """Turn a call to the structured-output tool back into the turn's text.
 
@@ -275,9 +284,23 @@ def fold_structured_output(
     interchangeable to a caller: on either one, `message.content` is the JSON document and
     `stop_reason` is `end_turn`.
 
+    `requested` is whether this turn actually asked for a schema. The guard against a manifest
+    binding a tool by the reserved name lives in `apply_anthropic_output_schema`, which only
+    runs when one was — so without this flag, a manifest that bound `felix_structured_output`
+    and declared *no* schema had that call silently swallowed: never executed, its
+    model-authored arguments returned as the final answer, and the stop reason forced to
+    `end_turn`. The guard was on the one branch where the collision was expected.
+
     A turn that also calls a real tool is the loop continuing rather than answering, so the
     premature structured call is dropped and the text left alone — the schema is asked for
     again on the next turn, which is the one that will end the run.
+
+    What comes out of here is a reply like any other and is screened like one, which means
+    reply controls can leave a caller holding a 200 whose body does not parse: PII redaction
+    rewrites the JSON in place, and a block replaces it with `PII_BLOCKED_REPLY`. That is the
+    right precedence — a control the operator switched on outranks a shape a caller asked for —
+    but it is the one case where the contract and the control disagree, and a caller calling
+    `json.loads` on every reply should expect it.
 
     Only a `tool_use` stop becomes `end_turn`. A turn truncated mid-arguments stops for
     `max_tokens`, and `parse_tool_arguments` answers a half-written document with `{}` rather
@@ -285,7 +308,7 @@ def fold_structured_output(
     a finished answer and, worse, silence react's truncation quarantine, which is the thing
     that would otherwise catch it.
     """
-    structured = [c for c in tool_calls if c.name == STRUCTURED_OUTPUT_TOOL]
+    structured = [c for c in tool_calls if c.name == STRUCTURED_OUTPUT_TOOL] if requested else []
     if not structured:
         return text, tool_calls, raw_stop
     remaining = [c for c in tool_calls if c.name != STRUCTURED_OUTPUT_TOOL]
@@ -426,7 +449,7 @@ class AnthropicMessagesClient(HttpModelClient):
                 thinking_blocks.append(dict(b))
         usage_raw = data.get("usage") or {}
         content, tool_calls, raw_stop = fold_structured_output(
-            "".join(text_parts), tool_calls, data.get("stop_reason")
+            "".join(text_parts), tool_calls, data.get("stop_reason"), requested=output_schema is not None
         )
         stop = map_stop(raw_stop, _ANTHROPIC_STOP, had_tool_calls=bool(tool_calls))
         return ModelChatResult(
@@ -555,7 +578,9 @@ class AnthropicMessagesClient(HttpModelClient):
         # It arrives whole rather than incrementally on purpose: a half-parsed JSON document
         # is not an answer, and a caller holding a schema is going to `json.loads` it.
         before = "".join(text_parts)
-        content, tool_calls, raw_stop = fold_structured_output(before, tool_calls, raw_stop)
+        content, tool_calls, raw_stop = fold_structured_output(
+            before, tool_calls, raw_stop, requested=output_schema is not None
+        )
         if content != before:
             yield StreamDelta(kind="text", text=content)
         yield ModelChatResult(

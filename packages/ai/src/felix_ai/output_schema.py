@@ -17,6 +17,7 @@ that can disagree with the one that actually decides.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 # Bounds against pathological input, not opinions about schema design — a provider's own
@@ -28,6 +29,18 @@ from typing import Any
 # schema, since the body is rebuilt on every turn of the loop.
 MAX_DEPTH = 32
 MAX_NODES = 1_000
+# The bound the two above were described as providing and do not: node count is orthogonal to
+# size, and 900 KB of schema fits in six nodes — one string value is one node. That is what
+# actually gets re-serialised into the provider request on every turn of the loop, and on
+# Anthropic the schema is a *tool definition*, so it sits inside the prefix the cache
+# breakpoint covers: a per-request schema also destroys the conversation's prompt cache and
+# bills every turn at the full write rate.
+MAX_BYTES = 32 * 1024
+
+# Keywords that take part in resolving a reference, and so decide what a `#`-prefixed pointer
+# resolves *against*. `$schema` is deliberately absent: it names a dialect, every schema
+# pydantic emits carries an https one, and rejecting it would reject the ordinary case.
+_REFERENCE_KEYWORDS = ("$ref", "$id", "$dynamicRef")
 
 
 class InvalidOutputSchema(ValueError):
@@ -56,6 +69,14 @@ def validate_output_schema(schema: Any) -> dict[str, Any]:
     if not isinstance(properties, dict) or not properties:
         raise InvalidOutputSchema('output_schema must declare a non-empty "properties" object')
 
+    # Before the walk, because the walk is per-node and this is about bytes.
+    try:
+        size = len(json.dumps(schema).encode("utf-8"))
+    except (TypeError, ValueError) as exc:
+        raise InvalidOutputSchema("output_schema is not JSON-serialisable") from exc
+    if size > MAX_BYTES:
+        raise InvalidOutputSchema(f"output_schema is too large ({size} bytes, limit {MAX_BYTES})")
+
     nodes = 0
     # Iterative, with the depth carried alongside each node: a recursive walk over
     # attacker-supplied nesting is a `RecursionError` — an unhandled 500 — rather than the
@@ -71,13 +92,22 @@ def validate_output_schema(schema: Any) -> dict[str, Any]:
         if depth > MAX_DEPTH:
             raise InvalidOutputSchema(f"output_schema is nested deeper than {MAX_DEPTH} levels")
         if isinstance(node, dict):
-            ref = node.get("$ref")
-            if ref is not None and not (isinstance(ref, str) and ref.startswith("#")):
-                # A remote `$ref` asks the provider to fetch a URL of the caller's choosing
-                # while holding the caller's schema — a request Felix would be paying for and
-                # could not see. Local refs into `$defs` are what pydantic's
-                # `model_json_schema()` emits, and are the whole reason refs are allowed.
-                raise InvalidOutputSchema(f'output_schema may only use local "$ref" values, not {ref!r}')
+            for keyword in _REFERENCE_KEYWORDS:
+                target = node.get(keyword)
+                # Only a *string* value is the keyword being used; `{"properties": {"$ref":
+                # {...}}}` is a property that happens to be named `$ref`, which pydantic emits
+                # for a field aliased that way and which the first version of this rejected
+                # with a message about remote references.
+                if isinstance(target, str) and not target.startswith("#"):
+                    # A remote reference asks the provider to fetch a URL of the caller's
+                    # choosing while holding the caller's schema — a request Felix would be
+                    # paying for and could not see. Checking `$ref` alone was not enough:
+                    # `$id` is precisely the keyword that redefines what a `#` pointer resolves
+                    # against. Local refs into `$defs` are what `model_json_schema()` emits and
+                    # are the whole reason references are allowed at all.
+                    raise InvalidOutputSchema(
+                        f'output_schema may only use local "{keyword}" values, not {target!r}'
+                    )
             children: list[Any] = list(node.values())
         elif isinstance(node, list):
             children = list(node)
@@ -124,6 +154,7 @@ def is_strict(schema: dict[str, Any]) -> bool:
 
 
 __all__ = [
+    "MAX_BYTES",
     "MAX_DEPTH",
     "MAX_NODES",
     "InvalidOutputSchema",
