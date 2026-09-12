@@ -4,7 +4,8 @@
 #   1. receives OTLP traces from felix-api / felix-worker (FELIX_OTEL_ENDPOINT)
 #   2. receives OTLP logs from the same processes and forwards them to Loki, already
 #      stamped with the trace and span they came from
-#   3. accepts extra exporters layered in by overlay (see compose.memoturn.yml)
+#   3. fans out to further backends — a second exporter added here is how one process's
+#      spans reach two destinations, since a process has only one OTLP endpoint
 #
 # Env expansion is a collector feature (`${env:VAR}`), unlike Prometheus, which has none in
 # scrape configs and needs a credentials file instead.
@@ -68,8 +69,8 @@ service:
     # The collector validates every *defined* exporter, not only the ones a pipeline
     # references, so an exporter with an unset endpoint fails startup even when unused —
     # which would make this overlay depend on a service it does not require.
-    # compose.memoturn.yml passes a second --config that adds its exporter and re-declares
-    # this pipeline; the collector deep-merges the two.
+    # A second `--config` that adds an exporter and re-declares this pipeline is
+    # deep-merged with this one, so an overlay can fan out without editing this file.
     traces:
       receivers: [otlp]
       processors: [memory_limiter, resource, batch]

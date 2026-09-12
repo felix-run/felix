@@ -17,6 +17,24 @@ time, so a metric added without a row here fails CI.
 | Logs | OTLP export, trace-correlated | `FELIX_OTEL_ENABLED=true` + `FELIX_OTEL_LOGS=true` + the extra |
 | Audit / usage rows | Postgres, `GET /audit`, `GET /usage`, `GET /usage/summary` | nothing |
 
+Traces go wherever you point them. Every `FELIX_OTEL_*` setting is passed through
+`deploy/docker/compose.yml`, so the base stack (`make up`) exports to a backend you already
+run — an OTel Collector, a hosted vendor, a console self-hosted on another host — with no
+overlay and no code that names the destination. `make up-observability` is the local
+version of the same thing: it points Felix at a collector it starts. See
+`deploy/docker/README.md`, "Sending traces to an external backend".
+
+A backend is an **egress destination**. Prompts stay off spans unless
+`FELIX_OTEL_CAPTURE_CONTENT=true` (they are outside governance content screening), and
+`FELIX_OTEL_CAPTURE_IDENTITY=false` drops the attributes that name a person — note that
+identity is captured by default and content is not.
+
+`felix doctor` reports whether the exporter is installed at all, in every environment:
+enabling export without `felix-harness[otel]` logs one warning and sends nothing, which
+otherwise surfaces as an empty dashboard. Outside `FELIX_ENVIRONMENT=development` it adds
+two posture rows — whether the destination is private or TLS, and whether prompts are
+excluded from spans. It has no row for identity capture.
+
 Two properties of `/metrics` are deliberate and easy to undo by accident:
 
 - **It requires authentication.** Label values include tenant-supplied manifest ids and

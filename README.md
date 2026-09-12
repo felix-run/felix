@@ -130,6 +130,13 @@ extras. Traces and OTLP logs need `felix-harness[otel]` and `FELIX_OTEL_ENABLED=
 make up-observability   # OTel Collector, Prometheus, Grafana, Jaeger, Loki, exporters
 ```
 
+To export to a backend you already run instead, set the `FELIX_OTEL_*` variables in `.env`
+(they reach every process through `compose.yml`) and build with `FELIX_DOCKER_EXTRAS=otel` —
+no overlay, and nothing in Felix that names the destination. Spans carry the `gen_ai.*`
+semantic-convention attributes, so an LLM-observability backend renders a chat as a
+generation with model, tokens and cost. See
+[`deploy/docker/README.md`](deploy/docker/README.md).
+
 Grafana lands on <http://localhost:3000> with datasources provisioned and one dashboard
 built from the counters Felix actually emits — including a governance row for the controls
 [`deploy/GOVERNANCE.md`](deploy/GOVERNANCE.md) tells operators to watch. Model calls are

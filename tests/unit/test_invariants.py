@@ -291,6 +291,66 @@ def test_the_test_runner_blanks_every_credential_setting() -> None:
     )
 
 
+def test_the_test_runner_points_the_cache_away_from_a_live_valkey() -> None:
+    """`scripts/test.sh` must not let the suite share a rate-limit counter with `make up`.
+
+    `memory://` covers the database and the object store; `redis_url` has no in-memory
+    spelling and its default is the port the Compose stack publishes Valkey on. With the
+    stack up, ~2,500 requests through the suite incremented one live counter and tests
+    started failing with 429 in groups that changed between runs — green in isolation, red
+    in the suite. CI has no Valkey, so CI was green throughout, which is the shape this
+    file exists to catch.
+
+    Checked against the *compose port mapping* rather than the `Settings` default, because
+    the hazard is "points at the running Valkey", not "differs from a default":
+    `redis://localhost:6379/1` differs from the default and is still the same server.
+    """
+    runner = (ROOT / "scripts" / "test.sh").read_text(encoding="utf-8")
+    match = re.search(r"^export FELIX_REDIS_URL=(\S+)", runner, re.MULTILINE)
+    assert match, (
+        "scripts/test.sh does not pin FELIX_REDIS_URL; with `make up` running, the suite "
+        "shares Valkey with the local stack and rate-limit failures appear at random"
+    )
+    pinned = match.group(1).strip("\"'")
+
+    # The host port `make up` publishes Valkey on, read from the mapping itself.
+    compose = (ROOT / "deploy" / "docker" / "compose.yml").read_text(encoding="utf-8")
+    published = re.search(r"\$\{FELIX_VALKEY_PORT:-(\d+)\}:6379", compose)
+    assert published, "no published Valkey port found in compose.yml — has the service moved?"
+    assert f":{published.group(1)}" not in pinned, (
+        f"scripts/test.sh points FELIX_REDIS_URL at {pinned}, which is where `make up` "
+        f"publishes Valkey (port {published.group(1)})"
+    )
+
+    # And that the pin is what this very run is using — everything above proves a line
+    # exists in a file; this proves the suite executing it is not on the live server.
+    assert os.environ.get("FELIX_REDIS_URL") == pinned, (
+        "the running suite's FELIX_REDIS_URL does not match the pin in scripts/test.sh — "
+        "run tests with ./scripts/test.sh (or make test), never a bare pytest"
+    )
+
+
+def test_down_removes_the_services_other_overlays_started() -> None:
+    """Every overlay shares the project name `felix`, so services one overlay started are
+    orphans to the next. Without --remove-orphans they survive `make down` and keep
+    running — a stack accrues four overlays' worth of containers, several of them
+    receiving nothing because the last `up` recreated api and worker without their env.
+    """
+    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+    recipes = dict(re.findall(r"^(down[a-z-]*):.*\n((?:\t.*\n)+)", makefile, flags=re.MULTILINE))
+    assert set(recipes) == {"down", "down-all"}, (
+        f"expected `down` and `down-all` targets, found {sorted(recipes)} — a renamed "
+        "target would leave this assertion checking nothing"
+    )
+    for name, body in recipes.items():
+        assert "--remove-orphans" in body, f"`make {name}` leaves other overlays' services running"
+        assert "--profile full" in body, f"`make {name}` skips the profiled services (MinIO)"
+    assert "--volumes" in recipes["down-all"], (
+        "`make down-all` without --volumes is a silent alias for `down`"
+    )
+    assert "--volumes" not in recipes["down"], "`make down` must not destroy local state"
+
+
 # --------------------------------------------------------------------------
 # Every FELIX_ setting is discoverable by an operator reading .env.example.
 # --------------------------------------------------------------------------
