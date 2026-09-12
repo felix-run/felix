@@ -371,8 +371,14 @@ async def _channels_in_postgres(
     ranked: dict[str, list[str]] = {}
     tsq = _tsquery_or(query)
     # An empty list means "no filter", expressed as a parameter rather than by building two
-    # statements: `:kinds = '{}'` is a comparison Postgres can plan, and one SQL string per
-    # channel is one thing to keep true.
+    # statements: `cardinality(...) = 0` is a comparison Postgres can plan, and one SQL string
+    # per channel is one thing to keep true.
+    #
+    # `list(kinds or [])` matters twice over. The `CAST(... AS text[])` is what lets psycopg
+    # type an empty list at all — bare, it is `could not determine data type of parameter`.
+    # And a `None` here would make the predicate NULL for every row, so every channel would
+    # return nothing: the silent-empty failure this filter was moved here to remove, back
+    # again from the other direction.
     params = {
         "tenant": tenant_id,
         "manifest": manifest_id,
@@ -382,27 +388,33 @@ async def _channels_in_postgres(
     }
     qvec = await _embed_query(embedder, query)
 
+    statements: list[tuple[str, str, dict[str, Any]]] = []
+    if tsq is not None:
+        statements.append(("fts", _FTS_SQL, params))
+        statements.append(("topic", _TOPIC_SQL, params))
+    if qvec is not None:
+        literal = "[" + ",".join(repr(float(v)) for v in qvec) + "]"
+        statements.append(("vector", _VECTOR_SQL, {**params, "vec": literal}))
+
     factory = get_session_factory(settings=settings)
     async with factory() as db:
-        for name, sql in (("fts", _FTS_SQL), ("topic", _TOPIC_SQL)):
-            if tsq is None:
-                continue
+        for name, sql, bound in statements:
+            # A savepoint per channel. The `except` below promises a deployment mid-upgrade
+            # "loses a channel, not the turn", and in one shared transaction that was not
+            # true: the first failure aborts the transaction, so every later channel dies on
+            # InFailedSqlTransaction and recall returns nothing at all — silently, at DEBUG.
+            # Dropping `content_tsv` reproduced it: fts failed for the real reason, topic and
+            # vector for that one, and the turn got zero memories rather than two channels'
+            # worth. `begin_nested` gives each statement its own rollback point.
             try:
-                rows = (await db.execute(sa_text(sql), params)).scalars().all()
+                async with db.begin_nested():
+                    rows = (await db.execute(sa_text(sql), bound)).scalars().all()
                 ranked[name] = [str(r) for r in rows]
             except Exception:
                 # `websearch_to_tsquery` never raises on user punctuation, but the
                 # generated columns only exist after 0009 — a deployment mid-upgrade
                 # should lose a channel, not the turn.
                 logger.debug("recall channel %s unavailable", name, exc_info=True)
-
-        if qvec is not None:
-            literal = "[" + ",".join(repr(float(v)) for v in qvec) + "]"
-            try:
-                rows = (await db.execute(sa_text(_VECTOR_SQL), {**params, "vec": literal})).scalars().all()
-                ranked["vector"] = [str(r) for r in rows]
-            except Exception:
-                logger.debug("recall vector channel unavailable", exc_info=True)
     return ranked
 
 

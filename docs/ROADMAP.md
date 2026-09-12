@@ -609,6 +609,22 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       (a write on a read path) or drop the column in a revision. Until one of those, the column
       exists and nothing populates it.
 
+- [ ] **The recall tiebreak costs an HNSW index scan its selectivity.** Measured at 20,500
+      rows: `ORDER BY embedding <=> :vec` alone is an `Index Scan using idx_memvec_hnsw`
+      pulling 16 rows in ~0.35 ms, while adding any tiebreak turns it into an
+      `Incremental Sort` over that index pulling 391 rows in ~1.25 ms — 4x the time and 5.6x
+      the buffers. Going from one extra key to three is then free (~4%, inside run-to-run
+      spread), so the lever if this ever matters is dropping the tiebreak, not trimming it.
+      It is worth the millisecond today: an undecided cut changes *which* memories a turn
+      gets. Re-measure before changing either way, and note the planner does not choose the
+      index at all below a few thousand rows, so small deployments pay nothing.
+
+- [ ] **`kind` is unindexed, and recall now filters on it.** `memory_vectors` has no index on
+      `kind`, so on the full-text and topic channels `kind = ANY(...)` is a heap recheck after
+      the GIN scan — a selective `kinds` over a broad tsquery walks a long way to fill a
+      `LIMIT 16`. Unmeasured, and expected to be invisible at realistic sizes; measure before
+      adding an index rather than adding one on the strength of this line.
+
 - [ ] **A read is a copy in one store and a window in three.** The jobs store now deepcopies
       its JSON columns on read *and* write, because the twin was handing back the dict it held
       and Postgres deserializes fresh — so a caller editing what it read edited the store, on

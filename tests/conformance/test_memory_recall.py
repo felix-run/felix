@@ -14,11 +14,13 @@ candidates, resolves the same way every time and the same way on either backend,
 scores on position and a truncated channel is where an undecided tie turns into a different
 answer rather than a differently-ordered one.
 
-The corpus is chosen so the stemming difference cannot bite. Mostly that is because a token
-is already its own stem (`alpha`, `beta`, `gamma`, `zeta`); `timezone` is not — it stems to
-`timezon` — and is safe for the different reason that the stemming is *symmetric*, applied to
-the content and the query alike, so both still match. A word like `timezones` would not be.
-Checked against a real `to_tsquery('english', ...)` rather than assumed.
+The corpus is chosen so the stemming difference cannot bite. The twin does no stemming at
+all, so the property that matters is not symmetry — it is that the query token and the content
+token are the *same string* on the twin while still matching after Postgres stems both. That
+holds for `alpha`, `beta`, `gamma` and `zeta`, which are their own stems, and for `timezone`,
+which stems to `timezon` on both sides of the `@@`. It does not hold for `timezones`: Postgres
+stems it to `timezon` and matches `timezone is utc`, while the twin has no stemmer and returns
+nothing. Confirmed by running both arms, not by reading the stemmer.
 
 Two more differences the corpus stays clear of rather than resolves: English stopwords
 (`is`, `only`, `theirs`) vanish from `content_tsv` but survive the twin's tokeniser, and the
