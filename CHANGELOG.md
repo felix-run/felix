@@ -7,41 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
+### Added
 
-- **Traces can be sent to a backend Felix does not host.** Every `FELIX_OTEL_*` setting is
-  now passed through `deploy/docker/compose.yml`, so `make up` plus a few lines of `.env`
-  exports to any OTLP destination — a collector, a hosted vendor, a console self-hosted
-  elsewhere. `x-felix-env` carried no OTLP key and there is no `env_file`, so the only way
-  to get a span out of the Compose stack was to run an overlay that stood a backend up
-  *inside* the project. That is how `compose.memoturn.yml` came to run one vendor's API,
-  worker and console on Felix's own Postgres, Valkey and MinIO: 8 services, a database
-  bootstrap, a blob bucket and a reverse proxy for a product Felix only sends to. That
-  overlay and `make up-memoturn` are **removed**; point `FELIX_OTEL_ENDPOINT` at the
-  instance instead, and run the product from its own compose project or its cloud.
+- **Agents can search the documents an operator ingested.** `spec.document_tools` binds a
+  retrieval tool per ref, and `support` uses it as `search_docs` over whatever this deployment
+  has in its corpus. The corpus landed a while ago — ingestion, a hybrid store, both backends,
+  `/documents` management routes — and nothing agent-facing could read it, so an operator could
+  fill it and no agent could use it.
 
-- **`make down` takes the whole project down.** Every overlay shares the project name
-  `felix`, so services one overlay started are orphans to the next; `down` named only the
-  base file and left them running. A stack accrued four overlays' worth of containers,
-  several receiving nothing because the last `up` had recreated `api` and `worker` without
-  their env. `down` now passes `--remove-orphans`, and `make down-all` adds `--volumes`.
+  It is the mildest of the three retrieval tools by construction: `http_fetch` lets the model
+  choose a destination and `web_search` lets it choose a query against an operator-chosen
+  endpoint, while this reaches only rows already in this deployment's store, in the calling
+  tenant. So there is no address to validate and no egress to guard. The tenant comes from the
+  compile rather than the call, which is the one thing the tool adds over the store it wraps.
+  Its transport is `documents`, absent from the trusted allowlist, so the same content
+  screening covers a retrieved chunk as covers a fetched page — and every line of a chunk is
+  indented under its hit, so a `2.` at column zero can only have come from the renderer. A
+  chunk is the one field here that is both untrusted and legitimately multi-line, so the
+  flattening `web_search` uses on a title is not available; without the indentation one
+  document renders as two, with a source the agent is told to follow.
 
-- **`felix doctor` reports whether the OTLP exporter is installed**, in every environment
-  including `development` — which is what Compose defaults to, so a row placed with the
-  production posture checks would have been skipped for exactly the operator it is for.
-  `FELIX_OTEL_ENABLED=true` on a lean image logs one warning at startup and exports nothing
-  while every other signal says the deployment is healthy. The check asks the question the
-  exporter asks — `felix.observability.tracing.exporter_available` selects the module by
-  `FELIX_OTEL_PROTOCOL`, so an environment carrying only the http exporter under `grpc` is
-  reported as broken rather than fine.
+  Retrieval is hybrid for the agent as well as for the operator: the tool builds the same
+  embedder `/documents/search` builds per request, so a deployment with `FELIX_MEMORY_EMBEDDER`
+  set does not answer the operator's query and quietly miss the agent's.
 
-- **`make up-observability` no longer forwards `FELIX_OTEL_HEADERS`.** Now that the base
-  stack passes that variable through, an operator with a hosted-ingest credential in `.env`
-  who then ran the overlay would have sent that `Authorization` header to a local collector
-  that never asked for one. The overlay redirects the destination; the credential does not
-  follow it. `migrate` and `scheduler` pin export off and drop the header for the same
-  reason — neither calls `setup_observability`, so both would have been carrying a secret
-  they cannot use.
+  This closes the audit finding that opened the capability workstream: `support.yaml` declared
+  `tools: [calculator, list_skills]` — a support agent that could not look anything up.
+  `fetch_docs` gave it a page whose URL it already knew; this gives it the question an operator
+  actually asks, which is where something is written down.
+
+- **A conformance contract for `recall()`** (`tests/conformance/test_memory_recall.py`), the
+  first this path has had. It deliberately does not assert the two backends return the same
+  hits: the twin scores text by raw token overlap while Postgres stems, so the same query can
+  legitimately match different rows. What it pins is that the answer is *decided* — that a tie
+  inside a channel, or between two candidates fused from different channels, resolves the same
+  way every time and on either backend.
 
 ### Fixed
 
@@ -102,6 +102,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every request to the canary on one backend and was unreachable on the other. The REST route
   already bounds the field; the store now does too, because plugins and worker jobs call it
   directly.
+
 - **The manifest twin handed back the stored document by reference.** `get_version` returned
   the dict it holds, so a caller that edited what it was given silently rewrote what every
   later reader of that version saw. Postgres deserialises fresh JSONB per read and never had
@@ -118,6 +119,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   canary was ever benchmarked — silently, and only on deployments where RLS is the isolation
   mechanism. The bundled compose role is a superuser and skips the policy entirely, which is
   why local development and CI never showed it. Each sweep now binds the tenant it is sweeping.
+
 - **`create_fiber` and `get_fiber` bind their tenant too.** They take one as an argument and
   were the only writes in `durability/fibers.py` that neither bound nor bypassed. On the HTTP
   path the ambient context covered them; the fiber scheduler reaches `get_fiber` without one.
@@ -166,12 +168,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   called no model at all. The declared window was not the one the route used and nothing said
   so, which is this repo's signature defect shape. Found while trying to write a test for the
   summarising branch and being unable to make it fire.
+
 - **The thinking level was written twice and only one copy was read by the run.** The snapshot
   resolves it from a `thinking_level_change` event; the next turn resolves it from thread
   metadata and turns it into a thinking budget on the model spec. Nothing covered the second
   path, so a thread could display "high" and run with thinking off. Now pinned on the spec the
   provider is built from, which is the only place the difference is visible.
-
 
 - **The management stores leaked between tests.** `_memory_datasets`, `_memory_items`,
   `_memory_runs`, `_memory_jobs` and `_memory_approvals` are process globals that nothing
@@ -183,8 +185,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fixture calls those rather than reaching across the package for six private dicts. The
   session-state reset added last cycle now uses the `reset_thread_meta_for_tests()` that
   already existed and had no caller.
-
-### Added
 
 - **A conformance contract for the jobs store** (`tests/conformance/test_jobs_store.py`), run
   against the in-memory twin and Postgres. Its Postgres half ran only under
@@ -363,6 +363,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Postgres does with it. It also pins that the binding is unwound between tenants: a leaked one
   would be worse than none, since the next tenant's queries would run under the previous
   tenant's policy.
+
 - **A conformance contract for the fiber claim path** (`tests/conformance/test_fiber_claim.py`).
   `test_fiber_store.py` already covered attempts through backoff and burial; this covers the
   step before it — which fibers a scheduler tick picks up and what claiming does to the row.
@@ -422,6 +423,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `_leaf_by_thread` are process globals that nothing cleared, so a test reusing another's
   thread id inherited its transcript, leaf and phase. The suite was correct only because every
   id in it happened to be unique.
+
+- **One broken recall channel silently returned no memories at all.** `recall()` runs three
+  channels in one transaction, and the comment above their error handler promised a deployment
+  mid-upgrade would "lose a channel, not the turn". It did not: the first failure aborted the
+  transaction, so every later channel died on `InFailedSqlTransaction` and the turn got nothing
+  — logged at DEBUG. Reproduced by dropping a generated column, and confirmed to have been
+  position-dependent, which is why it could sit there: breaking the *last* channel looked fine.
+  Each statement now runs in its own savepoint, verified across all eight combinations of
+  broken channels. The failure log line is now `recall channel vector unavailable` rather than
+  `recall vector channel unavailable`; nothing in the tree matched the old string.
+
+- **`recall(kinds=[...])` could return nothing while a matching memory was stored.** The filter
+  ran in the ranking pass, after each channel had been cut to its budget — so a match outside
+  that window was filtered against an answer it had already been excluded from. Reachable by an
+  agent through the recall tool's `kind` argument and by an operator through
+  `GET /memory/recall?kind=`. The predicate is in all six channels now.
+
+- **Which memories an agent was given could differ between two identical recalls.** `recall()`
+  runs three channels on each backend and fuses them by reciprocal rank. Every channel sorted
+  on its score alone — a small integer for the text channels, so ties are the normal case —
+  and each is then cut to a per-channel budget before fusion. Reciprocal-rank fusion scores on
+  *position*, so a different candidate set entering it is amplified rather than absorbed. The
+  ranking pass then tied again on score and recency. All six channels and the ranking now end
+  on the row id.
+
+  The recency tiebreak also read `last_used_at or created_at`, and `last_used_at` has no writer
+  anywhere: the migration adds the column, `put_memory` sets it to `None`, the upsert excludes
+  it. So "newest breaking ties" named a key that never applied. The dead half is gone, and
+  restoring it changes no test, which is what says it was dead.
+
+### Changed
+
+- **Traces can be sent to a backend Felix does not host.** Every `FELIX_OTEL_*` setting is
+  now passed through `deploy/docker/compose.yml`, so `make up` plus a few lines of `.env`
+  exports to any OTLP destination — a collector, a hosted vendor, a console self-hosted
+  elsewhere. `x-felix-env` carried no OTLP key and there is no `env_file`, so the only way
+  to get a span out of the Compose stack was to run an overlay that stood a backend up
+  *inside* the project. That is how `compose.memoturn.yml` came to run one vendor's API,
+  worker and console on Felix's own Postgres, Valkey and MinIO: 8 services, a database
+  bootstrap, a blob bucket and a reverse proxy for a product Felix only sends to. That
+  overlay and `make up-memoturn` are **removed**; point `FELIX_OTEL_ENDPOINT` at the
+  instance instead, and run the product from its own compose project or its cloud.
+
+- **`make down` takes the whole project down.** Every overlay shares the project name
+  `felix`, so services one overlay started are orphans to the next; `down` named only the
+  base file and left them running. A stack accrued four overlays' worth of containers,
+  several receiving nothing because the last `up` had recreated `api` and `worker` without
+  their env. `down` now passes `--remove-orphans`, and `make down-all` adds `--volumes`.
+
+- **`felix doctor` reports whether the OTLP exporter is installed**, in every environment
+  including `development` — which is what Compose defaults to, so a row placed with the
+  production posture checks would have been skipped for exactly the operator it is for.
+  `FELIX_OTEL_ENABLED=true` on a lean image logs one warning at startup and exports nothing
+  while every other signal says the deployment is healthy. The check asks the question the
+  exporter asks — `felix.observability.tracing.exporter_available` selects the module by
+  `FELIX_OTEL_PROTOCOL`, so an environment carrying only the http exporter under `grpc` is
+  reported as broken rather than fine.
+
+- **`make up-observability` no longer forwards `FELIX_OTEL_HEADERS`.** Now that the base
+  stack passes that variable through, an operator with a hosted-ingest credential in `.env`
+  who then ran the overlay would have sent that `Authorization` header to a local collector
+  that never asked for one. The overlay redirects the destination; the credential does not
+  follow it. `migrate` and `scheduler` pin export off and drop the header for the same
+  reason — neither calls `setup_observability`, so both would have been carrying a secret
+  they cannot use.
 
 ### Known and deliberately unfixed
 

@@ -217,6 +217,21 @@ proxy allowlist needs to know that.
 `spec.browser_tools` and `spec.http_tools` — which makes them the highest-value rebinding
 targets in the harness. They are pinned differently because they dial differently.
 
+The other two retrieval refs are milder, and it is worth being precise about why rather than
+grouping them. `spec.search_tools` lets the model choose the query but the operator chooses
+the endpoint, so the only address reached is the one in `FELIX_SEARCH_BACKEND`.
+`spec.document_tools` reaches no network at all — only rows already ingested into this
+deployment's own store, in the calling tenant, with the tenant taken from the compile rather
+than from the call. Neither takes a confinement field, because neither has a destination to
+confine.
+
+**None of that makes what they return trustworthy.** A search snippet is written by whoever
+ranked for the query and a retrieved chunk is text somebody ingested, so both transports
+(`search`, `documents`) sit outside the trusted allowlist and content screening covers them
+exactly as it covers a fetched page. A manifest binding any of the four without
+`content_screening.enabled` is warned at compile time and counted in
+`felix_untrusted_tools_unscreened`.
+
 `spec.http_tools` goes through `safe_async_client` like every other outbound call, so it
 inherits the pin for free, on the first request and on each redirect hop: the fetch tool
 drives redirects by hand rather than letting httpx follow them, so every hop re-enters the
