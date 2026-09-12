@@ -127,8 +127,22 @@ def _repo_on(tmp_path: pathlib.Path, branch: str) -> pathlib.Path:
     return root
 
 
-def _run(hook: str, command: str, *, project: pathlib.Path | None = None) -> int:
-    payload = json.dumps({"tool_input": {"command": command}})
+def _payload(command: str, cwd: pathlib.Path | None = None) -> dict[str, object]:
+    """What Claude Code sends a PreToolUse hook. `cwd` is where the command will run."""
+    body: dict[str, object] = {"tool_input": {"command": command}}
+    if cwd is not None:
+        body["cwd"] = str(cwd)
+    return body
+
+
+def _run(
+    hook: str,
+    command: str,
+    *,
+    project: pathlib.Path | None = None,
+    cwd: pathlib.Path | None = None,
+) -> int:
+    payload = json.dumps(_payload(command, cwd))
     return subprocess.run(
         ["bash", str(HOOKS / f"{hook}.sh")],
         input=payload,
@@ -189,3 +203,116 @@ def test_every_bash_guard_is_covered(tmp_path: Path) -> None:
     }
     covered = {hook for hook, _, _ in CASES} | {"pr-quality-gate"}  # its own module
     assert configured <= covered, f"Bash guards with no cases: {sorted(configured - covered)}"
+
+
+def _worktree_on(main: pathlib.Path, branch: str) -> pathlib.Path:
+    """A linked worktree of `main`, checked out on its own branch.
+
+    The shape this file could not express before: the session works here, while
+    `CLAUDE_PROJECT_DIR` still names the main checkout.
+    """
+    linked = main.parent / f"wt-{branch.replace('/', '-')}"
+    git(main, "worktree", "add", "-q", "-b", branch, str(linked))
+    return linked
+
+
+def _stdout(command: str, *, project: pathlib.Path, cwd: pathlib.Path) -> str:
+    return subprocess.run(
+        ["bash", str(HOOKS / "git-guard.sh")],
+        input=json.dumps(_payload(command, cwd)),
+        capture_output=True,
+        text=True,
+        env={"PATH": os.environ["PATH"], "CLAUDE_PROJECT_DIR": str(project)},
+    ).stdout
+
+
+@pytest.mark.parametrize(
+    ("worktree_branch", "want"),
+    [("feat/x", ALLOWED), ("main", BLOCKED)],
+    ids=["worktree-on-a-branch", "worktree-on-main"],
+)
+def test_force_with_lease_is_judged_where_the_command_runs(
+    tmp_path: pathlib.Path, worktree_branch: str, want: int
+) -> None:
+    """The guard asked `CLAUDE_PROJECT_DIR`, which is not where the work happens.
+
+    A session in a linked worktree had its branch read from the main checkout, so a
+    `--force-with-lease` on a feature branch was refused with "not on main" — advice that
+    could not be followed, since the session already was on one. A guard that cries wolf
+    gets worked around, and the workaround is a habit of rephrasing commands to slip past
+    it.
+
+    Both directions, so this cannot pass by simply never blocking: the project root is on
+    `main` in both rows, and only the directory the command runs in changes.
+    """
+    project = _repo_on(tmp_path, "main")
+    linked = _worktree_on(project, worktree_branch) if worktree_branch != "main" else project
+    got = _run("git-guard", "git push --force-with-lease origin HEAD", project=project, cwd=linked)
+    assert got == want, f"worktree on {worktree_branch}, project on main: got {got}, wanted {want}"
+
+
+def test_the_commit_warning_follows_the_working_directory(tmp_path: pathlib.Path) -> None:
+    """The nag rather than the block — the noisier half of the same bug.
+
+    It fired on every commit of a worktree session, which is an everyday shape here, so
+    the one signal that should mean "stop and branch" came to mean nothing.
+    """
+    project = _repo_on(tmp_path, "main")
+    linked = _worktree_on(project, "feat/x")
+    on_branch = _stdout("git commit -m x", project=project, cwd=linked)
+    assert "about to commit on main" not in on_branch, (
+        "the guard warned about main while the session was committing on a feature branch"
+    )
+    on_main = _stdout("git commit -m x", project=project, cwd=project)
+    assert "about to commit on main" in on_main, "the warning stopped working where it should fire"
+
+
+@pytest.mark.parametrize(
+    ("target_branch", "want"),
+    [("feat/x", ALLOWED), ("main", BLOCKED)],
+    ids=["sibling-on-a-branch", "sibling-on-main"],
+)
+def test_an_explicit_dash_c_names_the_repo_being_judged(
+    tmp_path: pathlib.Path, target_branch: str, want: int
+) -> None:
+    """`git -C <other checkout> push --force-with-lease` acts on that checkout.
+
+    Working in a sibling repo from a session rooted here is an ordinary shape — it is how
+    the docs half of a change lands. Judging it against this project's branch is the same
+    error as judging a worktree against the main checkout, one repo further out. The
+    project is put on the *opposite* branch in each row, so a guard still reading it would
+    get both rows wrong rather than one.
+    """
+    project = _repo_on(tmp_path, "feat/p" if target_branch == "main" else "main")
+    sibling = _repo_on(tmp_path, target_branch)
+    got = _run(
+        "git-guard",
+        f"git -C {sibling} push --force-with-lease origin HEAD",
+        project=project,
+        cwd=project,
+    )
+    assert got == want, f"sibling on {target_branch}: got {got}, wanted {want}"
+
+
+def test_dash_c_is_only_a_directory_before_the_subcommand(tmp_path: pathlib.Path) -> None:
+    """`git commit -C HEAD` reuses a commit message; it names no directory.
+
+    Reading it as one points the guard at a path that does not exist, and the fallback
+    then decides the answer — so whether the warning appears would turn on a flag that
+    has nothing to do with where the commit lands.
+    """
+    project = _repo_on(tmp_path, "main")
+    out = _stdout("git commit -C HEAD", project=project, cwd=project)
+    assert "about to commit on main" in out, (
+        "`-C HEAD` was read as a directory, so the guard judged the wrong repository"
+    )
+
+
+def test_a_leading_cd_moves_the_repo_being_judged(tmp_path: pathlib.Path) -> None:
+    """`cd <worktree> && git commit` commits there, whatever the payload cwd says."""
+    project = _repo_on(tmp_path, "main")
+    linked = _worktree_on(project, "feat/x")
+    out = _stdout(f"cd {linked} && git commit -m x", project=project, cwd=project)
+    assert "about to commit on main" not in out, (
+        "the guard ignored a leading cd and judged the directory the session started in"
+    )
