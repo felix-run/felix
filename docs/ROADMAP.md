@@ -103,8 +103,10 @@ First, because everything else governs it.
       in-memory twin), migration `0010`, conformance against both backends, and `/documents`
       management routes so an operator can ingest, search, inspect and remove. Split from the
       agent-facing half deliberately, on the evidence that the two smaller features in this
-      workstream each drew ~7 review findings; **the `search_documents` tool and wiring
-      `support` to the Felix docs are the follow-up**, and item 6 stays open until then.
+      workstream each drew ~7 review findings. The follow-up landed: `spec.document_tools`
+      binds a retrieval tool and `support` declares it as `search_docs`. What remains of this
+      item is ingesting the Felix docs themselves into a deployment's corpus, which is an
+      operations task rather than a harness one.
       Reuses the `Embedder` seam and `FELIX_MEMORY_EMBEDDER` rather than adding a second
       embedder setting — one embedder per deployment, one vector dimension.
 - [ ] **Structured output** — `spec.output_schema` → `response_format` on the OpenAI wire,
@@ -115,10 +117,10 @@ First, because everything else governs it.
       block. Image-by-URL already works on `/chat` (`felix_ai/types.py:ContentBlock`, encoded by
       both wires); the gaps are upload, and `openai_compat.py:34` typing content as `str | None`
       so images cannot reach `/v1` at all.
-- [~] **Make the bundled manifests use them.** `support` fetches from the docs site and `deep`
-      now has `search` + `fetch` with screening on — the two manifests the audit named. Document
-      search over the Felix docs waits on the retrieval item above. A tool no manifest declares
-      is inert by this repo's own definition, so this stays open until that lands.
+- [x] **Make the bundled manifests use them.** `support` fetches from the docs site and now
+      searches the corpus as `search_docs`; `deep` has `search` + `fetch`. Both with screening
+      on, which is what keeps the unscreened-tools warning silent on what we ship. A tool no
+      manifest declares is inert by this repo's own definition, and none of these are now.
 
 Decision gate, not a commitment: the **governed coding toolset** (`read`/`edit`/`bash` behind a
 `FilesystemBackend` + `ShellBackend` pair) was deferred as "large, and conditional — only worth

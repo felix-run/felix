@@ -37,9 +37,22 @@ spec:
       max_bytes: 60000
       timeout_ms: 10000
 
-  # Required by the tool above, not decoration: a fetched page is attacker-controlled input,
-  # and compiling this manifest without it logs `untrusted tool(s) ... unscreened`. Marker
-  # screening only (no `model:`), so it costs nothing per call.
+  # Retrieval over whatever this deployment ingested, which is the half `fetch_docs` cannot
+  # do: fetching needs a URL the model already knows, and the common support question is
+  # "where is this written down". No confinement field because there is nothing to confine —
+  # it reads only this tenant's own corpus and reaches no network.
+  document_tools:
+    - name: search_docs
+      description: >-
+        Search the documentation this deployment has ingested. Prefer this when you do not
+        already know which page answers the question; quote the chunk you used, and follow
+        its source with fetch_docs when you need the surrounding page.
+      max_results: 4
+
+  # Required by the tools above, not decoration: a fetched page is attacker-controlled input,
+  # and compiling this manifest without them logs `untrusted tool(s) ... unscreened`. A
+  # retrieved chunk is the same shape of input: text somebody else wrote, quoted into an
+  # answer. Marker screening only (no `model:`), so it costs nothing per call.
   content_screening:
     enabled: true
     on_flag: quarantine
