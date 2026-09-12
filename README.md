@@ -532,6 +532,10 @@ Storage and execution:
 - Durable facts via `spec.memory.capture`; how-tos via `spec.procedural_memory`
 - `spec.execution.mode: durable` enqueues a fiber (Temporal optional) and returns `202` with a
   `resume_token`; a step that keeps failing backs off and is `dead` after `FELIX_FIBER_MAX_ATTEMPTS`
+- `POST /chat/stream` on a durable manifest streams the run instead: `run_accepted` → `run_status`
+  → `final`, interleaved with `session_event` frames tailed from the thread's session log, so tool
+  calls and assistant turns arrive as they land, across replicas, with a resumable `id:` cursor.
+  Completed messages only — token deltas are never persisted, so a durable run never streams them
 - Tool retrieval, semantic sessions, and procedural recall use embeddings when
   `felix-harness[embeddings]` is installed
 
