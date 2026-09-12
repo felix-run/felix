@@ -21,7 +21,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tenant. So there is no address to validate and no egress to guard. The tenant comes from the
   compile rather than the call, which is the one thing the tool adds over the store it wraps.
   Its transport is `documents`, absent from the trusted allowlist, so the same content
-  screening covers a retrieved chunk as covers a fetched page.
+  screening covers a retrieved chunk as covers a fetched page — and every line of a chunk is
+  indented under its hit, so a `2.` at column zero can only have come from the renderer. A
+  chunk is the one field here that is both untrusted and legitimately multi-line, so the
+  flattening `web_search` uses on a title is not available; without the indentation one
+  document renders as two, with a source the agent is told to follow.
+
+  Retrieval is hybrid for the agent as well as for the operator: the tool builds the same
+  embedder `/documents/search` builds per request, so a deployment with `FELIX_MEMORY_EMBEDDER`
+  set does not answer the operator's query and quietly miss the agent's.
 
   This closes the audit finding that opened the capability workstream: `support.yaml` declared
   `tools: [calculator, list_skills]` — a support agent that could not look anything up.
