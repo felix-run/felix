@@ -195,6 +195,10 @@ class _ReactAgent:
     steering_mode: str = "all"
     follow_up_mode: str = "all"
     compact_after_turn: bool = False
+    # `spec.output_schema`: the shape every answer this agent gives must have. Held on the
+    # agent rather than read per request because it is the manifest's contract, not the
+    # caller's — a client cannot widen or replace it.
+    output_schema: dict[str, Any] | None = None
     _tool_map: dict[str, Tool] = field(init=False, repr=False)
     _last_model_id: str | None = field(default=None, init=False, repr=False)
 
@@ -223,9 +227,14 @@ class _ReactAgent:
         so an unclamped value would let one request size a whole turn past the ceiling
         the operator declared — and past `limits.max_output_tokens` by a full turn.
         """
-        opts = input.model_options
-        if opts is None:
+        if input.model_options is None and self.output_schema is None:
+            # The common case, and the only one with nothing to send.
             return None
+        # One construction path from here down. The manifest's `output_schema` used to get a
+        # `ModelChatOptions` of its own when the caller sent none, so a second manifest-level
+        # option would have had to be added in two places — and the one that landed in only
+        # one of them would be invisible.
+        opts = input.model_options or ModelChatOptions()
         spec = _model_spec_with_override(self.model_spec, input.model_id)
         ceiling = int(getattr(spec, "max_tokens", None) or ABSOLUTE_LIMITS["max_output_tokens"])
         # `limits` is None for a pattern builder that hands the loop a bare context;
@@ -235,7 +244,11 @@ class _ReactAgent:
         max_tokens = (
             opts.max_tokens if opts.max_tokens is None else max(1, min(int(opts.max_tokens), ceiling))
         )
-        return replace(opts, max_tokens=max_tokens)
+        # The manifest's schema wins over anything the caller sent. `/v1` lets a client ask
+        # for a `response_format`, and an agent published with an answer contract must keep
+        # answering to it rather than to whichever shape the last request preferred.
+        schema = self.output_schema or opts.output_schema
+        return replace(opts, max_tokens=max_tokens, output_schema=schema)
 
     def _resolve_model(self, input: InvokeInput) -> Any:
         settings = self.settings or get_settings()
@@ -1117,6 +1130,7 @@ def build_react_agent(ctx: PatternBuildContext) -> Agent:
         steering_mode=steer_mode,
         follow_up_mode=follow_mode,
         compact_after_turn=compact_after,
+        output_schema=ctx.get("output_schema"),
     )
 
 
@@ -1124,6 +1138,6 @@ async def _build_react(ctx: PatternBuildContext) -> Agent:
     return build_react_agent(ctx)
 
 
-register_pattern("react", _build_react, kind="single-agent")
+register_pattern("react", _build_react, kind="single-agent", honours_output_schema=True)
 
 __all__ = ["build_react_agent"]

@@ -22,6 +22,7 @@ from felix.manifests.pin import ManifestDriftError
 from felix.patterns.model import ModelGatewayError
 from felix.patterns.types import ChatMessage, InvokeInput
 from felix.runtime import build_tenant_agent, prepare_tenant_invoke, resolve_tenant_manifest
+from felix_ai.output_schema import InvalidOutputSchema, validate_output_schema
 from felix_ai.types import ModelChatOptions
 from felix_ai.wire.openai_completions import finish_reason_for
 from pydantic import BaseModel, Field
@@ -50,7 +51,35 @@ class ChatCompletionsRequest(BaseModel):
     # loop clamps it); the bounds here keep NaN/inf and nonsense off the wire.
     temperature: float | None = Field(default=None, ge=0.0, le=2.0)
     max_tokens: int | None = Field(default=None, ge=1)
+    # OpenAI's structured-output field, in its own shape, because the point of this surface is
+    # that an OpenAI SDK works unchanged. Only `json_schema` carries a schema; the legacy
+    # `json_object` mode is refused rather than accepted and ignored.
+    response_format: dict[str, Any] | None = None
     user: str | None = None
+
+
+def _requested_output_schema(response_format: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The JSON Schema an OpenAI-style `response_format` is asking for.
+
+    Raises `InvalidOutputSchema` for a shape this harness cannot honour, so the caller gets one
+    message naming the problem instead of a provider `400` two hops away. A manifest that
+    declares `spec.output_schema` overrides whatever comes back from here — the react loop
+    decides that, not this function.
+    """
+    if not response_format:
+        return None
+    kind = response_format.get("type")
+    if kind in (None, "text"):
+        return None
+    if kind != "json_schema":
+        raise InvalidOutputSchema(
+            f"response_format type {kind!r} is not supported; use "
+            '{"type": "json_schema", "json_schema": {"schema": ...}}'
+        )
+    block = response_format.get("json_schema")
+    if not isinstance(block, dict) or "schema" not in block:
+        raise InvalidOutputSchema('response_format.json_schema must be an object with a "schema" key')
+    return validate_output_schema(block["schema"])
 
 
 def _usage_payload(ctx: RequestContext) -> dict[str, Any]:
@@ -255,9 +284,19 @@ async def chat_completions(body: ChatCompletionsRequest, request: Request) -> An
         extras={INBOUND_SCREENED_EXTRA: True},
     )
     completion = _Completion.new(body.model)
+    try:
+        output_schema = _requested_output_schema(body.response_format)
+    except InvalidOutputSchema as exc:
+        # 400 like every other client error on this surface: an OpenAI SDK maps it to
+        # `BadRequestError`, where 422 lands in a generic `APIStatusError`.
+        return _error_json(str(exc), "invalid_request_error", "invalid_response_format", 400)
     options = (
-        ModelChatOptions(temperature=body.temperature, max_tokens=body.max_tokens)
-        if body.temperature is not None or body.max_tokens is not None
+        ModelChatOptions(
+            temperature=body.temperature,
+            max_tokens=body.max_tokens,
+            output_schema=output_schema,
+        )
+        if body.temperature is not None or body.max_tokens is not None or output_schema is not None
         else None
     )
     invoke_input = InvokeInput(messages=messages, thread_id=thread, model_options=options)

@@ -27,7 +27,7 @@ from felix.manifests.schema import (
 from felix.manifests.tool_match import matches_any, unmatched_patterns
 from felix.observability.metrics import record_counter
 from felix.observability.tracing import manifest_span
-from felix.patterns.registry import get_pattern, list_patterns
+from felix.patterns.registry import get_pattern, honours_output_schema, list_patterns
 from felix.patterns.types import Agent
 from felix.tools.executor import wrap_executor
 from felix.tools.provider import ToolProvider
@@ -1356,6 +1356,18 @@ async def build_agent(
                 f"Unknown pattern '{m.spec.pattern}' for manifest '{m.metadata.name}' — "
                 f"registered: {', '.join(list_patterns()) or '(none)'}"
             )
+        if m.spec.output_schema is not None and not honours_output_schema(m.spec.pattern):
+            # Refused rather than dropped. Every pattern receives `output_schema` in its build
+            # context and only some read it, so the alternative is a manifest that declares an
+            # answer contract, compiles, runs, and returns free text — the defect shape this
+            # repo produces most. Checked here rather than in the manifest schema because the
+            # pattern registry is open: only the live registry knows what a plugin's pattern
+            # supports.
+            raise ValueError(
+                f"Pattern '{m.spec.pattern}' does not support spec.output_schema "
+                f"(manifest '{m.metadata.name}'). Patterns that do: "
+                f"{', '.join(sorted(p for p in list_patterns() if honours_output_schema(p)))}"
+            )
 
         agent = await pattern_builder(
             {
@@ -1373,6 +1385,7 @@ async def build_agent(
                 # inside it; a registered pattern picks out its own key.
                 "extensions": dict(m.spec.extensions),
                 "recursion_limit": m.spec.recursion_limit,
+                "output_schema": m.spec.output_schema,
                 "max_turns": m.spec.max_turns,
                 "aggregator_prompt": m.spec.aggregator_prompt,
                 "session_store": deps.session_store,

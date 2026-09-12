@@ -109,10 +109,27 @@ First, because everything else governs it.
       operations task rather than a harness one.
       Reuses the `Embedder` seam and `FELIX_MEMORY_EMBEDDER` rather than adding a second
       embedder setting — one embedder per deployment, one vector dimension.
-- [ ] **Structured output** — `spec.output_schema` → `response_format` on the OpenAI wire,
-      tool-shaped constrained output on the Anthropic wire, pydantic validation with one repair
-      retry. Both wires already emit tool JSON schema (`felix_ai/wire/base.py:133`). There is no
-      `response_format` anywhere in `packages/` or `apps/` today.
+- [x] **Structured output** — `spec.output_schema` is a JSON Schema the answer must match, and
+      `/v1/chat/completions` accepts OpenAI's `response_format` for the same thing per request
+      (the manifest's wins). The OpenAI wire emits `response_format`, strict when the schema
+      closes every object and requires every property; the Anthropic wire, which has no
+      equivalent, sends the schema as a tool the model must call and folds the call back into the
+      reply, so `message.content` is a JSON document on either. `tool_choice` is `any` rather than
+      naming that tool whenever real tools are also bound, so a react loop can still reach them.
+      - Not done, and deliberately separate items: **the composite patterns.** `router`,
+        `parallel`, `groupchat`, `reflect` and `plan_execute` reach a model for the answering
+        turn through `_DelegatingAgent`, which passes no `ModelChatOptions` at all — and on
+        `reflect`/`plan_execute` the schema would otherwise shape the inner react turn nobody
+        sees while the synthesis stayed free text. `build_agent` refuses the combination for
+        now (`PatternDescriptor.honours_output_schema`). Supporting one means threading options
+        onto its answering turn and flipping its flag, which is also what `_child_input`
+        (`delegating.py:401`) needs for a caller's `/v1` `response_format` to reach a child.
+      - Not done, and deliberately a separate item: **validation with a repair retry.** The
+        provider is what enforces the shape here, which is the guarantee worth having and is why
+        this shipped without a retry loop. Extended thinking is the hole — Anthropic forbids a
+        forced `tool_choice` while `thinking` is set, so there the schema is offered and logged as
+        not guaranteed. A validate-and-retry pass would close that arm; until then, do not promise
+        the shape on a thinking-enabled Anthropic agent.
 - [ ] **Attachments** — an upload endpoint backed by the object store, base64 into a content
       block. Image-by-URL already works on `/chat` (`felix_ai/types.py:ContentBlock`, encoded by
       both wires); the gaps are upload, and `openai_compat.py:34` typing content as `str | None`

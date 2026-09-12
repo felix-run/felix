@@ -78,6 +78,14 @@ class ProviderSpec:
     supports_embeddings: bool = False
     # The model to embed with when the operator sets no `FELIX_MEMORY_EMBEDDING_MODEL`.
     embedding_model: str = ""
+    # Whether this endpoint honours OpenAI's `strict: true` inside a `json_schema` response
+    # format. `response_format` itself is part of the chat-completions request and goes to
+    # every provider on that wire, like `tools` — but `strict` is an OpenAI extension, and
+    # sending it to an endpoint that validates its request body is a 400 rather than a
+    # looser constraint. Default off for the same reason `supports_embeddings` is: a
+    # capability asserted for eleven endpoints nobody verified fails at the first request,
+    # not at startup. Turn it on for a row once it is checked.
+    supports_strict_schema: bool = False
 
     def placeholders(self, base_url: str | None = None) -> tuple[str, ...]:
         """Option names an endpoint template needs, e.g. `account_id`."""

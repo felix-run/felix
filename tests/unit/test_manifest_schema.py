@@ -146,3 +146,30 @@ def test_hold_open_knobs_are_bounded() -> None:
     over = [{"name": f"r{i}", "url": "https://example.com/m"} for i in range(MAX_REFS + 1)]
     with pytest.raises(ValidationError):
         Spec(pattern="react", mcp_servers=over)
+
+
+def test_an_output_schema_is_validated_at_manifest_load() -> None:
+    """`spec.output_schema` is checked here so a shape no provider will accept fails
+    `felix validate-manifest` and `bundle-manifests`, rather than failing every request against
+    the deployed agent with a relayed provider `400`.
+
+    The accepted case is asserted alongside: a validator that rejected everything would pass a
+    rejection test on its own.
+    """
+    from felix.manifests.schema import Spec
+
+    good = {
+        "type": "object",
+        "properties": {"answer": {"type": "string"}},
+        "required": ["answer"],
+        "additionalProperties": False,
+    }
+    assert Spec(pattern="react", output_schema=good).output_schema == good
+    assert Spec(pattern="react").output_schema is None
+
+    # Not an object at the root, which neither wire can express.
+    with pytest.raises(ValidationError):
+        Spec(pattern="react", output_schema={"type": "string"})
+    # A schema that constrains nothing.
+    with pytest.raises(ValidationError):
+        Spec(pattern="react", output_schema={"type": "object", "properties": {}})

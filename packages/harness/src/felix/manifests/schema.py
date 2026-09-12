@@ -747,6 +747,15 @@ class Spec(_Strict):
     approvals: list[ApprovalRule] = Field(default_factory=list, max_length=MAX_REFS)
     governance: GovernanceSpec = Field(default_factory=GovernanceSpec)
     recursion_limit: int | None = Field(default=None, ge=1, le=ABSOLUTE_LIMITS["recursion_limit"])
+    # A JSON Schema the agent's final answer must match, enforced by the model provider
+    # rather than asked for in the prompt. Set it and `message.content` is a JSON document on
+    # every wire: OpenAI gets `response_format`, Anthropic — which has no equivalent — gets a
+    # tool it must call, folded back into the reply. Tools still work either way; it is the
+    # turn that answers in text that is constrained.
+    #
+    # Validated here rather than at request time so a schema no provider will accept fails
+    # `felix validate-manifest` instead of every request against the agent.
+    output_schema: dict[str, Any] | None = None
     # The one relaxation of `extra="forbid"`. A plugin that registers a pattern or
     # tool otherwise has no way to be configured from a manifest, because every
     # unknown key is a validation error. Namespace by plugin name:
@@ -761,6 +770,15 @@ class Spec(_Strict):
     extensions: dict[str, Any] = Field(default_factory=dict)
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    @field_validator("output_schema")
+    @classmethod
+    def _output_schema(cls, v: dict[str, Any] | None) -> dict[str, Any] | None:
+        if v is None:
+            return None
+        from felix_ai.output_schema import validate_output_schema
+
+        return validate_output_schema(v)
 
 
 class Manifest(_Strict):

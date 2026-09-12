@@ -478,6 +478,40 @@ Outbound integrations, all declared on the manifest:
 > **stdio MCP is disabled** unless `FELIX_MCP_STDIO_ALLOWED_COMMANDS` names the exact commands
 > allowed. Manifest-supplied argv is arbitrary code execution.
 
+Structured output — `spec.output_schema` is a JSON Schema the agent's answer must match, and the
+model provider is what enforces it rather than the prompt:
+
+```yaml
+spec:
+  output_schema:
+    type: object
+    properties:
+      answer: {type: string}
+      confidence: {type: number}
+    required: [answer, confidence]
+    additionalProperties: false
+```
+
+`message.content` is then a JSON document on every provider. Tools still work — it is the turn
+that answers in text that is constrained, not the turns that call a tool on the way there. OpenAI
+gets `response_format`, strict when the schema closes every object and requires every property
+(the only setting under which the shape is *guaranteed*; the drop to non-strict is logged, and
+`strict` goes only to endpoints whose provider row declares it, since it is an OpenAI extension
+that eleven other providers share this wire without). Anthropic has no equivalent, so the schema
+becomes a tool the model must call, folded back into the reply — except with extended thinking
+on, where the provider forbids a forced tool choice and the schema can only be offered.
+
+Supported on `pattern: react` and `pattern: deep`. The composite patterns — `router`,
+`parallel`, `groupchat`, `reflect`, `plan_execute` — compose their answer in a turn that takes
+no options yet, so a manifest declaring `output_schema` on one of those is **refused at compile**
+rather than quietly answering in prose. A pattern registered by a plugin opts in with
+`register_pattern(..., honours_output_schema=True)`.
+
+A caller can ask for a shape per request too: `POST /v1/chat/completions` accepts OpenAI's
+`response_format: {type: json_schema, json_schema: {schema: …}}`, so an OpenAI SDK works
+unchanged. A manifest that declares `spec.output_schema` overrides it — an agent published with an
+answer contract keeps answering to it.
+
 Storage and execution:
 
 - Large tool outputs spill via `spec.artifacts`

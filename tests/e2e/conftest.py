@@ -106,6 +106,14 @@ class ProviderSpy:
     #: them, because the reply is scripted.
     prompts: list[list[Any]] = field(default_factory=list)
 
+    #: The `ModelChatOptions` each model call was handed, one per call, in order.
+    #:
+    #: A manifest field that shapes a *request* rather than the prompt is invisible in both
+    #: `prompts` and `specs`: `spec.output_schema` becomes an option on the call, and a reply
+    #: that happens to be JSON proves nothing about whether the provider was asked to enforce
+    #: the shape. `None` is recorded for a call that passed no options, which is most of them.
+    options: list[Any] = field(default_factory=list)
+
     #: The `ModelSpec` each client was built from, one per client, in order.
     #:
     #: This is how a *setting* is asserted rather than its rendering. The thinking level, for
@@ -143,6 +151,9 @@ class ProviderSpy:
             def wrapper(*args: Any, _inner: Any = inner, **kwargs: Any) -> Any:
                 messages = args[0] if args else kwargs.get("messages") or []
                 self.prompts.append(list(messages))
+                # Positional on every harness call site, keyword nowhere yet — read both, for
+                # the same reason `*args` is used at all.
+                self.options.append(args[2] if len(args) > 2 else kwargs.get("opts"))
                 return _inner(*args, **kwargs)
 
             setattr(client, name, wrapper)

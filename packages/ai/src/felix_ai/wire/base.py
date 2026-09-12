@@ -209,7 +209,14 @@ class HttpModelClient(ABC):
         opts: ModelChatOptions | None = None,
     ) -> ModelChatResult:
         opts, temperature, max_tokens = self._resolve(opts)
-        return await self._chat(messages, tools, temperature, max_tokens, isolate_cache=opts.isolate_cache)
+        return await self._chat(
+            messages,
+            tools,
+            temperature,
+            max_tokens,
+            isolate_cache=opts.isolate_cache,
+            output_schema=opts.output_schema,
+        )
 
     async def stream_turn(
         self,
@@ -232,7 +239,12 @@ class HttpModelClient(ABC):
         """
         opts, temperature, max_tokens = self._resolve(opts)
         async for item in self._stream_turn(
-            messages, tools, temperature, max_tokens, isolate_cache=opts.isolate_cache
+            messages,
+            tools,
+            temperature,
+            max_tokens,
+            isolate_cache=opts.isolate_cache,
+            output_schema=opts.output_schema,
         ):
             yield item
 
@@ -247,7 +259,12 @@ class HttpModelClient(ABC):
         # wrote the conversation's prompt-cache key — churning the cached prefix the next
         # real turn would have hit, which is the exact thing the option exists to prevent.
         async for chunk in self._stream(
-            messages, tools, temperature, max_tokens, isolate_cache=opts.isolate_cache
+            messages,
+            tools,
+            temperature,
+            max_tokens,
+            isolate_cache=opts.isolate_cache,
+            output_schema=opts.output_schema,
         ):
             yield chunk
 
@@ -265,6 +282,7 @@ class HttpModelClient(ABC):
         max_tokens: int | None,
         *,
         isolate_cache: bool = False,
+        output_schema: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         raise NotImplementedError
 
@@ -277,6 +295,7 @@ class HttpModelClient(ABC):
         max_tokens: int | None,
         *,
         isolate_cache: bool = False,
+        output_schema: dict[str, Any] | None = None,
     ) -> ModelChatResult:
         raise NotImplementedError
 
@@ -289,6 +308,7 @@ class HttpModelClient(ABC):
         max_tokens: int | None,
         *,
         isolate_cache: bool = False,
+        output_schema: dict[str, Any] | None = None,
     ) -> AsyncIterator[StreamDelta | ModelChatResult]:
         raise NotImplementedError
 
@@ -300,6 +320,7 @@ class HttpModelClient(ABC):
         max_tokens: int | None,
         *,
         isolate_cache: bool = False,
+        output_schema: dict[str, Any] | None = None,
     ) -> AsyncIterator[str]:
         """Text-only view of `_stream_turn`, so no wire format implements streaming twice.
 
@@ -314,7 +335,12 @@ class HttpModelClient(ABC):
         `stream_turn` when present. It exists for a provider that implements only `stream`.
         """
         async for item in self._stream_turn(
-            messages, tools, temperature, max_tokens, isolate_cache=isolate_cache
+            messages,
+            tools,
+            temperature,
+            max_tokens,
+            isolate_cache=isolate_cache,
+            output_schema=output_schema,
         ):
             if isinstance(item, StreamDelta) and item.kind == "text" and item.text:
                 yield item.text
