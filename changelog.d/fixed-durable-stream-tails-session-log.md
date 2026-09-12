@@ -16,6 +16,19 @@ its tool results as they land, outside every `emit_events` guard. So there was a
 durable, ordered, cross-replica record of the run's progress, and one endpoint that knows
 how to tail it. No new bus, no second delivery path, no second source of truth.
 
+**A `session_event` frame now carries `tool_calls`, `tool_call_id` and `id`,** which it never
+has. Found while building the above, and it is the difference between a transcript and a
+transcript you can read: a client folds these rows with the same function it folds a
+`snapshot` with, reading `tool_calls` off an assistant message to open a card per call and
+matching `tool_call_id` on the tool message to attach the result. Carrying neither, an
+assistant turn that called a tool folded to an empty message and the result was dropped
+outright — so a **warm reattach** to `GET /chat/stream/{thread_id}` (one that replays events
+rather than opening on a snapshot) has always rendered a transcript with no tool calls in it.
+The snapshot has carried all three since it was written; only the incremental frame was
+thinner, which is why it read as a reattach quirk rather than a missing field. This is a
+widening — a client that ignores the new fields is unaffected — and `id` is spelled the way
+the snapshot spells it, so a turn keeps one identity whichever way the client received it.
+
 **Only completed messages, never token deltas.** Chunks are never persisted, so a durable
 run yields tool cards and whole assistant messages and nothing finer. That is the right
 trade for the mode whose point is that nobody is watching, and it matches what clients
