@@ -11,11 +11,15 @@ the harness types satisfy structurally, so nothing on either side had to change 
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol, TypeIs, runtime_checkable
 
 Role = Literal["user", "assistant", "system", "tool"]
+
+
+logger = logging.getLogger("felix_ai.types")
 
 
 @dataclass(slots=True)
@@ -86,6 +90,7 @@ class ChatMessage:
             blocks = []
             parts: list[str] = []
             atts: list[ImageAttachment] = []
+            unknown: list[str] = []
             for part in content_raw:
                 if not isinstance(part, dict):
                     continue
@@ -122,6 +127,18 @@ class ChatMessage:
                             detail=str(detail) if detail else None,
                         )
                     )
+                else:
+                    unknown.append(ptype)
+            if unknown:
+                # It is still dropped — this layer has nothing to do with an `input_audio` or
+                # `file` part — but silently was the problem. `/v1` types content as an open
+                # list of parts precisely so the decision lives here, and a decision nobody can
+                # observe is the same as no decision.
+                logger.warning(
+                    "dropping %d content part(s) of unrecognised type: %s",
+                    len(unknown),
+                    ", ".join(sorted(set(unknown))),
+                )
             text_content = "\n".join(p for p in parts if p)
             attachments = atts or None
             if not blocks:

@@ -141,3 +141,38 @@ async def test_a_response_format_this_harness_cannot_honour_is_refused(
         assert resp.status_code == 400, resp.text
         assert resp.json()["error"]["type"] == "invalid_request_error"
         assert app.spy.calls == [], "a refused request must not reach the model"
+
+
+async def test_a_caller_supplied_schema_is_screened_like_the_turn_it_rides_with(boot: Any) -> None:
+    """A schema's text reaches the model, and inbound screening never saw it.
+
+    Every string leaf of `response_format` — `title`, `description`, a property name — is
+    serialised verbatim into the provider request, and because options are resolved once and
+    reused, it is in front of the model on *every* turn of the loop rather than on one.
+    `apply_inbound_screening` iterates messages; this rides on `model_options`, which is the
+    one place it does not look. A control the operator switched on, bypassed at the field
+    level.
+
+    Refused rather than redacted: rewriting a description would silently change the contract
+    the caller is holding, and there is no model to warn the way a quarantined turn warns one.
+    """
+    governed = _manifest("e2e-screened", guardrails={"providers": ["pii"], "targets": ["input"]})
+    async with boot(manifests={"e2e-screened": governed}) as app:
+        schema = {
+            "type": "object",
+            "properties": {"answer": {"type": "string", "description": "mail alice@example.com"}},
+            "required": ["answer"],
+            "additionalProperties": False,
+        }
+        resp = await _completion(app, model="e2e-screened", response_format=_response_format(schema))
+        assert resp.status_code == 422, resp.text
+        assert app.spy.calls == [], "a refused schema must not reach the model"
+
+
+async def test_a_clean_schema_still_passes_the_same_screening(boot: Any) -> None:
+    """The counterpart, so the test above cannot pass by refusing every governed request."""
+    governed = _manifest("e2e-screened", guardrails={"providers": ["pii"], "targets": ["input"]})
+    async with boot([ScriptedTurn(content=STRUCTURED)], manifests={"e2e-screened": governed}) as app:
+        resp = await _completion(app, model="e2e-screened", response_format=_response_format(ANSWER_SCHEMA))
+        assert resp.status_code == 200, resp.text
+        assert [o and o.output_schema for o in app.spy.options] == [ANSWER_SCHEMA]

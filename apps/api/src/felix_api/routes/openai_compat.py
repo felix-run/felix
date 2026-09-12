@@ -38,7 +38,16 @@ router = APIRouter(tags=["OpenAI"])
 
 class OpenAIMessage(BaseModel):
     role: Literal["system", "user", "assistant", "tool"]
-    content: str | None = None
+    # `str` or OpenAI's list of content parts. Typed `str | None`, this surface rejected every
+    # multimodal request with a 422 before any of it ran — so an image could reach `/chat`,
+    # both wires already encoded one, and the endpoint whose whole purpose is that an OpenAI
+    # SDK works unchanged was the one place it could not arrive. `ChatMessage.model_validate`
+    # already understands the list form; nothing below here changes.
+    #
+    # The parts themselves stay `dict`: the shape is OpenAI's, it grows (input_audio, file),
+    # and a model here would reject next year's part type for no gain. What Felix does with a
+    # part it does not recognise is decided in one place, by that validator.
+    content: str | list[dict[str, Any]] | None = None
     name: str | None = None
     tool_call_id: str | None = None
 
@@ -258,7 +267,20 @@ async def chat_completions(body: ChatCompletionsRequest, request: Request) -> An
         return _error_json(client_safe_message(exc), "manifest_drift", "conflict", 409)
 
     messages = [
-        ChatMessage.model_validate({"role": m.role, "content": m.content or ""}) for m in body.messages
+        # `or ""` keeps a populated list and flattens `None` and `[]` to empty text, which is
+        # what a message with no content means on either shape.
+        # `name` and `tool_call_id` are declared on the request model and were validated and
+        # then thrown away, so an SDK doing the standard tool round-trip lost the id tying a
+        # result back to its call. `ChatMessage.model_validate` reads both keys already.
+        ChatMessage.model_validate(
+            {
+                "role": m.role,
+                "content": m.content or "",
+                "name": m.name,
+                "tool_call_id": m.tool_call_id,
+            }
+        )
+        for m in body.messages
     ]
     # Imported here rather than at module scope to keep the governance package off the
     # import path of a lean install, but *before* the try so the handler can name the
@@ -286,6 +308,15 @@ async def chat_completions(body: ChatCompletionsRequest, request: Request) -> An
     completion = _Completion.new(body.model)
     try:
         output_schema = _requested_output_schema(body.response_format)
+        if output_schema is not None:
+            # On the same path the user turn just took. This text reaches the model on every
+            # turn of the loop, and it arrived on `model_options` rather than in `messages`,
+            # which is the one place `apply_inbound_screening` does not look.
+            from felix.governance.inbound import screen_output_schema
+
+            await screen_output_schema(resolved.manifest, output_schema, settings)
+    except InboundScreeningError as exc:
+        return _error_json(client_safe_message(exc), "content_filter", exc.detail, exc.status_code)
     except InvalidOutputSchema as exc:
         # 400 like every other client error on this surface: an OpenAI SDK maps it to
         # `BadRequestError`, where 422 lands in a generic `APIStatusError`.

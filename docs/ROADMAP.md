@@ -130,10 +130,22 @@ First, because everything else governs it.
         forced `tool_choice` while `thinking` is set, so there the schema is offered and logged as
         not guaranteed. A validate-and-retry pass would close that arm; until then, do not promise
         the shape on a thinking-enabled Anthropic agent.
-- [ ] **Attachments** — an upload endpoint backed by the object store, base64 into a content
-      block. Image-by-URL already works on `/chat` (`felix_ai/types.py:ContentBlock`, encoded by
-      both wires); the gaps are upload, and `openai_compat.py:34` typing content as `str | None`
-      so images cannot reach `/v1` at all.
+- [~] **Attachments** — split, on the evidence that the two smaller features in the document
+      retrieval workstream each drew ~7 review findings where one wide branch would have drawn
+      them all at once.
+      - Landed: **inline images actually work.** `/v1/chat/completions` takes OpenAI's list of
+        content parts, so an SDK can send an image; and the Anthropic wire encodes a `data:` URL
+        as a `base64` source instead of putting it in a `url` source, which that API rejects.
+        That second one was a live defect rather than a missing feature — both wires had an
+        image encoder, and an image reached `gpt-4o` and 400'd on `claude-sonnet`, the default.
+        Found by running the encoder, not by reading it.
+      - Remaining: **upload.** An endpoint backed by the object store, plus a `file_id` content
+        block the harness resolves to bytes before the wire — which is the base64 path the above
+        now provides. Shape it on `routes/artifacts.py`: tenant from the caller's credentials
+        and never from the path, scope-gated, 404 rather than 400 for a malformed reference.
+        Worth deciding at the same time: an inline image is persisted into the session event log
+        and replayed on every subsequent turn, which the 1 MiB body limit bounds per request but
+        not per thread.
 - [x] **Make the bundled manifests use them.** `support` fetches from the docs site and now
       searches the corpus as `search_docs`; `deep` has `search` + `fetch`. Both with screening
       on, which is what keeps the unscreened-tools warning silent on what we ship. A tool no

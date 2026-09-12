@@ -151,6 +151,20 @@ Adding a manifest field means: `manifests/schema.py` → an `apply_*` wrapper or
 `schemas/manifest.schema.json` that the `# yaml-language-server` header in every manifest points at).
 Adding a pattern means `register_pattern(...)` at import time — nothing in core enumerates patterns.
 
+**Removing** a manifest *key* means one more step: an entry in `manifests/compat.py:RETIRED`.
+The schema is `extra=forbid`, so a removal retroactively invalidates every manifest already
+stored with that field — and since the store is read ahead of bundled YAML, a stale row
+shadows the file it came from. `spec.model.region` did exactly that to the `quick` manifest
+of any deployment whose copy predated #125. Only list a removal that is *inert*, where a
+manifest with the field and one without compile to the same agent; one that changes
+behaviour needs a migration rewriting the rows, not a silent drop.
+
+That covers a removed key and nothing else. **Narrowing what a field accepts** is the same
+outage by another route and has no mechanism yet: `spec.memory.checkpointer` went from a
+`Literal` to a registry lookup in #109, so a stored `agentcore` still parses and then raises
+`unknown checkpointer` inside `build_tenant_agent`. Tightening a type, adding a validator or
+making a field required all land the same way.
+
 ### Protocols, not vendors
 
 The harness talks to Postgres, a cache, an object store, secrets, model providers, and the

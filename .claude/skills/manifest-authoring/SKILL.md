@@ -81,6 +81,32 @@ See [references/spec-fields.md](references/spec-fields.md) for the per-block det
    and `tests/unit/test_manifest_governance.py` (behavior, if it is a control).
 4. Document it: `guide/manifest-reference.mdx` in the felix-web docs repo (see the docs-sync skill).
 
+## Removing a spec field
+
+A removal is not the mirror of an addition, because manifests are *stored*. The schema is
+`extra=forbid`, so dropping a field retroactively invalidates every manifest already in the
+store that set it — and the store is consulted ahead of bundled YAML, so a stale row also
+shadows the file it came from. `spec.model.region` did this to `quick` on any deployment
+whose copy predated #125: the default manifest answered every request with
+`spec.model.region: Extra inputs are not permitted`.
+
+1. Remove it from `manifests/schema.py` and its reader in `builder.py`.
+2. Add the dotted path to `manifests/compat.py:RETIRED` with why and when. Stored manifests
+   then load with a warning instead of failing; authored ones still fail, which is the point.
+3. `make schema`, and a case in `tests/unit/test_stored_manifest_compat.py`.
+
+**Only list a removal that is inert** — one where a manifest with the field and one without
+compile to the same agent. A field that *did* something needs a migration that rewrites the
+stored rows; dropping it silently would start an agent whose behaviour changed with nobody
+told, which is worse than refusing to start it.
+
+`RETIRED` expresses a removed **key**, and only one that is not inside a list and has a
+single accepted spelling (an aliased field such as `spec.mcp` / `mcp_servers` needs every
+spelling listed). It does **not** cover a field whose accepted *values* narrowed — a
+`Literal` becoming a registry lookup, a new validator, a field becoming required. Those
+brick stored rows the same way and need their own answer; `spec.memory.checkpointer` is the
+example already in the tree.
+
 ## Validate — always
 
 ```bash

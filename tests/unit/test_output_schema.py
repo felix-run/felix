@@ -21,6 +21,7 @@ from typing import Any
 
 import pytest
 from felix_ai.output_schema import (
+    MAX_BYTES,
     MAX_DEPTH,
     MAX_NODES,
     InvalidOutputSchema,
@@ -141,6 +142,75 @@ def test_a_schema_with_too_many_nodes_is_refused() -> None:
     }
     with pytest.raises(InvalidOutputSchema, match="too large"):
         validate_output_schema(wide)
+
+
+def test_a_schema_large_in_bytes_is_refused_however_few_nodes_it_has() -> None:
+    """The bound the node and depth limits were described as providing and do not: node count
+    is orthogonal to size, and one string value is one node, so 900 KB of schema fits in six.
+
+    That is what gets re-serialised into the provider request on every turn of the loop, up to
+    the recursion limit, against the operator's own provider credential. On Anthropic it is
+    worse than bandwidth: the schema is a tool definition, so it sits inside the prefix the
+    cache breakpoint covers, and a per-request schema also destroys the conversation's prompt
+    cache and bills every turn at the full write rate.
+    """
+    fat = {
+        "type": "object",
+        "properties": {"answer": {"type": "string", "description": "x" * (MAX_BYTES + 1000)}},
+    }
+    assert len(list(_walk_nodes(fat))) < 20, "the point is that this is tiny by node count"
+    with pytest.raises(InvalidOutputSchema, match="bytes"):
+        validate_output_schema(fat)
+
+
+def _walk_nodes(value: Any) -> Any:
+    """Every container in a schema, so the test above can state its own premise."""
+    yield value
+    if isinstance(value, dict):
+        for item in value.values():
+            yield from _walk_nodes(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _walk_nodes(item)
+
+
+@pytest.mark.parametrize("keyword", ["$ref", "$id", "$dynamicRef"])
+def test_every_reference_keyword_must_stay_local(keyword: str) -> None:
+    """Checking `$ref` alone was not enough. `$id` is precisely the keyword that redefines what
+    a `#`-prefixed pointer resolves against, so a guard on `$ref` by itself does not deliver
+    what it says — and `$dynamicRef` is a reference by another name."""
+    with pytest.raises(InvalidOutputSchema, match="local"):
+        validate_output_schema(
+            {
+                "type": "object",
+                "properties": {"x": {"type": "string"}},
+                keyword: "https://example.invalid/schema.json",
+            }
+        )
+
+
+def test_the_dialect_keyword_is_left_alone() -> None:
+    """`$schema` names a dialect rather than something to fetch, and every schema pydantic
+    emits carries an `https://json-schema.org/...` one — so rejecting remote-looking values
+    across the board would reject the ordinary case."""
+    schema = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {"answer": {"type": "string"}},
+    }
+    assert validate_output_schema(schema) is schema
+
+
+def test_a_property_named_like_a_keyword_is_not_a_keyword() -> None:
+    """The guard misfired in the other direction too: it read `$ref` off every dict, including
+    the `properties` map, so a schema declaring a property literally named `$ref` — which
+    pydantic emits for a field aliased that way — was refused with a message about remote
+    references. Only a *string* value is the keyword being used."""
+    schema = {
+        "type": "object",
+        "properties": {"$ref": {"type": "string"}, "$id": {"type": "string"}},
+    }
+    assert validate_output_schema(schema) is schema
 
 
 def test_a_schema_made_large_by_leaves_is_refused() -> None:
@@ -477,3 +547,25 @@ def test_the_honouring_set_is_declared_by_the_registry_not_a_name_list() -> None
     finally:
         for name in ("plugin-quiet", "plugin-shaped"):
             registry._patterns.pop(name, None)
+
+
+def test_a_reserved_tool_name_is_not_swallowed_when_no_schema_was_asked_for() -> None:
+    """The collision guard was on the branch where the collision was expected.
+
+    `apply_anthropic_output_schema` raises when a bound tool already carries the reserved name,
+    but it only runs when a schema was requested — while the fold ran on every Anthropic turn.
+    So a manifest binding a tool called `felix_structured_output` and declaring no schema had
+    that call silently swallowed: never executed, its model-authored arguments returned as the
+    turn's answer, the stop reason forced to `end_turn`, and no log line. `spec.client_tools`
+    uses a ref's name verbatim, which is the reachable way to bind one.
+    """
+    call = ToolCall(id="t1", name=STRUCTURED_OUTPUT_TOOL, args={"pwned": True})
+    assert fold_structured_output("thinking", [call], "tool_use", requested=False) == (
+        "thinking",
+        [call],
+        "tool_use",
+    )
+    # And the fold still does its job on the turn that did ask.
+    content, remaining, stop = fold_structured_output("", [call], "tool_use", requested=True)
+    assert json.loads(content) == {"pwned": True}
+    assert remaining == [] and stop == "end_turn"
