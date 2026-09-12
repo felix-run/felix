@@ -13,7 +13,12 @@ surfaces=$(printf '%s\n' "$changed" | grep -E '^(apps/api/src/felix_api/routes/|
 [ -z "$surfaces" ] && exit 0
 
 # Any doc-side change in this repo counts as "docs were considered".
-printf '%s\n' "$changed" | grep -qE '^(README\.md|CLAUDE\.md|CHANGELOG\.md|\.env\.example|docs/|deploy/GOVERNANCE\.md|deploy/.*/README\.md)$' && exit 0
+# `docs/` and `changelog.d/` are prefixes, so they live outside the `$`-anchored group: an
+# anchored `docs/` matches only a path that is literally the string "docs/", which no file is,
+# so the gate was unsatisfiable by the very directory it tells you to update. `changelog.d/`
+# counts because CLAUDE.md forbids editing `CHANGELOG.md` in a pull request — a fragment is
+# how a user-visible change is documented here.
+printf '%s\n' "$changed" | grep -qE '^(README\.md|CLAUDE\.md|CHANGELOG\.md|\.env\.example|deploy/GOVERNANCE\.md|deploy/.*/README\.md)$|^(docs|changelog\.d)/' && exit 0
 
 sid=$(printf '%s' "$input" | jq -r '.session_id // "nosession"')
 hash=$(printf '%s\n' "$surfaces" | shasum | cut -c1-12)

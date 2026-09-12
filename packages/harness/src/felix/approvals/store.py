@@ -44,6 +44,7 @@ def _approval_dict(row: Approval | dict[str, Any]) -> dict[str, Any]:
             "ttl_seconds": row.ttl_seconds,
             "expires_at": row.expires_at,
             "rule_id": row.rule_id,
+            "thread_id": row.thread_id,
         }
     return {
         "id": data["id"],
@@ -63,6 +64,7 @@ def _approval_dict(row: Approval | dict[str, Any]) -> dict[str, Any]:
         "ttl_seconds": data.get("ttl_seconds"),
         "expires_at": data.get("expires_at"),
         "rule_id": data.get("rule_id", ""),
+        "thread_id": data.get("thread_id", ""),
     }
 
 
@@ -206,6 +208,7 @@ async def create_pending(
     principal_subj: str = "",
     ttl_seconds: int | None = None,
     rule_id: str = "",
+    thread_id: str = "",
 ) -> dict[str, Any]:
     # Reuse existing pending for the same signature.
     if _use_memory(settings):
@@ -259,6 +262,7 @@ async def create_pending(
             "ttl_seconds": ttl_seconds,
             "expires_at": expires_at,
             "rule_id": rule_id,
+            "thread_id": thread_id,
         }
         _memory_approvals[(tenant_id, approval_id)] = row
         return _approval_dict(row)
@@ -278,6 +282,7 @@ async def create_pending(
             ttl_seconds=ttl_seconds,
             expires_at=expires_at,
             rule_id=rule_id,
+            thread_id=thread_id,
         )
         db.add(row)
         await db.commit()

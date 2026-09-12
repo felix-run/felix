@@ -444,6 +444,9 @@ async def _await_approval(
     if req is None:
         return False, args, "no request context"
 
+    # Resolved before the row is written, not after: a durable run's only channel is the row
+    # (the frame cannot cross from the worker to the API's stream), so the thread goes on both.
+    thread_id = (ctx.thread_id if ctx else None) or req.thread_id
     try:
         from felix.approvals import store as approvals_store
 
@@ -458,13 +461,13 @@ async def _await_approval(
             principal_subj=req.auth.principal_sub,
             rule_id=rule_id,
             ttl_seconds=ttl_seconds,
+            thread_id=thread_id or "",
         )
     except Exception:
         logger.debug("approvals store create_pending failed", exc_info=True)
         return False, args, "approvals unavailable"
 
     approval_id = str(pending_row.get("id") or "")
-    thread_id = (ctx.thread_id if ctx else None) or req.thread_id
     await emit_side_event(
         thread_id,
         "approval_required",
@@ -700,6 +703,9 @@ def apply_approvals(tools: list[Tool], rules: list[ApprovalRule], manifest_id: s
             req = try_get_context()
             granted = bool((req.extras if req else {}).get(f"approval:{tool.name}"))
             pending_row: dict[str, object] | None = None
+            # Before `create_pending`, so the row carries it too — `GET /approvals` is the only
+            # channel a durable run has, and it was the half with no thread on it.
+            thread_id = (ctx.thread_id if ctx else None) or (req.thread_id if req else None)
             if not granted and req is not None:
                 try:
                     from felix.approvals import store as approvals_store
@@ -747,6 +753,7 @@ def apply_approvals(tools: list[Tool], rules: list[ApprovalRule], manifest_id: s
                             principal_subj=req.auth.principal_sub,
                             rule_id=rule.id,
                             ttl_seconds=rule.ttl_seconds,
+                            thread_id=thread_id or "",
                         )
                 except Exception:
                     logger.debug("approvals store lookup failed", exc_info=True)
@@ -763,7 +770,6 @@ def apply_approvals(tools: list[Tool], rules: list[ApprovalRule], manifest_id: s
                     )
 
                 approval_id = str(pending_row.get("id") or "")
-                thread_id = (ctx.thread_id if ctx else None) or (req.thread_id if req else None)
                 await emit_side_event(
                     thread_id,
                     "approval_required",

@@ -217,6 +217,14 @@ and fixed; the comment at `fibers.py:36-46` is the record.
       no bundled entry sets a long-context tier. Correction to this entry as written: an
       unpriced model contributes `$0`, so `limits.max_cost_usd` fails **open** for it, not
       closed — `felix_model_unpriced` now says when that is happening.
+- [x] **An approval row names the thread it is blocking** (migration `0014_approval_thread_id`,
+      felix-run/felix#232). The `approval_required` frame carried `thread_id`; the row did not —
+      and the two channels do not cover the same runs. Side events are an in-process queue keyed
+      by thread, so a durable run (agent in the worker, stream served by the API) is reachable
+      only through `GET /approvals`: the channel that is the whole story for an unwatched run was
+      the half with nothing to attribute. It is the *originating* thread, because `create_pending`
+      still reuses a pending row across threads. Widening that reuse key would change grant scope
+      and is a product decision, not part of this.
 - [ ] **Attribute denials in the audit record.** Every wrapper denial emits one undifferentiated
       `policy_deny` carrying `{tool, tool_call_id, thread_id}` — which control fired, and why,
       exists only in the tool message. The wrappers emit Prometheus counters, not audit events.

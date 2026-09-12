@@ -445,6 +445,7 @@ async def test_a_pending_approval_is_listed_and_can_be_decided(boot: Any) -> Non
             args={"expression": "2+2"},
             manifest_id="quick",
             rule_id="calc-approval",
+            thread_id="default:e2e-appr",
         )
         approval_id = pending["id"]
 
@@ -454,6 +455,10 @@ async def test_a_pending_approval_is_listed_and_can_be_decided(boot: Any) -> Non
         assert [r["id"] for r in rows] == [approval_id], rows
         assert rows[0]["tool_name"] == "calculator"
         assert rows[0]["status"] == "pending"
+        # The field the poll path exists for. It cannot regress today — the route returns the
+        # store dict with no `response_model` — which is exactly why it would vanish silently
+        # the day one is added or a field filter appears between the store and the wire.
+        assert rows[0]["thread_id"] == "default:e2e-appr", rows[0]
 
         decided = await app.client.post(
             f"/approvals/{approval_id}/decide",
@@ -468,6 +473,7 @@ async def test_a_pending_approval_is_listed_and_can_be_decided(boot: Any) -> Non
 
         reread = await app.client.get(f"/approvals/{approval_id}", headers=_as(READER))
         assert reread.json()["status"] == "approved", reread.json()
+        assert reread.json()["thread_id"] == "default:e2e-appr", reread.json()
         assert (await app.client.get("/approvals", headers=_as(READER))).json()["items"] == []
 
 
