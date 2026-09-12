@@ -43,6 +43,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   inside a channel, or between two candidates fused from different channels, resolves the same
   way every time and on either backend.
 
+### Fixed
+
 - **The facts an agent remembers could differ between two identical requests.** `list_active`
   sorted by writer trust, then importance, then recency, and truncated to a limit — with no
   key below those three, and all three tie routinely: facts are written in a batch so
@@ -100,6 +102,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every request to the canary on one backend and was unreachable on the other. The REST route
   already bounds the field; the store now does too, because plugins and worker jobs call it
   directly.
+
 - **The manifest twin handed back the stored document by reference.** `get_version` returned
   the dict it holds, so a caller that edited what it was given silently rewrote what every
   later reader of that version saw. Postgres deserialises fresh JSONB per read and never had
@@ -116,6 +119,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   canary was ever benchmarked — silently, and only on deployments where RLS is the isolation
   mechanism. The bundled compose role is a superuser and skips the policy entirely, which is
   why local development and CI never showed it. Each sweep now binds the tenant it is sweeping.
+
 - **`create_fiber` and `get_fiber` bind their tenant too.** They take one as an argument and
   were the only writes in `durability/fibers.py` that neither bound nor bypassed. On the HTTP
   path the ambient context covered them; the fiber scheduler reaches `get_fiber` without one.
@@ -164,12 +168,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   called no model at all. The declared window was not the one the route used and nothing said
   so, which is this repo's signature defect shape. Found while trying to write a test for the
   summarising branch and being unable to make it fire.
+
 - **The thinking level was written twice and only one copy was read by the run.** The snapshot
   resolves it from a `thinking_level_change` event; the next turn resolves it from thread
   metadata and turns it into a thinking budget on the model spec. Nothing covered the second
   path, so a thread could display "high" and run with thinking off. Now pinned on the spec the
   provider is built from, which is the only place the difference is visible.
-
 
 - **The management stores leaked between tests.** `_memory_datasets`, `_memory_items`,
   `_memory_runs`, `_memory_jobs` and `_memory_approvals` are process globals that nothing
@@ -359,6 +363,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Postgres does with it. It also pins that the binding is unwound between tenants: a leaked one
   would be worse than none, since the next tenant's queries would run under the previous
   tenant's policy.
+
 - **A conformance contract for the fiber claim path** (`tests/conformance/test_fiber_claim.py`).
   `test_fiber_store.py` already covered attempts through backoff and burial; this covers the
   step before it — which fibers a scheduler tick picks up and what claiming does to the row.
@@ -419,6 +424,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   thread id inherited its transcript, leaf and phase. The suite was correct only because every
   id in it happened to be unique.
 
+- **One broken recall channel silently returned no memories at all.** `recall()` runs three
+  channels in one transaction, and the comment above their error handler promised a deployment
+  mid-upgrade would "lose a channel, not the turn". It did not: the first failure aborted the
+  transaction, so every later channel died on `InFailedSqlTransaction` and the turn got nothing
+  — logged at DEBUG. Reproduced by dropping a generated column, and confirmed to have been
+  position-dependent, which is why it could sit there: breaking the *last* channel looked fine.
+  Each statement now runs in its own savepoint, verified across all eight combinations of
+  broken channels. The failure log line is now `recall channel vector unavailable` rather than
+  `recall vector channel unavailable`; nothing in the tree matched the old string.
+
+- **`recall(kinds=[...])` could return nothing while a matching memory was stored.** The filter
+  ran in the ranking pass, after each channel had been cut to its budget — so a match outside
+  that window was filtered against an answer it had already been excluded from. Reachable by an
+  agent through the recall tool's `kind` argument and by an operator through
+  `GET /memory/recall?kind=`. The predicate is in all six channels now.
+
+- **Which memories an agent was given could differ between two identical recalls.** `recall()`
+  runs three channels on each backend and fuses them by reciprocal rank. Every channel sorted
+  on its score alone — a small integer for the text channels, so ties are the normal case —
+  and each is then cut to a per-channel budget before fusion. Reciprocal-rank fusion scores on
+  *position*, so a different candidate set entering it is amplified rather than absorbed. The
+  ranking pass then tied again on score and recency. All six channels and the ranking now end
+  on the row id.
+
+  The recency tiebreak also read `last_used_at or created_at`, and `last_used_at` has no writer
+  anywhere: the migration adds the column, `put_memory` sets it to `None`, the upsert excludes
+  it. So "newest breaking ties" named a key that never applied. The dead half is gone, and
+  restoring it changes no test, which is what says it was dead.
+
 ### Changed
 
 - **Traces can be sent to a backend Felix does not host.** Every `FELIX_OTEL_*` setting is
@@ -454,37 +488,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   follow it. `migrate` and `scheduler` pin export off and drop the header for the same
   reason — neither calls `setup_observability`, so both would have been carrying a secret
   they cannot use.
-
-### Fixed
-
-- **One broken recall channel silently returned no memories at all.** `recall()` runs three
-  channels in one transaction, and the comment above their error handler promised a deployment
-  mid-upgrade would "lose a channel, not the turn". It did not: the first failure aborted the
-  transaction, so every later channel died on `InFailedSqlTransaction` and the turn got nothing
-  — logged at DEBUG. Reproduced by dropping a generated column, and confirmed to have been
-  position-dependent, which is why it could sit there: breaking the *last* channel looked fine.
-  Each statement now runs in its own savepoint, verified across all eight combinations of
-  broken channels. The failure log line is now `recall channel vector unavailable` rather than
-  `recall vector channel unavailable`; nothing in the tree matched the old string.
-
-- **`recall(kinds=[...])` could return nothing while a matching memory was stored.** The filter
-  ran in the ranking pass, after each channel had been cut to its budget — so a match outside
-  that window was filtered against an answer it had already been excluded from. Reachable by an
-  agent through the recall tool's `kind` argument and by an operator through
-  `GET /memory/recall?kind=`. The predicate is in all six channels now.
-
-- **Which memories an agent was given could differ between two identical recalls.** `recall()`
-  runs three channels on each backend and fuses them by reciprocal rank. Every channel sorted
-  on its score alone — a small integer for the text channels, so ties are the normal case —
-  and each is then cut to a per-channel budget before fusion. Reciprocal-rank fusion scores on
-  *position*, so a different candidate set entering it is amplified rather than absorbed. The
-  ranking pass then tied again on score and recency. All six channels and the ranking now end
-  on the row id.
-
-  The recency tiebreak also read `last_used_at or created_at`, and `last_used_at` has no writer
-  anywhere: the migration adds the column, `put_memory` sets it to `None`, the upsert excludes
-  it. So "newest breaking ties" named a key that never applied. The dead half is gone, and
-  restoring it changes no test, which is what says it was dead.
 
 ### Known and deliberately unfixed
 
