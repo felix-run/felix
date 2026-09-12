@@ -27,14 +27,20 @@ services:
         # still gets aws.
         FELIX_EXTRAS: ${FELIX_DOCKER_EXTRAS:-}${FELIX_DOCKER_EXTRAS:+,}otel
     environment:
+      # The whole transport is pinned, not just the endpoint. compose.yml passes every
+      # FELIX_OTEL_* setting through for hosted ingests, so an operator whose .env holds the
+      # documented hosted config — `FELIX_OTEL_PROTOCOL=http`, `FELIX_OTEL_INSECURE=false`,
+      # a credential in FELIX_OTEL_HEADERS — would otherwise carry all three into this
+      # overlay: a TLS handshake against the collector's plaintext port, or an HTTP POST to
+      # its gRPC one, and a vendor Authorization header sent to a collector that never asked
+      # for it. Every span dropped, silently, with the stack looking healthy — the exact
+      # failure this overlay exists to make visible. The overlay owns the destination, so it
+      # owns how Felix talks to it.
       FELIX_OTEL_ENABLED: "true"
       FELIX_OTEL_ENDPOINT: http://otel-collector:4317
-      # Blanked, not inherited. compose.yml passes FELIX_OTEL_HEADERS through for hosted
-      # ingests, so an operator with a vendor credential in .env who then runs this overlay
-      # would send that Authorization header to a local collector that never asked for one.
-      # This overlay redirects the destination; the credential must not follow it.
+      FELIX_OTEL_PROTOCOL: grpc
+      FELIX_OTEL_INSECURE: "true"
       FELIX_OTEL_HEADERS: ""
-      FELIX_OTEL_PROTOCOL: ${FELIX_OTEL_PROTOCOL:-grpc}
       FELIX_OTEL_SAMPLE_RATIO: ${FELIX_OTEL_SAMPLE_RATIO:-1.0}
       # Prompts and completions stay off spans unless you opt in; a tracing backend is an
       # egress destination and span attributes are not content-screened.
@@ -54,14 +60,20 @@ services:
         # still gets aws.
         FELIX_EXTRAS: ${FELIX_DOCKER_EXTRAS:-}${FELIX_DOCKER_EXTRAS:+,}otel
     environment:
+      # The whole transport is pinned, not just the endpoint. compose.yml passes every
+      # FELIX_OTEL_* setting through for hosted ingests, so an operator whose .env holds the
+      # documented hosted config — `FELIX_OTEL_PROTOCOL=http`, `FELIX_OTEL_INSECURE=false`,
+      # a credential in FELIX_OTEL_HEADERS — would otherwise carry all three into this
+      # overlay: a TLS handshake against the collector's plaintext port, or an HTTP POST to
+      # its gRPC one, and a vendor Authorization header sent to a collector that never asked
+      # for it. Every span dropped, silently, with the stack looking healthy — the exact
+      # failure this overlay exists to make visible. The overlay owns the destination, so it
+      # owns how Felix talks to it.
       FELIX_OTEL_ENABLED: "true"
       FELIX_OTEL_ENDPOINT: http://otel-collector:4317
-      # Blanked, not inherited. compose.yml passes FELIX_OTEL_HEADERS through for hosted
-      # ingests, so an operator with a vendor credential in .env who then runs this overlay
-      # would send that Authorization header to a local collector that never asked for one.
-      # This overlay redirects the destination; the credential must not follow it.
+      FELIX_OTEL_PROTOCOL: grpc
+      FELIX_OTEL_INSECURE: "true"
       FELIX_OTEL_HEADERS: ""
-      FELIX_OTEL_PROTOCOL: ${FELIX_OTEL_PROTOCOL:-grpc}
       FELIX_OTEL_SAMPLE_RATIO: ${FELIX_OTEL_SAMPLE_RATIO:-1.0}
       FELIX_OTEL_CAPTURE_CONTENT: ${FELIX_OTEL_CAPTURE_CONTENT:-false}
       FELIX_OTEL_LOGS: ${FELIX_OTEL_LOGS:-true}

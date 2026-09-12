@@ -218,11 +218,18 @@ FELIX_OTEL_HEADERS=authorization=Basic <credential>
 FELIX_OTEL_SERVICE_NAME=felix-prod  # when several deployments share one backend
 ```
 
-Then `make up` and `uv run felix doctor`. It reports whether the exporter is installed in
-every environment — including `development`, which is what compose defaults to, and the
-case where staring at an empty dashboard is the only other signal. Set
-`FELIX_ENVIRONMENT=production` and it adds the posture rows: whether the destination is
-private or TLS, and whether prompts are excluded from spans.
+Then `make up` and ask the container, not the host:
+
+```bash
+docker compose -f deploy/docker/compose.yml --project-directory . exec api felix doctor
+```
+
+The exporter row is an import probe, so it answers for the process running it — a lean host
+venv reports a missing exporter for a correctly built image. It runs in every environment,
+including `development`, which is what compose defaults to and where staring at an empty
+dashboard is otherwise the only signal. Under `FELIX_ENVIRONMENT=production` doctor adds the
+posture rows: whether the destination is private or TLS, and whether prompts are excluded
+from spans.
 
 **Felix needs no vendor SDK and no new dependency.** `felix.patterns.model` emits spans
 carrying the `gen_ai.*` semantic-convention attributes, so a backend that understands them

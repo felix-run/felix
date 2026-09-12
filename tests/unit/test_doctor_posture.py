@@ -15,7 +15,7 @@ from typing import Any
 import pytest
 from felix.config import Settings, get_settings
 from felix.db import migrations
-from felix_cli.main import Finding, _otel_findings, _posture_findings
+from felix_cli.main import Finding, _capability_findings, _posture_findings
 
 ROOT = Path(__file__).resolve().parents[2]
 BASE = {
@@ -121,7 +121,7 @@ def test_otel_transport_is_judged_the_way_the_exporter_decides_it(
     protocol: str, endpoint: str, insecure: bool, expect: bool
 ) -> None:
     rows = _by_label(
-        _otel_findings(
+        _posture_findings(
             _settings(
                 environment="production",
                 auth_mode="api_key",
@@ -138,7 +138,7 @@ def test_otel_transport_is_judged_the_way_the_exporter_decides_it(
 
 def test_prompts_in_spans_are_a_finding_outside_development() -> None:
     rows = _by_label(
-        _otel_findings(
+        _posture_findings(
             _settings(
                 environment="staging",
                 auth_mode="api_key",
@@ -232,9 +232,9 @@ def test_doctor_reports_whether_the_otel_exporter_is_installed(
     """
     # `_otel_findings` imports it from the harness at call time, which is the name the
     # running code resolves — patching a copy on felix_cli would pass while doctor did not.
-    monkeypatch.setattr("felix.observability.tracing.exporter_available", lambda _s: installed)
+    monkeypatch.setattr("felix.observability.tracing.trace_exporter_available", lambda _s: installed)
     rows = _by_label(
-        _otel_findings(
+        _capability_findings(
             _settings(
                 environment=environment,
                 auth_mode="api_key",
@@ -274,17 +274,16 @@ def test_the_exporter_probe_answers_for_the_configured_protocol(
     """
     import importlib.util
 
-    from felix.observability.tracing import exporter_available
+    from felix.observability.tracing import trace_exporter_available
 
-    real = importlib.util.find_spec
-
+    # Every answer is stubbed, including the SDK's, so this measures the branch rather
+    # than the venv — it must mean the same thing on a lean install, where the real
+    # `find_spec` would answer None for all of them and hide the selection entirely.
     def only(name: str) -> object | None:
-        if name.startswith("opentelemetry.exporter") and name != present:
-            return None
-        return real(name)
+        return object() if name in (present, "opentelemetry.sdk.trace") else None
 
     monkeypatch.setattr(importlib.util, "find_spec", only)
-    assert exporter_available(_settings(otel_enabled=True, otel_protocol=protocol)) is expect
+    assert trace_exporter_available(_settings(otel_enabled=True, otel_protocol=protocol)) is expect
 
 
 def test_the_exporter_probe_survives_a_missing_parent_package() -> None:
@@ -296,18 +295,18 @@ def test_the_exporter_probe_survives_a_missing_parent_package() -> None:
     """
     import importlib.util
 
-    from felix.observability.tracing import exporter_available
+    from felix.observability.tracing import trace_exporter_available
 
     def raiser(name: str) -> object:
         raise ModuleNotFoundError(f"No module named {name!r}")
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(importlib.util, "find_spec", raiser)
-        assert exporter_available(_settings(otel_enabled=True)) is False
+        assert trace_exporter_available(_settings(otel_enabled=True)) is False
 
 
 def test_the_otel_rows_are_absent_when_export_is_off() -> None:
     """Every otel row is conditional on export being on; a disabled exporter is not a fault."""
-    from felix_cli.main import _otel_findings
-
-    assert _otel_findings(_settings(environment="production", auth_mode="api_key")) == []
+    settings = _settings(environment="production", auth_mode="api_key", auth_api_keys="k")
+    assert _capability_findings(settings) == []
+    assert not [r for r in _posture_findings(settings) if "otel" in r.label]

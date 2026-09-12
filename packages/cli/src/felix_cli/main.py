@@ -347,53 +347,39 @@ def _otel_private_or_tls(settings: Settings) -> tuple[bool, str]:
     return tls or _is_loopback_host(host), f"{'tls' if tls else 'plaintext'} ({where})"
 
 
-def _otel_findings(settings: Settings) -> list[Finding]:
-    """What doctor says about OTLP export, in **every** environment.
+def _capability_findings(settings: Settings) -> list[Finding]:
+    """Things that are configured and cannot work — true in **every** environment.
 
-    Deliberately not part of `_posture_findings`, which returns early under
-    `FELIX_ENVIRONMENT=development` — and development is what `deploy/docker/compose.yml`
-    defaults to, so these rows would have been skipped for exactly the operator the
-    passthrough was added for: `make up`, forget `FELIX_DOCKER_EXTRAS=otel`, run doctor,
-    see nothing. "Is the exporter installed" is not a production-posture question anyway;
-    it is a "this is configured and does nothing" fact, and it is true everywhere.
+    Separate from `_posture_findings`, which returns early under
+    `FELIX_ENVIRONMENT=development`. Development is what `deploy/docker/compose.yml`
+    defaults to, so a row placed there would be skipped for exactly the operator it is
+    for: `make up`, forget `FELIX_DOCKER_EXTRAS=otel`, run doctor, see nothing. "Is the
+    exporter installed" is not a judgement about how exposed a deployment is — it is a
+    fact about whether a switch that is on does anything, and that is worth saying
+    wherever it is false.
     """
     if not settings.otel_enabled:
         return []
-    from felix.observability.tracing import exporter_available
+    from felix.observability.tracing import trace_exporter_available
 
-    rows = [
+    return [
         # The lean image and the lean install both ship without the extra, and the only
         # other signal is one warning line at startup — after which the stack looks
         # healthy in every respect except that the backend stays empty.
+        #
+        # "(this process)" because that is what an import probe can answer. Running doctor
+        # on a lean host venv says nothing about the container, which is where export
+        # actually happens — `docker compose exec api felix doctor` asks that one.
         Finding(
             "otel exporter is installed",
-            exporter_available(settings),
-            f"FELIX_OTEL_PROTOCOL={settings.otel_protocol}",
+            trace_exporter_available(settings),
+            f"FELIX_OTEL_PROTOCOL={settings.otel_protocol} (this process)",
             "FELIX_OTEL_ENABLED=true exports nothing without the otel extra for this "
-            "protocol; uv sync --extra otel, or build with FELIX_DOCKER_EXTRAS=otel",
+            "protocol; uv sync --extra otel, or build the image with "
+            "FELIX_DOCKER_EXTRAS=otel and ask the container: "
+            "docker compose exec api felix doctor",
         )
     ]
-    # The two below are posture: legal, and weakening only outside development.
-    if settings.environment == "development":
-        return rows
-    tls, transport = _otel_private_or_tls(settings)
-    rows.append(
-        Finding(
-            "otel exporter is private or TLS",
-            tls,
-            transport,
-            "spans carry user and tenant ids; use https://, FELIX_OTEL_INSECURE=false, or a local collector",
-        )
-    )
-    rows.append(
-        Finding(
-            "otel spans exclude prompts",
-            not settings.otel_capture_content,
-            f"FELIX_OTEL_CAPTURE_CONTENT={str(settings.otel_capture_content).lower()}",
-            "prompts and completions in spans are outside content screening; turn it off outside development",
-        )
-    )
-    return rows
 
 
 def _posture_findings(settings: Settings) -> list[Finding]:
@@ -441,6 +427,26 @@ def _posture_findings(settings: Settings) -> list[Finding]:
                     "any tenant a JWT claims is accepted; list the tenants, or use ;tenant=fixed:<tenant>",
                 )
             )
+    if settings.otel_enabled:
+        tls, transport = _otel_private_or_tls(settings)
+        rows.append(
+            Finding(
+                "otel exporter is private or TLS",
+                tls,
+                transport,
+                "spans carry user and tenant ids; use https://, FELIX_OTEL_INSECURE=false, or a "
+                "local collector",
+            )
+        )
+        rows.append(
+            Finding(
+                "otel spans exclude prompts",
+                not settings.otel_capture_content,
+                f"FELIX_OTEL_CAPTURE_CONTENT={str(settings.otel_capture_content).lower()}",
+                "prompts and completions in spans are outside content screening; turn it off "
+                "outside development",
+            )
+        )
     return rows
 
 
@@ -500,8 +506,8 @@ def doctor_cmd() -> None:
     except RuntimeError as exc:
         check("backends resolve", False, str(exc))
     # Two lists, because they are skipped differently: posture is a production-only
-    # judgement, while "export is on and cannot work" is true in any environment.
-    for row in _otel_findings(settings) + _posture_findings(settings):
+    # judgement, while "this is switched on and cannot work" is true in any environment.
+    for row in _capability_findings(settings) + _posture_findings(settings):
         check(row.label, row.passed, row.detail, remedy=row.remedy)
     if settings.environment == "development":
         rprint("  [dim]posture[/dim]  production posture checks skipped — FELIX_ENVIRONMENT=development")
