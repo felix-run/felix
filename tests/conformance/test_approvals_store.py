@@ -351,3 +351,55 @@ async def test_an_expired_grant_does_not_hide_a_live_one(store_settings: Any) ->
     )
     assert found is not None, "a live grant exists; an expired one must not hide it"
     assert found["id"] == live["id"], found
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_the_thread_round_trips_and_survives_a_decision(store_settings: Any) -> None:
+    """`thread_id` is what makes `GET /approvals` able to name the blocked conversation.
+
+    It matters most on the arm that is hardest to check: a durable run reaches an operator
+    only through this row, because side events are an in-process queue keyed by thread and
+    the run's agent is in the worker while its stream is served by the API.
+    """
+    created = await _pending(store_settings, thread_id="default:t-42")
+    assert created["thread_id"] == "default:t-42"
+
+    listed = await approvals.list_approvals(store_settings, TENANT, status="pending")
+    assert [row["thread_id"] for row in listed] == ["default:t-42"]
+
+    decided = await _approve(store_settings, created["id"])
+    assert decided is not None and decided["thread_id"] == "default:t-42"
+
+    found = await approvals.find_approved(
+        store_settings, TENANT, manifest_id=MANIFEST, tool_name=TOOL, call_signature=SIG
+    )
+    assert found is not None and found["thread_id"] == "default:t-42"
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_a_row_with_no_thread_reads_as_empty_not_null(store_settings: Any) -> None:
+    """A gated tool called outside a chat context is a real state, not a missing value —
+    and a client that has to branch on `None` versus `""` per backend has two contracts."""
+    created = await _pending(store_settings)
+    assert created["thread_id"] == ""
+    fetched = await approvals.get_approval(store_settings, TENANT, created["id"])
+    assert fetched is not None and fetched["thread_id"] == ""
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_a_reused_pending_row_keeps_the_thread_that_opened_it(store_settings: Any) -> None:
+    """Attribution, not ownership, and both backends must agree on which.
+
+    `create_pending` reuses on (tenant, manifest, tool, call_signature, status=pending), so two
+    threads issuing a byte-identical gated call share one row and one decision. The thread on
+    it therefore names the *originator*; a second thread's must not overwrite it, because the
+    row an operator is looking at would then rename itself under them.
+    """
+    first = await _pending(store_settings, thread_id="default:first")
+    second = await _pending(store_settings, thread_id="default:second")
+
+    assert second["id"] == first["id"], "the reuse key changed; this contract no longer applies"
+    assert second["thread_id"] == "default:first", "a later thread overwrote the originator"

@@ -92,6 +92,9 @@ class Approval(Base):
     ttl_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     expires_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     rule_id: Mapped[str] = mapped_column(Text, server_default="", default="")
+    # Attribution, not ownership: `create_pending` reuses a pending row keyed on
+    # (tenant, manifest, tool, call_signature), so this names whichever thread asked first.
+    thread_id: Mapped[str] = mapped_column(Text, server_default="", default="")
     # Set when a one_shot grant is spent, so it cannot authorize a second identical call.
     consumed_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
