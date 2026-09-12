@@ -197,3 +197,25 @@ async def test_the_manifest_filter_survives_a_tied_page_boundary(
 
     assert [e["manifest_id"] for e in seen] == ["watched"] * len(seen), seen
     assert len(seen) == 3, seen
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_the_summary_rows_come_back_in_one_order(usage_settings: Any) -> None:
+    """The two arms sorted the same two text keys in opposite directions.
+
+    The twin reversed the whole `(day, manifest_id, model_id)` tuple while the SQL ordered
+    `day DESC, manifest_id ASC, model_id ASC` — so every row sharing a day came back in the
+    opposite order, and neither arm was wrong about its own rows. The existing tests funnel
+    the result into a dict before asserting, so order was never compared and this was green.
+
+    Mixed case on purpose: `manifest_id` is tenant-supplied, `ORDER BY` on text uses the
+    database collation, and the twin sorts by code point.
+    """
+    for manifest in ("Zulu", "alpha", "_edge", "beta"):
+        _record(usage_settings, manifest=manifest, model="fast", tokens=1_000)
+    await usage_store.flush_pending(usage_settings)
+
+    rows = (await usage_store.summary(usage_settings, TENANT))["items"]
+
+    assert [r["manifest_id"] for r in rows] == sorted(("Zulu", "alpha", "_edge", "beta")), rows

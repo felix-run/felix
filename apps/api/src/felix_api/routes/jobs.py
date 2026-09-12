@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from felix.auth.mgmt import (
     SCOPE_JOBS_READ,
     SCOPE_JOBS_WRITE,
@@ -74,7 +74,9 @@ async def delete_job(name: str, request: Request) -> dict[str, str]:
 
 
 @router.get("/{name}/runs")
-async def list_job_runs(name: str, request: Request, limit: int = 20) -> dict[str, Any]:
+async def list_job_runs(
+    name: str, request: Request, limit: int = Query(default=20, ge=1, le=200)
+) -> dict[str, Any]:
     from felix.jobs import store as jobs_store
 
     require_mgmt_scopes(request, SCOPE_JOBS_READ)
