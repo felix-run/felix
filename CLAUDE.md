@@ -204,6 +204,9 @@ cron labels). `felix-scheduler` must run alongside `felix-worker` or nothing fir
 - Postgres is the system of record; the warehouse (`FELIX_WAREHOUSE`) is optional
   append-only spill written after the Postgres write.
 - `docs/ROADMAP.md` tracks in-flight work and is expected to be updated in place.
+- User-visible changes add a `changelog.d/<section>-<slug>.md` fragment rather than editing
+  `CHANGELOG.md`; `scripts/changelog.py --release X.Y.Z` folds them in at release time. One
+  file per change, so two pull requests never conflict over the changelog.
 
 ## Claude Code toolkit
 
