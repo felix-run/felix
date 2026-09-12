@@ -165,6 +165,24 @@ directly from a tenant id read out of the database, with no `Principal` and so n
 row written before this rule existed still flows through those paths, which is why the
 sweeps escape the value where they log it rather than assuming it is clean.
 
+Behind all of that, a log *message* is one line by construction. A newline reaching one
+would end the record and start another that an attacker wrote in full — most damagingly a
+forged *refusal*, since the log is what an incident is reconstructed from. Under
+`FELIX_LOG_FORMAT=json` this never applied (`json.dumps` escapes the separator because the
+message is a value, not a line); the text format now escapes the message before rendering
+it, so the guarantee no longer depends on each call site remembering `loggable()`. Call
+sites still use it, because the formatter cannot bound length — it sees a finished record,
+and truncating there would cut the record rather than the value.
+
+**One thing that guarantee does not cover: the traceback.** `logging.Formatter` appends
+`exc_text` after the message, deliberately unescaped so tracebacks stay readable, and an
+exception's own `str` renders at column 0 rather than indented like its frames. A newline
+inside an exception message therefore still produces a record-shaped line, on any of the
+`exc_info=True` / `logger.exception(...)` call sites whose exception text is built from a
+caller-influenced value. This is long-standing stdlib behaviour rather than something the
+escaping changed, and the mitigation today is `loggable()` on the value *before* it reaches
+the exception. `tests/unit/test_log_ids.py` pins the boundary so it stays a known fact.
+
 ## Inbound and outbound constraints
 
 ```yaml
