@@ -371,6 +371,24 @@ class SearchToolRef(_Strict):
     fatal: bool = False
 
 
+class DocumentSearchToolRef(_Strict):
+    """Retrieve from the corpus an operator ingested, scoped to the calling tenant.
+
+    The mildest of the three retrieval refs, and for a structural reason rather than a policy
+    one: `HttpFetchToolRef` needs a `path_prefix` because the model names a destination, and
+    `SearchToolRef` needs none because the operator does — this one reaches no network at all,
+    only rows already in this deployment's own store. What comes back is still untrusted, since
+    a document is text somebody else wrote.
+    """
+
+    name: str = Field(min_length=1)
+    description: str = ""
+    # Chunks are the whole cost of this tool in a context window, and a chunk is larger than a
+    # search snippet — hence a lower ceiling than `SearchToolRef` carries.
+    max_results: int | None = Field(default=None, ge=1, le=10)
+    fatal: bool = False
+
+
 class ClientToolRef(_Strict):
     """Tool executed by the connected client; the server waits for a result."""
 
@@ -700,6 +718,7 @@ class Spec(_Strict):
     browser_tools: list[BrowserToolRef] = Field(default_factory=list, max_length=MAX_REFS)
     http_tools: list[HttpFetchToolRef] = Field(default_factory=list, max_length=MAX_REFS)
     search_tools: list[SearchToolRef] = Field(default_factory=list, max_length=MAX_REFS)
+    document_tools: list[DocumentSearchToolRef] = Field(default_factory=list, max_length=MAX_REFS)
     client_tools: list[ClientToolRef] = Field(default_factory=list, max_length=MAX_REFS)
     sub_agents: list[str] = Field(default_factory=list)
     aggregator_prompt: str = ""
