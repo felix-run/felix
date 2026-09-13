@@ -65,6 +65,17 @@ FIBER_RETRY_MAX_MS = 60 * 60 * 1000
 FIBER_TERMINAL_STATUSES = frozenset({"completed", "failed", "expired", "dead"})
 
 
+def fiber_thread_id(tenant_id: str, fiber_id: str) -> str:
+    """The thread a fiber writes to when the request supplied none.
+
+    Named rather than interpolated at the two places that need it, because the API now
+    derives the same id to tail a durable run's session log. A durable run with no thread
+    of its own is exactly the case where an f-string here and a different one there would
+    silently tail an empty log forever.
+    """
+    return f"{tenant_id}:fiber:{fiber_id}"
+
+
 def _fiber_dict(row: Fiber | dict[str, Any]) -> dict[str, Any]:
     if isinstance(row, dict):
         return dict(row)
@@ -297,7 +308,7 @@ async def _run_fiber_step(settings: Settings, row: dict[str, Any]) -> dict[str, 
                     anonymous=bool(stored_auth.get("anonymous", False)),
                     scheme=str(stored_auth.get("scheme") or "anonymous"),
                 )
-                thread = thread_id or f"{tenant_id}:fiber:{row['id']}"
+                thread = thread_id or fiber_thread_id(tenant_id, str(row["id"]))
                 req_ctx = RequestContext(
                     settings=settings,
                     auth=auth,
@@ -697,6 +708,7 @@ save_fiber = _save_fiber
 __all__ = [
     "advance_fiber",
     "create_fiber",
+    "fiber_thread_id",
     "get_fiber",
     "now_ms",
     "resume_due_fibers",

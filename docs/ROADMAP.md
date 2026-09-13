@@ -194,6 +194,27 @@ live again. Revisit after the first three land, on evidence, not before.
       Minimum ~2 minutes, and the second is pure scheduler latency. A *failure* terminates in one
       sweep, so a failed run reaches its terminal state a full minute faster than a successful
       one. Clear `heartbeat_at` on suspend so sleeping is distinguishable from crashed.
+- [x] **A durable run streams its transcript** (felix-run/felix#238). `POST /chat/stream` on a
+      durable manifest sent `run_accepted` → `run_status` → `final` and nothing between, so the
+      answer arrived and the tool calls behind it did not. Correction to the premise this started
+      from, and it matters for the entry below: bridging `side_events` through Valkey fixes
+      nothing here, twice over. `drain` is called inside the agent's own loop and `emit` comes
+      from tool execution in the same process, so on a fiber **both ends are already in the
+      worker**; and the events do not exist to be bridged anyway, because `invoke` is
+      `_run(..., emit_events=False)` — the deltas and `on_tool_start`/`on_tool_end` are dropped
+      at the source and the `drain_side_events` loop is itself inside `if emit_events:`. What the
+      fiber does produce is the session log, written incrementally by `_append_produced` outside
+      every `emit_events` guard. So the stream now tails it, through the same helper
+      `GET /chat/stream/{thread_id}` uses. No new transport, no second source of truth. Completed
+      messages only — chunks are never persisted, so a durable run never streams token deltas.
+- [ ] **Split the SSE tail out of `routes/chat.py`.** Deferred from #238 deliberately, as
+      motion that would have obscured the change it rode in on. `chat.py` is 1,774 lines and the
+      largest module in the repo; ~330 of them (`_next_poll_delay`, `_session_event_frame`,
+      `_drain_session_events`, `_ResumePacing`, `_stream_cursor`, `_build_thread_snapshot`,
+      `_DurableTail`, `_durable_run_gen`) are one subject — *tailing a session log over SSE, and
+      how fast to ask* — with no route decorator among them and no importer outside this file and
+      its tests. They belong in `routes/_streaming.py`, beside `routes/_sse.py`. Mechanical; the
+      churn is ten test imports. Do it before the next streaming change, not after.
 - [ ] **Approvals reach the durable path.** `side_events` is a process-local
       `dict[str, asyncio.Queue]`, so on a fiber the `approval_required` emit lands in the
       worker's own memory and is unreachable by construction — on precisely the path where a
@@ -202,7 +223,12 @@ live again. Revisit after the first three land, on evidence, not before.
       does cross — `waiters.py` is a Redis `BLPOP` and the API's approve reaches the worker's
       fiber. What did not was the no-Redis case, where the waiter silently became a
       process-local future; `FELIX_REDIS_URL` is now required outside development and a
-      configured Redis that is down is logged at warning. The event-side gap above stands.
+      configured Redis that is down is logged at warning. The event-side gap above stands, and
+      #238 sharpens it: the `emit_side_event` call in the approvals wrapper is *not* gated by
+      `emit_events`, so a fiber does queue the frame — it is the `drain_side_events` loop that
+      sits inside `if emit_events:`, and `invoke` never runs it. So publishing at the emit is
+      still the shape of the fix. Note that the session-log tail #238 added does not cover this:
+      an approval request is never written to the session log, only tool results are.
 - [ ] **Signed completion webhooks**, delivered from the **worker** — the fiber reaches terminal
       state under its cron and the API replica that accepted the request may be gone. Dead letter
       is `status='dead'` on the same durable row, not a second store. `spec.webhooks` selects
