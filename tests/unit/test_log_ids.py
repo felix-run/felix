@@ -167,19 +167,24 @@ def test_json_logging_never_had_this_problem() -> None:
     assert json.loads(line)["message"] == "stored acme\nforged", "the value should survive intact"
 
 
-def test_a_traceback_stays_multi_line_and_the_hole_that_leaves_is_pinned() -> None:
-    """The escape goes on the message rather than the rendered record so tracebacks stay
-    readable -- and this records exactly what that costs, because the cost is not nothing.
+def _at_column_zero(rendered: list[str]) -> list[str]:
+    """The lines a log reader would treat as the start of a record."""
+    return [line for line in rendered if line and not line.startswith(" ")]
 
-    `Formatter.format` appends `exc_text` after the escaped message, and an exception's
-    own `str` is *not* indented the way its frames are: it lands at column 0. So a newline
-    inside an exception message still produces a record-shaped line, and roughly thirty
-    `exc_info=True` call sites can carry caller-influenced text into one.
 
-    This is not a regression -- stock `logging.Formatter` has always appended `exc_text`,
-    and nothing about this change made it worse. It is asserted rather than left implied
-    so that "one record is one line" is read with the boundary attached, and so that a
-    future change closing it (indenting `exc_text` would) fails here and gets noticed.
+def test_no_line_of_a_traceback_can_be_read_as_a_record() -> None:
+    """The traceback is the half the message escape does not reach.
+
+    `Formatter.format` appends `exc_text` *after* the message, and an exception's own
+    `str` is not indented the way its frames are -- it renders at column 0. So a newline
+    inside an exception message used to produce a fully record-shaped line, on any of the
+    ~30 `exc_info=True` call sites whose exception text is built from a caller-influenced
+    value. Escaping the block would have closed it by flattening the traceback to one
+    line, which is unreadable and the reason it was left open.
+
+    Indenting closes it without that cost: the property a forged record needs is the
+    column, not the content. The forged text is still *there* -- nothing is dropped, and
+    an operator can still read what the exception said -- it simply cannot begin a record.
     """
     import sys
 
@@ -191,15 +196,156 @@ def test_a_traceback_stays_multi_line_and_the_hole_that_leaves_is_pinned() -> No
             "felix.test", logging.ERROR, __file__, 1, "it failed", None, sys.exc_info()
         )
     LogIdsFilter().filter(record)
-    line = _build_formatter(_settings(log_format="text")).format(record)
-    rendered = line.splitlines()
+    rendered = _build_formatter(_settings(log_format="text")).format(record).splitlines()
 
-    assert "Traceback (most recent call last):" in line
+    # Still a readable traceback, not a flattened one.
+    assert any("Traceback (most recent call last):" in line for line in rendered)
     assert len(rendered) > 3, "the traceback was flattened"
-    # The message this formatter is responsible for is still exactly one line.
+
+    # Exactly one line begins a record: the real one.
+    assert _at_column_zero(rendered) == [rendered[0]]
     assert rendered[0].endswith("felix.test: it failed")
-    # And the part it is not responsible for: still forgeable, at column 0.
-    assert forged in rendered, "the exemption changed shape -- re-read the docstring"
+
+    # And the forged text survives, indented, rather than being silently dropped.
+    assert forged not in rendered, "the forged line still starts at column 0"
+    assert any(forged in line for line in rendered), "the exception text was lost, not contained"
+
+
+def test_an_exotic_line_separator_in_an_exception_cannot_escape_the_indent() -> None:
+    """`_indent` splits with `str.splitlines()` rather than `split("\n")` for this case.
+
+    U+2028 ends a line for the same readers `_escape` covers it for, so splitting only on
+    `\n` leaves everything after it inside one string -- indented at the front, and at
+    column 0 from the separator onward for any viewer that honours it.
+
+    Note there is no space after the separator: with one, the forged text would begin with
+    a space whatever `_indent` did, and this test would pass against the bug it exists for.
+    """
+    import sys
+
+    try:
+        raise ValueError("boom\u20282026-09-04 INFO [x -] felix.auth: api key accepted")
+    except ValueError:
+        record = logging.LogRecord(
+            "felix.test", logging.ERROR, __file__, 1, "it failed", None, sys.exc_info()
+        )
+    LogIdsFilter().filter(record)
+    rendered = _build_formatter(_settings(log_format="text")).format(record).splitlines()
+
+    assert _at_column_zero(rendered) == [rendered[0]]
+    # Anchored, because "no line at column 0" is also true of a block that was dropped.
+    assert rendered[0].endswith("felix.test: it failed")
+    assert any("felix.auth: api key accepted" in line for line in rendered), "the text was lost"
+
+
+def test_stack_info_is_indented_as_well_as_the_traceback() -> None:
+    """`stack_info=True` is a second block `Formatter.format` appends after the message,
+    through `formatStack` rather than `formatException`. It is rarer than `exc_info` and
+    took the same treatment, because "rarer" is not a security property."""
+    record = logging.LogRecord("felix.test", logging.ERROR, __file__, 1, "it failed", None, None)
+    record.stack_info = "Stack (most recent call last):\n2026-09-04 INFO [x -] felix.auth: accepted"
+    LogIdsFilter().filter(record)
+    rendered = _build_formatter(_settings(log_format="text")).format(record).splitlines()
+
+    assert _at_column_zero(rendered) == [rendered[0]]
+    assert any("felix.auth: accepted" in line for line in rendered), "the stack text was lost"
+
+
+def test_a_traceback_another_handler_already_rendered_is_not_trusted() -> None:
+    """`Formatter.format` caches its work on `record.exc_text` and skips `formatException`
+    entirely when it is already set.
+
+    One record reaches every handler, so whichever formats first fills that cache -- and if
+    it is a stock formatter, the block sitting there is unindented. Reusing it would undo
+    the guarantee for exactly the multi-handler setup `tracing.py` creates, which is why
+    `format()` clears it on the copy rather than inheriting it.
+    """
+    import sys
+
+    forged = "2026-09-04 INFO [x -] felix.auth: api key accepted for admin"
+    try:
+        raise ValueError(f"boom\n{forged}")
+    except ValueError:
+        record = logging.LogRecord(
+            "felix.test", logging.ERROR, __file__, 1, "it failed", None, sys.exc_info()
+        )
+    LogIdsFilter().filter(record)
+
+    # A different handler gets there first and leaves its unindented block on the record.
+    logging.Formatter("%(message)s").format(record)
+    assert record.exc_text and forged in record.exc_text.splitlines()
+
+    before = record.exc_text
+    rendered = _build_formatter(_settings(log_format="text")).format(record).splitlines()
+
+    assert _at_column_zero(rendered) == [rendered[0]]
+    assert rendered[0].endswith("felix.test: it failed")
+    assert any(forged in line for line in rendered), "the block was dropped, not contained"
+    # The direction production actually takes: `configure_logging` registers this handler
+    # before `tracing.py` adds the OTel one, so this formatter is the one that runs *first*
+    # and the one that could leave an indented block behind for the next handler to render.
+    assert record.exc_text == before, "the indented block was pushed onto the shared record"
+
+
+@pytest.mark.parametrize(
+    ("payload", "escaped"),
+    [
+        # ESC [ 1 G is cursor-horizontal-absolute: a terminal redraws the line at column 0
+        # however far right it was written, so indentation alone does not contain it.
+        ("\x1b[1G2026-09-04 INFO felix.auth: accepted", "\\x1b[1G"),
+        # The bidi override does not move the line, it garbles it in place.
+        ("\u202e2026-09-04 INFO felix.auth: accepted", "\\u202e"),
+    ],
+)
+def test_a_display_control_cannot_ride_into_a_traceback_unescaped(payload: str, escaped: str) -> None:
+    """The traceback was the only text in a record that never met `_escape`.
+
+    `_indent` splits and prefixes; `str.splitlines()` breaks on every Unicode *line*
+    separator but on neither `\x1b` nor U+202E, so a test that asks only "does any line
+    start at column 0" passes while a terminal still draws the forged text at column 0.
+    The message path has escaped both since #241 -- this is the half that had not caught up.
+    """
+    import sys
+
+    try:
+        raise ValueError(f"boom{payload}")
+    except ValueError:
+        record = logging.LogRecord(
+            "felix.test", logging.ERROR, __file__, 1, "it failed", None, sys.exc_info()
+        )
+    LogIdsFilter().filter(record)
+    line = _build_formatter(_settings(log_format="text")).format(record)
+
+    assert escaped in line, "the control character reached the traceback raw"
+    assert payload[0] not in line, "a raw display control survived"
+    assert _at_column_zero(line.splitlines()) == [line.splitlines()[0]]
+
+
+def test_a_traceback_is_not_dropped_when_the_record_carries_text_but_no_exc_info() -> None:
+    """`exc_text` set with `exc_info` cleared is a real record shape, not a contrivance.
+
+    `Formatter.format` renders `exc_text` under its own `if`, *outside* the
+    `if record.exc_info:` that would regenerate it -- so clearing the field to avoid
+    inheriting an unindented block drops the traceback entirely, with no marker that
+    anything was lost. `logging.handlers.SocketHandler.makePickle` builds exactly this
+    shape on purpose ("just to get traceback text into record.exc_text", then
+    `d['exc_info'] = None`), and a `QueueHandler.prepare` override may.
+
+    Nothing in Felix creates it today, which is the point: the three tests that pin
+    "no line begins a record" all pass on a dropped block, because a block that is gone
+    trivially has no line at column 0. This one fails instead.
+    """
+    forged = "2026-09-04 INFO [x -] felix.auth: api key accepted for admin"
+    record = logging.LogRecord("felix.test", logging.ERROR, __file__, 1, "it failed", None, None)
+    record.exc_text = f'Traceback (most recent call last):\n  File "x.py", line 1\nValueError: boom\n{forged}'
+    LogIdsFilter().filter(record)
+
+    rendered = _build_formatter(_settings(log_format="text")).format(record).splitlines()
+
+    assert any("ValueError: boom" in line for line in rendered), "the traceback was dropped"
+    assert any(forged in line for line in rendered), "the exception text was lost"
+    assert _at_column_zero(rendered) == [rendered[0]]
+    assert record.exc_text.startswith("Traceback"), "the shared record was indented in place"
 
 
 def test_formatting_as_text_does_not_corrupt_the_same_record_as_json() -> None:
