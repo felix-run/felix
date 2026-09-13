@@ -23,7 +23,7 @@ from felix.logging_setup import loggable
 from felix.patterns.model import ModelGatewayError
 from felix.patterns.types import ChatMessage, InvokeInput
 from felix.runtime import build_tenant_agent, prepare_tenant_invoke, resolve_tenant_manifest
-from felix.session.notify import thread_watch
+from felix.session.snapshot import gather_thread_snapshot
 from felix.session.store import get_session_store
 from felix.session.tree import fork_thread, get_leaf, rewind_to
 from felix.session.types import GetEventsOpts
@@ -42,10 +42,8 @@ from felix_api.routes._sse import (
     with_heartbeat,
 )
 from felix_api.routes._streaming import (
-    ResumePacing,
-    build_thread_snapshot,
-    drain_session_events,
     durable_run_gen,
+    resume_stream_gen,
     stream_cursor,
 )
 from felix_api.threads import effective_thread_id
@@ -492,56 +490,17 @@ async def chat_stream_resume(request: Request, thread_id: str) -> StreamingRespo
         after = None
 
     poll = float(getattr(settings, "stream_resume_poll_seconds", 1.0) or 1.0)
-    poll_max = max(poll, float(getattr(settings, "stream_resume_poll_max_seconds", 10.0) or 10.0))
-    idle_limit = float(getattr(settings, "stream_resume_idle_seconds", 300.0) or 300.0)
-
-    async def resume_gen():
-        import json
-
-        cursor = after
-        try:
-            if cursor is None:
-                snapshot = await build_thread_snapshot(
-                    settings=settings, tenant_id=auth.tenant_id, thread=thread
-                )
-                cursor = int((await stream_cursor(settings, auth.tenant_id, thread)) or 0)
-                # The snapshot carries every event so far, so the cursor it hands back
-                # is the next sequence the client should expect — not the last one it
-                # has. Every `id:` on this stream means the same thing, which is what
-                # lets a client hand it straight back as `Last-Event-ID`.
-                yield (
-                    f"id: {cursor}\n"
-                    f"data: {json.dumps({'event': 'snapshot', 'data': snapshot}, default=str)}\n\n"
-                )
-
-            store = get_session_store(settings, tenant_id=auth.tenant_id)
-            pacing = ResumePacing(floor=poll, ceiling=poll_max, idle_limit=idle_limit)
-            # One subscription for the life of the stream. Waiting through a watch
-            # rather than a call per iteration is what keeps this to a single
-            # SUBSCRIBE/UNSUBSCRIBE pair instead of one per poll interval.
-            async with thread_watch(auth.tenant_id, thread) as watch:
-                reader = store.open(thread)
-                while True:
-                    frames, cursor = await drain_session_events(reader, cursor)
-                    for frame_text in frames:
-                        yield frame_text
-                    pacing.observed(bool(frames))
-                    if pacing.exhausted:
-                        break
-                    yield ": keep-alive\n\n"
-                    # Wait for the thread to move rather than sleeping through it. The
-                    # query above runs either way, so a dropped notification costs
-                    # latency and never correctness -- which is what lets the ceiling
-                    # relax rather than disappear.
-                    pacing.waited(await watch.wait(timeout=pacing.timeout))
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            logger.exception("chat resume failed thread=%s", loggable(thread, limit=80))
-            yield error_frame(client_safe_message(exc))
-        yield DONE
-
-    return sse_response(resume_gen())
+    return sse_response(
+        resume_stream_gen(
+            settings=settings,
+            tenant_id=auth.tenant_id,
+            thread=thread,
+            after=after,
+            poll=poll,
+            poll_max=max(poll, float(getattr(settings, "stream_resume_poll_max_seconds", 10.0) or 10.0)),
+            idle_limit=float(getattr(settings, "stream_resume_idle_seconds", 300.0) or 300.0),
+        )
+    )
 
 
 @router.post("/stream")
@@ -953,7 +912,7 @@ async def acquire_session_lease(body: LeaseRequest, request: Request) -> dict[st
     )
     if not result.get("ok"):
         raise HTTPException(status_code=409, detail=result.get("error") or "lease_held")
-    snapshot = await build_thread_snapshot(
+    snapshot = await gather_thread_snapshot(
         settings=request.app.state.settings,
         tenant_id=auth.tenant_id,
         thread=thread,
@@ -972,7 +931,7 @@ async def release_session_lease(body: LeaseReleaseRequest, request: Request) -> 
     result = await release_lease(thread, holder_id=body.holder_id, token=body.token)
     if not result.get("ok"):
         raise HTTPException(status_code=403, detail=result.get("error") or "release_failed")
-    snapshot = await build_thread_snapshot(
+    snapshot = await gather_thread_snapshot(
         settings=request.app.state.settings,
         tenant_id=auth.tenant_id,
         thread=thread,
@@ -1075,7 +1034,7 @@ async def get_session_snapshot(thread_id: str, request: Request) -> dict[str, An
     thread = effective_thread_id(auth.tenant_id, thread_id)
     if thread is None:
         raise HTTPException(status_code=400, detail="invalid_thread_id")
-    return await build_thread_snapshot(
+    return await gather_thread_snapshot(
         settings=request.app.state.settings,
         tenant_id=auth.tenant_id,
         thread=thread,
@@ -1165,7 +1124,7 @@ async def chat_abort(body: AbortRequest, request: Request) -> dict[str, Any]:
         thread_id=thread,
         phase="aborted",
     )
-    snapshot = await build_thread_snapshot(
+    snapshot = await gather_thread_snapshot(
         settings=request.app.state.settings,
         tenant_id=auth.tenant_id,
         thread=thread,
@@ -1353,5 +1312,5 @@ async def chat_compact(body: CompactRequest, request: Request) -> dict[str, Any]
             reason="manual",
         )
     await update_thread_meta(settings=settings, tenant_id=auth.tenant_id, thread_id=thread, phase="idle")
-    snapshot = await build_thread_snapshot(settings=settings, tenant_id=auth.tenant_id, thread=thread)
+    snapshot = await gather_thread_snapshot(settings=settings, tenant_id=auth.tenant_id, thread=thread)
     return {**result, "thread_id": thread, "snapshot": snapshot}

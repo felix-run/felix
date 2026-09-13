@@ -467,7 +467,7 @@ async def test_a_thread_id_cannot_forge_a_chat_log_line(caplog: pytest.LogCaptur
     from felix_api.routes._streaming import stream_cursor
 
     forged = "t-1\nERROR:felix_api.routes.chat:tenant acme authenticated as admin"
-    with caplog.at_level(logging.DEBUG, logger="felix_api.routes.streaming"):
+    with caplog.at_level(logging.DEBUG, logger="felix_api.routes._streaming"):
         # No settings object, so the lookup raises and the except path does the logging.
         assert await stream_cursor(None, "acme", forged) is None
 

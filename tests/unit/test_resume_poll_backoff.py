@@ -145,7 +145,7 @@ async def _record_waits(
     """
     from felix.session.notify import Wake
     from felix_api.app import create_app
-    from felix_api.routes import chat as chat_mod
+    from felix_api.routes import _streaming as streaming_mod
     from httpx import ASGITransport, AsyncClient
 
     slept: list[float] = []
@@ -167,7 +167,7 @@ async def _record_waits(
     async def _watch(_tenant: str, _thread: str):
         yield _Watch()
 
-    monkeypatch.setattr(chat_mod, "thread_watch", _watch)
+    monkeypatch.setattr(streaming_mod, "thread_watch", _watch)
 
     settings = Settings(
         allow_insecure=True,

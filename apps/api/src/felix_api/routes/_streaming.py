@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 import logging
 import math
 import time
@@ -27,13 +26,15 @@ from typing import Any
 
 from felix.durability.fibers import FIBER_TERMINAL_STATUSES
 from felix.logging_setup import loggable
-from felix.session.notify import Wake, thread_watch
+from felix.session.notify import ThreadWatch, Wake, thread_watch
+from felix.session.snapshot import gather_thread_snapshot
 from felix.session.store import get_session_store
-from felix.session.types import GetEventsOpts
+from felix.session.types import GetEventsOpts, Session, SessionEvent
 
-from felix_api.routes._sse import DONE, error_frame
+from felix_api.errors import client_safe_message
+from felix_api.routes._sse import DONE, KEEP_ALIVE, error_frame, frame
 
-logger = logging.getLogger("felix_api.routes.streaming")
+logger = logging.getLogger(__name__)
 
 # Fiber statuses that mean the run will not change again: the fiber store's terminal set,
 # plus the client-side cancel the stream reports itself.
@@ -65,7 +66,7 @@ def next_poll_delay(idle: float, delay: float, *, floor: float, ceiling: float) 
     return min(delay * POLL_BACKOFF_FACTOR, ceiling)
 
 
-def session_event_frame(event: Any, cursor: int) -> str:
+def session_event_frame(event: SessionEvent, cursor: int) -> str:
     """One `session_event` SSE frame.
 
     `id:` is the *next* sequence the client should expect, not the one it just got, so a
@@ -86,7 +87,7 @@ def session_event_frame(event: Any, cursor: int) -> str:
     `id` is spelled the way the snapshot spells it, so a turn keeps one identity whether
     the client got it from a snapshot or from the tail.
     """
-    md = dict(getattr(event, "metadata", None) or {})
+    md = dict(event.metadata or {})
     data: dict[str, Any] = {
         "id": md.get("event_id") or f"seq-{event.seq}",
         "seq": event.seq,
@@ -101,10 +102,10 @@ def session_event_frame(event: Any, cursor: int) -> str:
         data["tool_call_id"] = event.tool_call_id
     if event.tool_calls:
         data["tool_calls"] = event.tool_calls
-    return f"id: {cursor}\ndata: {json.dumps({'event': 'session_event', 'data': data}, default=str)}\n\n"
+    return frame({"event": "session_event", "data": data}, cursor=cursor)
 
 
-async def drain_session_events(reader: Any, cursor: int) -> tuple[list[str], int]:
+async def drain_session_events(reader: Session, cursor: int) -> tuple[list[str], int]:
     """Frames for everything appended since `cursor`, and the cursor after them.
 
     The one place that turns session log rows into `session_event` frames, shared by the
@@ -210,50 +211,64 @@ async def stream_cursor(settings: Any, tenant_id: str, thread: str | None) -> in
         return None
 
 
-async def build_thread_snapshot(
+async def resume_stream_gen(
     *,
     settings: Any,
     tenant_id: str,
     thread: str,
-) -> dict[str, Any]:
-    from felix.session.lease import lease_status
-    from felix.session.snapshot import build_snapshot
-    from felix.session.thread_state import get_thread_meta, load_leaf
-    from felix.session.tree import get_leaf
-    from felix.steer import peek_steer_count
+    after: int | None,
+    poll: float,
+    poll_max: float,
+    idle_limit: float,
+) -> AsyncIterator[str]:
+    """Tail a thread for a client that reattached to it.
 
-    store = get_session_store(settings, tenant_id=tenant_id)
-    # Five reads against four different stores, none of which depends on another. They
-    # ran in series on `GET /chat/sessions/{id}`, on both lease endpoints and on every
-    # cold SSE reconnect -- the reattach path, where latency is the most visible thing
-    # in the product.
-    #
-    # `gather` holds more pool connections at once, which is why it waited for the pool
-    # to become a setting rather than a hardcoded 5 + 10.
-    events, meta, stored_leaf, steer_n, lease = await asyncio.gather(
-        store.open(thread).get_events(),
-        get_thread_meta(settings=settings, tenant_id=tenant_id, thread_id=thread),
-        load_leaf(settings=settings, tenant_id=tenant_id, thread_id=thread),
-        peek_steer_count(tenant_id, thread),
-        lease_status(thread),
-    )
-    # `get_leaf` is synchronous and in-process, so it stays out of the fan-out.
-    leaf = stored_leaf or get_leaf(thread)
-    return build_snapshot(
-        thread_id=thread,
-        events=events,
-        leaf_id=leaf,
-        session_name=meta.get("session_name"),
-        phase=str(meta.get("phase") or "idle"),
-        model_id=meta.get("model_id"),
-        thinking_level=meta.get("thinking_level"),
-        parent_session_id=meta.get("parent_session_id"),
-        labels=dict(meta.get("labels") or {}),
-        queued_steer=[{"placeholder": True}] * steer_n if steer_n else [],
-        revision=int(meta.get("revision") or 0),
-        attached=bool(lease.get("attached")),
-        locked=bool(lease.get("locked")),
-    )
+    Cold reconnect (`after is None`) opens with a `snapshot` frame carrying the transcript;
+    a warm one replays only the session events after that cursor. Both then tail the log,
+    which is shared state, so this works regardless of which replica served the original
+    turn.
+
+    Sibling of `durable_run_gen`, and here for the same reason: it is the same tail over the
+    same log, and the two drifting apart is exactly what this module exists to prevent. It
+    took nothing from the request but seven scalars, so the route above it is now parse and
+    delegate -- which is the shape the durable arm of `POST /chat/stream` already had.
+    """
+    cursor = after
+    try:
+        if cursor is None:
+            snapshot = await gather_thread_snapshot(settings=settings, tenant_id=tenant_id, thread=thread)
+            cursor = int((await stream_cursor(settings, tenant_id, thread)) or 0)
+            # The snapshot carries every event so far, so the cursor it hands back is the
+            # next sequence the client should expect — not the last one it has. Every `id:`
+            # on this stream means the same thing, which is what lets a client hand it
+            # straight back as `Last-Event-ID`.
+            yield frame({"event": "snapshot", "data": snapshot}, cursor=cursor)
+
+        store = get_session_store(settings, tenant_id=tenant_id)
+        pacing = ResumePacing(floor=poll, ceiling=poll_max, idle_limit=idle_limit)
+        # One subscription for the life of the stream. Waiting through a watch rather than
+        # a call per iteration is what keeps this to a single SUBSCRIBE/UNSUBSCRIBE pair
+        # instead of one per poll interval.
+        async with thread_watch(tenant_id, thread) as watch:
+            reader = store.open(thread)
+            while True:
+                frames, cursor = await drain_session_events(reader, cursor)
+                for frame_text in frames:
+                    yield frame_text
+                pacing.observed(bool(frames))
+                if pacing.exhausted:
+                    break
+                yield KEEP_ALIVE
+                # Wait for the thread to move rather than sleeping through it. The query
+                # above runs either way, so a dropped notification costs latency and never
+                # correctness -- which is what lets the ceiling relax rather than disappear.
+                pacing.waited(await watch.wait(timeout=pacing.timeout))
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.exception("chat resume failed thread=%s", loggable(thread, limit=80))
+        yield error_frame(client_safe_message(exc))
+    yield DONE
 
 
 def durable_thread(tenant_id: str, accepted: dict[str, Any]) -> str:
@@ -289,7 +304,9 @@ class DurableTail:
 
     __slots__ = ("_cursor", "_reader", "_thread", "_watch")
 
-    def __init__(self, *, reader: Any, thread: str, cursor: int, watch: Any) -> None:
+    def __init__(
+        self, *, reader: Session | None, thread: str, cursor: int, watch: ThreadWatch | None
+    ) -> None:
         self._reader = reader
         self._thread = thread
         self._cursor = cursor
@@ -387,7 +404,7 @@ async def durable_run_gen(
     from felix.durability.runs import get_durable_run
 
     token = str(accepted.get("resume_token") or "")
-    yield f"data: {json.dumps({'event': 'run_accepted', 'data': accepted}, default=str)}\n\n"
+    yield frame({"event": "run_accepted", "data": accepted})
 
     poll = float(getattr(settings, "stream_resume_poll_seconds", 1.0) or 1.0)
     poll_max = max(poll, float(getattr(settings, "stream_resume_poll_max_seconds", 10.0) or 10.0))
@@ -427,12 +444,10 @@ async def durable_run_gen(
             if status != last_status:
                 last_status = status
                 progressed = True
-                payload = {"event": "run_status", "data": {"status": status, "resume_token": token}}
-                yield f"data: {json.dumps(payload, default=str)}\n\n"
+                yield frame({"event": "run_status", "data": {"status": status, "resume_token": token}})
             if status in RUN_TERMINAL:
                 if status == "completed":
-                    final = {"event": "final", "data": run.get("final") or {}}
-                    yield f"data: {json.dumps(final, default=str)}\n\n"
+                    yield frame({"event": "final", "data": run.get("final") or {}})
                 else:
                     yield error_frame(str(run.get("error") or status), kind="run_error")
                 break
@@ -442,7 +457,7 @@ async def durable_run_gen(
                 yield error_frame(f"run_expired:{token}", kind="run_error")
                 break
             pacing.observed(progressed)
-            yield ": keep-alive\n\n"
+            yield KEEP_ALIVE
             # Wait for the thread to move rather than sleeping through it. The status
             # query above runs either way, so a dropped notification costs latency and
             # never correctness -- the same property the reattach stream relies on.
@@ -450,19 +465,19 @@ async def durable_run_gen(
     yield DONE
 
 
+# What other modules may use. `DurableTail`, `durable_tail`, `durable_thread` and
+# `session_event_frame` are deliberately absent: each is reached only from inside this file,
+# and exporting the implementation of an implementation is how the next helper ends up
+# imported into `openai_compat.py` by accident rather than by decision.
 __all__ = [
     "NOTIFIED_POLL_CEILING_SECONDS",
     "POLL_BACKOFF_FACTOR",
     "POLL_BACKOFF_GRACE_SECONDS",
     "RUN_TERMINAL",
-    "DurableTail",
     "ResumePacing",
-    "build_thread_snapshot",
     "drain_session_events",
     "durable_run_gen",
-    "durable_tail",
-    "durable_thread",
     "next_poll_delay",
-    "session_event_frame",
+    "resume_stream_gen",
     "stream_cursor",
 ]
