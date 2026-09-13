@@ -97,6 +97,11 @@ SCOPE_MEMORY_READ = "memory:read"
 SCOPE_MEMORY_WRITE = "memory:write"
 SCOPE_DOCUMENTS_READ = "documents:read"
 SCOPE_DOCUMENTS_WRITE = "documents:write"
+# Separate from `artifacts:read`, which reads tool output the harness itself spilled.
+# These are caller-uploaded bytes with a caller-driven lifecycle, so the permission to
+# write them is its own grant rather than a side effect of being able to read spill.
+SCOPE_FILES_READ = "files:read"
+SCOPE_FILES_WRITE = "files:write"
 
 __all__ = [
     "SCOPE_APPROVALS_READ",
@@ -107,6 +112,8 @@ __all__ = [
     "SCOPE_DOCUMENTS_WRITE",
     "SCOPE_EVAL_READ",
     "SCOPE_EVAL_WRITE",
+    "SCOPE_FILES_READ",
+    "SCOPE_FILES_WRITE",
     "SCOPE_JOBS_READ",
     "SCOPE_JOBS_WRITE",
     "SCOPE_MANIFESTS_READ",
