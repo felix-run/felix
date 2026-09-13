@@ -590,6 +590,31 @@ Approvals are matched on `(tenant, manifest, tool, sha256(args))` and stored in 
 — never in model-visible state, so the model cannot forge one. Every failure path
 (no request context, store error, waiter timeout) denies.
 
+**What an operator sees, on either channel.** A pending row and the `approval_required` stream
+frame now carry the same story: `rule_id`, `reason` (the rule's `description`, or the finding
+for a command-screening gate), `thread_id`, `tool_call_id`, and `expires_at`. That symmetry
+matters most where there is no choice of channel — a **durable** run's agent is in the worker
+while its stream is served by the API, so no side event can cross and `GET /approvals` is the
+whole channel. It was previously the half that could not say *why* a gate fired.
+
+`reason` and `tool_call_id` are empty on rows written before migration
+`0015_approval_reason_and_call`, and on gates that genuinely have neither — a command-screening
+gate has no rule description, a tool called outside a tool loop has no call id. Treat all of
+them as optional when mirroring the wire.
+
+`thread_id` and `tool_call_id` are **attribution, not ownership**: `create_pending` reuses a
+pending row across threads keyed on the tuple above, so each names whichever call opened the
+row. `GET /approvals?thread_id=…` therefore under-reports rather than over-reports, which is
+the safe direction — a caller asking about one conversation never learns about another's. The
+filter is applied in SQL before `LIMIT`, so a busy tenant cannot hide the thread you asked
+about; `?thread_id=` (empty) means "approvals with no thread" and is distinct from omitting it.
+
+**Three fields sound alike and are not.** `reason` is the *gate's* words, set when the row is
+created and never changed. `decision_note` is the *decider's*, set when someone approves or
+denies. Neither is the denial text the tool returns to the model, which is composed at the call
+site and persisted nowhere. `reason` is truncated at 2048 characters on the way in — it comes
+from a tenant-scoped manifest author, and these rows are not swept by retention.
+
 `command_screening` rules with `decision: require_approval` go through the same flow and
 wait up to `command_screening.approval_ttl_seconds` (default 300).
 

@@ -390,6 +390,49 @@ async def test_listing_approvals_is_empty_before_anything_pauses(boot: Any) -> N
         assert listed.json()["items"] == []
 
 
+async def test_listing_approvals_narrows_to_one_thread_over_http(boot: Any) -> None:
+    """The store filter has to be reachable, or an operator filters a page after the cut.
+
+    This is the route a durable run's operator actually uses: the agent is in the worker and
+    the stream is served by the API, so no `approval_required` frame crosses and polling here
+    is the whole channel. Narrowing client-side instead would drop whatever `limit` had
+    already discarded — the same filter-after-`LIMIT` bug the store avoids, one layer up.
+    """
+    from felix.approvals import store as approvals_store
+
+    async with boot([], env=_keys(reader=["approvals:read"])) as app:
+        mine = await approvals_store.create_pending(
+            app.settings,
+            "default",
+            tool_name="write_file",
+            call_signature="mine",
+            thread_id="default:one",
+            reason="needs a human",
+            tool_call_id="call_a",
+        )
+        await approvals_store.create_pending(
+            app.settings,
+            "default",
+            tool_name="write_file",
+            call_signature="theirs",
+            thread_id="default:two",
+        )
+
+        listed = await app.client.get("/approvals", params={"thread_id": "default:one"}, headers=_as(ADMIN))
+        assert listed.status_code == 200, listed.text
+        items = listed.json()["items"]
+        assert [r["id"] for r in items] == [mine["id"]], (
+            "the route ignored thread_id, or returned another thread's approval"
+        )
+        # And the two fields that made the poll worth reading survive the route.
+        assert items[0]["reason"] == "needs a human"
+        assert items[0]["tool_call_id"] == "call_a"
+
+        # Omitting it still means every thread.
+        everything = await app.client.get("/approvals", headers=_as(ADMIN))
+        assert len(everything.json()["items"]) == 2
+
+
 async def test_an_unknown_approval_is_a_404_on_read_and_on_decide(boot: Any) -> None:
     """Deciding an approval that does not exist must not create one."""
     async with boot([], env=_keys(reader=["approvals:read"])) as app:

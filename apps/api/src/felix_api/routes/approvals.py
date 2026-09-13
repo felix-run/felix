@@ -39,7 +39,20 @@ async def list_approvals(
     request: Request,
     status: str | None = "pending",
     limit: int = Query(default=50, ge=1, le=200),
+    thread_id: str | None = Query(default=None),
 ) -> dict[str, Any]:
+    """Approvals awaiting a decision, newest first.
+
+    `thread_id` narrows to one conversation, and it has to be applied *here* rather than by
+    the caller: filtering a returned page client-side drops whatever the page already cut
+    off, so a busy tenant hides the one thread the caller asked about. The store applies it
+    in SQL before `LIMIT` for exactly that reason.
+
+    `?thread_id=` (empty) is a real value meaning "approvals with no thread" — a gated tool
+    called outside a chat context — and is distinct from omitting the parameter. It
+    under-reports rather than over-reports: `create_pending` reuses a pending row across
+    threads, so the row names whichever thread asked first. See `deploy/GOVERNANCE.md`.
+    """
     from felix.approvals import store as approvals_store
 
     require_mgmt_scopes(request, SCOPE_APPROVALS_READ)
@@ -48,6 +61,7 @@ async def list_approvals(
         tenant_id_from_request(request),
         status=status,
         limit=limit,
+        thread_id=thread_id,
     )
     return {"items": items, "requests": items}
 

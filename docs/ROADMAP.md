@@ -218,6 +218,31 @@ live again. Revisit after the first three land, on evidence, not before.
       move by diffing the relocated blocks against `main` modulo the renames — the only other
       changes are one comment re-attached to the constants it explains (it had drifted onto
       `RUN_TERMINAL`), `json` hoisted to module scope, and a return annotation.
+- [x] **An approval says why it fired and what it blocks** (migration
+      `0015_approval_reason_and_call`) — the half of the entry below that does not need a
+      transport. The two channels were each missing what the other had, and both sides of the
+      wire had already written it down: `builder.py` at the emit ("the `/approvals` row does not
+      carry it either") and `@felix/client`'s `PendingApproval`, which documents `reason` as
+      frame-only and `expiresAt` as poll-only. So the row gains `reason` and `tool_call_id`, the
+      frame gains `expires_at` read off the row, and `list_approvals` takes a `thread_id` filter
+      (under-reporting by construction, since `create_pending` reuses a row across threads). This
+      matters most on the durable path, where the poll is the only channel and was the half that
+      could not say *why*.
+- [ ] **`approvals` is never reclaimed, and `jobs/retention.py` says it is.** That module's
+      docstring lists `approvals` among the tables "bounded by something else ... go with their
+      run or job", but there is no FK, no cascade, and no `delete(Approval)` anywhere — the table
+      is absent from the sweep's `TABLES`. Every gate firing writes a row and nothing removes it.
+      Found by the security review on #245, which also bounded the largest field (`reason`,
+      truncated at 2048 on the way in, since it is tenant-author text). Either sweep decided
+      approvals older than a TTL, or correct the docstring — but not both silently.
+- [ ] **`tool_call_id` is provider input spliced into a `:`-delimited waiter key.**
+      `tools/client_bridge.py:31` builds `f"client:{thread_id}:{tool_call_id}"` with no escaping,
+      and the id comes straight off the wire (`wire/openai_completions.py:246`, no charset or
+      length check) — server-minted for the major vendors, model-influenced for a self-hosted
+      OpenAI-compatible endpoint. An id containing `:` can collide with another call's key inside
+      the same thread. This is the repo's named defect shape: a value validated for one grammar
+      re-serialized into another. Pre-existing; surfaced while tracing the id's provenance for
+      #245, which puts it in a bound parameter and a JSON payload and so crosses nothing itself.
 - [ ] **Approvals reach the durable path.** `side_events` is a process-local
       `dict[str, asyncio.Queue]`, so on a fiber the `approval_required` emit lands in the
       worker's own memory and is unreachable by construction — on precisely the path where a
