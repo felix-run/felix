@@ -14,6 +14,20 @@ from felix.db.session import _use_memory, get_session_factory
 
 now_ms = lambda: int(time.time() * 1000)
 
+# How much of the gate's own words a row will hold.
+#
+# `reason` comes from `ApprovalRule.description` or `CommandRule.reason`, both authored by a
+# *tenant*-scoped manifest author and neither length-capped by the schema (`pattern` beside
+# them is capped at 256). Rows here are never reclaimed -- `approvals` is not in the retention
+# sweep's `TABLES`, has no cascade, and nothing anywhere issues a delete against it -- so an
+# unbounded field copied in on every gate firing grows without a ceiling.
+#
+# Truncating here rather than adding `max_length` to the schema, deliberately: per CLAUDE.md,
+# narrowing what a manifest field accepts retroactively invalidates every manifest already
+# stored with a longer value, and the store is read ahead of bundled YAML. A cap at the
+# persistence boundary bounds the table without refusing a manifest that parses today.
+MAX_REASON_CHARS = 2048
+
 _memory_approvals: dict[tuple[str, str], dict[str, Any]] = {}
 
 
@@ -26,28 +40,13 @@ def _approval_dict(row: Approval | dict[str, Any]) -> dict[str, Any]:
     if isinstance(row, dict):
         data = dict(row)
     else:
-        data = {
-            "id": row.id,
-            "tenant_id": row.tenant_id,
-            "manifest_id": row.manifest_id,
-            "tool_name": row.tool_name,
-            "call_signature": row.call_signature,
-            "args_json": row.args_json,
-            "principal_subj": row.principal_subj,
-            "consumed_at": row.consumed_at,
-            "status": row.status,
-            "created_at": row.created_at,
-            "decided_at": row.decided_at,
-            "decided_by": row.decided_by,
-            "decision_note": row.decision_note,
-            "edited_args_json": row.edited_args_json,
-            "ttl_seconds": row.ttl_seconds,
-            "expires_at": row.expires_at,
-            "rule_id": row.rule_id,
-            "reason": row.reason,
-            "thread_id": row.thread_id,
-            "tool_call_id": row.tool_call_id,
-        }
+        # Read from the table's own columns rather than twenty hand-written `"x": row.x`
+        # pairs. The pairs were exactly the column list, so this is the same dict -- but the
+        # two input shapes failed differently: a column missed here raised `AttributeError`
+        # (loud) while one missed in the in-memory row literal below falls through
+        # `data.get(..., "")` and reads as an empty value (silent). Adding a column is now
+        # one edit rather than two, on the store that gates tool execution.
+        data = {c.key: getattr(row, c.key) for c in Approval.__table__.columns}
     return {
         "id": data["id"],
         "tenant_id": data["tenant_id"],
@@ -268,6 +267,8 @@ async def create_pending(
     approval_id = uuid.uuid4().hex
     ts = now_ms()
     expires_at = ts + ttl_seconds * 1000 if ttl_seconds is not None else None
+    # Bounded on the way in, once, so both arms store the same thing. See MAX_REASON_CHARS.
+    reason = reason[:MAX_REASON_CHARS]
 
     if _use_memory(settings):
         row = {

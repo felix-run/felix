@@ -317,7 +317,7 @@ async def test_the_row_says_why_the_gate_fired_and_what_it_blocks() -> None:
     async with async_run_with_context(req):
         await wrapped.executor.execute(
             {"path": "notes.txt"},
-            ToolInvocationCtx(thread_id="default:t-why", tool_call_id="call_99"),
+            ToolInvocationCtx(tool_call_id="call_99"),
         )
     await helper
 
@@ -336,7 +336,7 @@ async def test_the_row_says_why_the_gate_fired_and_what_it_blocks() -> None:
     assert data["tool_call_id"] == row["tool_call_id"]
     # `.get`, not `[...]`: a missing key should fail this assertion with its message rather
     # than raise KeyError, which reads as a broken test rather than a broken contract.
-    assert data.get("expires_at"), f"the frame carries no deadline: {sorted(data)}"
+    assert isinstance(data.get("expires_at"), int), f"the frame carries no deadline: {sorted(data)}"
     assert data["expires_at"] == row["expires_at"], (
         "the frame and the poll disagree about when the offer expires"
     )
@@ -383,6 +383,7 @@ async def test_a_command_screening_approval_names_its_thread_too() -> None:
         thread_id="default:t6-request",
     )
     seen: list[str] = []
+    polled: list[dict] = []
 
     async def _deny_soon() -> None:
         from felix.approvals.interrupt import signal_decision
@@ -391,6 +392,7 @@ async def test_a_command_screening_approval_names_its_thread_too() -> None:
         pending = await approvals_store.list_approvals(settings, "default", status="pending")
         assert pending, "expected pending approval"
         seen.append(pending[0]["thread_id"])
+        polled.append(dict(pending[0]))
         await approvals_store.decide(settings, "default", pending[0]["id"], decision="denied", decided_by="t")
         await signal_decision(pending[0]["id"], "denied")
 
@@ -409,3 +411,17 @@ async def test_a_command_screening_approval_names_its_thread_too() -> None:
     assert frames and frames[0]["data"]["thread_id"] == "default:t6-ctx", (
         "the two channels disagree about the thread"
     )
+
+    # `reason` / `tool_call_id` / `expires_at` reach the row from *this* site too. Asserted
+    # here because the sibling test covers only `apply_approvals`: with all three broken at
+    # this call site the whole approval-and-screening suite stayed green, so nothing was
+    # watching the path an operator hits by running a screened shell command.
+    #
+    # The field, not `rule_id`: command screening builds `rule_id` as `f"command:{reason}"`,
+    # so an assertion on the id passes with `reason` empty.
+    (row,) = polled
+    assert row["reason"] == "pushes code", "the screening rule's words did not reach the row"
+    assert row["tool_call_id"] == "c1"
+    data = frames[0]["data"]
+    assert isinstance(data.get("expires_at"), int), f"the frame carries no deadline: {sorted(data)}"
+    assert data["expires_at"] == row["expires_at"]

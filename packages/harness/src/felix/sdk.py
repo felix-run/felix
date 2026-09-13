@@ -489,6 +489,7 @@ class FelixClient:
         *,
         status: str | None = "pending",
         limit: int = 50,
+        thread_id: str | None = None,
     ) -> dict[str, Any]:
         """Approvals awaiting a decision.
 
@@ -497,10 +498,18 @@ class FelixClient:
         no such frame to read — polling here is the only way to find what it is
         waiting on. Needs the ``approvals:read`` scope, so a 403 is a narrow key
         rather than an empty queue.
+
+        `thread_id` narrows to one conversation, server-side and before the limit —
+        filtering the returned page here instead would drop whatever the page had
+        already cut off. `""` means "approvals with no thread" and is distinct from
+        omitting it. It under-reports rather than over-reports, because a pending row
+        is reused across threads and names whichever asked first.
         """
         params: dict[str, Any] = {"limit": limit}
         if status is not None:
             params["status"] = status
+        if thread_id is not None:
+            params["thread_id"] = thread_id
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             resp = await client.get(
                 f"{self.base_url.rstrip('/')}/approvals",

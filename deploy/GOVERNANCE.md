@@ -587,8 +587,16 @@ them as optional when mirroring the wire.
 
 `thread_id` and `tool_call_id` are **attribution, not ownership**: `create_pending` reuses a
 pending row across threads keyed on the tuple above, so each names whichever call opened the
-row. Filtering approvals by thread therefore under-reports rather than over-reports, which is
-the safe direction — a caller asking about one conversation never learns about another's.
+row. `GET /approvals?thread_id=…` therefore under-reports rather than over-reports, which is
+the safe direction — a caller asking about one conversation never learns about another's. The
+filter is applied in SQL before `LIMIT`, so a busy tenant cannot hide the thread you asked
+about; `?thread_id=` (empty) means "approvals with no thread" and is distinct from omitting it.
+
+**Three fields sound alike and are not.** `reason` is the *gate's* words, set when the row is
+created and never changed. `decision_note` is the *decider's*, set when someone approves or
+denies. Neither is the denial text the tool returns to the model, which is composed at the call
+site and persisted nowhere. `reason` is truncated at 2048 characters on the way in — it comes
+from a tenant-scoped manifest author, and these rows are not swept by retention.
 
 `command_screening` rules with `decision: require_approval` go through the same flow and
 wait up to `command_screening.approval_ttl_seconds` (default 300).

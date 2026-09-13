@@ -14,6 +14,7 @@ twice. Each of those is a security property rather than a storage detail — `bi
 
 from __future__ import annotations
 
+import itertools
 from typing import Any
 
 import pytest
@@ -77,7 +78,7 @@ async def test_creating_the_same_pending_twice_reuses_the_first(store_settings: 
 @parametrized
 @pytest.mark.asyncio
 async def test_a_decision_is_recorded_with_its_decider(store_settings: Any) -> None:
-    created = await _pending(store_settings)
+    created = await _pending(store_settings, reason="why the gate fired", tool_call_id="call_1")
 
     decided = await approvals.decide(
         store_settings, TENANT, created["id"], decision="denied", decided_by="carol", note="no"
@@ -88,7 +89,16 @@ async def test_a_decision_is_recorded_with_its_decider(store_settings: Any) -> N
     assert decided["decision_note"] == "no"
     assert decided["decided_at"]
 
-    assert (await approvals.get_approval(store_settings, TENANT, created["id"]))["status"] == "denied"
+    # `decision_note` is the decider's words; `reason` is the gate's, set at creation and
+    # never touched by a decision. Two fields one letter apart in meaning, so the round trip
+    # is worth pinning rather than assuming.
+    assert decided["reason"] == "why the gate fired"
+    assert decided["tool_call_id"] == "call_1"
+
+    after = await approvals.get_approval(store_settings, TENANT, created["id"])
+    assert after["status"] == "denied"
+    assert after["reason"] == "why the gate fired"
+    assert after["tool_call_id"] == "call_1"
 
 
 @parametrized
@@ -143,20 +153,101 @@ async def test_listing_narrows_to_one_thread(store_settings: Any) -> None:
 
 @parametrized
 @pytest.mark.asyncio
-async def test_the_filter_is_applied_before_the_limit(store_settings: Any) -> None:
+async def test_the_filter_is_applied_before_the_limit(
+    store_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Filtering after `LIMIT` would let other threads' rows hide this thread's.
 
     `find_approved` already carries a comment about this exact shape — an expired grant
     hiding a live one because the filter ran after the limit. Same trap, different query.
+
+    The clock is pinned and the wanted row is created **first**, because the two arms
+    disagree about tie-breaking and the first version of this test could not fail on
+    Postgres. Written the other way round, the wanted row is newest, so it survives
+    `ORDER BY created_at DESC LIMIT 2` even when the filter runs after the fetch — and the
+    memory arm caught the bug only because its inserts all land in the same millisecond, so
+    a stable sort kept the noise in front. Two arms, one of them passing on the defect and
+    the other catching it by accident of machine speed.
     """
+    clock = itertools.count(1_700_000_000_000, 1000)
+    monkeypatch.setattr(approvals, "now_ms", lambda: next(clock))
+
+    wanted = await _pending(store_settings, call_signature="wanted", thread_id="t:quiet")
     for i in range(5):
         await _pending(store_settings, call_signature=f"noise-{i}", thread_id="t:noisy")
-    wanted = await _pending(store_settings, call_signature="wanted", thread_id="t:quiet")
 
-    # A limit smaller than the noise: if the filter ran in Python after the fetch, the page
-    # would be all `t:noisy` and this would come back empty.
+    # The precondition everything below rests on: the wanted row is off the newest page, so a
+    # filter applied after `LIMIT` has nothing left to return.
+    newest = await approvals.list_approvals(store_settings, TENANT, limit=2)
+    assert [r["call_signature"] for r in newest] == ["noise-4", "noise-3"]
+
     listed = await approvals.list_approvals(store_settings, TENANT, thread_id="t:quiet", limit=2)
-    assert [r["id"] for r in listed] == [wanted["id"]]
+    assert [r["id"] for r in listed] == [wanted["id"]], (
+        "the filter ran after the limit, so a busy tenant hid the thread that was asked for"
+    )
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_a_gate_with_no_ttl_stores_a_null_deadline_not_a_missing_one(store_settings: Any) -> None:
+    """`ApprovalRule.ttl_seconds` defaults to `None`, so this is the *common* manifest shape.
+
+    Every other test here sets a ttl, which left the default untested on both arms. The
+    distinction matters to a client: `expires_at` present-and-null means "this gate set no
+    deadline, fall back to your own default", which is what `@felix/client`'s
+    `DEFAULT_APPROVAL_TTL_MS` exists for. A tidy-up that dropped the key when it was falsy
+    would read as "no information" instead, and would pass every other assertion in this file.
+    """
+    created = await _pending(store_settings, call_signature="no-ttl", ttl_seconds=None)
+
+    assert "expires_at" in created and created["expires_at"] is None
+    assert "ttl_seconds" in created and created["ttl_seconds"] is None
+
+    fetched = await approvals.get_approval(store_settings, TENANT, created["id"])
+    assert fetched is not None
+    assert "expires_at" in fetched and fetched["expires_at"] is None
+
+    # And a null deadline does not quietly expire the grant it belongs to.
+    await _approve(store_settings, created["id"])
+    assert await approvals.find_approved(
+        store_settings,
+        TENANT,
+        manifest_id=MANIFEST,
+        tool_name=TOOL,
+        call_signature="no-ttl",
+    )
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_a_reused_row_keeps_the_call_that_opened_it(store_settings: Any) -> None:
+    """Attribution, not ownership — pinned, because a comment is where this gets lost.
+
+    `create_pending` reuses a pending row keyed on (tenant, manifest, tool, signature), so a
+    second caller with the same arguments gets the first caller's row *and its provenance*.
+    That is what makes the thread filter under-report rather than over-report, and it is why
+    the `approval_required` frame sends each caller's own ids instead of the row's: deriving
+    the frame from the row would emit the first thread's ids into the second thread's stream.
+    """
+    first = await _pending(
+        store_settings,
+        call_signature="shared",
+        reason="first",
+        thread_id="t:one",
+        tool_call_id="call_a",
+    )
+    second = await _pending(
+        store_settings,
+        call_signature="shared",
+        reason="second",
+        thread_id="t:two",
+        tool_call_id="call_b",
+    )
+
+    assert second["id"] == first["id"], "the row was not reused, so this test proves nothing"
+    assert second["reason"] == "first"
+    assert second["tool_call_id"] == "call_a"
+    assert second["thread_id"] == "t:one"
 
 
 @parametrized

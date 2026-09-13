@@ -20,7 +20,12 @@ without it a polled approval floats free of anything on screen.
 cannot disagree about when an offer lapses. Null there means the rule set no `ttl_seconds`,
 which is a real state a client renders from its own default rather than a missing value.
 
-`list_approvals` also takes an optional `thread_id`. It **under-reports by construction**:
+**`GET /approvals?thread_id=…`** narrows to one conversation, applied in SQL before `LIMIT` so a
+busy tenant cannot hide the thread you asked about — filtering a returned page client-side would
+drop whatever the page had already cut off. `?thread_id=` (empty) means "approvals with no thread"
+and is distinct from omitting the parameter. `FelixClient.list_approvals` takes the same argument.
+
+It **under-reports by construction**:
 `create_pending` reuses a pending row keyed on (tenant, manifest, tool, call signature), so
 the row names whichever thread asked first and a second thread blocked on the same reused row
 is not listed under its own id. That is the safe direction — a caller asking about one thread
