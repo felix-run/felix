@@ -122,6 +122,81 @@ async def test_listing_filters_by_status(store_settings: Any) -> None:
 
 @parametrized
 @pytest.mark.asyncio
+async def test_listing_narrows_to_one_thread(store_settings: Any) -> None:
+    """The filter a durable run needs to find what it, and only it, is blocked on."""
+    mine = await _pending(store_settings, call_signature="mine", thread_id="t:one")
+    await _pending(store_settings, call_signature="theirs", thread_id="t:two")
+    await _pending(store_settings, call_signature="loose")  # no thread at all
+
+    listed = await approvals.list_approvals(store_settings, TENANT, thread_id="t:one")
+    assert [r["id"] for r in listed] == [mine["id"]], (
+        "a thread-scoped listing returned another thread's approval, or lost its own"
+    )
+    # `""` is a real value the harness writes -- a gated tool called outside a chat context --
+    # and asking for it must not become "no filter".
+    loose = await approvals.list_approvals(store_settings, TENANT, thread_id="")
+    assert [r["call_signature"] for r in loose] == ["loose"]
+    assert len(await approvals.list_approvals(store_settings, TENANT)) == 3, (
+        "omitting thread_id stopped meaning every thread"
+    )
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_the_filter_is_applied_before_the_limit(store_settings: Any) -> None:
+    """Filtering after `LIMIT` would let other threads' rows hide this thread's.
+
+    `find_approved` already carries a comment about this exact shape — an expired grant
+    hiding a live one because the filter ran after the limit. Same trap, different query.
+    """
+    for i in range(5):
+        await _pending(store_settings, call_signature=f"noise-{i}", thread_id="t:noisy")
+    wanted = await _pending(store_settings, call_signature="wanted", thread_id="t:quiet")
+
+    # A limit smaller than the noise: if the filter ran in Python after the fetch, the page
+    # would be all `t:noisy` and this would come back empty.
+    listed = await approvals.list_approvals(store_settings, TENANT, thread_id="t:quiet", limit=2)
+    assert [r["id"] for r in listed] == [wanted["id"]]
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_why_a_gate_fired_and_what_it_blocks_survive_the_round_trip(store_settings: Any) -> None:
+    """`reason` and `tool_call_id` are what the polled channel was missing.
+
+    Both sides of the wire had written this down: `builder.py` at the emit ("the `/approvals`
+    row does not carry it either") and `@felix/client`'s `PendingApproval.reason`
+    ("**Frame-only** … an approval the poll found has none to show"). An operator who found a
+    waiting approval by polling saw a tool name and a rule id and no statement of why.
+    """
+    created = await _pending(
+        store_settings,
+        call_signature="explained",
+        rule_id="workspace-write",
+        reason="writes outside the workspace need a human",
+        thread_id="t:one",
+        tool_call_id="call_42",
+    )
+    assert created["reason"] == "writes outside the workspace need a human"
+    assert created["tool_call_id"] == "call_42"
+
+    fetched = await approvals.get_approval(store_settings, TENANT, created["id"])
+    assert fetched is not None
+    assert fetched["reason"] == created["reason"], "the reason did not survive the store"
+    assert fetched["tool_call_id"] == "call_42", "the call it blocks did not survive the store"
+
+    (listed,) = await approvals.list_approvals(store_settings, TENANT, thread_id="t:one")
+    assert listed["reason"] == created["reason"]
+    assert listed["tool_call_id"] == "call_42"
+
+    # Historical rows and gates with nothing to say read `""`, not null -- the same choice
+    # `rule_id` and `thread_id` already made.
+    bare = await _pending(store_settings, call_signature="bare")
+    assert bare["reason"] == "" and bare["tool_call_id"] == ""
+
+
+@parametrized
+@pytest.mark.asyncio
 async def test_approvals_do_not_cross_the_tenant_boundary(store_settings: Any) -> None:
     mine = await _pending(store_settings)
     theirs = await _pending(store_settings, tenant_id="other", call_signature="theirs")

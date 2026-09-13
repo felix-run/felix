@@ -44,7 +44,9 @@ def _approval_dict(row: Approval | dict[str, Any]) -> dict[str, Any]:
             "ttl_seconds": row.ttl_seconds,
             "expires_at": row.expires_at,
             "rule_id": row.rule_id,
+            "reason": row.reason,
             "thread_id": row.thread_id,
+            "tool_call_id": row.tool_call_id,
         }
     return {
         "id": data["id"],
@@ -64,7 +66,9 @@ def _approval_dict(row: Approval | dict[str, Any]) -> dict[str, Any]:
         "ttl_seconds": data.get("ttl_seconds"),
         "expires_at": data.get("expires_at"),
         "rule_id": data.get("rule_id", ""),
+        "reason": data.get("reason", ""),
         "thread_id": data.get("thread_id", ""),
+        "tool_call_id": data.get("tool_call_id", ""),
     }
 
 
@@ -74,12 +78,29 @@ async def list_approvals(
     *,
     status: str | None = "pending",
     limit: int = 50,
+    thread_id: str | None = None,
 ) -> list[dict[str, Any]]:
+    """Approvals for a tenant, newest first.
+
+    `thread_id` narrows to one conversation. It **under-reports by construction**:
+    `create_pending` reuses a pending row keyed on (tenant, manifest, tool, call signature),
+    so the row names whichever thread asked first, and a second thread blocked on the same
+    reused row is not listed under its own id. That is the safe direction — a caller asking
+    for one thread never learns about another's — and it is why this is attribution rather
+    than ownership. Widening the reuse key would change grant scope, which is a product
+    decision and not a filter's business.
+
+    The Postgres arm filters in SQL rather than after `LIMIT`: filtering afterwards would
+    let 50 other threads' rows hide this thread's, which is the same shape of bug
+    `find_approved` already carries a comment about.
+    """
     if _use_memory(settings):
         items = [
             _approval_dict(row)
             for (t, _), row in _memory_approvals.items()
-            if t == tenant_id and (status is None or row["status"] == status)
+            if t == tenant_id
+            and (status is None or row["status"] == status)
+            and (thread_id is None or row.get("thread_id", "") == thread_id)
         ]
         items.sort(key=lambda r: r["created_at"], reverse=True)
         return items[:limit]
@@ -94,6 +115,8 @@ async def list_approvals(
         )
         if status is not None:
             stmt = stmt.where(Approval.status == status)
+        if thread_id is not None:
+            stmt = stmt.where(Approval.thread_id == thread_id)
         rows = (await db.scalars(stmt)).all()
         return [_approval_dict(r) for r in rows]
 
@@ -208,7 +231,9 @@ async def create_pending(
     principal_subj: str = "",
     ttl_seconds: int | None = None,
     rule_id: str = "",
+    reason: str = "",
     thread_id: str = "",
+    tool_call_id: str = "",
 ) -> dict[str, Any]:
     # Reuse existing pending for the same signature.
     if _use_memory(settings):
@@ -262,7 +287,9 @@ async def create_pending(
             "ttl_seconds": ttl_seconds,
             "expires_at": expires_at,
             "rule_id": rule_id,
+            "reason": reason,
             "thread_id": thread_id,
+            "tool_call_id": tool_call_id,
         }
         _memory_approvals[(tenant_id, approval_id)] = row
         return _approval_dict(row)
@@ -282,7 +309,9 @@ async def create_pending(
             ttl_seconds=ttl_seconds,
             expires_at=expires_at,
             rule_id=rule_id,
+            reason=reason,
             thread_id=thread_id,
+            tool_call_id=tool_call_id,
         )
         db.add(row)
         await db.commit()

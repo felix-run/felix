@@ -461,7 +461,12 @@ async def _await_approval(
             principal_subj=req.auth.principal_sub,
             rule_id=rule_id,
             ttl_seconds=ttl_seconds,
+            # Same argument as `thread_id` above, for the same reason: the row is a durable
+            # run's only channel, so anything the frame says has to be on the row too or the
+            # poll shows strictly less than the stream.
+            reason=reason,
             thread_id=thread_id or "",
+            tool_call_id=(ctx.tool_call_id if ctx else "") or "",
         )
     except Exception:
         logger.debug("approvals store create_pending failed", exc_info=True)
@@ -479,6 +484,11 @@ async def _await_approval(
             "reason": reason,
             "thread_id": thread_id,
             "tool_call_id": ctx.tool_call_id if ctx else None,
+            # The deadline after which the harness stops waiting and denies. Read off the
+            # row rather than recomputed, so the frame and the poll cannot disagree about
+            # when the offer expires -- and null here means "no rule TTL", which is a real
+            # state the client renders from its own default rather than a missing value.
+            "expires_at": pending_row.get("expires_at"),
         },
     )
     decision = await wait_for_decision(
@@ -753,7 +763,12 @@ def apply_approvals(tools: list[Tool], rules: list[ApprovalRule], manifest_id: s
                             principal_subj=req.auth.principal_sub,
                             rule_id=rule.id,
                             ttl_seconds=rule.ttl_seconds,
+                            # On the row, not only in the frame. `description` is the one
+                            # field in `ApprovalRule` written to be read by a person, and
+                            # the poll -- a durable run's only channel -- could not show it.
+                            reason=rule.description,
                             thread_id=thread_id or "",
+                            tool_call_id=(ctx.tool_call_id if ctx else "") or "",
                         )
                 except Exception:
                     logger.debug("approvals store lookup failed", exc_info=True)
@@ -786,6 +801,10 @@ def apply_approvals(tools: list[Tool], rules: list[ApprovalRule], manifest_id: s
                         "reason": rule.description,
                         "thread_id": thread_id,
                         "tool_call_id": ctx.tool_call_id if ctx else None,
+                        # Off the row, so the frame and the poll cannot disagree about when
+                        # the offer expires. The frame carried no deadline at all, which is
+                        # why `@felix/client` documents `expiresAt` as poll-only.
+                        "expires_at": pending_row.get("expires_at"),
                     },
                 )
                 decision = await wait_for_decision(

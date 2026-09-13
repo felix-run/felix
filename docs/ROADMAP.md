@@ -218,6 +218,16 @@ live again. Revisit after the first three land, on evidence, not before.
       move by diffing the relocated blocks against `main` modulo the renames — the only other
       changes are one comment re-attached to the constants it explains (it had drifted onto
       `RUN_TERMINAL`), `json` hoisted to module scope, and a return annotation.
+- [x] **An approval says why it fired and what it blocks** (migration
+      `0015_approval_reason_and_call`) — the half of the entry below that does not need a
+      transport. The two channels were each missing what the other had, and both sides of the
+      wire had already written it down: `builder.py` at the emit ("the `/approvals` row does not
+      carry it either") and `@felix/client`'s `PendingApproval`, which documents `reason` as
+      frame-only and `expiresAt` as poll-only. So the row gains `reason` and `tool_call_id`, the
+      frame gains `expires_at` read off the row, and `list_approvals` takes a `thread_id` filter
+      (under-reporting by construction, since `create_pending` reuses a row across threads). This
+      matters most on the durable path, where the poll is the only channel and was the half that
+      could not say *why*.
 - [ ] **Approvals reach the durable path.** `side_events` is a process-local
       `dict[str, asyncio.Queue]`, so on a fiber the `approval_required` emit lands in the
       worker's own memory and is unreachable by construction — on precisely the path where a

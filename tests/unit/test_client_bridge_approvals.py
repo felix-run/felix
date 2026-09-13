@@ -260,6 +260,89 @@ async def test_the_pending_row_names_the_thread_that_is_blocked() -> None:
 
 
 @pytest.mark.asyncio
+async def test_the_row_says_why_the_gate_fired_and_what_it_blocks() -> None:
+    """The poll must not be a poorer channel than the frame, because for a durable run it is
+    the only one.
+
+    Two fields the frame carried never reached the row, and both sides of the wire had
+    written that down: `builder.py` at the emit ("the `/approvals` row does not carry it
+    either") and `@felix/client`'s `PendingApproval.reason` ("**Frame-only** … an approval the
+    poll found has none to show"). So an operator who found a waiting approval by polling saw
+    a tool name and a rule id and no statement of why the gate exists — while `description`,
+    the one field in `ApprovalRule` written to be read by a person, sat unread.
+
+    Read *while the call is still blocked*, which is exactly the poll a client makes.
+    """
+    from felix.approvals import store as approvals_store
+    from felix.manifests.builder import apply_approvals
+    from felix.manifests.schema import ApprovalRule
+    from felix.tools.types import define_tool
+
+    async def _echo(args: dict) -> str:
+        return "written"
+
+    wrapped = apply_approvals(
+        [define_tool(name="write_file", description="w", handler=_echo)],
+        [
+            ApprovalRule(
+                id="workspace-write",
+                description="Writes outside the workspace need a human",
+                tools=["write_file"],
+                ttl_seconds=5,
+            )
+        ],
+        "cowork",
+    )[0]
+
+    settings = Settings(allow_insecure=True, auth_mode="none", environment="development")
+    req = RequestContext(
+        settings=settings,
+        auth=AuthContext(tenant_id="default"),
+        manifest_id="cowork",
+        thread_id="default:t-why",
+    )
+    polled: list[dict] = []
+
+    async def _deny_soon() -> None:
+        from felix.approvals.interrupt import signal_decision
+
+        await asyncio.sleep(0.1)
+        pending = await approvals_store.list_approvals(settings, "default", status="pending")
+        assert pending, "expected pending approval"
+        polled.append(dict(pending[0]))
+        await approvals_store.decide(settings, "default", pending[0]["id"], decision="denied", decided_by="t")
+        await signal_decision(pending[0]["id"], "denied")
+
+    helper = asyncio.create_task(_deny_soon())
+    async with async_run_with_context(req):
+        await wrapped.executor.execute(
+            {"path": "notes.txt"},
+            ToolInvocationCtx(thread_id="default:t-why", tool_call_id="call_99"),
+        )
+    await helper
+
+    (row,) = polled
+    assert row["reason"] == "Writes outside the workspace need a human", (
+        "the polled channel still cannot say why the gate fired"
+    )
+    assert row["tool_call_id"] == "call_99", "the polled approval cannot be attached to its call"
+
+    # And the two channels now tell the same story, in both directions: the frame gained the
+    # deadline it never carried, read off the row so they cannot disagree about it.
+    frames = [f for f in await drain("default:t-why") if f["event"] == "approval_required"]
+    assert frames, "the gate emitted no approval_required"
+    data = frames[0]["data"]
+    assert data["reason"] == row["reason"]
+    assert data["tool_call_id"] == row["tool_call_id"]
+    # `.get`, not `[...]`: a missing key should fail this assertion with its message rather
+    # than raise KeyError, which reads as a broken test rather than a broken contract.
+    assert data.get("expires_at"), f"the frame carries no deadline: {sorted(data)}"
+    assert data["expires_at"] == row["expires_at"], (
+        "the frame and the poll disagree about when the offer expires"
+    )
+
+
+@pytest.mark.asyncio
 async def test_a_command_screening_approval_names_its_thread_too() -> None:
     """The other `create_pending` call site: `require_approval` from command screening.
 
