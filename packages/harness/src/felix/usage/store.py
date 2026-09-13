@@ -175,6 +175,43 @@ def _day(ts: int) -> str:
     return datetime.fromtimestamp(ts / 1000, UTC).strftime("%Y-%m-%d")
 
 
+def _summary_item_dict(row: dict[str, Any]) -> dict[str, Any]:
+    """One summary bucket, on the wire.
+
+    Named and spelled out for the same reason every other `_*_dict` here is: it is
+    the only form a client can read the shape from. The response used to be built
+    inline in both arms, so `felix-web`'s payload guard had nothing to compare a
+    client type against and the area could not be guarded at all — the same gap
+    `/documents` had before #213.
+
+    It also gives the two arms one definition instead of two that agree by
+    inspection. They have disagreed before, about the sort order of rows sharing a
+    day.
+    """
+    return {
+        "manifest_id": str(row.get("manifest_id") or ""),
+        "model_id": str(row.get("model_id") or ""),
+        "day": str(row.get("day") or ""),
+        "calls": int(row.get("calls") or 0),
+        "tokens_input": int(row.get("tokens_input") or 0),
+        "tokens_output": int(row.get("tokens_output") or 0),
+        "cache_creation": int(row.get("cache_creation") or 0),
+        "cache_read": int(row.get("cache_read") or 0),
+        # Rounded here rather than by the caller, so both arms and the totals below
+        # agree on the precision a client sees.
+        "cost_usd": round(float(row.get("cost_usd") or 0.0), 8),
+    }
+
+
+def _summary_totals_dict(items: list[dict[str, Any]]) -> dict[str, Any]:
+    """The totals block — the same columns as an item, summed, without the keys that group."""
+    totals: dict[str, Any] = {"calls": sum(i["calls"] for i in items)}
+    for k in _SUMMED_COLUMNS:
+        totals[k] = sum(i[k] for i in items)
+    totals["cost_usd"] = round(float(totals["cost_usd"]), 8)
+    return totals
+
+
 def _summary_memory(
     tenant_id: str, since_ms: int, until_ms: int, manifest_id: str | None
 ) -> list[dict[str, Any]]:
@@ -204,7 +241,7 @@ def _summary_memory(
     # cannot be negated, and Python's sort is stable so the inner order survives the outer.
     rows = sorted(buckets.values(), key=lambda b: (b["manifest_id"], b["model_id"]))
     rows.sort(key=lambda b: b["day"], reverse=True)
-    return rows
+    return [_summary_item_dict(dict(r)) for r in rows]
 
 
 async def _summary_sql(
@@ -235,8 +272,9 @@ async def _summary_sql(
     factory = get_session_factory(settings=settings)
     async with factory() as db:
         rows = (await db.execute(stmt)).mappings().all()
-    # `sum(numeric)` is a Decimal whatever the column's result processor says.
-    return [{**dict(r), "cost_usd": float(r["cost_usd"])} for r in rows]
+    # `sum(numeric)` is a Decimal whatever the column's result processor says;
+    # `_summary_item_dict` is what coerces it, along with every other column.
+    return [_summary_item_dict(dict(r)) for r in rows]
 
 
 async def summary(
@@ -257,14 +295,12 @@ async def summary(
         items = _summary_memory(tenant_id, since_ms, until_ms, manifest_id)
     else:
         items = await _summary_sql(settings, tenant_id, since_ms, until_ms, manifest_id)
-    for item in items:
-        item["cost_usd"] = round(float(item["cost_usd"]), 8)
-    totals = {
-        "calls": sum(i["calls"] for i in items),
-        **{k: sum(i[k] for i in items) for k in _SUMMED_COLUMNS},
+    return {
+        "since_ms": since_ms,
+        "until_ms": until_ms,
+        "items": items,
+        "totals": _summary_totals_dict(items),
     }
-    totals["cost_usd"] = round(float(totals["cost_usd"]), 8)
-    return {"since_ms": since_ms, "until_ms": until_ms, "items": items, "totals": totals}
 
 
 def pending_count() -> int:
