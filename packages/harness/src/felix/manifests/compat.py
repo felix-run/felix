@@ -31,6 +31,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from felix.logging_setup import loggable
+
 logger = logging.getLogger("felix.manifests.compat")
 
 # Path -> why it went, and when. The path is the dotted location in the manifest body,
@@ -58,28 +60,6 @@ logger = logging.getLogger("felix.manifests.compat")
 RETIRED: dict[tuple[str, ...], str] = {
     ("spec", "model", "region"): "removed in 0.3.0 (#125); was declared and read by nothing",
 }
-
-
-# A log line's separator is the newline, and `origin` carries a tenant id.
-#
-# `assert_valid_tenant_id` rejects `:` and `#` — the delimiters *it* cares about — and
-# nothing else, so `acme\nWARNING  all clear` is an accepted tenant id. Interpolated raw,
-# it ends the record and starts a second one that reads like the harness said it. This
-# repo already names the rule: validating a value for one grammar does not validate it for
-# the next, and a value crossing into a log line must be re-validated against *that*
-# grammar. Flagged by CodeQL on first review of this module, and reproduced before fixing.
-#
-# Escaped rather than rejected: the point of the message is to name an unserviceable row,
-# and refusing to log because the name is strange loses exactly the information the
-# operator needs. Truncated too, since `origin` is attacker-influenced and a log line is
-# not a place to put an unbounded string.
-_MAX_LOGGED = 200
-
-
-def one_line(value: str) -> str:
-    """`value` with control characters escaped, safe to interpolate into one log record."""
-    text = "".join(ch if ch.isprintable() else repr(ch)[1:-1] for ch in str(value))
-    return text if len(text) <= _MAX_LOGGED else text[:_MAX_LOGGED] + "…"
 
 
 def _parent_of(root: dict[str, Any], path: tuple[str, ...]) -> dict[str, Any] | None:
@@ -132,6 +112,17 @@ def drop_retired(raw: Any) -> tuple[Any, list[tuple[str, ...]]]:
     return result, dropped
 
 
+# `origin` names the stored manifest that failed — a tenant id and a manifest name — so it
+# is caller-influenced, and a log line's separator is the newline. Two doors have since been
+# shut in front of this (#234 charset-bound the tenant id at every inbound door, and the text
+# formatter escapes the finished message), and neither is the reason this escapes: validating
+# a value for one grammar does not validate it for the next, and `loggable` is where this repo
+# re-validates for the log-line one. Flagged by CodeQL on first review of this module, and
+# reproduced before fixing.
+#
+# Escaped rather than rejected: the point of the message is to name an unserviceable row, and
+# refusing to log because the name is strange loses exactly what the operator needs. `loggable`
+# bounds the length too — a log line is not a place to put an unbounded string.
 def log_dropped(dropped: list[tuple[str, ...]], *, origin: str) -> None:
     """Say it once per load, naming the manifest — silence here would be the same bug.
 
@@ -145,7 +136,7 @@ def log_dropped(dropped: list[tuple[str, ...]], *, origin: str) -> None:
     """
     if not dropped:
         return
-    # Every value interpolated into the record goes through `one_line`, including this
+    # Every value interpolated into the record goes through `loggable`, including this
     # one, which is drawn from `RETIRED` rather than from the manifest. Two reasons, and
     # the second is the one that will actually happen:
     #
@@ -158,13 +149,13 @@ def log_dropped(dropped: list[tuple[str, ...]], *, origin: str) -> None:
     logger.warning(
         "stored manifest %s carries fields the schema has retired (%s); they were ignored. "
         "Delete them from the manifest and re-save it to clear this.",
-        one_line(origin),
-        # Escaped per entry rather than after the join: `one_line` also truncates, and
+        loggable(origin),
+        # Escaped per entry rather than after the join: `loggable` also truncates, and
         # capping the joined string would drop the tail of the field list — which is the
         # actionable half of the message. Each entry is short; the list length is bounded
         # by `RETIRED`, which is a source constant rather than anything a caller supplies.
-        ", ".join(one_line(f"{'.'.join(path)} — {RETIRED[path]}") for path in dropped),
+        ", ".join(loggable(f"{'.'.join(path)} — {RETIRED[path]}") for path in dropped),
     )
 
 
-__all__ = ["RETIRED", "drop_retired", "log_dropped", "one_line"]
+__all__ = ["RETIRED", "drop_retired", "log_dropped"]

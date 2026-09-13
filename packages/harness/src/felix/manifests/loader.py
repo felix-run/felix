@@ -9,7 +9,8 @@ from typing import Any
 from pydantic import ValidationError as PydanticValidationError
 from ruamel.yaml import YAML
 
-from felix.manifests.compat import drop_retired, log_dropped, one_line
+from felix.logging_setup import loggable
+from felix.manifests.compat import drop_retired, log_dropped
 from felix.manifests.schema import Manifest, assert_valid_manifest_name
 
 _yaml = YAML(typ="safe")
@@ -96,7 +97,7 @@ def parse_stored_manifest(raw: Any, *, origin: str) -> Manifest:
         # `spec.model.region: Extra inputs are not permitted` says nothing about *which*
         # stored manifest is unserviceable, and the operator's next question is always
         # which one. `parse_manifest` cannot say — only the caller knows the row.
-        raise ManifestParseError(f"stored manifest {one_line(origin)}: {exc}") from exc
+        raise ManifestParseError(f"stored manifest {loggable(origin)}: {exc}") from exc
 
 
 def load_manifest_data(data: str | bytes, *, source: str = "inline") -> Manifest:

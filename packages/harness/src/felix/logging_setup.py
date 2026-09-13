@@ -10,6 +10,7 @@ together.
 
 from __future__ import annotations
 
+import copy
 import logging
 import uuid
 from contextvars import ContextVar
@@ -125,41 +126,6 @@ def configure_logging(settings: Any) -> None:
     root.addHandler(handler)
 
 
-def _build_formatter(settings: Any) -> logging.Formatter:
-    """`FELIX_LOG_FORMAT`: JSON so logs are queryable, text so a person can read them,
-    `auto` picks JSON in production."""
-    wanted = str(getattr(settings, "log_format", "auto") or "auto")
-    if wanted == "auto":
-        wanted = "json" if str(getattr(settings, "environment", "development")) == "production" else "text"
-    if wanted == "json":
-        return _json_formatter()
-    return logging.Formatter(
-        "%(asctime)s %(levelname)-7s [%(request_id)s %(tenant_id)s %(trace_id)s] %(name)s: %(message)s",
-        datefmt="%H:%M:%S",
-    )
-
-
-def _json_formatter() -> logging.Formatter:
-    import json
-
-    class _Json(logging.Formatter):
-        def format(self, record: logging.LogRecord) -> str:
-            payload = {
-                "ts": self.formatTime(record, "%Y-%m-%dT%H:%M:%S%z"),
-                "level": record.levelname,
-                "logger": record.name,
-                "request_id": getattr(record, "request_id", "-"),
-                "tenant_id": getattr(record, "tenant_id", "-"),
-                "trace_id": getattr(record, "trace_id", "-"),
-                "message": record.getMessage(),
-            }
-            if record.exc_info:
-                payload["exception"] = self.formatException(record.exc_info)
-            return json.dumps(payload, default=str)
-
-    return _Json()
-
-
 # Control characters, escaped rather than dropped. `\t`, `\n` and `\r` get their
 # familiar spellings; everything else in the C0 range plus DEL becomes `\xNN`.
 _LOG_ESCAPES: dict[int, str] = {c: f"\\x{c:02x}" for c in range(0x20)} | {
@@ -170,27 +136,119 @@ _LOG_ESCAPES: dict[int, str] = {c: f"\\x{c:02x}" for c in range(0x20)} | {
 }
 
 
-def loggable(value: object, *, limit: int = 200) -> str:
-    """Untrusted text, made safe to interpolate into a log line.
+def _escape(text: str) -> str:
+    """`text` with every character that could end a log line replaced by its escape.
 
-    A newline in a logged value forges a log entry. That is worth more than it sounds
-    where the forged line can be a *refusal* or an error: an attacker who can write
-    "auth failed for tenant X" into the log makes the trail argue for something that
-    never happened, and the trail is what an incident is reconstructed from.
-
-    Control characters are escaped rather than removed, so the value stays readable and
-    a deliberate injection attempt is visible as `\\n` in the output instead of silently
-    vanishing. Truncation is marked for the same reason -- a log line that was cut
-    should not look like one that was short.
-
-    `limit` is generous by default because the usual callers are gateway response
-    bodies, where the content is the reason for logging at all. Pass something small
-    for an identifier, where anything long is already not an identifier.
+    Two passes: the C0 range is the common case and worth one C-level `translate`, and
+    `str.isprintable()` then names exactly what the table cannot cover -- U+0085, U+2028
+    and U+2029, which end a line for a reader the table never considered, and the bidi
+    overrides, which reorder a record's visible text without changing a byte of it. The
+    per-character pass runs only when that check says something was left behind.
     """
-    escaped = str(value).translate(_LOG_ESCAPES)
+    escaped = text.translate(_LOG_ESCAPES)
+    if escaped.isprintable():
+        return escaped
+    return "".join(ch if ch.isprintable() else ch.encode("unicode_escape").decode("ascii") for ch in escaped)
+
+
+def loggable(value: object, *, limit: int = 200) -> str:
+    """Untrusted text, made safe to interpolate into a log line. See `deploy/GOVERNANCE.md`.
+
+    Control characters are escaped rather than removed, so a deliberate injection attempt
+    stays visible as `\\n` instead of silently vanishing, and truncation is marked for the
+    same reason -- a line that was cut should not look like one that was short.
+
+    `limit` is generous by default because the usual callers are gateway response bodies,
+    where the content is the reason for logging at all. Pass something small for an
+    identifier, where anything long is already not an identifier.
+
+    `_TextFormatter` escapes too, so this is no longer the only thing standing between a
+    newline and a forged record -- but the bound lives here and nowhere else, because a
+    formatter sees a finished record and truncating there would cut the record.
+    """
+    escaped = _escape(str(value))
     if len(escaped) <= limit:
         return escaped or "<empty>"
     return escaped[:limit] + f"…(+{len(escaped) - limit})"
+
+
+class _TextFormatter(logging.Formatter):
+    """Text output, with the caller's message escaped before it is rendered.
+
+    A newline reaching `%(message)s` splits one record into two, and the second is
+    attacker-written; `deploy/GOVERNANCE.md` has the threat model. Escaping here rather
+    than at each call site is what makes that structural instead of a list to maintain.
+
+    Four decisions a maintainer cannot recover from the code:
+
+    * **Not a `logging.Filter`,** though the docs invite mutating records there and one
+      filter would cover every handler. A record is shared by all of them, so escaping
+      before the format is chosen corrupts a JSON handler's output to fix a text
+      handler's bug -- and JSON was never exposed, since `json.dumps` escapes the
+      separator for a value. The `copy.copy` is that argument at smaller scale: `format()`
+      may not alter a record the next handler has yet to read. `tracing.py` really does
+      attach a second handler to the root logger, so this is not hypothetical.
+    * **Not `formatMessage()`,** which is shorter and is what CPython's own `format()`
+      calls, but appears in no version of the logging docs. Only documented API is used
+      here: `LogRecord.getMessage()`, the `msg`/`args` attributes, and `Formatter.format()`.
+    * **`args` is cleared** because the copy already carries the merged message, and
+      leaving them would re-apply `%` to attacker-influenced text.
+    * **`exc_text` is not escaped**, so tracebacks stay multi-line and readable. That is a
+      real hole and not a closed one: an exception's own `str` is appended after this
+      message and lands at column 0, so a newline in it still forges a record-shaped line.
+      Roughly thirty `exc_info=True` call sites can carry caller-influenced text into it.
+      `loggable()` on the value *before* it reaches the exception is the mitigation today.
+
+    Two costs, both accepted: the `exc_text` cache lands on the copy, so a record carrying
+    an exception formats its traceback once per handler rather than once; and a
+    deliberately multi-line message is flattened with no opt-out -- nothing logs one today,
+    but a future `logger.debug("compiled:\\n%s", yaml)` will not render as its author expects.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        safe = copy.copy(record)
+        safe.msg = _escape(record.getMessage())
+        safe.args = None
+        return super().format(safe)
+
+
+class _JsonFormatter(logging.Formatter):
+    """One JSON object per record, so logs are queryable.
+
+    Never had the text format's injection problem: the message is a *value* here, and
+    `json.dumps` escapes the separator on its way in. Escaping again would double every
+    backslash an operator reads.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        import json
+
+        payload = {
+            "ts": self.formatTime(record, "%Y-%m-%dT%H:%M:%S%z"),
+            "level": record.levelname,
+            "logger": record.name,
+            "request_id": getattr(record, "request_id", "-"),
+            "tenant_id": getattr(record, "tenant_id", "-"),
+            "trace_id": getattr(record, "trace_id", "-"),
+            "message": record.getMessage(),
+        }
+        if record.exc_info:
+            payload["exception"] = self.formatException(record.exc_info)
+        return json.dumps(payload, default=str)
+
+
+def _build_formatter(settings: Any) -> logging.Formatter:
+    """`FELIX_LOG_FORMAT`: JSON so logs are queryable, text so a person can read them,
+    `auto` picks JSON in production."""
+    wanted = str(getattr(settings, "log_format", "auto") or "auto")
+    if wanted == "auto":
+        wanted = "json" if str(getattr(settings, "environment", "development")) == "production" else "text"
+    if wanted == "json":
+        return _JsonFormatter()
+    return _TextFormatter(
+        "%(asctime)s %(levelname)-7s [%(request_id)s %(tenant_id)s %(trace_id)s] %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
 
 
 __all__ = [

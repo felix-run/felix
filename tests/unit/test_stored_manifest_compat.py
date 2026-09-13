@@ -297,26 +297,6 @@ def test_the_parse_failure_message_is_one_line_too() -> None:
     assert "\n" not in str(exc.value)
 
 
-@pytest.mark.parametrize(
-    ("raw", "expected"),
-    [
-        ("plain/quick v2", "plain/quick v2"),
-        ("a\nb", "a\\nb"),
-        ("a\rb", "a\\rb"),
-        ("a\tb", "a\\tb"),
-        ("a\u2028b", "a\\u2028b"),  # a line separator a naive \n filter misses
-        ("a\x00b", "a\\x00b"),
-    ],
-)
-def test_one_line_escapes_every_shape_of_line_break(raw: str, expected: str) -> None:
-    assert compat.one_line(raw) == expected
-
-
-def test_one_line_bounds_an_attacker_influenced_string() -> None:
-    """A log line is not a place to put an unbounded value."""
-    assert len(compat.one_line("x" * 5000)) < 250
-
-
 def test_a_multi_line_retirement_reason_cannot_split_the_record(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -327,7 +307,7 @@ def test_a_multi_line_retirement_reason_cannot_split_the_record(
     hostile tenant id would. CodeQL flagged the argument for its own reason — `drop_retired`
     returns `(cleaned, dropped)`, so taint analysis treats the whole tuple as manifest-
     derived — and the honest answer to both is the same one rule: everything interpolated
-    into a log record goes through `one_line`.
+    into a log record goes through `loggable`.
     """
     monkeypatch.setitem(RETIRED, ("spec", "session", "gone"), "removed in 9.9.9\nWARNING  forged: all clear")
     body = _body()
@@ -344,7 +324,7 @@ def test_a_multi_line_retirement_reason_cannot_split_the_record(
 def test_every_retired_field_is_named_however_many_there_are(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Escaping per entry rather than after the join, because `one_line` truncates.
+    """Escaping per entry rather than after the join, because `loggable` truncates.
 
     Capping the joined string would drop the tail of the field list — the actionable half
     of the message, and the half an operator needs to know what to delete.
