@@ -3,18 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
-import math
-import time
-from collections.abc import AsyncIterator
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from felix.context import AuthContext, RequestContext, async_run_with_context, get_context, try_get_context
-from felix.durability.fibers import FIBER_TERMINAL_STATUSES
 from felix.governance.inbound import INBOUND_SCREENED_EXTRA
 from felix.idempotency import (
     IdempotencyConflict,
@@ -28,7 +23,7 @@ from felix.logging_setup import loggable
 from felix.patterns.model import ModelGatewayError
 from felix.patterns.types import ChatMessage, InvokeInput
 from felix.runtime import build_tenant_agent, prepare_tenant_invoke, resolve_tenant_manifest
-from felix.session.notify import Wake, thread_watch
+from felix.session.notify import thread_watch
 from felix.session.store import get_session_store
 from felix.session.tree import fork_thread, get_leaf, rewind_to
 from felix.session.types import GetEventsOpts
@@ -45,6 +40,13 @@ from felix_api.routes._sse import (
     is_resume_point,
     sse_response,
     with_heartbeat,
+)
+from felix_api.routes._streaming import (
+    ResumePacing,
+    build_thread_snapshot,
+    drain_session_events,
+    durable_run_gen,
+    stream_cursor,
 )
 from felix_api.threads import effective_thread_id
 
@@ -462,202 +464,6 @@ async def chat_run(resume_token: str, request: Request) -> dict[str, Any]:
     return row
 
 
-def _durable_thread(tenant_id: str, accepted: dict[str, Any]) -> str:
-    """The thread a durable run writes its transcript to, or "" if it cannot be derived.
-
-    A run started without a `thread_id` is not a run without a thread: the fiber mints
-    `{tenant}:fiber:{id}` and writes there just the same, so deriving the same id is what
-    lets an anonymous durable run report progress at all.
-    """
-    from felix.durability.fibers import fiber_thread_id
-
-    thread = str(accepted.get("thread_id") or "")
-    if thread:
-        return thread
-    fiber_id = str(accepted.get("fiber_id") or accepted.get("resume_token") or "")
-    return fiber_thread_id(tenant_id, fiber_id) if fiber_id else ""
-
-
-class _DurableTail:
-    """The session log a durable run appends to — or a stand-in when there is none.
-
-    "Is there a tail?" was answered in four places: a two-element return whose
-    "both are None" invariant no type could state, an `is not None` branch in the loop, a
-    try/except-degrade inside the loop body, and a null watch class beside it. The loop
-    should ask for frames and for a wait, and never learn the answer — so the null case
-    lives here, once, and the protocol loop reads as protocol.
-
-    The reader is opened once rather than per iteration, which would put a store
-    construction on the hot path of every poll. It owns the cursor for the same reason
-    `_drain_session_events` returns one: two call sites keeping a loop-local in sync is
-    how a tail starts replaying or skipping.
-    """
-
-    __slots__ = ("_cursor", "_reader", "_thread", "_watch")
-
-    def __init__(self, *, reader: Any, thread: str, cursor: int, watch: Any) -> None:
-        self._reader = reader
-        self._thread = thread
-        self._cursor = cursor
-        self._watch = watch
-
-    async def drain(self) -> list[str]:
-        """Frames for everything appended since the last drain. Never raises.
-
-        A read that fails degrades to status-only for that iteration rather than failing
-        the run stream: the answer still arrives on `final`, which is all this endpoint
-        promised before. The cursor is untouched on failure, so the next poll re-reads
-        the same range instead of skipping it.
-        """
-        if self._reader is None:
-            return []
-        try:
-            frames, self._cursor = await _drain_session_events(self._reader, self._cursor)
-        except Exception:
-            logger.debug("durable tail read failed for %s", loggable(self._thread, limit=80), exc_info=True)
-            return []
-        return frames
-
-    async def wait(self, *, timeout: float) -> Wake:
-        """Wait for the thread to move, or just wait, when there is no thread to watch."""
-        if self._watch is None:
-            await asyncio.sleep(timeout)
-            return Wake(woken=False, by_notification=False)
-        return await self._watch.wait(timeout=timeout)
-
-
-@contextlib.asynccontextmanager
-async def _durable_tail(
-    settings: Any, tenant_id: str, accepted: dict[str, Any], from_seq: int | None
-) -> AsyncIterator[_DurableTail]:
-    """Open the tail for a durable run, and hold its watch for the life of the stream.
-
-    `from_seq` of None means the caller could not read the thread's head, which is not the
-    same as zero: tailing from zero would re-emit the thread's entire prior transcript as
-    if this run had produced it. There is no bound on that — `GetEventsOpts` has no default
-    limit — so a client appending the frames would duplicate the whole conversation. Not
-    knowing where to start is a reason not to tail, and the run still reports status and
-    its answer.
-
-    A watch is opened only when there is something to watch. Subscribing to a channel
-    nothing can publish to would hold a refcount on the shared pub/sub connection for the
-    life of the stream *and* report `by_notification=True`, telling the pacing it is safe
-    to stretch its interval on a stream that can never be woken.
-    """
-    idle = _DurableTail(reader=None, thread="", cursor=0, watch=None)
-    thread = _durable_thread(tenant_id, accepted) if from_seq is not None else ""
-    if not thread:
-        yield idle
-        return
-    try:
-        reader = get_session_store(settings, tenant_id=tenant_id).open(thread)
-    except Exception:
-        logger.debug("durable tail unavailable for %s", loggable(thread, limit=80), exc_info=True)
-        yield idle
-        return
-    async with thread_watch(tenant_id, thread) as watch:
-        yield _DurableTail(reader=reader, thread=thread, cursor=int(from_seq or 0), watch=watch)
-
-
-async def _durable_run_gen(
-    *, settings: Any, tenant_id: str, accepted: dict[str, Any], from_seq: int | None = None
-):
-    """Stream a durable run's progress instead of pretending it is synchronous.
-
-    `POST /chat` honours `spec.execution.mode: durable` and returns 202 with a
-    `resume_token`; this endpoint did not mention it at all, so a manifest that asked
-    for durable execution got it on one route and was silently ignored on the other.
-
-    Streaming the run rather than returning 202 keeps the SSE contract a caller of this
-    endpoint already has, and it delivers what durable is actually for: a disconnect
-    here tears down the *poll*, not the run. That is the opposite of the transient
-    path, where a hung-up client deliberately kills the run so it stops burning tokens.
-
-    The first frame carries the `resume_token`, so a client that drops before the run
-    finishes can come back to `GET /chat/runs/{token}` rather than starting over.
-
-    **What the run is doing, not just that it is running.** The fiber invokes the agent
-    through `invoke`, which runs the loop with `emit_events=False` — the deltas and the
-    `on_tool_start`/`on_tool_end` pairs are dropped at the source, so there is no display
-    event stream in the worker to forward and no transport that could carry one. What the
-    fiber *does* produce is the session log: `_append_produced` writes each assistant turn
-    and its tool results as they land, outside every `emit_events` guard. So this tails the
-    log, exactly as `GET /chat/stream/{thread_id}` does, through `_drain_session_events`.
-    Shared state and one notification channel, no second delivery path for data already
-    durably written.
-
-    The consequence to know is that only *completed* messages are persisted, never chunks:
-    a durable run yields tool cards and whole assistant messages, and never token deltas.
-    That is the right trade for the mode whose point is that nobody is watching.
-    """
-    import json
-
-    from felix.durability.runs import get_durable_run
-
-    token = str(accepted.get("resume_token") or "")
-    yield f"data: {json.dumps({'event': 'run_accepted', 'data': accepted}, default=str)}\n\n"
-
-    poll = float(getattr(settings, "stream_resume_poll_seconds", 1.0) or 1.0)
-    poll_max = max(poll, float(getattr(settings, "stream_resume_poll_max_seconds", 10.0) or 10.0))
-    # The run's own TTL bounds this, not the resume stream's idle limit: a durable run
-    # that outlives its expiry is finished either way, and holding the connection past
-    # that point would keep a worker busy for a result that can no longer arrive. So the
-    # pacing here is asked for its interval and never for `exhausted` — hence the
-    # infinite idle limit rather than a second set of backoff rules.
-    deadline = float(accepted.get("expires_at") or 0) or None
-
-    # `notified_ceiling=poll_max`, deliberately, and this is the one place that needs to
-    # say why. The long notified ceiling exists because a stream whose only source is the
-    # session log polls as a safety net once wakes are being delivered. This loop polls a
-    # *second* resource — the durable run row — and the fiber's status write publishes no
-    # thread notification, so a wake being delivered says nothing about it. Left at the
-    # default, a run that appends nothing for a few minutes (queued, a long tool call, a
-    # fiber that died before its first append) would report its status up to a minute late.
-    pacing = _ResumePacing(floor=poll, ceiling=poll_max, idle_limit=math.inf, notified_ceiling=poll_max)
-    last_status = ""
-
-    async with _durable_tail(settings, tenant_id, accepted, from_seq) as tail:
-        while True:
-            run = await get_durable_run(settings, tenant_id, token)
-            if run is None:
-                yield error_frame(f"run_not_found:{token}", kind="run_error")
-                break
-            status = str(run.get("status") or "")
-            # Drained *after* the status read and *before* the terminal check, so a run
-            # that completed between two iterations still emits the turns it appended
-            # before it flipped the row. The fiber writes the transcript and then saves
-            # `completed`, so this ordering is what makes "every event, then `final`" true
-            # rather than usually true.
-            frames = await tail.drain()
-            for frame_text in frames:
-                yield frame_text
-            progressed = bool(frames)
-            if status != last_status:
-                last_status = status
-                progressed = True
-                payload = {"event": "run_status", "data": {"status": status, "resume_token": token}}
-                yield f"data: {json.dumps(payload, default=str)}\n\n"
-            if status in _RUN_TERMINAL:
-                if status == "completed":
-                    final = {"event": "final", "data": run.get("final") or {}}
-                    yield f"data: {json.dumps(final, default=str)}\n\n"
-                else:
-                    yield error_frame(str(run.get("error") or status), kind="run_error")
-                break
-            if deadline and time.time() * 1000 >= deadline:
-                # Says which it was. "expired" and "still running" look identical to a
-                # client that only sees the stream close.
-                yield error_frame(f"run_expired:{token}", kind="run_error")
-                break
-            pacing.observed(progressed)
-            yield ": keep-alive\n\n"
-            # Wait for the thread to move rather than sleeping through it. The status
-            # query above runs either way, so a dropped notification costs latency and
-            # never correctness -- the same property the reattach stream relies on.
-            pacing.waited(await tail.wait(timeout=pacing.timeout))
-    yield DONE
-
-
 @router.get("/stream/{thread_id}")
 async def chat_stream_resume(request: Request, thread_id: str) -> StreamingResponse:
     """Reattach to a thread after a dropped connection or a page refresh.
@@ -695,10 +501,10 @@ async def chat_stream_resume(request: Request, thread_id: str) -> StreamingRespo
         cursor = after
         try:
             if cursor is None:
-                snapshot = await _build_thread_snapshot(
+                snapshot = await build_thread_snapshot(
                     settings=settings, tenant_id=auth.tenant_id, thread=thread
                 )
-                cursor = int((await _stream_cursor(settings, auth.tenant_id, thread)) or 0)
+                cursor = int((await stream_cursor(settings, auth.tenant_id, thread)) or 0)
                 # The snapshot carries every event so far, so the cursor it hands back
                 # is the next sequence the client should expect — not the last one it
                 # has. Every `id:` on this stream means the same thing, which is what
@@ -709,14 +515,14 @@ async def chat_stream_resume(request: Request, thread_id: str) -> StreamingRespo
                 )
 
             store = get_session_store(settings, tenant_id=auth.tenant_id)
-            pacing = _ResumePacing(floor=poll, ceiling=poll_max, idle_limit=idle_limit)
+            pacing = ResumePacing(floor=poll, ceiling=poll_max, idle_limit=idle_limit)
             # One subscription for the life of the stream. Waiting through a watch
             # rather than a call per iteration is what keeps this to a single
             # SUBSCRIBE/UNSUBSCRIBE pair instead of one per poll interval.
             async with thread_watch(auth.tenant_id, thread) as watch:
                 reader = store.open(thread)
                 while True:
-                    frames, cursor = await _drain_session_events(reader, cursor)
+                    frames, cursor = await drain_session_events(reader, cursor)
                     for frame_text in frames:
                         yield frame_text
                     pacing.observed(bool(frames))
@@ -790,13 +596,13 @@ async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
         # and start appending the moment the row lands, and a cursor read after that has
         # already skipped the turns the stream exists to report.
         #
-        # `if thread else 0` rather than letting `_stream_cursor` answer for both: it
+        # `if thread else 0` rather than letting `stream_cursor` answer for both: it
         # returns None for "no thread" *and* for "the head read failed", and those want
         # opposite handling. A run with no thread of its own gets a freshly minted fiber
         # thread, which is empty, so 0 is exactly right; a failed read means the start
-        # point is unknown, and `_durable_tail` declines to tail rather than replaying the
+        # point is unknown, and `durable_tail` declines to tail rather than replaying the
         # thread's entire history as this run's progress.
-        from_seq = await _stream_cursor(settings, auth.tenant_id, thread) if thread else 0
+        from_seq = await stream_cursor(settings, auth.tenant_id, thread) if thread else 0
         accepted = await start_durable_chat(
             settings,
             auth.tenant_id,
@@ -808,7 +614,7 @@ async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
             pin=pin_fields(resolved.manifest, version=resolved.version),
         )
         return sse_response(
-            _durable_run_gen(
+            durable_run_gen(
                 settings=settings,
                 tenant_id=auth.tenant_id,
                 accepted=accepted,
@@ -863,7 +669,7 @@ async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
                         # frame is where an append may just have happened. Consecutive
                         # structural frames with nothing appended between them return
                         # the same number, which is correct and costs one small query.
-                        fresh = await _stream_cursor(settings, auth.tenant_id, thread)
+                        fresh = await stream_cursor(settings, auth.tenant_id, thread)
                         if fresh is not None:
                             cursor = fresh
                         yield frame(payload, cursor=cursor)
@@ -1129,229 +935,6 @@ async def chat_history_delete(thread_id: str, request: Request) -> dict[str, str
     return {"status": "deleted", "thread_id": thread}
 
 
-# How long a stream stays at the floor before the poll starts decaying, and how
-# sharply it decays after that.
-#
-# A plain exponential from the first empty round would be wrong here. Backing off costs
-# first-event latency -- a thread that goes quiet and then produces makes the client
-# wait up to the current delay -- and the moment a user is most likely to act is right
-# after they reattach. So the first half-minute stays at the floor, and only a stream
-# that has been silent past that decays. The load this finding is about comes from tabs
-# left open for minutes, not from the first few seconds of one.
-# Fiber statuses that mean the run will not change again.
-# The fiber store's terminal set, plus the client-side cancel the stream reports itself.
-_RUN_TERMINAL = FIBER_TERMINAL_STATUSES | {"cancelled"}
-
-# The ceiling a stream may decay to once notifications are actually being delivered.
-# Far above the un-notified ceiling because the poll is then a safety net against a
-# dropped pub/sub message rather than the mechanism itself: one query per minute per
-# idle client instead of one every ten seconds.
-NOTIFIED_POLL_CEILING_SECONDS = 60.0
-
-POLL_BACKOFF_GRACE_SECONDS = 30.0
-POLL_BACKOFF_FACTOR = 1.5
-
-
-def _next_poll_delay(idle: float, delay: float, *, floor: float, ceiling: float) -> float:
-    """The wait before the next poll of a quiet stream."""
-    if idle < POLL_BACKOFF_GRACE_SECONDS:
-        return floor
-    return min(delay * POLL_BACKOFF_FACTOR, ceiling)
-
-
-def _session_event_frame(event: Any, cursor: int) -> str:
-    """One `session_event` SSE frame.
-
-    `id:` is the *next* sequence the client should expect, not the one it just got, so a
-    client can hand it straight back as `Last-Event-ID`. Every `id:` on this stream means
-    the same thing, including the snapshot's.
-
-    **`tool_calls` and `tool_call_id` are what make a tool card renderable**, and this
-    frame carried neither. A client folds these rows with the same function it folds a
-    `snapshot` with: it reads `tool_calls` off an assistant message to open the cards, and
-    `tool_call_id` off the tool message to close the matching one. Without them an
-    assistant turn that called a tool folded to an empty message and its result was
-    dropped outright, so a *warm* reattach — one that replays events rather than opening on
-    a snapshot — silently rendered a transcript with no tool calls in it. The snapshot has
-    carried all three since it was written (`session/snapshot.py:30-34`); only the
-    incremental frame was thinner, which is why it read as a reattach quirk rather than a
-    missing field. Adding them is a widening: a client that ignores them is unaffected.
-
-    `id` is spelled the way the snapshot spells it, so a turn keeps one identity whether
-    the client got it from a snapshot or from the tail.
-    """
-    import json
-
-    md = dict(getattr(event, "metadata", None) or {})
-    data: dict[str, Any] = {
-        "id": md.get("event_id") or f"seq-{event.seq}",
-        "seq": event.seq,
-        "kind": event.kind,
-        "role": event.role,
-        "content": event.content,
-        "name": event.name,
-    }
-    # Omitted rather than sent as null, matching the snapshot item: `eventsToTurns` tests
-    # these for presence, and a null reads the same as absent to it either way.
-    if event.tool_call_id:
-        data["tool_call_id"] = event.tool_call_id
-    if event.tool_calls:
-        data["tool_calls"] = event.tool_calls
-    return f"id: {cursor}\ndata: {json.dumps({'event': 'session_event', 'data': data}, default=str)}\n\n"
-
-
-async def _drain_session_events(reader: Any, cursor: int) -> tuple[list[str], int]:
-    """Frames for everything appended since `cursor`, and the cursor after them.
-
-    The one place that turns session log rows into `session_event` frames, shared by the
-    reattach stream and the durable stream. They are the same tail over the same log, and
-    the point of a single helper is that they cannot drift into meaning different things
-    by the same frame name.
-
-    `get_events(from_seq=...)` already applies `seq >= from_seq` in SQL on both backends,
-    so filtering again in Python re-walks the page to discard nothing.
-    """
-    events = await reader.get_events(GetEventsOpts(from_seq=cursor))
-    frames = []
-    for event in events:
-        cursor = event.seq + 1
-        frames.append(_session_event_frame(event, cursor))
-    return frames, cursor
-
-
-@dataclass(slots=True)
-class _ResumePacing:
-    """How long a resume stream waits before asking again, and when it gives up.
-
-    Split out of `chat_stream_resume` because the rules were interleaved line by line
-    with SSE framing -- `yield f"id: {cursor}\ndata: ..."` two lines from the decay
-    ceiling. Those are protocol and policy at different levels, and the comment density
-    around them was what a missing seam looks like. Here the rules sit together and can
-    be read as rules; the loop reads as protocol.
-
-    Nothing about the behaviour changed: `saw_events`, `went_quiet`, `exhausted` and
-    `waited` are the four things the loop body did, in the order it did them.
-    """
-
-    floor: float
-    ceiling: float
-    idle_limit: float
-    #: The ceiling a stream may decay to *once wakes are being delivered*. The long
-    #: default is right for a stream whose only source is the session log, because the
-    #: poll is then a safety net rather than the mechanism. A caller that also polls
-    #: something the notification does not cover has to pass its own -- being woken for
-    #: one resource says nothing about the other. `_durable_run_gen` is that caller.
-    notified_ceiling: float = NOTIFIED_POLL_CEILING_SECONDS
-    #: How long to wait for the next append. The loop reads this, never computes it.
-    timeout: float = 0.0
-    _idle: float = 0.0
-    _notified: bool = False
-
-    def __post_init__(self) -> None:
-        self.timeout = self.floor
-
-    @property
-    def exhausted(self) -> bool:
-        """Time to close rather than hold an idle connection open forever. The client
-        reconnects with its `Last-Event-ID` and loses nothing."""
-        return self._idle >= self.idle_limit
-
-    def saw_events(self) -> None:
-        """Backoff is a measure of idleness, so activity resets it -- otherwise a thread
-        that goes quiet and then busy answers the next message at the decayed interval."""
-        self._idle = 0.0
-        self.timeout = self.floor
-
-    def went_quiet(self) -> None:
-        # `self.timeout`, not `self.floor`: the accounting has to follow the actual wait
-        # or the idle limit stops meaning the number of seconds it says.
-        self._idle += self.timeout
-        # A notified stream polls only as a safety net, so it can afford a far longer
-        # interval. When Redis drops, `by_notification` goes False on the next wait and
-        # this tightens back on its own, without anything having to notice.
-        ceiling = self.notified_ceiling if self._notified else self.ceiling
-        self.timeout = _next_poll_delay(self._idle, self.timeout, floor=self.floor, ceiling=ceiling)
-
-    def observed(self, progressed: bool) -> None:
-        """Fold one iteration's outcome in.
-
-        Both streaming loops ran `saw_events()`/`went_quiet()` by hand. That is an ordering
-        rule about a stateful object, and it belongs in one place rather than two.
-        """
-        if progressed:
-            self.saw_events()
-        else:
-            self.went_quiet()
-
-    def waited(self, wake: Wake) -> None:
-        self._notified = wake.by_notification
-        if wake.woken:
-            self.saw_events()
-
-
-async def _stream_cursor(settings: Any, tenant_id: str, thread: str | None) -> int | None:
-    """The next session sequence this thread will write.
-
-    A cursor, not a last-seen id: a client hands it back as `Last-Event-ID` and gets
-    everything from there on. Using the session log rather than a per-connection
-    counter is what makes it mean anything to the *next* connection.
-    """
-    if not thread:
-        return None
-    try:
-        head = await get_session_store(settings, tenant_id=tenant_id).open(thread).head()
-        return int(head.get("seq") or 0)
-    except Exception:
-        logger.debug("stream cursor unavailable for %s", loggable(thread, limit=80), exc_info=True)
-        return None
-
-
-async def _build_thread_snapshot(
-    *,
-    settings: Any,
-    tenant_id: str,
-    thread: str,
-) -> dict[str, Any]:
-    from felix.session.lease import lease_status
-    from felix.session.snapshot import build_snapshot
-    from felix.session.thread_state import get_thread_meta, load_leaf
-    from felix.session.tree import get_leaf
-    from felix.steer import peek_steer_count
-
-    store = get_session_store(settings, tenant_id=tenant_id)
-    # Five reads against four different stores, none of which depends on another. They
-    # ran in series on `GET /chat/sessions/{id}`, on both lease endpoints and on every
-    # cold SSE reconnect -- the reattach path, where latency is the most visible thing
-    # in the product.
-    #
-    # `gather` holds more pool connections at once, which is why it waited for the pool
-    # to become a setting rather than a hardcoded 5 + 10.
-    events, meta, stored_leaf, steer_n, lease = await asyncio.gather(
-        store.open(thread).get_events(),
-        get_thread_meta(settings=settings, tenant_id=tenant_id, thread_id=thread),
-        load_leaf(settings=settings, tenant_id=tenant_id, thread_id=thread),
-        peek_steer_count(tenant_id, thread),
-        lease_status(thread),
-    )
-    # `get_leaf` is synchronous and in-process, so it stays out of the fan-out.
-    leaf = stored_leaf or get_leaf(thread)
-    return build_snapshot(
-        thread_id=thread,
-        events=events,
-        leaf_id=leaf,
-        session_name=meta.get("session_name"),
-        phase=str(meta.get("phase") or "idle"),
-        model_id=meta.get("model_id"),
-        thinking_level=meta.get("thinking_level"),
-        parent_session_id=meta.get("parent_session_id"),
-        labels=dict(meta.get("labels") or {}),
-        queued_steer=[{"placeholder": True}] * steer_n if steer_n else [],
-        revision=int(meta.get("revision") or 0),
-        attached=bool(lease.get("attached")),
-        locked=bool(lease.get("locked")),
-    )
-
-
 @router.post("/sessions/lease")
 async def acquire_session_lease(body: LeaseRequest, request: Request) -> dict[str, Any]:
     """Acquire an exclusive or shared lease (maps to snapshot locked/attached)."""
@@ -1370,7 +953,7 @@ async def acquire_session_lease(body: LeaseRequest, request: Request) -> dict[st
     )
     if not result.get("ok"):
         raise HTTPException(status_code=409, detail=result.get("error") or "lease_held")
-    snapshot = await _build_thread_snapshot(
+    snapshot = await build_thread_snapshot(
         settings=request.app.state.settings,
         tenant_id=auth.tenant_id,
         thread=thread,
@@ -1389,7 +972,7 @@ async def release_session_lease(body: LeaseReleaseRequest, request: Request) -> 
     result = await release_lease(thread, holder_id=body.holder_id, token=body.token)
     if not result.get("ok"):
         raise HTTPException(status_code=403, detail=result.get("error") or "release_failed")
-    snapshot = await _build_thread_snapshot(
+    snapshot = await build_thread_snapshot(
         settings=request.app.state.settings,
         tenant_id=auth.tenant_id,
         thread=thread,
@@ -1492,7 +1075,7 @@ async def get_session_snapshot(thread_id: str, request: Request) -> dict[str, An
     thread = effective_thread_id(auth.tenant_id, thread_id)
     if thread is None:
         raise HTTPException(status_code=400, detail="invalid_thread_id")
-    return await _build_thread_snapshot(
+    return await build_thread_snapshot(
         settings=request.app.state.settings,
         tenant_id=auth.tenant_id,
         thread=thread,
@@ -1582,7 +1165,7 @@ async def chat_abort(body: AbortRequest, request: Request) -> dict[str, Any]:
         thread_id=thread,
         phase="aborted",
     )
-    snapshot = await _build_thread_snapshot(
+    snapshot = await build_thread_snapshot(
         settings=request.app.state.settings,
         tenant_id=auth.tenant_id,
         thread=thread,
@@ -1770,5 +1353,5 @@ async def chat_compact(body: CompactRequest, request: Request) -> dict[str, Any]
             reason="manual",
         )
     await update_thread_meta(settings=settings, tenant_id=auth.tenant_id, thread_id=thread, phase="idle")
-    snapshot = await _build_thread_snapshot(settings=settings, tenant_id=auth.tenant_id, thread=thread)
+    snapshot = await build_thread_snapshot(settings=settings, tenant_id=auth.tenant_id, thread=thread)
     return {**result, "thread_id": thread, "snapshot": snapshot}

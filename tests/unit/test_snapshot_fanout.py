@@ -35,7 +35,7 @@ async def test_the_snapshot_reads_run_concurrently(monkeypatch: pytest.MonkeyPat
     from felix import steer as steer_mod
     from felix.session import lease as lease_mod
     from felix.session import thread_state as ts_mod
-    from felix_api.routes import chat as chat_mod
+    from felix_api.routes import _streaming as streaming_mod
 
     barrier = asyncio.Barrier(CONCURRENT)
 
@@ -52,13 +52,13 @@ async def test_the_snapshot_reads_run_concurrently(monkeypatch: pytest.MonkeyPat
         def open(self, _thread: str) -> _Session:
             return _Session()
 
-    monkeypatch.setattr(chat_mod, "get_session_store", lambda *a, **k: _Store())
+    monkeypatch.setattr(streaming_mod, "get_session_store", lambda *a, **k: _Store())
     monkeypatch.setattr(ts_mod, "get_thread_meta", lambda **k: _rendezvous({}))
     monkeypatch.setattr(ts_mod, "load_leaf", lambda **k: _rendezvous(None))
     monkeypatch.setattr(steer_mod, "peek_steer_count", lambda *a, **k: _rendezvous(0))
     monkeypatch.setattr(lease_mod, "lease_status", lambda *a, **k: _rendezvous({}))
 
-    snapshot = await chat_mod._build_thread_snapshot(settings=object(), tenant_id="t", thread="t:thread")
+    snapshot = await streaming_mod.build_thread_snapshot(settings=object(), tenant_id="t", thread="t:thread")
     assert snapshot["id"] == "t:thread"
 
 
@@ -71,7 +71,7 @@ async def test_the_snapshot_still_carries_what_each_read_provides(
     from felix import steer as steer_mod
     from felix.session import lease as lease_mod
     from felix.session import thread_state as ts_mod
-    from felix_api.routes import chat as chat_mod
+    from felix_api.routes import _streaming as streaming_mod
 
     class _Session:
         async def get_events(self) -> list[Any]:
@@ -93,13 +93,13 @@ async def test_the_snapshot_still_carries_what_each_read_provides(
     async def _lease(*_a: Any, **_k: Any) -> dict[str, bool]:
         return {"attached": True, "locked": False}
 
-    monkeypatch.setattr(chat_mod, "get_session_store", lambda *a, **k: _Store())
+    monkeypatch.setattr(streaming_mod, "get_session_store", lambda *a, **k: _Store())
     monkeypatch.setattr(ts_mod, "get_thread_meta", _meta)
     monkeypatch.setattr(ts_mod, "load_leaf", _leaf)
     monkeypatch.setattr(steer_mod, "peek_steer_count", _steer)
     monkeypatch.setattr(lease_mod, "lease_status", _lease)
 
-    snap = await chat_mod._build_thread_snapshot(settings=object(), tenant_id="t", thread="t:thread")
+    snap = await streaming_mod.build_thread_snapshot(settings=object(), tenant_id="t", thread="t:thread")
     assert snap["name"] == "named"
     assert snap["phase"] == "turn"
     assert snap["revision"] == 7

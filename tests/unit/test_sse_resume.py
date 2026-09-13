@@ -355,9 +355,9 @@ def test_pause_frames_are_resume_points() -> None:
 @pytest.mark.asyncio
 async def test_stream_cursor_is_the_next_sequence(thread: str) -> None:
     """A per-connection counter restarts at 1 and so means nothing to the next one."""
-    from felix_api.routes.chat import _stream_cursor
+    from felix_api.routes._streaming import stream_cursor
 
     settings = _settings()
-    assert await _stream_cursor(settings, "default", None) is None
+    assert await stream_cursor(settings, "default", None) is None
     await _seed(settings, thread, "one", "two", "three")
-    assert await _stream_cursor(settings, "default", effective_thread_id("default", thread)) == 3
+    assert await stream_cursor(settings, "default", effective_thread_id("default", thread)) == 3
