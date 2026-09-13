@@ -123,7 +123,12 @@ same pair locally. Neither fixture means anything without the other.
 - `packages/harness` (`felix`) — all the logic: manifests, patterns, tools, session,
   governance, auth, memory, eval, durability, storage, plugins.
 - `packages/cli` (`felix`) — `migrate | eval | mint-jwt | bundle-manifests | validate-manifest | doctor | version | temporal-worker`.
-- `apps/api` (`felix-api`) — FastAPI routes, one module per surface in `routes/`.
+- `apps/api` (`felix-api`) — FastAPI routes, one module per surface in `routes/`, plus two
+  underscore-prefixed modules that carry no route: `_sse.py` knows the SSE *envelope* (frame
+  spelling, `[DONE]`, heartbeats — never spell a frame by hand elsewhere) and `_streaming.py`
+  knows the *source* (session-log tailing, cursors, poll backoff, and **both** stream loops —
+  `resume_stream_gen` for a reattach and `durable_run_gen` for a durable run, which are the
+  same tail over the same log and are kept together so they cannot drift).
 - `apps/worker` (`felix-worker`, `felix-scheduler`) — Taskiq broker + cron tasks.
 - `manifests/` — bundled agents (`quick`, `deep`, `router`, `governed`, …); `governed.yaml` is the fullest example of the schema.
 - `skills/<name>/SKILL.md` — Agent Skills, referenced from a manifest's `spec.skills`.

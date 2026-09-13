@@ -118,9 +118,67 @@ def build_session_metadata(
     }
 
 
+async def gather_thread_snapshot(*, settings: Any, tenant_id: str, thread: str) -> dict[str, Any]:
+    """Read everything a snapshot needs, then build one.
+
+    `build_snapshot` above is pure — hand it rows and it shapes them. This is the half that
+    goes and gets the rows, and it lives here rather than in an HTTP route because nothing
+    about it is HTTP: it takes a tenant and a thread and returns a dict, and the worker and
+    the A2A surface can reach for it on the same terms a route does.
+
+    (It spent a while in `felix_api.routes._streaming`, which made `POST /chat/abort` import
+    a module named for streaming in order to read a session. Five of its six callers were
+    not streaming at all.)
+
+    The store imports are deferred because this module is imported by the session package
+    itself; at module scope they would close a cycle.
+    """
+    import asyncio
+
+    from felix.session.lease import lease_status
+    from felix.session.store import get_session_store
+    from felix.session.thread_state import get_thread_meta, load_leaf
+    from felix.session.tree import get_leaf
+    from felix.steer import peek_steer_count
+
+    store = get_session_store(settings, tenant_id=tenant_id)
+    # Five reads against four different stores, none of which depends on another. They
+    # ran in series on `GET /chat/sessions/{id}`, on both lease endpoints and on every
+    # cold SSE reconnect -- the reattach path, where latency is the most visible thing
+    # in the product.
+    #
+    # `gather` holds more pool connections at once, which is why it waited for the pool
+    # to become a setting rather than a hardcoded 5 + 10.
+    events, meta, stored_leaf, steer_n, lease = await asyncio.gather(
+        store.open(thread).get_events(),
+        get_thread_meta(settings=settings, tenant_id=tenant_id, thread_id=thread),
+        load_leaf(settings=settings, tenant_id=tenant_id, thread_id=thread),
+        peek_steer_count(tenant_id, thread),
+        lease_status(thread),
+    )
+    # `get_leaf` is synchronous and in-process, so it stays out of the fan-out.
+    leaf = stored_leaf or get_leaf(thread)
+    return build_snapshot(
+        thread_id=thread,
+        events=events,
+        leaf_id=leaf,
+        session_name=meta.get("session_name"),
+        phase=str(meta.get("phase") or "idle"),
+        model_id=meta.get("model_id"),
+        thinking_level=meta.get("thinking_level"),
+        parent_session_id=meta.get("parent_session_id"),
+        labels=dict(meta.get("labels") or {}),
+        queued_steer=[{"placeholder": True}] * steer_n if steer_n else [],
+        revision=int(meta.get("revision") or 0),
+        attached=bool(lease.get("attached")),
+        locked=bool(lease.get("locked")),
+    )
+
+
 __all__ = [
     "SessionPhase",
     "build_session_metadata",
     "build_snapshot",
     "event_to_transcript_item",
+    "gather_thread_snapshot",
 ]

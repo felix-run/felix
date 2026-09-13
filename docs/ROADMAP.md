@@ -207,14 +207,17 @@ live again. Revisit after the first three land, on evidence, not before.
       every `emit_events` guard. So the stream now tails it, through the same helper
       `GET /chat/stream/{thread_id}` uses. No new transport, no second source of truth. Completed
       messages only — chunks are never persisted, so a durable run never streams token deltas.
-- [ ] **Split the SSE tail out of `routes/chat.py`.** Deferred from #238 deliberately, as
-      motion that would have obscured the change it rode in on. `chat.py` is 1,774 lines and the
-      largest module in the repo; ~330 of them (`_next_poll_delay`, `_session_event_frame`,
-      `_drain_session_events`, `_ResumePacing`, `_stream_cursor`, `_build_thread_snapshot`,
-      `_DurableTail`, `_durable_run_gen`) are one subject — *tailing a session log over SSE, and
-      how fast to ask* — with no route decorator among them and no importer outside this file and
-      its tests. They belong in `routes/_streaming.py`, beside `routes/_sse.py`. Mechanical; the
-      churn is ten test imports. Do it before the next streaming change, not after.
+- [x] **Split the SSE tail out of `routes/chat.py`** — `routes/_streaming.py`, beside
+      `routes/_sse.py`. Deferred from #238 as motion that would have obscured the change it rode
+      in on, and done first here because the approvals entry below is itself a streaming change.
+      `chat.py` was 1,774 lines and the largest module in the repo; 417 of them were one subject —
+      *tailing a session log over SSE, and how fast to ask* — with no route decorator among them
+      and no importer outside that file and its tests. The division against `_sse.py` is that it
+      knows the frame *envelope* and this knows the *source*. Names lost their leading underscore
+      on the way, matching `_sse.py`: a private module with a public surface. Verified as a pure
+      move by diffing the relocated blocks against `main` modulo the renames — the only other
+      changes are one comment re-attached to the constants it explains (it had drifted onto
+      `RUN_TERMINAL`), `json` hoisted to module scope, and a return annotation.
 - [ ] **Approvals reach the durable path.** `side_events` is a process-local
       `dict[str, asyncio.Queue]`, so on a fiber the `approval_required` emit lands in the
       worker's own memory and is unreachable by construction — on precisely the path where a

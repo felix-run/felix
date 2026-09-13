@@ -459,17 +459,17 @@ async def test_a_thread_id_cannot_forge_a_chat_log_line(caplog: pytest.LogCaptur
 
     It arrives as `Field(min_length=1)` with no charset constraint and reaches the log
     without being looked up first, so unlike a memory id there is nothing filtering it
-    on the way. `_stream_cursor` is the smallest of the three sites and the only one
+    on the way. `stream_cursor` is the smallest of the three sites and the only one
     whose failure path can be driven directly.
     """
     import logging
 
-    from felix_api.routes.chat import _stream_cursor
+    from felix_api.routes._streaming import stream_cursor
 
     forged = "t-1\nERROR:felix_api.routes.chat:tenant acme authenticated as admin"
-    with caplog.at_level(logging.DEBUG, logger="felix_api.routes.chat"):
+    with caplog.at_level(logging.DEBUG, logger="felix_api.routes._streaming"):
         # No settings object, so the lookup raises and the except path does the logging.
-        assert await _stream_cursor(None, "acme", forged) is None
+        assert await stream_cursor(None, "acme", forged) is None
 
     messages = [r.getMessage() for r in caplog.records]
     assert len(messages) == 1, f"one failure became {len(messages)} log entries: {messages}"
