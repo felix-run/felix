@@ -151,6 +151,27 @@ def _escape(text: str) -> str:
     return "".join(ch if ch.isprintable() else ch.encode("unicode_escape").decode("ascii") for ch in escaped)
 
 
+def _indent(block: str) -> str:
+    """Every line of `block` pushed off column 0, so none of it can begin a record.
+
+    `deploy/GOVERNANCE.md` has the why. Two things to know here.
+
+    The splitter is `str.splitlines()` rather than `split("\\n")`, because it also breaks on
+    U+2028, U+2029, U+0085 and `\\v`/`\\f`/`\\x1c`-`\\x1e`, which would otherwise step back out
+    to column 0. They are normalised to `\\n` in the process, so a block that went through
+    here no longer shows *which* separator it carried -- evidence a log message keeps and a
+    traceback does not, and the reason this is used on tracebacks and nothing else.
+
+    Each line is then escaped, because indentation alone is a claim about columns and a
+    terminal does not have to honour it: `\\x1b[1G` is cursor-horizontal-absolute, so an ESC
+    surviving into a traceback redraws that line at column 0 no matter how far right it was
+    written, and the bidi overrides reorder it in place. `splitlines()` has already removed
+    every break character by this point, so escaping here cannot flatten anything -- the only
+    visible cost is that a tab inside a frame's source line renders as `\\t`.
+    """
+    return "\n".join("  " + _escape(line) for line in block.splitlines())
+
+
 def loggable(value: object, *, limit: int = 200) -> str:
     """Untrusted text, made safe to interpolate into a log line. See `deploy/GOVERNANCE.md`.
 
@@ -193,23 +214,42 @@ class _TextFormatter(logging.Formatter):
       here: `LogRecord.getMessage()`, the `msg`/`args` attributes, and `Formatter.format()`.
     * **`args` is cleared** because the copy already carries the merged message, and
       leaving them would re-apply `%` to attacker-influenced text.
-    * **`exc_text` is not escaped**, so tracebacks stay multi-line and readable. That is a
-      real hole and not a closed one: an exception's own `str` is appended after this
-      message and lands at column 0, so a newline in it still forges a record-shaped line.
-      Roughly thirty `exc_info=True` call sites can carry caller-influenced text into it.
-      `loggable()` on the value *before* it reaches the exception is the mitigation today.
+    * **Tracebacks are indented rather than escaped**, so they stay multi-line and
+      readable while still being unable to forge a record. `Formatter.format` appends
+      `exc_text` *after* the message, and an exception's own `str` is not indented the way
+      its frames are -- it renders at column 0, so a newline inside an exception message
+      produced a record-shaped line, on any of the ~30 `exc_info=True` call sites whose
+      exception text is built from a caller-influenced value. Escaping the block would
+      flatten the traceback to one line; pushing every line off column 0 keeps the shape
+      an operator reads and removes the one property a forged record needs.
 
-    Two costs, both accepted: the `exc_text` cache lands on the copy, so a record carrying
-    an exception formats its traceback once per handler rather than once; and a
-    deliberately multi-line message is flattened with no opt-out -- nothing logs one today,
-    but a future `logger.debug("compiled:\\n%s", yaml)` will not render as its author expects.
+    Three costs, all accepted: `exc_text` is recomputed rather than shared, so a record
+    carrying an exception formats its traceback once per handler; frame lines sit two
+    columns further right than a stock traceback; and a deliberately multi-line *message*
+    is flattened with no opt-out -- nothing logs one today, but a future
+    `logger.debug("compiled:\\n%s", yaml)` will not render as its author expects.
     """
 
     def format(self, record: logging.LogRecord) -> str:
         safe = copy.copy(record)
         safe.msg = _escape(record.getMessage())
         safe.args = None
+        # A cache another formatter filled is indented here rather than recomputed, because
+        # `Formatter.format` renders `exc_text` under its own `if`, *outside* the
+        # `if record.exc_info:` that would refill it. Clearing it therefore drops the
+        # traceback silently whenever a record arrives with the text but not the tuple --
+        # which `logging.handlers.SocketHandler.makePickle` constructs deliberately, and any
+        # `QueueHandler.prepare` override may. Indenting covers that record and the ordinary
+        # one with the same line, and cannot double-indent: this writes only to the copy, so
+        # a block on the original can only have come from some other formatter.
+        safe.exc_text = _indent(record.exc_text) if record.exc_text else None
         return super().format(safe)
+
+    def formatException(self, ei: Any) -> str:
+        return _indent(super().formatException(ei))
+
+    def formatStack(self, stack_info: str) -> str:
+        return _indent(super().formatStack(stack_info))
 
 
 class _JsonFormatter(logging.Formatter):

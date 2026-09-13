@@ -10,13 +10,21 @@ the message is a *value* there, not a line — so the exposure was the text form
 Text now escapes the caller's message before rendering it: whatever was interpolated, the
 message is one line. The JSON format is left alone rather than double-escaped.
 
-Tracebacks are deliberately **not** escaped, so they stay multi-line and readable — and
-that leaves a hole worth naming rather than implying is closed. `logging.Formatter` appends
-`exc_text` after the message, and an exception's own `str` renders at column 0 rather than
-indented like its frames, so a newline inside an exception message still produces a
-record-shaped line. That is long-standing stdlib behaviour, not something this change
-introduced or worsened; the mitigation is `loggable()` on the value before it reaches the
-exception, and the boundary is now pinned by a test instead of left to be rediscovered.
+**Tracebacks are covered too, by indenting each line and then escaping it.** They were the
+half a message escape does not reach: `logging.Formatter` appends `exc_text` after the
+message, and an exception's own `str` is not indented the way its frames are — it renders at
+column 0, so a newline inside an exception message produced a fully record-shaped line on any
+of the ~30 `exc_info=True` call sites whose exception text is built from a caller-influenced
+value.
+
+Escaping the *block* would have closed that by flattening the traceback onto one line, which
+is unreadable and the reason it was left open. Splitting first and escaping each line keeps
+the shape and closes the hole: no text is dropped, an operator still reads what the exception
+said, and only the record itself begins at column 0. Escaping as well as indenting matters
+because indentation is only a claim about columns — `\x1b[1G` is cursor-horizontal-absolute,
+so an ESC reaching a traceback redraws that line at column 0 however far right it was
+written. **Frame lines now sit two columns further right than a stock Python traceback, and a
+tab inside a frame's source line renders as `\t`** — the visible changes to existing logs.
 
 The escape is applied to a copy of the record, and deliberately not in a `logging.Filter`,
 which is the shorter-looking option the stdlib docs invite: one record is shared by every

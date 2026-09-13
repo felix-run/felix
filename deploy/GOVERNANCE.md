@@ -174,14 +174,31 @@ it, so the guarantee no longer depends on each call site remembering `loggable()
 sites still use it, because the formatter cannot bound length — it sees a finished record,
 and truncating there would cut the record rather than the value.
 
-**One thing that guarantee does not cover: the traceback.** `logging.Formatter` appends
-`exc_text` after the message, deliberately unescaped so tracebacks stay readable, and an
-exception's own `str` renders at column 0 rather than indented like its frames. A newline
-inside an exception message therefore still produces a record-shaped line, on any of the
-`exc_info=True` / `logger.exception(...)` call sites whose exception text is built from a
-caller-influenced value. This is long-standing stdlib behaviour rather than something the
-escaping changed, and the mitigation today is `loggable()` on the value *before* it reaches
-the exception. `tests/unit/test_log_ids.py` pins the boundary so it stays a known fact.
+**Tracebacks are covered too, by indentation rather than escaping.** `logging.Formatter`
+appends `exc_text` after the message, and an exception's own `str` is not indented the way
+its frames are — it renders at column 0, so a newline inside an exception message used to
+produce a fully record-shaped line on any `exc_info=True` / `logger.exception(...)` call
+site whose exception text is built from a caller-influenced value. Escaping the block would
+close that by flattening the traceback onto one line, which is unreadable. Every line of a
+traceback is now pushed two columns right instead: the property a forged record needs is the
+column, not the content, so the text is still all there and still readable, and only the
+record itself begins at column 0. Frame lines therefore sit two columns further right than
+a stock Python traceback.
+
+Indentation alone would only be a claim about columns, and a terminal need not honour it —
+`\x1b[1G` is cursor-horizontal-absolute, so an ESC surviving into a traceback redraws that
+line at column 0 however far right it was written, and the bidi overrides reorder it in
+place. Each line is therefore escaped as well as indented, the same treatment the message
+gets. The one visible cost is that a tab inside a frame's source line renders as `\t`.
+
+Two consequences to know rather than be surprised by. The indenter splits on every Unicode
+line separator, not just `\n`, so an exotic one inside an exception message (U+2028, U+0085,
+a bare `\r`) becomes an ordinary indented line break — the text survives, but *which*
+separator it was does not. A log message keeps that evidence, because there the separator is
+escaped and stays visible as ` `; a traceback does not. And a record that arrives
+carrying `exc_text` without `exc_info` — which `logging.handlers.SocketHandler` constructs
+deliberately, and a `QueueHandler.prepare` override may — has its cached block indented
+rather than regenerated, so the traceback is neither dropped nor trusted unindented.
 
 ## Inbound and outbound constraints
 
