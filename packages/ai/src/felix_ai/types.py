@@ -30,6 +30,38 @@ class ImageAttachment:
     detail: str | None = None  # openai: low|high|auto
 
 
+# A stored attachment, named rather than inlined. It rides in the same `url` field an
+# inline image uses, which is the whole reason this is a URI and not a new field: the
+# session log persists `attachments[].url` and restores it, `inline_parts` renders from
+# it, and both wires already read it. A parallel `file_id` field would have had to be
+# threaded through every one of those and would have been dropped by the one that was
+# missed -- and it would have been the session layer, which is the only path a *second*
+# turn takes, so nothing would have failed until replay.
+#
+# `felix.attachments.resolve_file_refs` swaps these for `data:` URLs immediately before
+# the wire call. Resolving there rather than at ingest is what keeps a 600 KiB image out
+# of the event log on turns two, three and four; `full_replay` re-sends that log every
+# turn, which is the argument for an upload over an inline `data:` URL in the first place.
+FILE_REF_SCHEME = "felix-file://"
+
+
+def file_ref_url(file_id: str) -> str:
+    """The reference form of a stored attachment id."""
+    return f"{FILE_REF_SCHEME}{file_id}"
+
+
+def split_file_ref(url: str | None) -> str | None:
+    """The file id inside a reference URL, or None for any other URL.
+
+    Deliberately says nothing about whether the id is *well formed* -- that is
+    `felix.attachments.valid_file_id`, and this package has no business knowing the shape
+    of an id the harness issued.
+    """
+    if not url or not url.startswith(FILE_REF_SCHEME):
+        return None
+    return url[len(FILE_REF_SCHEME) :] or None
+
+
 @dataclass(slots=True)
 class ContentBlock:
     """Typed content part (text or image) for multimodal messages."""
@@ -127,11 +159,41 @@ class ChatMessage:
                             detail=str(detail) if detail else None,
                         )
                     )
+                elif ptype == "file":
+                    # OpenAI's own shape, because a caller's SDK already emits it.
+                    file_obj = part.get("file") if isinstance(part.get("file"), dict) else {}
+                    file_id = str(part.get("file_id") or file_obj.get("file_id") or "")
+                    if not file_id:
+                        unknown.append(ptype)
+                        continue
+                    ref = file_ref_url(file_id)
+                    media = str(part.get("media_type") or file_obj.get("media_type") or "") or None
+                    detail = part.get("detail") or file_obj.get("detail")
+                    blocks.append(
+                        ContentBlock(
+                            type="image_url",
+                            url=ref,
+                            media_type=media,
+                            detail=str(detail) if detail else None,
+                        )
+                    )
+                    # Both shapes, for the same reason every image part fills both: a request
+                    # renders from `content_blocks` and every later turn renders from what the
+                    # session restored, which is `attachments`.
+                    atts.append(
+                        ImageAttachment(
+                            url=ref,
+                            media_type=media or "image/png",
+                            filename=file_obj.get("filename") or part.get("filename"),
+                            detail=str(detail) if detail else None,
+                        )
+                    )
                 else:
                     unknown.append(ptype)
             if unknown:
-                # It is still dropped — this layer has nothing to do with an `input_audio` or
-                # `file` part — but silently was the problem. `/v1` types content as an open
+                # Still dropped — this layer has nothing to do with an `input_audio` part,
+                # nor with a `file` part carrying no `file_id` — but silently was the problem.
+                # `/v1` types content as an open
                 # list of parts precisely so the decision lives here, and a decision nobody can
                 # observe is the same as no decision.
                 logger.warning(
