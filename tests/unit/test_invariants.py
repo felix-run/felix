@@ -1573,14 +1573,16 @@ def test_every_consumer_of_run_status_agrees_on_what_is_terminal() -> None:
     AST — importing it needs `temporalio`). A status missing from any copy is a run a client
     polls until its own deadline, or a workflow that spins on a row nothing will change."""
     from felix.durability.fibers import FIBER_TERMINAL_STATUSES
-    from felix.sdk import RUN_TERMINAL
-    from felix_api.routes.chat import _RUN_TERMINAL
+    from felix.sdk import RUN_TERMINAL as SDK_RUN_TERMINAL
+    from felix_api.routes._streaming import RUN_TERMINAL as STREAM_RUN_TERMINAL
 
     assert {"completed", "failed", "expired", "dead"} <= FIBER_TERMINAL_STATUSES, "the source set was emptied"
-    assert FIBER_TERMINAL_STATUSES <= RUN_TERMINAL, (
+    assert FIBER_TERMINAL_STATUSES <= SDK_RUN_TERMINAL, (
         "felix.sdk.RUN_TERMINAL is missing a fiber terminal status"
     )
-    assert FIBER_TERMINAL_STATUSES <= _RUN_TERMINAL, "the resume stream is missing a fiber terminal status"
+    assert FIBER_TERMINAL_STATUSES <= STREAM_RUN_TERMINAL, (
+        "the resume stream is missing a fiber terminal status"
+    )
 
     workflow = ROOT / "packages/harness/src/felix/durability/_temporal_workflow.py"
     tree = ast.parse(workflow.read_text(encoding="utf-8"))

@@ -25,12 +25,12 @@ import pytest
 from felix.config import Settings
 
 # Imported directly, not defensively. The `try/except ImportError` this replaces turned a
-# renamed or deleted `_next_poll_delay` into three skipped tests -- the symbol under test
+# renamed or deleted `next_poll_delay` into three skipped tests -- the symbol under test
 # going missing is the loudest possible failure, and it was being reported as a pass.
-from felix_api.routes.chat import (
+from felix_api.routes._streaming import (
     POLL_BACKOFF_FACTOR,
     POLL_BACKOFF_GRACE_SECONDS,
-    _next_poll_delay,
+    next_poll_delay,
 )
 
 FLOOR, CEILING = 1.0, 10.0
@@ -38,9 +38,9 @@ FLOOR, CEILING = 1.0, 10.0
 
 def _pacing():
     """The pacing object under the settings the route would build it with."""
-    from felix_api.routes.chat import _ResumePacing
+    from felix_api.routes._streaming import ResumePacing
 
-    return _ResumePacing(floor=1.0, ceiling=10.0, idle_limit=300.0)
+    return ResumePacing(floor=1.0, ceiling=10.0, idle_limit=300.0)
 
 
 def _ramp(floor: float = FLOOR, ceiling: float = CEILING) -> list[tuple[float, float]]:
@@ -49,7 +49,7 @@ def _ramp(floor: float = FLOOR, ceiling: float = CEILING) -> list[tuple[float, f
     while idle < 300.0:
         out.append((idle, delay))
         idle += delay
-        delay = _next_poll_delay(idle, delay, floor=floor, ceiling=ceiling)
+        delay = next_poll_delay(idle, delay, floor=floor, ceiling=ceiling)
     return out
 
 
@@ -81,22 +81,22 @@ def test_the_idle_window_costs_far_fewer_queries() -> None:
 
 
 def test_activity_returns_the_stream_to_the_floor() -> None:
-    """`_next_poll_delay` is only consulted on an empty round; the loop resets to the
+    """`next_poll_delay` is only consulted on an empty round; the loop resets to the
     floor when events arrive. Asserted here so the reset cannot quietly become a decay
     from wherever the delay had climbed to."""
-    assert _next_poll_delay(0.0, CEILING, floor=FLOOR, ceiling=CEILING) == FLOOR
+    assert next_poll_delay(0.0, CEILING, floor=FLOOR, ceiling=CEILING) == FLOOR
 
 
 def test_a_ceiling_below_the_floor_cannot_speed_the_poll_up() -> None:
     """Misconfiguration must not turn a backoff into a tighter loop than the floor."""
-    assert _next_poll_delay(999.0, FLOOR, floor=FLOOR, ceiling=0.1) <= FLOOR
+    assert next_poll_delay(999.0, FLOOR, floor=FLOOR, ceiling=0.1) <= FLOOR
 
 
 def test_the_ramp_is_gentle_enough_to_be_worth_the_grace_window() -> None:
     """A factor so steep that the first post-grace step lands on the ceiling would make
     the grace window the only thing protecting latency."""
     assert 1.0 < POLL_BACKOFF_FACTOR <= 2.0
-    first_step = _next_poll_delay(POLL_BACKOFF_GRACE_SECONDS + 1, FLOOR, floor=FLOOR, ceiling=CEILING)
+    first_step = next_poll_delay(POLL_BACKOFF_GRACE_SECONDS + 1, FLOOR, floor=FLOOR, ceiling=CEILING)
     assert first_step < CEILING, "the first decay step jumps straight to the ceiling"
 
 
@@ -145,7 +145,7 @@ async def _record_waits(
     """
     from felix.session.notify import Wake
     from felix_api.app import create_app
-    from felix_api.routes import chat as chat_mod
+    from felix_api.routes import _streaming as streaming_mod
     from httpx import ASGITransport, AsyncClient
 
     slept: list[float] = []
@@ -167,7 +167,7 @@ async def _record_waits(
     async def _watch(_tenant: str, _thread: str):
         yield _Watch()
 
-    monkeypatch.setattr(chat_mod, "thread_watch", _watch)
+    monkeypatch.setattr(streaming_mod, "thread_watch", _watch)
 
     settings = Settings(
         allow_insecure=True,
@@ -196,7 +196,7 @@ async def test_the_loop_actually_waits_the_backed_off_delay(
     """The arithmetic elsewhere in this file is only worth anything if the loop uses it.
 
     Passing `poll` to the wait while feeding `delay` to the accounting would keep the
-    1 Hz cadence and still look correct in every unit test of `_next_poll_delay`.
+    1 Hz cadence and still look correct in every unit test of `next_poll_delay`.
     """
     slept, _ = await _record_waits(monkeypatch)
 
@@ -219,7 +219,7 @@ async def test_a_notified_stream_relaxes_to_the_longer_ceiling(
     coverage fed `by_notification=False` on every wait, so this branch never ran and the
     60-second ceiling was asserted by nothing.
     """
-    from felix_api.routes.chat import NOTIFIED_POLL_CEILING_SECONDS
+    from felix_api.routes._streaming import NOTIFIED_POLL_CEILING_SECONDS
 
     slept, _ = await _record_waits(monkeypatch, delivering=True, idle_limit=600.0)
 
@@ -288,7 +288,7 @@ def test_activity_puts_the_interval_back_on_the_floor() -> None:
 def test_a_notified_stream_decays_past_the_un_notified_ceiling() -> None:
     """The branch the end-to-end tests could not reach until this was extracted."""
     from felix.session.notify import Wake
-    from felix_api.routes.chat import NOTIFIED_POLL_CEILING_SECONDS
+    from felix_api.routes._streaming import NOTIFIED_POLL_CEILING_SECONDS
 
     p = _pacing()
     for _ in range(400):
@@ -301,7 +301,7 @@ def test_losing_notifications_tightens_the_interval_again() -> None:
     """Redis dropping must not leave a stream on the minute-long ceiling: the poll is
     the safety net, and it stops being one if it stays that slow."""
     from felix.session.notify import Wake
-    from felix_api.routes.chat import NOTIFIED_POLL_CEILING_SECONDS
+    from felix_api.routes._streaming import NOTIFIED_POLL_CEILING_SECONDS
 
     p = _pacing()
     for _ in range(400):
