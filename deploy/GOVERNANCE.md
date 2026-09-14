@@ -485,23 +485,32 @@ pass; the first missing scope denies the call, and the denial names it.
 | `tools` | The tools this rule gates, matched by glob (`fnmatch`, case-sensitive): `calculator`, `github__*`, `*__search`, `*`. Applies equally to `spec.approvals`, judge `target_tools`, `content_screening.tools` and `command_screening.target_tools`. A pattern with no `*` or `?` is a literal name, so a tool whose name contains `[...]` still matches itself. A pattern matching no bound tool is logged and counted (`felix_rule_targets_nothing`) rather than refused, since the bound set varies — an MCP server whose discovery failed binds nothing. A rule naming no tools at all gates nothing and is rejected: it would otherwise satisfy the `soc2` profile's "policies **or** approvals **or** limits" requirement while enforcing nothing. |
 | `required_scopes` | Scopes the caller must hold. **Required**: a rule that lists tools but no scopes permits every caller while appearing to govern them, so it is rejected rather than accepted as a no-op. |
 
-Two things to know before relying on it:
+Four things to know before relying on it:
 
-- **A run with no scopes is denied, not permitted.** That includes any request under
-  `auth_mode=none`, and it includes durable fibers, scheduled jobs and `felix eval`, whose
-  contexts carry an empty scope set. `spec.policies` and `execution.mode: durable` are
-  therefore not usable together today — every policied tool denies.
+- **A run with no scopes is denied, not permitted.** "No scopes" must never read as "all
+  scopes", so a context carrying an empty set denies every policied tool. Three do: any
+  request under `auth_mode=none` (`auth/middleware.py:120` returns `ANONYMOUS`), scheduled
+  jobs (`jobs/scheduler.py:71`, principal `cron`) and `felix eval` (`eval/runner.py:164`,
+  principal `eval`). The last two construct an `AuthContext` with no `scopes` argument, so
+  they take the field's `frozenset()` default.
 - Policy scopes are matched literally. The `admin` / `*` bypass and the `x:write` implies
   `x:read` rule that `require_mgmt_scopes` applies to the management API deliberately do
   **not** apply here.
 - `manifests/governed.yaml` policies `calculator` on `tools:calc`, so it will deny its own
   calculator under `make dev` (which sets `FELIX_AUTH_MODE=none`). Mint a token with the
   scope — see the `felix mint-jwt` line above — rather than removing the policy.
-- **Durable runs are the exception.** A fiber records the caller's scopes and resumes with
-  them, so `spec.policies` and `execution.mode: durable` work together. The resumed run's
-  principal is `fiber`, not the person — `on_behalf_of` carries who it is for, which is what
-  keeps a `bind_principal` approval valid across a resume without an audit row claiming a human
-  took an action a worker took.
+- **A durable run is not in that list**, though this document said it was until 2026-09-14.
+  `start_durable_chat` records the caller's scopes on the fiber row and the resume rebuilds an
+  `AuthContext` from them (`durability/runs.py:96`, `durability/fibers.py:288`), so
+  `spec.policies` and `execution.mode: durable` work together. The resumed run's principal is
+  `fiber`, not the person — `on_behalf_of` carries who it is for, which is what keeps a
+  `bind_principal` approval valid across a resume without an audit row claiming a human took an
+  action a worker took.
+
+  The exception is a fiber with **no recorded caller** — one enqueued outside a request context,
+  or written before fibers recorded authority at all. Those keep the old behaviour: principal
+  `fiber`, no scopes, every policied tool denies. That is the fail-closed direction, and it is
+  the case the stale sentence described before it outlived its scope.
 
   Carrying authority in durable state is bounded three ways, and the bounds are the design:
 
