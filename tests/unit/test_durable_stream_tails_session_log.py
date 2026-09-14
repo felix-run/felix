@@ -635,3 +635,241 @@ async def test_the_accepted_shape_matches_what_the_real_start_returns() -> None:
 
     run = await get_durable_run(settings, "default", str(accepted["resume_token"]))
     assert run is not None and {"status", "final", "error"} <= set(run)
+
+
+# --- what the run is blocked on ---------------------------------------------------------
+
+
+async def _gate(settings: Settings, thread: str, **kw: Any) -> dict[str, Any]:
+    """A pending approval on `thread`, written the way the governance wrapper writes one."""
+    from felix.approvals.store import create_pending
+
+    return await create_pending(
+        settings,
+        "default",
+        tool_name=kw.pop("tool_name", "write_file"),
+        call_signature=kw.pop("call_signature", "sig-1"),
+        manifest_id="quick",
+        args=kw.pop("args", {"path": "notes.txt"}),
+        thread_id=thread,
+        **kw,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_durable_run_announces_what_it_is_blocked_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The gap the session-log tail cannot close.
+
+    `_append_produced` writes assistant turns and tool results; a request for permission is
+    neither, so no amount of tailing the transcript reaches it — on exactly the path where a
+    human has time to answer, because the agent is in the worker and nothing it emits can
+    cross to the API's stream. The approvals table is the durable record that can, and the
+    frame is rebuilt from a row rather than forwarded.
+    """
+    settings = _settings("tail-approval")
+    thread = "default:gated"
+    _force_durable(monkeypatch)
+
+    async def worker_hit_a_gate() -> None:
+        await _gate(
+            settings,
+            thread,
+            rule_id="workspace-write",
+            reason="writes outside the workspace need a human",
+            tool_call_id="call_7",
+            ttl_seconds=300,
+        )
+
+    _stub_fiber(monkeypatch, on_poll=[worker_hit_a_gate], statuses=["running"])
+
+    async with _client(settings) as client:
+        body = await _post_stream(client, "gated")
+
+    gates = [p["data"] for _, p in _blocks(body) if p.get("event") == "approval_required"]
+    assert gates, f"a blocked durable run announced nothing: {_names(body)}"
+    (gate,) = gates
+    assert gate["tool_name"] == "write_file"
+    assert gate["args"] == {"path": "notes.txt"}
+    assert gate["rule_id"] == "workspace-write"
+    # The two fields felix#245 put on the row so the frame could be rebuilt rather than
+    # forwarded. Without them this path could announce a gate but not say why, which is the
+    # state the poll was already in.
+    assert gate["reason"] == "writes outside the workspace need a human"
+    assert gate["tool_call_id"] == "call_7"
+    assert isinstance(gate["expires_at"], int)
+    assert gate["thread_id"] == thread
+
+
+@pytest.mark.asyncio
+async def test_a_pending_approval_is_announced_once_however_many_polls_see_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`list_approvals` answers "what is pending", not "what is new".
+
+    So the same row comes back on every poll until someone decides it, and without a dedupe
+    the client is re-shown a prompt it may already have answered — worse than being shown it
+    late. There is no cursor to lean on the way the transcript has one.
+    """
+    settings = _settings("tail-approval-once")
+    thread = "default:gated-once"
+    _force_durable(monkeypatch)
+    await _gate(settings, thread, ttl_seconds=300)
+
+    # Four polls over one unchanging pending row.
+    _stub_fiber(monkeypatch, statuses=["running", "running", "running"])
+
+    async with _client(settings) as client:
+        body = await _post_stream(client, "gated-once")
+
+    gates = [p for _, p in _blocks(body) if p.get("event") == "approval_required"]
+    assert len(gates) == 1, f"the prompt was re-announced on every poll: {len(gates)} frames"
+
+
+@pytest.mark.asyncio
+async def test_another_threads_approval_is_not_announced(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Thread-scoped, and it has to be: `GET /approvals` is tenant-wide.
+
+    Announcing every pending approval in the tenant on one run's stream would leak the tool
+    names and arguments of other conversations to whoever started this one.
+    """
+    settings = _settings("tail-approval-scope")
+    _force_durable(monkeypatch)
+    await _gate(settings, "default:theirs", call_signature="sig-theirs", ttl_seconds=300)
+
+    _stub_fiber(monkeypatch, statuses=["running", "running"])
+
+    async with _client(settings) as client:
+        body = await _post_stream(client, "mine")
+
+    gates = [p for _, p in _blocks(body) if p.get("event") == "approval_required"]
+    assert gates == [], f"another thread's approval reached this run's stream: {gates}"
+
+
+@pytest.mark.asyncio
+async def test_an_approval_decided_before_the_stream_opened_is_not_announced(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only `status="pending"` is a question. A decided row is history, and re-announcing it
+    would put a prompt on screen for a call that is already running or already refused."""
+    from felix.approvals.store import decide
+
+    settings = _settings("tail-approval-decided")
+    thread = "default:decided"
+    _force_durable(monkeypatch)
+    row = await _gate(settings, thread, ttl_seconds=300)
+    await decide(settings, "default", row["id"], decision="approved", decided_by="operator")
+
+    _stub_fiber(monkeypatch, statuses=["running", "running"])
+
+    async with _client(settings) as client:
+        body = await _post_stream(client, "decided")
+
+    gates = [p for _, p in _blocks(body) if p.get("event") == "approval_required"]
+    assert gates == [], f"a decided approval was announced as if it were still waiting: {gates}"
+
+
+@pytest.mark.asyncio
+async def test_a_chat_scoped_caller_is_not_told_what_the_run_is_blocked_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`POST /chat/stream` must not route around the `approvals:read` scope.
+
+    `thread_id` comes from the request body, so the thread a durable run names is a question
+    the caller *chose*, not one they own — nothing in Felix binds a thread to a principal.
+    Ungated, a caller with chat access and without `approvals:read` could name any thread in
+    the tenant and read the tool names, full arguments and gate reasons it is blocked on:
+    exactly the payload `GET /approvals` refuses them.
+
+    Every other test in this file runs under `auth_mode="none"`, where the check is a no-op
+    by design — so this one turns auth on, and it is the only place the gate can fail.
+    """
+    settings = Settings(
+        allow_insecure=True,
+        auth_mode="api_key",
+        environment="development",
+        object_store="memory",
+        database_url="memory://tail-scope",
+        redis_url="",
+        auth_api_keys=json.dumps(
+            {
+                "sk-chat": {"tenant_id": "default", "sub": "chat", "scopes": ["chat"]},
+                "sk-ops": {"tenant_id": "default", "sub": "ops", "scopes": ["approvals:read"]},
+            }
+        ),
+        stream_resume_poll_seconds=0.1,
+        stream_resume_poll_max_seconds=0.1,
+        stream_resume_idle_seconds=0.2,
+    )
+    thread = "default:scoped"
+    _force_durable(monkeypatch)
+    await _gate(settings, thread, reason="wire transfers need a human", ttl_seconds=300)
+    _stub_fiber(monkeypatch, statuses=["running", "running"])
+
+    async def _stream(token: str) -> str:
+        body = ""
+        async with (
+            _client(settings) as client,
+            client.stream(
+                "POST",
+                "/chat/stream",
+                json={
+                    "manifest": "quick",
+                    "thread_id": "scoped",
+                    "messages": [{"role": "user", "content": "hi"}],
+                },
+                headers={"Authorization": f"Bearer {token}"},
+            ) as resp,
+        ):
+            assert resp.status_code == 200, (resp.status_code, await resp.aread())
+            async for chunk in resp.aiter_text():
+                body += chunk
+        return body
+
+    denied = _names(await _stream("sk-chat"))
+    assert "approval_required" not in denied, (
+        "a caller without approvals:read read the gate through the chat stream"
+    )
+    # The transcript and the answer are untouched — the scope gates the announcement, not
+    # the run. Without this half, deleting the whole feature would also pass.
+    assert "run_status" in denied and "final" in denied
+
+    _stub_fiber(monkeypatch, statuses=["running", "running"])
+    allowed = _names(await _stream("sk-ops"))
+    assert "approval_required" in allowed, (
+        "the scope that grants this on /approvals does not grant it on the stream"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_failing_approvals_read_does_not_take_the_run_stream_down(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Degrade to transcript-and-status, the same way a failed session read degrades.
+
+    The answer still arrives on `final`, which is everything this endpoint promised before
+    either tail existed.
+    """
+    settings = _settings("tail-approval-raises")
+    thread = "default:appr-raises"
+    _force_durable(monkeypatch)
+    await _gate(settings, thread, ttl_seconds=300)
+
+    from felix.approvals import store as approvals_store
+
+    async def _boom(*a: Any, **k: Any) -> Any:
+        raise RuntimeError("approvals store down")
+
+    monkeypatch.setattr(approvals_store, "list_approvals", _boom)
+
+    async def worker_ran_a_turn() -> None:
+        await _append(settings, thread, *_turn())
+
+    _stub_fiber(monkeypatch, on_poll=[worker_ran_a_turn], statuses=["running"])
+
+    async with _client(settings) as client:
+        body = await _post_stream(client, "appr-raises")
+
+    names = _names(body)
+    assert "approval_required" not in names
+    assert "session_event" in names, "a failing approvals read took the transcript with it"
+    assert "final" in names, "a failing approvals read took the answer with it"
