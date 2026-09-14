@@ -297,6 +297,24 @@ def durable_thread(tenant_id: str, accepted: dict[str, Any]) -> str:
     return fiber_thread_id(tenant_id, fiber_id) if fiber_id else ""
 
 
+def _has_lapsed(expires_at: Any, now_ms: float) -> bool:
+    """Whether a gate's deadline has passed. Never raises on a malformed value.
+
+    `drain` promises it never raises, and the promise has to survive the comparison as well as
+    the store read. `expires_at` is `BigInteger` on both arms today, so a non-numeric value is
+    unreachable — but the alternative to this guard is an exception escaping mid-body, and
+    `durable_run_gen` has no top-level handler, so a client would see a truncated connection
+    with no `error:` frame and no `[DONE]`: the exact failure `error_frame` exists to prevent.
+    An unreadable deadline means "I cannot say it lapsed", which keeps the prompt visible.
+    """
+    if expires_at is None:
+        return False
+    try:
+        return float(expires_at) < now_ms
+    except TypeError, ValueError:
+        return False
+
+
 def approval_required_frame(row: dict[str, Any]) -> str:
     """One `approval_required` SSE frame, rebuilt from a pending approvals row.
 
@@ -442,8 +460,13 @@ class DurableTail:
             # the retention sweep, so these accumulate forever. `find_approved` filters expiry
             # in its own WHERE for the authorization half; this is the display half of the
             # same fact, and without it a stream opens with a prompt that timed out weeks ago.
-            expires_at = row.get("expires_at")
-            if expires_at is not None and float(expires_at) < now:
+            #
+            # `now` is *this* host's clock while `expires_at` was written by whichever process
+            # created the row -- the worker, on a durable run. Skew larger than the gate's TTL
+            # would suppress announcements the poll still lists, which is an NTP problem rather
+            # than something to compensate for here, but it is the reason the poll stays the
+            # channel of record.
+            if _has_lapsed(row.get("expires_at"), now):
                 continue
             self._announced.add(approval_id)
             frames.append(approval_required_frame(row))
@@ -559,67 +582,80 @@ async def durable_run_gen(
     """
     from felix.durability.runs import get_durable_run
 
-    token = str(accepted.get("resume_token") or "")
-    yield frame({"event": "run_accepted", "data": accepted})
+    try:
+        token = str(accepted.get("resume_token") or "")
+        yield frame({"event": "run_accepted", "data": accepted})
 
-    poll = float(getattr(settings, "stream_resume_poll_seconds", 1.0) or 1.0)
-    poll_max = max(poll, float(getattr(settings, "stream_resume_poll_max_seconds", 10.0) or 10.0))
-    # The run's own TTL bounds this, not the resume stream's idle limit: a durable run
-    # that outlives its expiry is finished either way, and holding the connection past
-    # that point would keep a worker busy for a result that can no longer arrive. So the
-    # pacing here is asked for its interval and never for `exhausted` — hence the
-    # infinite idle limit rather than a second set of backoff rules.
-    deadline = float(accepted.get("expires_at") or 0) or None
+        poll = float(getattr(settings, "stream_resume_poll_seconds", 1.0) or 1.0)
+        poll_max = max(poll, float(getattr(settings, "stream_resume_poll_max_seconds", 10.0) or 10.0))
+        # The run's own TTL bounds this, not the resume stream's idle limit: a durable run
+        # that outlives its expiry is finished either way, and holding the connection past
+        # that point would keep a worker busy for a result that can no longer arrive. So the
+        # pacing here is asked for its interval and never for `exhausted` — hence the
+        # infinite idle limit rather than a second set of backoff rules.
+        deadline = float(accepted.get("expires_at") or 0) or None
 
-    # `notified_ceiling=poll_max`, deliberately, and this is the one place that needs to
-    # say why. The long notified ceiling exists because a stream whose only source is the
-    # session log polls as a safety net once wakes are being delivered. This loop polls a
-    # *second* resource — the durable run row — and the fiber's status write publishes no
-    # thread notification, so a wake being delivered says nothing about it. Left at the
-    # default, a run that appends nothing for a few minutes (queued, a long tool call, a
-    # fiber that died before its first append) would report its status up to a minute late.
-    pacing = ResumePacing(floor=poll, ceiling=poll_max, idle_limit=math.inf, notified_ceiling=poll_max)
-    last_status = ""
+        # `notified_ceiling=poll_max`, deliberately, and this is the one place that needs to
+        # say why. The long notified ceiling exists because a stream whose only source is the
+        # session log polls as a safety net once wakes are being delivered. This loop polls a
+        # *second* resource — the durable run row — and the fiber's status write publishes no
+        # thread notification, so a wake being delivered says nothing about it. Left at the
+        # default, a run that appends nothing for a few minutes (queued, a long tool call, a
+        # fiber that died before its first append) would report its status up to a minute late.
+        pacing = ResumePacing(floor=poll, ceiling=poll_max, idle_limit=math.inf, notified_ceiling=poll_max)
+        last_status = ""
 
-    async with durable_tail(
-        settings, tenant_id, accepted, from_seq, may_read_approvals=may_read_approvals
-    ) as tail:
-        while True:
-            run = await get_durable_run(settings, tenant_id, token)
-            if run is None:
-                yield error_frame(f"run_not_found:{token}", kind="run_error")
-                break
-            status = str(run.get("status") or "")
-            # Drained *after* the status read and *before* the terminal check, so a run
-            # that completed between two iterations still emits the turns it appended
-            # before it flipped the row. The fiber writes the transcript and then saves
-            # `completed`, so this ordering is what makes "every event, then `final`" true
-            # rather than usually true.
-            frames = await tail.drain()
-            for frame_text in frames:
-                yield frame_text
-            progressed = bool(frames)
-            if status != last_status:
-                last_status = status
-                progressed = True
-                yield frame({"event": "run_status", "data": {"status": status, "resume_token": token}})
-            if status in RUN_TERMINAL:
-                if status == "completed":
-                    yield frame({"event": "final", "data": run.get("final") or {}})
-                else:
-                    yield error_frame(str(run.get("error") or status), kind="run_error")
-                break
-            if deadline and time.time() * 1000 >= deadline:
-                # Says which it was. "expired" and "still running" look identical to a
-                # client that only sees the stream close.
-                yield error_frame(f"run_expired:{token}", kind="run_error")
-                break
-            pacing.observed(progressed)
-            yield KEEP_ALIVE
-            # Wait for the thread to move rather than sleeping through it. The status
-            # query above runs either way, so a dropped notification costs latency and
-            # never correctness -- the same property the reattach stream relies on.
-            pacing.waited(await tail.wait(timeout=pacing.timeout))
+        async with durable_tail(
+            settings, tenant_id, accepted, from_seq, may_read_approvals=may_read_approvals
+        ) as tail:
+            while True:
+                run = await get_durable_run(settings, tenant_id, token)
+                if run is None:
+                    yield error_frame(f"run_not_found:{token}", kind="run_error")
+                    break
+                status = str(run.get("status") or "")
+                # Drained *after* the status read and *before* the terminal check, so a run
+                # that completed between two iterations still emits the turns it appended
+                # before it flipped the row. The fiber writes the transcript and then saves
+                # `completed`, so this ordering is what makes "every event, then `final`" true
+                # rather than usually true.
+                frames = await tail.drain()
+                for frame_text in frames:
+                    yield frame_text
+                progressed = bool(frames)
+                if status != last_status:
+                    last_status = status
+                    progressed = True
+                    yield frame({"event": "run_status", "data": {"status": status, "resume_token": token}})
+                if status in RUN_TERMINAL:
+                    if status == "completed":
+                        yield frame({"event": "final", "data": run.get("final") or {}})
+                    else:
+                        yield error_frame(str(run.get("error") or status), kind="run_error")
+                    break
+                if deadline and time.time() * 1000 >= deadline:
+                    # Says which it was. "expired" and "still running" look identical to a
+                    # client that only sees the stream close.
+                    yield error_frame(f"run_expired:{token}", kind="run_error")
+                    break
+                pacing.observed(progressed)
+                yield KEEP_ALIVE
+                # Wait for the thread to move rather than sleeping through it. The status
+                # query above runs either way, so a dropped notification costs latency and
+                # never correctness -- the same property the reattach stream relies on.
+                pacing.waited(await tail.wait(timeout=pacing.timeout))
+    except asyncio.CancelledError:
+        # The client hung up. The *run* survives -- that is what durable means -- so let the
+        # cancellation through untouched rather than reporting a failure for work still going.
+        raise
+    except Exception as exc:
+        # Mirrors `resume_stream_gen`. Without it an unexpected raise ends the body mid-stream
+        # under an already-sent 200, with no `error:` frame and no `[DONE]`, and a client
+        # cannot tell a truncated connection from a finished one. The sibling loop has had
+        # this since it was written; this one did not, which is an asymmetry rather than a
+        # decision.
+        logger.exception("durable run stream failed token=%s", loggable(token, limit=80))
+        yield error_frame(client_safe_message(exc), kind="run_error")
     yield DONE
 
 

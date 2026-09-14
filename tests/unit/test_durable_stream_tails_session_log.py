@@ -841,6 +841,38 @@ async def test_a_chat_scoped_caller_is_not_told_what_the_run_is_blocked_on(
 
 
 @pytest.mark.asyncio
+async def test_an_unexpected_failure_closes_the_stream_with_an_error_not_a_truncation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A raise mid-body must not end the response silently.
+
+    The status read and the tail both degrade on their own, so this is about everything
+    else: under an already-sent `200 OK`, an unhandled exception ends the body with no
+    `event: error` and no `[DONE]`, and a client cannot tell a truncated connection from a
+    finished one. `resume_stream_gen` has guarded this since it was written; the durable loop
+    did not, which was an asymmetry rather than a decision.
+    """
+    settings = _settings("tail-boom")
+    _force_durable(monkeypatch)
+    _stub_fiber(monkeypatch, statuses=["running"])
+
+    import felix_api.routes._streaming as streaming_mod
+
+    def _boom(*a: Any, **k: Any) -> str:
+        raise RuntimeError("frame builder exploded")
+
+    monkeypatch.setattr(streaming_mod, "frame", _boom)
+
+    async with _client(settings) as client:
+        body = await _post_stream(client, "boom")
+
+    assert "event: error" in body, f"the stream ended without saying it failed: {body[-200:]}"
+    assert body.rstrip().endswith("[DONE]"), "the stream ended without terminating the protocol"
+    # The message is client-safe, not a traceback.
+    assert "Traceback" not in body
+
+
+@pytest.mark.asyncio
 async def test_a_failing_approvals_read_does_not_take_the_run_stream_down(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
