@@ -228,13 +228,17 @@ live again. Revisit after the first three land, on evidence, not before.
       (under-reporting by construction, since `create_pending` reuses a row across threads). This
       matters most on the durable path, where the poll is the only channel and was the half that
       could not say *why*.
-- [ ] **`approvals` is never reclaimed, and `jobs/retention.py` says it is.** That module's
-      docstring lists `approvals` among the tables "bounded by something else ... go with their
-      run or job", but there is no FK, no cascade, and no `delete(Approval)` anywhere — the table
-      is absent from the sweep's `TABLES`. Every gate firing writes a row and nothing removes it.
-      Found by the security review on #245, which also bounded the largest field (`reason`,
-      truncated at 2048 on the way in, since it is tenant-author text). Either sweep decided
-      approvals older than a TTL, or correct the docstring — but not both silently.
+- [x] **`approvals` can be reclaimed, and `jobs/retention.py` stopped claiming it already was.**
+      The docstring listed the table as "bounded by ... its run or job"; there is no FK, no
+      cascade and no `delete(Approval)` anywhere, so it grew for the life of the deployment, and
+      nothing moves a timed-out row off `pending` either. Closed by *both* halves of the choice
+      this entry offered, because they were not alternatives: `FELIX_APPROVAL_RETENTION_DAYS`
+      (default 0 = keep) sweeps **settled** rows on both backends, and the docstring now says
+      what is and is not bounded. Settled is the exact negation of `find_approved`'s predicate —
+      an unexpired `approved` grant is never swept however old, and neither is one with a null
+      `expires_at`, because retention must not silently revoke authorization from a cron job.
+      Off by default, matching session retention: the row is the record of a human decision and
+      the `soc2` / `eu_ai_act` profiles lean on it.
 - [ ] **`tool_call_id` is provider input spliced into a `:`-delimited waiter key.**
       `tools/client_bridge.py:31` builds `f"client:{thread_id}:{tool_call_id}"` with no escaping,
       and the id comes straight off the wire (`wire/openai_completions.py:246`, no charset or
