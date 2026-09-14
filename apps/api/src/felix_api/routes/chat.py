@@ -9,6 +9,7 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+from felix.auth.mgmt import SCOPE_APPROVALS_READ, holds_mgmt_scopes
 from felix.context import AuthContext, RequestContext, async_run_with_context, get_context, try_get_context
 from felix.governance.inbound import INBOUND_SCREENED_EXTRA
 from felix.idempotency import (
@@ -578,6 +579,15 @@ async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
                 tenant_id=auth.tenant_id,
                 accepted=accepted,
                 from_seq=from_seq,
+                # Gated on the *management* scope, not on this route's auth. `thread_id` is
+                # client-supplied, so the run's thread is a question the caller chose rather
+                # than one they necessarily own — nothing in Felix binds a thread to a
+                # principal, and `GET /chat/stream/{thread_id}` demonstrates that already.
+                # Without the check, a chat-scoped caller could name any thread in the tenant
+                # and read the tool names, arguments and gate reasons it is blocked on,
+                # which `GET /approvals` would have refused them. A caller without the scope
+                # gets the transcript and the answer, exactly as before this existed.
+                may_read_approvals=holds_mgmt_scopes(settings, auth.scopes, SCOPE_APPROVALS_READ),
             )
         )
 

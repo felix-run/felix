@@ -591,11 +591,38 @@ Approvals are matched on `(tenant, manifest, tool, sha256(args))` and stored in 
 (no request context, store error, waiter timeout) denies.
 
 **What an operator sees, on either channel.** A pending row and the `approval_required` stream
-frame now carry the same story: `rule_id`, `reason` (the rule's `description`, or the finding
-for a command-screening gate), `thread_id`, `tool_call_id`, and `expires_at`. That symmetry
-matters most where there is no choice of channel — a **durable** run's agent is in the worker
-while its stream is served by the API, so no side event can cross and `GET /approvals` is the
-whole channel. It was previously the half that could not say *why* a gate fired.
+frame carry the same story: `rule_id`, `reason` (the rule's `description`, or the finding for a
+command-screening gate), `thread_id`, `tool_call_id`, and `expires_at`.
+
+That symmetry is what lets a **durable** run announce a gate at all. Its agent runs in the
+worker while its stream is served by the API, so the in-process side event cannot cross — and
+`GET /approvals` was the whole channel, on precisely the path where a human has time to answer.
+`POST /chat/stream` on a durable manifest now reads the pending rows for the run's thread and
+**rebuilds** the frame from them, rather than forwarding a message across a bus. The difference
+matters: a dropped pub/sub message *is* the lost prompt, and the run would block its full
+`ttl_seconds` and then deny with nobody ever asked, whereas a missed poll costs only latency.
+It also means a client attaching *after* the gate fired still sees it.
+
+**The stream frames need `approvals:read`, the same scope `GET /approvals` needs.** Without it a
+durable run still streams its transcript, its status and its answer, and simply says nothing
+about gates. This is not belt-and-braces: `thread_id` is supplied by the caller, so the thread a
+durable run names is a question the caller *chose* rather than one they own — nothing in Felix
+binds a thread to a principal. Ungated, a caller holding only chat access could name any thread
+in the tenant and read the tool names, full arguments and gate reasons it is blocked on, which
+is precisely what the management route refuses them. `admin`/`*` bypass and `approvals:write`
+implies `approvals:read`, exactly as on the route, because both ask the same function.
+
+Each approval is announced once per stream. `GET /approvals` answers "what is pending now", so
+the row returns on every poll until it is decided; re-showing a prompt someone has already
+answered is worse than showing it late. A **decided or expired** approval is never announced —
+both are history, not a question. (Nothing moves a timed-out gate off `pending`: the waiter
+returns a denial and writes nothing back, and `approvals` is not swept by retention, so stale
+rows accumulate. `find_approved` filters expiry for the authorization half; the announcement
+filters it for the display half.)
+
+And the **poll remains the channel of record**: a stream that was never open, or that dropped
+before the gate fired, sees nothing, which is why `felix doctor` and the operator console read
+`/approvals` rather than depending on an attached stream.
 
 `reason` and `tool_call_id` are empty on rows written before migration
 `0015_approval_reason_and_call`, and on gates that genuinely have neither — a command-screening
@@ -795,7 +822,7 @@ implies the matching `*:read`.
 | `manifests:read` / `manifests:write` | `/manifests` |
 | `audit:read` | `/audit` |
 | `artifacts:read` | `/artifacts` — read back a tool output too large to keep in the transcript. Its own scope rather than part of `audit:read`, because a spilled result is raw tool output and often the most sensitive data a run touches |
-| `approvals:read` / `approvals:write` | `/approvals` |
+| `approvals:read` / `approvals:write` | `/approvals`; `approvals:read` also gates the `approval_required` frames on a durable `POST /chat/stream` |
 | `jobs:read` / `jobs:write` | `/jobs` |
 | `plans:read` / `plans:write` | `/plans` |
 | `eval:read` / `eval:write` | `/eval` |

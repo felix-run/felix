@@ -243,20 +243,21 @@ live again. Revisit after the first three land, on evidence, not before.
       the same thread. This is the repo's named defect shape: a value validated for one grammar
       re-serialized into another. Pre-existing; surfaced while tracing the id's provenance for
       #245, which puts it in a bound parameter and a JSON payload and so crosses nothing itself.
-- [ ] **Approvals reach the durable path.** `side_events` is a process-local
-      `dict[str, asyncio.Queue]`, so on a fiber the `approval_required` emit lands in the
-      worker's own memory and is unreachable by construction — on precisely the path where a
-      human would have time to respond. Route it through the Redis layer `session/notify.py`
-      already built in `#93`. Correction from the 2026-09-04 readiness audit: the *decision*
-      does cross — `waiters.py` is a Redis `BLPOP` and the API's approve reaches the worker's
-      fiber. What did not was the no-Redis case, where the waiter silently became a
-      process-local future; `FELIX_REDIS_URL` is now required outside development and a
-      configured Redis that is down is logged at warning. The event-side gap above stands, and
-      #238 sharpens it: the `emit_side_event` call in the approvals wrapper is *not* gated by
-      `emit_events`, so a fiber does queue the frame — it is the `drain_side_events` loop that
-      sits inside `if emit_events:`, and `invoke` never runs it. So publishing at the emit is
-      still the shape of the fix. Note that the session-log tail #238 added does not cover this:
-      an approval request is never written to the session log, only tool results are.
+- [x] **Approvals reach the durable path.** Closed in two halves, and *not* the way this entry
+      proposed. It said to route `side_events` through the Redis layer from `#93`; that would have
+      been wrong for the reason the Valkey bridge was wrong on #238, and the reason is in
+      `notify.py`'s own docstring: "the notification is a hint, never the source of truth", because
+      every wake re-reads Postgres. Pub/sub is at-most-once, and here the message *is* the frame —
+      a dropped one means the run blocks its whole `ttl_seconds` and then denies with no human ever
+      asked. So instead: felix#245 put `reason` and `tool_call_id` on the approvals row (the frame
+      carried them, the row did not), and the durable stream now reads the pending rows for its
+      thread and **rebuilds** `approval_required` from them. Same principle as the transcript tail,
+      applied to the half the session log cannot carry — `_append_produced` writes assistant turns
+      and tool results, and a request for permission is neither. Announced once per stream, deduped
+      by id because `list_approvals` answers "what is pending" and has no cursor; thread-scoped,
+      because `GET /approvals` is tenant-wide and every pending approval in the tenant on one run's
+      stream would leak other conversations' tool names and arguments. The poll remains the channel
+      of record: a stream that was never open sees nothing.
 - [ ] **Signed completion webhooks**, delivered from the **worker** — the fiber reaches terminal
       state under its cron and the API replica that accepted the request may be gone. Dead letter
       is `status='dead'` on the same durable row, not a second store. `spec.webhooks` selects
