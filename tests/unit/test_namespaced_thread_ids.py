@@ -37,8 +37,11 @@ def test_a_usable_id_is_composed_the_way_it_always_was() -> None:
     ("label", "task_id"),
     [
         ("`#` mints a thread `/internal` refuses", "has#hash"),
-        ("an empty id would collapse every such task onto one thread", ""),
         ("an oversized id breaks the btree index row", "x" * MAX_THREAD_ID),
+        # `message/send` substitutes a `uuid4` for a missing `taskId`, so this one is the
+        # composer refusing to build a thread that names no task rather than a reachable
+        # call. Kept because the composer is what the next namespace will reuse.
+        ("an empty id", ""),
     ],
 )
 def test_an_unusable_a2a_task_id_yields_no_thread(label: str, task_id: str) -> None:
@@ -48,11 +51,14 @@ def test_an_unusable_a2a_task_id_yields_no_thread(label: str, task_id: str) -> N
 @pytest.mark.parametrize(
     ("label", "run_id", "item_id"),
     [
+        # Reachable: `item_id` is whatever the dataset author wrote.
         ("`#` in the item", "run-7", "item#3"),
         ("an oversized item id", "run-7", "x" * MAX_THREAD_ID),
+        # Not reachable today, and kept anyway: `run_id` is a `uuid4().hex` and
+        # `put_dataset` mints one for an item that carries no id, so these four are the
+        # composer holding a line nothing currently crosses. It is the line the next
+        # namespace will inherit, and `test_a2a_eval.py` pins the minting they rely on.
         ("an empty item id", "run-7", ""),
-        # `run_id` is a `uuid4().hex` today, so these three are the composer holding a line
-        # nothing currently crosses rather than a reachable failure.
         ("`#` in the run id", "run#7", "item-3"),
         ("a separator in the run id, which is not the permissive segment", "run:7", "item-3"),
         ("an empty run id", "", "item-3"),
@@ -83,6 +89,15 @@ def test_everything_they_return_is_addressable() -> None:
         assert thread is not None  # narrowed above; keeps the type checker honest
         assert thread_belongs_to_tenant(tenant, thread), f"{thread!r} is not addressable"
 
+    # The boundary, because the assertions above can only ever see values a correct
+    # composer returned — they cannot catch an off-by-one in the cap itself. `/internal`
+    # measures the same limit, so the longest id this mints has to be one it still accepts.
+    longest = "x" * (MAX_THREAD_ID - len("acme:a2a:"))
+    at_limit = a2a_thread_id("acme", longest)
+    assert at_limit is not None and len(at_limit) == MAX_THREAD_ID, at_limit
+    assert thread_belongs_to_tenant("acme", at_limit), "the longest id it mints is unaddressable"
+    assert a2a_thread_id("acme", longest + "x") is None, "one character over was accepted"
+
 
 def test_the_separator_is_legal_in_the_caller_supplied_segment() -> None:
     """Deliberate, and the one place this is looser than `effective_thread_id`.
@@ -98,27 +113,23 @@ def test_the_separator_is_legal_in_the_caller_supplied_segment() -> None:
     assert eval_thread_id("acme", "run:7", "item") is None
 
 
-def test_no_namespace_can_name_another_namespaces_thread() -> None:
-    """Injectivity, which is why only the caller's segment may carry `:`.
+def test_the_pair_that_would_share_a_thread_is_refused_on_one_side() -> None:
+    """Injectivity, stated as the collision it prevents rather than as a property.
 
-    A bare `":".join` over parts that may all contain the separator lets one namespace
-    compose another's id — the shape that made a waiter key forgeable in felix#250. Here
-    the cost would be two runs sharing a session log rather than a forged answer, but it is
-    the same mistake and cheaper not to make twice.
+    A bare `":".join` over segments that may all contain the separator lets two different
+    argument tuples compose one id — the shape that made a waiter key forgeable in
+    felix#250. For an eval run the concrete pair is `(run "r:i", item "z")` against
+    `(run "r", item "i:z")`: both join to `acme:eval:r:i:z`, so two items would share a
+    session log. Here the cost is interleaved transcripts rather than a forged answer, but
+    it is the same mistake and cheaper not to make twice.
 
-    Each namespace has its own composer with its own arity, so *which* segment is
-    permissive is fixed by a signature rather than by how many arguments a call site
-    happens to pass. That was the other half of the same hazard: with one variadic helper,
-    adding a trailing segment to the A2A id would quietly move `task_id` out of the
-    permissive slot and start refusing the `urn:uuid:…` ids the test above pins.
+    The permissive segment is the *last* one, so the pair is broken by refusing the first
+    of the two rather than by mangling either id — and the second, which is the shape a
+    real `urn:uuid:` item id takes, still composes.
     """
-    minted = [
-        a2a_thread_id("acme", "x:y"),
-        eval_thread_id("acme", "x", "y"),
-        eval_thread_id("acme", "run-7", "item-3"),
-        eval_thread_id("acme", "run-7", "item-3:extra"),
-    ]
-    assert len(set(minted)) == len(minted), f"two namespaces composed one id: {minted}"
+    collides_with = eval_thread_id("acme", "r", "i:z")
+    assert collides_with == "acme:eval:r:i:z"
+    assert eval_thread_id("acme", "r:i", "z") is None, "two eval items can share one thread"
 
 
 def test_the_tenant_prefix_is_still_the_boundary() -> None:
