@@ -625,9 +625,10 @@ Each approval is announced once per stream. `GET /approvals` answers "what is pe
 the row returns on every poll until it is decided; re-showing a prompt someone has already
 answered is worse than showing it late. A **decided or expired** approval is never announced —
 both are history, not a question. (Nothing moves a timed-out gate off `pending`: the waiter
-returns a denial and writes nothing back, and `approvals` is not swept by retention, so stale
-rows accumulate. `find_approved` filters expiry for the authorization half; the announcement
-filters it for the display half.)
+returns a denial and writes nothing back. `find_approved` filters expiry for the authorization
+half and the announcement filters it for the display half, so a stale row is inert either way —
+but it still occupies the table until `FELIX_APPROVAL_RETENTION_DAYS` is set, which is what
+actually reclaims it.)
 
 And the **poll remains the channel of record**: a stream that was never open, or that dropped
 before the gate fired, sees nothing, which is why `felix doctor` and the operator console read
@@ -649,7 +650,8 @@ about; `?thread_id=` (empty) means "approvals with no thread" and is distinct fr
 created and never changed. `decision_note` is the *decider's*, set when someone approves or
 denies. Neither is the denial text the tool returns to the model, which is composed at the call
 site and persisted nowhere. `reason` is truncated at 2048 characters on the way in — it comes
-from a tenant-scoped manifest author, and these rows are not swept by retention.
+from a tenant-scoped manifest author, and the table is unbounded until an operator sets
+`FELIX_APPROVAL_RETENTION_DAYS`.
 
 `command_screening` rules with `decision: require_approval` go through the same flow and
 wait up to `command_screening.approval_ttl_seconds` (default 300).

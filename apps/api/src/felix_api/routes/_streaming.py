@@ -65,7 +65,8 @@ NOTIFIED_POLL_CEILING_SECONDS = 60.0
 # announced, and since a timed-out gate never leaves `pending` that is reachable by
 # accumulation rather than by concurrency. A run blocks on one gate at a time, so a thread
 # legitimately over this limit is a thread whose backlog an operator should be reading in
-# `GET /approvals` anyway.
+# `GET /approvals` anyway. `FELIX_APPROVAL_RETENTION_DAYS` is what keeps the accumulation
+# from reaching here at all, and it is off by default, so this bound still earns its place.
 APPROVAL_ANNOUNCE_LIMIT = 50
 
 

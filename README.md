@@ -208,7 +208,9 @@ zero cloud SDKs.
 - Retention: the worker's nightly sweep prunes `audit_events`, `usage_events`, finished `fibers`
   and `a2a_tasks`, and (off by default) idle session threads — `FELIX_AUDIT_RETENTION_DAYS` (30),
   `FELIX_USAGE_RETENTION_DAYS` (365), `FELIX_FIBER_RETENTION_DAYS` (7), `FELIX_SESSION_RETENTION_DAYS`
-  (0 = keep); a manifest's `governance.retention_days` shortens the audit TTL for its own rows
+  (0 = keep), `FELIX_APPROVAL_RETENTION_DAYS` (0 = keep, and only *settled* approvals — a grant
+  that can still authorize is never swept); a manifest's `governance.retention_days` shortens the
+  audit TTL for its own rows
 
 **Sizing.** Each worker process carries its own connection pool, so raise the two together:
 `FELIX_WORKERS` (1) and `FELIX_DB_POOL_SIZE` (10) + `FELIX_DB_MAX_OVERFLOW` (20) — past that
