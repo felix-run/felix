@@ -239,14 +239,17 @@ live again. Revisit after the first three land, on evidence, not before.
       `expires_at`, because retention must not silently revoke authorization from a cron job.
       Off by default, matching session retention: the row is the record of a human decision and
       the `soc2` / `eu_ai_act` profiles lean on it.
-- [ ] **`tool_call_id` is provider input spliced into a `:`-delimited waiter key.**
-      `tools/client_bridge.py:31` builds `f"client:{thread_id}:{tool_call_id}"` with no escaping,
-      and the id comes straight off the wire (`wire/openai_completions.py:246`, no charset or
-      length check) — server-minted for the major vendors, model-influenced for a self-hosted
-      OpenAI-compatible endpoint. An id containing `:` can collide with another call's key inside
-      the same thread. This is the repo's named defect shape: a value validated for one grammar
-      re-serialized into another. Pre-existing; surfaced while tracing the id's provenance for
-      #245, which puts it in a bound parameter and a JSON payload and so crosses nothing itself.
+- [x] **`tool_call_id` was provider input spliced into a `:`-delimited waiter key.** Closed, and
+      the entry understated it: the collision needs no hostile `tool_call_id` at all, because
+      *`thread_id` already contains colons* -- `{tenant}:{suffix}`, and `{tenant}:fiber:{id}` for a
+      durable run. `fiber` is a legal thread suffix, so a caller can create `acme:fiber` and post a
+      `tool_result` for call `F123:call_9`, forging the waiter of the durable run on
+      `acme:fiber:F123` answering `call_9`, and satisfying its pending client tool with content
+      they chose. Same tenant only; the tenant prefix cannot be forged. Waiter names now go through
+      `waiters.waiter_name`, which percent-encodes each part (`%` before `:`) so the join is
+      injective; approval and UI names are byte-identical since their ids are a uuid and a
+      `token_urlsafe`. The repo's named defect shape, and worth noting that the *second* grammar
+      here was one the harness minted itself rather than one it received.
 - [x] **Approvals reach the durable path.** Closed in two halves, and *not* the way this entry
       proposed. It said to route `side_events` through the Redis layer from `#93`; that would have
       been wrong for the reason the Valkey bridge was wrong on #238, and the reason is in

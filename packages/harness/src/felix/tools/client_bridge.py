@@ -17,6 +17,7 @@ from felix.tools.types import (
 )
 from felix.waiters import signal as waiter_signal
 from felix.waiters import wait as waiter_wait
+from felix.waiters import waiter_name
 
 DEFAULT_TIMEOUT_SECONDS = 120.0
 
@@ -28,7 +29,14 @@ class ClientToolResult:
 
 
 def _name(thread_id: str, tool_call_id: str) -> str:
-    return f"client:{thread_id}:{tool_call_id}"
+    """The waiter a pending client tool is answered through.
+
+    Two parts, both of which can contain the separator -- `thread_id` legitimately
+    (`{tenant}:{suffix}`, or `{tenant}:fiber:{id}`) and `tool_call_id` because it arrives
+    off the model wire unvalidated. `waiter_name` is what keeps the pair injective; an
+    f-string here let one thread's call forge another's key. See its docstring.
+    """
+    return waiter_name("client", thread_id, tool_call_id)
 
 
 async def wait_for_result(

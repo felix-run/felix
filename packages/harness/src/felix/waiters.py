@@ -24,6 +24,33 @@ def _key(name: str) -> str:
     return f"{_PREFIX}{name}"
 
 
+def waiter_name(kind: str, *parts: str) -> str:
+    """Compose a waiter name from parts that cannot be confused with each other.
+
+    A waiter name is a *key*: whoever can construct it can answer the wait. So the join has
+    to be injective — two different part-tuples must never produce the same name — and
+    `":".join(...)` is not, once any part may contain the separator.
+
+    It could, and did. `client:{thread_id}:{tool_call_id}` was built with a bare f-string
+    while `thread_id` legitimately carries colons (`{tenant}:{suffix}`, and
+    `{tenant}:fiber:{id}` for a durable run) and `tool_call_id` arrives off the model wire
+    with no charset check at all (`wire/openai_completions.py` takes `str(tc.get("id"))`).
+    Two examples that collided:
+
+        thread `acme:fiber:F123`, call `call_9`   ->  client:acme:fiber:F123:call_9
+        thread `acme:fiber`,      call `F123:call_9` ->  client:acme:fiber:F123:call_9
+
+    and `fiber` is a perfectly legal thread suffix, so the second is a thread any caller in
+    that tenant can create. Answering the forged key satisfies the durable run's pending
+    client tool with content the forger chose.
+
+    Percent-encoding, `%` first so the escape cannot itself be forged. The result is never
+    parsed back — injectivity is the whole requirement — but it stays readable in a log line
+    and in `redis-cli --scan`, which a hash would not.
+    """
+    return ":".join([kind, *(p.replace("%", "%25").replace(":", "%3A") for p in parts)])
+
+
 #: How long a single BLPOP may block, in seconds.
 #:
 #: Must stay below the client's `socket_timeout`. BLPOP blocks server-side while the
@@ -108,4 +135,4 @@ async def signal(name: str, payload: dict[str, Any]) -> bool:
         return True
 
 
-__all__ = ["signal", "wait"]
+__all__ = ["signal", "wait", "waiter_name"]
