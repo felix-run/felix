@@ -97,14 +97,24 @@ now_ms = lambda: int(time.time() * 1000)
 def _approval_settled(status: Any, expires_at: Any, now: int) -> bool:
     """Whether this approval can no longer authorize a call, and so is safe to delete.
 
-    The inverse of `find_approved`'s own predicate, deliberately written as one function so
-    the two cannot drift: it authorizes when the row is `approved` **and** either has no
-    expiry or has not reached it. Anything else -- pending, denied, or an approved grant past
-    its deadline -- can never authorize again.
+    The inverse of `find_approved`'s own predicate: it authorizes when the row is `approved`
+    **and** either has no expiry or has not reached it. Anything else -- pending, denied, or
+    an approved grant past its deadline -- can never authorize again.
+
+    This is the memory arm's half; the Postgres arm expresses the same rule in SQL below, and
+    `find_approved` expresses its positive twice more. Four expressions of one rule, and no
+    comment can hold them together -- so `test_retention_keeps_exactly_what_find_approved_
+    could_still_return` does not restate the predicate, it *calls* `find_approved` and
+    requires the survivors to be exactly the rows it would still return.
 
     A null `expires_at` on an approved row is a *standing* grant (the rule set no
     `ttl_seconds`), so it is never settled however old the row is. Retention deleting it
     would revoke a permission an operator granted, silently, from a cron job.
+
+    `consumed_at` is deliberately absent: `one_shot` lives on the manifest rule rather than
+    the row, so a consumed grant still authorizes a tool whose rule is not one-shot, and
+    treating "spent" as "settled" would revoke exactly those. The `consumed` row in that test
+    is what stops a future reader making that edit -- it looks obviously right.
     """
     if str(status or "") != "approved":
         return True

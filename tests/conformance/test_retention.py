@@ -459,65 +459,103 @@ async def test_manifests_are_resolved_under_the_rls_bypass(
 # --- approvals -------------------------------------------------------------------------------
 
 
-async def _seed_approval(settings: Any, *, sig: str, ttl: int | None, decision: str | None) -> str:
+async def _seed_approval(
+    settings: Any, *, sig: str, ttl: int | None, decision: str | None, tenant: str = TENANT
+) -> str:
     """One approval row, written through the real store and optionally decided."""
-    from felix.approvals import store as approvals_store
-
     row = await approvals_store.create_pending(
         settings,
-        TENANT,
+        tenant,
         tool_name="write_file",
         call_signature=sig,
         manifest_id="m",
         ttl_seconds=ttl,
     )
     if decision is not None:
-        await approvals_store.decide(settings, TENANT, row["id"], decision=decision, decided_by="operator")
+        await approvals_store.decide(settings, tenant, row["id"], decision=decision, decided_by="operator")
     return str(row["id"])
 
 
 @parametrized
 @pytest.mark.asyncio
-async def test_retention_never_revokes_a_grant_that_can_still_authorise(
+async def test_retention_keeps_exactly_what_find_approved_could_still_return(
     retention_settings: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The property the whole rule exists to preserve.
+    """The property the whole rule exists to preserve, asserted against its own oracle.
 
-    An approval row is a *permission*. Sweeping one that can still authorize a call would
-    revoke it silently, from a cron job, days after an operator granted it — a failure an
-    operator would experience as a tool that used to work and now denies, with nothing in
-    the audit trail explaining why. So the rule deletes only rows `find_approved` could
-    never return: not `approved`, or `approved` with a deadline already passed.
+    An approval row is a *permission*. Sweeping one that can still authorize a call revokes
+    it silently, from a cron job, days after an operator granted it — experienced as a tool
+    that used to work and now denies, with nothing in the audit trail explaining why.
 
-    The two survivors below are the ones a careless `created_at < cutoff` would take.
+    The sweep's condition is meant to be the exact negation of `find_approved`'s. That
+    sentence appears in four places — `_approval_settled`, the SQL parallel beside it, and
+    `find_approved`'s own two arms — and a sentence cannot hold four expressions together.
+    So this does not restate the predicate: it **calls** `find_approved` and requires the
+    survivors to be precisely the rows it would still return. That cannot drift from the
+    thing it checks, and it catches a compensating error no count can — reversing the expiry
+    comparison deletes `live` and keeps `lapsed`, leaving the total unchanged at three.
+
+    Every row here is older than the TTL, so age decides nothing, which is what makes
+    "survivors == authorizing" the right shape. The age half is the next test.
     """
-    from felix.approvals import store as approvals_store
-
     clock = Clock(ms=10 * DAY)
     clock.install(monkeypatch)
     settings = _retention(retention_settings, approval=1)
 
-    # Old enough to sweep, all of them.
-    standing = await _seed_approval(settings, sig="standing", ttl=None, decision="approved")
-    live = await _seed_approval(settings, sig="live", ttl=30 * 24 * 3600, decision="approved")
-    lapsed = await _seed_approval(settings, sig="lapsed", ttl=60, decision="approved")
-    denied = await _seed_approval(settings, sig="denied", ttl=None, decision="denied")
-    stuck = await _seed_approval(settings, sig="stuck", ttl=60, decision=None)
+    ids = {
+        # Approved with no ttl: a standing grant, never settled however old.
+        "standing": await _seed_approval(settings, sig="standing", ttl=None, decision="approved"),
+        "live": await _seed_approval(settings, sig="live", ttl=30 * 24 * 3600, decision="approved"),
+        # Expires *exactly* at the sweep's `now`. `find_approved` authorizes at equality, so a
+        # `<=` here would revoke a grant that is still live this instant.
+        "boundary": await _seed_approval(settings, sig="boundary", ttl=10 * 24 * 3600, decision="approved"),
+        # Approved and spent. `one_shot` lives on the manifest *rule*, not the row, so this
+        # still authorizes a tool whose rule is not one-shot — which is why `consumed_at` is
+        # deliberately absent from the settled test.
+        "consumed": await _seed_approval(settings, sig="consumed", ttl=30 * 24 * 3600, decision="approved"),
+        "lapsed": await _seed_approval(settings, sig="lapsed", ttl=60, decision="approved"),
+        "denied": await _seed_approval(settings, sig="denied", ttl=None, decision="denied"),
+        "stuck": await _seed_approval(settings, sig="stuck", ttl=60, decision=None),
+    }
+    assert await approvals_store.consume_approval(settings, TENANT, ids["consumed"])
+
+    # A second tenant, so "never revoke" is a per-tenant property rather than one that holds
+    # for whichever tenant comes first, and so a sweep that silently scoped itself to one
+    # tenant fails here rather than passing.
+    other_live = await _seed_approval(
+        settings, sig="other-live", ttl=None, decision="approved", tenant="neighbour"
+    )
+    other_settled = await _seed_approval(
+        settings, sig="other-denied", ttl=None, decision="denied", tenant="neighbour"
+    )
 
     clock.ms = 20 * DAY
-    counts = await retention.run_retention_sweep(settings)
 
-    assert counts["approvals"] == 3, counts
-    # Live authorization, untouched however old the row is.
-    assert await approvals_store.get_approval(settings, TENANT, standing) is not None, (
-        "a standing grant (approved, no ttl) was revoked by retention"
+    async def _authorises(sig: str) -> bool:
+        found = await approvals_store.find_approved(
+            settings, TENANT, manifest_id="m", tool_name="write_file", call_signature=sig
+        )
+        return found is not None
+
+    expected = {name for name in ids if await _authorises(name)}
+    assert expected == {"standing", "live", "boundary", "consumed"}, (
+        f"the oracle disagrees with the fixture, so one of them is wrong: {sorted(expected)}"
     )
-    assert await approvals_store.get_approval(settings, TENANT, live) is not None, (
-        "an unexpired grant was revoked by retention"
+
+    await retention.run_retention_sweep(settings)
+
+    survived = {
+        name for name, aid in ids.items() if await approvals_store.get_approval(settings, TENANT, aid)
+    }
+    assert survived == expected, (
+        "retention deleted a row `find_approved` could still return, or kept one it could not"
     )
-    # Settled: cannot authorize again, so safe to reclaim.
-    for gone, why in ((lapsed, "expired grant"), (denied, "denial"), (stuck, "timed-out pending row")):
-        assert await approvals_store.get_approval(settings, TENANT, gone) is None, f"{why} was kept"
+
+    # Swept by the same rule in a second tenant: not exempted, and not spared.
+    assert await approvals_store.get_approval(settings, "neighbour", other_live) is not None
+    assert await approvals_store.get_approval(settings, "neighbour", other_settled) is None, (
+        "the sweep did not reach a second tenant"
+    )
 
 
 @parametrized
@@ -530,7 +568,6 @@ async def test_a_settled_approval_inside_the_ttl_is_kept(
     Without this, a rule that swept every settled row regardless of `created_at` would pass
     the test above — it only ever asserts about rows old enough to go.
     """
-    from felix.approvals import store as approvals_store
 
     clock = Clock(ms=10 * DAY)
     clock.install(monkeypatch)
@@ -555,7 +592,6 @@ async def test_the_approval_sweep_is_off_by_default(
     The row is the record of a human decision on a gated tool, which the `soc2` and
     `eu_ai_act` profiles lean on, so an operator opts in rather than out.
     """
-    from felix.approvals import store as approvals_store
 
     clock = Clock(ms=10 * DAY)
     clock.install(monkeypatch)
