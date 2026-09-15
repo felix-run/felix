@@ -9,6 +9,7 @@ from typing import Any, Literal
 from felix.side_events import emit as emit_side_event
 from felix.waiters import signal as waiter_signal
 from felix.waiters import wait as waiter_wait
+from felix.waiters import waiter_name
 
 DEFAULT_TIMEOUT_SECONDS = 300.0
 UiKind = Literal["select", "confirm", "input"]
@@ -24,7 +25,10 @@ class UiResponse:
 
 
 def _waiter_name(request_id: str) -> str:
-    return f"ui:{request_id}"
+    # One server-minted `secrets.token_urlsafe` part, so nothing here can be ambiguous --
+    # but routed through the shared join anyway, so the next part added to this name is
+    # escaped by construction rather than by whoever remembers.
+    return waiter_name("ui", request_id)
 
 
 async def request_ui(

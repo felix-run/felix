@@ -29,6 +29,7 @@ from felix.session.store import get_session_store
 from felix.session.tree import fork_thread, get_leaf, rewind_to
 from felix.session.types import GetEventsOpts
 from felix.steer import enqueue
+from felix.tools.client_bridge import MAX_TOOL_CALL_ID
 from pydantic import BaseModel, Field
 
 from felix_api.errors import client_safe_message, log_gateway_error
@@ -117,7 +118,9 @@ class ToolResultRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
     thread_id: str = Field(min_length=1)
-    tool_call_id: str = Field(min_length=1)
+    # Capped for the same reason `thread_id` is: both are interpolated into a waiter name,
+    # which becomes a Redis key held for an hour. See `client_bridge.MAX_TOOL_CALL_ID`.
+    tool_call_id: str = Field(min_length=1, max_length=MAX_TOOL_CALL_ID)
     content: str | dict[str, Any] | list[Any] = ""
     error: bool = False
 

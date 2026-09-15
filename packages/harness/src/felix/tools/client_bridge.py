@@ -17,8 +17,19 @@ from felix.tools.types import (
 )
 from felix.waiters import signal as waiter_signal
 from felix.waiters import wait as waiter_wait
+from felix.waiters import waiter_name
 
 DEFAULT_TIMEOUT_SECONDS = 120.0
+
+# The longest `tool_call_id` that may reach a waiter name.
+#
+# It arrives off the model wire uncapped (`wire/openai_completions.py` takes
+# `str(tc.get("id") or "")`) and is interpolated into a Redis key that `signal` holds for an
+# hour. Escaping expands it up to threefold, so an uncapped id is an uncapped key -- the
+# same reason `threads.py` caps `thread_id` at `MAX_THREAD_ID`, which is the rule this repo
+# states as re-validating a value against the grammar it is crossing into rather than only
+# the one it arrived in. Real ids are tens of characters (OpenAI ~29, Anthropic ~24).
+MAX_TOOL_CALL_ID = 256
 
 
 @dataclass(slots=True)
@@ -28,7 +39,14 @@ class ClientToolResult:
 
 
 def _name(thread_id: str, tool_call_id: str) -> str:
-    return f"client:{thread_id}:{tool_call_id}"
+    """The waiter a pending client tool is answered through.
+
+    Two parts, both of which can contain the separator -- `thread_id` legitimately
+    (`{tenant}:{suffix}`, or `{tenant}:fiber:{id}`) and `tool_call_id` because it arrives
+    off the model wire unvalidated. `waiter_name` is what keeps the pair injective; an
+    f-string here let one thread's call forge another's key. See its docstring.
+    """
+    return waiter_name("client", thread_id, tool_call_id)
 
 
 async def wait_for_result(
@@ -76,6 +94,10 @@ class _ClientToolExecutor:
         tool_call_id = (ctx.tool_call_id if ctx else None) or ""
         if not thread_id or not tool_call_id:
             return "[error/invalid_arguments] client tools require thread_id and tool_call_id"
+        if len(tool_call_id) > MAX_TOOL_CALL_ID:
+            # Deny now rather than wait the full timeout: the route that would answer this
+            # refuses the same id, so the wait could only ever end in `[error/timeout]`.
+            return "[error/invalid_arguments] tool_call_id is too long"
 
         await emit_side_event(
             thread_id,

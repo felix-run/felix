@@ -239,14 +239,40 @@ live again. Revisit after the first three land, on evidence, not before.
       `expires_at`, because retention must not silently revoke authorization from a cron job.
       Off by default, matching session retention: the row is the record of a human decision and
       the `soc2` / `eu_ai_act` profiles lean on it.
-- [ ] **`tool_call_id` is provider input spliced into a `:`-delimited waiter key.**
-      `tools/client_bridge.py:31` builds `f"client:{thread_id}:{tool_call_id}"` with no escaping,
-      and the id comes straight off the wire (`wire/openai_completions.py:246`, no charset or
-      length check) — server-minted for the major vendors, model-influenced for a self-hosted
-      OpenAI-compatible endpoint. An id containing `:` can collide with another call's key inside
-      the same thread. This is the repo's named defect shape: a value validated for one grammar
-      re-serialized into another. Pre-existing; surfaced while tracing the id's provenance for
-      #245, which puts it in a bound parameter and a JSON payload and so crosses nothing itself.
+- [ ] **A2A `taskId` goes off the wire straight into a thread id.** `a2a/server.py:71-72` does
+      `task_id = str(params.get("taskId") or uuid.uuid4())` then `f"{tenant_id}:a2a:{task_id}"`,
+      bypassing both guards `threads.py` applies to every other thread: the `:`/`#` rejection at
+      `:53` and `MAX_THREAD_ID` at `:20`. A `#` mints a thread `/internal` refuses and no chat
+      route can address, export or delete; a megabyte `taskId` is the index bloat the cap exists
+      to stop. Same defect shape as #250 and the practical multi-colon namespace — found by its
+      security review. Run the composed id through `thread_belongs_to_tenant`, or validate
+      `taskId` against the suffix rule before composing.
+- [ ] **The `ui` waiter is a bearer capability with no tenant in it.** `ui:{request_id}` carries
+      no tenant (`ui/prompts.py`), and `POST /chat/ui` does `_ = request` — no tenant, no thread,
+      no ownership check (`routes/chat.py:952-963`). The whole control is the secrecy of a 96-bit
+      `token_urlsafe`, which is adequate in practice (it is emitted only on that thread's side-event
+      stream, and stream access is tenant-gated) but is the one surface where every other route
+      checks ownership and this does not. The fix is `waiter_name("ui", thread_id, request_id)`
+      plus a `thread_belongs_to_tenant` check — deliberately *not* folded into #250, because it
+      changes the `ui` name shape that PR's upgrade note promises is unchanged, so it wants its
+      own commit and its own note. Decide before the next release.
+- [ ] **`waiters._local` never shrinks on the signal-first path.** `waiters.py:127-131`: a
+      `signal` with no waiter registers a *completed* future and only `wait` pops it. While Redis
+      is in fallback, an authenticated caller POSTing `/chat/tool_result` with random
+      `tool_call_id`s grows the dict without bound. Pre-existing and not made worse by #250 (the
+      name space was already caller-chosen); capping `tool_call_id` there bounds each entry's
+      size but not the count.
+- [x] **`tool_call_id` was provider input spliced into a `:`-delimited waiter key.** Closed, and
+      the entry understated it: the collision needs no hostile `tool_call_id` at all, because
+      *`thread_id` already contains colons* -- `{tenant}:{suffix}`, and `{tenant}:fiber:{id}` for a
+      durable run. `fiber` is a legal thread suffix, so a caller can create `acme:fiber` and post a
+      `tool_result` for call `F123:call_9`, forging the waiter of the durable run on
+      `acme:fiber:F123` answering `call_9`, and satisfying its pending client tool with content
+      they chose. Same tenant only; the tenant prefix cannot be forged. Waiter names now go through
+      `waiters.waiter_name`, which percent-encodes each part (`%` before `:`) so the join is
+      injective; approval and UI names are byte-identical since their ids are a uuid and a
+      `token_urlsafe`. The repo's named defect shape, and worth noting that the *second* grammar
+      here was one the harness minted itself rather than one it received.
 - [x] **Approvals reach the durable path.** Closed in two halves, and *not* the way this entry
       proposed. It said to route `side_events` through the Redis layer from `#93`; that would have
       been wrong for the reason the Valkey bridge was wrong on #238, and the reason is in
