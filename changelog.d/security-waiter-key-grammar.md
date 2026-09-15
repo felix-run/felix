@@ -14,9 +14,19 @@ thread acme:fiber,      call F123:call_9   ->  client:acme:fiber:F123:call_9
 
 `fiber` is a legal thread suffix — `effective_thread_id` rejects only `:` and `#` — so the
 second thread is one any caller in that tenant can create. Posting a `tool_result` for it
-resolved the durable run's pending client tool with content the poster chose. Same tenant
-only: the tenant prefix cannot be forged, since a tenant id carrying the delimiter is refused
-outright.
+resolved the durable run's pending client tool with content the poster chose.
+
+**Scope, stated precisely**, because the general shape is narrower than "any two-part `:` join
+is exploitable". An ordinary thread is `{tenant}:{suffix}` with `:` rejected in the suffix, so
+it carries exactly one colon and the old join was already injective for it. Only a thread
+namespace the harness mints with an *extra* colon collides — `{tenant}:fiber:{id}`,
+`{tenant}:a2a:{task_id}` and `{tenant}:eval:{run}:{item}`. Same tenant only: a tenant id
+carrying the delimiter is refused at issuance, so the prefix cannot be forged. And exploiting
+it needs the victim's fiber id (a `uuid4`) and its pending `tool_call_id`, neither of which is
+disclosed to a third party — so this is a latent hole rather than a trivially drivable one.
+
+Note which part was *not* the problem: `tool_call_id` is the unvalidated input, and it is not
+what made the collision reachable. The second grammar here was one the harness produced itself.
 
 Waiter names are now composed by `waiters.waiter_name`, which percent-encodes each part (`%`
 before `:`, so the escape cannot itself be forged) before joining. The approval and UI prompt

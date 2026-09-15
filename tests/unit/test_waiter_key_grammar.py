@@ -51,6 +51,21 @@ def test_distinct_parts_never_share_a_name(left: tuple[str, str], right: tuple[s
     assert _name(*left) != _name(*right), f"{left} and {right} share a waiter name"
 
 
+def test_the_kind_is_escaped_too_so_a_plugin_cannot_reintroduce_this() -> None:
+    """`waiter_name` is exported, and the plugin seam can reach it.
+
+    All three in-tree kinds are literals without `%` or `:`, so escaping the kind is a no-op
+    for them — which is exactly why it would be easy to leave out and impossible to notice. A
+    plugin minting `waiter_name("commerce:refund", order_id)` against an unescaped kind
+    reintroduces the collision this whole change removes, under a docstring that promises it
+    cannot happen.
+    """
+    assert waiter_name("commerce:refund", "o1") != waiter_name("commerce", "refund", "o1")
+    # And the no-op property the upgrade note depends on: real kinds are unchanged.
+    assert waiter_name("approval", "abc123") == "approval:abc123"
+    assert waiter_name("ui", "tok_9") == "ui:tok_9"
+
+
 def test_the_name_still_identifies_its_kind_and_parts() -> None:
     """Injective, not opaque. A hash would also be injective and would make every waiter in
     `redis-cli --scan` and every log line unreadable, so the parts stay legible."""
