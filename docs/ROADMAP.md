@@ -259,14 +259,22 @@ live again. Revisit after the first three land, on evidence, not before.
       `expires_at`, because retention must not silently revoke authorization from a cron job.
       Off by default, matching session retention: the row is the record of a human decision and
       the `soc2` / `eu_ai_act` profiles lean on it.
-- [ ] **A2A `taskId` goes off the wire straight into a thread id.** `a2a/server.py:71-72` does
-      `task_id = str(params.get("taskId") or uuid.uuid4())` then `f"{tenant_id}:a2a:{task_id}"`,
-      bypassing both guards `threads.py` applies to every other thread: the `:`/`#` rejection at
-      `:53` and `MAX_THREAD_ID` at `:20`. A `#` mints a thread `/internal` refuses and no chat
-      route can address, export or delete; a megabyte `taskId` is the index bloat the cap exists
-      to stop. Same defect shape as #250 and the practical multi-colon namespace — found by its
-      security review. Run the composed id through `thread_belongs_to_tenant`, or validate
-      `taskId` against the suffix rule before composing.
+- [x] **A2A `taskId` went off the wire straight into a thread id.** Closed, and it was not
+      only A2A: `eval/runner.py` composes `{tenant}:eval:{run}:{item_id}` the same way, and
+      dataset items arrive through `PUT /eval/datasets/{name}`, so that id is caller-supplied
+      too. Both skipped every rule `effective_thread_id` applies — the `#` rejection and
+      `MAX_THREAD_ID`. The cap turned out to be load-bearing rather than hygienic: `thread_id`
+      is the tail of the `session_events` primary key and `task_id` half of the `a2a_tasks`
+      one, both btree, so an incompressible id past ~2700 bytes *fails the insert* ("index row
+      size 3864 exceeds btree version 4 maximum 2704") rather than merely bloating the index —
+      a 500 repeatable at the rate limit. Verified against a throwaway Postgres, because
+      `memory://` keys a dict and shows none of it. Both sites now compose through
+      `thread_ids.a2a_thread_id` / `eval_thread_id` — one composer per namespace, so which
+      segment may carry a `:` is fixed by a signature rather than by call-site arity. A2A
+      answers `-32602` before writing the task row, and an
+      eval item with an unusable id fails that item rather than the run. `:` stays legal in the
+      last segment so `urn:uuid:…` task ids keep working. `felix_api/threads.py` moved to
+      `felix/thread_ids.py` to make one definition reachable from the harness.
 - [ ] **The `ui` waiter is a bearer capability with no tenant in it.** `ui:{request_id}` carries
       no tenant (`ui/prompts.py`), and `POST /chat/ui` does `_ = request` — no tenant, no thread,
       no ownership check (`routes/chat.py:952-963`). The whole control is the secrecy of a 96-bit

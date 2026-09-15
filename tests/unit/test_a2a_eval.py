@@ -134,3 +134,100 @@ async def test_eval_fails_loudly_when_the_pinned_version_is_gone(settings: Setti
     assert run.get("fail_count") == 1
     scores = run.get("scores") or []
     assert scores and "error" in scores[0], f"the failure was not recorded: {scores}"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("label", "task_id"),
+    [
+        ("`#` mints a thread `/internal` refuses and no operator can address", "task#1"),
+        ("an oversized id fails the `a2a_tasks` btree primary key on Postgres", "x" * 600),
+    ],
+)
+async def test_a2a_refuses_a_task_id_it_cannot_make_a_thread_of(
+    settings: Settings, label: str, task_id: str
+) -> None:
+    """`taskId` is caller-chosen and was interpolated straight into a thread id.
+
+    The refusal has to land *before* `put_task`, so the second assertion is the load-bearing
+    one: `task_id` is half of the `a2a_tasks` primary key, and an id that cannot become a
+    thread must not leave a row behind either.
+    """
+    from felix.a2a import tasks as task_store
+
+    task_store.clear_tasks()
+    resp = await handle_rpc(
+        settings=settings,
+        tools=InMemoryToolProvider(),
+        tenant_id="default",
+        method="message/send",
+        params={"manifest": "quick", "taskId": task_id, "message": {"parts": [{"text": "hi"}]}},
+        rpc_id=3,
+    )
+    assert resp.get("error", {}).get("code") == -32602, f"{label}: {resp}"
+    assert await task_store.get_task(settings, "default", task_id) is None, "a row was written anyway"
+
+
+@pytest.mark.asyncio
+async def test_eval_fails_one_item_rather_than_the_run_on_an_unusable_item_id(
+    settings: Settings,
+) -> None:
+    """Dataset items come off `PUT /eval/datasets/{name}`, so `item_id` is caller-supplied.
+
+    It reached `{tenant}:eval:{run}:{item_id}` by f-string, which is the same defect as the
+    A2A one on a different surface. The run must still score every other item — that is the
+    choice the rubric check beside it already makes, and a whole run lost to one bad id is
+    the failure that change was written to prevent.
+    """
+    from felix.eval import store as eval_store
+    from felix.eval.runner import start_run
+
+    await eval_store.put_dataset(
+        settings,
+        "default",
+        "bad-item-id",
+        description="one unusable id, one good",
+        items=[
+            {"item_id": "x" * 600, "user_input": "hi", "rubric": {"min_chars": 1}},
+            {"item_id": "fine", "user_input": "hi", "rubric": {"min_chars": 1}},
+        ],
+    )
+    run = await start_run(
+        settings,
+        tenant_id="default",
+        dataset_name="bad-item-id",
+        candidate_manifest="quick",
+        mock=True,
+    )
+    scores = {str(s.get("item_id")): s for s in run.get("scores") or []}
+    assert len(scores) == 2, f"an item went missing: {run.get('scores')}"
+    assert "error" in scores["x" * 600], "the unusable id was not reported as that item's error"
+    assert "error" not in scores["fine"], f"the good item lost its score too: {scores['fine']}"
+
+
+@pytest.mark.asyncio
+async def test_an_unlabelled_item_still_reaches_the_runner_with_an_id(settings: Settings) -> None:
+    """Why `eval_thread_id` needs no stand-in for a missing `item_id`.
+
+    `start_run` always reads its items back from `get_dataset`, and `put_dataset` mints a
+    `uuid4().hex` for an item that carries none — so an empty id never reaches the composer
+    and a fallback there would be a branch nothing takes. This pins the assumption rather
+    than leaving it as a comment, because it is the whole reason that branch is absent.
+    """
+    from felix.eval import store as eval_store
+
+    await eval_store.put_dataset(
+        settings,
+        "default",
+        "unlabelled",
+        description="two items, no ids",
+        items=[
+            {"user_input": "hi", "rubric": {"min_chars": 1}},
+            {"user_input": "hi", "rubric": {"min_chars": 1}},
+        ],
+    )
+    stored = await eval_store.get_dataset(settings, "default", "unlabelled")
+    ids = [str((i or {}).get("item_id") or "") for i in (stored or {}).get("items") or []]
+    assert len(ids) == 2, f"the dataset did not round-trip: {stored}"
+    assert all(ids), f"an item came back with no id: {ids}"
+    assert len(set(ids)) == 2, f"two unlabelled items share an id: {ids}"
