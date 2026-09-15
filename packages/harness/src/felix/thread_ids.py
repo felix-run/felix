@@ -1,8 +1,14 @@
-"""Thread-id scoping for the HTTP layer.
+"""Thread-id scoping.
 
 Clients send a thread-id *suffix*; the server prefixes the tenant so a thread can
 never be addressed across tenants. This is a security rule, so it lives in one
 place rather than being restated per router.
+
+It sat in `felix_api` while the HTTP routes were its only callers. They are not:
+the harness mints thread ids of its own (`a2a`, `eval`, `fiber`) from parts that
+are just as caller-supplied, and it cannot import the app. One definition or two
+that disagree — this is the first, so the module moved down rather than the rule
+being restated.
 """
 
 from __future__ import annotations

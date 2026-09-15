@@ -171,7 +171,7 @@ def test_a_tenant_id_that_cannot_partition_is_refused_at_issuance() -> None:
 def test_the_http_layer_and_the_auth_layer_cannot_disagree() -> None:
     """`_usable_tenant` and `assert_valid_tenant_id` are the same rule, not two copies."""
     from felix.auth.context import assert_valid_tenant_id
-    from felix_api.threads import _usable_tenant
+    from felix.thread_ids import _usable_tenant
 
     for value in ("acme", "acme:sub", "acme#1", "", "x" * 129, "ok-tenant_1"):
         expected = True
