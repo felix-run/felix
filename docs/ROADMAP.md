@@ -381,16 +381,14 @@ and fixed; the comment at `fibers.py:36-46` is the record.
       but its payload carries the tool's *name*, not its arguments, so the trail said a skill
       activated and never which one. `skills/tools.py` now emits `skill_activation` naming it —
       safe to store because `activate` resolves the name against the catalog first.
-- [ ] **Decide: does `spec.skills` restrict, or only add?** Found while building the routes and
-      verified directly — `load_manifest_skills` seeds every skill in the bundled dir and in
-      `FELIX_SKILLS_DIR` before resolving a ref, so a manifest declaring one skill compiles a
-      catalog of seven (the repo's own `felix-architecture`, `felix-contributing`, … included)
-      and `make_skill_tools` offers all of them to the model. Defensible as a host-wide library,
-      but it is not what "declared skills" reads like, nothing documented it, and a manifest
-      cannot currently say "only these". The new `declared` field makes the difference visible;
-      whether to add an opt-in restriction is the open question. Governance-adjacent: a skill
-      body is prompt content, so an ambient one is instructions the agent follows that its own
-      manifest never named.
+- [x] **Decided: `spec.skills` only adds, and a manifest can now opt out of that.**
+      `spec.skills_declared_only: true` makes the declared names the whole catalogue. Opt-in
+      rather than a default change, because narrowing silently would alter behaviour for every
+      manifest already in Postgres — a migration, by this repo's own rule, not a
+      reinterpretation. The reason to want it: a skill body is appended to the system prompt,
+      so an ambient skill is the one prompt-shaping input `pin_compile` cannot cover, since the
+      hash is over the manifest and the drift is on the host's disk. `GET /skills/{manifest}`
+      reports `declared_only` so the two readings are distinguishable from outside.
 
 ### D. Truth in advertising
 

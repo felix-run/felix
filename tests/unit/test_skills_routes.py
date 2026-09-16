@@ -540,3 +540,189 @@ async def test_the_absolute_install_path_is_not_handed_to_a_tenant(skills_dir: P
     assert body["filename"] == "SKILL.md"
     assert "path" not in body
     assert str(skills_dir) not in resp.text
+
+
+async def _store_manifest_only(settings: Settings, name: str, skills: list[str]) -> None:
+    """A manifest that declares `skills_declared_only`."""
+    from felix.manifests.loader import parse_manifest
+    from felix.manifests.store import put_version
+
+    await put_version(
+        settings,
+        "acme",
+        name,
+        parse_manifest(
+            {
+                "apiVersion": "felix/v1",
+                "kind": "Agent",
+                "metadata": {"name": name},
+                "spec": {
+                    "pattern": "react",
+                    "tools": [],
+                    "skills": [{"name": s} for s in skills],
+                    "skills_declared_only": True,
+                },
+            }
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_declared_only_keeps_the_host_library_out_of_the_catalogue(
+    skills_dir: Path,
+) -> None:
+    """The point of the flag: what the manifest names is what the agent can load.
+
+    A skill body is appended to the system prompt, so an ambient skill is a prompt fragment
+    the manifest never named -- the one prompt-shaping input `pin_compile` cannot cover,
+    because the hash is over the manifest and the drift is on the host's disk.
+    """
+    client, settings = await _client(skills_dir)
+    async with client:
+        await _store_manifest_only(settings, "locked", ["invoice-triage"])
+        resp = await client.get("/skills/locked", headers=_auth("sk-skills"))
+
+    body = resp.json()
+    assert body["declared_only"] is True
+    assert [i["name"] for i in body["items"]] == ["invoice-triage"]
+    assert all(i["declared"] for i in body["items"])
+
+
+@pytest.mark.asyncio
+async def test_declared_only_still_finds_the_body_of_what_it_declares(
+    skills_dir: Path,
+) -> None:
+    """Restricting the catalogue must not stop a declared skill resolving.
+
+    The seeding is also how a bundled name is resolved cheaply, so dropping it naively
+    would leave every declared skill as an empty placeholder -- the manifest would compile
+    and the agent would activate a skill that hands the model nothing.
+    """
+    client, settings = await _client(skills_dir)
+    async with client:
+        await _store_manifest_only(settings, "locked", ["invoice-triage"])
+        resp = await client.get("/skills/locked/invoice-triage", headers=_auth("sk-skills"))
+
+    assert resp.status_code == 200, resp.text
+    assert "Read the invoice" in resp.json()["body"]
+
+
+@pytest.mark.asyncio
+async def test_a_host_skill_is_not_reachable_under_declared_only(skills_dir: Path) -> None:
+    client, settings = await _client(skills_dir)
+    async with client:
+        await _store_manifest_only(settings, "locked", ["invoice-triage"])
+        resp = await client.get("/skills/locked/internal-only", headers=_auth("sk-skills"))
+
+    assert resp.status_code == 404, resp.text
+
+
+@pytest.mark.asyncio
+async def test_the_default_is_unchanged(skills_dir: Path) -> None:
+    """Opt-in, because narrowing silently would be a behaviour change to every manifest
+    already in Postgres -- which this repo's own rule says needs a migration rather than a
+    reinterpretation. A manifest that says nothing keeps the host library."""
+    client, settings = await _client(skills_dir)
+    async with client:
+        await _store_manifest(settings, "triage", ["invoice-triage"])
+        resp = await client.get("/skills/triage", headers=_auth("sk-skills"))
+
+    body = resp.json()
+    assert body["declared_only"] is False
+    assert "internal-only" in [i["name"] for i in body["items"]]
+
+
+async def _catalogue_in_the_system_prompt(skills_dir: Path, *, declared_only: bool) -> str:
+    """Compile through `build_agent` and return the prompt the model would be given.
+
+    Through the builder rather than by calling `load_manifest_skills` directly, because the
+    thing worth pinning is that the *compile* reads the flag. Calling the loader with the
+    flag proves only that the loader honours an argument I passed it, and stays green if
+    `builder.py` never passes one -- this repo's named defect shape, and exactly what the
+    mutation run caught the first time this test was written.
+
+    The system prompt rather than the `list_skills` tool, because the catalogue XML appended
+    to the prompt is how the model actually learns which skills exist: progressive
+    disclosure means it sees names and descriptions there and pays for a body only on
+    activation. Executing the tool instead would run it through the governance stack, which
+    refuses outside a request context -- a real behaviour, and not the one under test.
+    """
+    from felix.config import Settings
+    from felix.manifests.builder import BuildDeps, build_agent
+    from felix.storage import MemoryObjectStore
+    from felix.tools.provider import InMemoryToolProvider
+
+    _ = skills_dir  # the fixture exports FELIX_SKILLS_DIR
+    settings = Settings(database_url="memory://compile", object_store="memory", allow_insecure=True)
+    agent = await build_agent(
+        {
+            "apiVersion": "felix/v1",
+            "kind": "Agent",
+            "metadata": {"name": "locked"},
+            "spec": {
+                "pattern": "react",
+                "tools": [],
+                "skills": [{"name": "invoice-triage"}],
+                "skills_declared_only": declared_only,
+            },
+        },
+        deps=BuildDeps(
+            tools=InMemoryToolProvider(),
+            settings=settings,
+            tenant_id="acme",
+            object_store=MemoryObjectStore(),
+        ),
+        settings=settings,
+    )
+    return agent.system_prompt or ""
+
+
+#: A skill this repo ships in `skills/`, which no test manifest declares. Its presence in a
+#: compiled prompt is the host library leaking in; its absence under `skills_declared_only`
+#: is the flag working. `internal-only` cannot play this role -- `skill_catalog_xml` renders
+#: `list_public()`, which filters `disable_model_invocation` out before the prompt is built.
+BUNDLED_SKILL = "felix-architecture"
+
+
+@pytest.mark.asyncio
+async def test_the_compile_shows_the_model_only_what_the_manifest_declared(
+    skills_dir: Path,
+) -> None:
+    """The property the flag exists for, asserted where the model actually meets it."""
+    prompt = await _catalogue_in_the_system_prompt(skills_dir, declared_only=True)
+
+    assert "invoice-triage" in prompt
+    assert BUNDLED_SKILL not in prompt, "a skill the manifest never named reached the prompt"
+
+
+@pytest.mark.asyncio
+async def test_the_compile_shows_the_host_library_by_default(skills_dir: Path) -> None:
+    """The other half, and the behaviour this whole flag was written to make optional: a
+    manifest naming one skill has the repo's own bundled skills in its prompt.
+
+    Without this assertion the test above passes against a compile that puts no catalogue in
+    the prompt at all, and "restricted" is indistinguishable from "broken"."""
+    prompt = await _catalogue_in_the_system_prompt(skills_dir, declared_only=False)
+
+    assert "invoice-triage" in prompt
+    assert BUNDLED_SKILL in prompt, "the host library was not seeded"
+
+
+@pytest.mark.asyncio
+async def test_skills_is_bounded_like_every_other_ref_list() -> None:
+    """`spec.skills` was the one ref list with no `max_length`, and each ref can cost an
+    object-store lookup at compile -- so an unbounded list is an unbounded fan-out."""
+    from felix.manifests.loader import ManifestParseError, parse_manifest
+    from felix.manifests.schema import MAX_REFS
+
+    # Matched on the message, not just the type: `parse_manifest` refuses a manifest for
+    # plenty of reasons, and a bare `raises` would pass on any of them.
+    with pytest.raises(ManifestParseError, match="at most 64"):
+        parse_manifest(
+            {
+                "apiVersion": "felix/v1",
+                "kind": "Agent",
+                "metadata": {"name": "toomany"},
+                "spec": {"skills": [{"name": f"s{i}"} for i in range(MAX_REFS + 1)]},
+            }
+        )

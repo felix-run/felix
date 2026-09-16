@@ -458,7 +458,7 @@ Two things to know before flipping an existing deployment:
 
 Sessions and skills:
 
-- **Skills** live under `skills/` as Agent Skills `SKILL.md` files; declare them with `spec.skills`.
+- **Skills** live under `skills/` as Agent Skills `SKILL.md` files; declare them with `spec.skills` (which *adds to* the bundled and `FELIX_SKILLS_DIR` catalogue; set `spec.skills_declared_only: true` to make the declared names the whole set).
   Bundled: `calculator-help`, plus the developer set used by the `contributor` manifest —
   `felix-architecture`, `felix-conventions`, `felix-testing`, `felix-contributing`
 - **Session strategies**: `compacting` (token-threshold), `windowed:N`, `semantic:N`, `full_replay`
