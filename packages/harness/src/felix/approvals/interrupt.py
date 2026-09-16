@@ -7,6 +7,7 @@ from typing import Any, Literal
 
 from felix.waiters import signal as waiter_signal
 from felix.waiters import wait as waiter_wait
+from felix.waiters import waiter_name
 
 DEFAULT_TIMEOUT_SECONDS = 300.0
 
@@ -19,7 +20,10 @@ class ApprovalDecision:
 
 
 def _name(approval_id: str) -> str:
-    return f"approval:{approval_id}"
+    # A `uuid4().hex` from the approvals store, so single-part and unambiguous. Same reason
+    # as `ui` for going through the shared join: the escaping should not be a thing to
+    # remember when a second part shows up.
+    return waiter_name("approval", approval_id)
 
 
 async def wait_for_decision(

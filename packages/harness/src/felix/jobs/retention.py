@@ -4,11 +4,17 @@ The sweep used to cover `audit_events`, `plans` and `memory_vectors` and nothing
 four tables grew for the life of the deployment: `fibers` (which carry the caller's
 principal and scopes in `state_json`), `usage_events`, `a2a_tasks` and `session_events`.
 Each TTL was a module constant. They are settings now — `FELIX_*_RETENTION_DAYS`, ``0``
-meaning keep forever — and the seven tables in `TABLES` are swept here, on both backends,
+meaning keep forever — and the tables in `TABLES` are swept here, on both backends,
 under one rule per table. (Not swept, because each is bounded by something else or is the
-record itself: `approvals` and `job_runs` go with their run or job, eval tables with their
-dataset, *active* `memory_vectors` are the memory, and session retention does not reach the
-facts memory capture extracted from a thread.)
+record itself: `job_runs` goes with its job, eval tables with their dataset, *active*
+`memory_vectors` are the memory, and session retention does not reach the facts memory
+capture extracted from a thread.)
+
+`approvals` used to be listed in that parenthesis as "bounded by its run". It is not: there
+is no foreign key, no cascade, and nothing anywhere issues a delete against it, so every
+gate firing left a row that outlived the run by the life of the deployment. Worse, nothing
+moves a *timed-out* row off `pending` — `wait_for_decision` returns a denial and the caller
+writes nothing back — so the set a thread-scoped query walks grows monotonically and forever.
 
 * `audit_events` — older than the audit TTL. A manifest's `governance.retention_days`
   shortens that for its own rows (never lengthens: the operator's setting is the ceiling),
@@ -20,6 +26,16 @@ facts memory capture extracted from a thread.)
 * `session_events` + `thread_state` — whole threads whose last event is older than the
   session TTL. Whole threads only: `seq` is dense and `head()` assumes nothing deletes an
   individual event. Off by default, because the event log is the chat record.
+* `approvals` — **settled** and older than the approval TTL. Settled means the row can no
+  longer authorize a call: anything not `approved`, plus an `approved` grant whose
+  `expires_at` has passed. An unexpired `approved` row is live authorization and is never
+  swept however old it is, and neither is one with a null `expires_at` — the rule set no
+  `ttl_seconds`, so that grant is standing by construction. Deleting either would revoke a
+  permission an operator granted, silently, from a cron job. `consumed_at` is deliberately
+  *not* part of the test: `one_shot` lives on the manifest rule rather than the row, so a
+  consumed grant still authorizes a tool whose rule is not one-shot. Off by default,
+  because the row is the record of a human decision and the `soc2` / `eu_ai_act` profiles
+  lean on it.
 * `plans` — past their own `expires_at`; `memory_vectors` — superseded past a grace period.
 
 The memory:// path is the CI twin, not a mock: it deletes the same rows by the same rules
@@ -34,11 +50,12 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import delete, func, select, tuple_
+from sqlalchemy import and_, delete, func, or_, select, tuple_
 
 from felix.config import Settings
 from felix.db.models import (
     A2ATask,
+    Approval,
     AuditEvent,
     Fiber,
     MemoryVector,
@@ -63,9 +80,35 @@ TERMINAL_FIBER_STATUSES = FIBER_TERMINAL_STATUSES
 # does not know is treated as finished rather than kept forever.
 LIVE_A2A_STATES = frozenset({"submitted", "working", "input-required", "auth-required"})
 
-TABLES = ("audit_events", "plans", "memory_vectors", "fibers", "usage_events", "a2a_tasks", "session_events")
+TABLES = (
+    "audit_events",
+    "plans",
+    "memory_vectors",
+    "fibers",
+    "usage_events",
+    "a2a_tasks",
+    "session_events",
+    "approvals",
+)
 
 now_ms = lambda: int(time.time() * 1000)
+
+
+def _approval_settled(status: Any, expires_at: Any, now: int) -> bool:
+    """Whether this approval can no longer authorize a call, and so is safe to delete.
+
+    The inverse of `find_approved`'s own predicate, deliberately written as one function so
+    the two cannot drift: it authorizes when the row is `approved` **and** either has no
+    expiry or has not reached it. Anything else -- pending, denied, or an approved grant past
+    its deadline -- can never authorize again.
+
+    A null `expires_at` on an approved row is a *standing* grant (the rule set no
+    `ttl_seconds`), so it is never settled however old the row is. Retention deleting it
+    would revoke a permission an operator granted, silently, from a cron job.
+    """
+    if str(status or "") != "approved":
+        return True
+    return expires_at is not None and int(expires_at) < now
 
 
 @dataclass(frozen=True)
@@ -81,6 +124,8 @@ class Cutoffs:
     # on the Postgres row and milliseconds on the memory twin, and each arm compares in its
     # own store's unit.
     session: int | None
+    #: Settled approvals older than this go. `None` keeps every row.
+    approval: int | None
     memory: int
 
     @classmethod
@@ -94,6 +139,7 @@ class Cutoffs:
             usage=days(settings.usage_retention_days),
             fiber=days(settings.fiber_retention_days),
             session=days(settings.session_retention_days),
+            approval=days(settings.approval_retention_days),
             memory=now - MEMORY_SUPERSEDED_GRACE_MS,
         )
 
@@ -220,6 +266,16 @@ def _sweep_memory(cutoffs: Cutoffs, per_manifest: ManifestCutoffs) -> dict[str, 
         usage[:] = fresh
     if cutoffs.session is not None:
         counts["session_events"] = _sweep_memory_sessions(cutoffs.session)
+    if (approval_cutoff := cutoffs.approval) is not None:
+        from felix.approvals import store as approvals_store
+
+        counts["approvals"] = _pop_where(
+            approvals_store._memory_approvals,
+            lambda a: (
+                int(a.get("created_at") or 0) < approval_cutoff
+                and _approval_settled(a.get("status"), a.get("expires_at"), cutoffs.now)
+            ),
+        )
     return counts
 
 
@@ -324,6 +380,23 @@ async def _sweep_postgres(
                 )
             if (session_cutoff := cutoffs.session) is not None:
                 await _table(db, counts, "session_events", lambda: _delete_idle_threads(db, session_cutoff))
+            if (approval_cutoff := cutoffs.approval) is not None:
+                # The negation of `find_approved`'s WHERE, kept in the same shape as the twin's
+                # `_approval_settled`: not approved, or approved with a deadline already past.
+                # A null `expires_at` never satisfies the second arm, so a standing grant
+                # survives -- which is the property this rule exists to preserve.
+                settled = or_(
+                    Approval.status != "approved",
+                    and_(Approval.expires_at.is_not(None), Approval.expires_at < cutoffs.now),
+                )
+                await _table(
+                    db,
+                    counts,
+                    "approvals",
+                    lambda: _rowcount(
+                        db, delete(Approval).where(Approval.created_at < approval_cutoff, settled)
+                    ),
+                )
     return counts
 
 

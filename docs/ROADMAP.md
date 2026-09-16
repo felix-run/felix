@@ -225,20 +225,76 @@ live again. Revisit after the first three land, on evidence, not before.
       move by diffing the relocated blocks against `main` modulo the renames — the only other
       changes are one comment re-attached to the constants it explains (it had drifted onto
       `RUN_TERMINAL`), `json` hoisted to module scope, and a return annotation.
-- [ ] **Approvals reach the durable path.** `side_events` is a process-local
-      `dict[str, asyncio.Queue]`, so on a fiber the `approval_required` emit lands in the
-      worker's own memory and is unreachable by construction — on precisely the path where a
-      human would have time to respond. Route it through the Redis layer `session/notify.py`
-      already built in `#93`. Correction from the 2026-09-04 readiness audit: the *decision*
-      does cross — `waiters.py` is a Redis `BLPOP` and the API's approve reaches the worker's
-      fiber. What did not was the no-Redis case, where the waiter silently became a
-      process-local future; `FELIX_REDIS_URL` is now required outside development and a
-      configured Redis that is down is logged at warning. The event-side gap above stands, and
-      #238 sharpens it: the `emit_side_event` call in the approvals wrapper is *not* gated by
-      `emit_events`, so a fiber does queue the frame — it is the `drain_side_events` loop that
-      sits inside `if emit_events:`, and `invoke` never runs it. So publishing at the emit is
-      still the shape of the fix. Note that the session-log tail #238 added does not cover this:
-      an approval request is never written to the session log, only tool results are.
+- [x] **An approval says why it fired and what it blocks** (migration
+      `0015_approval_reason_and_call`) — the half of the entry below that does not need a
+      transport. The two channels were each missing what the other had, and both sides of the
+      wire had already written it down: `builder.py` at the emit ("the `/approvals` row does not
+      carry it either") and `@felix/client`'s `PendingApproval`, which documents `reason` as
+      frame-only and `expiresAt` as poll-only. So the row gains `reason` and `tool_call_id`, the
+      frame gains `expires_at` read off the row, and `list_approvals` takes a `thread_id` filter
+      (under-reporting by construction, since `create_pending` reuses a row across threads). This
+      matters most on the durable path, where the poll is the only channel and was the half that
+      could not say *why*.
+- [x] **`approvals` can be reclaimed, and `jobs/retention.py` stopped claiming it already was.**
+      The docstring listed the table as "bounded by ... its run or job"; there is no FK, no
+      cascade and no `delete(Approval)` anywhere, so it grew for the life of the deployment, and
+      nothing moves a timed-out row off `pending` either. Closed by *both* halves of the choice
+      this entry offered, because they were not alternatives: `FELIX_APPROVAL_RETENTION_DAYS`
+      (default 0 = keep) sweeps **settled** rows on both backends, and the docstring now says
+      what is and is not bounded. Settled is the exact negation of `find_approved`'s predicate —
+      an unexpired `approved` grant is never swept however old, and neither is one with a null
+      `expires_at`, because retention must not silently revoke authorization from a cron job.
+      Off by default, matching session retention: the row is the record of a human decision and
+      the `soc2` / `eu_ai_act` profiles lean on it.
+- [ ] **A2A `taskId` goes off the wire straight into a thread id.** `a2a/server.py:71-72` does
+      `task_id = str(params.get("taskId") or uuid.uuid4())` then `f"{tenant_id}:a2a:{task_id}"`,
+      bypassing both guards `threads.py` applies to every other thread: the `:`/`#` rejection at
+      `:53` and `MAX_THREAD_ID` at `:20`. A `#` mints a thread `/internal` refuses and no chat
+      route can address, export or delete; a megabyte `taskId` is the index bloat the cap exists
+      to stop. Same defect shape as #250 and the practical multi-colon namespace — found by its
+      security review. Run the composed id through `thread_belongs_to_tenant`, or validate
+      `taskId` against the suffix rule before composing.
+- [ ] **The `ui` waiter is a bearer capability with no tenant in it.** `ui:{request_id}` carries
+      no tenant (`ui/prompts.py`), and `POST /chat/ui` does `_ = request` — no tenant, no thread,
+      no ownership check (`routes/chat.py:952-963`). The whole control is the secrecy of a 96-bit
+      `token_urlsafe`, which is adequate in practice (it is emitted only on that thread's side-event
+      stream, and stream access is tenant-gated) but is the one surface where every other route
+      checks ownership and this does not. The fix is `waiter_name("ui", thread_id, request_id)`
+      plus a `thread_belongs_to_tenant` check — deliberately *not* folded into #250, because it
+      changes the `ui` name shape that PR's upgrade note promises is unchanged, so it wants its
+      own commit and its own note. Decide before the next release.
+- [ ] **`waiters._local` never shrinks on the signal-first path.** `waiters.py:127-131`: a
+      `signal` with no waiter registers a *completed* future and only `wait` pops it. While Redis
+      is in fallback, an authenticated caller POSTing `/chat/tool_result` with random
+      `tool_call_id`s grows the dict without bound. Pre-existing and not made worse by #250 (the
+      name space was already caller-chosen); capping `tool_call_id` there bounds each entry's
+      size but not the count.
+- [x] **`tool_call_id` was provider input spliced into a `:`-delimited waiter key.** Closed, and
+      the entry understated it: the collision needs no hostile `tool_call_id` at all, because
+      *`thread_id` already contains colons* -- `{tenant}:{suffix}`, and `{tenant}:fiber:{id}` for a
+      durable run. `fiber` is a legal thread suffix, so a caller can create `acme:fiber` and post a
+      `tool_result` for call `F123:call_9`, forging the waiter of the durable run on
+      `acme:fiber:F123` answering `call_9`, and satisfying its pending client tool with content
+      they chose. Same tenant only; the tenant prefix cannot be forged. Waiter names now go through
+      `waiters.waiter_name`, which percent-encodes each part (`%` before `:`) so the join is
+      injective; approval and UI names are byte-identical since their ids are a uuid and a
+      `token_urlsafe`. The repo's named defect shape, and worth noting that the *second* grammar
+      here was one the harness minted itself rather than one it received.
+- [x] **Approvals reach the durable path.** Closed in two halves, and *not* the way this entry
+      proposed. It said to route `side_events` through the Redis layer from `#93`; that would have
+      been wrong for the reason the Valkey bridge was wrong on #238, and the reason is in
+      `notify.py`'s own docstring: "the notification is a hint, never the source of truth", because
+      every wake re-reads Postgres. Pub/sub is at-most-once, and here the message *is* the frame —
+      a dropped one means the run blocks its whole `ttl_seconds` and then denies with no human ever
+      asked. So instead: felix#245 put `reason` and `tool_call_id` on the approvals row (the frame
+      carried them, the row did not), and the durable stream now reads the pending rows for its
+      thread and **rebuilds** `approval_required` from them. Same principle as the transcript tail,
+      applied to the half the session log cannot carry — `_append_produced` writes assistant turns
+      and tool results, and a request for permission is neither. Announced once per stream, deduped
+      by id because `list_approvals` answers "what is pending" and has no cursor; thread-scoped,
+      because `GET /approvals` is tenant-wide and every pending approval in the tenant on one run's
+      stream would leak other conversations' tool names and arguments. The poll remains the channel
+      of record: a stream that was never open sees nothing.
 - [ ] **Signed completion webhooks**, delivered from the **worker** — the fiber reaches terminal
       state under its cron and the API replica that accepted the request may be gone. Dead letter
       is `status='dead'` on the same durable row, not a second store. `spec.webhooks` selects

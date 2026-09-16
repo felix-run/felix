@@ -485,23 +485,32 @@ pass; the first missing scope denies the call, and the denial names it.
 | `tools` | The tools this rule gates, matched by glob (`fnmatch`, case-sensitive): `calculator`, `github__*`, `*__search`, `*`. Applies equally to `spec.approvals`, judge `target_tools`, `content_screening.tools` and `command_screening.target_tools`. A pattern with no `*` or `?` is a literal name, so a tool whose name contains `[...]` still matches itself. A pattern matching no bound tool is logged and counted (`felix_rule_targets_nothing`) rather than refused, since the bound set varies — an MCP server whose discovery failed binds nothing. A rule naming no tools at all gates nothing and is rejected: it would otherwise satisfy the `soc2` profile's "policies **or** approvals **or** limits" requirement while enforcing nothing. |
 | `required_scopes` | Scopes the caller must hold. **Required**: a rule that lists tools but no scopes permits every caller while appearing to govern them, so it is rejected rather than accepted as a no-op. |
 
-Two things to know before relying on it:
+Four things to know before relying on it:
 
-- **A run with no scopes is denied, not permitted.** That includes any request under
-  `auth_mode=none`, and it includes durable fibers, scheduled jobs and `felix eval`, whose
-  contexts carry an empty scope set. `spec.policies` and `execution.mode: durable` are
-  therefore not usable together today — every policied tool denies.
+- **A run with no scopes is denied, not permitted.** "No scopes" must never read as "all
+  scopes", so a context carrying an empty set denies every policied tool. Three do: any
+  request under `auth_mode=none` (`auth/middleware.py:120` returns `ANONYMOUS`), scheduled
+  jobs (`jobs/scheduler.py:71`, principal `cron`) and `felix eval` (`eval/runner.py:164`,
+  principal `eval`). The last two construct an `AuthContext` with no `scopes` argument, so
+  they take the field's `frozenset()` default.
 - Policy scopes are matched literally. The `admin` / `*` bypass and the `x:write` implies
   `x:read` rule that `require_mgmt_scopes` applies to the management API deliberately do
   **not** apply here.
 - `manifests/governed.yaml` policies `calculator` on `tools:calc`, so it will deny its own
   calculator under `make dev` (which sets `FELIX_AUTH_MODE=none`). Mint a token with the
   scope — see the `felix mint-jwt` line above — rather than removing the policy.
-- **Durable runs are the exception.** A fiber records the caller's scopes and resumes with
-  them, so `spec.policies` and `execution.mode: durable` work together. The resumed run's
-  principal is `fiber`, not the person — `on_behalf_of` carries who it is for, which is what
-  keeps a `bind_principal` approval valid across a resume without an audit row claiming a human
-  took an action a worker took.
+- **A durable run is not in that list**, though this document said it was until 2026-09-14.
+  `start_durable_chat` records the caller's scopes on the fiber row and the resume rebuilds an
+  `AuthContext` from them (`durability/runs.py:96`, `durability/fibers.py:288`), so
+  `spec.policies` and `execution.mode: durable` work together. The resumed run's principal is
+  `fiber`, not the person — `on_behalf_of` carries who it is for, which is what keeps a
+  `bind_principal` approval valid across a resume without an audit row claiming a human took an
+  action a worker took.
+
+  The exception is a fiber with **no recorded caller** — one enqueued outside a request context,
+  or written before fibers recorded authority at all. Those keep the old behaviour: principal
+  `fiber`, no scopes, every policied tool denies. That is the fail-closed direction, and it is
+  the case the stale sentence described before it outlived its scope.
 
   Carrying authority in durable state is bounded three ways, and the bounds are the design:
 
@@ -589,6 +598,60 @@ and a manifest is compiled per request.
 Approvals are matched on `(tenant, manifest, tool, sha256(args))` and stored in Postgres
 — never in model-visible state, so the model cannot forge one. Every failure path
 (no request context, store error, waiter timeout) denies.
+
+**What an operator sees, on either channel.** A pending row and the `approval_required` stream
+frame carry the same story: `rule_id`, `reason` (the rule's `description`, or the finding for a
+command-screening gate), `thread_id`, `tool_call_id`, and `expires_at`.
+
+That symmetry is what lets a **durable** run announce a gate at all. Its agent runs in the
+worker while its stream is served by the API, so the in-process side event cannot cross — and
+`GET /approvals` was the whole channel, on precisely the path where a human has time to answer.
+`POST /chat/stream` on a durable manifest now reads the pending rows for the run's thread and
+**rebuilds** the frame from them, rather than forwarding a message across a bus. The difference
+matters: a dropped pub/sub message *is* the lost prompt, and the run would block its full
+`ttl_seconds` and then deny with nobody ever asked, whereas a missed poll costs only latency.
+It also means a client attaching *after* the gate fired still sees it.
+
+**The stream frames need `approvals:read`, the same scope `GET /approvals` needs.** Without it a
+durable run still streams its transcript, its status and its answer, and simply says nothing
+about gates. This is not belt-and-braces: `thread_id` is supplied by the caller, so the thread a
+durable run names is a question the caller *chose* rather than one they own — nothing in Felix
+binds a thread to a principal. Ungated, a caller holding only chat access could name any thread
+in the tenant and read the tool names, full arguments and gate reasons it is blocked on, which
+is precisely what the management route refuses them. `admin`/`*` bypass and `approvals:write`
+implies `approvals:read`, exactly as on the route, because both ask the same function.
+
+Each approval is announced once per stream. `GET /approvals` answers "what is pending now", so
+the row returns on every poll until it is decided; re-showing a prompt someone has already
+answered is worse than showing it late. A **decided or expired** approval is never announced —
+both are history, not a question. (Nothing moves a timed-out gate off `pending`: the waiter
+returns a denial and writes nothing back. `find_approved` filters expiry for the authorization
+half and the announcement filters it for the display half, so a stale row is inert either way —
+but it still occupies the table until `FELIX_APPROVAL_RETENTION_DAYS` is set, which is what
+actually reclaims it.)
+
+And the **poll remains the channel of record**: a stream that was never open, or that dropped
+before the gate fired, sees nothing, which is why `felix doctor` and the operator console read
+`/approvals` rather than depending on an attached stream.
+
+`reason` and `tool_call_id` are empty on rows written before migration
+`0015_approval_reason_and_call`, and on gates that genuinely have neither — a command-screening
+gate has no rule description, a tool called outside a tool loop has no call id. Treat all of
+them as optional when mirroring the wire.
+
+`thread_id` and `tool_call_id` are **attribution, not ownership**: `create_pending` reuses a
+pending row across threads keyed on the tuple above, so each names whichever call opened the
+row. `GET /approvals?thread_id=…` therefore under-reports rather than over-reports, which is
+the safe direction — a caller asking about one conversation never learns about another's. The
+filter is applied in SQL before `LIMIT`, so a busy tenant cannot hide the thread you asked
+about; `?thread_id=` (empty) means "approvals with no thread" and is distinct from omitting it.
+
+**Three fields sound alike and are not.** `reason` is the *gate's* words, set when the row is
+created and never changed. `decision_note` is the *decider's*, set when someone approves or
+denies. Neither is the denial text the tool returns to the model, which is composed at the call
+site and persisted nowhere. `reason` is truncated at 2048 characters on the way in — it comes
+from a tenant-scoped manifest author, and the table is unbounded until an operator sets
+`FELIX_APPROVAL_RETENTION_DAYS`.
 
 `command_screening` rules with `decision: require_approval` go through the same flow and
 wait up to `command_screening.approval_ttl_seconds` (default 300).
@@ -770,7 +833,7 @@ implies the matching `*:read`.
 | `manifests:read` / `manifests:write` | `/manifests` |
 | `audit:read` | `/audit` |
 | `artifacts:read` | `/artifacts` — read back a tool output too large to keep in the transcript. Its own scope rather than part of `audit:read`, because a spilled result is raw tool output and often the most sensitive data a run touches |
-| `approvals:read` / `approvals:write` | `/approvals` |
+| `approvals:read` / `approvals:write` | `/approvals`; `approvals:read` also gates the `approval_required` frames on a durable `POST /chat/stream` |
 | `jobs:read` / `jobs:write` | `/jobs` |
 | `plans:read` / `plans:write` | `/plans` |
 | `eval:read` / `eval:write` | `/eval` |

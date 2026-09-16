@@ -183,6 +183,11 @@ class Settings(BaseSettings):
     # The session event log is the chat record, so the default keeps it. When set, a
     # thread is dropped whole once its last event is this old.
     session_retention_days: int = Field(default=0, ge=0)
+    # An approval row is the record of a human decision on a gated tool, which the `soc2`
+    # and `eu_ai_act` profiles lean on, so the default keeps it. When set, only *settled*
+    # rows are swept — a grant that can still authorize a call is never deleted, however
+    # old, because retention must not silently revoke authorization.
+    approval_retention_days: int = Field(default=0, ge=0)
 
     # --- scale-out ---
     scale_out: bool = False

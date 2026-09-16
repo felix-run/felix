@@ -58,6 +58,17 @@ POLL_BACKOFF_FACTOR = 1.5
 # idle client instead of one every ten seconds.
 NOTIFIED_POLL_CEILING_SECONDS = 60.0
 
+# How many pending gates one durable stream will announce.
+#
+# Stated rather than inherited from `list_approvals`' default, because the ordering is
+# `created_at DESC`: past this many pending rows on one thread the *oldest* stop being
+# announced, and since a timed-out gate never leaves `pending` that is reachable by
+# accumulation rather than by concurrency. A run blocks on one gate at a time, so a thread
+# legitimately over this limit is a thread whose backlog an operator should be reading in
+# `GET /approvals` anyway. `FELIX_APPROVAL_RETENTION_DAYS` is what keeps the accumulation
+# from reaching here at all, and it is off by default, so this bound still earns its place.
+APPROVAL_ANNOUNCE_LIMIT = 50
+
 
 def next_poll_delay(idle: float, delay: float, *, floor: float, ceiling: float) -> float:
     """The wait before the next poll of a quiet stream."""
@@ -287,33 +298,106 @@ def durable_thread(tenant_id: str, accepted: dict[str, Any]) -> str:
     return fiber_thread_id(tenant_id, fiber_id) if fiber_id else ""
 
 
+def _has_lapsed(expires_at: Any, now_ms: float) -> bool:
+    """Whether a gate's deadline has passed. Never raises on a malformed value.
+
+    `drain` promises it never raises, and the promise has to survive the comparison as well as
+    the store read. `expires_at` is `BigInteger` on both arms today, so a non-numeric value is
+    unreachable — but the alternative to this guard is an exception escaping mid-body, and
+    `durable_run_gen` has no top-level handler, so a client would see a truncated connection
+    with no `error:` frame and no `[DONE]`: the exact failure `error_frame` exists to prevent.
+    An unreadable deadline means "I cannot say it lapsed", which keeps the prompt visible.
+    """
+    if expires_at is None:
+        return False
+    try:
+        return float(expires_at) < now_ms
+    except TypeError, ValueError:
+        return False
+
+
+def approval_required_frame(row: dict[str, Any]) -> str:
+    """One `approval_required` SSE frame, rebuilt from a pending approvals row.
+
+    The same eight keys `manifests/builder.py` emits as a side event, so a client folds a
+    durable run's prompt with the handler it already has. Every one of them is on the row as
+    of felix#245 — `reason` and `tool_call_id` were added there precisely so the frame could
+    be *re-derived* rather than forwarded, which is what lets this path exist without a
+    second delivery channel.
+
+    Safe to build from the row **only because the caller filtered by thread**. A pending row
+    is reused across threads and names whichever call opened it, so a row fetched without
+    that filter could carry another conversation's `thread_id` and `tool_call_id`. The two
+    facts are one fact: we read only rows this thread originated, so the row's provenance is
+    this thread's provenance.
+    """
+    return frame(
+        {
+            "event": "approval_required",
+            "data": {
+                "approval_id": row.get("id") or "",
+                "tool_name": row.get("tool_name") or "",
+                "args": row.get("args") or {},
+                "rule_id": row.get("rule_id") or "",
+                "reason": row.get("reason") or "",
+                "thread_id": row.get("thread_id") or "",
+                "tool_call_id": row.get("tool_call_id") or "",
+                "expires_at": row.get("expires_at"),
+            },
+        }
+    )
+
+
 class DurableTail:
-    """The session log a durable run appends to — or a stand-in when there is none.
+    """What a durable run has newly produced — its transcript, and anything it is blocked on.
 
     "Is there a tail?" was answered in four places: a two-element return whose
     "both are None" invariant no type could state, an `is not None` branch in the loop, a
     try/except-degrade inside the loop body, and a null watch class beside it. The loop
     should ask for frames and for a wait, and never learn the answer — so the null case
-    lives here, once, and the protocol loop reads as protocol.
+    lives here, once, and the protocol loop reads as protocol. Adding the approvals source
+    keeps that shape: `drain` still answers one question.
 
     The reader is opened once rather than per iteration, which would put a store
     construction on the hot path of every poll. It owns the cursor for the same reason
     `drain_session_events` returns one: two call sites keeping a loop-local in sync is
-    how a tail starts replaying or skipping.
+    how a tail starts replaying or skipping. `_announced` is the same idea for approvals,
+    which have no cursor — the store answers "what is pending", not "what is new".
     """
 
-    __slots__ = ("_cursor", "_reader", "_thread", "_watch")
+    __slots__ = (
+        "_announced",
+        "_cursor",
+        "_may_read_approvals",
+        "_reader",
+        "_settings",
+        "_tenant_id",
+        "_thread",
+        "_watch",
+    )
 
     def __init__(
-        self, *, reader: Session | None, thread: str, cursor: int, watch: ThreadWatch | None
+        self,
+        *,
+        reader: Session | None,
+        thread: str,
+        cursor: int,
+        watch: ThreadWatch | None,
+        settings: Any = None,
+        tenant_id: str = "",
+        may_read_approvals: bool = False,
     ) -> None:
         self._reader = reader
         self._thread = thread
         self._cursor = cursor
         self._watch = watch
+        self._settings = settings
+        self._tenant_id = tenant_id
+        self._may_read_approvals = may_read_approvals
+        self._announced: set[str] = set()
 
     async def drain(self) -> list[str]:
-        """Frames for everything appended since the last drain. Never raises.
+        """Frames for everything new since the last drain. Never raises.
 
         A read that fails degrades to status-only for that iteration rather than failing
         the run stream: the answer still arrives on `final`, which is all this endpoint
@@ -322,15 +406,81 @@ class DurableTail:
         """
         if self._reader is None:
             return []
+        frames: list[str] = []
         try:
             frames, self._cursor = await drain_session_events(self._reader, self._cursor)
         except Exception:
             logger.debug("durable tail read failed for %s", loggable(self._thread, limit=80), exc_info=True)
+        return frames + await self._drain_approvals()
+
+    async def _drain_approvals(self) -> list[str]:
+        """Frames for approvals this run is blocked on that the client has not been told about.
+
+        The session log does not carry these — `_append_produced` writes assistant turns and
+        tool results, and an approval request is neither — so the transcript tail cannot
+        reach them. The approvals table can: it is the same shared, cross-replica store, and
+        since felix#232 a row names the thread it blocked.
+
+        **Not a pub/sub bridge, for the reason the tail itself is not one.** `notify.py` can
+        afford at-most-once delivery because a dropped wake still re-reads Postgres; here the
+        message *would be* the frame, so a drop means the run blocks its whole TTL and then
+        denies with nobody ever asked. Re-deriving from the row keeps "the notification is a
+        hint, never the source of truth" true for this path too — and a client that attaches
+        *after* the gate fired still sees the prompt, which a bus cannot offer.
+
+        Deduped by id rather than by cursor: `list_approvals` answers "what is pending now",
+        so the same row comes back every poll until it is decided, and a client re-shown a
+        prompt it has already answered is worse than one shown it late.
+        """
+        if not self._thread or self._settings is None or not self._may_read_approvals:
             return []
+        try:
+            from felix.approvals.store import list_approvals
+
+            rows = await list_approvals(
+                self._settings,
+                self._tenant_id,
+                status="pending",
+                thread_id=self._thread,
+                limit=APPROVAL_ANNOUNCE_LIMIT,
+            )
+        except Exception:
+            logger.debug(
+                "durable approval read failed for %s", loggable(self._thread, limit=80), exc_info=True
+            )
+            return []
+        now = time.time() * 1000
+        frames = []
+        for row in rows:
+            approval_id = str(row.get("id") or "")
+            if not approval_id or approval_id in self._announced:
+                continue
+            # An expired gate is history, not a question -- the same reason a *decided* one is
+            # not announced. Nothing moves a timed-out row off `pending`: `wait_for_decision`
+            # returns a denial and the caller writes nothing back, and `approvals` is not in
+            # the retention sweep, so these accumulate forever. `find_approved` filters expiry
+            # in its own WHERE for the authorization half; this is the display half of the
+            # same fact, and without it a stream opens with a prompt that timed out weeks ago.
+            #
+            # `now` is *this* host's clock while `expires_at` was written by whichever process
+            # created the row -- the worker, on a durable run. Skew larger than the gate's TTL
+            # would suppress announcements the poll still lists, which is an NTP problem rather
+            # than something to compensate for here, but it is the reason the poll stays the
+            # channel of record.
+            if _has_lapsed(row.get("expires_at"), now):
+                continue
+            self._announced.add(approval_id)
+            frames.append(approval_required_frame(row))
         return frames
 
     async def wait(self, *, timeout: float) -> Wake:
-        """Wait for the thread to move, or just wait, when there is no thread to watch."""
+        """Wait for the thread to move, or just wait, when there is no thread to watch.
+
+        A wake here means the *session log* moved; an approval landing publishes nothing, so
+        it is found by the poll underneath rather than announced. That is why the durable
+        loop keeps its notified ceiling at `poll_max` instead of the long one — see
+        `durable_run_gen`.
+        """
         if self._watch is None:
             await asyncio.sleep(timeout)
             return Wake(woken=False, by_notification=False)
@@ -339,7 +489,12 @@ class DurableTail:
 
 @contextlib.asynccontextmanager
 async def durable_tail(
-    settings: Any, tenant_id: str, accepted: dict[str, Any], from_seq: int | None
+    settings: Any,
+    tenant_id: str,
+    accepted: dict[str, Any],
+    from_seq: int | None,
+    *,
+    may_read_approvals: bool = False,
 ) -> AsyncIterator[DurableTail]:
     """Open the tail for a durable run, and hold its watch for the life of the stream.
 
@@ -367,11 +522,24 @@ async def durable_tail(
         yield idle
         return
     async with thread_watch(tenant_id, thread) as watch:
-        yield DurableTail(reader=reader, thread=thread, cursor=int(from_seq or 0), watch=watch)
+        yield DurableTail(
+            reader=reader,
+            thread=thread,
+            cursor=int(from_seq or 0),
+            watch=watch,
+            settings=settings,
+            tenant_id=tenant_id,
+            may_read_approvals=may_read_approvals,
+        )
 
 
 async def durable_run_gen(
-    *, settings: Any, tenant_id: str, accepted: dict[str, Any], from_seq: int | None = None
+    *,
+    settings: Any,
+    tenant_id: str,
+    accepted: dict[str, Any],
+    from_seq: int | None = None,
+    may_read_approvals: bool = False,
 ) -> AsyncIterator[str]:
     """Stream a durable run's progress instead of pretending it is synchronous.
 
@@ -400,68 +568,95 @@ async def durable_run_gen(
     The consequence to know is that only *completed* messages are persisted, never chunks:
     a durable run yields tool cards and whole assistant messages, and never token deltas.
     That is the right trade for the mode whose point is that nobody is watching.
+
+    **And what it is blocked on.** An approval request is the one thing the session log does
+    not carry — `_append_produced` writes assistant turns and tool results, and a request for
+    permission is neither — so the transcript tail cannot reach it, on precisely the path
+    where a human has time to answer. The approvals table can, and does: `DurableTail` reads
+    the rows pending on this thread and rebuilds `approval_required` from them. Same
+    principle as the transcript, applied to the other half: re-derive from the durable record
+    rather than forward a message, so a dropped anything costs latency instead of a decision.
+
+    An approval landing publishes no thread notification, so it is found by the poll rather
+    than announced — which is the second reason this loop keeps `notified_ceiling=poll_max`
+    below rather than the long default.
     """
     from felix.durability.runs import get_durable_run
 
-    token = str(accepted.get("resume_token") or "")
-    yield frame({"event": "run_accepted", "data": accepted})
+    try:
+        token = str(accepted.get("resume_token") or "")
+        yield frame({"event": "run_accepted", "data": accepted})
 
-    poll = float(getattr(settings, "stream_resume_poll_seconds", 1.0) or 1.0)
-    poll_max = max(poll, float(getattr(settings, "stream_resume_poll_max_seconds", 10.0) or 10.0))
-    # The run's own TTL bounds this, not the resume stream's idle limit: a durable run
-    # that outlives its expiry is finished either way, and holding the connection past
-    # that point would keep a worker busy for a result that can no longer arrive. So the
-    # pacing here is asked for its interval and never for `exhausted` — hence the
-    # infinite idle limit rather than a second set of backoff rules.
-    deadline = float(accepted.get("expires_at") or 0) or None
+        poll = float(getattr(settings, "stream_resume_poll_seconds", 1.0) or 1.0)
+        poll_max = max(poll, float(getattr(settings, "stream_resume_poll_max_seconds", 10.0) or 10.0))
+        # The run's own TTL bounds this, not the resume stream's idle limit: a durable run
+        # that outlives its expiry is finished either way, and holding the connection past
+        # that point would keep a worker busy for a result that can no longer arrive. So the
+        # pacing here is asked for its interval and never for `exhausted` — hence the
+        # infinite idle limit rather than a second set of backoff rules.
+        deadline = float(accepted.get("expires_at") or 0) or None
 
-    # `notified_ceiling=poll_max`, deliberately, and this is the one place that needs to
-    # say why. The long notified ceiling exists because a stream whose only source is the
-    # session log polls as a safety net once wakes are being delivered. This loop polls a
-    # *second* resource — the durable run row — and the fiber's status write publishes no
-    # thread notification, so a wake being delivered says nothing about it. Left at the
-    # default, a run that appends nothing for a few minutes (queued, a long tool call, a
-    # fiber that died before its first append) would report its status up to a minute late.
-    pacing = ResumePacing(floor=poll, ceiling=poll_max, idle_limit=math.inf, notified_ceiling=poll_max)
-    last_status = ""
+        # `notified_ceiling=poll_max`, deliberately, and this is the one place that needs to
+        # say why. The long notified ceiling exists because a stream whose only source is the
+        # session log polls as a safety net once wakes are being delivered. This loop polls a
+        # *second* resource — the durable run row — and the fiber's status write publishes no
+        # thread notification, so a wake being delivered says nothing about it. Left at the
+        # default, a run that appends nothing for a few minutes (queued, a long tool call, a
+        # fiber that died before its first append) would report its status up to a minute late.
+        pacing = ResumePacing(floor=poll, ceiling=poll_max, idle_limit=math.inf, notified_ceiling=poll_max)
+        last_status = ""
 
-    async with durable_tail(settings, tenant_id, accepted, from_seq) as tail:
-        while True:
-            run = await get_durable_run(settings, tenant_id, token)
-            if run is None:
-                yield error_frame(f"run_not_found:{token}", kind="run_error")
-                break
-            status = str(run.get("status") or "")
-            # Drained *after* the status read and *before* the terminal check, so a run
-            # that completed between two iterations still emits the turns it appended
-            # before it flipped the row. The fiber writes the transcript and then saves
-            # `completed`, so this ordering is what makes "every event, then `final`" true
-            # rather than usually true.
-            frames = await tail.drain()
-            for frame_text in frames:
-                yield frame_text
-            progressed = bool(frames)
-            if status != last_status:
-                last_status = status
-                progressed = True
-                yield frame({"event": "run_status", "data": {"status": status, "resume_token": token}})
-            if status in RUN_TERMINAL:
-                if status == "completed":
-                    yield frame({"event": "final", "data": run.get("final") or {}})
-                else:
-                    yield error_frame(str(run.get("error") or status), kind="run_error")
-                break
-            if deadline and time.time() * 1000 >= deadline:
-                # Says which it was. "expired" and "still running" look identical to a
-                # client that only sees the stream close.
-                yield error_frame(f"run_expired:{token}", kind="run_error")
-                break
-            pacing.observed(progressed)
-            yield KEEP_ALIVE
-            # Wait for the thread to move rather than sleeping through it. The status
-            # query above runs either way, so a dropped notification costs latency and
-            # never correctness -- the same property the reattach stream relies on.
-            pacing.waited(await tail.wait(timeout=pacing.timeout))
+        async with durable_tail(
+            settings, tenant_id, accepted, from_seq, may_read_approvals=may_read_approvals
+        ) as tail:
+            while True:
+                run = await get_durable_run(settings, tenant_id, token)
+                if run is None:
+                    yield error_frame(f"run_not_found:{token}", kind="run_error")
+                    break
+                status = str(run.get("status") or "")
+                # Drained *after* the status read and *before* the terminal check, so a run
+                # that completed between two iterations still emits the turns it appended
+                # before it flipped the row. The fiber writes the transcript and then saves
+                # `completed`, so this ordering is what makes "every event, then `final`" true
+                # rather than usually true.
+                frames = await tail.drain()
+                for frame_text in frames:
+                    yield frame_text
+                progressed = bool(frames)
+                if status != last_status:
+                    last_status = status
+                    progressed = True
+                    yield frame({"event": "run_status", "data": {"status": status, "resume_token": token}})
+                if status in RUN_TERMINAL:
+                    if status == "completed":
+                        yield frame({"event": "final", "data": run.get("final") or {}})
+                    else:
+                        yield error_frame(str(run.get("error") or status), kind="run_error")
+                    break
+                if deadline and time.time() * 1000 >= deadline:
+                    # Says which it was. "expired" and "still running" look identical to a
+                    # client that only sees the stream close.
+                    yield error_frame(f"run_expired:{token}", kind="run_error")
+                    break
+                pacing.observed(progressed)
+                yield KEEP_ALIVE
+                # Wait for the thread to move rather than sleeping through it. The status
+                # query above runs either way, so a dropped notification costs latency and
+                # never correctness -- the same property the reattach stream relies on.
+                pacing.waited(await tail.wait(timeout=pacing.timeout))
+    except asyncio.CancelledError:
+        # The client hung up. The *run* survives -- that is what durable means -- so let the
+        # cancellation through untouched rather than reporting a failure for work still going.
+        raise
+    except Exception as exc:
+        # Mirrors `resume_stream_gen`. Without it an unexpected raise ends the body mid-stream
+        # under an already-sent 200, with no `error:` frame and no `[DONE]`, and a client
+        # cannot tell a truncated connection from a finished one. The sibling loop has had
+        # this since it was written; this one did not, which is an asymmetry rather than a
+        # decision.
+        logger.exception("durable run stream failed token=%s", loggable(token, limit=80))
+        yield error_frame(client_safe_message(exc), kind="run_error")
     yield DONE
 
 
