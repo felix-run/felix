@@ -25,8 +25,11 @@ import logging
 import posixpath
 import re
 import uuid
-from dataclasses import dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass, replace
 from typing import Any
+
+from felix_ai.types import ChatMessage, ContentBlock, ImageAttachment, split_file_ref
 
 from felix.logging_setup import loggable
 
@@ -53,7 +56,10 @@ _MAGIC: dict[str, tuple[bytes, ...]] = {
     "image/png": (b"\x89PNG\r\n\x1a\n",),
     "image/jpeg": (b"\xff\xd8\xff",),
     "image/gif": (b"GIF87a", b"GIF89a"),
-    # RIFF....WEBP — the four size bytes in between are why this one is checked in halves.
+    # RIFF....WEBP — the four size bytes in between are why the tail is checked separately
+    # in `_is_webp` rather than here. `RIFF` alone is WAV and AVI too, and since
+    # `sniff_media_type` is now the only thing deciding what a model is told these bytes
+    # are, a container check that matches audio is not good enough.
     "image/webp": (b"RIFF",),
 }
 ALLOWED_MEDIA_TYPES = frozenset(_MAGIC)
@@ -229,6 +235,165 @@ async def delete_attachment(object_store: Any | None, *, tenant_id: str, file_id
     return True
 
 
+def _is_webp(raw: bytes) -> bool:
+    """RIFF containers carry their format at offset 8; WAV and AVI share the prefix."""
+    return raw[8:12] == b"WEBP"
+
+
+def sniff_media_type(raw: bytes) -> str | None:
+    """The media type the bytes actually are, or None for anything outside the allowlist.
+
+    Read back from the bytes rather than from a stored label, because there is no stored
+    label to read: the default filesystem store discards the content type, which is half
+    the reason `decode_upload` verifies the magic number at the door instead of believing
+    the caller. Sniffing on the way out means the type the model is told matches the type
+    the bytes are, on every backend, with no metadata sidecar to keep in step.
+    """
+    for media_type, prefixes in _MAGIC.items():
+        if raw.startswith(prefixes) and (media_type != "image/webp" or _is_webp(raw)):
+            return media_type
+    return None
+
+
+def _carries_reference(message: ChatMessage) -> bool:
+    """Whether anything on this message still needs expanding.
+
+    Checked before copying so the overwhelmingly common message -- every text turn, every
+    assistant reply, every tool result -- allocates nothing.
+    """
+    return any(
+        split_file_ref(part.url) for part in (*(message.content_blocks or ()), *(message.attachments or ()))
+    )
+
+
+async def resolve_file_refs(
+    messages: Sequence[ChatMessage], *, tenant_id: str, object_store: Any | None
+) -> list[ChatMessage]:
+    """`felix-file://` references expanded to `data:` URLs, immediately before the wire.
+
+    Late on purpose. The session event log holds what the caller sent, and `full_replay`
+    re-sends that log on every turn -- so expanding at ingest would put a 600 KiB image in
+    the log once and on the wire on turns two, three and four. Expanding here means the log
+    keeps the reference and the bytes are fetched per turn, which is the trade the upload
+    endpoint exists to make.
+
+    The tenant comes from the caller's request context, never from the reference. A caller
+    naming another tenant's file id gets the same answer as one naming an id that never
+    existed, because `read_attachment` resolves the key under the caller's own prefix and
+    re-checks containment.
+
+    A reference that cannot be resolved -- deleted since, another tenant's, or bytes that
+    are no longer a type any wire encodes -- is **dropped with a warning**, not raised. A
+    thread whose attachment was deleted on turn two would otherwise stop answering
+    forever, and the session log is not rewritable. The cost is that the model answers
+    without an image the caller believes it saw; the warning names the id so an operator
+    can tell which.
+
+    Returns the input list unchanged when nothing carries a reference, and never mutates a
+    message in place -- these belong to the session, and the next turn rebuilds from them.
+    """
+    if not any(_carries_reference(m) for m in messages):
+        return list(messages)
+
+    resolved: dict[str, tuple[str, str] | None] = {}
+
+    async def _expand(file_id: str) -> tuple[str, str] | None:
+        """The `data:` URL and media type for one id, read at most once per call.
+
+        `full_replay` re-sends the same reference on every prior turn, so a five-turn
+        thread with one image would otherwise be five reads of the same object.
+        """
+        if file_id in resolved:
+            return resolved[file_id]
+        found: tuple[str, str] | None = None
+        raw = await read_attachment(object_store, tenant_id=tenant_id, file_id=file_id)
+        if raw is None:
+            logger.warning(
+                "attachment reference resolves to nothing for this tenant; dropping it tenant=%s file_id=%s",
+                loggable(tenant_id, limit=64),
+                loggable(file_id, limit=64),
+            )
+        elif (media_type := sniff_media_type(raw)) is None:
+            logger.warning(
+                "stored attachment is not a type any wire encodes; dropping it tenant=%s file_id=%s",
+                loggable(tenant_id, limit=64),
+                loggable(file_id, limit=64),
+            )
+        else:
+            found = (
+                f"data:{media_type};base64,{base64.b64encode(raw).decode('ascii')}",
+                media_type,
+            )
+        resolved[file_id] = found
+        return found
+
+    async def _rewrite[T: (ContentBlock, ImageAttachment)](
+        items: Sequence[T] | None,
+    ) -> tuple[list[T], list[str], bool]:
+        out: list[T] = []
+        dropped: list[str] = []
+        changed = False
+        for item in items or ():
+            file_id = split_file_ref(item.url)
+            if file_id is None:
+                out.append(item)
+                continue
+            changed = True
+            expanded = await _expand(file_id)
+            if expanded is None:
+                dropped.append(file_id)
+            else:
+                # `media_type` too, not just the url. A reference sent without one is
+                # defaulted to `image/png` at parse time, so a GIF would otherwise carry a
+                # `data:image/gif` url next to a field saying PNG. The wires re-derive from
+                # the url and would not notice; the next reader of the field would.
+                url, media_type = expanded
+                out.append(replace(item, url=url, media_type=media_type))
+        return out, dropped, changed
+
+    messages_out: list[ChatMessage] = []
+    for message in messages:
+        if not _carries_reference(message):
+            messages_out.append(message)
+            continue
+        blocks, dropped, blocks_changed = await _rewrite(message.content_blocks)
+        atts, _, atts_changed = await _rewrite(message.attachments)
+        # Nothing renderable left: no text worth sending and no image. Note the test is not
+        # "blocks is empty" -- a turn sent as an empty text part plus a reference keeps a
+        # block whose text is `""`, and the wires fall back to `content`, which is also `""`.
+        # An empty content is an Anthropic 400 in its own right, so dropping silently would
+        # wedge the thread permanently: the exact outage dropping-rather-than-raising exists
+        # to avoid, reached by the other road, since the turn is in an append-only log and
+        # every later turn replays it. The marker also stops the model answering confidently
+        # about an image it was never shown.
+        renderable = bool(message.content) or any(b.text or b.url for b in blocks)
+        if blocks_changed and not renderable:
+            blocks = [ContentBlock(type="text", text=_unavailable(dropped))]
+        messages_out.append(
+            replace(
+                message,
+                content=message.content or (blocks[0].text or "" if blocks else ""),
+                content_blocks=blocks if blocks_changed else message.content_blocks,
+                attachments=atts if atts_changed else message.attachments,
+            )
+        )
+    return messages_out
+
+
+def _unavailable(file_ids: Sequence[str]) -> str:
+    """What the model is told in place of an attachment that could not be resolved.
+
+    The ids are echoed only when they are well formed, because this string reaches the
+    model: a reference is caller-written, and the one that failed to resolve is the one
+    most likely to have been written to be read. `valid_file_id` bounds it to 32 hex
+    characters, which is not a sentence.
+    """
+    named = [f for f in file_ids if valid_file_id(f)]
+    if not named:
+        return "[an attachment referenced here is no longer available]"
+    return "[attachment(s) no longer available: " + ", ".join(named) + "]"
+
+
 __all__ = [
     "ALLOWED_MEDIA_TYPES",
     "MAX_ATTACHMENT_BYTES",
@@ -240,5 +405,7 @@ __all__ = [
     "delete_attachment",
     "put_attachment",
     "read_attachment",
+    "resolve_file_refs",
+    "sniff_media_type",
     "valid_file_id",
 ]

@@ -279,3 +279,43 @@ def test_an_unrecognised_content_part_is_reported_rather_than_vanishing(
         )
     assert msg.content == "listen", "the parts that are understood still arrive"
     assert "input_audio" in caplog.text
+
+
+def test_an_unresolved_reference_is_dropped_rather_than_sent() -> None:
+    """A `felix-file://` URL reaching a wire means the harness did not expand it.
+
+    That is a bug here, not a malformed request there — sent on, it is a provider 400 at
+    best and a fetch of an unroutable host at worst. Dropped in `inline_parts` so both
+    wires inherit the refusal; implementing it twice is what let the Anthropic `data:`
+    defect sit unnoticed on one of them.
+
+    Unreachable through the normal path, because `resolve_file_refs` drops a reference it
+    cannot expand before a provider is ever called — which is exactly why it is asserted
+    here and not through the stack: a test that went through `/v1` would pass with this
+    guard deleted.
+    """
+    from felix_ai.types import ChatMessage, ContentBlock, file_ref_url
+    from felix_ai.wire.base import inline_parts
+
+    ref = file_ref_url("c" * 32)
+    from_blocks = ChatMessage(
+        role="user",
+        content="what is this",
+        content_blocks=[
+            ContentBlock(type="text", text="what is this"),
+            ContentBlock(type="image_url", url=ref),
+        ],
+    )
+    assert [(p.type, p.url) for p in inline_parts(from_blocks)] == [("text", None)]
+
+    # The other branch: a turn restored from the session renders from `attachments`.
+    from felix.patterns.types import ImageAttachment
+
+    from_attachments = ChatMessage(
+        role="user",
+        content="what is this",
+        attachments=[ImageAttachment(url=ref, media_type="image/png")],
+    )
+    rendered = inline_parts(from_attachments)
+    assert [(p.type, p.url) for p in rendered] == [("text", None)]
+    assert rendered[0].text == "what is this", "the turn lost its text along with the reference"

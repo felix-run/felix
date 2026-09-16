@@ -31,6 +31,7 @@ from felix_ai.types import (
     StopReason,
     StreamDelta,
     ToolSchema,
+    split_file_ref,
 )
 from felix_ai.wire.transport import DEFAULT_CONNECT_TIMEOUT_S
 
@@ -192,7 +193,10 @@ def inline_parts(m: ChatMessage) -> list[ContentBlock]:
     Image URLs come back canonicalised, so a wire decides only how to spell a block, never
     what one is.
     """
+    dropped = 0
     if m.content_blocks:
+        kept = [b for b in m.content_blocks if not split_file_ref(b.url)]
+        _warn_dropped(len(m.content_blocks) - len(kept))
         return [
             ContentBlock(
                 type=b.type,
@@ -201,12 +205,15 @@ def inline_parts(m: ChatMessage) -> list[ContentBlock]:
                 media_type=_declared_media_type(b.url, b.media_type),
                 detail=b.detail,
             )
-            for b in m.content_blocks
+            for b in kept
         ]
     parts: list[ContentBlock] = []
     if m.content:
         parts.append(ContentBlock(type="text", text=m.content))
     for att in m.attachments or []:
+        if split_file_ref(att.url):
+            dropped += 1
+            continue
         url = canonical_inline_url(att.url)
         parts.append(
             ContentBlock(
@@ -216,7 +223,30 @@ def inline_parts(m: ChatMessage) -> list[ContentBlock]:
                 detail=att.detail,
             )
         )
+    _warn_dropped(dropped)
     return parts
+
+
+def _warn_dropped(count: int) -> None:
+    """Say that references were dropped, once per call, without quoting any of them.
+
+    A count rather than the ids, for two reasons that point the same way. The ids are
+    caller-written and a text log record is one line, so quoting one means escaping it --
+    and the escaping rule lives in `felix.logging_setup.loggable`, which this package may
+    not import. A second implementation of a security control in another package is how
+    the last two of these drifted apart. Counting needs neither.
+
+    It is also per call rather than per block: this only fires when the harness expanded
+    nothing at all, and in that state a replayed thread with three references across a
+    ten-step loop would emit thirty identical lines per request, at a rate the caller
+    chooses. `felix.patterns.model` has the same reasoning next to `_WARNED_NO_CREDENTIAL`.
+    """
+    if count:
+        logger.warning(
+            "dropping %d unresolved attachment reference(s): the harness did not expand "
+            "them before the wire call",
+            count,
+        )
 
 
 def _declared_media_type(url: str | None, declared: str | None) -> str | None:

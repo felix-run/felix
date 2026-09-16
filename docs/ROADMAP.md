@@ -150,12 +150,17 @@ First, because everything else governs it.
         uuid4 id. Capped at 600 KiB decoded and to the image types both wires encode — the cap
         sits below `CORE_BODY_LIMIT_BYTES` deliberately, since above it the middleware answers 413
         before the route and hides the real ceiling.
-      - Remaining: **the `file_id` content block**, resolved to bytes at the wire. The decision the
-        split was waiting on is made: resolve *late*, per turn, so the session event log keeps
-        holding the reference rather than the base64 it expands to — which is the whole reason an
-        upload beats an inline `data:` URL, since `full_replay` re-sends the log every turn.
-        `packages/ai` cannot do the resolving (it may not import `felix`), so the harness rewrites
-        the part before the wire call.
+      - Landed: **the `file_id` content block**, resolved to bytes at the wire. Resolution is
+        late, per turn, so the session event log keeps the reference rather than the base64 it
+        expands to. One correction to this entry as written: the reference does **not** need a
+        new field. It rides in the `url` an inline image already uses, as `felix-file://<id>`,
+        because `session/types.py` persists and restores `attachments[].url` and both wires read
+        it — a parallel `file_id` field would have had to be threaded through each, and the one
+        that would have been missed is the session layer, which is the only path a *second* turn
+        takes. Nothing would have failed until replay, which is this repo's defect shape exactly.
+        `packages/ai` still does no resolving (it may not import `felix`); it parses the part into
+        a reference and drops any reference that reaches a wire unexpanded, since that means the
+        harness did not do its half.
       - **Required before `files:write` is granted to an untrusted tenant**, from the security
         review: a per-tenant quota. `MAX_ATTACHMENT_BYTES` caps one upload and nothing caps how
         many — the same argument that produced `documents_max_per_tenant`, which exists because
@@ -166,11 +171,13 @@ First, because everything else governs it.
         manifest storage for every tenant on the host. Shipped without it deliberately, because
         `files:write` is an operator-granted management scope rather than something a chat caller
         holds — but that is the condition, and it is written here rather than assumed.
-      - **Decide before writing the resolver:** where `file_id` → bytes sits relative to
-        `apply_inbound_screening`. Resolving late (which the log-size argument requires) puts it
-        *after* screening, so a screener would never see the substituted bytes — and text rendered
-        inside an uploaded image is an injection channel. Pre-existing for inline images; the
-        ordering choice is new.
+      - Decided, and the answer made the choice smaller than it looked: resolution sits **after**
+        `apply_inbound_screening`. Checked rather than reasoned — `governance/inbound.py:_message_text`
+        collects only blocks whose type is `text`, so image content has never reached a screener
+        and resolving early would have handed it a block it ignores. So this is not a coverage
+        regression; it puts `file_id` images exactly where inline images already were. What
+        remains open is the real item underneath: **image content is not screened at all**, and
+        text rendered inside an uploaded image is an injection channel on both paths.
       - Open, and a change to a security control rather than a feature: uploads are bounded by the
         single global `BodyLimitMiddleware` limit, so a larger ceiling means per-route limits.
         That middleware has a bypass in its history; it should not be widened as a side effect of
