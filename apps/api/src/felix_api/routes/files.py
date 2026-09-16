@@ -39,7 +39,7 @@ class UploadRequest(BaseModel):
 @router.post("/")
 async def upload_file(body: UploadRequest, request: Request) -> dict[str, Any]:
     """Store bytes and return the id a later message can reference."""
-    from felix.attachments import AttachmentError, decode_upload, put_attachment
+    from felix.attachments import AttachmentError, QuotaExceeded, decode_upload, put_attachment
     from felix.storage import get_object_store
 
     require_mgmt_scopes(request, SCOPE_FILES_WRITE)
@@ -58,7 +58,12 @@ async def upload_file(body: UploadRequest, request: Request) -> dict[str, Any]:
             data=raw,
             media_type=body.media_type,
             filename=body.filename,
+            settings=settings,
         )
+    except QuotaExceeded as exc:
+        # 409, not 413: the request is a fine size and the account is full. A 413 would send
+        # the caller off to shrink an image that was never the problem.
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except AttachmentError as exc:
         # No object store configured is the deployment's problem, not the caller's.
         raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -114,9 +119,15 @@ async def delete_file(file_id: str, request: Request) -> dict[str, Any]:
 
     require_mgmt_scopes(request, SCOPE_FILES_WRITE)
     settings = request.app.state.settings
-    await delete_attachment(
+    # The real answer rather than an unconditional `true`: `delete_attachment` returns False
+    # when it could not act -- a malformed id, or an object store that raised -- and saying
+    # `deleted: true` there tells an operator the bytes are gone when they are not. It is not
+    # an existence oracle: a well-formed id naming nothing still deletes successfully,
+    # because every backend's delete is idempotent.
+    deleted = await delete_attachment(
         get_object_store(settings),
+        settings=settings,
         tenant_id=tenant_id_from_request(request),
         file_id=file_id,
     )
-    return {"file_id": file_id, "deleted": True}
+    return {"file_id": file_id, "deleted": deleted}

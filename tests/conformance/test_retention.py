@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from felix import attachments
 from felix.a2a import tasks as a2a_store
 from felix.approvals import store as approvals_store
 from felix.audit import store as audit_store
@@ -39,7 +40,7 @@ class Clock:
     ms: int
 
     def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        for module in (retention, fiber_store, a2a_store, memory_store, approvals_store):
+        for module in (retention, fiber_store, a2a_store, memory_store, approvals_store, attachments):
             monkeypatch.setattr(module, "now_ms", lambda: self.ms)
         # `persist_leaf` stamps `thread_state.updated_at` from the wall clock.
         monkeypatch.setattr(thread_state, "time", SimpleNamespace(time=lambda: self.ms / 1000))
@@ -55,6 +56,7 @@ def _retention(settings: Any, **days: int) -> Any:
             # 0 unless a test asks, so the existing sweeps keep their expected counts and
             # the approval rule is only exercised where it is the subject.
             "approval_retention_days": days.get("approval", 0),
+            "attachment_retention_days": days.get("attachment", 0),
         }
     )
 
@@ -197,6 +199,10 @@ async def test_sweep_removes_only_rows_older_than_each_ttl(
         # `TABLES`, so a table that stops being swept shows up here as a silent 0 rather
         # than as a missing key -- which is the point of asserting the dict exactly.
         "approvals": 0,
+        # Same, for the same reason, and not from `TABLES`: an upload is bytes plus a
+        # ledger row, so it is swept by its own step. `FELIX_ATTACHMENT_RETENTION_DAYS`
+        # defaults to 0 and keeps everything.
+        "attachments": 0,
     }
     assert await _audit_ids(settings) == {new_audit}, f"{old_audit=} should be gone"
     assert await _usage_ids(settings) == {new_usage}, f"{old_usage=} should be gone"
@@ -581,3 +587,50 @@ def _no_bypass(fn: Any) -> Any:
         return await fn(*args, **kwargs)
 
     return wrapped
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_an_expired_upload_is_collected_bytes_and_row_together(
+    retention_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one sweep that deletes something other than a row, against a real store.
+
+    Every other arm here is a DELETE. An upload is bytes in the object store plus a ledger
+    row beside them, and dropping only the row orphans the bytes for good: nothing lists
+    that prefix, which is why the ledger exists. So both have to be asserted gone.
+
+    The Postgres arm is the point. `attachments` is the first new tenant table since
+    `0010_documents`, so its RLS policy is newly written rather than newly copied, and the
+    quota's SUM, the cross-tenant sweep read under `rls_bypass`, and the `merge` upsert had
+    no coverage that ran SQL at all -- `memory://` hides exactly that kind of divergence.
+    """
+    from felix.attachments import delete_attachment, put_attachment, tenant_attachment_bytes
+    from felix.storage import get_object_store
+
+    settings = _retention(retention_settings, attachment=1)
+    clock = Clock(ms=10 * DAY)
+    clock.install(monkeypatch)
+    store = get_object_store(settings)
+    png = b"\x89PNG\r\n\x1a\n" + b"x" * 32
+
+    old_upload = await put_attachment(
+        store, tenant_id=TENANT, data=png, media_type="image/png", settings=settings
+    )
+    clock.ms += 2 * DAY
+    new_upload = await put_attachment(
+        store, tenant_id=TENANT, data=png, media_type="image/png", settings=settings
+    )
+    assert await tenant_attachment_bytes(settings, TENANT) == 2 * len(png)
+
+    counts = await retention.run_retention_sweep(settings)
+
+    assert counts["attachments"] == 1
+    assert await tenant_attachment_bytes(settings, TENANT) == len(png), "the row survived"
+    old_key = f"attachments/{TENANT}/{old_upload.file_id}"
+    new_key = f"attachments/{TENANT}/{new_upload.file_id}"
+    assert await store.get(old_key) is None, "the row went and the bytes stayed"
+    assert await store.get(new_key) == png, "an upload inside the TTL was collected"
+
+    await delete_attachment(store, tenant_id=TENANT, file_id=new_upload.file_id, settings=settings)
+    assert await tenant_attachment_bytes(settings, TENANT) == 0

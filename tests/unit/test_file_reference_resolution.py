@@ -29,7 +29,11 @@ def _settings() -> Settings:
 
 async def _stored(settings, tenant_id: str, raw: bytes, media_type: str) -> str:
     att = await put_attachment(
-        get_object_store(settings), tenant_id=tenant_id, data=raw, media_type=media_type
+        get_object_store(settings),
+        tenant_id=tenant_id,
+        data=raw,
+        media_type=media_type,
+        settings=settings,
     )
     return att.file_id
 

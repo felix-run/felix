@@ -161,16 +161,20 @@ First, because everything else governs it.
         `packages/ai` still does no resolving (it may not import `felix`); it parses the part into
         a reference and drops any reference that reaches a wire unexpanded, since that means the
         harness did not do its half.
-      - **Required before `files:write` is granted to an untrusted tenant**, from the security
-        review: a per-tenant quota. `MAX_ATTACHMENT_BYTES` caps one upload and nothing caps how
-        many — the same argument that produced `documents_max_per_tenant`, which exists because
-        "a per-request cap is not a per-tenant cap". Counting needs Postgres (the object store
-        Protocol has no `list`), so it is a table plus a migration, and `jobs/retention.py` needs
-        an object-store arm: `attachments/` joins `artifacts/` as a prefix nothing ever collects.
-        On the default `fs` backend one tenant filling the disk degrades artifact spill and
-        manifest storage for every tenant on the host. Shipped without it deliberately, because
-        `files:write` is an operator-granted management scope rather than something a chat caller
-        holds — but that is the condition, and it is written here rather than assumed.
+      - Landed, and it was the stated condition on granting `files:write` to an untrusted
+        tenant: **a per-tenant quota and a retention sweep**.
+        `FELIX_ATTACHMENTS_MAX_BYTES_PER_TENANT` bounds stored bytes (409 over the line, not
+        413 — the request is a fine size and the account is full) and
+        `FELIX_ATTACHMENT_RETENTION_DAYS` lets the nightly sweep collect old uploads;
+        `attachments/` had joined `artifacts/` as a prefix nothing collected. Both needed
+        migration `0016`'s ledger, because the `ObjectStore` Protocol has no `list` — so
+        nothing could count what a tenant held or find what was old. Bytes rather than a
+        count, since each upload is already capped at 600 KiB and the resource is disk.
+        The bytes stay the system of record: the row is written before the object and deleted
+        after it, so every interruption leaves a row whose bytes may not exist -- visible and
+        collectable -- rather than bytes no count can name. Both reviewers caught this the
+        other way round on the first pass, where it would have made the quota fail open. Existing uploads are not backfilled — a backfill would need the `list`
+        this table exists because we lack.
       - Decided, and the answer made the choice smaller than it looked: resolution sits **after**
         `apply_inbound_screening`. Checked rather than reasoned — `governance/inbound.py:_message_text`
         collects only blocks whose type is `text`, so image content has never reached a screener
@@ -178,6 +182,15 @@ First, because everything else governs it.
         regression; it puts `file_id` images exactly where inline images already were. What
         remains open is the real item underneath: **image content is not screened at all**, and
         text rendered inside an uploaded image is an injection channel on both paths.
+      - Follow-up, from the quality review of the quota: **split `felix/attachments.py`**. It is
+        ~600 lines doing four jobs — magic-number validation, key and containment rules, the
+        `felix-file://` resolver, and now a Postgres-backed ledger — and the fourth brought a
+        dependency class the others do not have. The tell is that the ledger was inserted
+        *through the middle* of the magic-number subject, which is no longer contiguous. Seam,
+        in dependency order with no cycles: `attachments/ledger.py` (the only module that knows
+        Postgres exists), `attachments/store.py` (constants, magic, keys, put/read/delete),
+        `attachments/refs.py` (`resolve_file_refs`), with `__init__.py` re-exporting the current
+        `__all__` verbatim so no import site changes.
       - Open, and a change to a security control rather than a feature: uploads are bounded by the
         single global `BodyLimitMiddleware` limit, so a larger ceiling means per-route limits.
         That middleware has a bypass in its history; it should not be widened as a side effect of

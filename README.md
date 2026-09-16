@@ -209,8 +209,14 @@ zero cloud SDKs.
   and `a2a_tasks`, and (off by default) idle session threads — `FELIX_AUDIT_RETENTION_DAYS` (30),
   `FELIX_USAGE_RETENTION_DAYS` (365), `FELIX_FIBER_RETENTION_DAYS` (7), `FELIX_SESSION_RETENTION_DAYS`
   (0 = keep), `FELIX_APPROVAL_RETENTION_DAYS` (0 = keep, and only *settled* approvals — a grant
-  that can still authorize is never swept); a manifest's `governance.retention_days` shortens the
-  audit TTL for its own rows
+  that can still authorize is never swept), `FELIX_ATTACHMENT_RETENTION_DAYS` (0 = keep; the one
+  sweep that deletes *bytes* as well as rows, since `attachments/` is an object-store prefix
+  nothing else collects); a manifest's `governance.retention_days` shortens the audit TTL for its
+  own rows
+- Uploads: `FELIX_ATTACHMENTS_MAX_BYTES_PER_TENANT` (256 MiB, 0 = no ceiling) bounds what one
+  tenant may store through `/files`, on top of the 600 KiB per-upload cap. Over the ceiling
+  answers 409. On the default `fs` store this shares a disk with artifact spill and manifest
+  storage, so the ceiling is what keeps one tenant from degrading every other one
 
 **Sizing.** Each worker process carries its own connection pool, so raise the two together:
 `FELIX_WORKERS` (1) and `FELIX_DB_POOL_SIZE` (10) + `FELIX_DB_MAX_OVERFLOW` (20) — past that
