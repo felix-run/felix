@@ -16,9 +16,8 @@ from felix.manifests.governance import GovernanceError, validate_for_write
 from felix.manifests.loader import ManifestParseError, parse_manifest
 from felix.manifests.schema import Manifest
 from felix.manifests.secret_refs import redact_manifest_secrets
+from felix.thread_ids import effective_thread_id
 from pydantic import BaseModel, Field
-
-from felix_api.threads import effective_thread_id
 
 router = APIRouter(tags=["Manifests"])
 # Mounted only when manifests are writable. Under `manifest_source=bundled` these are

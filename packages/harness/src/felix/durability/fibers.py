@@ -72,6 +72,12 @@ def fiber_thread_id(tenant_id: str, fiber_id: str) -> str:
     derives the same id to tail a durable run's session log. A durable run with no thread
     of its own is exactly the case where an f-string here and a different one there would
     silently tail an empty log forever.
+
+    The other two namespaced thread ids go through `thread_ids.a2a_thread_id` /
+    `eval_thread_id`, which validate a caller-supplied segment and may return None. This
+    one stays a plain f-string and returns `str`: `fiber_id` is a `uuid4` the harness
+    generates, so it can fail no check those apply, and routing it through would add an
+    unreachable None branch at both call sites.
     """
     return f"{tenant_id}:fiber:{fiber_id}"
 

@@ -22,6 +22,7 @@ from felix.manifests.pin import ManifestDriftError
 from felix.patterns.model import ModelGatewayError
 from felix.patterns.types import ChatMessage, InvokeInput
 from felix.runtime import build_tenant_agent, prepare_tenant_invoke, resolve_tenant_manifest
+from felix.thread_ids import effective_thread_id
 from felix_ai.output_schema import InvalidOutputSchema, validate_output_schema
 from felix_ai.types import ModelChatOptions
 from felix_ai.wire.openai_completions import finish_reason_for
@@ -29,7 +30,6 @@ from pydantic import BaseModel, Field
 
 from felix_api.errors import client_safe_message, log_gateway_error
 from felix_api.routes._sse import DONE, HEARTBEAT, KEEP_ALIVE, sse_response, with_heartbeat
-from felix_api.threads import effective_thread_id
 
 logger = logging.getLogger("felix_api.routes.openai_compat")
 

@@ -10,6 +10,7 @@ from felix.context import AuthContext, RequestContext, async_run_with_context
 from felix.eval import store as eval_store
 from felix.patterns.types import ChatMessage, InvokeInput
 from felix.runtime import build_tenant_agent, resolve_tenant_manifest
+from felix.thread_ids import eval_thread_id
 
 logger = logging.getLogger("felix.eval.runner")
 
@@ -189,13 +190,28 @@ async def start_run(
     for item in items:
         item_id = str(item.get("item_id") or item.get("id") or "")
         user_input = str(item.get("user_input") or "")
-        req_ctx = RequestContext(
-            settings=settings,
-            auth=auth,
-            manifest_id=candidate_manifest,
-            thread_id=f"{tenant_id}:eval:{run['id']}:{item_id}",
-        )
         try:
+            # `item_id` is dataset content, and `PUT /eval/datasets/{name}` takes the items
+            # from the caller — so it is caller-supplied in the same way an A2A `taskId` is,
+            # and it lands in the `session_events` primary key. Composed rather than
+            # interpolated for that reason; see `thread_ids._compose`.
+            #
+            # It is never *empty* here whatever the dataset said: `items` always comes back
+            # from `get_dataset`, and `put_dataset` mints a `uuid4().hex` for an item that
+            # carries no id — the `--fixture` path included, since the CLI stores the file
+            # before running it. So this handles the ids an author chose badly, not absent
+            # ones; a stand-in for a missing id would be a branch nothing reaches.
+            thread_id = eval_thread_id(tenant_id, str(run["id"]), item_id)
+            if thread_id is None:
+                # This item's error, not the run's — the same choice the rubric check below
+                # makes, so one unusable id does not cost every other item its score.
+                raise ValueError(f"item_id is not usable as a thread id: {item_id[:80]!r}")
+            req_ctx = RequestContext(
+                settings=settings,
+                auth=auth,
+                manifest_id=candidate_manifest,
+                thread_id=thread_id,
+            )
             # Inside the try: a rubric that is not a mapping used to raise here and abandon the
             # whole run, so one malformed item in a stored dataset took every other item's score
             # with it and the run reported nothing. It is this item's error now.

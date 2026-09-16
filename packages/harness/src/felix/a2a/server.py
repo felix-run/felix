@@ -10,6 +10,7 @@ from felix.a2a import tasks as task_store
 from felix.config import Settings
 from felix.context import AuthContext, RequestContext, async_run_with_context
 from felix.patterns.types import ChatMessage, InvokeInput
+from felix.thread_ids import a2a_thread_id
 from felix.tools.provider import ToolProvider
 
 
@@ -69,7 +70,24 @@ async def handle_rpc(
                 "error": {"code": -32602, "message": "message text required"},
             }
         task_id = str(params.get("taskId") or uuid.uuid4())
-        thread = f"{tenant_id}:a2a:{task_id}"
+        thread = a2a_thread_id(tenant_id, task_id)
+        if thread is None:
+            # Before `put_task`, deliberately: `task_id` is half of the `a2a_tasks`
+            # primary key and the whole tail of the `session_events` one, both plain
+            # btree indexes. An incompressible id past ~2700 bytes does not merely
+            # bloat them, it fails the insert outright ("index row size N exceeds
+            # btree version 4 maximum 2704"), so an unchecked id here is a 500 a
+            # caller can repeat at the rate limit. `memory://` keys a dict and shows
+            # none of this, which is why the cap has to be enforced rather than tested
+            # for on the CI path.
+            return {
+                "jsonrpc": "2.0",
+                "id": rpc_id,
+                "error": {
+                    "code": -32602,
+                    "message": f"taskId is not usable as a thread id: {task_id[:80]!r}",
+                },
+            }
         ts = int(time.time() * 1000)
         await task_store.put_task(
             settings,

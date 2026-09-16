@@ -29,6 +29,7 @@ from felix.session.store import get_session_store
 from felix.session.tree import fork_thread, get_leaf, rewind_to
 from felix.session.types import GetEventsOpts
 from felix.steer import enqueue
+from felix.thread_ids import effective_thread_id
 from felix.tools.client_bridge import MAX_TOOL_CALL_ID
 from pydantic import BaseModel, Field
 
@@ -48,7 +49,6 @@ from felix_api.routes._streaming import (
     resume_stream_gen,
     stream_cursor,
 )
-from felix_api.threads import effective_thread_id
 
 logger = logging.getLogger("felix_api.routes.chat")
 
