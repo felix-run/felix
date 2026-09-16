@@ -123,7 +123,12 @@ same pair locally. Neither fixture means anything without the other.
 - `packages/harness` (`felix`) — all the logic: manifests, patterns, tools, session,
   governance, auth, memory, eval, durability, storage, plugins.
 - `packages/cli` (`felix`) — `migrate | eval | mint-jwt | bundle-manifests | validate-manifest | doctor | version | temporal-worker`.
-- `apps/api` (`felix-api`) — FastAPI routes, one module per surface in `routes/`.
+- `apps/api` (`felix-api`) — FastAPI routes, one module per surface in `routes/`, plus two
+  underscore-prefixed modules that carry no route: `_sse.py` knows the SSE *envelope* (frame
+  spelling, `[DONE]`, heartbeats — never spell a frame by hand elsewhere) and `_streaming.py`
+  knows the *source* (session-log tailing, cursors, poll backoff, and **both** stream loops —
+  `resume_stream_gen` for a reattach and `durable_run_gen` for a durable run, which are the
+  same tail over the same log and are kept together so they cannot drift).
 - `apps/worker` (`felix-worker`, `felix-scheduler`) — Taskiq broker + cron tasks.
 - `manifests/` — bundled agents (`quick`, `deep`, `router`, `governed`, …); `governed.yaml` is the fullest example of the schema.
 - `skills/<name>/SKILL.md` — Agent Skills, referenced from a manifest's `spec.skills`.
@@ -150,6 +155,20 @@ Adding a manifest field means: `manifests/schema.py` → an `apply_*` wrapper or
 `builder.py` → a case in `tests/unit/` → `make schema` (regenerates the generated, checked-in
 `schemas/manifest.schema.json` that the `# yaml-language-server` header in every manifest points at).
 Adding a pattern means `register_pattern(...)` at import time — nothing in core enumerates patterns.
+
+**Removing** a manifest *key* means one more step: an entry in `manifests/compat.py:RETIRED`.
+The schema is `extra=forbid`, so a removal retroactively invalidates every manifest already
+stored with that field — and since the store is read ahead of bundled YAML, a stale row
+shadows the file it came from. `spec.model.region` did exactly that to the `quick` manifest
+of any deployment whose copy predated #125. Only list a removal that is *inert*, where a
+manifest with the field and one without compile to the same agent; one that changes
+behaviour needs a migration rewriting the rows, not a silent drop.
+
+That covers a removed key and nothing else. **Narrowing what a field accepts** is the same
+outage by another route and has no mechanism yet: `spec.memory.checkpointer` went from a
+`Literal` to a registry lookup in #109, so a stored `agentcore` still parses and then raises
+`unknown checkpointer` inside `build_tenant_agent`. Tightening a type, adding a validator or
+making a field required all land the same way.
 
 ### Protocols, not vendors
 

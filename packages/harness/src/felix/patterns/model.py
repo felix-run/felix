@@ -270,6 +270,33 @@ def record_model_usage(
     )
 
 
+async def resolve_for_current_request(messages: list[ChatMessage]) -> list[ChatMessage]:
+    """`felix-file://` references turned into bytes, as late as there is a place to.
+
+    Called from the leaf-client wrapper below, so every provider call passes through it
+    exactly once however the pattern above composed things -- and so that the next
+    statement after it is the provider call itself, which is the "before the wire" this
+    needs. Doing it in a pattern would mean doing it in every pattern, and `groupchat` is
+    the one that would be forgotten.
+
+    Degrades rather than raises when there is no request context -- an eval run, a worker
+    sweep -- because there is then no tenant to resolve against, and a message with no
+    reference needs none: `resolve_file_refs` returns the list untouched in that case, so
+    this costs one attribute read on the overwhelming majority of calls.
+    """
+    ctx = try_get_context()
+    tenant_id = getattr(getattr(ctx, "auth", None), "tenant_id", None) if ctx else None
+    if not tenant_id:
+        return messages
+    from felix.attachments import resolve_file_refs
+    from felix.storage import get_object_store
+
+    settings = getattr(ctx, "settings", None) or get_settings()
+    return await resolve_file_refs(
+        messages, tenant_id=str(tenant_id), object_store=get_object_store(settings)
+    )
+
+
 @dataclass
 class _TracedClient:
     """One span and one latency sample per provider call.
@@ -281,8 +308,14 @@ class _TracedClient:
     them into one and hidden the retry.
 
     Only `chat` and `stream_turn` are instrumented, because they are the two that report
-    usage. `stream` cannot report any, so it is passed through untouched rather than
-    given a span that would claim a generation with no tokens.
+    usage. `stream` gets no span -- it cannot report any tokens, and one would claim a
+    generation with none -- but it is not a bare pass-through either: all three entry
+    points call `resolve_for_current_request` first, because this wrapper sits on the leaf
+    and is therefore the last place a message can be rewritten before a provider sees it.
+    That is a second subject for one class, taken deliberately: the alternative is a second
+    wrapper pair duplicating the `supports_stream_turn` narrowing and `__getattr__`'s
+    deliberate refusal to forward `stream_turn`, which is a lot of machinery to isolate one
+    call. The body lives at module scope so only the call is here.
     """
 
     inner: ModelClient
@@ -318,6 +351,7 @@ class _TracedClient:
         tools: Sequence[ToolSchema],
         opts: ModelChatOptions | None = None,
     ) -> ModelChatResult:
+        messages = await resolve_for_current_request(messages)
         async with timed_span(
             f"chat {self._wire_model()}",
             self._span_attrs(),
@@ -329,13 +363,16 @@ class _TracedClient:
             record_result_on_span(span, result, self._wire_model())
             return result
 
-    def stream(
+    async def stream(
         self,
         messages: list[ChatMessage],
         tools: Sequence[ToolSchema],
         opts: ModelChatOptions | None = None,
     ) -> AsyncIterator[str]:
-        return self.inner.stream(messages, tools, opts)
+        # An async generator rather than the plain forward this used to be, because the
+        # expansion is a coroutine. `async for` over the result is identical either way.
+        async for chunk in self.inner.stream(await resolve_for_current_request(messages), tools, opts):
+            yield chunk
 
     def __getattr__(self, name: str) -> Any:
         # Providers carry extra attributes the harness reads by name (`wire_model_id`
@@ -370,6 +407,7 @@ class _TracedStreamingClient(_TracedClient):
         tools: Sequence[ToolSchema],
         opts: ModelChatOptions | None = None,
     ) -> AsyncIterator[StreamDelta | ModelChatResult]:
+        messages = await resolve_for_current_request(messages)
         async with timed_span(
             f"chat {self._wire_model()}",
             {**self._span_attrs(), "felix.streamed": True},

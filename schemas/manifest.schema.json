@@ -1944,6 +1944,19 @@
           "default": null,
           "title": "Recursion Limit"
         },
+        "output_schema": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Output Schema"
+        },
         "extensions": {
           "additionalProperties": true,
           "title": "Extensions",

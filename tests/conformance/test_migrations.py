@@ -92,6 +92,39 @@ async def test_migration_only_ddl_exists_after_upgrade() -> None:
         await drop_everything(url)
 
 
+async def test_a_column_added_to_a_live_table_is_not_null_with_a_default() -> None:
+    """`approvals.thread_id`, and the promise its migration makes about historical rows.
+
+    `create_pending` always passes an explicit `""`, so every store-level test sees the Python
+    kwarg default and none of them can see the DDL. Written `nullable=True` with no default,
+    the whole conformance file stays green while every row predating the migration surfaces as
+    `null` over `GET /approvals` — two contracts for one field, which is the thing a client
+    author discovers in production. This asserts the column as the migration declares it.
+    """
+    url = _url_or_skip()
+    try:
+        await migrate_to_head(url)
+        engine = create_async_engine(url, future=True)
+        try:
+            async with engine.connect() as conn:
+                row = (
+                    await conn.execute(
+                        text(
+                            "SELECT is_nullable, column_default FROM information_schema.columns "
+                            "WHERE table_name = 'approvals' AND column_name = 'thread_id'"
+                        )
+                    )
+                ).first()
+        finally:
+            await engine.dispose()
+
+        assert row is not None, "0014 did not add approvals.thread_id"
+        assert row[0] == "NO", f"thread_id is nullable, so an old row reads as null: {row[0]!r}"
+        assert row[1] == "''::text", f"no server default, so the backfill-free claim fails: {row[1]!r}"
+    finally:
+        await drop_everything(url)
+
+
 async def test_downgrades_reverse_cleanly() -> None:
     """Every revision reverses, and the schema re-applies afterwards.
 

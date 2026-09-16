@@ -208,7 +208,9 @@ zero cloud SDKs.
 - Retention: the worker's nightly sweep prunes `audit_events`, `usage_events`, finished `fibers`
   and `a2a_tasks`, and (off by default) idle session threads — `FELIX_AUDIT_RETENTION_DAYS` (30),
   `FELIX_USAGE_RETENTION_DAYS` (365), `FELIX_FIBER_RETENTION_DAYS` (7), `FELIX_SESSION_RETENTION_DAYS`
-  (0 = keep); a manifest's `governance.retention_days` shortens the audit TTL for its own rows
+  (0 = keep), `FELIX_APPROVAL_RETENTION_DAYS` (0 = keep, and only *settled* approvals — a grant
+  that can still authorize is never swept); a manifest's `governance.retention_days` shortens the
+  audit TTL for its own rows
 
 **Sizing.** Each worker process carries its own connection pool, so raise the two together:
 `FELIX_WORKERS` (1) and `FELIX_DB_POOL_SIZE` (10) + `FELIX_DB_MAX_OVERFLOW` (20) — past that
@@ -478,12 +480,64 @@ Outbound integrations, all declared on the manifest:
 > **stdio MCP is disabled** unless `FELIX_MCP_STDIO_ALLOWED_COMMANDS` names the exact commands
 > allowed. Manifest-supplied argv is arbitrary code execution.
 
+Structured output — `spec.output_schema` is a JSON Schema the agent's answer must match, and the
+model provider is what enforces it rather than the prompt:
+
+```yaml
+spec:
+  output_schema:
+    type: object
+    properties:
+      answer: {type: string}
+      confidence: {type: number}
+    required: [answer, confidence]
+    additionalProperties: false
+```
+
+`message.content` is then a JSON document on every provider. Tools still work — it is the turn
+that answers in text that is constrained, not the turns that call a tool on the way there. OpenAI
+gets `response_format`, strict when the schema closes every object and requires every property
+(the only setting under which the shape is *guaranteed*; the drop to non-strict is logged, and
+`strict` goes only to endpoints whose provider row declares it, since it is an OpenAI extension
+that eleven other providers share this wire without). Anthropic has no equivalent, so the schema
+becomes a tool the model must call, folded back into the reply — except with extended thinking
+on, where the provider forbids a forced tool choice and the schema can only be offered.
+
+Supported on `pattern: react` and `pattern: deep`. The composite patterns — `router`,
+`parallel`, `groupchat`, `reflect`, `plan_execute` — compose their answer in a turn that takes
+no options yet, so a manifest declaring `output_schema` on one of those is **refused at compile**
+rather than quietly answering in prose. A pattern registered by a plugin opts in with
+`register_pattern(..., honours_output_schema=True)`.
+
+A caller can ask for a shape per request too: `POST /v1/chat/completions` accepts OpenAI's
+`response_format: {type: json_schema, json_schema: {schema: …}}`, so an OpenAI SDK works
+unchanged. A manifest that declares `spec.output_schema` overrides it — an agent published with an
+answer contract keeps answering to it.
+
+Images, on `/chat` and on `/v1/chat/completions`, in OpenAI's content-parts shape:
+
+```json
+{"role": "user", "content": [
+  {"type": "text", "text": "what is in this picture?"},
+  {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="}}
+]}
+```
+
+A `data:` URL is sent to the provider as inline bytes — OpenAI takes the URL verbatim, Anthropic
+gets a `base64` source, since it has no URL form for inline data — and an `https://` URL is
+passed through as a URL for the provider to fetch. A request is bounded by the 1 MiB body limit;
+there is no upload endpoint yet, so an image arrives with the message that uses it.
+
 Storage and execution:
 
 - Large tool outputs spill via `spec.artifacts`
 - Durable facts via `spec.memory.capture`; how-tos via `spec.procedural_memory`
 - `spec.execution.mode: durable` enqueues a fiber (Temporal optional) and returns `202` with a
   `resume_token`; a step that keeps failing backs off and is `dead` after `FELIX_FIBER_MAX_ATTEMPTS`
+- `POST /chat/stream` on a durable manifest streams the run instead: `run_accepted` → `run_status`
+  → `final`, interleaved with `session_event` frames tailed from the thread's session log, so tool
+  calls and assistant turns arrive as they land, across replicas, with a resumable `id:` cursor.
+  Completed messages only — token deltas are never persisted, so a durable run never streams them
 - Tool retrieval, semantic sessions, and procedural recall use embeddings when
   `felix-harness[embeddings]` is installed
 

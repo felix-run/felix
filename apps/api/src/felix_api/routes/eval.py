@@ -46,16 +46,38 @@ async def list_datasets(request: Request) -> dict[str, Any]:
 
 @router.put("/datasets/{name}")
 async def upsert_dataset(name: str, body: DatasetUpsert, request: Request) -> Any:
+    """Write a dataset whole — name, description and items.
+
+    Items are validated before they are stored. They used to be accepted as any dict, so an
+    item spelling the prompt key `input` rather than `user_input` was stored with an empty
+    prompt and a 200: the dataset looked configured and scored nothing. The rubric stays
+    free-form — only the shapes that cannot work are refused.
+    """
     from felix.eval import store as eval_store
+    from felix.eval.validation import validate_items
 
     require_mgmt_scopes(request, SCOPE_EVAL_WRITE)
-    return await eval_store.put_dataset(
+    report = validate_items(body.items)
+    if not report.ok:
+        # `code` because this endpoint returns 422 twice over: pydantic's own
+        # `detail: [{loc, msg, type}, ...]` fires first for a body that fails `extra="forbid"`,
+        # and this one is a dict. A client needs to tell them apart without type-sniffing.
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "eval_items_invalid", "errors": report.errors, "warnings": report.warnings},
+        )
+    stored = await eval_store.put_dataset(
         request.app.state.settings,
         tenant_id_from_request(request),
         name,
         description=body.description,
         items=body.items,
     )
+    # Always present, never conditional: a key that appears only sometimes still forces
+    # `.get("warnings", [])` on the caller and reads as absent rather than empty. A rubric
+    # naming no rule is legal and almost never intended, and there is nowhere else the
+    # author would see it said.
+    return {**stored, "warnings": report.warnings}
 
 
 @router.get("/datasets/{name}")

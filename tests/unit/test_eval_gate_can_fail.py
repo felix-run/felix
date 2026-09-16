@@ -248,13 +248,32 @@ def test_the_shared_counter_smoke_script_rejects_a_run_that_did_not_reject(
     1, and so does the script when the eval never ran at all. A script hollowed the other way —
     refusing everything, including the real negative fixture — would pass a status-only
     assertion twice while turning CI permanently red.
+
+    The second case changed when `--fixture` started validating its items. An unscoreable
+    rubric used to reach the runner, become an errored row, and be caught by the script's
+    fourth check; it is now refused before the run, so the CLI exits 2 and the script's *first*
+    check reports the wrong status. That is the stronger guarantee — the mix can no longer be
+    produced through this path — but it costs something, and the cost is worth stating exactly
+    rather than waving at: **both cases now terminate at the first check, so the script's
+    embedded parser is no longer executed here at all.** Checks 2, 3 and 4 are covered only by
+    the text match in `test_invariants.py`, which a line that no longer exits would satisfy.
+
+    What check 4 still guards is the real `negative.json` run in CI erroring rather than being
+    scored down — nothing wider. It is *not*, despite the obvious guesses: the continuous-eval
+    job (this script never invokes it, and that job writes `{"min_chars": 1}` rubrics only), nor
+    a manifest that fails to resolve (that row is built behind `if not mock` in `start_run`, and
+    both callers of this script pass `--mock`).
+
+    The durable fix is to move the parser out of the shell into a `scripts/` module this test
+    can feed crafted records to. Reaching it through the validator's own blind spots instead
+    would encode a bug as a fixture.
     """
     root = FIXTURES.parents[1]
     script = root / "scripts" / "eval-counter-smoke.sh"
 
-    # One item the scorer rejects honestly, one whose rubric is not a mapping so it errors.
-    # That mix is the case the counts cannot see: the run still exits 1 with a pass count of 0
-    # and prints score rows, and only the fourth check tells it from an honest rejection.
+    # One item the scorer rejects honestly, one whose rubric is not a mapping. That mix is the
+    # case the counts cannot see — pass count 0, score rows present, exit 1 — and it is now
+    # refused a step earlier, by validation, rather than being scored as an error.
     erroring = tmp_path / "erroring.json"
     erroring.write_text(
         json.dumps(
@@ -275,7 +294,7 @@ def test_the_shared_counter_smoke_script_rejects_a_run_that_did_not_reject(
 
     cases = [
         (FIXTURES / "smoke.json", "expected exit 1 from the negative fixture, got 0"),
-        (erroring, "errored instead of being scored down"),
+        (erroring, "expected exit 1 from the negative fixture, got 2"),
     ]
     for fixture, expected in cases:
         done = subprocess.run(
@@ -284,7 +303,9 @@ def test_the_shared_counter_smoke_script_rejects_a_run_that_did_not_reject(
             capture_output=True,
             text=True,
             check=False,
-            timeout=120,
+            # Under the pytest timeout, so a hung script fails by its own name rather than
+            # as an opaque suite timeout.
+            timeout=60,
         )
         assert done.returncode == 1, f"the counter-smoke accepted {fixture.name}:\n{done.stdout}"
         assert expected in done.stderr, (

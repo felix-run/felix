@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import time
+from typing import Any
 
 import pytest
 from felix.auth.jwt import (
@@ -190,3 +191,117 @@ def test_mgmt_scope_check_fails_closed_without_settings() -> None:
     with pytest.raises(HTTPException) as e:
         require_mgmt_scopes(_NoState(), "audit:read")  # type: ignore[arg-type]
     assert e.value.status_code == 500
+
+
+# --- tenant id charset -------------------------------------------------------------
+#
+# The claim is the least trustworthy source of a tenant id, and the tenant id is a path
+# segment in five object-store keys and a field in every log record. These pin the shapes
+# that used to pass the delimiter-only check.
+
+HOSTILE_TENANTS = [
+    pytest.param("acme/../other", id="path-traversal"),
+    pytest.param("a/b", id="key-separator"),
+    pytest.param("..", id="parent-segment"),
+    pytest.param(".", id="current-segment"),
+    pytest.param("acme\nWARNING  all clear", id="log-record-forgery"),
+    pytest.param("acme\rx", id="carriage-return"),
+    pytest.param("acme\tx", id="tab"),
+    pytest.param("acme\u2028x", id="unicode-line-separator"),
+    pytest.param("acme x", id="space"),
+    pytest.param("acme\x00x", id="nul"),
+]
+
+
+@pytest.mark.parametrize("claimed", HOSTILE_TENANTS)
+def test_a_hostile_tenant_claim_is_refused_at_verification(claimed: str) -> None:
+    """The production path: a token claim, not the validator called directly.
+
+    Each of these passed when the only rule was "no ':' or '#'". A tenant id is
+    interpolated into `artifacts/{tenant}/…`, `workspace/{tenant}/…`,
+    `skills/{tenant}/…`, `manifests/{tenant}/…`, into idempotency keys, and into log
+    records — grammars whose separators the delimiter check never considered.
+    """
+    with pytest.raises(TenantResolutionError):
+        _tenant_from_payload({"tenant_id": claimed}, _cfg(), _settings())
+
+
+@pytest.mark.parametrize(
+    "claimed",
+    ["acme", "tenant-b", "8f14e45f-ceea-467a-9b8f-1c2d3e4f5a6b", "acme.com", "org_abc123", "default"],
+)
+def test_the_tenant_shapes_people_actually_issue_still_verify(claimed: str) -> None:
+    """Tightening a validator that every request passes through is only safe if the
+    shapes real issuers emit keep working: a slug, a UUID from Cognito, a domain, an
+    Auth0-style org id. The one shape this newly rejects is an email address, which
+    identifies a user rather than a tenant.
+    """
+    assert _tenant_from_payload({"tenant_id": claimed}, _cfg(), _settings()) == claimed
+
+
+def test_the_tenant_rule_matches_the_object_store_s_own_segment_rule() -> None:
+    """One definition of "a safe segment", not two that drift.
+
+    `storage/fs.py` already decided what may appear in a key segment, and a tenant id *is*
+    a key segment in five places. If these diverge, the door and the far end disagree
+    about the same string — which is the state this fix was closing.
+    """
+    from felix.auth.context import TENANT_ID_RE
+    from felix.storage.fs import _SAFE_SEGMENT
+
+    assert TENANT_ID_RE.pattern == _SAFE_SEGMENT.pattern
+
+
+# --- tenant ids an operator pins in configuration ----------------------------------
+
+
+def _jwt_settings(**kw: object) -> Any:
+    from felix.config import Settings
+
+    base = {
+        "database_url": "memory://tenantcfg",
+        "object_store": "memory",
+        "environment": "production",
+        "auth_mode": "jwt",
+        "allow_insecure": True,
+        "redis_url": "redis://127.0.0.1:9/0",
+    }
+    return Settings(**{**base, **kw})  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("label", "kw"),
+    [
+        ("fixed", {"jwt_verifiers": f"self:{_ISS};tenant=fixed:acme corp", "allowed_tenants": "acme"}),
+        ("allowlist", {"jwt_verifiers": f"self:{_ISS};tenant=claim", "allowed_tenants": "acme/../x"}),
+    ],
+)
+def test_a_configured_tenant_id_that_breaks_the_rule_refuses_to_start(label: str, kw: dict) -> None:
+    """Only the *claim* path validated, so an operator-pinned tenant failed far away.
+
+    `;tenant=fixed:acme corp` parsed, authenticated, and then died in
+    `Principal.__post_init__` with a plain `ValueError` — which `verify_jwt`'s
+    `except TenantResolutionError` does not catch and its outer `except Exception` swallows.
+    The result was a blanket 401 from that issuer with no log line at all, pointing the
+    operator at signatures and JWKS rather than at one character in their verifier spec.
+    """
+    with pytest.raises(RuntimeError, match="not a usable tenant id"):
+        _jwt_settings(**kw).validate_runtime()
+
+
+def test_the_configured_tenant_ids_people_actually_pin_still_start() -> None:
+    """The check is at startup, so a false positive here is a deployment that will not boot."""
+    _jwt_settings(
+        jwt_verifiers=f"self:{_ISS};tenant=fixed:acme", allowed_tenants="acme,globex,acme.com"
+    ).validate_runtime()
+
+
+def test_an_api_key_tenant_is_checked_too() -> None:
+    """`FELIX_AUTH_API_KEYS` pins a tenant per key, and nothing validated those either."""
+    import json
+
+    keys = json.dumps({"sk-x": {"tenant_id": "acme corp", "sub": "s", "scopes": ["admin"]}})
+    with pytest.raises(RuntimeError, match="FELIX_AUTH_API_KEYS"):
+        _jwt_settings(
+            auth_mode="api_key", auth_api_keys=keys, jwt_verifiers="", allowed_tenants=""
+        ).validate_runtime()

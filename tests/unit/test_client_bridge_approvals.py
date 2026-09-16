@@ -191,3 +191,237 @@ async def test_approval_frame_names_the_rule_and_says_why() -> None:
     assert frames, "the gate emitted no approval_required"
     assert frames[0]["data"]["rule_id"] == "workspace-write"
     assert frames[0]["data"]["reason"] == "Confirm writes to the workspace"
+
+
+@pytest.mark.asyncio
+async def test_the_pending_row_names_the_thread_that_is_blocked() -> None:
+    """The row, not only the frame — because for a durable run the row is all there is.
+
+    `approval_required` has carried `thread_id` all along, but side events are an in-process
+    queue keyed by thread: a durable run's agent is in the worker while its stream is served by
+    the API, so no frame can cross and `GET /approvals` is the whole channel. It was the half
+    with no thread on it, so an operator polling cold could be told that something was waiting
+    but not what.
+
+    The invocation ctx deliberately carries **no** thread, so only `req.thread_id` can supply
+    one. That is not a convenience: `ToolInvocationCtx.thread_id` defaults to `None`, and on a
+    durable run the thread is set by `durability/fibers.py` on the `RequestContext` it builds
+    (`{tenant}:fiber:{id}`). With both halves set to the same value the fallback is invisible —
+    dropping it from the production expression left this test green — and the invisible half is
+    the one the docstring above is about.
+    """
+    from felix.approvals import store as approvals_store
+    from felix.manifests.builder import apply_approvals
+    from felix.manifests.schema import ApprovalRule
+    from felix.tools.types import define_tool
+
+    async def _echo(args: dict) -> str:
+        return "written"
+
+    wrapped = apply_approvals(
+        [define_tool(name="write_file", description="w", handler=_echo)],
+        [ApprovalRule(id="workspace-write", tools=["write_file"], ttl_seconds=5)],
+        "cowork",
+    )[0]
+
+    settings = Settings(allow_insecure=True, auth_mode="none", environment="development")
+    req = RequestContext(
+        settings=settings,
+        auth=AuthContext(tenant_id="default"),
+        manifest_id="cowork",
+        thread_id="default:t5",
+    )
+    seen: list[str] = []
+
+    async def _deny_soon() -> None:
+        from felix.approvals.interrupt import signal_decision
+
+        await asyncio.sleep(0.1)
+        pending = await approvals_store.list_approvals(settings, "default", status="pending")
+        assert pending, "expected pending approval"
+        # Read while the call is still blocked: this is exactly the poll a client makes.
+        seen.append(pending[0]["thread_id"])
+        await approvals_store.decide(settings, "default", pending[0]["id"], decision="denied", decided_by="t")
+        await signal_decision(pending[0]["id"], "denied")
+
+    helper = asyncio.create_task(_deny_soon())
+    async with async_run_with_context(req):
+        await wrapped.executor.execute(
+            {"path": "notes.txt"},
+            ToolInvocationCtx(tool_call_id="c1"),
+        )
+    await helper
+
+    assert seen == ["default:t5"], "the poll path cannot say which conversation is waiting"
+    frames = [f for f in await drain("default:t5") if f["event"] == "approval_required"]
+    assert frames and frames[0]["data"]["thread_id"] == "default:t5", (
+        "the two channels disagree about the thread"
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_row_says_why_the_gate_fired_and_what_it_blocks() -> None:
+    """The poll must not be a poorer channel than the frame, because for a durable run it is
+    the only one.
+
+    Two fields the frame carried never reached the row, and both sides of the wire had
+    written that down: `builder.py` at the emit ("the `/approvals` row does not carry it
+    either") and `@felix/client`'s `PendingApproval.reason` ("**Frame-only** … an approval the
+    poll found has none to show"). So an operator who found a waiting approval by polling saw
+    a tool name and a rule id and no statement of why the gate exists — while `description`,
+    the one field in `ApprovalRule` written to be read by a person, sat unread.
+
+    Read *while the call is still blocked*, which is exactly the poll a client makes.
+    """
+    from felix.approvals import store as approvals_store
+    from felix.manifests.builder import apply_approvals
+    from felix.manifests.schema import ApprovalRule
+    from felix.tools.types import define_tool
+
+    async def _echo(args: dict) -> str:
+        return "written"
+
+    wrapped = apply_approvals(
+        [define_tool(name="write_file", description="w", handler=_echo)],
+        [
+            ApprovalRule(
+                id="workspace-write",
+                description="Writes outside the workspace need a human",
+                tools=["write_file"],
+                ttl_seconds=5,
+            )
+        ],
+        "cowork",
+    )[0]
+
+    settings = Settings(allow_insecure=True, auth_mode="none", environment="development")
+    req = RequestContext(
+        settings=settings,
+        auth=AuthContext(tenant_id="default"),
+        manifest_id="cowork",
+        thread_id="default:t-why",
+    )
+    polled: list[dict] = []
+
+    async def _deny_soon() -> None:
+        from felix.approvals.interrupt import signal_decision
+
+        await asyncio.sleep(0.1)
+        pending = await approvals_store.list_approvals(settings, "default", status="pending")
+        assert pending, "expected pending approval"
+        polled.append(dict(pending[0]))
+        await approvals_store.decide(settings, "default", pending[0]["id"], decision="denied", decided_by="t")
+        await signal_decision(pending[0]["id"], "denied")
+
+    helper = asyncio.create_task(_deny_soon())
+    async with async_run_with_context(req):
+        await wrapped.executor.execute(
+            {"path": "notes.txt"},
+            ToolInvocationCtx(tool_call_id="call_99"),
+        )
+    await helper
+
+    (row,) = polled
+    assert row["reason"] == "Writes outside the workspace need a human", (
+        "the polled channel still cannot say why the gate fired"
+    )
+    assert row["tool_call_id"] == "call_99", "the polled approval cannot be attached to its call"
+
+    # And the two channels now tell the same story, in both directions: the frame gained the
+    # deadline it never carried, read off the row so they cannot disagree about it.
+    frames = [f for f in await drain("default:t-why") if f["event"] == "approval_required"]
+    assert frames, "the gate emitted no approval_required"
+    data = frames[0]["data"]
+    assert data["reason"] == row["reason"]
+    assert data["tool_call_id"] == row["tool_call_id"]
+    # `.get`, not `[...]`: a missing key should fail this assertion with its message rather
+    # than raise KeyError, which reads as a broken test rather than a broken contract.
+    assert isinstance(data.get("expires_at"), int), f"the frame carries no deadline: {sorted(data)}"
+    assert data["expires_at"] == row["expires_at"], (
+        "the frame and the poll disagree about when the offer expires"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_command_screening_approval_names_its_thread_too() -> None:
+    """The other `create_pending` call site: `require_approval` from command screening.
+
+    It goes through `_await_approval` rather than `apply_approvals`, so it is a second place
+    the thread could be dropped, and the one an operator hits by running a screened shell
+    command rather than by calling a gated tool.
+
+    The two sources disagree here on purpose — the sibling test above pins the `req.thread_id`
+    fallback, this one pins that the invocation ctx takes precedence over it. Set to the same
+    value, as they first were, neither half of `(ctx.thread_id if ctx else None) or
+    req.thread_id` can be removed by a test.
+    """
+    from felix.approvals import store as approvals_store
+    from felix.manifests.builder import apply_command_screening
+    from felix.manifests.schema import CommandRule, CommandScreening
+    from felix.tools.types import define_tool
+
+    async def _run(args: dict) -> str:
+        return "ran"
+
+    wrapped = apply_command_screening(
+        [define_tool(name="local_shell", description="s", handler=_run)],
+        CommandScreening(
+            enabled=True,
+            include_defaults=False,
+            target_tools=["local_shell"],
+            approval_ttl_seconds=5,
+            rules=[CommandRule(pattern="^git push", decision="require_approval", reason="pushes code")],
+        ),
+        "cowork",
+    )[0]
+
+    settings = Settings(allow_insecure=True, auth_mode="none", environment="development")
+    req = RequestContext(
+        settings=settings,
+        auth=AuthContext(tenant_id="default"),
+        manifest_id="cowork",
+        thread_id="default:t6-request",
+    )
+    seen: list[str] = []
+    polled: list[dict] = []
+
+    async def _deny_soon() -> None:
+        from felix.approvals.interrupt import signal_decision
+
+        await asyncio.sleep(0.1)
+        pending = await approvals_store.list_approvals(settings, "default", status="pending")
+        assert pending, "expected pending approval"
+        seen.append(pending[0]["thread_id"])
+        polled.append(dict(pending[0]))
+        await approvals_store.decide(settings, "default", pending[0]["id"], decision="denied", decided_by="t")
+        await signal_decision(pending[0]["id"], "denied")
+
+    helper = asyncio.create_task(_deny_soon())
+    async with async_run_with_context(req):
+        await wrapped.executor.execute(
+            {"command": "git push --force"},
+            ToolInvocationCtx(thread_id="default:t6-ctx", tool_call_id="c1"),
+        )
+    await helper
+
+    assert seen == ["default:t6-ctx"], "the invocation ctx must win over the request context"
+    # Mirrors the sibling test: the row and the frame must attribute the same thread, on this
+    # path too. They are resolved once and shared, and this is what keeps that true.
+    frames = [f for f in await drain("default:t6-ctx") if f["event"] == "approval_required"]
+    assert frames and frames[0]["data"]["thread_id"] == "default:t6-ctx", (
+        "the two channels disagree about the thread"
+    )
+
+    # `reason` / `tool_call_id` / `expires_at` reach the row from *this* site too. Asserted
+    # here because the sibling test covers only `apply_approvals`: with all three broken at
+    # this call site the whole approval-and-screening suite stayed green, so nothing was
+    # watching the path an operator hits by running a screened shell command.
+    #
+    # The field, not `rule_id`: command screening builds `rule_id` as `f"command:{reason}"`,
+    # so an assertion on the id passes with `reason` empty.
+    (row,) = polled
+    assert row["reason"] == "pushes code", "the screening rule's words did not reach the row"
+    assert row["tool_call_id"] == "c1"
+    data = frames[0]["data"]
+    assert isinstance(data.get("expires_at"), int), f"the frame carries no deadline: {sorted(data)}"
+    assert data["expires_at"] == row["expires_at"]

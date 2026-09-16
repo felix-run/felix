@@ -109,14 +109,79 @@ First, because everything else governs it.
       operations task rather than a harness one.
       Reuses the `Embedder` seam and `FELIX_MEMORY_EMBEDDER` rather than adding a second
       embedder setting — one embedder per deployment, one vector dimension.
-- [ ] **Structured output** — `spec.output_schema` → `response_format` on the OpenAI wire,
-      tool-shaped constrained output on the Anthropic wire, pydantic validation with one repair
-      retry. Both wires already emit tool JSON schema (`felix_ai/wire/base.py:133`). There is no
-      `response_format` anywhere in `packages/` or `apps/` today.
-- [ ] **Attachments** — an upload endpoint backed by the object store, base64 into a content
-      block. Image-by-URL already works on `/chat` (`felix_ai/types.py:ContentBlock`, encoded by
-      both wires); the gaps are upload, and `openai_compat.py:34` typing content as `str | None`
-      so images cannot reach `/v1` at all.
+- [x] **Structured output** — `spec.output_schema` is a JSON Schema the answer must match, and
+      `/v1/chat/completions` accepts OpenAI's `response_format` for the same thing per request
+      (the manifest's wins). The OpenAI wire emits `response_format`, strict when the schema
+      closes every object and requires every property; the Anthropic wire, which has no
+      equivalent, sends the schema as a tool the model must call and folds the call back into the
+      reply, so `message.content` is a JSON document on either. `tool_choice` is `any` rather than
+      naming that tool whenever real tools are also bound, so a react loop can still reach them.
+      - **The composite patterns** — done for four of five. `router`, `parallel`, `reflect`
+        and `plan_execute` now thread `ModelChatOptions` onto the one turn whose output the
+        caller receives, and declare `honours_output_schema`. Placement is per pattern and
+        explicit at each call site: the parallel synthesis but not its specialists, the
+        plan_execute synthesis but not the plan or the steps — which needed the schema
+        stripped from the context its executor is built from, since `build_react_agent` reads
+        it onto the agent itself — the routed child but not the classifier, and every reflect
+        draft because the loop exits early. The manifest outranks a request's
+        `response_format`, matching react. `_child_input` no longer
+        drops `model_options`, so a caller's `/v1` `response_format` reaches a child too.
+        `groupchat` stays refused with the reason recorded next to its registration: its answer
+        is the last speaker's message stamped `[name] …`, so a child's JSON comes back with a
+        prefix on it. Supporting it means dropping the stamp or adding a synthesis turn.
+      - Not done, and deliberately a separate item: **validation with a repair retry.** The
+        provider is what enforces the shape here, which is the guarantee worth having and is why
+        this shipped without a retry loop. Extended thinking is the hole — Anthropic forbids a
+        forced `tool_choice` while `thinking` is set, so there the schema is offered and logged as
+        not guaranteed. A validate-and-retry pass would close that arm; until then, do not promise
+        the shape on a thinking-enabled Anthropic agent.
+- [~] **Attachments** — split, on the evidence that the two smaller features in the document
+      retrieval workstream each drew ~7 review findings where one wide branch would have drawn
+      them all at once.
+      - Landed: **inline images actually work.** `/v1/chat/completions` takes OpenAI's list of
+        content parts, so an SDK can send an image; and the Anthropic wire encodes a `data:` URL
+        as a `base64` source instead of putting it in a `url` source, which that API rejects.
+        That second one was a live defect rather than a missing feature — both wires had an
+        image encoder, and an image reached `gpt-4o` and 400'd on `claude-sonnet`, the default.
+        Found by running the encoder, not by reading it.
+      - Landed: **the storage half of upload.** `POST /files` / `GET /files/{file_id}`, backed
+        by the object store and gated on new `files:read` / `files:write` scopes; tenant from the
+        caller's credentials and never from the path, 404 for a malformed reference, server-issued
+        uuid4 id. Capped at 600 KiB decoded and to the image types both wires encode — the cap
+        sits below `CORE_BODY_LIMIT_BYTES` deliberately, since above it the middleware answers 413
+        before the route and hides the real ceiling.
+      - Landed: **the `file_id` content block**, resolved to bytes at the wire. Resolution is
+        late, per turn, so the session event log keeps the reference rather than the base64 it
+        expands to. One correction to this entry as written: the reference does **not** need a
+        new field. It rides in the `url` an inline image already uses, as `felix-file://<id>`,
+        because `session/types.py` persists and restores `attachments[].url` and both wires read
+        it — a parallel `file_id` field would have had to be threaded through each, and the one
+        that would have been missed is the session layer, which is the only path a *second* turn
+        takes. Nothing would have failed until replay, which is this repo's defect shape exactly.
+        `packages/ai` still does no resolving (it may not import `felix`); it parses the part into
+        a reference and drops any reference that reaches a wire unexpanded, since that means the
+        harness did not do its half.
+      - **Required before `files:write` is granted to an untrusted tenant**, from the security
+        review: a per-tenant quota. `MAX_ATTACHMENT_BYTES` caps one upload and nothing caps how
+        many — the same argument that produced `documents_max_per_tenant`, which exists because
+        "a per-request cap is not a per-tenant cap". Counting needs Postgres (the object store
+        Protocol has no `list`), so it is a table plus a migration, and `jobs/retention.py` needs
+        an object-store arm: `attachments/` joins `artifacts/` as a prefix nothing ever collects.
+        On the default `fs` backend one tenant filling the disk degrades artifact spill and
+        manifest storage for every tenant on the host. Shipped without it deliberately, because
+        `files:write` is an operator-granted management scope rather than something a chat caller
+        holds — but that is the condition, and it is written here rather than assumed.
+      - Decided, and the answer made the choice smaller than it looked: resolution sits **after**
+        `apply_inbound_screening`. Checked rather than reasoned — `governance/inbound.py:_message_text`
+        collects only blocks whose type is `text`, so image content has never reached a screener
+        and resolving early would have handed it a block it ignores. So this is not a coverage
+        regression; it puts `file_id` images exactly where inline images already were. What
+        remains open is the real item underneath: **image content is not screened at all**, and
+        text rendered inside an uploaded image is an injection channel on both paths.
+      - Open, and a change to a security control rather than a feature: uploads are bounded by the
+        single global `BodyLimitMiddleware` limit, so a larger ceiling means per-route limits.
+        That middleware has a bypass in its history; it should not be widened as a side effect of
+        an attachments change. Multipart ingest would also remove the base64 inflation.
 - [x] **Make the bundled manifests use them.** `support` fetches from the docs site and now
       searches the corpus as `search_docs`; `deep` has `search` + `fetch`. Both with screening
       on, which is what keeps the unscreened-tools warning silent on what we ship. A tool no
@@ -136,15 +201,100 @@ live again. Revisit after the first three land, on evidence, not before.
       Minimum ~2 minutes, and the second is pure scheduler latency. A *failure* terminates in one
       sweep, so a failed run reaches its terminal state a full minute faster than a successful
       one. Clear `heartbeat_at` on suspend so sleeping is distinguishable from crashed.
-- [ ] **Approvals reach the durable path.** `side_events` is a process-local
-      `dict[str, asyncio.Queue]`, so on a fiber the `approval_required` emit lands in the
-      worker's own memory and is unreachable by construction — on precisely the path where a
-      human would have time to respond. Route it through the Redis layer `session/notify.py`
-      already built in `#93`. Correction from the 2026-09-04 readiness audit: the *decision*
-      does cross — `waiters.py` is a Redis `BLPOP` and the API's approve reaches the worker's
-      fiber. What did not was the no-Redis case, where the waiter silently became a
-      process-local future; `FELIX_REDIS_URL` is now required outside development and a
-      configured Redis that is down is logged at warning. The event-side gap above stands.
+- [x] **A durable run streams its transcript** (felix-run/felix#238). `POST /chat/stream` on a
+      durable manifest sent `run_accepted` → `run_status` → `final` and nothing between, so the
+      answer arrived and the tool calls behind it did not. Correction to the premise this started
+      from, and it matters for the entry below: bridging `side_events` through Valkey fixes
+      nothing here, twice over. `drain` is called inside the agent's own loop and `emit` comes
+      from tool execution in the same process, so on a fiber **both ends are already in the
+      worker**; and the events do not exist to be bridged anyway, because `invoke` is
+      `_run(..., emit_events=False)` — the deltas and `on_tool_start`/`on_tool_end` are dropped
+      at the source and the `drain_side_events` loop is itself inside `if emit_events:`. What the
+      fiber does produce is the session log, written incrementally by `_append_produced` outside
+      every `emit_events` guard. So the stream now tails it, through the same helper
+      `GET /chat/stream/{thread_id}` uses. No new transport, no second source of truth. Completed
+      messages only — chunks are never persisted, so a durable run never streams token deltas.
+- [x] **Split the SSE tail out of `routes/chat.py`** — `routes/_streaming.py`, beside
+      `routes/_sse.py`. Deferred from #238 as motion that would have obscured the change it rode
+      in on, and done first here because the approvals entry below is itself a streaming change.
+      `chat.py` was 1,774 lines and the largest module in the repo; 417 of them were one subject —
+      *tailing a session log over SSE, and how fast to ask* — with no route decorator among them
+      and no importer outside that file and its tests. The division against `_sse.py` is that it
+      knows the frame *envelope* and this knows the *source*. Names lost their leading underscore
+      on the way, matching `_sse.py`: a private module with a public surface. Verified as a pure
+      move by diffing the relocated blocks against `main` modulo the renames — the only other
+      changes are one comment re-attached to the constants it explains (it had drifted onto
+      `RUN_TERMINAL`), `json` hoisted to module scope, and a return annotation.
+- [x] **An approval says why it fired and what it blocks** (migration
+      `0015_approval_reason_and_call`) — the half of the entry below that does not need a
+      transport. The two channels were each missing what the other had, and both sides of the
+      wire had already written it down: `builder.py` at the emit ("the `/approvals` row does not
+      carry it either") and `@felix/client`'s `PendingApproval`, which documents `reason` as
+      frame-only and `expiresAt` as poll-only. So the row gains `reason` and `tool_call_id`, the
+      frame gains `expires_at` read off the row, and `list_approvals` takes a `thread_id` filter
+      (under-reporting by construction, since `create_pending` reuses a row across threads). This
+      matters most on the durable path, where the poll is the only channel and was the half that
+      could not say *why*.
+- [x] **`approvals` can be reclaimed, and `jobs/retention.py` stopped claiming it already was.**
+      The docstring listed the table as "bounded by ... its run or job"; there is no FK, no
+      cascade and no `delete(Approval)` anywhere, so it grew for the life of the deployment, and
+      nothing moves a timed-out row off `pending` either. Closed by *both* halves of the choice
+      this entry offered, because they were not alternatives: `FELIX_APPROVAL_RETENTION_DAYS`
+      (default 0 = keep) sweeps **settled** rows on both backends, and the docstring now says
+      what is and is not bounded. Settled is the exact negation of `find_approved`'s predicate —
+      an unexpired `approved` grant is never swept however old, and neither is one with a null
+      `expires_at`, because retention must not silently revoke authorization from a cron job.
+      Off by default, matching session retention: the row is the record of a human decision and
+      the `soc2` / `eu_ai_act` profiles lean on it.
+- [ ] **A2A `taskId` goes off the wire straight into a thread id.** `a2a/server.py:71-72` does
+      `task_id = str(params.get("taskId") or uuid.uuid4())` then `f"{tenant_id}:a2a:{task_id}"`,
+      bypassing both guards `threads.py` applies to every other thread: the `:`/`#` rejection at
+      `:53` and `MAX_THREAD_ID` at `:20`. A `#` mints a thread `/internal` refuses and no chat
+      route can address, export or delete; a megabyte `taskId` is the index bloat the cap exists
+      to stop. Same defect shape as #250 and the practical multi-colon namespace — found by its
+      security review. Run the composed id through `thread_belongs_to_tenant`, or validate
+      `taskId` against the suffix rule before composing.
+- [ ] **The `ui` waiter is a bearer capability with no tenant in it.** `ui:{request_id}` carries
+      no tenant (`ui/prompts.py`), and `POST /chat/ui` does `_ = request` — no tenant, no thread,
+      no ownership check (`routes/chat.py:952-963`). The whole control is the secrecy of a 96-bit
+      `token_urlsafe`, which is adequate in practice (it is emitted only on that thread's side-event
+      stream, and stream access is tenant-gated) but is the one surface where every other route
+      checks ownership and this does not. The fix is `waiter_name("ui", thread_id, request_id)`
+      plus a `thread_belongs_to_tenant` check — deliberately *not* folded into #250, because it
+      changes the `ui` name shape that PR's upgrade note promises is unchanged, so it wants its
+      own commit and its own note. Decide before the next release.
+- [ ] **`waiters._local` never shrinks on the signal-first path.** `waiters.py:127-131`: a
+      `signal` with no waiter registers a *completed* future and only `wait` pops it. While Redis
+      is in fallback, an authenticated caller POSTing `/chat/tool_result` with random
+      `tool_call_id`s grows the dict without bound. Pre-existing and not made worse by #250 (the
+      name space was already caller-chosen); capping `tool_call_id` there bounds each entry's
+      size but not the count.
+- [x] **`tool_call_id` was provider input spliced into a `:`-delimited waiter key.** Closed, and
+      the entry understated it: the collision needs no hostile `tool_call_id` at all, because
+      *`thread_id` already contains colons* -- `{tenant}:{suffix}`, and `{tenant}:fiber:{id}` for a
+      durable run. `fiber` is a legal thread suffix, so a caller can create `acme:fiber` and post a
+      `tool_result` for call `F123:call_9`, forging the waiter of the durable run on
+      `acme:fiber:F123` answering `call_9`, and satisfying its pending client tool with content
+      they chose. Same tenant only; the tenant prefix cannot be forged. Waiter names now go through
+      `waiters.waiter_name`, which percent-encodes each part (`%` before `:`) so the join is
+      injective; approval and UI names are byte-identical since their ids are a uuid and a
+      `token_urlsafe`. The repo's named defect shape, and worth noting that the *second* grammar
+      here was one the harness minted itself rather than one it received.
+- [x] **Approvals reach the durable path.** Closed in two halves, and *not* the way this entry
+      proposed. It said to route `side_events` through the Redis layer from `#93`; that would have
+      been wrong for the reason the Valkey bridge was wrong on #238, and the reason is in
+      `notify.py`'s own docstring: "the notification is a hint, never the source of truth", because
+      every wake re-reads Postgres. Pub/sub is at-most-once, and here the message *is* the frame —
+      a dropped one means the run blocks its whole `ttl_seconds` and then denies with no human ever
+      asked. So instead: felix#245 put `reason` and `tool_call_id` on the approvals row (the frame
+      carried them, the row did not), and the durable stream now reads the pending rows for its
+      thread and **rebuilds** `approval_required` from them. Same principle as the transcript tail,
+      applied to the half the session log cannot carry — `_append_produced` writes assistant turns
+      and tool results, and a request for permission is neither. Announced once per stream, deduped
+      by id because `list_approvals` answers "what is pending" and has no cursor; thread-scoped,
+      because `GET /approvals` is tenant-wide and every pending approval in the tenant on one run's
+      stream would leak other conversations' tool names and arguments. The poll remains the channel
+      of record: a stream that was never open sees nothing.
 - [ ] **Signed completion webhooks**, delivered from the **worker** — the fiber reaches terminal
       state under its cron and the API replica that accepted the request may be gone. Dead letter
       is `status='dead'` on the same durable row, not a second store. `spec.webhooks` selects
@@ -188,6 +338,14 @@ and fixed; the comment at `fibers.py:36-46` is the record.
       no bundled entry sets a long-context tier. Correction to this entry as written: an
       unpriced model contributes `$0`, so `limits.max_cost_usd` fails **open** for it, not
       closed — `felix_model_unpriced` now says when that is happening.
+- [x] **An approval row names the thread it is blocking** (migration `0014_approval_thread_id`,
+      felix-run/felix#232). The `approval_required` frame carried `thread_id`; the row did not —
+      and the two channels do not cover the same runs. Side events are an in-process queue keyed
+      by thread, so a durable run (agent in the worker, stream served by the API) is reachable
+      only through `GET /approvals`: the channel that is the whole story for an unwatched run was
+      the half with nothing to attribute. It is the *originating* thread, because `create_pending`
+      still reuses a pending row across threads. Widening that reuse key would change grant scope
+      and is a product decision, not part of this.
 - [ ] **Attribute denials in the audit record.** Every wrapper denial emits one undifferentiated
       `policy_deny` carrying `{tool, tool_call_id, thread_id}` — which control fired, and why,
       exists only in the tool message. The wrappers emit Prometheus counters, not audit events.
@@ -274,13 +432,19 @@ comment explaining exactly that. It is conditional, not inert.
       `scripts/eval-counter-smoke.sh` in both CI and `make check-ci`. That proves the scorer can
       say no, which it could not before, but both halves still score a canned answer — nothing
       here scores the agent. Optional nightly against `api.felix.run` that does not block PRs.
-- [ ] **Validate eval dataset items, or document that they are free-form.** An item whose keys
-      are not `user_input` / `rubric` is accepted with 200 and stored with an empty prompt, so
-      the dataset looks configured and scores nothing — the bundled JSON fixtures use
-      `input`/`expect`, which is exactly the spelling that silently produces nothing. Pinned by
-      `tests/e2e/test_mgmt_routes.py::test_an_eval_item_with_unrecognised_keys_is_stored_empty`.
-      Pairs with the item below. A malformed item no longer abandons the run — it is scored as
-      that item's error — so this is now about telling the author, not about salvaging the run.
+- [x] **Validate eval dataset items.** Done: `felix/eval/validation.py`, called by
+      `PUT /eval/datasets/{name}` and by `felix eval --fixture`. An item with no `user_input`
+      is refused and the near-miss key it used is named back (`input` — the spelling the
+      bundled fixtures once used — plus `prompt`, `question`, `query`, `user_message`, `text`);
+      so is a non-object rubric and a repeated `item_id`. A rubric naming no rule is legal and
+      warns instead, because it scores as `nonempty` and passes anything. The rubric stays
+      free-form. `tests/e2e/test_mgmt_routes.py` pinned the old accept-and-store-empty
+      behaviour and said it should fail when this landed; it now pins the refusal.
+
+      One consequence for the item below: an unscoreable rubric no longer reaches the runner
+      through `--fixture`, so the counter-smoke's fourth check is unreachable from a fixture
+      and now guards only the paths that bypass validation — items written straight to the
+      store by the continuous-eval job, and a manifest that fails to resolve.
 
 - [ ] **An eval run cannot report how many items errored.** `fail_count` counts an item the
       scorer rejected and an item that raised as the same thing, and the run row carries no
@@ -530,7 +694,7 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       on Postgres only, and a batch of Temporal-backed fibers starved a tenant's ordinary ones.
       Manifests are done too, and found two more: the twin accepted a canary weight the CHECK
       constraint refuses, and handed back the stored document by reference. Still open, in the
-      order their SQL diverges most from the twin: plans, eval and a2a tasks.
+      order their SQL diverges most from the twin: plans and a2a tasks.
 
       Jobs is done (`test_jobs_store.py`) and found two orderings that were not orders at all:
       `list_runs` broke ties by nothing, so the twin's stable sort returned a job's *oldest*
@@ -539,6 +703,12 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       Audit is done (`test_audit_store.py`). It found a defect both arms shared rather than a
       divergence: the cursor carried only a millisecond timestamp, so paging stepped over every
       event sharing the boundary millisecond and returned them on no page at all.
+
+      Eval is done (`test_eval_store.py`) and found the worst one yet: `put_dataset` overwrote an
+      existing item on the twin and raised `UniqueViolation` on Postgres, so the second run of any
+      eval failed on every real deployment while CI stayed green — and the continuous-eval sweep,
+      which swallows a per-tenant exception, had scored nothing since its first ever tick while
+      reporting a normal result.
 
 - [ ] **`put_version` has a read-modify-write race on Postgres only.** It computes
       `SELECT coalesce(max(version),0)` then inserts, with no lock and no retry, so four

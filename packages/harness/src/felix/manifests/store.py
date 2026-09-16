@@ -12,7 +12,7 @@ from sqlalchemy.dialects.postgresql import insert
 from felix.config import Settings
 from felix.db.models import ManifestActive, ManifestRow
 from felix.db.session import _use_memory, get_session_factory
-from felix.manifests.loader import parse_manifest
+from felix.manifests.loader import parse_stored_manifest
 from felix.manifests.resolver import ActivePointer
 from felix.manifests.schema import Manifest
 
@@ -314,9 +314,11 @@ class PostgresManifestStore:
         row = await get_version(self._settings, tenant_id, name, version)
         if row is None:
             return None
-        # Through the loader, so a row stored before a schema tightening fails with the
-        # operator-readable message rather than a raw ValidationError.
-        return parse_manifest(row["manifest"])
+        # Through the stored-manifest loader: an operator-readable message when the row is
+        # genuinely invalid, and a warning rather than an outage when all it carries is a
+        # field the schema has since retired. This row was authored once and accepted then;
+        # a later removal must not make it unserviceable.
+        return parse_stored_manifest(row["manifest"], origin=f"{tenant_id}/{name} v{version}")
 
 
 __all__ = [

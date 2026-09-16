@@ -10,6 +10,7 @@ from typing import Any
 from felix.audit import store as audit_store
 from felix.config import Settings
 from felix.db.session import _use_memory
+from felix.logging_setup import loggable
 
 logger = logging.getLogger("felix.jobs.anomaly")
 
@@ -123,5 +124,5 @@ async def run_anomaly_scan_all_tenants(settings: Settings) -> list[dict]:
                 findings.extend(await run_anomaly_scan(settings, tenant_id=tenant_id))
         except Exception:
             # One tenant's bad data must not stop the scan for everyone else.
-            logger.exception("anomaly_scan_failed tenant=%s", tenant_id)
+            logger.exception("anomaly_scan_failed tenant=%s", loggable(tenant_id, limit=64))
     return findings

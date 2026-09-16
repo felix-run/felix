@@ -24,6 +24,55 @@ def _key(name: str) -> str:
     return f"{_PREFIX}{name}"
 
 
+def _escape(part: str) -> str:
+    """`%` first, so the escape cannot itself be forged."""
+    return part.replace("%", "%25").replace(":", "%3A")
+
+
+def waiter_name(kind: str, *parts: str) -> str:
+    """Compose a waiter name from parts that cannot be confused with each other.
+
+    A waiter name is a *key*: whoever can construct it can answer the wait. So the join has
+    to be injective — two different part-tuples must never produce the same name — and
+    `":".join(...)` is not, once any part may contain the separator.
+
+    It could, and did. `client:{thread_id}:{tool_call_id}` was built with a bare f-string,
+    and `thread_id` legitimately carries colons:
+
+        thread `acme:fiber:F123`, call `call_9`      ->  client:acme:fiber:F123:call_9
+        thread `acme:fiber`,      call `F123:call_9` ->  client:acme:fiber:F123:call_9
+
+    `fiber` is a legal thread suffix, so the second thread is one any caller in that tenant
+    can create, and answering the forged key satisfies the durable run's pending client tool.
+
+    **Exactly which thread ids collide is worth being precise about**, because the general
+    lesson is narrower and more useful than "a two-part `:` join is exploitable". An ordinary
+    thread is `{tenant}:{suffix}` and `effective_thread_id` rejects `:` in the suffix, so it
+    carries exactly one colon and the first colon after the tenant fixes the part boundary --
+    the old join was already injective for those. The collision channel is a thread namespace
+    the *harness itself* mints with an **extra** colon, and there are three:
+
+        {tenant}:fiber:{id}            durability/fibers.py    id is a uuid
+        {tenant}:a2a:{task_id}         a2a/server.py           task_id is CALLER-CHOSEN
+        {tenant}:eval:{run}:{item}     eval/runner.py          three colons
+
+    So the part that was unvalidated input (`tool_call_id`, straight off the model wire) is
+    not the part that made it reachable. A new namespace of this shape is the thing to check
+    against this list.
+
+    Percent-encoding, `%` first so the escape cannot itself be forged. The result is never
+    parsed back — injectivity is the whole requirement — but it stays readable in a log line
+    and in `redis-cli --scan`, which a hash would not.
+
+    `kind` is escaped along with the parts even though all three in-tree kinds are literals
+    without a `%` or `:` (so their names are byte-identical either way). This function is
+    exported, and the plugin seam can reach it: a plugin minting
+    `waiter_name("commerce:refund", order_id)` would otherwise reintroduce exactly this
+    collision, against a docstring promising it cannot happen.
+    """
+    return ":".join(_escape(p) for p in (kind, *parts))
+
+
 #: How long a single BLPOP may block, in seconds.
 #:
 #: Must stay below the client's `socket_timeout`. BLPOP blocks server-side while the
@@ -108,4 +157,4 @@ async def signal(name: str, payload: dict[str, Any]) -> bool:
         return True
 
 
-__all__ = ["signal", "wait"]
+__all__ = ["signal", "wait", "waiter_name"]

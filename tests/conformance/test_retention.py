@@ -3,7 +3,8 @@
 Rows are written through the real stores with a controllable clock, the clock is moved
 past the TTL, a second set is written, and the sweep must remove exactly the first set.
 The clock lives in the modules under test (`retention.now_ms`, `fibers.now_ms`,
-`a2a.tasks.now_ms`) so no row is backdated by SQL the production path never runs.
+`a2a.tasks.now_ms`, `approvals.store.now_ms`) so no row is backdated by SQL the production
+path never runs.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from typing import Any
 
 import pytest
 from felix.a2a import tasks as a2a_store
+from felix.approvals import store as approvals_store
 from felix.audit import store as audit_store
 from felix.durability import fibers as fiber_store
 from felix.jobs import retention
@@ -37,7 +39,7 @@ class Clock:
     ms: int
 
     def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        for module in (retention, fiber_store, a2a_store, memory_store):
+        for module in (retention, fiber_store, a2a_store, memory_store, approvals_store):
             monkeypatch.setattr(module, "now_ms", lambda: self.ms)
         # `persist_leaf` stamps `thread_state.updated_at` from the wall clock.
         monkeypatch.setattr(thread_state, "time", SimpleNamespace(time=lambda: self.ms / 1000))
@@ -50,6 +52,9 @@ def _retention(settings: Any, **days: int) -> Any:
             "usage_retention_days": days.get("usage", 1),
             "fiber_retention_days": days.get("fiber", 1),
             "session_retention_days": days.get("session", 1),
+            # 0 unless a test asks, so the existing sweeps keep their expected counts and
+            # the approval rule is only exercised where it is the subject.
+            "approval_retention_days": days.get("approval", 0),
         }
     )
 
@@ -187,6 +192,11 @@ async def test_sweep_removes_only_rows_older_than_each_ttl(
         "usage_events": 1,
         "a2a_tasks": 2,
         "session_events": 2,
+        # Reported but zero: this sweep runs with the approval TTL at its default of 0,
+        # which keeps every row. The key is present because `counts` is seeded from
+        # `TABLES`, so a table that stops being swept shows up here as a silent 0 rather
+        # than as a missing key -- which is the point of asserting the dict exactly.
+        "approvals": 0,
     }
     assert await _audit_ids(settings) == {new_audit}, f"{old_audit=} should be gone"
     assert await _usage_ids(settings) == {new_usage}, f"{old_usage=} should be gone"
@@ -444,6 +454,122 @@ async def test_manifests_are_resolved_under_the_rls_bypass(
     await retention.run_retention_sweep(settings)
 
     assert seen and all(seen), "manifest resolution ran without the RLS bypass"
+
+
+# --- approvals -------------------------------------------------------------------------------
+
+
+async def _seed_approval(settings: Any, *, sig: str, ttl: int | None, decision: str | None) -> str:
+    """One approval row, written through the real store and optionally decided."""
+    from felix.approvals import store as approvals_store
+
+    row = await approvals_store.create_pending(
+        settings,
+        TENANT,
+        tool_name="write_file",
+        call_signature=sig,
+        manifest_id="m",
+        ttl_seconds=ttl,
+    )
+    if decision is not None:
+        await approvals_store.decide(settings, TENANT, row["id"], decision=decision, decided_by="operator")
+    return str(row["id"])
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_retention_never_revokes_a_grant_that_can_still_authorise(
+    retention_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The property the whole rule exists to preserve.
+
+    An approval row is a *permission*. Sweeping one that can still authorize a call would
+    revoke it silently, from a cron job, days after an operator granted it — a failure an
+    operator would experience as a tool that used to work and now denies, with nothing in
+    the audit trail explaining why. So the rule deletes only rows `find_approved` could
+    never return: not `approved`, or `approved` with a deadline already passed.
+
+    The two survivors below are the ones a careless `created_at < cutoff` would take.
+    """
+    from felix.approvals import store as approvals_store
+
+    clock = Clock(ms=10 * DAY)
+    clock.install(monkeypatch)
+    settings = _retention(retention_settings, approval=1)
+
+    # Old enough to sweep, all of them.
+    standing = await _seed_approval(settings, sig="standing", ttl=None, decision="approved")
+    live = await _seed_approval(settings, sig="live", ttl=30 * 24 * 3600, decision="approved")
+    lapsed = await _seed_approval(settings, sig="lapsed", ttl=60, decision="approved")
+    denied = await _seed_approval(settings, sig="denied", ttl=None, decision="denied")
+    stuck = await _seed_approval(settings, sig="stuck", ttl=60, decision=None)
+
+    clock.ms = 20 * DAY
+    counts = await retention.run_retention_sweep(settings)
+
+    assert counts["approvals"] == 3, counts
+    # Live authorization, untouched however old the row is.
+    assert await approvals_store.get_approval(settings, TENANT, standing) is not None, (
+        "a standing grant (approved, no ttl) was revoked by retention"
+    )
+    assert await approvals_store.get_approval(settings, TENANT, live) is not None, (
+        "an unexpired grant was revoked by retention"
+    )
+    # Settled: cannot authorize again, so safe to reclaim.
+    for gone, why in ((lapsed, "expired grant"), (denied, "denial"), (stuck, "timed-out pending row")):
+        assert await approvals_store.get_approval(settings, TENANT, gone) is None, f"{why} was kept"
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_a_settled_approval_inside_the_ttl_is_kept(
+    retention_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Age is the other half of the rule, and on its own it deletes nothing.
+
+    Without this, a rule that swept every settled row regardless of `created_at` would pass
+    the test above — it only ever asserts about rows old enough to go.
+    """
+    from felix.approvals import store as approvals_store
+
+    clock = Clock(ms=10 * DAY)
+    clock.install(monkeypatch)
+    settings = _retention(retention_settings, approval=5)
+
+    recent = await _seed_approval(settings, sig="recent", ttl=60, decision="denied")
+
+    clock.ms = 11 * DAY  # one day later; the TTL is five
+    counts = await retention.run_retention_sweep(settings)
+
+    assert counts["approvals"] == 0, counts
+    assert await approvals_store.get_approval(settings, TENANT, recent) is not None
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_the_approval_sweep_is_off_by_default(
+    retention_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`FELIX_APPROVAL_RETENTION_DAYS` defaults to 0, and 0 means keep.
+
+    The row is the record of a human decision on a gated tool, which the `soc2` and
+    `eu_ai_act` profiles lean on, so an operator opts in rather than out.
+    """
+    from felix.approvals import store as approvals_store
+
+    clock = Clock(ms=10 * DAY)
+    clock.install(monkeypatch)
+    settings = _retention(retention_settings)  # no approval= override
+
+    ancient = await _seed_approval(settings, sig="ancient", ttl=60, decision="denied")
+
+    clock.ms = 900 * DAY
+    counts = await retention.run_retention_sweep(settings)
+
+    assert counts["approvals"] == 0, counts
+    assert await approvals_store.get_approval(settings, TENANT, ancient) is not None, (
+        "the sweep ran with the setting at its default of 0"
+    )
 
 
 def _no_bypass(fn: Any) -> Any:

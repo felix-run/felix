@@ -27,7 +27,7 @@ from felix.manifests.schema import (
 from felix.manifests.tool_match import matches_any, unmatched_patterns
 from felix.observability.metrics import record_counter
 from felix.observability.tracing import manifest_span
-from felix.patterns.registry import get_pattern, list_patterns
+from felix.patterns.registry import get_pattern, honours_output_schema, list_patterns
 from felix.patterns.types import Agent
 from felix.tools.executor import wrap_executor
 from felix.tools.provider import ToolProvider
@@ -444,6 +444,9 @@ async def _await_approval(
     if req is None:
         return False, args, "no request context"
 
+    # Resolved before the row is written, not after: a durable run's only channel is the row
+    # (the frame cannot cross from the worker to the API's stream), so the thread goes on both.
+    thread_id = (ctx.thread_id if ctx else None) or req.thread_id
     try:
         from felix.approvals import store as approvals_store
 
@@ -458,13 +461,18 @@ async def _await_approval(
             principal_subj=req.auth.principal_sub,
             rule_id=rule_id,
             ttl_seconds=ttl_seconds,
+            # Same argument as `thread_id` above, for the same reason: the row is a durable
+            # run's only channel, so anything the frame says has to be on the row too or the
+            # poll shows strictly less than the stream.
+            reason=reason,
+            thread_id=thread_id or "",
+            tool_call_id=(ctx.tool_call_id if ctx else "") or "",
         )
     except Exception:
         logger.debug("approvals store create_pending failed", exc_info=True)
         return False, args, "approvals unavailable"
 
     approval_id = str(pending_row.get("id") or "")
-    thread_id = (ctx.thread_id if ctx else None) or req.thread_id
     await emit_side_event(
         thread_id,
         "approval_required",
@@ -476,6 +484,11 @@ async def _await_approval(
             "reason": reason,
             "thread_id": thread_id,
             "tool_call_id": ctx.tool_call_id if ctx else None,
+            # The deadline after which the harness stops waiting and denies. Read off the
+            # row rather than recomputed, so the frame and the poll cannot disagree about
+            # when the offer expires -- and null here means "no rule TTL", which is a real
+            # state the client renders from its own default rather than a missing value.
+            "expires_at": pending_row.get("expires_at"),
         },
     )
     decision = await wait_for_decision(
@@ -700,6 +713,9 @@ def apply_approvals(tools: list[Tool], rules: list[ApprovalRule], manifest_id: s
             req = try_get_context()
             granted = bool((req.extras if req else {}).get(f"approval:{tool.name}"))
             pending_row: dict[str, object] | None = None
+            # Before `create_pending`, so the row carries it too — `GET /approvals` is the only
+            # channel a durable run has, and it was the half with no thread on it.
+            thread_id = (ctx.thread_id if ctx else None) or (req.thread_id if req else None)
             if not granted and req is not None:
                 try:
                     from felix.approvals import store as approvals_store
@@ -747,6 +763,12 @@ def apply_approvals(tools: list[Tool], rules: list[ApprovalRule], manifest_id: s
                             principal_subj=req.auth.principal_sub,
                             rule_id=rule.id,
                             ttl_seconds=rule.ttl_seconds,
+                            # On the row, not only in the frame. `description` is the one
+                            # field in `ApprovalRule` written to be read by a person, and
+                            # the poll -- a durable run's only channel -- could not show it.
+                            reason=rule.description,
+                            thread_id=thread_id or "",
+                            tool_call_id=(ctx.tool_call_id if ctx else "") or "",
                         )
                 except Exception:
                     logger.debug("approvals store lookup failed", exc_info=True)
@@ -763,7 +785,6 @@ def apply_approvals(tools: list[Tool], rules: list[ApprovalRule], manifest_id: s
                     )
 
                 approval_id = str(pending_row.get("id") or "")
-                thread_id = (ctx.thread_id if ctx else None) or (req.thread_id if req else None)
                 await emit_side_event(
                     thread_id,
                     "approval_required",
@@ -780,8 +801,26 @@ def apply_approvals(tools: list[Tool], rules: list[ApprovalRule], manifest_id: s
                         "reason": rule.description,
                         "thread_id": thread_id,
                         "tool_call_id": ctx.tool_call_id if ctx else None,
+                        # Off the row, so the frame and the poll cannot disagree about when
+                        # the offer expires. The frame carried no deadline at all, which is
+                        # why `@felix/client` documents `expiresAt` as poll-only.
+                        #
+                        # On the *reuse* path this is the first caller's deadline, not this
+                        # call's -- `create_pending` matches on (tenant, manifest, tool,
+                        # signature) and does not look at `expires_at`, while
+                        # `wait_for_decision` below times out on *this* rule's ttl. It fails
+                        # closed either way: an approval granted past its stored expiry is
+                        # refused by `find_approved`. Same qualifier `thread_id` and
+                        # `tool_call_id` carry on the row.
+                        "expires_at": pending_row.get("expires_at"),
                     },
                 )
+                # Every other key here is *this* caller's, read from `rule`/`ctx`, and that
+                # asymmetry is load-bearing rather than untidy. Deriving the whole frame from
+                # `pending_row` is the obvious tidy-up and would be a cross-thread leak: a
+                # reused row holds the ids of whichever call opened it, so thread A's
+                # `thread_id` and `tool_call_id` would be emitted into thread B's stream.
+                # Only `expires_at` is the row's to give.
                 decision = await wait_for_decision(
                     approval_id,
                     timeout=float(rule.ttl_seconds) if rule.ttl_seconds else None,
@@ -1356,6 +1395,18 @@ async def build_agent(
                 f"Unknown pattern '{m.spec.pattern}' for manifest '{m.metadata.name}' — "
                 f"registered: {', '.join(list_patterns()) or '(none)'}"
             )
+        if m.spec.output_schema is not None and not honours_output_schema(m.spec.pattern):
+            # Refused rather than dropped. Every pattern receives `output_schema` in its build
+            # context and only some read it, so the alternative is a manifest that declares an
+            # answer contract, compiles, runs, and returns free text — the defect shape this
+            # repo produces most. Checked here rather than in the manifest schema because the
+            # pattern registry is open: only the live registry knows what a plugin's pattern
+            # supports.
+            raise ValueError(
+                f"Pattern '{m.spec.pattern}' does not support spec.output_schema "
+                f"(manifest '{m.metadata.name}'). Patterns that do: "
+                f"{', '.join(sorted(p for p in list_patterns() if honours_output_schema(p)))}"
+            )
 
         agent = await pattern_builder(
             {
@@ -1373,6 +1424,7 @@ async def build_agent(
                 # inside it; a registered pattern picks out its own key.
                 "extensions": dict(m.spec.extensions),
                 "recursion_limit": m.spec.recursion_limit,
+                "output_schema": m.spec.output_schema,
                 "max_turns": m.spec.max_turns,
                 "aggregator_prompt": m.spec.aggregator_prompt,
                 "session_store": deps.session_store,

@@ -31,6 +31,43 @@ entries between them. Anything under **Removed** or **Changed** is where an upgr
 
 ---
 
+## Tenant ids are held to a charset
+
+**No migration, and it can still lock people out — check before you deploy.**
+
+`assert_valid_tenant_id` used to reject only `:`, `#` and surrounding whitespace. It now
+requires the whole id to match `[A-Za-z0-9._-]+`, not be `.` or `..`, and stay within 128
+characters — the same rule `storage/fs.py` applies to an object-key segment, because a
+tenant id is one in four key spaces.
+
+`tenant_id` columns are `Text`, so a database can hold ids the new rule refuses: an email
+address, anything with a space or an uppercase-plus-punctuation shape, non-ASCII, or
+whatever a permissive development deployment minted. After the upgrade those principals are
+refused at authentication, and **their rows stay in the database addressable only by a
+principal that can no longer exist**. That is an availability incident wearing a security
+fix's clothes, so find out first:
+
+```sql
+-- Any tenant id the new rule refuses. Run against the deployment's own database.
+SELECT DISTINCT tenant_id FROM audit_events
+WHERE tenant_id !~ '^[A-Za-z0-9._-]{1,128}$' OR tenant_id IN ('.', '..');
+```
+
+`audit_events` sees every tenant that has done anything; widen to `sessions`, `manifests`
+and `memory_facts` if you want certainty. An empty result means this section does not apply
+to you — which is the expected answer for a deployment whose tenants are slugs, UUIDs or
+domains.
+
+If it is not empty, decide before upgrading rather than after: rename the tenant in place
+(every table carrying `tenant_id`, in one transaction, with the deployment stopped), or stay
+on the previous image until you can. There is no compatibility flag — the rule is a door,
+and a door that can be turned off for some callers is not one.
+
+Configuration is checked too, and that failure is loud: a tenant id pinned in
+`FELIX_JWT_VERIFIERS` (`;tenant=fixed:…`), `FELIX_ALLOWED_TENANTS` or `FELIX_AUTH_API_KEYS`
+that does not match the rule now refuses to start, naming the setting. Before this it
+started and returned `401` to every request from that issuer with nothing in the log.
+
 ## v0.1.0 → v0.2.0
 
 Five migrations apply: `0005_session_fts`, `0006_tenant_rls`, `0007_approval_consumed_at`,

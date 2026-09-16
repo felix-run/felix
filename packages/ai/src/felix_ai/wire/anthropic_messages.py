@@ -7,6 +7,7 @@ turn or the provider rejects the whole request.
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from collections.abc import AsyncIterator, Sequence
@@ -27,9 +28,11 @@ from felix_ai.types import (
 )
 from felix_ai.wire.base import (
     HttpModelClient,
+    inline_parts,
     iter_sse_json,
     map_stop,
     parse_tool_arguments,
+    split_data_url,
     tool_json_schema,
 )
 from felix_ai.wire.transport import ModelGatewayError, post_with_retry
@@ -123,41 +126,59 @@ _ANTHROPIC_STOP: dict[str, StopReason] = {
 }
 
 
+def _anthropic_image_block(url: str, media_type: str | None) -> dict[str, Any] | None:
+    """One image block, in whichever of Anthropic's two source forms the URL calls for.
+
+    Anthropic has no URL form for inline bytes: a `data:` URL in a `url` source is a 400, and
+    that is what this wire sent for every inline image — so an image an OpenAI SDK sends the
+    documented way reached `gpt-4o` and failed on `claude-sonnet`, this harness's default.
+    The OpenAI wire needs no equivalent; a data URL is native there.
+
+    `None` only for an empty URL. `inline_parts` has already converted every other data URL to
+    base64, so there is no longer a well-formed image this can decline to send.
+    """
+    if not url:
+        return None
+    inline = split_data_url(url)
+    if inline is not None:
+        media, payload = inline
+        return {"type": "image", "source": {"type": "base64", "media_type": media, "data": payload}}
+    return {
+        "type": "image",
+        "source": {"type": "url", "url": url, "media_type": media_type or "image/png"},
+    }
+
+
 def _anthropic_user_or_plain(m: ChatMessage) -> dict[str, Any]:
-    """Convert a non-tool message for Anthropic, including image blocks."""
-    if m.role == "user" and (m.attachments or m.content_blocks):
-        blocks: list[dict[str, Any]] = []
-        if m.content_blocks:
-            for b in m.content_blocks:
-                if b.type == "text" and b.text:
-                    blocks.append({"type": "text", "text": b.text})
-                elif b.url:
-                    blocks.append(
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "url",
-                                "url": b.url,
-                                "media_type": b.media_type or "image/png",
-                            },
-                        }
-                    )
-        else:
-            if m.content:
-                blocks.append({"type": "text", "text": m.content})
-            for att in m.attachments or []:
-                blocks.append(
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "url",
-                            "url": att.url,
-                            "media_type": att.media_type or "image/png",
-                        },
-                    }
-                )
-        return {"role": "user", "content": blocks or m.content}
-    return {"role": m.role, "content": m.content}
+    """Convert a non-tool message for Anthropic, including image blocks.
+
+    Images render on a user turn only, which is the sole place either API accepts one. That
+    is the half that changed on the *other* wire, which used to send an image on an assistant
+    turn; here a non-user message already resolved to `m.content`, and the parser fills that
+    from the text parts. The join below is for a message built by hand rather than parsed,
+    where the text lives only in the blocks — `content: ""` is itself an Anthropic 400.
+    """
+    parts = inline_parts(m)
+    images = [p for p in parts if p.type != "text" and p.url]
+    if not images:
+        # A plain string, which is what every text turn sends and what the provider's prompt
+        # cache keys on. Normalising unconditionally turned each of those into a one-element
+        # parts list — accepted by the API, and a different request body for every turn in the
+        # repo, for nothing.
+        return {"role": m.role, "content": m.content}
+    if m.role != "user":
+        text = "\n".join(p.text for p in parts if p.type == "text" and p.text)
+        return {"role": m.role, "content": text or m.content}
+
+    blocks: list[dict[str, Any]] = []
+    for part in parts:
+        if part.type == "text" and part.text:
+            blocks.append({"type": "text", "text": part.text})
+        elif part.url:
+            image = _anthropic_image_block(part.url, part.media_type)
+            if image is not None:
+                blocks.append(image)
+    return {"role": "user", "content": blocks or m.content}
 
 
 def _anthropic_thinking_blocks(m: ChatMessage) -> list[dict[str, Any]]:
@@ -191,6 +212,118 @@ def _anthropic_thinking_blocks(m: ChatMessage) -> list[dict[str, Any]]:
     return blocks
 
 
+# The Anthropic messages API has no `response_format`, so a schema becomes a tool. The name is
+# sent to the provider and read back off the response, and it is the one identifier that must
+# not collide with a real tool the manifest bound.
+STRUCTURED_OUTPUT_TOOL = "felix_structured_output"
+
+
+def apply_anthropic_output_schema(body: dict[str, Any], schema: dict[str, Any]) -> None:
+    """Ask for a schema-shaped answer the only way this wire can: a tool the model must call.
+
+    `tool_choice` is `any` rather than `tool` whenever the turn also carries real tools.
+    Naming this one would stop the model calling the others, and in a react loop the
+    structured answer is the *last* turn rather than the only one — `any` says "end this turn
+    in a tool call", and the structured tool is then the way to finish without doing more work.
+    With no other tools there is nothing to preserve, so the choice is named outright.
+
+    Extended thinking is the exception, and a loud one: Anthropic rejects any `tool_choice`
+    but `auto` while `thinking` is set, so there the schema can only be offered. Call it after
+    `apply_anthropic_thinking_cache`, which is what decides whether `thinking` is on the body.
+
+    A caller's `/v1` `response_format` reaches here too, which means a *request* can set
+    `tool_choice` on a manifest whose author asked for none. That is deliberate and it is the
+    price of the request-supplied case working at all — leaving the choice unset there would
+    make the feature advisory for every caller who is not also the operator. Two things bound
+    it: the schema's text is screened like the turn it rides with
+    (`governance.inbound.screen_output_schema`), and `any` is satisfiable without touching a
+    real tool, since the structured-output tool is always the way to finish. A manifest that
+    declares its own `spec.output_schema` overrides the caller's outright.
+    """
+    tools = list(body.get("tools") or [])
+    if any(t.get("name") == STRUCTURED_OUTPUT_TOOL for t in tools):
+        # Otherwise the fold below would swallow that tool's call and re-emit its arguments
+        # as the turn's answer. The collision is unlikely and silent, which is the pair that
+        # earns a raise rather than a comment asserting it cannot happen.
+        raise ValueError(
+            f"a bound tool is named {STRUCTURED_OUTPUT_TOOL!r}, which this wire reserves for "
+            "structured output; rename the tool in the manifest"
+        )
+    tools.append(
+        {
+            "name": STRUCTURED_OUTPUT_TOOL,
+            "description": (
+                "Return the final answer. Call this exactly once, with the answer as its "
+                "arguments. Do not answer in plain text."
+            ),
+            "input_schema": schema,
+        }
+    )
+    body["tools"] = tools
+    if body.get("thinking"):
+        logger.warning(
+            "extended thinking forbids a forced tool choice, so the output schema is offered "
+            "to %s rather than required of it; the reply may be plain text",
+            body.get("model") or "the model",
+        )
+        body["tool_choice"] = {"type": "auto"}
+    elif len(tools) > 1:
+        body["tool_choice"] = {"type": "any"}
+    else:
+        body["tool_choice"] = {"type": "tool", "name": STRUCTURED_OUTPUT_TOOL}
+
+
+def fold_structured_output(
+    text: str, tool_calls: list[ToolCall], raw_stop: Any, *, requested: bool = True
+) -> tuple[str, list[ToolCall], Any]:
+    """Turn a call to the structured-output tool back into the turn's text.
+
+    Without this the react loop sees a tool named `felix_structured_output` that no manifest
+    bound, fails to find it, and answers with a tool error — so the whole feature would read as
+    broken rather than as unsupported. Folding here is also what makes the two wires
+    interchangeable to a caller: on either one, `message.content` is the JSON document and
+    `stop_reason` is `end_turn`.
+
+    `requested` is whether this turn actually asked for a schema. The guard against a manifest
+    binding a tool by the reserved name lives in `apply_anthropic_output_schema`, which only
+    runs when one was — so without this flag, a manifest that bound `felix_structured_output`
+    and declared *no* schema had that call silently swallowed: never executed, its
+    model-authored arguments returned as the final answer, and the stop reason forced to
+    `end_turn`. The guard was on the one branch where the collision was expected.
+
+    A turn that also calls a real tool is the loop continuing rather than answering, so the
+    premature structured call is dropped and the text left alone — the schema is asked for
+    again on the next turn, which is the one that will end the run.
+
+    What comes out of here is a reply like any other and is screened like one, which means
+    reply controls can leave a caller holding a 200 whose body does not parse: PII redaction
+    rewrites the JSON in place, and a block replaces it with `PII_BLOCKED_REPLY`. That is the
+    right precedence — a control the operator switched on outranks a shape a caller asked for —
+    but it is the one case where the contract and the control disagree, and a caller calling
+    `json.loads` on every reply should expect it.
+
+    Only a `tool_use` stop becomes `end_turn`. A turn truncated mid-arguments stops for
+    `max_tokens`, and `parse_tool_arguments` answers a half-written document with `{}` rather
+    than raising — so reporting `end_turn` there would hand the caller a well-formed `"{}"` as
+    a finished answer and, worse, silence react's truncation quarantine, which is the thing
+    that would otherwise catch it.
+    """
+    structured = [c for c in tool_calls if c.name == STRUCTURED_OUTPUT_TOOL] if requested else []
+    if not structured:
+        return text, tool_calls, raw_stop
+    remaining = [c for c in tool_calls if c.name != STRUCTURED_OUTPUT_TOOL]
+    if remaining:
+        return text, remaining, raw_stop
+    # The arguments *are* the answer, so they replace any prose rather than joining it: a
+    # caller holding a schema calls `json.loads` on this, and a preamble breaks that.
+    #
+    # `tool_use` with the only tool call consumed would map to a stop reason the loop reads as
+    # "run another turn", and there is nothing left to run. Every other stop is the provider
+    # saying something about the turn that is still true once the call is folded away.
+    stop = "end_turn" if str(raw_stop or "").lower() == "tool_use" else raw_stop
+    return json.dumps(structured[-1].args, ensure_ascii=False), [], stop
+
+
 @dataclass
 class AnthropicMessagesClient(HttpModelClient):
     """The Anthropic messages wire format, including thinking blocks and cache points."""
@@ -203,6 +336,7 @@ class AnthropicMessagesClient(HttpModelClient):
         max_tokens: int | None,
         *,
         isolate_cache: bool = False,
+        output_schema: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         system = ""
         converted: list[dict[str, Any]] = []
@@ -255,6 +389,9 @@ class AnthropicMessagesClient(HttpModelClient):
                 for t in tools
             ]
         apply_anthropic_thinking_cache(body, self.spec, self.route.model, isolate_cache=isolate_cache)
+        # After the thinking pass, which is what decides whether a forced tool choice is legal.
+        if output_schema:
+            apply_anthropic_output_schema(body, output_schema)
         return body
 
     async def _chat(
@@ -265,8 +402,16 @@ class AnthropicMessagesClient(HttpModelClient):
         max_tokens: int | None,
         *,
         isolate_cache: bool = False,
+        output_schema: dict[str, Any] | None = None,
     ) -> ModelChatResult:
-        body = self._body(messages, tools, temperature, max_tokens, isolate_cache=isolate_cache)
+        body = self._body(
+            messages,
+            tools,
+            temperature,
+            max_tokens,
+            isolate_cache=isolate_cache,
+            output_schema=output_schema,
+        )
         headers = self._headers(
             {
                 "x-api-key": self.api_key,
@@ -303,11 +448,14 @@ class AnthropicMessagesClient(HttpModelClient):
             elif b.get("type") in ("thinking", "redacted_thinking"):
                 thinking_blocks.append(dict(b))
         usage_raw = data.get("usage") or {}
-        stop = map_stop(data.get("stop_reason"), _ANTHROPIC_STOP, had_tool_calls=bool(tool_calls))
+        content, tool_calls, raw_stop = fold_structured_output(
+            "".join(text_parts), tool_calls, data.get("stop_reason"), requested=output_schema is not None
+        )
+        stop = map_stop(raw_stop, _ANTHROPIC_STOP, had_tool_calls=bool(tool_calls))
         return ModelChatResult(
             message=ChatMessage(
                 role="assistant",
-                content="".join(text_parts),
+                content=content,
                 tool_calls=tool_calls or None,
                 thinking=thinking_blocks or None,
             ),
@@ -328,8 +476,16 @@ class AnthropicMessagesClient(HttpModelClient):
         max_tokens: int | None,
         *,
         isolate_cache: bool = False,
+        output_schema: dict[str, Any] | None = None,
     ) -> AsyncIterator[StreamDelta | ModelChatResult]:
-        body = self._body(messages, tools, temperature, max_tokens, isolate_cache=isolate_cache)
+        body = self._body(
+            messages,
+            tools,
+            temperature,
+            max_tokens,
+            isolate_cache=isolate_cache,
+            output_schema=output_schema,
+        )
         body["stream"] = True
         headers = self._headers(
             {
@@ -413,10 +569,24 @@ class AnthropicMessagesClient(HttpModelClient):
             if entry.get("name")
         ]
         thinking = [thinking_by_index[i] for i in sorted(thinking_by_index)]
+        # The structured answer streams as `input_json_delta` on a tool block, so nothing here
+        # yielded a text delta for it. Everything downstream that renders a stream forwards
+        # text deltas only — react re-emits `text_delta`, and `/v1` streaming filters to
+        # `REPLY_TEXT_EVENTS` — so without the delta below a client streaming a structured
+        # agent received `[DONE]` and no content at all.
+        #
+        # It arrives whole rather than incrementally on purpose: a half-parsed JSON document
+        # is not an answer, and a caller holding a schema is going to `json.loads` it.
+        before = "".join(text_parts)
+        content, tool_calls, raw_stop = fold_structured_output(
+            before, tool_calls, raw_stop, requested=output_schema is not None
+        )
+        if content != before:
+            yield StreamDelta(kind="text", text=content)
         yield ModelChatResult(
             message=ChatMessage(
                 role="assistant",
-                content="".join(text_parts),
+                content=content,
                 tool_calls=tool_calls or None,
                 thinking=thinking or None,
             ),
@@ -426,6 +596,9 @@ class AnthropicMessagesClient(HttpModelClient):
 
 
 __all__ = [
+    "STRUCTURED_OUTPUT_TOOL",
     "AnthropicMessagesClient",
+    "apply_anthropic_output_schema",
     "apply_anthropic_thinking_cache",
+    "fold_structured_output",
 ]

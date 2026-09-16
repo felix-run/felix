@@ -5,7 +5,14 @@
 input=$(cat)
 [ "$(printf '%s' "$input" | jq -r '.stop_hook_active // false')" = "true" ] && exit 0
 
-cd "${CLAUDE_PROJECT_DIR:-.}" 2>/dev/null || exit 0
+# The tree this session is working in, which is not `CLAUDE_PROJECT_DIR` when the session
+# runs in a git worktree -- an everyday shape here. Reading the project root reported
+# *another* session's changes as this one's: it blocked twice in a single session naming
+# files that session had never opened, each time demanding documentation for someone
+# else's work. `cwd` is a documented field on every hook payload, `Stop` included.
+workdir=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null)
+[ -n "$workdir" ] || workdir="${CLAUDE_PROJECT_DIR:-.}"
+cd "$workdir" 2>/dev/null || exit 0
 changed=$({ git diff --name-only HEAD 2>/dev/null; git ls-files --others --exclude-standard 2>/dev/null; } | sort -u)
 [ -z "$changed" ] && exit 0
 
@@ -13,7 +20,12 @@ surfaces=$(printf '%s\n' "$changed" | grep -E '^(apps/api/src/felix_api/routes/|
 [ -z "$surfaces" ] && exit 0
 
 # Any doc-side change in this repo counts as "docs were considered".
-printf '%s\n' "$changed" | grep -qE '^(README\.md|CLAUDE\.md|CHANGELOG\.md|\.env\.example|docs/|deploy/GOVERNANCE\.md|deploy/.*/README\.md)$' && exit 0
+# `docs/` and `changelog.d/` are prefixes, so they live outside the `$`-anchored group: an
+# anchored `docs/` matches only a path that is literally the string "docs/", which no file is,
+# so the gate was unsatisfiable by the very directory it tells you to update. `changelog.d/`
+# counts because CLAUDE.md forbids editing `CHANGELOG.md` in a pull request — a fragment is
+# how a user-visible change is documented here.
+printf '%s\n' "$changed" | grep -qE '^(README\.md|CLAUDE\.md|CHANGELOG\.md|\.env\.example|deploy/GOVERNANCE\.md|deploy/.*/README\.md)$|^(docs|changelog\.d)/' && exit 0
 
 sid=$(printf '%s' "$input" | jq -r '.session_id // "nosession"')
 hash=$(printf '%s\n' "$surfaces" | shasum | cut -c1-12)

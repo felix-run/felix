@@ -14,9 +14,17 @@ case "$fp" in *.py) ;; *) exit 0 ;; esac
 case "$fp" in */.venv/*|*/node_modules/*|*/site-packages/*) exit 0 ;; esac
 [ -f "$fp" ] || exit 0
 
-root="${CLAUDE_PROJECT_DIR:-.}"
+# Both derived from the file, not from `CLAUDE_PROJECT_DIR`. Under a worktree the strip
+# left the `.claude/worktrees/<name>/` prefix attached, so `git show HEAD:$rel` found
+# nothing, `previous` was None, and every edited file was reported as a "new file" --
+# turning a ratchet that only speaks when an edit made something *worse* into one that
+# nags about absolute size. Observed on `felix_cli/main.py`: "module is 696 lines (new
+# file)" for a module that has existed for months, after a twelve-line edit.
+. "$(dirname "${BASH_SOURCE[0]}")/lib/command.sh"
+root=$(hook_repo_root "$fp")
+[ -n "$root" ] || exit 0
 cd "$root" 2>/dev/null || exit 0
-rel="${fp#"$root"/}"
+rel=$(hook_repo_rel "$fp")
 # Tests, generated migrations, and one-off scripts are judged by a reviewer, not a budget.
 case "$rel" in tests/*|migrations/*|scripts/*|/*) exit 0 ;; esac
 

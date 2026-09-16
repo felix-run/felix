@@ -72,7 +72,7 @@ def serialize_for_handoff(messages: list[ChatMessage], *, max_chars: int = 24_00
         body = m.content or ""
         if m.attachments:
             for att in m.attachments:
-                body += f"\n[image:{att.filename or att.url}]"
+                body += f"\n[image:{att.filename or _handoff_label(att.url)}]"
         if m.tool_calls:
             calls = ", ".join(f"{tc.name}({tc.args})" for tc in m.tool_calls)
             body = (body + f"\n[tools: {calls}]").strip()
@@ -109,3 +109,20 @@ __all__ = [
     "provider_family",
     "serialize_for_handoff",
 ]
+
+
+def _handoff_label(url: str) -> str:
+    """What to call an image in the prose a handoff writes, when it has no filename.
+
+    A handoff summary is a *system message*, built before any attachment is resolved and
+    outside `inline_parts`, which is what refuses an unexpanded reference everywhere else.
+    So this is the one place a `felix-file://` URI would reach a provider -- as prose
+    rather than as an image, harmless in itself, and still a raw internal identifier in a
+    prompt. A `data:` URL reaching here is worse and pre-existing: it embeds the whole
+    base64 payload in the summary.
+    """
+    from felix_ai.types import split_file_ref
+
+    if split_file_ref(url):
+        return "stored attachment"
+    return "inline image" if url.startswith("data:") else url

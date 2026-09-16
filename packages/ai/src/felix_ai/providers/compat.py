@@ -23,6 +23,7 @@ _CORE: tuple[ProviderSpec, ...] = (
         ensure_v1_suffix=True,
         supports_embeddings=True,
         embedding_model="text-embedding-3-small",
+        supports_strict_schema=True,
     ),
     ProviderSpec(
         name="ollama",

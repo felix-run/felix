@@ -208,29 +208,46 @@ async def test_an_eval_dataset_round_trips(boot: Any) -> None:
         assert [row["name"] for row in listing.json()["items"]] == ["smoke"], listing.json()
 
 
-async def test_an_eval_item_with_unrecognised_keys_is_stored_empty(boot: Any) -> None:
-    """Pins a sharp edge rather than a guarantee, so changing it is a deliberate act.
+async def test_an_eval_item_with_unrecognised_keys_is_refused(boot: Any) -> None:
+    """The replacement for a test that pinned the opposite, and said so.
 
-    `items` is `list[dict[str, Any]]`, and `put_dataset` reads only `user_input` and `rubric`
-    off each entry. An item written with any other spelling is accepted with 200, listed as
-    present, and stored with an empty prompt and an empty rubric. The dataset then looks
-    configured and scores nothing — the shape of defect this audit keeps finding.
-
-    Not changed here: `items` is deliberately schema-free, so rejecting unknown keys is an API
-    decision rather than a bug fix. If validation is ever added, this test should fail.
+    `items` was `list[dict[str, Any]]` with `put_dataset` reading only `user_input` and
+    `rubric`, so an item written with any other spelling was accepted with 200, listed as
+    present, and stored with an empty prompt — a dataset that looked configured and scored
+    nothing. The rubric is still free-form; only shapes that cannot work are refused, and
+    the message names the key that was found.
     """
     async with boot([], env=_keys(reader=["eval:read"])) as app:
-        created = await app.client.put(
+        refused = await app.client.put(
             "/eval/datasets/mistyped",
             json={"items": [{"input": "what is 2+2?", "expect": "4"}]},
             headers=_as(ADMIN),
         )
-        assert created.status_code == 200, created.text
+        assert refused.status_code == 422, refused.text
+        errors = refused.json()["detail"]["errors"]
+        assert any("user_input" in e and "'input'" in e for e in errors), errors
 
-        stored = (await app.client.get("/eval/datasets/mistyped", headers=_as(ADMIN))).json()
-        assert len(stored["items"]) == 1, stored
-        assert stored["items"][0]["user_input"] == "", stored
-        assert stored["items"][0]["rubric"] == {}, stored
+        # And nothing was written: a refused write that half-applied would be worse than
+        # the behaviour this replaced.
+        missing = await app.client.get("/eval/datasets/mistyped", headers=_as(ADMIN))
+        assert missing.status_code == 404, missing.text
+
+
+async def test_an_eval_rubric_naming_no_rule_is_stored_with_a_warning(boot: Any) -> None:
+    """Legal, and almost never intended — so it lands, and says so.
+
+    A rubric naming none of `expect` / `equals` / `contains` / `min_chars` falls through to
+    the non-empty rule, which passes any answer at all. That is a real rule, so refusing it
+    would be wrong; saying nothing is how a gate that gates nothing gets written.
+    """
+    async with boot([], env=_keys(reader=["eval:read"])) as app:
+        created = await app.client.put(
+            "/eval/datasets/loose",
+            json={"items": [{"item_id": "a", "user_input": "anything", "rubric": {}}]},
+            headers=_as(ADMIN),
+        )
+        assert created.status_code == 200, created.text
+        assert any("non-empty" in w for w in created.json()["warnings"]), created.json()
 
 
 async def test_writing_an_eval_dataset_needs_a_write_scope(boot: Any) -> None:
@@ -373,6 +390,113 @@ async def test_listing_approvals_is_empty_before_anything_pauses(boot: Any) -> N
         assert listed.json()["items"] == []
 
 
+async def test_listing_approvals_narrows_to_one_thread_over_http(boot: Any) -> None:
+    """The store filter has to be reachable, or an operator filters a page after the cut.
+
+    This is the route a durable run's operator actually uses: the agent is in the worker and
+    the stream is served by the API, so no `approval_required` frame crosses and polling here
+    is the whole channel. Narrowing client-side instead would drop whatever `limit` had
+    already discarded — the same filter-after-`LIMIT` bug the store avoids, one layer up.
+    """
+    from felix.approvals import store as approvals_store
+
+    async with boot([], env=_keys(reader=["approvals:read"])) as app:
+        mine = await approvals_store.create_pending(
+            app.settings,
+            "default",
+            tool_name="write_file",
+            call_signature="mine",
+            thread_id="default:one",
+            reason="needs a human",
+            tool_call_id="call_a",
+        )
+        await approvals_store.create_pending(
+            app.settings,
+            "default",
+            tool_name="write_file",
+            call_signature="theirs",
+            thread_id="default:two",
+        )
+
+        listed = await app.client.get("/approvals", params={"thread_id": "default:one"}, headers=_as(ADMIN))
+        assert listed.status_code == 200, listed.text
+        items = listed.json()["items"]
+        assert [r["id"] for r in items] == [mine["id"]], (
+            "the route ignored thread_id, or returned another thread's approval"
+        )
+        # And the two fields that made the poll worth reading survive the route.
+        assert items[0]["reason"] == "needs a human"
+        assert items[0]["tool_call_id"] == "call_a"
+
+        # Omitting it still means every thread.
+        everything = await app.client.get("/approvals", headers=_as(ADMIN))
+        assert len(everything.json()["items"]) == 2
+
+
+async def test_a_chat_scoped_caller_cannot_read_approvals_through_the_durable_stream(
+    boot: Any,
+) -> None:
+    """The scope boundary `POST /chat/stream` would otherwise route around.
+
+    The durable stream announces the gates its run is blocked on, which is the point — but
+    `thread_id` comes from the request body, so the thread a run names is a question the
+    caller *chose*, not one they necessarily own. Nothing in Felix binds a thread to a
+    principal. Without the scope check, a caller holding chat access and not `approvals:read`
+    could name any thread in the tenant and read the tool names, full arguments and gate
+    reasons it is blocked on — the exact payload `GET /approvals` refuses them.
+
+    Asserted from both sides, because only the pair is evidence: the refusal alone would also
+    pass if the feature were simply absent.
+    """
+    from felix.approvals import store as approvals_store
+
+    async with boot([], env=_keys(reader=["chat"], writer=["approvals:read"])) as app:
+        await approvals_store.create_pending(
+            app.settings,
+            "default",
+            tool_name="send_wire_transfer",
+            call_signature="wire-1",
+            args={"iban": "DE89370400440532013000", "amount": 250000},
+            thread_id="default:victim",
+            rule_id="finance-gate",
+            reason="wire transfers need a human",
+            ttl_seconds=300,
+        )
+
+        # The caller really is refused on the management route...
+        refused = await app.client.get("/approvals", headers=_as(READER))
+        assert refused.status_code == 403, refused.text
+
+        listed = await app.client.get("/approvals", headers=_as(WRITER))
+        assert listed.status_code == 200, listed.text
+        assert [r["tool_name"] for r in listed.json()["items"]] == ["send_wire_transfer"]
+
+    # ...and the tail honours the same answer. Driven at the unit the route computes, because
+    # reaching the durable arm over HTTP needs a durable manifest and a fiber; what is under
+    # test is that the flag gates the drain, not how the flag is derived (which
+    # `holds_mgmt_scopes` owns and the two assertions above pin).
+    from felix.auth.context import ANONYMOUS, AuthContext, Principal
+    from felix.auth.mgmt import SCOPE_APPROVALS_READ, holds_mgmt_scopes
+    from felix.config import Settings
+
+    def _who(*scopes: str) -> AuthContext:
+        return AuthContext(
+            principal=Principal(tenant_id="default", subject="s", scopes=frozenset(scopes)),
+            outbound_token=ANONYMOUS.outbound_token,
+        )
+
+    cfg = Settings(auth_mode="api_key", allow_insecure=True, environment="development")
+    assert holds_mgmt_scopes(cfg, _who("chat").principal.scopes, SCOPE_APPROVALS_READ) is False
+    assert holds_mgmt_scopes(cfg, _who("approvals:read").principal.scopes, SCOPE_APPROVALS_READ) is True
+    # The two rules the 403 path applies, asserted on the degrade path so the two cannot
+    # drift apart: admin bypasses, and `x:write` implies `x:read`.
+    assert holds_mgmt_scopes(cfg, _who("admin").principal.scopes, SCOPE_APPROVALS_READ) is True
+    assert holds_mgmt_scopes(cfg, _who("approvals:write").principal.scopes, SCOPE_APPROVALS_READ) is True
+    # And `auth_mode=none` checks nothing, which is what keeps local DX working.
+    off = Settings(auth_mode="none", allow_insecure=True, environment="development")
+    assert holds_mgmt_scopes(off, _who().principal.scopes, SCOPE_APPROVALS_READ) is True
+
+
 async def test_an_unknown_approval_is_a_404_on_read_and_on_decide(boot: Any) -> None:
     """Deciding an approval that does not exist must not create one."""
     async with boot([], env=_keys(reader=["approvals:read"])) as app:
@@ -428,6 +552,7 @@ async def test_a_pending_approval_is_listed_and_can_be_decided(boot: Any) -> Non
             args={"expression": "2+2"},
             manifest_id="quick",
             rule_id="calc-approval",
+            thread_id="default:e2e-appr",
         )
         approval_id = pending["id"]
 
@@ -437,6 +562,10 @@ async def test_a_pending_approval_is_listed_and_can_be_decided(boot: Any) -> Non
         assert [r["id"] for r in rows] == [approval_id], rows
         assert rows[0]["tool_name"] == "calculator"
         assert rows[0]["status"] == "pending"
+        # The field the poll path exists for. It cannot regress today — the route returns the
+        # store dict with no `response_model` — which is exactly why it would vanish silently
+        # the day one is added or a field filter appears between the store and the wire.
+        assert rows[0]["thread_id"] == "default:e2e-appr", rows[0]
 
         decided = await app.client.post(
             f"/approvals/{approval_id}/decide",
@@ -451,6 +580,7 @@ async def test_a_pending_approval_is_listed_and_can_be_decided(boot: Any) -> Non
 
         reread = await app.client.get(f"/approvals/{approval_id}", headers=_as(READER))
         assert reread.json()["status"] == "approved", reread.json()
+        assert reread.json()["thread_id"] == "default:e2e-appr", reread.json()
         assert (await app.client.get("/approvals", headers=_as(READER))).json()["items"] == []
 
 

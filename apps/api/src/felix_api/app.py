@@ -38,6 +38,7 @@ from felix_api.routes import (
     audit,
     chat,
     documents,
+    files,
     internal,
     jobs,
     manifests,
@@ -286,6 +287,7 @@ def create_app(
     app.include_router(internal.router, prefix="/internal")
     app.include_router(audit.router, prefix="/audit")
     app.include_router(artifacts.router, prefix="/artifacts")
+    app.include_router(files.router, prefix="/files")
     app.include_router(approvals.router, prefix="/approvals")
     app.include_router(plans.router, prefix="/plans")
     app.include_router(jobs.router, prefix="/jobs")

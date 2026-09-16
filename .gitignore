@@ -61,3 +61,8 @@ workspace/*
 
 # Prometheus scrape credential, minted by scripts/metrics-token.sh
 deploy/docker/.metrics-token
+
+# Mermaid renders: generated from docs/diagrams/*.mmd, never edited by hand.
+# `/marmalade:export` rebuilds them and `--check` reports staleness, so the sources
+# are the record and a committed SVG would only ever be a copy that could disagree.
+docs/diagrams/rendered/

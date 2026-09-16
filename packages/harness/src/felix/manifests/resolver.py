@@ -9,7 +9,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
-from felix.manifests.loader import load_bundled, parse_manifest
+from felix.manifests.loader import load_bundled, parse_stored_manifest
 from felix.manifests.schema import Manifest, assert_valid_manifest_name
 
 ManifestSource = Literal["tenant_postgres", "tenant_object", "global_object", "bundled"]
@@ -223,7 +223,15 @@ async def _read_object(
         return None
     if isinstance(raw, (bytes, str)):
         raw = json.loads(raw)
-    parsed = parse_manifest(raw)
+    # Consistent with the Postgres store, and deliberately so — but the reasoning is not
+    # identical and the difference is worth knowing. Nothing in core writes these bodies:
+    # an operator hand-uploads `manifests/{tenant}/{name}.json`, so unlike a Postgres row
+    # it was never accepted by a write path, which makes it lean authored. It is also
+    # unreachable today — `resolve_tenant_manifest` passes no `object_store`, and core has
+    # no `get_json` implementation. Kept aligned anyway: the day this is wired up, having
+    # one of the two stored readers strict and the other not is a difference nobody would
+    # predict from the outside.
+    parsed = parse_stored_manifest(raw, origin=key)
     cache[key] = parsed
     return parsed
 

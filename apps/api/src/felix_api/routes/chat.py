@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+from felix.auth.mgmt import SCOPE_APPROVALS_READ, holds_mgmt_scopes
 from felix.context import AuthContext, RequestContext, async_run_with_context, get_context, try_get_context
-from felix.durability.fibers import FIBER_TERMINAL_STATUSES
 from felix.governance.inbound import INBOUND_SCREENED_EXTRA
 from felix.idempotency import (
     IdempotencyConflict,
@@ -25,11 +24,12 @@ from felix.logging_setup import loggable
 from felix.patterns.model import ModelGatewayError
 from felix.patterns.types import ChatMessage, InvokeInput
 from felix.runtime import build_tenant_agent, prepare_tenant_invoke, resolve_tenant_manifest
-from felix.session.notify import Wake, thread_watch
+from felix.session.snapshot import gather_thread_snapshot
 from felix.session.store import get_session_store
 from felix.session.tree import fork_thread, get_leaf, rewind_to
 from felix.session.types import GetEventsOpts
 from felix.steer import enqueue
+from felix.tools.client_bridge import MAX_TOOL_CALL_ID
 from pydantic import BaseModel, Field
 
 from felix_api.errors import client_safe_message, log_gateway_error
@@ -42,6 +42,11 @@ from felix_api.routes._sse import (
     is_resume_point,
     sse_response,
     with_heartbeat,
+)
+from felix_api.routes._streaming import (
+    durable_run_gen,
+    resume_stream_gen,
+    stream_cursor,
 )
 from felix_api.threads import effective_thread_id
 
@@ -113,7 +118,9 @@ class ToolResultRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
     thread_id: str = Field(min_length=1)
-    tool_call_id: str = Field(min_length=1)
+    # Capped for the same reason `thread_id` is: both are interpolated into a waiter name,
+    # which becomes a Redis key held for an hour. See `client_bridge.MAX_TOOL_CALL_ID`.
+    tool_call_id: str = Field(min_length=1, max_length=MAX_TOOL_CALL_ID)
     content: str | dict[str, Any] | list[Any] = ""
     error: bool = False
 
@@ -459,69 +466,6 @@ async def chat_run(resume_token: str, request: Request) -> dict[str, Any]:
     return row
 
 
-async def _durable_run_gen(*, settings: Any, tenant_id: str, accepted: dict[str, Any]):
-    """Stream a durable run's progress instead of pretending it is synchronous.
-
-    `POST /chat` honours `spec.execution.mode: durable` and returns 202 with a
-    `resume_token`; this endpoint did not mention it at all, so a manifest that asked
-    for durable execution got it on one route and was silently ignored on the other.
-
-    Streaming the run rather than returning 202 keeps the SSE contract a caller of this
-    endpoint already has, and it delivers what durable is actually for: a disconnect
-    here tears down the *poll*, not the run. That is the opposite of the transient
-    path, where a hung-up client deliberately kills the run so it stops burning tokens.
-
-    The first frame carries the `resume_token`, so a client that drops before the run
-    finishes can come back to `GET /chat/runs/{token}` rather than starting over.
-    """
-    import json
-
-    from felix.durability.runs import get_durable_run
-
-    token = str(accepted.get("resume_token") or "")
-    yield f"data: {json.dumps({'event': 'run_accepted', 'data': accepted}, default=str)}\n\n"
-
-    poll = float(getattr(settings, "stream_resume_poll_seconds", 1.0) or 1.0)
-    poll_max = max(poll, float(getattr(settings, "stream_resume_poll_max_seconds", 10.0) or 10.0))
-    # The run's own TTL bounds this, not the resume stream's idle limit: a durable run
-    # that outlives its expiry is finished either way, and holding the connection past
-    # that point would keep a worker busy for a result that can no longer arrive.
-    deadline = float(accepted.get("expires_at") or 0) or None
-
-    waited = 0.0
-    delay = poll
-    last_status = ""
-    while True:
-        run = await get_durable_run(settings, tenant_id, token)
-        if run is None:
-            yield error_frame(f"run_not_found:{token}", kind="run_error")
-            break
-        status = str(run.get("status") or "")
-        if status != last_status:
-            last_status = status
-            waited = 0.0
-            delay = poll
-            payload = {"event": "run_status", "data": {"status": status, "resume_token": token}}
-            yield f"data: {json.dumps(payload, default=str)}\n\n"
-        if status in _RUN_TERMINAL:
-            if status == "completed":
-                final = {"event": "final", "data": run.get("final") or {}}
-                yield f"data: {json.dumps(final, default=str)}\n\n"
-            else:
-                yield error_frame(str(run.get("error") or status), kind="run_error")
-            break
-        if deadline and time.time() * 1000 >= deadline:
-            # Says which it was. "expired" and "still running" look identical to a
-            # client that only sees the stream close.
-            yield error_frame(f"run_expired:{token}", kind="run_error")
-            break
-        yield ": keep-alive\n\n"
-        await asyncio.sleep(delay)
-        waited += delay
-        delay = _next_poll_delay(waited, delay, floor=poll, ceiling=poll_max)
-    yield DONE
-
-
 @router.get("/stream/{thread_id}")
 async def chat_stream_resume(request: Request, thread_id: str) -> StreamingResponse:
     """Reattach to a thread after a dropped connection or a page refresh.
@@ -550,62 +494,17 @@ async def chat_stream_resume(request: Request, thread_id: str) -> StreamingRespo
         after = None
 
     poll = float(getattr(settings, "stream_resume_poll_seconds", 1.0) or 1.0)
-    poll_max = max(poll, float(getattr(settings, "stream_resume_poll_max_seconds", 10.0) or 10.0))
-    idle_limit = float(getattr(settings, "stream_resume_idle_seconds", 300.0) or 300.0)
-
-    async def resume_gen():
-        import json
-
-        cursor = after
-        try:
-            if cursor is None:
-                snapshot = await _build_thread_snapshot(
-                    settings=settings, tenant_id=auth.tenant_id, thread=thread
-                )
-                cursor = int((await _stream_cursor(settings, auth.tenant_id, thread)) or 0)
-                # The snapshot carries every event so far, so the cursor it hands back
-                # is the next sequence the client should expect — not the last one it
-                # has. Every `id:` on this stream means the same thing, which is what
-                # lets a client hand it straight back as `Last-Event-ID`.
-                yield (
-                    f"id: {cursor}\n"
-                    f"data: {json.dumps({'event': 'snapshot', 'data': snapshot}, default=str)}\n\n"
-                )
-
-            store = get_session_store(settings, tenant_id=auth.tenant_id)
-            pacing = _ResumePacing(floor=poll, ceiling=poll_max, idle_limit=idle_limit)
-            # One subscription for the life of the stream. Waiting through a watch
-            # rather than a call per iteration is what keeps this to a single
-            # SUBSCRIBE/UNSUBSCRIBE pair instead of one per poll interval.
-            async with thread_watch(auth.tenant_id, thread) as watch:
-                while True:
-                    # `get_events(from_seq=...)` already applies `seq >= from_seq` in SQL
-                    # on both backends, so filtering again in Python re-walks the page to
-                    # discard nothing.
-                    events = await store.open(thread).get_events(GetEventsOpts(from_seq=cursor))
-                    for event in events:
-                        cursor = event.seq + 1
-                        yield _session_event_frame(event, cursor)
-                    if events:
-                        pacing.saw_events()
-                    else:
-                        pacing.went_quiet()
-                    if pacing.exhausted:
-                        break
-                    yield ": keep-alive\n\n"
-                    # Wait for the thread to move rather than sleeping through it. The
-                    # query above runs either way, so a dropped notification costs
-                    # latency and never correctness -- which is what lets the ceiling
-                    # relax rather than disappear.
-                    pacing.waited(await watch.wait(timeout=pacing.timeout))
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            logger.exception("chat resume failed thread=%s", loggable(thread, limit=80))
-            yield error_frame(client_safe_message(exc))
-        yield DONE
-
-    return sse_response(resume_gen())
+    return sse_response(
+        resume_stream_gen(
+            settings=settings,
+            tenant_id=auth.tenant_id,
+            thread=thread,
+            after=after,
+            poll=poll,
+            poll_max=max(poll, float(getattr(settings, "stream_resume_poll_max_seconds", 10.0) or 10.0)),
+            idle_limit=float(getattr(settings, "stream_resume_idle_seconds", 300.0) or 300.0),
+        )
+    )
 
 
 @router.post("/stream")
@@ -656,6 +555,17 @@ async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
         from felix.durability.runs import start_durable_chat
         from felix.manifests.pin import pin_fields
 
+        # Captured *before* the enqueue, not inside the stream: the fiber may be claimed
+        # and start appending the moment the row lands, and a cursor read after that has
+        # already skipped the turns the stream exists to report.
+        #
+        # `if thread else 0` rather than letting `stream_cursor` answer for both: it
+        # returns None for "no thread" *and* for "the head read failed", and those want
+        # opposite handling. A run with no thread of its own gets a freshly minted fiber
+        # thread, which is empty, so 0 is exactly right; a failed read means the start
+        # point is unknown, and `durable_tail` declines to tail rather than replaying the
+        # thread's entire history as this run's progress.
+        from_seq = await stream_cursor(settings, auth.tenant_id, thread) if thread else 0
         accepted = await start_durable_chat(
             settings,
             auth.tenant_id,
@@ -667,10 +577,20 @@ async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
             pin=pin_fields(resolved.manifest, version=resolved.version),
         )
         return sse_response(
-            _durable_run_gen(
+            durable_run_gen(
                 settings=settings,
                 tenant_id=auth.tenant_id,
                 accepted=accepted,
+                from_seq=from_seq,
+                # Gated on the *management* scope, not on this route's auth. `thread_id` is
+                # client-supplied, so the run's thread is a question the caller chose rather
+                # than one they necessarily own — nothing in Felix binds a thread to a
+                # principal, and `GET /chat/stream/{thread_id}` demonstrates that already.
+                # Without the check, a chat-scoped caller could name any thread in the tenant
+                # and read the tool names, arguments and gate reasons it is blocked on,
+                # which `GET /approvals` would have refused them. A caller without the scope
+                # gets the transcript and the answer, exactly as before this existed.
+                may_read_approvals=holds_mgmt_scopes(settings, auth.scopes, SCOPE_APPROVALS_READ),
             )
         )
 
@@ -721,7 +641,7 @@ async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
                         # frame is where an append may just have happened. Consecutive
                         # structural frames with nothing appended between them return
                         # the same number, which is correct and costs one small query.
-                        fresh = await _stream_cursor(settings, auth.tenant_id, thread)
+                        fresh = await stream_cursor(settings, auth.tenant_id, thread)
                         if fresh is not None:
                             cursor = fresh
                         yield frame(payload, cursor=cursor)
@@ -987,174 +907,6 @@ async def chat_history_delete(thread_id: str, request: Request) -> dict[str, str
     return {"status": "deleted", "thread_id": thread}
 
 
-# How long a stream stays at the floor before the poll starts decaying, and how
-# sharply it decays after that.
-#
-# A plain exponential from the first empty round would be wrong here. Backing off costs
-# first-event latency -- a thread that goes quiet and then produces makes the client
-# wait up to the current delay -- and the moment a user is most likely to act is right
-# after they reattach. So the first half-minute stays at the floor, and only a stream
-# that has been silent past that decays. The load this finding is about comes from tabs
-# left open for minutes, not from the first few seconds of one.
-# Fiber statuses that mean the run will not change again.
-# The fiber store's terminal set, plus the client-side cancel the stream reports itself.
-_RUN_TERMINAL = FIBER_TERMINAL_STATUSES | {"cancelled"}
-
-# The ceiling a stream may decay to once notifications are actually being delivered.
-# Far above the un-notified ceiling because the poll is then a safety net against a
-# dropped pub/sub message rather than the mechanism itself: one query per minute per
-# idle client instead of one every ten seconds.
-NOTIFIED_POLL_CEILING_SECONDS = 60.0
-
-POLL_BACKOFF_GRACE_SECONDS = 30.0
-POLL_BACKOFF_FACTOR = 1.5
-
-
-def _next_poll_delay(idle: float, delay: float, *, floor: float, ceiling: float) -> float:
-    """The wait before the next poll of a quiet stream."""
-    if idle < POLL_BACKOFF_GRACE_SECONDS:
-        return floor
-    return min(delay * POLL_BACKOFF_FACTOR, ceiling)
-
-
-def _session_event_frame(event: Any, cursor: int) -> str:
-    """One `session_event` SSE frame.
-
-    `id:` is the *next* sequence the client should expect, not the one it just got, so a
-    client can hand it straight back as `Last-Event-ID`. Every `id:` on this stream means
-    the same thing, including the snapshot's.
-    """
-    import json
-
-    payload = {
-        "event": "session_event",
-        "data": {
-            "seq": event.seq,
-            "kind": event.kind,
-            "role": event.role,
-            "content": event.content,
-            "name": event.name,
-        },
-    }
-    return f"id: {cursor}\ndata: {json.dumps(payload, default=str)}\n\n"
-
-
-@dataclass(slots=True)
-class _ResumePacing:
-    """How long a resume stream waits before asking again, and when it gives up.
-
-    Split out of `chat_stream_resume` because the rules were interleaved line by line
-    with SSE framing -- `yield f"id: {cursor}\ndata: ..."` two lines from the decay
-    ceiling. Those are protocol and policy at different levels, and the comment density
-    around them was what a missing seam looks like. Here the rules sit together and can
-    be read as rules; the loop reads as protocol.
-
-    Nothing about the behaviour changed: `saw_events`, `went_quiet`, `exhausted` and
-    `waited` are the four things the loop body did, in the order it did them.
-    """
-
-    floor: float
-    ceiling: float
-    idle_limit: float
-    #: How long to wait for the next append. The loop reads this, never computes it.
-    timeout: float = 0.0
-    _idle: float = 0.0
-    _notified: bool = False
-
-    def __post_init__(self) -> None:
-        self.timeout = self.floor
-
-    @property
-    def exhausted(self) -> bool:
-        """Time to close rather than hold an idle connection open forever. The client
-        reconnects with its `Last-Event-ID` and loses nothing."""
-        return self._idle >= self.idle_limit
-
-    def saw_events(self) -> None:
-        """Backoff is a measure of idleness, so activity resets it -- otherwise a thread
-        that goes quiet and then busy answers the next message at the decayed interval."""
-        self._idle = 0.0
-        self.timeout = self.floor
-
-    def went_quiet(self) -> None:
-        # `self.timeout`, not `self.floor`: the accounting has to follow the actual wait
-        # or the idle limit stops meaning the number of seconds it says.
-        self._idle += self.timeout
-        # A notified stream polls only as a safety net, so it can afford a far longer
-        # interval. When Redis drops, `by_notification` goes False on the next wait and
-        # this tightens back on its own, without anything having to notice.
-        ceiling = NOTIFIED_POLL_CEILING_SECONDS if self._notified else self.ceiling
-        self.timeout = _next_poll_delay(self._idle, self.timeout, floor=self.floor, ceiling=ceiling)
-
-    def waited(self, wake: Wake) -> None:
-        self._notified = wake.by_notification
-        if wake.woken:
-            self.saw_events()
-
-
-async def _stream_cursor(settings: Any, tenant_id: str, thread: str | None) -> int | None:
-    """The next session sequence this thread will write.
-
-    A cursor, not a last-seen id: a client hands it back as `Last-Event-ID` and gets
-    everything from there on. Using the session log rather than a per-connection
-    counter is what makes it mean anything to the *next* connection.
-    """
-    if not thread:
-        return None
-    try:
-        head = await get_session_store(settings, tenant_id=tenant_id).open(thread).head()
-        return int(head.get("seq") or 0)
-    except Exception:
-        logger.debug("stream cursor unavailable for %s", loggable(thread, limit=80), exc_info=True)
-        return None
-
-
-async def _build_thread_snapshot(
-    *,
-    settings: Any,
-    tenant_id: str,
-    thread: str,
-) -> dict[str, Any]:
-    from felix.session.lease import lease_status
-    from felix.session.snapshot import build_snapshot
-    from felix.session.thread_state import get_thread_meta, load_leaf
-    from felix.session.tree import get_leaf
-    from felix.steer import peek_steer_count
-
-    store = get_session_store(settings, tenant_id=tenant_id)
-    # Five reads against four different stores, none of which depends on another. They
-    # ran in series on `GET /chat/sessions/{id}`, on both lease endpoints and on every
-    # cold SSE reconnect -- the reattach path, where latency is the most visible thing
-    # in the product.
-    #
-    # `gather` holds more pool connections at once, which is why it waited for the pool
-    # to become a setting rather than a hardcoded 5 + 10.
-    events, meta, stored_leaf, steer_n, lease = await asyncio.gather(
-        store.open(thread).get_events(),
-        get_thread_meta(settings=settings, tenant_id=tenant_id, thread_id=thread),
-        load_leaf(settings=settings, tenant_id=tenant_id, thread_id=thread),
-        peek_steer_count(tenant_id, thread),
-        lease_status(thread),
-    )
-    # `get_leaf` is synchronous and in-process, so it stays out of the fan-out.
-    leaf = stored_leaf or get_leaf(thread)
-    return build_snapshot(
-        thread_id=thread,
-        events=events,
-        leaf_id=leaf,
-        session_name=meta.get("session_name"),
-        phase=str(meta.get("phase") or "idle"),
-        model_id=meta.get("model_id"),
-        thinking_level=meta.get("thinking_level"),
-        parent_session_id=meta.get("parent_session_id"),
-        labels=dict(meta.get("labels") or {}),
-        queued_steer=[{"placeholder": True}] * steer_n if steer_n else [],
-        revision=int(meta.get("revision") or 0),
-        attached=bool(lease.get("attached")),
-        locked=bool(lease.get("locked")),
-    )
-
-
 @router.post("/sessions/lease")
 async def acquire_session_lease(body: LeaseRequest, request: Request) -> dict[str, Any]:
     """Acquire an exclusive or shared lease (maps to snapshot locked/attached)."""
@@ -1173,7 +925,7 @@ async def acquire_session_lease(body: LeaseRequest, request: Request) -> dict[st
     )
     if not result.get("ok"):
         raise HTTPException(status_code=409, detail=result.get("error") or "lease_held")
-    snapshot = await _build_thread_snapshot(
+    snapshot = await gather_thread_snapshot(
         settings=request.app.state.settings,
         tenant_id=auth.tenant_id,
         thread=thread,
@@ -1192,7 +944,7 @@ async def release_session_lease(body: LeaseReleaseRequest, request: Request) -> 
     result = await release_lease(thread, holder_id=body.holder_id, token=body.token)
     if not result.get("ok"):
         raise HTTPException(status_code=403, detail=result.get("error") or "release_failed")
-    snapshot = await _build_thread_snapshot(
+    snapshot = await gather_thread_snapshot(
         settings=request.app.state.settings,
         tenant_id=auth.tenant_id,
         thread=thread,
@@ -1295,7 +1047,7 @@ async def get_session_snapshot(thread_id: str, request: Request) -> dict[str, An
     thread = effective_thread_id(auth.tenant_id, thread_id)
     if thread is None:
         raise HTTPException(status_code=400, detail="invalid_thread_id")
-    return await _build_thread_snapshot(
+    return await gather_thread_snapshot(
         settings=request.app.state.settings,
         tenant_id=auth.tenant_id,
         thread=thread,
@@ -1385,7 +1137,7 @@ async def chat_abort(body: AbortRequest, request: Request) -> dict[str, Any]:
         thread_id=thread,
         phase="aborted",
     )
-    snapshot = await _build_thread_snapshot(
+    snapshot = await gather_thread_snapshot(
         settings=request.app.state.settings,
         tenant_id=auth.tenant_id,
         thread=thread,
@@ -1573,5 +1325,5 @@ async def chat_compact(body: CompactRequest, request: Request) -> dict[str, Any]
             reason="manual",
         )
     await update_thread_meta(settings=settings, tenant_id=auth.tenant_id, thread_id=thread, phase="idle")
-    snapshot = await _build_thread_snapshot(settings=settings, tenant_id=auth.tenant_id, thread=thread)
+    snapshot = await gather_thread_snapshot(settings=settings, tenant_id=auth.tenant_id, thread=thread)
     return {**result, "thread_id": thread, "snapshot": snapshot}
