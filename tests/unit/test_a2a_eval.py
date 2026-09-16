@@ -206,6 +206,27 @@ async def test_eval_fails_one_item_rather_than_the_run_on_an_unusable_item_id(
 
 
 @pytest.mark.asyncio
+async def test_a2a_refuses_a_task_id_that_is_not_a_string(settings: Settings) -> None:
+    """`params` is `dict[str, Any]`, so the guard has to see the caller's value.
+
+    `str(params.get("taskId"))` turns a JSON object into a thread id from its Python repr,
+    and that repr passes every check below it — the tail may contain `:`. Same tenant and
+    still injective, so this is tidiness rather than a hole, but it is the difference between
+    validating what was sent and validating what `str()` made of it.
+    """
+    resp = await handle_rpc(
+        settings=settings,
+        tools=InMemoryToolProvider(),
+        tenant_id="default",
+        method="message/send",
+        params={"manifest": "quick", "taskId": {"a": "b"}, "message": {"parts": [{"text": "hi"}]}},
+        rpc_id=4,
+    )
+    assert resp.get("error", {}).get("code") == -32602, resp
+    assert "string" in resp["error"]["message"]
+
+
+@pytest.mark.asyncio
 async def test_an_unlabelled_item_still_reaches_the_runner_with_an_id(settings: Settings) -> None:
     """Why `eval_thread_id` needs no stand-in for a missing `item_id`.
 

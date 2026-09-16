@@ -8,6 +8,7 @@ from typing import Any
 from felix.config import Settings
 from felix.context import AuthContext, RequestContext, async_run_with_context
 from felix.eval import store as eval_store
+from felix.logging_setup import loggable
 from felix.patterns.types import ChatMessage, InvokeInput
 from felix.runtime import build_tenant_agent, resolve_tenant_manifest
 from felix.thread_ids import eval_thread_id
@@ -277,7 +278,10 @@ async def start_run(
         except Exception as exc:
             fails += 1
             scores.append({"item_id": item_id, "pass": False, "error": str(exc)})
-            logger.exception("eval_item_failed item=%s", item_id)
+            # `loggable`, because `item_id` is dataset content and this line is now reachable
+            # deliberately -- an id chosen to be unusable takes the branch above straight here.
+            # A newline in it would otherwise forge a second log record.
+            logger.exception("eval_item_failed item=%s", loggable(item_id, limit=80))
 
     completed = await eval_store.complete_run(
         settings,

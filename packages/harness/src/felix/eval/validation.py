@@ -22,6 +22,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from felix.auth.context import MAX_TENANT_ID
+from felix.thread_ids import MAX_THREAD_ID
+
 # The rubric keys `felix.eval.runner._score_answer` dispatches on, in its own precedence
 # order. A rubric carrying none of these is not invalid — it scores as `nonempty`.
 # `test_eval_item_validation.py` reads the same set off `_score_answer`'s source, so a new
@@ -67,6 +70,39 @@ def read_item(item: Mapping[str, Any]) -> ItemFields:
     )
 
 
+# The longest `item_id` that is usable whatever tenant stores the dataset.
+#
+# `item_id` is a third of the `eval_dataset_items` primary key and the tail of the
+# `session_events` one, both plain btree, and it is also the last segment of the thread the
+# item runs on (`thread_ids.eval_thread_id`). So it has two ceilings, and this is the lower:
+# `{tenant}:eval:{run}:{item}` must fit `MAX_THREAD_ID`, with room for the longest legal
+# tenant and a `uuid4().hex` run id.
+#
+# Tenant-independent on purpose. Deriving it from the tenant actually storing the dataset
+# would make the same file valid in one deployment and rejected in another, and an item id
+# this long is a mistake in every deployment.
+MAX_EVAL_ITEM_ID = MAX_THREAD_ID - (MAX_TENANT_ID + len(":eval:") + 32 + len(":"))
+
+
+def _unusable_item_id(item_id: str) -> str:
+    """Why this id cannot become a thread, or "" when it can.
+
+    Rejected here rather than at the run, which is `validate_items`' whole remit: an item
+    stored with one of these is accepted with a 200, then fails *every* run forever with an
+    error string buried in `scores`. On Postgres a long enough id does not even reach that —
+    the insert fails on the primary-key index ("index row size N exceeds btree version 4
+    maximum 2704"), which is a 500 at write time, so refusing it is also the difference
+    between a clear 422 and a stack trace.
+    """
+    if "#" in item_id:
+        # The same character `effective_thread_id` and `thread_belongs_to_tenant` reject: it
+        # mints a thread `/internal` refuses and no operator can address.
+        return "contains '#', which cannot appear in a thread id"
+    if len(item_id) > MAX_EVAL_ITEM_ID:
+        return f"is {len(item_id)} characters; the limit is {MAX_EVAL_ITEM_ID}"
+    return ""
+
+
 @dataclass(frozen=True, slots=True)
 class ValidationReport:
     """Everything wrong with a batch of items, reported at once."""
@@ -108,6 +144,9 @@ def validate_items(items: Any) -> ValidationReport:
                     f"{label} repeats item_id {fields.item_id!r}; the later item would win silently"
                 )
             seen.add(fields.item_id)
+            unusable = _unusable_item_id(fields.item_id)
+            if unusable:
+                errors.append(f"{label} has an item_id that {unusable}")
 
         if not isinstance(fields.user_input, str) or not fields.user_input.strip():
             alias = next((k for k in USER_INPUT_ALIASES if k in item), None)
