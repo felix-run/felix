@@ -152,6 +152,12 @@ jobs:
         # is scanned by its own digest; an index scan would resolve to the runner's
         # architecture and skip the other half of what ships. Policy knobs match ci.yml's
         # scan of the PR build; change them together.
+        #
+        # The workspace is mounted read-only and `--ignorefile` passed explicitly, because
+        # this runs in a container that would otherwise never see `.trivyignore.yaml` —
+        # Trivy looks in its own working directory, which is inside the image. Without the
+        # mount an entry in that file would be silently inert here while working in ci.yml,
+        # which is the worst of both: a suppression that looks applied and is not.
         env:
           MANIFESTS: ${{ steps.platforms.outputs.manifests }}
         run: |
@@ -159,8 +165,10 @@ jobs:
           while IFS='=' read -r platform digest; do
             echo "::group::trivy ${platform}"
             docker run --rm -v "$HOME/.docker:/root/.docker:ro" \
+              -v "$GITHUB_WORKSPACE:/work:ro" \
               ghcr.io/aquasecurity/trivy:0.65.0@sha256:a22415a38938a56c379387a8163fcb0ce38b10ace73e593475d3658d578b2436 \
-              image --severity CRITICAL,HIGH --ignore-unfixed --exit-code 1 "${IMAGE}@${digest}"
+              image --severity CRITICAL,HIGH --ignore-unfixed --exit-code 1 \
+              --ignorefile /work/.trivyignore.yaml "${IMAGE}@${digest}"
             echo "::endgroup::"
           done <<< "$MANIFESTS"
       - id: sbom
