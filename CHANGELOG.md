@@ -7,6 +7,832 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-09-16
+
+### Added
+
+- **An approval now says why it fired and what it is blocking, on both channels.** `GET
+  /approvals` rows carry `reason` and `tool_call_id` (migration
+  `0015_approval_reason_and_call`), and the `approval_required` stream frame carries
+  `expires_at`. Until now the two channels were each missing what the other had, and both
+  sides of the wire had written that down: `manifests/builder.py` at the emit noted that the
+  rule's `description` "reached no client by any route: the `/approvals` row does not carry it
+  either", and `@felix/client`'s `PendingApproval` documents `reason` as **frame-only** ("an
+  approval the poll found has none to show") and `expiresAt` as poll-only ("the frame carries
+  no deadline").
+
+  That asymmetry falls hardest on the path with no choice. A **durable** run's agent is in the
+  worker while its stream is served by the API, so no side event can cross and the poll is the
+  whole channel — and the poll was the half that could not say *why* a gate fired. An operator
+  who found a waiting approval was shown a tool name and a rule id, while `description` — the
+  one field in `ApprovalRule` written to be read by a person — sat unread. `tool_call_id` is
+  the same shape of gap: it is what attaches the prompt to the tool card it is blocking, so
+  without it a polled approval floats free of anything on screen.
+
+  `expires_at` on the frame is read off the row rather than recomputed, so the two channels
+  cannot disagree about when an offer lapses. Null there means the rule set no `ttl_seconds`,
+  which is a real state a client renders from its own default rather than a missing value.
+
+  **`GET /approvals?thread_id=…`** narrows to one conversation, applied in SQL before `LIMIT` so a
+  busy tenant cannot hide the thread you asked about — filtering a returned page client-side would
+  drop whatever the page had already cut off. `?thread_id=` (empty) means "approvals with no thread"
+  and is distinct from omitting the parameter. `FelixClient.list_approvals` takes the same argument.
+
+  It **under-reports by construction**:
+  `create_pending` reuses a pending row keyed on (tenant, manifest, tool, call signature), so
+  the row names whichever thread asked first and a second thread blocked on the same reused row
+  is not listed under its own id. That is the safe direction — a caller asking about one thread
+  never learns about another's — and it is why `thread_id` is attribution rather than ownership.
+
+  Expand-only, empty on every historical row, and a widening for clients: `''` is the harness
+  saying it has no answer (a command-screening gate has no rule description; a gated tool
+  called outside a tool loop has no call id) rather than a missing value, the same choice
+  `rule_id` and `thread_id` already made. Clients mirroring the wire should add all three as
+  **optional**, so they keep working against a harness that predates them.
+
+- **`approvals` can now be reclaimed, and `jobs/retention.py` stops claiming it already was.**
+  That module's docstring listed the table among those "bounded by something else… `approvals`
+  and `job_runs` go with their run or job". For `approvals` no such binding exists: no foreign
+  key, no cascade, and nothing anywhere issued a delete against it, so every gate firing left a
+  row that outlived its run by the life of the deployment. Worse, nothing moves a *timed-out*
+  row off `pending` — `wait_for_decision` returns a denial and the caller writes nothing back —
+  so the set a thread-scoped query walks grew monotonically and forever.
+
+  `FELIX_APPROVAL_RETENTION_DAYS` (default **0**, keep) sweeps **settled** approvals older than
+  the TTL, on both backends, under the nightly job.
+
+  **Settled means the row can no longer authorize a call**, and that distinction is the whole
+  design. An approval row is a *permission*: deleting one that could still be returned by
+  `find_approved` would revoke it silently, from a cron job, days after an operator granted it —
+  experienced as a tool that used to work and now denies, with nothing in the audit trail saying
+  why. So the rule is the exact negation of `find_approved`'s own predicate:
+
+  - swept: anything not `approved`, plus an `approved` grant whose `expires_at` has passed
+  - never swept: an unexpired `approved` grant, however old — and one with a **null**
+    `expires_at`, because the rule set no `ttl_seconds` and that grant is standing by
+    construction
+
+  `consumed_at` is deliberately not part of the test. `one_shot` lives on the manifest rule
+  rather than the row, so a consumed grant still authorizes a tool whose rule is not one-shot.
+
+  **Off by default**, matching `FELIX_SESSION_RETENTION_DAYS`: the row is the record of a human
+  decision on a gated tool, and the `soc2` and `eu_ai_act` profiles lean on it, so an operator
+  opts in rather than out. Turning it on is also what bounds the pending-row accumulation that
+  made a durable run's thread-scoped approval query walk a growing set.
+
+- **An approval row now names the conversation it is blocking.** `GET /approvals` (and
+  `GET /approvals/{id}`) carry `thread_id`, which the `approval_required` stream frame has
+  carried all along. The two channels do not cover the same runs: side events are an
+  in-process queue keyed by thread, so a **durable** run — agent in the worker, stream served
+  by the API — can only be seen through the poll, and that was the half with no thread on it.
+  An operator opening a tab cold could be told that something was waiting but not what.
+
+  It is the **originating** thread, not an owner. `create_pending` reuses a pending row keyed
+  on (tenant, manifest, tool, call signature), so two threads issuing a byte-identical gated
+  call still share one row and one decision; the field names whichever asked first and a later
+  thread does not overwrite it. Treat it as attribution — a hint good enough to link to, not a
+  claim that exactly one conversation is waiting. Widening the reuse key to make it exact would
+  change grant scope, which is a product decision rather than a serialization fix.
+
+  Empty where there is no thread — a gated tool called outside a chat context — the same way
+  `rule_id` is empty when no rule named it. Historical rows read `""`, since they genuinely
+  have no answer; `migrations/versions/0014_approval_thread_id.py` is expand-only with no
+  backfill. Clients mirroring the wire should add it as **optional**, so they keep working
+  against a harness that predates it.
+
+  One case never reads empty, and it is the motivating one: a **durable** run started without a
+  thread gets `{tenant}:fiber:{fiber_id}` synthesized for it, which is a real session thread and
+  openable like any other. So the poll can attribute a durable approval even when the caller
+  never opened a conversation.
+
+- **Uploads now have a per-tenant ceiling and a retention sweep.** `MAX_ATTACHMENT_BYTES`
+  capped one upload and nothing capped how many — the same gap that produced
+  `documents_max_per_tenant`, because a per-request cap is not a per-tenant cap. The security
+  review of `/files` named this as the condition on granting `files:write` to an untrusted
+  tenant, and it was shipped twice without it, written into the roadmap rather than assumed.
+
+  `FELIX_ATTACHMENTS_MAX_BYTES_PER_TENANT` (256 MiB, `0` disables) bounds what one tenant may
+  store. Bytes rather than a count, because the resource being protected is disk — and with
+  each upload already capped at 600 KiB, a count ceiling is just this number divided by that
+  one with worse failure text. An upload over the line answers **409**, not 413: the request
+  is a fine size and the account is full, and a 413 sends the caller off to shrink an image
+  that was never the problem. It is checked before the object is written, so a refusal leaves
+  nothing behind.
+
+  `FELIX_ATTACHMENT_RETENTION_DAYS` (`0`, keep forever) lets the nightly sweep collect old
+  uploads. `attachments/` had joined `artifacts/` as an object-store prefix nothing ever
+  collected, so on the default `fs` backend a tenant's uploads accumulated against the same
+  disk that holds artifact spill and manifest storage. The default stays "keep forever":
+  deleting caller data on a timer is an operator's decision, and a thread can reference an
+  attachment long after it was uploaded.
+
+  Both need something the object store cannot give them. The `ObjectStore` Protocol has no
+  `list` — deliberately, since S3 and GCS charge for it and the filesystem backend would walk
+  a directory tree per request — so nothing could count what a tenant had stored or find what
+  was old enough to drop. Migration `0016` adds an `attachments` ledger beside the bytes,
+  with the same tenant RLS policy as every other tenant table.
+
+  The bytes remain the system of record and the ledger can drift from them, so the ordering is
+  chosen rather than incidental: the row is written **before** the object and deleted **after**
+  it. Every way this can be interrupted therefore leaves the same shape — a row whose bytes may
+  not exist — which over-counts, is visible to an operator, and is collected by the sweep. The
+  opposite order is unrecoverable in both directions: bytes with no row are invisible to the
+  count *and* to the sweep, because both read rows, and it would also make the quota fail open,
+  since a total that never grows never refuses anything. Existing uploads are not backfilled, because a backfill would have to
+  list the object store, which is the operation this table exists because we lack; they are
+  invisible to the quota and the sweep, exactly as they were before.
+
+- **A file can be uploaded once and referenced by id.** `POST /files` stores bytes in the
+  object store and returns a `file_id`; `GET /files/{file_id}` reads one back. Both are
+  scope-gated on `files:write` / `files:read`, separate from `artifacts:read` because that
+  reads spill the *harness* wrote while these are caller-supplied bytes with a caller-driven
+  lifecycle.
+
+  The point is not convenience. An image sent inline as a `data:` URL lands in the session
+  event log, and `full_replay` sends that log again on every subsequent turn — so a 600 KiB
+  screenshot attached on turn one is re-uploaded to the model on turns two, three and four.
+  The 1 MiB body limit bounds each *request* and nothing bounds the thread. A reference is
+  small enough to replay.
+
+  Shaped on `/artifacts`, and for its reasons: the tenant comes from the caller's credentials
+  and is never a path segment, so no spelling of a reference reaches another tenant's upload;
+  a malformed reference answers 404 rather than 400, because which ids are well-formed is not
+  a caller's business; and the id is a uuid4 hex generated by the server, since a
+  caller-chosen id is a caller-chosen object key.
+
+  Uploads are capped at 600 KiB decoded and restricted to the image media types both wires can
+  actually encode. The cap sits *below* the 1 MiB body limit on purpose — above it, the
+  middleware answers 413 before the route is reached and the caller is told the request was too
+  large without being told the real ceiling — with extra margin because base64 in a JSON
+  envelope inflates by a third.
+
+  **Not yet wired into a conversation.** Resolving a `file_id` in a message back to bytes
+  belongs at the wire and is the follow-up; resolving late is what keeps the session log
+  holding the reference rather than the base64 it expands to.
+
+- **Changelog entries are files now, so two pull requests cannot conflict over one.** Every
+  change adds `changelog.d/<section>-<slug>.md` instead of appending to `CHANGELOG.md`, and
+  `python3 scripts/changelog.py --release X.Y.Z` folds them in when the release is cut.
+
+  Appending to the top of one block meant any two open pull requests collided there, every
+  time. That conflict is worse than most: the resolution is prose, no merge tool helps, and a
+  botched one silently drops somebody's entry — which happened, six at once, to a rewrite that
+  should have been a merge. Two fragments are never in the same file.
+
+- **`spec.output_schema` now works on `router`, `parallel`, `reflect` and `plan_execute`.**
+  It shipped supporting only the single-agent patterns, and `build_agent` refused the
+  combination outright for the composites rather than accept a manifest that declares an
+  answer contract and returns free text.
+
+  The reason it was refused is the reason it is interesting: a composite reaches a model
+  several times per run — routing, planning, critiquing, scoring, synthesizing — and exactly
+  one of those turns produces what the caller receives. So the contract is placed per
+  pattern, never applied wholesale:
+
+  - **`parallel`** shapes the synthesis. The specialists stay free-form; their answers are
+    raw material for the aggregator's prompt, not the reply.
+  - **`plan_execute`** shapes the final synthesis. The planning turn and each executor step
+    stay free-form — a plan shaped like the answer schema is not a plan, and a subtask answer
+    shaped like it arrives as a JSON envelope in a notes list the synthesis reads as prose.
+    That took stripping `output_schema` from the context the executor is built from, not just
+    withholding it at the call site: `build_react_agent` reads the schema off the build
+    context onto the agent itself, so an executor built from the shared context carried it
+    regardless of what it was handed per turn.
+  - **`router`** shapes the child it routes to. The classifier turn does not: a router that
+    replied with its classifier's JSON would satisfy the schema and answer nothing.
+  - **`reflect`** shapes every draft, because the loop exits as soon as one clears the
+    threshold and "the last iteration" is not knowable in advance.
+
+  `groupchat` stays refused, and the refusal now carries its reason: its answer is the last
+  speaker's message *stamped with its name* (`[researcher] …`), so even a child returning
+  perfect JSON comes back with a prefix in front of it. Supporting it means dropping the stamp
+  — losing who spoke, which is the pattern's point — or adding a synthesis turn it does not
+  have.
+
+  `_child_input` also stopped dropping `model_options`, so a caller's `/v1` `response_format`
+  reaches a composite's answering turn — and a child — for the first time. Where a manifest and
+  a request both specify a schema the **manifest** wins, matching `react._chat_options`: an
+  agent published with an answer contract keeps answering to it rather than to whichever shape
+  the last request preferred.
+
+  A composite that declares no schema is unchanged, deliberately including the case where the
+  request carries other options. `_DelegatingAgent` has no `limits`, so unlike `react` it
+  cannot clamp `max_tokens` to `limits.max_output_tokens` — forwarding a request's options to
+  the synthesis turn would let `max_tokens: 200000` size the turn that composes the answer on a
+  manifest capping output at 2000.
+
+- **A durable run now says what it is waiting for you to approve.** `POST /chat/stream` on a
+  manifest with `spec.execution.mode: durable` emits `approval_required` frames for the gates
+  the run is blocked on, alongside the `run_status` and `session_event` frames it already
+  carried. Previously it emitted neither: the agent runs in the worker while the stream is
+  served by the API, so the in-process side event could not cross, and `GET /approvals` was the
+  only channel — on precisely the path where a human has time to answer, because the mode exists
+  for work nobody is watching.
+
+  **Rebuilt from the approvals row, not forwarded across a bus**, which is the whole design. A
+  pub/sub bridge would be at-most-once, and here the message *is* the prompt: drop it and the run
+  blocks its entire `ttl_seconds` before denying, with nobody ever asked. Reading the durable row
+  instead keeps the property the session-log tail relies on — a missed poll costs latency, never
+  a decision — and it means a client that attaches *after* a gate fired still sees it, which a
+  bus cannot offer. This is what the preceding change (`reason` and `tool_call_id` on the row)
+  was for: every field the frame carries is now on the row, so it can be re-derived.
+
+  The frame is the same eight keys the transient path emits, so a client folds it with the
+  handler it already has.
+
+  **The frames require the `approvals:read` scope**, the same one `GET /approvals` requires; a
+  caller without it gets the transcript, the status and the answer exactly as before, and nothing
+  about gates. That is not caution for its own sake — `thread_id` comes from the request body, so
+  the thread a durable run names is a question the caller *chose* rather than one they own, and
+  nothing in Felix binds a thread to a principal. Ungated, chat access alone would have read the
+  tool names, arguments and gate reasons of any thread in the tenant. `admin` bypasses and
+  `approvals:write` implies `approvals:read`, as on the route, because both ask one function.
+
+  Two more behaviours worth knowing. **Each approval is announced once per stream** — `GET
+  /approvals` answers "what is pending now", so the row returns on every poll until it is decided,
+  and re-showing a prompt someone has already answered is worse than showing it late; a decided
+  **or expired** gate is never announced, since both are history rather than a question. And the
+  frames are **thread-scoped**: a run only ever announces gates attributed to its own thread.
+
+  **`GET /approvals` remains the channel of record.** A stream that was never opened, or that
+  dropped before a gate fired, sees nothing — the frames are a convenience for a watching client,
+  not a replacement for the poll. An operator console should still poll.
+
+- **Eval dataset items are validated instead of silently stored empty.**
+  `PUT /eval/datasets/{name}` and `felix eval --fixture` now refuse an item that would be
+  stored and then score nothing, and name what to change: a prompt under a near-miss key
+  (`input`, `prompt`, `question`, …) rather than `user_input`, a rubric that is not an object,
+  or a repeated `item_id`. Every problem in a batch is reported at once, and nothing is written
+  when the batch is refused. The rubric itself stays free-form.
+
+  A rubric naming none of `expect` / `equals` / `contains` / `min_chars` is legal — it scores as
+  `nonempty`, which passes any answer that is not blank — so it lands with a **warning** rather
+  than a refusal: the route returns it alongside the stored dataset, the CLI prints it to stderr.
+  That is the case where a dataset looks configured and gates nothing.
+
+  The CLI exits **2** for a malformed fixture, distinct from the exit 1 that means the eval ran
+  and items failed, which is what `scripts/eval-counter-smoke.sh` and the CI eval job read.
+
+  The refusal body is `{"code": "eval_items_invalid", "errors": [...], "warnings": [...]}`. The
+  code matters because this endpoint returns 422 twice over — a body failing the request model's
+  `extra="forbid"` gets pydantic's own list-shaped `detail` — so a client can tell them apart
+  without type-sniffing. A successful `PUT` always carries a `warnings` array, empty when there is
+  nothing to say.
+
+  Behaviour change: a `PUT` that previously returned 200 for an unrecognised item now returns
+  422. `tests/e2e/test_mgmt_routes.py` pinned the old behaviour and said in its own docstring
+  that it should fail when validation arrived; it now pins the refusal.
+
+- **A turn can now name an uploaded file instead of carrying it.** `POST /files` stored bytes
+  and handed back a `file_id`; nothing consumed one. A message may now include OpenAI's own
+  `{"type": "file", "file": {"file_id": "…"}}` content part, and the harness expands it to the
+  stored bytes immediately before the model call.
+
+  The expansion is late on purpose, and that timing is the whole feature. An image sent inline
+  lands in the session event log, and `full_replay` re-sends that log on every later turn — so
+  a 600 KiB screenshot attached on turn one is re-uploaded to the model on turns two, three
+  and four. Expanding at ingest would have put the base64 in the log and paid that cost
+  silently. The log keeps the reference; the bytes are fetched per turn.
+
+  The reference rides in the same `url` field an inline image uses, as a `felix-file://` URI,
+  rather than in a new field. The session layer already persists and restores `attachments[].url`
+  and both wires already read it — a parallel `file_id` field would have had to be threaded
+  through each of those, and the one that would have been missed is the session layer, which is
+  the only path a *second* turn takes. Nothing would have failed until replay.
+
+  The tenant comes from the caller's credentials and never from the reference, so naming
+  another tenant's `file_id` is indistinguishable from naming one that never existed. The media
+  type is read back off the bytes rather than from a stored label, because the default
+  filesystem store discards the label — and the sniff now checks a RIFF container's format
+  tag, since `RIFF` alone is also WAV and AVI and this is the only thing deciding what a model
+  is told these bytes are.
+
+  A reference that cannot be resolved — deleted since, another tenant's, or bytes that are no
+  longer a type any wire encodes — is dropped with a warning naming the id rather than raised:
+  the turn naming it is already in an append-only log, so refusing would make a thread
+  unanswerable for good the moment an attachment was deleted. Where dropping would leave the
+  turn with nothing to send, a short marker replaces it instead. A turn whose only content part
+  was the reference would otherwise reach the provider with empty content, which is itself an
+  error and would wedge the thread just as permanently by the other road; the marker also stops
+  the model answering confidently about an image it was never shown. The id appears in that
+  marker only when it is well formed, because that text reaches the model.
+
+  The same id repeated across a replayed context is read once per model call.
+
+  Unchanged, and worth stating because the roadmap left it open: resolution happens **after**
+  `apply_inbound_screening`, which is where it has to be if the log is to keep the reference.
+  That is not a regression in screening coverage — `_message_text` collects only blocks of type
+  `text`, so image content has never reached a screener, inline `data:` URLs included. Text
+  rendered inside an uploaded image remains an injection channel that screening does not see,
+  exactly as it was for inline images.
+
+- **Structured output: `spec.output_schema`.** A JSON Schema the agent's answer must match,
+  enforced by the model provider rather than asked for in the prompt. `message.content` is then a
+  JSON document on every provider — `response_format` on the OpenAI wire (strict where the schema
+  closes every object and requires every property, which is the only setting under which the shape
+  is guaranteed), and on Anthropic, which has no equivalent, a tool the model is required to call,
+  folded back into the reply so a caller sees the same document either way. Tools still work: it is
+  the turn that answers in text that is constrained, not the turns that call a tool on the way.
+
+  `POST /v1/chat/completions` accepts OpenAI's `response_format` for the same thing per request, so
+  an OpenAI SDK works unchanged. A manifest that declares `spec.output_schema` overrides it — an
+  agent published with an answer contract keeps answering to it rather than to whichever shape the
+  last caller preferred.
+
+  Supported on `pattern: react` and `pattern: deep`. The composite patterns compose their answer in
+  a turn that takes no per-request options yet, so a manifest declaring `output_schema` on one of
+  those is refused at compile rather than quietly answering in prose; a plugin's pattern opts in
+  with `register_pattern(..., honours_output_schema=True)`.
+
+- **A manifest can now say its declared skills are the whole set.**
+  `spec.skills_declared_only: true` loads only the names in `spec.skills`; anything else on
+  the host stays out of the catalogue and out of the model's prompt.
+
+  Without it — the default, and unchanged — `load_manifest_skills` seeds every skill in the
+  bundled directory and in `FELIX_SKILLS_DIR` before it resolves a single ref, so `spec.skills`
+  adds to a host-wide library rather than restricting one. A manifest declaring one skill
+  compiles a catalogue holding every skill on the host, and all of them are offered to the
+  model. That was surfaced by the `/skills` routes and recorded as a question rather than
+  fixed, because it is a reasonable design and it is what every stored manifest was written
+  against.
+
+  It is worth being able to turn off because a skill body is appended to the system prompt.
+  An ambient skill is therefore a prompt fragment the manifest never named — the one
+  prompt-shaping input `pin_compile` cannot cover, since the hash is over the manifest while
+  the drift is on the host's disk. A manifest that has to be reviewable can now enumerate
+  every instruction its agent may load; one using the host as a shared library carries on as
+  before.
+
+  **Opt-in on purpose.** Narrowing by default would change behaviour for every manifest
+  already in Postgres, which this repo's own rule says needs a migration rather than a
+  reinterpretation — and a stored manifest relying on an ambient skill would start answering
+  differently with nothing in its own text having changed.
+
+  `GET /skills/{manifest}` reports `declared_only` alongside the per-skill `declared` flag, so
+  the two readings are distinguishable from outside. Restricting does not break resolution: a
+  declared name still resolves against the bundled directory, so it keeps its body rather than
+  degrading to an empty placeholder.
+
+  Separately, `spec.skills` gained the `max_length` every other ref list already had. Each ref
+  can cost an object-store lookup at compile, so an unbounded list was an unbounded fan-out.
+  Naming it plainly, because this repo's own note says a narrowed field has no compat
+  mechanism the way a removed one does: a stored manifest with more than 64 skill refs stops
+  validating, and since the store is read ahead of bundled YAML it goes dead rather than
+  falling back. No such manifest is plausible at that bound, but the precedent should be
+  visible rather than rediscovered.
+
+  **Upgrading.** Adding a field to `spec` used to change every manifest's content hash, which
+  would have drifted pinned threads and failed in-flight durable fibers. That is fixed in the
+  same release — see *Adding a field to the manifest schema no longer breaks every pinned
+  thread…* under **Fixed** — so the hash rotates **once** for this release as a whole rather
+  than once per change. The operator action is stated there; do not do it twice.
+
+  One thing specific to this entry: `manifests/governed.yaml` sets `pin_compile: true` *and*
+  is edited here, so threads pinned to it drift on their own account as well. The README
+  already records that editing a bundled manifest is drift by design.
+
+- **Agent Skills are reachable over HTTP.** `grep -rn skill apps/api/src/felix_api/routes/`
+  returned zero: a loader, a catalog, an activation store with its own table and Postgres arm,
+  and three model-facing tools — none of it answerable to an operator without opening psql. A
+  surface nothing can reach is inert by this repo's own rule, and skills were the largest
+  built-but-unreachable subsystem left.
+
+  `GET /skills/{manifest}` lists what the manifest can reach and which are active.
+  `GET /skills/{manifest}/{skill}` returns one, including the body `activate_skill` would hand
+  the model — that body is appended to the system prompt, so it is prompt content an operator
+  is accountable for and could not otherwise read. `GET /skills/{manifest}/activations/recent`
+  says which skill activated on which turn. All three gate on a new `skills:read` scope, kept
+  separate from `manifests:read` because reading a skill body is reading instructions the
+  agent will follow, which is a different question from reading the manifest that names it.
+
+  Read-only, deliberately: activation is a decision the model makes mid-turn, and the store is
+  keyed by `(tenant, manifest)` rather than by thread, so an operator toggling from outside
+  would be writing shared state a run is concurrently reading with no turn to attribute it to.
+
+  Two things the routes surface that nothing surfaced before, both found while building them:
+
+  - **`spec.skills` adds to a host-wide library rather than restricting one.**
+    `load_manifest_skills` seeds every skill in the bundled directory and in
+    `FELIX_SKILLS_DIR` before it resolves a single ref, so a manifest declaring one skill
+    compiles a catalog holding every skill on the host — and all of them are offered to the
+    model. Verified directly: a manifest naming one skill reached seven, including the repo's
+    own `felix-architecture` and `felix-contributing`. This may well be the intent, but it is
+    not what "declared skills" reads like and nothing said so anywhere. The new `declared`
+    field on each item is how the difference becomes legible; the behaviour itself is
+    unchanged here and recorded in the roadmap as a question.
+  - **The audit trail recorded that a skill activated but never which one.** `tool_runner`
+    already emits a `tool_call` event for every tool, and its payload carries the tool's name
+    and not its arguments — deliberately, since arguments are arbitrary model text and a
+    credential in a retained row is how that goes wrong. `skills/tools.py` now emits a
+    `skill_activation` event naming the skill, which is safe to record precisely because
+    `activate` resolves it against the catalog first: the stored value is a name the host
+    declared rather than anything the model typed. A model naming a skill that does not exist
+    is recorded too, under its own status, because that is itself worth seeing. Both tools
+    resolve first: `deactivate` originally did not, and `activation_store.deactivate` is a list
+    filter that neither validates a name nor reports whether anything was removed — so every
+    call succeeded and arbitrary model text went into a retained row under `status="ok"`,
+    indistinguishable from a real deactivation. Both reviewers found it; the security review
+    ranked it the highest finding in the change.
+
+  A skill body is redacted before it leaves, for the reason `routes/manifests.py` redacts a
+  manifest on `manifests:read`: this is the lower scope and an embedded credential must not
+  ride out on it. Nothing validates SKILL.md frontmatter, and the same bytes reaching the
+  *model* are already masked by the governance stack — so without this the HTTP route would
+  have been the only path on which a skill body reached anyone unmasked. The absolute
+  `Skill.path` is reduced to a basename for the same reason: it is derived from the install
+  prefix, so returning it told a tenant-scoped caller the container's filesystem layout.
+
+  `audit_store.query` gained an optional `manifest_id` filter. The route first over-fetched a
+  fixed window and narrowed in Python, which is wrong in a way the caller cannot detect: a
+  tenant whose activations on one manifest exceeded the window got an empty list for another,
+  identical on the wire to "that manifest has never activated a skill" — and a model calling
+  `deactivate_skill` in a loop could push a real activation out of view, which is
+  anti-forensics against the one question the route exists to answer. The filter is four
+  lines mirroring the `event_type` and `status` filters already there, and adds no clause for
+  any caller that does not pass it.
+
+  Also: `felix.skills.store.clear_memory()`, the test seam every other `memory://` store
+  already had, wired into the conftest registry that exists to call these. Without it one
+  test's activation is the next test's starting state, which is how a tenant-isolation
+  assertion passes alone and fails in a file.
+
+- **`POST /v1/chat/completions` accepts an image.** `content` was typed `str | None` on that
+  surface, so a multimodal request was a 422 before any of the request ran — on the one endpoint
+  whose stated purpose is that an OpenAI SDK works unchanged, while `/chat` accepted the same
+  message and both wires knew how to encode it. It now takes OpenAI's list of content parts as
+  well as a plain string. The parts stay untyped dictionaries on purpose: the shape is OpenAI's
+  and it grows, and what Felix does with a part it does not recognise is decided in one place, by
+  the message validator, rather than by a model that would reject next year's part type.
+
+### Changed
+
+- **`GET /usage/summary` builds its rows through a named serializer.** The response was
+  assembled inline in both arms of `felix.usage.store`, which made the shape unreadable to
+  anything outside the process: `felix-web`'s payload guard reads `_<row>_dict` functions to
+  learn what a route actually sends, so this area could not be guarded at all and a client
+  type naming a field the harness never sends would have typechecked, linted and rendered a
+  blank forever. It is the gap `/documents` had before #213.
+
+  `_summary_item_dict` and `_summary_totals_dict` now own that shape, and the memory and
+  Postgres arms both return through the first of them rather than agreeing by inspection —
+  those two have disagreed before, about the order of rows sharing a day. No wire change: the
+  keys, their types and the rounding are what they were.
+
+### Fixed
+
+- **A durable run now reports what it is doing, not only that it is running.** `POST
+  /chat/stream` against a manifest with `spec.execution.mode: durable` carried
+  `run_accepted` → `run_status` → `final` and nothing else, so the answer arrived and the
+  tool calls behind it did not — a client drawing tool cards showed a bare reply until the
+  thread was next hydrated. The stream now interleaves the thread's **session log** between
+  status frames, as `session_event` frames with the same `id:` cursor semantics `GET
+  /chat/stream/{thread_id}` has used all along, through one shared tail helper.
+
+  The diagnosis that looks obvious is wrong twice over, which is why this is not a transport
+  change. `felix.side_events` is an in-process queue drained inside the agent's own loop, so
+  for a durable run both ends are already in the worker; and the events do not exist to be
+  bridged anyway, because the fiber calls `agent.invoke` — `_run(..., emit_events=False)` —
+  which drops the deltas and the `on_tool_start`/`on_tool_end` pairs at the source. What the
+  fiber *does* produce is the session log: `_append_produced` writes each assistant turn and
+  its tool results as they land, outside every `emit_events` guard. So there was already a
+  durable, ordered, cross-replica record of the run's progress, and one endpoint that knows
+  how to tail it. No new bus, no second delivery path, no second source of truth.
+
+  **A `session_event` frame now carries `tool_calls`, `tool_call_id` and `id`,** which it never
+  has. Found while building the above, and it is the difference between a transcript and a
+  transcript you can read: a client folds these rows with the same function it folds a
+  `snapshot` with, reading `tool_calls` off an assistant message to open a card per call and
+  matching `tool_call_id` on the tool message to attach the result. Carrying neither, an
+  assistant turn that called a tool folded to an empty message and the result was dropped
+  outright — so a **warm reattach** to `GET /chat/stream/{thread_id}` (one that replays events
+  rather than opening on a snapshot) has always rendered a transcript with no tool calls in it.
+  The snapshot has carried all three since it was written; only the incremental frame was
+  thinner, which is why it read as a reattach quirk rather than a missing field. This is a
+  widening — a client that ignores the new fields is unaffected — and `id` is spelled the way
+  the snapshot spells it, so a turn keeps one identity whichever way the client received it.
+
+  **Only completed messages, never token deltas.** Chunks are never persisted, so a durable
+  run yields tool cards and whole assistant messages and nothing finer. That is the right
+  trade for the mode whose point is that nobody is watching, and it matches what clients
+  already render there.
+
+  Two details worth knowing. The cursor is captured **before** the run is enqueued, not when
+  `run_accepted` is emitted: a fiber can be claimed and start appending the moment its row
+  lands, and a later read would open the stream past the progress it exists to report. And a
+  run started without a `thread_id` is not a run without a thread — the fiber mints
+  `{tenant}:fiber:{id}` and writes its transcript there, so those runs report progress too;
+  `fiber_thread_id` is now named rather than interpolated at each end.
+
+  `POST /chat` (202 + `GET /chat/runs/{token}`) is unchanged and stays coarse: it is a status
+  read, not a stream, so it still reports only status and the final answer. A client that
+  wants the transcript there reattaches to `GET /chat/stream/{thread_id}`.
+
+- **The second run of any eval failed on Postgres, and the canary monitor stopped scoring after
+  its first ever tick.** `put_dataset` is the only way an eval item is written and every caller
+  repeats item ids by design, but it did a plain `db.add` per item — so writing an item id that
+  already existed raised `UniqueViolation` on `(tenant_id, dataset_name, item_id)`. The in-memory
+  twin overwrote happily, so the entire suite was green and only a real deployment failed. It is
+  an upsert now, updating `user_input` and `rubric_json` and leaving `created_at` at the item's
+  first appearance; the twin was aligned to keep the same `created_at`.
+
+  What it was breaking, measured against a live Postgres rather than inferred: `felix eval
+  --fixture <file>` succeeded once and 500'd on every later run of the same file, as did
+  `PUT /eval/datasets/{name}` with any repeated item id. Worse, the scheduled `continuous_eval`
+  sweep re-puts its sampled dataset on every 10-minute tick, and `run_continuous_eval_all_tenants`
+  logs and swallows a per-tenant exception — so from the second tick onward it scored nothing and
+  returned `{"runs": 0, "tenants": 1}`, a success-shaped result. Three consecutive ticks now
+  report one run each; before the fix they reported 1, 0, 0.
+
+  `tests/conformance/test_eval_store.py` is the new arm that holds the two backends to one
+  contract, which is what would have caught this: the eval store was on the roadmap's list of
+  stores with no Postgres arm.
+
+- **`deploy/GOVERNANCE.md` told operators that `spec.policies` and `execution.mode: durable`
+  could not be combined.** They can, and have been able to since fibers began recording the
+  caller's authority. One bullet said durable fibers "carry an empty scope set" and that the two
+  features are "therefore not usable together today — every policied tool denies"; a bullet four
+  lines below it said "Durable runs are the exception … so `spec.policies` and `execution.mode:
+  durable` work together", and a paragraph further down described the recorded-authority model in
+  full. The first was stale and the rest were current, and a reader hitting the stale one first
+  would abandon a configuration that works.
+
+  Corrected against the code rather than reconciled by preference: `start_durable_chat` writes
+  `state["auth"]["scopes"]` from the caller (`durability/runs.py`) and the resume rebuilds an
+  `AuthContext` from it (`durability/fibers.py`). The genuinely scopeless cases are named and
+  verified — `auth_mode=none` (the middleware returns `ANONYMOUS`), scheduled jobs (principal
+  `cron`) and `felix eval` (principal `eval`), the last two because they construct an
+  `AuthContext` with no `scopes` argument and take the field default. A fiber with **no recorded
+  caller** — enqueued outside a request context, or written before fibers carried authority —
+  still denies, which is the fail-closed direction and is what the stale sentence originally
+  described before it outlived its scope.
+
+  The same claim had been copied into the public docs (`internals/governance.mdx`) and is fixed
+  there in `felix-run/web#172`. It appears nowhere else in this repo.
+
+- **Every hook that judged a file by its repo-relative name was reading the wrong tree.**
+  They derived that name by stripping `CLAUDE_PROJECT_DIR` off an absolute path — which is
+  correct in the main checkout and wrong in a git worktree, where the file lives at
+  `<project>/.claude/worktrees/<name>/<rel>`. The strip left the worktree prefix attached and
+  every anchored pattern stopped matching.
+
+  `protect-files.sh` therefore failed **open**: inside a worktree, `.env`, `uv.lock`,
+  `secrets/`, generated directories and already-published Alembic revisions were all freely
+  editable, silently, because `.claude/worktrees/x/.env` does not match the pattern `.env`.
+  Verified by running the hook, not by reading it.
+
+  `quality-ratchet.sh` lost every file's history the same way: `git show HEAD:<rel>` found
+  nothing, so `previous` was `None`, which both bypasses the "did this edit make it worse"
+  guard and prints "new file". A ratchet that exists to stay quiet about pre-existing size
+  became one that reports absolute size on every edit — observed as "module is 696 lines (new
+  file)" for a module months old, after a twelve-line change.
+
+  `doc-drift-stop.sh` inspected `CLAUDE_PROJECT_DIR` directly and so reported *another*
+  session's changes as this one's, blocking the turn twice in one session over files that
+  session had never opened. It now reads `cwd` from the hook payload, a documented field on
+  every event including `Stop`.
+
+  Two shared helpers in `lib/command.sh` carry the rule — `hook_repo_root` and
+  `hook_repo_rel`, deriving the answer from the file's own repository rather than from the
+  project root — and `tests/unit/test_file_guard_hooks.py` covers the Write/Edit guards in
+  both trees, which nothing did before.
+
+- **An image sent inline reached OpenAI and 400'd on Anthropic.** A `data:` URL is how OpenAI's
+  own API documents attaching an image, so it is what every SDK emits — and the Anthropic wire put
+  it in a `url` source, which that API rejects. Both wires had an image encoder and only one of
+  them worked, on the provider this harness defaults to. Inline images now go to Anthropic as a
+  `base64` source, labelled with the media type out of the data URL rather than the `image/png`
+  the parser fills in for anything unlabelled; a remote `https://` image still goes as a URL, which
+  is the form that exists so the provider fetches it itself. The older `attachments` shape carried
+  the same URLs and the same bug, and now takes the same path.
+
+  A percent-encoded data URL — `data:image/svg+xml,<svg …>`, which is a legal and ordinary way to
+  write an image inline — is re-encoded as base64 rather than dropped: neither provider accepts the
+  percent-encoded form, so it was a hard 400 on one route and a confidently wrong answer on the
+  other, decided by nothing but which model the manifest routed to. Images render on a user turn
+  only, which is the sole place either API accepts one; the OpenAI wire used to send one on an
+  assistant turn, which is reachable by replaying a vision thread. Both wires now render one
+  normalised part list, so a message's two shapes — `content_blocks` on the turn that parsed it,
+  `attachments` on every turn replayed out of the session log — cannot drift apart again. A content
+  part of a type Felix does not recognise is still dropped, but is now logged rather than vanishing.
+
+- **Adding a field to the manifest schema no longer breaks every pinned thread and every
+  in-flight durable fiber.** `manifest_content_hash` dumped the model with every field the
+  schema declares, so a field *added* to `spec` — with a default, changing nothing about how
+  any manifest compiles — moved the content hash of every manifest already stored.
+
+  The consequences were an outage nobody asked for, and fail-closed rather than silent: a
+  thread pinned under `governance.pin_compile: true` raised `ManifestDriftError` on its next
+  turn with nothing in its own text having changed, and every in-flight durable fiber failed
+  at resume, because `durability/fibers.py` forces pinning for any fiber carrying stored auth
+  regardless of the manifest's own setting. `spec.skills_declared_only` did exactly this one
+  release ago, which is why it shipped with an upgrade note telling operators to drain fibers.
+
+  The hash now excludes fields sitting at their default. For a *manifest* edit that changes
+  nothing — a manifest writing `pin_compile: false` and one omitting it compile to the same
+  agent, and the old dump already hashed those two identically. Drift detection is unchanged
+  and now asserted in both directions, which is the half worth naming: moving a field off its
+  default adds a key and moving it back removes one, so both are still seen. A hash that
+  noticed only additions would let a pinned thread keep running after its governance was
+  switched off — that is a test, not a hope.
+
+  **What it gives up, stated rather than glossed:** a *release* that changes what a default
+  means. Shipping a new default for a governance field used to move every stored manifest that
+  omitted it, and the pin fired; now it does not, and those manifests compile differently while
+  hashing the same. **Changing a default is therefore a migration** — rewrite the rows or
+  rotate the pins — joining the family `manifests/compat.py` already names alongside removing a
+  key and narrowing a field. The alternative, a second digest over the schema's own defaults,
+  would move on every field addition and reintroduce exactly the outage this removes.
+
+  **Upgrading — the one operator action for this release.** This rotates every content hash
+  exactly once. Other entries in this release also add fields to `spec`, which would each have
+  rotated it on their own; folded in together with this fix, the cost is paid a single time,
+  and from the next release on a defaulted field addition costs nothing at all.
+
+  Drain in-flight durable fibers across the deploy, and expect pinned threads to need
+  re-pinning. Two details the obvious reading misses:
+
+  - **Threads that were never pinned are affected too.** Every thread gets a hash
+    soft-recorded on first touch with `pin_compile=False`, and the check enforces when *either*
+    side asks for it — so a thread whose manifest later turns pinning on refuses once, with
+    nothing having changed.
+  - **A drifted pinned thread stays refused, not refused once.** There is deliberately no
+    tenant-facing pin reset. The recovery is `POST /fork`, which starts a thread with no pin
+    and keeps the history; durable fibers are marked `failed` with the drift text and are not
+    retried, so there is no storm — they are re-enqueued, or drained before the deploy.
+
+- **A tool named `felix_structured_output` had its call silently swallowed.** The Anthropic wire
+  reserves that name for structured output and folds a call to it back into the turn's reply — but
+  the guard against a manifest binding the same name ran only when a schema was requested, while
+  the fold ran on every turn. A manifest binding it through `spec.client_tools` and declaring no
+  `output_schema` therefore had that tool never execute, its model-authored arguments returned as
+  the final answer, and the stop reason forced to `end_turn`, with nothing logged. The fold now
+  runs only on a turn that asked for a schema.
+
+- **Removing a field from the manifest schema bricked every stored manifest that set it.**
+  The schema is `extra=forbid`, which is what makes `spec.toolz` an error rather than a field
+  that silently configures nothing — but `forbid` judges authored input, and a row in
+  Postgres is not input. It was authored once, validated then, and has been sitting there
+  since. So when `spec.model.region` was removed in #125, every manifest stored before that
+  release stopped validating, and because the store is consulted ahead of the bundled YAML, a
+  stale row also shadows the file it was derived from. Found on a deployment whose `quick` was
+  stored two weeks before the removal: the **default manifest** answered every request with
+  `spec.model.region: Extra inputs are not permitted`, a perfectly good `manifests/quick.yaml`
+  sat there unreachable, and nothing said so until someone made a request.
+
+  Stored manifests now load through `parse_stored_manifest`, which drops fields listed in
+  `felix.manifests.compat.RETIRED` and warns, naming the manifest and the field so an
+  operator knows to re-save it. Authoring is untouched — a PUT or a YAML file carrying a
+  retired field still fails, because its author can fix it and should be told to — and a typo
+  still fails on both paths, since the list is explicit rather than blanket tolerance. Adding
+  to `RETIRED` is now the price of removing a field, and only for a removal that is inert; one
+  that changes how an agent compiles still needs a migration that rewrites the rows.
+
+- **`POST /v1/chat/completions` validated `name` and `tool_call_id` and then discarded them.**
+  Only `role` and `content` were forwarded, so an OpenAI SDK doing the standard tool round-trip
+  sent a result whose id was dropped and the model received a tool message answering nothing in
+  particular. Both fields now reach the message the model sees.
+
+### Security
+
+- **Log injection is now closed by the text formatter, not by remembering to wrap a value.**
+  A newline in a logged value ends the record and starts one the attacker wrote in full — a
+  forged line that reads as a *refusal* is the damaging case, because the log is what an
+  incident gets reconstructed from. The fixes for this had all been per call site: escape
+  this value, then the next one someone finds. That closes instances and never the class,
+  and the list of call sites only grows.
+
+  `FELIX_LOG_FORMAT=json` never had the problem — `json.dumps` escapes the separator because
+  the message is a *value* there, not a line — so the exposure was the text format alone.
+  Text now escapes the caller's message before rendering it: whatever was interpolated, the
+  message is one line. The JSON format is left alone rather than double-escaped.
+
+  **Tracebacks are covered too, by indenting each line and then escaping it.** They were the
+  half a message escape does not reach: `logging.Formatter` appends `exc_text` after the
+  message, and an exception's own `str` is not indented the way its frames are — it renders at
+  column 0, so a newline inside an exception message produced a fully record-shaped line on any
+  of the ~30 `exc_info=True` call sites whose exception text is built from a caller-influenced
+  value.
+
+  Escaping the *block* would have closed that by flattening the traceback onto one line, which
+  is unreadable and the reason it was left open. Splitting first and escaping each line keeps
+  the shape and closes the hole: no text is dropped, an operator still reads what the exception
+  said, and only the record itself begins at column 0. Escaping as well as indenting matters
+  because indentation is only a claim about columns — `\x1b[1G` is cursor-horizontal-absolute,
+  so an ESC reaching a traceback redraws that line at column 0 however far right it was
+  written. **Frame lines now sit two columns further right than a stock Python traceback, and a
+  tab inside a frame's source line renders as `\t`** — the visible changes to existing logs.
+
+  The escape is applied to a copy of the record, and deliberately not in a `logging.Filter`,
+  which is the shorter-looking option the stdlib docs invite: one record is shared by every
+  handler attached, so escaping there would corrupt a JSON handler's output in order to fix a
+  text handler's bug. A newline is a separator in one format and an ordinary character in the
+  other, so the escape belongs where the grammar is chosen.
+
+  `felix.manifests.compat.one_line` is gone; `logging_setup.loggable` is the one helper for
+  this job. The two were not identical — `one_line` escaped every non-printable character and
+  `loggable` only the C0 range and DEL — so `loggable` picked up the stricter behaviour
+  rather than the shorter one. It now escapes U+2028, U+2029 and U+0085, which end a line for
+  a JavaScript-based log viewer even when `tail` shows one, and the bidi overrides, which
+  reorder a record's visible text without changing a byte of it. Call sites keep using
+  `loggable`: the formatter cannot truncate, so the bound on an attacker-influenced string
+  still lives there.
+
+- **A caller-supplied `response_format` reached the model unscreened.** Every string leaf of a
+  JSON Schema sent to `POST /v1/chat/completions` — `title`, `description`, a property name — is
+  serialised verbatim into the provider request, and because per-request options are resolved once
+  and reused, it sat in front of the model on *every* turn of the loop rather than on one.
+  `apply_inbound_screening` iterates messages; this arrived on `model_options`, the one place it
+  does not look, so content screening and input guardrails never saw it. A schema is now screened
+  on the same path as the turn it rides with, and refused rather than redacted — rewriting a
+  description would silently change the contract the caller is holding.
+
+  The size bounds were also not the ones the code claimed: node count is orthogonal to bytes, and
+  900 KB of schema fits in six nodes, so one accepted request could have that re-serialised into
+  the provider body on every turn against the operator's own credential — and on Anthropic, where
+  the schema is a tool definition inside the cached prefix, destroy the conversation's prompt cache
+  as well. There is now a byte bound. `$id` and `$dynamicRef` are held to the same local-reference
+  rule as `$ref`, since `$id` is what decides where a `#` pointer resolves; a property *named*
+  `$ref` is no longer mistaken for one.
+
+- **Inbound screening reported success and changed nothing on a multimodal turn.** A message
+  carrying images holds its text in `content_blocks`, both wire formats prefer those over
+  `.content`, and screening wrote only `.content` — so PII redaction and the `[quarantined]`
+  substitution ran, were audited as applied, and the model was still shown the caller's original
+  text. Nothing in `packages/harness` read `content_blocks` at all, which is why no test could see
+  it. The screened text now replaces the text blocks, with the images preserved in order; blocks
+  are rebuilt only when screening actually changed something, so an ordinary turn is untouched.
+
+- **A tenant id was validated as a thread-id prefix and used as a path segment.**
+  `assert_valid_tenant_id` rejected `:` and `#` — the delimiters the `{tenant}:{suffix}`
+  thread-id rule needs — plus leading and trailing whitespace, and nothing else. But a tenant
+  id is also interpolated into object-store keys (`artifacts/{tenant}/…`,
+  `workspace/{tenant}/…`, `skills/{tenant}/…`, `manifests/{tenant}/…`), into idempotency
+  keys, and into every log record. Those grammars have their own separators, and
+  `acme/../other` and `acme\nWARNING  all clear` both passed. Under a claim-mode JWT verifier
+  the tenant id comes from a token claim, which on Cognito is frequently user-writable.
+
+  Nothing was exploitable through it, and the reason is worth stating rather than implying a
+  breach. Outside `development`, a claim-mode verifier with an empty `FELIX_ALLOWED_TENANTS`
+  refuses to start, so the attacker-writable claim has to match an allowlist entry exactly.
+  Behind that, `storage/fs.py` re-validates every key segment and re-checks containment with
+  `relative_to`, S3/GCS keys are literal so `..` is a character rather than a parent, the RLS
+  GUC is bound as a parameter and compared for equality, and `LogIdsFilter` already escapes
+  the `tenant_id` log *field*.
+
+  What was unescaped is a tenant id interpolated into a log *message*, which four sweeps in
+  the worker did (`jobs/scheduler.py`, `jobs/anomaly.py`, `jobs/continuous_eval.py`); those
+  now use `loggable()` like the rest of the repo.
+
+  The tenant id is now held to the same rule `storage/fs.py` applies to a key segment, using
+  the same expression: letters, digits, `.`, `_`, `-`, and never `.` or `..` alone. One
+  definition of a safe segment rather than two that drift. **A tenant id containing any other
+  character is now rejected at authentication** — the shapes issuers actually emit (slugs,
+  UUIDs, domains, `org_`-style ids) are unaffected; an email address used as a tenant id is
+  the one shape that stops working.
+
+- **One thread could forge another's client-tool waiter key.** A waiter name is a *key* —
+  whoever can construct it can answer the wait behind it — and
+  `f"client:{thread_id}:{tool_call_id}"` was not injective, because both parts may contain the
+  separator. `thread_id` carries colons legitimately (`{tenant}:{suffix}`, and
+  `{tenant}:fiber:{id}` for a durable run), and `tool_call_id` arrives off the model wire with
+  no charset check at all (`wire/openai_completions.py` takes `str(tc.get("id") or "")`).
+
+  Concretely, and reachable rather than theoretical:
+
+  ```
+  thread acme:fiber:F123, call call_9        ->  client:acme:fiber:F123:call_9
+  thread acme:fiber,      call F123:call_9   ->  client:acme:fiber:F123:call_9
+  ```
+
+  `fiber` is a legal thread suffix — `effective_thread_id` rejects only `:` and `#` — so the
+  second thread is one any caller in that tenant can create. Posting a `tool_result` for it
+  resolved the durable run's pending client tool with content the poster chose.
+
+  **Scope, stated precisely**, because the general shape is narrower than "any two-part `:` join
+  is exploitable". An ordinary thread is `{tenant}:{suffix}` with `:` rejected in the suffix, so
+  it carries exactly one colon and the old join was already injective for it. Only a thread
+  namespace the harness mints with an *extra* colon collides — `{tenant}:fiber:{id}`,
+  `{tenant}:a2a:{task_id}` and `{tenant}:eval:{run}:{item}`. Same tenant only: a tenant id
+  carrying the delimiter is refused at issuance, so the prefix cannot be forged. And exploiting
+  it needs the victim's fiber id (a `uuid4`) and its pending `tool_call_id`, neither of which is
+  disclosed to a third party — so this is a latent hole rather than a trivially drivable one.
+
+  Note which part was *not* the problem: `tool_call_id` is the unvalidated input, and it is not
+  what made the collision reachable. The second grammar here was one the harness produced itself.
+
+  Waiter names are now composed by `waiters.waiter_name`, which percent-encodes each part (`%`
+  before `:`, so the escape cannot itself be forged) before joining. The approval and UI prompt
+  waiters go through it too — their ids are a `uuid4().hex` and a `token_urlsafe`, so they were
+  never ambiguous and their names are **byte-identical** to before; routing them through one
+  helper is so the next part added to a waiter name is escaped by construction rather than by
+  whoever remembers.
+
+  **Upgrade note.** Client-tool waiter names change shape, so a client-tool call already in
+  flight across a rolling upgrade will not be answered by the new process and times out after
+  `DEFAULT_TIMEOUT_SECONDS` (120s), returning `[error/timeout]` to the model. That is the
+  fail-closed direction and it resolves itself on the next call; approvals and UI prompts are
+  unaffected because their names did not change.
+
 ### Changed
 
 - **Traces can be sent to a backend Felix does not host.** Every `FELIX_OTEL_*` setting is
@@ -1547,3 +2373,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.2.1]: https://github.com/felix-run/felix/releases/tag/v0.2.1
 [0.2.0]: https://github.com/felix-run/felix/releases/tag/v0.2.0
 [0.1.0]: https://github.com/felix-run/felix/releases/tag/v0.1.0
+[0.3.0]: https://github.com/felix-run/felix/releases/tag/v0.3.0

@@ -1,6 +1,6 @@
 [project]
 name = "felix-ai"
-version = "0.2.2"
+version = "0.3.0"
 description = "Felix model layer — wire formats, providers, and model catalog. Depends on nothing in Felix."
 requires-python = ">=3.14"
 license = "Apache-2.0"
