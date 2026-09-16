@@ -431,6 +431,17 @@ comment explaining exactly that. It is conditional, not inert.
 
 ### Harness
 
+- [ ] **`session.context_window_tokens` should default to a sentinel, not a number.** It is the
+      one field in the schema where writing the default and omitting it mean different things:
+      `runtime.py` reads `model_fields_set` to tell them apart, so an explicit `128000` compacts
+      against 128K while omitting it compacts against the model's real window (1M on a
+      large-context route). Everything else in the repo treats the serialized form as the
+      meaning — including the compile-pin hash, which cannot see the difference and never could.
+      Making the default `None` would make the two agree, remove the only `model_fields_set`
+      read outside `Settings`, and let the pin notice a change that currently slips past it.
+      Touches `react.py`, `usage/catalog.py`, four bundled manifests and
+      `test_compaction_window.py`, so it wants its own change rather than riding along.
+
 - [ ] **Tamper-evident audit chain** — `seq` + `prev_hash` + keyed HMAC per row, per tenant,
       with `verify_chain` reporting the first break. Allocate the chain at write time inside the
       insert transaction under a per-tenant advisory lock (`session/store.py:93` is the
