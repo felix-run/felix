@@ -709,7 +709,22 @@ class Spec(_Strict):
     system_prompt: SystemPrompt = Field(default_factory=SystemPrompt)
     prompts: list[PromptTemplateSpec] = Field(default_factory=list)
     tools: list[str] = Field(default_factory=list)
-    skills: list[SkillRef] = Field(default_factory=list)
+    skills: list[SkillRef] = Field(default_factory=list, max_length=MAX_REFS)
+    # Whether `skills` is the whole set, or an addition to what the host already offers.
+    #
+    # False, the default and the historical behaviour: `load_manifest_skills` seeds every
+    # skill in the bundled directory and in `FELIX_SKILLS_DIR` before it resolves a single
+    # ref, so a manifest declaring one skill compiles a catalogue holding every skill on the
+    # host and offers all of them to the model. Defensible as a shared library, and it is
+    # what every stored manifest was written against -- which is why narrowing it silently
+    # would be a behaviour change to rows already in Postgres rather than a fix.
+    #
+    # True: only the names in `skills` are loaded. Worth having because a skill body is
+    # appended to the system prompt, so an ambient skill is a prompt fragment the manifest
+    # never named -- the one prompt-shaping input `pin_compile` cannot cover, since the
+    # hash is over the manifest and the drift is on the host's disk. A manifest that has to
+    # be reviewable sets this; one using the host as a library does not.
+    skills_declared_only: bool = False
     mcp: list[McpServerRef] = Field(default_factory=list, alias="mcp_servers", max_length=MAX_REFS)
     peers: list[A2APeerRef] = Field(default_factory=list, max_length=MAX_REFS)
     containers: list[ContainerRef] = Field(default_factory=list, max_length=MAX_REFS)

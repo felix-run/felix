@@ -1761,8 +1761,14 @@
           "items": {
             "$ref": "#/$defs/SkillRef"
           },
+          "maxItems": 64,
           "title": "Skills",
           "type": "array"
+        },
+        "skills_declared_only": {
+          "default": false,
+          "title": "Skills Declared Only",
+          "type": "boolean"
         },
         "mcp_servers": {
           "items": {

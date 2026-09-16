@@ -32,6 +32,12 @@ spec:
 
   skills:
     - name: calculator-help
+  # The declared list is the whole list. Without this a manifest inherits every skill in the
+  # bundled directory and in FELIX_SKILLS_DIR, and a skill body is appended to the system
+  # prompt -- so a reviewer of this file could not enumerate the instructions the agent may
+  # load. That is the one prompt-shaping input pin_compile does not cover: the hash is over
+  # the manifest, and the drift is on the host disk.
+  skills_declared_only: true
 
   # Optional outbound MCP — leave commented until the secret exists.
   # Uncomment and set FELIX_MCP_AUTH_TOKEN (env / Secrets Manager) first:

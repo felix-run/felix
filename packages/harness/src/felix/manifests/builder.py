@@ -1288,6 +1288,7 @@ async def build_agent(
                 list(m.spec.skills),
                 tenant_id=tenant_id,
                 object_store=deps.object_store,
+                declared_only=m.spec.skills_declared_only,
             )
             skill_tools = {
                 t.name: t

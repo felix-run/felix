@@ -36,20 +36,20 @@ router = APIRouter(tags=["Skills"])
 
 async def _catalog_for(
     settings: Settings, tenant_id: str, manifest_name: str
-) -> tuple[SkillCatalog, set[str]]:
+) -> tuple[SkillCatalog, set[str], bool]:
     """The catalog a request naming this manifest would compile, and what it declared.
 
     Resolved the way a request resolves it — stored revision first, bundled YAML behind it
     — so what an operator is shown is what the next turn will actually see, rather than
     what the bundled file happens to say.
 
-    The declared set is returned alongside because it is *not* the catalog.
-    `load_manifest_skills` seeds every skill in the bundled directory and in
-    `FELIX_SKILLS_DIR` before it resolves a single ref, so `spec.skills` adds to a
-    deployment-wide library rather than restricting one: a manifest declaring one skill
-    compiles a catalog holding every skill on the host, and `make_skill_tools` offers all
-    of them to the model. That is invisible from inside a turn and was invisible from
-    outside one too, which is most of the reason this route exists.
+    The declared set is returned alongside because it need not be the catalogue. Unless a
+    manifest sets `spec.skills_declared_only`, `load_manifest_skills` seeds every skill in
+    the bundled directory and in `FELIX_SKILLS_DIR` before resolving a ref, so `spec.skills`
+    adds to a host-wide library rather than restricting one -- a manifest declaring one
+    skill compiles a catalogue holding every skill on the host and offers all of them to
+    the model. That is invisible from inside a turn and was invisible from outside one too,
+    which is most of the reason this route exists; `declared` is how the difference reads.
     """
     from felix.runtime import resolve_tenant_manifest
     from felix.skills.loader import load_manifest_skills
@@ -65,9 +65,25 @@ async def _catalog_for(
         raise HTTPException(status_code=404, detail="not_found") from exc
 
     refs = resolved.manifest.spec.skills or []
-    catalog = await load_manifest_skills(refs, tenant_id=tenant_id, object_store=get_object_store(settings))
-    declared = {str(getattr(ref, "name", "") or "") for ref in refs}
-    return catalog, declared - {""}
+    declared_only = resolved.manifest.spec.skills_declared_only
+    catalog = await load_manifest_skills(
+        refs,
+        tenant_id=tenant_id,
+        object_store=get_object_store(settings),
+        # The same flag the compile passes, or this reports a catalogue no turn will build.
+        declared_only=declared_only,
+    )
+    if declared_only:
+        # Nothing reached the catalogue except through a ref, so asking the catalogue is
+        # exact -- and it is the only answer that survives a rename. A skill's own SKILL.md
+        # frontmatter supplies its catalogue name, so a ref naming `foo` whose package
+        # declares `name: bar` is entry `bar`; matching the ref would report it undeclared
+        # while the response said `declared_only: true`, which reads as a bug rather than
+        # as the frontmatter-wins rule it is.
+        declared = set(catalog.skills)
+    else:
+        declared = {str(getattr(ref, "name", "") or "") for ref in refs} & set(catalog.skills)
+    return catalog, declared, declared_only
 
 
 def _active_store(settings: Settings) -> SkillActivationStore:
@@ -94,7 +110,7 @@ async def list_skills(manifest_name: str, request: Request) -> dict[str, object]
     settings = request.app.state.settings
     tenant_id = tenant_id_from_request(request)
 
-    catalog, declared = await _catalog_for(settings, tenant_id, manifest_name)
+    catalog, declared, declared_only = await _catalog_for(settings, tenant_id, manifest_name)
     active = await _active_store(settings).get_active(tenant_id, manifest_name)
 
     items = [
@@ -111,7 +127,12 @@ async def list_skills(manifest_name: str, request: Request) -> dict[str, object]
         }
         for skill in sorted(catalog.skills.values(), key=lambda s: s.name)
     ]
-    return {"manifest": manifest_name, "items": items, "active": list(active)}
+    return {
+        "manifest": manifest_name,
+        "declared_only": declared_only,
+        "items": items,
+        "active": list(active),
+    }
 
 
 @router.get("/{manifest_name}/{skill_name}")
@@ -131,7 +152,7 @@ async def get_skill(manifest_name: str, skill_name: str, request: Request) -> di
     settings = request.app.state.settings
     tenant_id = tenant_id_from_request(request)
 
-    catalog, declared = await _catalog_for(settings, tenant_id, manifest_name)
+    catalog, declared, _ = await _catalog_for(settings, tenant_id, manifest_name)
     skill = catalog.get(skill_name)
     if skill is None:
         raise HTTPException(status_code=404, detail="not_found")

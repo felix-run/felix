@@ -253,8 +253,28 @@ async def load_manifest_skills(
     tenant_id: str = "default",
     object_store: Any | None = None,
     bundled_dir: Path | None = None,
+    declared_only: bool = False,
 ) -> SkillCatalog:
-    """Resolve SkillRef list into a SkillCatalog."""
+    """Resolve a SkillRef list into a SkillCatalog.
+
+    `declared_only` is `spec.skills_declared_only`. False -- the default, and what every
+    stored manifest was written against -- seeds the bundled directory and `FELIX_SKILLS_DIR`
+    first, so the refs *add to* a host-wide library. True loads nothing but the refs, so the
+    catalogue is exactly what the manifest names and a reviewer of that manifest can
+    enumerate every prompt fragment the agent may load.
+
+    `declared_only` changes what the host catalogue is *for*, not whether it is built. It
+    stops being a seed for the returned catalogue and stays a resolution source: the bundled
+    directories are still scanned, and a declared name still resolves against them by an
+    in-memory lookup with no object-store round trip. So a restricted manifest costs about
+    the same as an unrestricted one, and a declared bundled skill keeps its body rather than
+    degrading to the empty placeholder below.
+
+    Precedence is deliberately identical under both settings -- host directory first, tenant
+    object store second -- so this narrows *which names* reach the catalogue and never
+    *where a body comes from*. `load_skill_from_store` carries the reasoning for that order;
+    do not reorder one without the other.
+    """
     catalog = SkillCatalog()
     roots: list[Path] = []
     if bundled_dir is None:
@@ -269,11 +289,14 @@ async def load_manifest_skills(
     else:
         roots.append(bundled_dir)
 
+    host: SkillCatalog = SkillCatalog()
     for root in roots:
         bundled = await _bundled_catalog(root)
         # A copy: the cached catalog is shared between requests, and the loop below
         # mutates `catalog.skills` with tenant-resolved and placeholder entries.
-        catalog.skills.update(bundled.skills)
+        host.skills.update(bundled.skills)
+    if not declared_only:
+        catalog.skills.update(host.skills)
 
     for ref in refs or []:
         name = getattr(ref, "name", None) or (ref.get("name") if isinstance(ref, dict) else None)
@@ -282,7 +305,9 @@ async def load_manifest_skills(
         version = getattr(ref, "version", None)
         if isinstance(ref, dict):
             version = ref.get("version")
-        skill: Skill | None = catalog.get(str(name))
+        # `host` rather than `catalog` so a declared name still resolves against the
+        # bundled directory when `declared_only` kept it out of the catalogue.
+        skill: Skill | None = catalog.get(str(name)) or host.get(str(name))
         if skill is None and object_store is not None:
             skill = await load_skill_from_store(
                 object_store, tenant_id=tenant_id, name=str(name), version=version
