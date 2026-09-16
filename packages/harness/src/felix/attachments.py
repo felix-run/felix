@@ -21,16 +21,23 @@ impossible, and that argument has already been wrong once here.
 from __future__ import annotations
 
 import base64
+import contextlib
 import logging
 import posixpath
 import re
+import time
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import Any
 
 from felix_ai.types import ChatMessage, ContentBlock, ImageAttachment, split_file_ref
+from sqlalchemy import delete as sa_delete
+from sqlalchemy import func
+from sqlalchemy import select as sa_select
 
+from felix.config import Settings
+from felix.db.session import _use_memory
 from felix.logging_setup import loggable
 
 logger = logging.getLogger("felix.attachments")
@@ -67,6 +74,8 @@ ALLOWED_MEDIA_TYPES = frozenset(_MAGIC)
 # A media type is a token, not a payload. Unbounded, a 1 MiB one fits inside the body limit
 # and comes back reflected in the refusal.
 MAX_MEDIA_TYPE_CHARS = 127
+#: Matches the `/files` request model's own cap, so the ledger and the door agree.
+MAX_FILENAME_CHARS = 255
 
 # Below `CORE_BODY_LIMIT_BYTES` (1 MiB), and for the same reason `documents.py` sits below
 # it: set above, this advertises a size the server will never accept, because the
@@ -157,15 +166,24 @@ async def put_attachment(
     data: bytes,
     media_type: str,
     filename: str = "",
+    settings: Settings,
 ) -> Attachment:
     """Store bytes under a fresh id and describe what was stored.
 
     The id is generated here rather than accepted from the caller. A caller-chosen id is a
     caller-chosen key, and the whole point of the containment check above is that no
     spelling of a reference reaches another tenant's data.
+
+    `settings` is required rather than defaulted, and that is the whole of the quota's
+    integrity. An upload stored without a ledger row is not merely unbilled: it is
+    unreachable by `expired_attachments` too, so nothing in the system can ever name or
+    collect it. A parameter whose omission silently produces that is not a quota -- and this
+    is an exported API whose callers may one day not be the HTTP doors, which is the same
+    reason the containment check above exists.
     """
     if object_store is None:
         raise AttachmentError("no object store is configured; set FELIX_OBJECT_STORE")
+    await _check_quota(settings, tenant_id, len(data))
     # The tenant is half the key, and this is an exported API whose callers may one day not
     # be the HTTP doors. `read_artifact` checks the *real* tenant rather than a placeholder
     # and this module claimed parity with it; `valid_file_id` only ever proves things about
@@ -174,7 +192,34 @@ async def put_attachment(
     key = attachment_key(tenant_id, file_id)
     if not _contained(tenant_id, key):
         raise AttachmentError("refusing to write outside the tenant prefix")
-    await object_store.put(key, data, content_type=media_type)
+    # The row *before* the bytes, and the mirror of it in `delete_attachment`, so that every
+    # way this can be interrupted leaves the same shape: a row whose bytes may not exist.
+    #
+    # That shape is the recoverable one. It over-counts, which an operator can see in the
+    # ledger and the sweep collects by age, and a re-delete of absent bytes is a no-op. The
+    # other order is not recoverable in either direction: bytes with no row are invisible to
+    # `tenant_attachment_bytes` *and* to `expired_attachments`, because both read rows -- so
+    # nothing in the system can ever name them again, on a backend whose Protocol has no
+    # `list`. A client retrying against a flaky database would mint one such orphan per
+    # attempt, which is the disk-fill this feature exists to prevent.
+    await record_attachment(
+        settings,
+        tenant_id=tenant_id,
+        file_id=file_id,
+        size_bytes=len(data),
+        media_type=media_type,
+        filename=filename,
+    )
+    try:
+        await object_store.put(key, data, content_type=media_type)
+    except Exception:
+        # The window narrowed to a hard crash: an ordinary store failure takes the row back
+        # out, so the over-count is not left behind for something that plainly did not
+        # happen. Best-effort by construction -- if this fails too, the row stands, which is
+        # the visible failure rather than the silent one.
+        with contextlib.suppress(Exception):
+            await forget_attachment(settings, tenant_id=tenant_id, file_id=file_id)
+        raise
     # Every interpolated value through `loggable`, which is the repo's rule and not a
     # judgement about which of these happens to be clean today. `tenant_id` is charset-bound
     # at the door and `file_id` is generated here, but `put_attachment` is an exported API:
@@ -209,7 +254,9 @@ async def read_attachment(object_store: Any | None, *, tenant_id: str, file_id: 
         return None
 
 
-async def delete_attachment(object_store: Any | None, *, tenant_id: str, file_id: str) -> bool:
+async def delete_attachment(
+    object_store: Any | None, *, tenant_id: str, file_id: str, settings: Settings
+) -> bool:
     """Remove an upload. True when a reference that could have named one was acted on.
 
     The erasure path. Everything stored here is caller-supplied by construction, so a
@@ -222,17 +269,166 @@ async def delete_attachment(object_store: Any | None, *, tenant_id: str, file_id
     key = attachment_key(tenant_id, file_id)
     if not _contained(tenant_id, key):
         return False
+    # Bytes first, row second -- the mirror of the write, for the same reason. Interrupted
+    # here the row outlives its bytes: the tenant is briefly over-counted and the next sweep
+    # or re-delete clears it. Dropping the row first would leave bytes nothing can name.
     try:
         await object_store.delete(key)
     except Exception:
         logger.warning("attachment delete failed file_id=%s", loggable(file_id, limit=64), exc_info=True)
         return False
+    await forget_attachment(settings, tenant_id=tenant_id, file_id=file_id)
     logger.info(
         "attachment deleted tenant=%s file_id=%s",
         loggable(tenant_id, limit=64),
         loggable(file_id, limit=64),
     )
     return True
+
+
+class QuotaExceeded(AttachmentError):
+    """The tenant is at its stored-bytes ceiling.
+
+    Distinct from `AttachmentError` so a route can answer 409 rather than 400: the request
+    is well formed and the account is full, which is a different thing to tell a caller.
+    """
+
+
+#: `(tenant_id, file_id) -> row`, the in-memory twin of the `attachments` table.
+_ledger_rows: dict[tuple[str, str], dict[str, Any]] = {}
+
+
+def now_ms() -> int:
+    """Wall clock in epoch milliseconds, as a module attribute so a test can hold it still.
+
+    The same shape `memory/store.py`, `usage/store.py` and `a2a/tasks.py` expose, and for
+    the same reason: `jobs/retention.py` computes its cutoff from a patched clock, so a
+    ledger stamping `time.time()` directly would be aged against a clock it never shared.
+    """
+    return int(time.time() * 1000)
+
+
+def clear_memory_ledger() -> None:
+    """Drop the in-memory ledger. Test seam, matching the other `memory://` stores."""
+    _ledger_rows.clear()
+
+
+async def _check_quota(settings: Settings, tenant_id: str, incoming: int) -> None:
+    """Refuse an upload that would put this tenant over its stored-bytes ceiling.
+
+    Before the object is written, so a refusal leaves nothing behind. The race is real and
+    deliberately unguarded: two concurrent uploads can both read a total under the line and
+    both be admitted, overshooting by at most `MAX_ATTACHMENT_BYTES` each. Serialising every
+    upload behind a lock to bound an already-bounded overshoot costs more than it buys --
+    this is a guard against a tenant filling a disk, not a billing boundary.
+    """
+    ceiling = int(settings.attachments_max_bytes_per_tenant or 0)
+    if not ceiling:
+        return
+    used = await tenant_attachment_bytes(settings, tenant_id)
+    if used + incoming > ceiling:
+        raise QuotaExceeded(
+            f"tenant is at its attachment ceiling of {ceiling} bytes ({used} stored); "
+            f"delete an upload or raise FELIX_ATTACHMENTS_MAX_BYTES_PER_TENANT"
+        )
+
+
+async def record_attachment(
+    settings: Settings,
+    *,
+    tenant_id: str,
+    file_id: str,
+    size_bytes: int,
+    media_type: str = "",
+    filename: str = "",
+) -> None:
+    """Note that these bytes exist, so they can be counted now and collected later."""
+    row = {
+        "tenant_id": tenant_id,
+        "file_id": file_id,
+        "size_bytes": int(size_bytes),
+        "media_type": media_type[:MAX_MEDIA_TYPE_CHARS],
+        "filename": filename[:MAX_FILENAME_CHARS],
+        "created_at": now_ms(),
+    }
+    if _use_memory(settings):
+        _ledger_rows[(tenant_id, file_id)] = row
+        return
+
+    from felix.db.models import AttachmentRow
+    from felix.db.session import tenant_session
+
+    async with tenant_session(settings, tenant_id) as db:
+        await db.merge(AttachmentRow(**row))
+        await db.commit()
+
+
+async def forget_attachment(settings: Settings, *, tenant_id: str, file_id: str) -> None:
+    """Drop the ledger row for one upload. Idempotent."""
+    if _use_memory(settings):
+        _ledger_rows.pop((tenant_id, file_id), None)
+        return
+
+    from felix.db.models import AttachmentRow
+    from felix.db.session import tenant_session
+
+    async with tenant_session(settings, tenant_id) as db:
+        await db.execute(
+            sa_delete(AttachmentRow).where(
+                AttachmentRow.tenant_id == tenant_id, AttachmentRow.file_id == file_id
+            )
+        )
+        await db.commit()
+
+
+async def tenant_attachment_bytes(settings: Settings, tenant_id: str) -> int:
+    """How much this tenant is currently storing, in decoded bytes."""
+    if _use_memory(settings):
+        return sum(int(r["size_bytes"]) for (t, _), r in _ledger_rows.items() if t == tenant_id)
+
+    from felix.db.models import AttachmentRow
+    from felix.db.session import tenant_session
+
+    async with tenant_session(settings, tenant_id) as db:
+        total = await db.scalar(
+            sa_select(func.coalesce(func.sum(AttachmentRow.size_bytes), 0)).where(
+                AttachmentRow.tenant_id == tenant_id
+            )
+        )
+        return int(total or 0)
+
+
+async def expired_attachments(
+    settings: Settings, *, older_than_ms: int, limit: int = 1000
+) -> list[tuple[str, str]]:
+    """`(tenant_id, file_id)` for uploads older than a cutoff, across every tenant.
+
+    Crosses tenants because the sweep does: it runs in the worker with no request and no
+    principal, which is why this reads under `rls_bypass` rather than a bound tenant GUC.
+    The caller deletes through `delete_attachment`, which re-derives the key under the
+    tenant it is handed, so the containment rule applies to the sweep exactly as to a
+    request.
+    """
+    if _use_memory(settings):
+        return [
+            (t, f)
+            for (t, f), r in sorted(_ledger_rows.items(), key=lambda kv: kv[1]["created_at"])
+            if int(r["created_at"]) < older_than_ms
+        ][:limit]
+
+    from felix.db.models import AttachmentRow
+    from felix.db.session import get_session_factory, rls_bypass
+
+    factory = get_session_factory(settings=settings)
+    with rls_bypass():
+        async with factory() as db:
+            rows = await db.execute(
+                sa_select(AttachmentRow.tenant_id, AttachmentRow.file_id)
+                .where(AttachmentRow.created_at < older_than_ms)
+                .order_by(AttachmentRow.created_at)
+                .limit(limit)
+            )
+            return [(str(t), str(f)) for t, f in rows.all()]
 
 
 def _is_webp(raw: bytes) -> bool:
@@ -397,15 +593,22 @@ def _unavailable(file_ids: Sequence[str]) -> str:
 __all__ = [
     "ALLOWED_MEDIA_TYPES",
     "MAX_ATTACHMENT_BYTES",
+    "MAX_FILENAME_CHARS",
     "MAX_MEDIA_TYPE_CHARS",
     "Attachment",
     "AttachmentError",
+    "QuotaExceeded",
     "attachment_key",
+    "clear_memory_ledger",
     "decode_upload",
     "delete_attachment",
+    "expired_attachments",
+    "forget_attachment",
     "put_attachment",
     "read_attachment",
+    "record_attachment",
     "resolve_file_refs",
     "sniff_media_type",
+    "tenant_attachment_bytes",
     "valid_file_id",
 ]

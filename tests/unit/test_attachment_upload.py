@@ -300,6 +300,7 @@ async def test_a_hostile_tenant_id_cannot_write_outside_its_prefix() -> None:
             tenant_id="../../manifests/acme",
             data=b"\x89PNG\r\n\x1a\n",
             media_type="image/png",
+            settings=_settings(),
         )
     assert await read_attachment(store, tenant_id="../..", file_id="0" * 32) is None
 
@@ -327,6 +328,7 @@ def test_no_logged_value_can_forge_a_record(caplog: pytest.LogCaptureFixture) ->
                 tenant_id="acme",
                 data=b"\x89PNG\r\n\x1a\n",
                 media_type=hostile,
+                settings=_settings(),
             )
         )
 

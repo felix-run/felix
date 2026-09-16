@@ -370,9 +370,43 @@ class DocumentChunk(Base):
     embedding_model: Mapped[str] = mapped_column(Text, server_default="", default="")
 
 
+class AttachmentRow(Base):
+    """One stored upload, recorded so the object store can be counted and collected.
+
+    The object store is the system of record for the *bytes*; this is a ledger beside it,
+    and it exists because the `ObjectStore` Protocol has no `list`. Two things need one:
+    a per-tenant quota has to know the current total before admitting the next upload, and
+    retention has to find what is old enough to drop -- `attachments/` was a prefix nothing
+    ever collected, so on the default `fs` backend one tenant filling the disk degraded
+    artifact spill and manifest storage for every tenant on the host.
+
+    `size_bytes` is the decoded length, which is what the disk actually holds -- not the
+    base64 the caller sent, which is a third larger and is a property of the request rather
+    than of the stored object.
+
+    A ledger beside a store can drift, and the direction is chosen rather than accidental:
+    the row is written *before* the object and deleted *after* it, so every interruption
+    leaves the same shape -- a row whose bytes may not exist. That over-counts, which an
+    operator can see here and the sweep collects by age, and re-deleting absent bytes is a
+    no-op on every backend. The opposite order is unrecoverable in both directions: bytes
+    with no row are invisible to `tenant_attachment_bytes` *and* to `expired_attachments`,
+    because both read rows, on a store whose Protocol has no `list`.
+    """
+
+    __tablename__ = "attachments"
+
+    tenant_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    file_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    media_type: Mapped[str] = mapped_column(Text, server_default="", default="")
+    filename: Mapped[str] = mapped_column(Text, server_default="", default="")
+    created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+
 __all__ = [
     "A2ATask",
     "Approval",
+    "AttachmentRow",
     "AuditEvent",
     "Base",
     "DocumentChunk",

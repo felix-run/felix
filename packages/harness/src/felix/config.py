@@ -268,6 +268,24 @@ class Settings(BaseSettings):
     # as a call that never returns rather than as a boot failure.
     search_timeout_seconds: float = Field(default=15.0, gt=0, le=300.0)
 
+    # --- Attachments ---
+    # Per-tenant ceiling on stored upload bytes. `MAX_ATTACHMENT_BYTES` caps one upload and
+    # nothing capped how many, which is the same gap `documents_max_per_tenant` exists for:
+    # a per-request cap is not a per-tenant cap. Bytes rather than a count, because the
+    # resource being protected is disk — and with each upload already capped at 600 KiB a
+    # count ceiling is just this number divided by that one, with worse failure text.
+    #
+    # On the default `fs` backend the object store shares a disk with artifact spill and
+    # manifest storage, so one tenant filling it degrades every tenant on the host. 256 MiB
+    # is roughly 430 uploads at the per-file cap.
+    attachments_max_bytes_per_tenant: int = Field(default=256 * 1024 * 1024, ge=0)
+
+    # How long a stored upload is kept. `0` keeps forever, which is the previous behaviour
+    # and stays the default: an attachment is caller data with a caller-driven lifecycle,
+    # and silently deleting one out from under a thread that still references it would make
+    # the model answer without an image nobody knew had expired. Set it deliberately.
+    attachment_retention_days: int = Field(default=0, ge=0)
+
     # --- Document corpus ---
     # Per-tenant document ceiling. Without one, a single `documents:write` credential grows
     # the database without bound: `MAX_DOCUMENT_CHARS` caps one request and

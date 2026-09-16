@@ -126,6 +126,9 @@ class Cutoffs:
     session: int | None
     #: Settled approvals older than this go. `None` keeps every row.
     approval: int | None
+    #: Stored uploads older than this go, bytes and all. `None` keeps every one, which is
+    #: the default: an attachment is caller data and a thread may still reference it.
+    attachment: int | None
     memory: int
 
     @classmethod
@@ -140,6 +143,7 @@ class Cutoffs:
             fiber=days(settings.fiber_retention_days),
             session=days(settings.session_retention_days),
             approval=days(settings.approval_retention_days),
+            attachment=days(settings.attachment_retention_days),
             memory=now - MEMORY_SUPERSEDED_GRACE_MS,
         )
 
@@ -198,8 +202,60 @@ async def run_retention_sweep(settings: Settings) -> dict[str, int]:
         counts = _sweep_memory(cutoffs, per_manifest)
     else:
         counts = await _sweep_postgres(settings, cutoffs, per_manifest)
+    # Separate from both branches above, because this is the only thing the sweep collects
+    # that is not a row: an upload is bytes in the object store with a ledger row beside it,
+    # and dropping the row alone would orphan the bytes for good -- nothing else lists that
+    # prefix. Its own step also means one implementation rather than one per backend.
+    counts["attachments"] = await _sweep_attachments(settings, cutoffs.attachment)
     logger.info("retention_sweep %s", counts)
     return counts
+
+
+#: How many expired uploads one `expired_attachments` call returns, and how many such
+#: calls one sweep makes. The product is the nightly ceiling: 50k objects, which is a
+#: bound on how long one run may take rather than on how much may ever be collected.
+ATTACHMENT_SWEEP_BATCH = 1000
+ATTACHMENT_SWEEP_MAX_BATCHES = 50
+
+
+async def _sweep_attachments(settings: Settings, cutoff: int | None) -> int:
+    """Delete stored uploads older than the cutoff, bytes first-class rather than a row.
+
+    `attachments/` joined `artifacts/` as an object-store prefix nothing ever collected, so
+    on the default `fs` backend a tenant's uploads accumulated against the same disk that
+    holds artifact spill and manifest storage. `0` days keeps everything, which stays the
+    default -- deleting caller data on a timer is an operator's decision, not ours.
+
+    Deletion goes through `delete_attachment` rather than straight at the object store, so
+    the sweep is held to the same containment rule a request is: the key is re-derived under
+    the tenant on the row and refused if it escapes that prefix. A ledger row is the only
+    thing naming these bytes, so a row that somehow carried a hostile tenant would otherwise
+    be a delete anywhere the process can write.
+    """
+    if cutoff is None:
+        return 0
+    from felix.attachments import delete_attachment, expired_attachments
+    from felix.storage import get_object_store
+
+    store = get_object_store(settings)
+    deleted = 0
+    # Drained in batches rather than one batch. A single `limit` would collect that many per
+    # nightly run and no more, so a deployment whose backlog exceeds it never catches up --
+    # and the count it returns looks like an ordinary number, so nothing says so. The outer
+    # bound is what keeps one sweep from running until morning on a very large backlog; a
+    # batch that comes back short means there is nothing left older than the cutoff.
+    for _ in range(ATTACHMENT_SWEEP_MAX_BATCHES):
+        expired = await expired_attachments(settings, older_than_ms=cutoff, limit=ATTACHMENT_SWEEP_BATCH)
+        for tenant_id, file_id in expired:
+            if await delete_attachment(store, tenant_id=tenant_id, file_id=file_id, settings=settings):
+                deleted += 1
+        if len(expired) < ATTACHMENT_SWEEP_BATCH:
+            return deleted
+    logger.warning(
+        "attachment sweep stopped at its batch bound with work left; %d collected this run",
+        deleted,
+    )
+    return deleted
 
 
 # --- memory:// ---------------------------------------------------------------------------
