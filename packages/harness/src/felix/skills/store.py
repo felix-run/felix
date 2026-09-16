@@ -105,9 +105,20 @@ def get_skill_activation_store(
     return PostgresSkillActivationStore(get_session_factory(settings=settings))
 
 
+def clear_memory() -> None:
+    """Drop every in-memory activation. Test seam, matching the other `memory://` stores.
+
+    `_memory_store` is a process global, so without this one test's activation is another
+    test's starting state -- which is how a tenant-isolation assertion passes alone and
+    fails in a file, reading as flakiness rather than as the leak it is.
+    """
+    _memory_store._data.clear()
+
+
 __all__ = [
     "InMemorySkillActivationStore",
     "PostgresSkillActivationStore",
     "SkillActivationStore",
+    "clear_memory",
     "get_skill_activation_store",
 ]

@@ -370,9 +370,27 @@ and fixed; the comment at `fibers.py:36-46` is the record.
       make the judge's fail-open path visible: any exception silently degrades an LLM judge to a
       substring check with `reason: "llm_fallback:<exc>"`, so a misconfigured judge model does not
       fail your eval, it quietly weakens it.
-- [ ] **Skills routes.** `grep -rn skill apps/api/src/felix_api/routes/` returns **zero** — 564
-      lines of skills subsystem and a `skill_activation` table with no HTTP reachability. List,
-      inspect, and report which skill activated on a turn.
+- [x] **Skills routes.** Landed: `GET /skills/{manifest}` lists what a manifest can reach and
+      what is active, `GET /skills/{manifest}/{skill}` returns the body `activate_skill` would
+      hand the model, and `GET /skills/{manifest}/activations/recent` says which skill activated
+      on which turn — all on a new `skills:read` scope, kept off `manifests:read` because a skill
+      body is prompt content. Read-only: activation is the model's decision mid-turn and the
+      store is keyed by `(tenant, manifest)` rather than thread, so an operator writing it would
+      be racing a run with no turn to attribute the change to.
+      The third ask needed a fix to be answerable at all: `tool_runner` audits every tool call
+      but its payload carries the tool's *name*, not its arguments, so the trail said a skill
+      activated and never which one. `skills/tools.py` now emits `skill_activation` naming it —
+      safe to store because `activate` resolves the name against the catalog first.
+- [ ] **Decide: does `spec.skills` restrict, or only add?** Found while building the routes and
+      verified directly — `load_manifest_skills` seeds every skill in the bundled dir and in
+      `FELIX_SKILLS_DIR` before resolving a ref, so a manifest declaring one skill compiles a
+      catalog of seven (the repo's own `felix-architecture`, `felix-contributing`, … included)
+      and `make_skill_tools` offers all of them to the model. Defensible as a host-wide library,
+      but it is not what "declared skills" reads like, nothing documented it, and a manifest
+      cannot currently say "only these". The new `declared` field makes the difference visible;
+      whether to add an opt-in restriction is the open question. Governance-adjacent: a skill
+      body is prompt content, so an ambient one is instructions the agent follows that its own
+      manifest never named.
 
 ### D. Truth in advertising
 

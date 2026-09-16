@@ -127,6 +127,12 @@ SCOPE_DOCUMENTS_WRITE = "documents:write"
 # write them is its own grant rather than a side effect of being able to read spill.
 SCOPE_FILES_READ = "files:read"
 SCOPE_FILES_WRITE = "files:write"
+# Read-only, and separate from `manifests:read` rather than folded into it. A skill *body*
+# is prompt content -- it is appended to the system prompt on activation -- so reading one
+# is reading instructions the agent will follow, which is a different question from reading
+# the manifest that names it. An operator auditing prompts should be able to hold this
+# without also holding the scope that lists every manifest.
+SCOPE_SKILLS_READ = "skills:read"
 
 __all__ = [
     "SCOPE_APPROVALS_READ",
@@ -147,6 +153,7 @@ __all__ = [
     "SCOPE_MEMORY_WRITE",
     "SCOPE_PLANS_READ",
     "SCOPE_PLANS_WRITE",
+    "SCOPE_SKILLS_READ",
     "SCOPE_USAGE_READ",
     "auth_from_request",
     "holds_mgmt_scopes",

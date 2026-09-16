@@ -159,14 +159,25 @@ async def query(
     cursor: str | None = None,
     event_type: str | None = None,
     status: str | None = None,
+    manifest_id: str | None = None,
 ) -> tuple[list[dict[str, Any]], str | None]:
-    """Query audit events for a tenant."""
+    """Query audit events for a tenant.
+
+    Every filter is optional and `None` adds no clause, so a caller that does not pass one
+    pays nothing. `manifest_id` is here rather than in a caller because filtering *after*
+    the store's limit is a silently wrong answer: a tenant whose events on one manifest
+    exceed the page would get an empty list for another, indistinguishable on the wire from
+    "that manifest has no events". It is also a first-class column here --
+    `list_manifests_with_events` groups by it and `jobs/retention.py` sweeps by it.
+    """
     if _use_memory(settings):
         items = [e for e in _memory_events if e["tenant_id"] == tenant_id]
         if event_type is not None:
             items = [e for e in items if e["event_type"] == event_type]
         if status is not None:
             items = [e for e in items if e["status"] == status]
+        if manifest_id is not None:
+            items = [e for e in items if e["manifest_id"] == manifest_id]
         # `felix.cursors` owns the rule, not just the string: the twin and the store paged in
         # parallel here and their `next_cursor` predicates had already drifted apart.
         rows, next_cursor = take_page(order_and_seek(items, cursor), limit=limit)
@@ -187,6 +198,8 @@ async def query(
             stmt = stmt.where(AuditEvent.event_type == event_type)
         if status is not None:
             stmt = stmt.where(AuditEvent.status == status)
+        if manifest_id is not None:
+            stmt = stmt.where(AuditEvent.manifest_id == manifest_id)
         if cursor is not None:
             stmt = stmt.where(keyset_before(AuditEvent.ts, AuditEvent.id, cursor))
         found = (await db.scalars(stmt)).all()
@@ -202,6 +215,7 @@ async def list_events(
     cursor: str | None = None,
     event_type: str | None = None,
     status: str | None = None,
+    manifest_id: str | None = None,
 ) -> tuple[list[dict[str, Any]], str | None]:
     """Compatibility name for `query`, kept because the API routes and plugins import it.
 
@@ -213,6 +227,7 @@ async def list_events(
         limit=limit,
         cursor=cursor,
         event_type=event_type,
+        manifest_id=manifest_id,
         status=status,
     )
 
