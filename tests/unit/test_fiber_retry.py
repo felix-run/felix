@@ -56,7 +56,7 @@ def clock(monkeypatch: pytest.MonkeyPatch) -> _Clock:
 
 
 def _always_raise(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def boom(settings: Any, row: dict[str, Any]) -> dict[str, Any]:
+    async def boom(settings: Any, row: dict[str, Any], **kw: Any) -> dict[str, Any]:
         raise RuntimeError("connection refused")
 
     monkeypatch.setattr(fibers, "_run_fiber_step", boom)
@@ -121,15 +121,23 @@ async def test_a_step_that_completes_resets_the_count(
     settings: Settings, clock: _Clock, monkeypatch: Any
 ) -> None:
     """Failures are consecutive: two before a step that lands, then two more, is two — not
-    four — against a ceiling of three."""
+    four — against a ceiling of three.
+
+    Asserted as the property rather than as a sweep count, because the count is no longer a
+    property of the rule. A claim runs the fiber to its next suspension, so the step that
+    lands and the failure after it now share one sweep — which is precisely the case that
+    makes the reset load-bearing: charging the pre-sweep streak there would bury a fiber that
+    had just made progress. The peak is what the ceiling is compared against, so the peak is
+    what this watches.
+    """
     calls = {"n": 0}
     real = fibers._run_fiber_step
 
-    async def flaky(settings: Any, row: dict[str, Any]) -> dict[str, Any]:
+    async def flaky(settings: Any, row: dict[str, Any], **kw: Any) -> dict[str, Any]:
         calls["n"] += 1
         if calls["n"] in {1, 2, 4, 5}:
             raise RuntimeError("transient")
-        return await real(settings, row)
+        return await real(settings, row, **kw)
 
     monkeypatch.setattr(fibers, "_run_fiber_step", flaky)
     created = await create_fiber(
@@ -139,20 +147,23 @@ async def test_a_step_that_completes_resets_the_count(
     )
     fiber_id = str(created["id"])
 
-    for _ in range(5):
+    seen: list[int] = []
+    for _ in range(8):
         await resume_due_fibers(settings)
         row = await get_fiber(settings, TENANT, fiber_id)
         assert row is not None
+        seen.append(int(row["attempts"] or 0))
+        if row["status"] in {"completed", "dead"}:
+            break
         clock.ms = int(row["wake_at"] or clock.ms)
 
-    row = await get_fiber(settings, TENANT, fiber_id)
-    assert row is not None
-    assert (row["status"], row["attempts"], row["state_json"]["cursor"]) == ("sleeping", 2, 1)
-    clock.ms = int(row["wake_at"])
-    await resume_due_fibers(settings)
-    row = await get_fiber(settings, TENANT, fiber_id)
-    assert row is not None
-    assert (row["status"], row["attempts"]) == ("completed", 0)
+    assert row["status"] == "completed", f"the fiber did not finish: {row['status']} after {seen}"
+    assert row["attempts"] == 0, "a completed fiber still carries a failure count"
+    # Four failures were injected, and the ceiling is three. The fiber survives only because
+    # the streak resets — so the number that matters is the peak, not the total.
+    assert max(seen) == 2, f"the streak did not reset; attempts went {seen}"
+    assert seen.count(1) >= 2, f"the count never restarted, so nothing reset: {seen}"
+    assert calls["n"] >= 5, "not every injected failure was reached"
 
 
 @pytest.mark.asyncio
@@ -164,7 +175,7 @@ async def test_a_save_that_keeps_failing_is_still_bounded(
     and the fiber is buried at the ceiling like any other, with the error derived from
     the count because the text could not be stored."""
 
-    async def unsaveable(settings: Any, row: dict[str, Any]) -> None:
+    async def unsaveable(settings: Any, row: dict[str, Any], **kw: Any) -> None:
         raise RuntimeError("state_json is not JSON serialisable")
 
     monkeypatch.setattr(fibers, "_save_fiber", unsaveable)
@@ -199,11 +210,11 @@ async def test_a_transient_save_failure_keeps_the_step_done(
     real = fibers._save_fiber
     calls = {"n": 0}
 
-    async def once(settings: Any, row: dict[str, Any]) -> None:
+    async def once(settings: Any, row: dict[str, Any], **kw: Any) -> None:
         calls["n"] += 1
         if calls["n"] == 1:
             raise RuntimeError("transient")
-        await real(settings, row)
+        await real(settings, row, **kw)
 
     monkeypatch.setattr(fibers, "_save_fiber", once)
     created = await create_fiber(
@@ -231,11 +242,11 @@ async def test_a_finished_step_whose_save_failed_stays_finished(
     real = fibers._save_fiber
     calls = {"n": 0}
 
-    async def once(settings: Any, row: dict[str, Any]) -> None:
+    async def once(settings: Any, row: dict[str, Any], **kw: Any) -> None:
         calls["n"] += 1
         if calls["n"] == 1:
             raise RuntimeError("transient")
-        await real(settings, row)
+        await real(settings, row, **kw)
 
     monkeypatch.setattr(fibers, "_save_fiber", once)
     fiber_id = await _pending(settings)

@@ -60,7 +60,7 @@ async def test_attempts_persist_when_the_save_itself_fails(
     clock = {"ms": 1_800_000_000_000}
     monkeypatch.setattr(fibers, "now_ms", lambda: clock["ms"])
 
-    async def unsaveable(settings: Any, row: dict[str, Any]) -> None:
+    async def unsaveable(settings: Any, row: dict[str, Any], **kw: Any) -> None:
         raise RuntimeError("state_json is not JSON serialisable")
 
     created = await fibers.create_fiber(

@@ -207,13 +207,23 @@ live again. Revisit after the first three land, on evidence, not before.
 
 ### B. Close the durable loop
 
-- [ ] **Run a fiber to suspension inside one claim.** `resume_due_fibers` calls
-      `_step_with_lease` once per claimed row and `_run_fiber_step` advances exactly one op, so
-      a durable chat — whose `steps` has length 1 — needs **two `* * * * *` ticks**: one to run
-      `invoke` and set `running`, a second to notice `cursor >= len(steps)` and flip `completed`.
-      Minimum ~2 minutes, and the second is pure scheduler latency. A *failure* terminates in one
-      sweep, so a failed run reaches its terminal state a full minute faster than a successful
-      one. Clear `heartbeat_at` on suspend so sleeping is distinguishable from crashed.
+- [x] **Run a fiber to suspension inside one claim.** Closed. The entry undercounted it: the
+      cost is one tick *per op* plus one, not two overall — measured before and after rather
+      than reasoned about, three stashes took four sweeps and now take one, a durable chat two
+      and now one. A claim runs the fiber until it suspends, where suspension is exactly
+      `status != "running"`. Fairness is what makes it safe and it is unchanged: a claim runs
+      at most one `invoke` — the only op that can take seconds — so wall-clock per fiber per
+      sweep is what it always was, and only the bookkeeping ticks go away.
+      Two things the change turned up that the entry did not predict. The claim has to be held
+      across the loop and released once at the end (`hold_claim`), because releasing per step
+      and re-acquiring is *not* equivalent — `_renew_lease` only renews a lease this worker
+      still holds, so the gap lets a second worker take the fiber and run the next `invoke`
+      concurrently: a duplicated side effect, not a lost write. And `attempts` counts
+      consecutive failures, which a landed step and a failed step sharing one claim would
+      otherwise break — a failure after progress is charged as the first of a new streak.
+      The entry's last sentence was stale rather than wrong: **there is no `heartbeat_at`
+      column**, anywhere in the models or migrations. Sleeping is already distinguishable from
+      crashed by `status` plus `lease_until`, which `_save_fiber` clears on every save.
 - [x] **A durable run streams its transcript** (felix-run/felix#238). `POST /chat/stream` on a
       durable manifest sent `run_accepted` → `run_status` → `final` and nothing between, so the
       answer arrived and the tool calls behind it did not. Correction to the premise this started
