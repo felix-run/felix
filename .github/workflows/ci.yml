@@ -384,6 +384,10 @@ jobs:
       # act on until upstream ships a patch.
       - name: Scan the image
         # Policy knobs match release.yml's scan of the pushed multi-arch digest; change together.
+        # `trivyignores` is named rather than left to the default lookup so the two scans
+        # read the same file by the same path — this job builds only the runner's
+        # architecture, so a finding that is arm64-only reaches the release scan first and
+        # a suppression that applied in just one of them would be invisible here.
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: felix:ci
@@ -391,3 +395,4 @@ jobs:
           exit-code: "1"
           ignore-unfixed: true
           severity: HIGH,CRITICAL
+          trivyignores: .trivyignore.yaml
