@@ -530,6 +530,24 @@ Four things to know before relying on it:
   `pin_compile` is forced: the manifest is re-resolved at resume, and running a rewritten
   manifest with the original caller's scopes is exactly what a pin is for.
 
+  That forcing is also why the content hash ignores fields sitting at their default. The
+  hash is over the manifest's *meaning*, not the schema's shape — a manifest that writes a
+  field's default and one that omits it compile to the same agent — and without that, adding
+  a defaulted field to `spec` moved every stored manifest's hash and failed every in-flight
+  fiber at resume, for a change no operator made. Setting a field away from its default or
+  back still moves the hash, in both directions; `tests/unit/test_manifest_pin_hash.py`
+  pins that, because a hash that noticed only additions would let a pinned thread keep
+  running after its governance was switched off.
+
+  **Two limits of the pin an operator should know.** First, *changing a default in a release
+  is a migration*: a manifest that omits the field now compiles differently and hashes the
+  same, so the pin will not fire. Rewrite the rows or rotate the pins deliberately — this
+  sits in the same family as removing a key or narrowing a field, which `manifests/compat.py`
+  already documents. Second, a pin binds a **thread**, not a conversation: `POST /fork`
+  starts a new thread with no pin, so a forked conversation continues under the current
+  manifest. That is the design — the pin protects a run in progress — and it is also the
+  recovery path when a deliberate manifest edit leaves a pinned thread refusing.
+
 ## Content screening targets
 
 `content_screening.tools` is **additive**. Screening covers every untrusted tool — anything

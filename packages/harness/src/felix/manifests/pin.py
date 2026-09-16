@@ -14,8 +14,46 @@ class ManifestDriftError(ValueError):
 
 
 def manifest_content_hash(manifest: Manifest) -> str:
-    """Stable SHA-256 of the canonical manifest JSON (refs, not resolved secrets)."""
-    payload = manifest.model_dump(mode="json", by_alias=True)
+    """Stable SHA-256 of the canonical manifest JSON (refs, not resolved secrets).
+
+    `exclude_defaults` is what makes "stable" true across releases rather than only within
+    one. Without it the dump carries every field the schema declares, so *adding* a field to
+    `Spec` -- with a default, touching nothing -- moves the hash of every manifest already
+    stored. That is not theoretical: `spec.skills_declared_only` did it in #254, and the
+    blast radius is a thread pinned under `pin_compile` raising `ManifestDriftError` on its
+    next turn with nothing in its manifest having changed, plus every in-flight durable
+    fiber failing at resume, since `durability/fibers.py` forces pinning for any fiber
+    carrying stored auth. Fail-closed, and still an outage an operator did not ask for.
+
+    Almost nothing is given up, and the exception is worth stating rather than glossing. A
+    field at its default is not usually information about the manifest -- one that writes
+    `pin_compile: false` and one that omits it compile to the same agent, and the old dump
+    already hashed those two identically -- so for a *manifest* edit this changes nothing.
+    Drift detection is untouched in both directions: moving a field off its default adds a
+    key and moving it back removes one, which matters because a hash that noticed only
+    additions would let a pinned thread keep running after its governance was switched off.
+
+    What it does give up is a *release* that changes what a default means. Under the old
+    hash, shipping a new default for, say, `content_screening.on_flag` moved every stored
+    manifest that omitted the field, and a pin fired; now it does not, and those manifests
+    compile differently while hashing the same. **Changing a default is therefore a
+    migration** -- rewrite the rows or rotate the pins -- and it joins the family
+    `manifests/compat.py` already names, alongside removing a key and narrowing a field.
+    A second digest over `Spec()`'s own defaults would catch it and would also move on every
+    field addition, which is the outage this exists to remove; so it is documented instead.
+
+    One field also breaks the "written default == omitted" rule today, independently of
+    this: `session.context_window_tokens` is read through `model_fields_set` in
+    `runtime.py`, so writing its default and omitting it mean different things there and
+    hash the same. The old hash was equally blind to it. `docs/ROADMAP.md` carries the fix,
+    which is to make the schema default a sentinel so the serialized form matches the
+    meaning.
+
+    Changing this rotates every hash exactly once, which is the same one-time cost as the
+    additions it prevents -- taken deliberately here rather than accidentally on the next
+    schema change. `tests/unit/test_manifest_pin_hash.py` pins the properties above.
+    """
+    payload = manifest.model_dump(mode="json", by_alias=True, exclude_defaults=True)
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
