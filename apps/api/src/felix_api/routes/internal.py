@@ -13,9 +13,8 @@ from fastapi import APIRouter, HTTPException, Request
 from felix.context import try_get_context
 from felix.logging_setup import loggable
 from felix.security.constant_time import constant_time_equal
+from felix.thread_ids import thread_belongs_to_tenant
 from pydantic import BaseModel, Field
-
-from felix_api.threads import thread_belongs_to_tenant
 
 logger = logging.getLogger("felix_api.internal")
 

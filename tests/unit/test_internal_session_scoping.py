@@ -111,7 +111,7 @@ async def test_v1_refuses_a_user_that_forges_a_reserved_thread(user: str) -> Non
 @pytest.mark.asyncio
 async def test_v1_still_accepts_an_ordinary_user() -> None:
     """The screening must not break the feature: `user` is how /v1 addresses a thread."""
-    from felix_api.threads import effective_thread_id
+    from felix.thread_ids import effective_thread_id
 
     assert effective_thread_id("acme", "alice") == "acme:alice"
 
@@ -122,7 +122,7 @@ def test_the_two_helpers_agree() -> None:
     They disagreed: one rejected `#` and a delimiter-bearing tenant, the other did
     not — so `/internal` could mint ids no chat route could address.
     """
-    from felix_api.threads import MAX_THREAD_ID, effective_thread_id, thread_belongs_to_tenant
+    from felix.thread_ids import MAX_THREAD_ID, effective_thread_id, thread_belongs_to_tenant
 
     # Anything the builder produces, the checker must accept.
     built = effective_thread_id("acme", "alice")

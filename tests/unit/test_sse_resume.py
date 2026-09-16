@@ -22,7 +22,7 @@ from felix.config import Settings
 from felix.patterns.types import Event
 from felix.session.store import get_session_store
 from felix.session.types import AppendableEvent
-from felix_api.threads import effective_thread_id
+from felix.thread_ids import effective_thread_id
 from httpx import ASGITransport, AsyncClient
 
 
