@@ -439,17 +439,17 @@ comment explaining exactly that. It is conditional, not inert.
 
 ### Harness
 
-- [ ] **Move off `psycopg[binary]` to `psycopg[c]`, before 2026-11-16.** The aarch64 wheel
-      vendors its own copies of libpq's dependency chain and declares them in an auditwheel
-      SBOM, so the image ships RHEL 8 builds of `pcre2` (10.32, six CRITICAL/HIGH) and
-      **OpenSSL 1.1.1k** — long EOL, and the better reason to move. `apt-get upgrade` cannot
-      reach inside a wheel; the Debian `libpcre2-8-0` in the same image is already patched,
-      which is why `linux/amd64` scans clean and `linux/arm64` does not (the two wheels
-      repair different library sets). `psycopg[c]` compiles against the system libpq and
-      vendors nothing, closing the class rather than the instance. Needs `libpq-dev` and a
-      compiler in the builder stage, and costs build time; measure the image size before and
-      after. `.trivyignore.yaml` carries the six pcre2 findings **with an expiry on that
-      date** — the release fails again afterwards, which is the point.
+- [x] **Moved off `psycopg[binary]` to `psycopg[c]`** — done well before the ignore expired,
+      and `.trivyignore.yaml` is empty again because the findings went away with the library
+      rather than being suppressed. One correction to this entry as written: the swap is in
+      `deploy/docker/Dockerfile`, **not** in `pyproject.toml`. Changing the dependency would
+      have made `pip install felix-harness` and every contributor's `make install` require a
+      compiler and libpq headers, which is a steep price for an OSS project to pay for a
+      property only the shipped image needs. The image installs `psycopg[c]` over the synced
+      venv and asserts `psycopg-binary` is gone; everywhere else keeps the wheel.
+      The measurement the entry asked for: **577 MB against 587 MB**, so dropping the vendored
+      libraries more than paid for `libpq5`. `psycopg.pq.__impl__` reports `c`, migrations run
+      to head against real Postgres 17.11, and the scan exits 0 with no ignore file at all.
 
 - [ ] **`session.context_window_tokens` should default to a sentinel, not a number.** It is the
       one field in the schema where writing the default and omitting it mean different things:
