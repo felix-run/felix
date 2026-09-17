@@ -30,6 +30,14 @@ ENV UV_COMPILE_BYTECODE=1 \
 
 WORKDIR /app
 
+# `psycopg[c]` compiles against the system libpq instead of vendoring one, so the builder
+# needs headers and a compiler. Neither reaches the runtime stage: only `/app` is copied
+# forward, and the runtime installs `libpq5` alone.
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends gcc libc6-dev libpq-dev; \
+    rm -rf /var/lib/apt/lists/*
+
 COPY pyproject.toml uv.lock README.md LICENSE NOTICE ./
 COPY packages ./packages
 COPY apps ./apps
@@ -55,6 +63,28 @@ RUN --mount=type=cache,target=/root/.cache/uv \
       uv sync --locked --no-dev "$@"; \
     fi
 
+# The image ships `psycopg[c]`, not `psycopg[binary]`, and this is the one place the two
+# diverge: `pyproject.toml` keeps `[binary]` so that installing Felix -- or contributing to
+# it -- needs no compiler and no libpq headers, which is the difference between `pip install
+# felix-harness` working everywhere and working where a toolchain happens to be.
+#
+# The image cannot afford the same convenience. `psycopg[binary]`'s manylinux wheels vendor
+# libpq's whole dependency chain and declare it in an auditwheel SBOM: RHEL 8 builds of
+# pcre2, krb5, ldap, sasl, selinux, and OpenSSL 1.1.1k. `apt-get upgrade` cannot reach inside
+# a wheel, so those ship at whatever version the wheel was built against and stay there --
+# which is how the 0.3.0 release scan failed on arm64 while amd64 passed, the two wheels
+# having repaired different library sets.
+#
+# `psycopg[c]` links the system libpq, so every one of those becomes a Debian package that
+# `apt-get upgrade` above already patches. Done as an explicit swap rather than by changing
+# the dependency, so `--locked` still governs everything else in the venv.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    set -eux; \
+    version="$(uv pip show psycopg | awk '/^Version:/ {print $2}')"; \
+    uv pip uninstall psycopg-binary; \
+    uv pip install --no-cache "psycopg[c]==${version}"; \
+    ! uv pip show psycopg-binary >/dev/null 2>&1
+
 FROM python:3.14-slim@sha256:cad9a2c871761c413caa6fdd6441c783451e740a48aaeba60ae62a8b53525ef6 AS runtime
 
 ENV UV_CACHE_DIR=/tmp/uv \
@@ -78,6 +108,7 @@ COPY --from=builder /app /app
 RUN set -eux; \
     apt-get update; \
     apt-get upgrade -y --no-install-recommends; \
+    apt-get install -y --no-install-recommends libpq5; \
     rm -rf /var/lib/apt/lists/*; \
     python -m pip uninstall -y pip 2>/dev/null || true; \
     rm -rf /usr/local/lib/python3.14/site-packages/pip \

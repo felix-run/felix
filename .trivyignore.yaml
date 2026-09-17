@@ -1,55 +1,24 @@
 # Findings the image scan may pass over, each with a reason and a date it stops working.
 #
-# `expired_at` is the point: an entry here is a decision to ship a known finding for a
-# stated reason, and a decision like that should lapse rather than persist. After the date
-# Trivy reports the finding again and the release fails until someone re-decides. A comment
-# would not do that.
+# Empty, and worth keeping empty. `expired_at` is the point of the format: an entry here is
+# a decision to ship a known finding for a stated reason, and a decision like that should
+# lapse rather than persist. After the date Trivy reports the finding again and the release
+# fails until someone re-decides. A comment would not do that.
 #
 # Adding an entry is not routine. The scan runs with `--ignore-unfixed`, so everything it
 # reports already has a patch available upstream — "wait for a fix" is never the reason.
+#
+# The one entry this file has held so far is the example worth remembering. Six pcre2 CVEs,
+# three CRITICAL, on `linux/arm64` only: `psycopg[binary]`'s aarch64 wheel vendored RHEL 8's
+# pcre2 and declared it in an auditwheel SBOM, so `apt-get upgrade` could not reach it and
+# the Debian package in the same image was already patched. It was suppressed for 0.3.0 with
+# a one-month expiry, and then the expiry was not needed: `deploy/docker/Dockerfile` now
+# installs `psycopg[c]`, which links the system libpq and vendors nothing, and the findings
+# went away because the library did. Prefer that shape — remove the thing rather than the
+# report — and keep the date short enough that it stays the likelier option.
+#
+# Both scans read this file: `ci.yml` via the action's `trivyignores`, and `release.yml` by
+# mounting the workspace and passing `--ignorefile`, because that one runs Trivy in a
+# container that would otherwise look inside its own image and find nothing.
 
-vulnerabilities:
-  # ---------------------------------------------------------------------------------
-  # pcre2 vendored inside the psycopg[binary] aarch64 wheel.
-  #
-  # `linux/amd64` scans clean and `linux/arm64` does not, for a reason worth writing
-  # down: the two manylinux wheels repair different library sets. The aarch64 wheel
-  # bundles `libpcre2-8-8701a61e.so.0.7.1` under
-  # `site-packages/psycopg_binary.libs/`, and declares it in its own auditwheel
-  # CycloneDX SBOM as `pcre2 10.32-3.el8_6` — which is where Trivy reads the version,
-  # and the declaration is accurate: it is RHEL 8's pcre2, built into the wheel.
-  #
-  # So this is a real vendored library, not a false positive. What it is *not* is the
-  # Debian package: `dpkg` in the same image reports `libpcre2-8-0 10.46-1~deb13u2`,
-  # already carrying the fix. `apt-get upgrade` in the Dockerfile cannot reach inside a
-  # Python wheel, so no image-level change closes this.
-  #
-  # Shipped for 0.3.0 because the exposure is narrow and the alternative was worse: the
-  # bundled copy is reachable only through libpq's own dependency chain (ldap, sasl,
-  # krb5, selinux), none of which Felix drives with attacker-controlled patterns — and
-  # dropping arm64 from the release would cost every Apple Silicon and Graviton
-  # deployment for a finding that is not reachable from a Felix code path.
-  #
-  # The real fix is `psycopg[c]`, which links against the system libpq instead of
-  # vendoring anything, and removes this whole class at once — the same wheel also
-  # bundles `libcrypto-02bae65c.so.1.1.1k`, OpenSSL 1.1.1k, which is long EOL and is a
-  # better reason to move than pcre2 is. That is its own change, tracked in
-  # `docs/ROADMAP.md`, and this entry expires well before anyone could forget it.
-  - id: CVE-2022-1586
-    statement: "pcre2 vendored in the psycopg[binary] aarch64 wheel; the Debian package is patched. Fix is psycopg[c]."
-    expired_at: 2026-11-16
-  - id: CVE-2022-1587
-    statement: "pcre2 vendored in the psycopg[binary] aarch64 wheel; the Debian package is patched. Fix is psycopg[c]."
-    expired_at: 2026-11-16
-  - id: CVE-2025-58050
-    statement: "pcre2 vendored in the psycopg[binary] aarch64 wheel; the Debian package is patched. Fix is psycopg[c]."
-    expired_at: 2026-11-16
-  - id: CVE-2019-20454
-    statement: "pcre2 vendored in the psycopg[binary] aarch64 wheel; the Debian package is patched. Fix is psycopg[c]."
-    expired_at: 2026-11-16
-  - id: CVE-2026-86145
-    statement: "pcre2 vendored in the psycopg[binary] aarch64 wheel; the Debian package is patched. Fix is psycopg[c]."
-    expired_at: 2026-11-16
-  - id: CVE-2026-89161
-    statement: "pcre2 vendored in the psycopg[binary] aarch64 wheel; the Debian package is patched. Fix is psycopg[c]."
-    expired_at: 2026-11-16
+vulnerabilities: []
