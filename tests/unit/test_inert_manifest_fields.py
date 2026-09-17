@@ -239,11 +239,6 @@ KNOWN_INERT_FIELDS = {
     "consolidate",  # MemorySpec
     "default_window_chars",  # ArtifactsSpec
     "max_window_chars",  # ArtifactsSpec
-    "executor_model",  # PlanExecuteSpec
-    "max_replans",  # PlanExecuteSpec
-    "planner_few_shots",  # PlanExecuteSpec
-    "planner_model",  # PlanExecuteSpec
-    "replan_on_failure",  # PlanExecuteSpec
     "min_rate",  # AnomalySpec
     "precount",  # Limits
 }

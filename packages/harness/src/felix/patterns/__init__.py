@@ -13,7 +13,7 @@ reads from, so a separate `import felix.patterns.react` alongside it would be re
 from __future__ import annotations
 
 from felix.patterns.delegating import _DelegatingAgent
-from felix.patterns.model import register_builtin_providers
+from felix.patterns.model import _spec_with_model, register_builtin_providers
 from felix.patterns.model_sinks import install_felix_ai_sinks
 from felix.patterns.plan_tools import _plan_tools
 from felix.patterns.react import build_react_agent
@@ -134,7 +134,22 @@ async def _build_plan_execute(ctx: PatternBuildContext) -> Agent:
     # `build_react_agent` reads it onto the agent itself, so passing ctx through
     # unchanged shaped every step no matter what `_child_input` passed. The only path
     # that may shape a turn is an explicit `options=` at the call site.
-    inner = build_react_agent({**ctx, "output_schema": None, "recursion_limit": recursion})
+    # `executor_model` belongs here, beside `executor_recursion_limit`, because this is the
+    # only place a plan_execute executor is built. `_DelegatingAgent` has a
+    # `self.inner or self._base_agent(...)` fallback that looks like the natural home for it
+    # and is dead from core: `inner` is always set, right here, so the right-hand side never
+    # evaluates. Putting it there left the field as inert as it was before -- and quieter,
+    # because the mention satisfied the textual ratchet in `test_inert_manifest_fields.py`.
+    inner = build_react_agent(
+        {
+            **ctx,
+            "output_schema": None,
+            "recursion_limit": recursion,
+            "model_spec": _spec_with_model(
+                ctx.get("model_spec"), str(getattr(plan_cfg, "executor_model", "") or "")
+            ),
+        }
+    )
     return _DelegatingAgent(
         tools=list(ctx.get("tools") or []),
         pattern="plan_execute",

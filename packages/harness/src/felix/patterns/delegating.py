@@ -13,19 +13,23 @@ import logging
 import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field, replace
+from functools import partial
 from typing import Any
 
 # `felix.manifests.schema` is a leaf — it imports only `felix.security.ssrf` — so this is
 # safe at module scope even though `manifests/builder.py` imports `felix.patterns`.
+from felix.logging_setup import loggable
 from felix.manifests.schema import PlanExecuteSpec, ReflectSpec
 from felix.patterns.model import (
     ModelChatOptions,
     ModelChatResult,
     ModelClient,
+    _spec_with_model,
     build_model,
     record_model_usage,
     supports_stream_turn,
 )
+from felix.patterns.plan_execute import _plan_subtasks, _replan_request, _step_failed
 from felix.patterns.react import build_react_agent
 from felix.patterns.types import (
     Agent,
@@ -149,6 +153,18 @@ def _stub_output(input: InvokeInput, text: str) -> InvokeOutput:
 
 
 def _terminal_events(result: InvokeOutput) -> list[Event]:
+    """The pair a composite emits when it finishes, shaped like the one `react` emits.
+
+    `stop_reason` rides on `done` as well as on `on_chain_end`, and both halves matter.
+    `_pipe_stream` keeps the *last* terminal event it sees, so a parent composite reading a
+    child's `done` would otherwise record `end_turn` however the child really ended -- which
+    is what makes `plan_execute` replan on the `invoke` path and not the streamed one when a
+    delegate is itself a composite. And `routes/openai_compat.py` reads `stop_reason` off
+    this event to fill `finish_reason`, so without it a streamed composite run reported a
+    default finish even after a truncation or a provider refusal. (A *reply-guard* denial
+    already came out right: `ReplyControlsAgent` rewrites the terminal event it rewrote the
+    reply on -- but only a manifest with reply controls configured is wrapped in it.)
+    """
     return [
         Event(event="on_chain_end", data={"output": result}),
         Event(
@@ -156,6 +172,7 @@ def _terminal_events(result: InvokeOutput) -> list[Event]:
             data={
                 "final": result.final.model_dump(),
                 "messages": [m.model_dump() for m in result.messages],
+                "stop_reason": result.stop_reason,
             },
         ),
     ]
@@ -226,24 +243,14 @@ async def _yield_model_stream(
 
 
 def _model_for(input: InvokeInput, settings: Any, model_spec: Any) -> Any:
-    """Build a model client, applying request-level model_id override when present."""
-    spec = model_spec
-    if input.model_id:
-        from copy import deepcopy
+    """Build a model client, applying a request-level `model_id` override when present.
 
-        from felix.manifests.schema import ModelSpec
-
-        if isinstance(model_spec, ModelSpec):
-            data = model_spec.model_dump()
-            data["id"] = input.model_id
-            spec = ModelSpec.model_validate(data)
-        else:
-            try:
-                spec = deepcopy(model_spec)
-                spec.id = input.model_id
-            except Exception:
-                spec = model_spec
-    return build_model(settings, spec)
+    The override is applied *last*, so a caller who names a model on the request wins over
+    `plan_execute.planner_model`. That ordering is deliberate -- an explicit per-request
+    choice outranks a manifest default -- and it means a request override moves the planning
+    turn too, not only the answering one.
+    """
+    return build_model(settings, _spec_with_model(model_spec, input.model_id or ""))
 
 
 @dataclass
@@ -402,7 +409,7 @@ class _DelegatingAgent:
         yield ChatMessage(role="assistant", content="".join(collected))
 
     def _base_agent(self, *, recursion_limit: Any = None) -> Agent:
-        """The react agent a single-agent composite wraps."""
+        """The react agent a single-agent composite wraps when the caller supplied none."""
         ctx: dict[str, Any] = {
             "tools": self.tools,
             "system_prompt": self.system_prompt,
@@ -713,51 +720,92 @@ class _DelegatingAgent:
     ) -> AsyncIterator[Event | InvokeOutput]:
         cfg = self.plan_cfg or PlanExecuteSpec()
         max_subtasks = cfg.max_subtasks
+        replans = 0
         model = _model_for(input, self.settings, self.model_spec)
-
-        plan_result = await model.chat(
-            [
-                ChatMessage(
-                    role="system",
-                    content=self.system_prompt or "Break the user goal into a numbered list of subtasks.",
-                ),
-                *input.messages,
-                ChatMessage(
-                    role="user",
-                    content=f"Return at most {max_subtasks} numbered subtasks, one per line.",
-                ),
-            ],
-            [],
+        # The planner is its own route when the manifest names one. The point of the field
+        # is the asymmetry: planning is one call whose quality shapes everything after it,
+        # execution is many calls that each do a narrow thing, so "plan with the expensive
+        # model, execute with the cheap one" is the lever a plan/execute split exists for.
+        # Unset keeps the manifest's model, so a spec that says nothing behaves as before.
+        planner = (
+            _model_for(input, self.settings, _spec_with_model(self.model_spec, cfg.planner_model))
+            if cfg.planner_model
+            else model
         )
-        record_model_usage(plan_result, model, manifest_id=self.manifest_id)
-        lines = [
-            ln.strip().lstrip("0123456789.-) ").strip()
-            for ln in plan_result.message.content.splitlines()
-            if ln.strip()
-        ][:max_subtasks]
+
+        # `max_subtasks` is deliberately *not* bound here. It is the one argument that
+        # differs between the two calls -- the opening plan may use the whole ceiling, a
+        # replan only what is left of it -- and freezing it meant asking the planner for
+        # eight subtasks when two slots remained and then cutting its answer to fit, which
+        # truncates a revised plan mid-plan. Everything the partial does hold genuinely does
+        # not vary across a run.
+        plan_subtasks = partial(
+            _plan_subtasks, planner, system_prompt=self.system_prompt, manifest_id=self.manifest_id
+        )
+
+        lines = await plan_subtasks(list(input.messages), max_subtasks=max_subtasks)
         if not lines:
             lines = [input.messages[-1].content if input.messages else "complete the task"]
 
+        # `executor_model` is *not* applied here, and the omission is the point.
+        # `patterns/__init__.py:_build_plan_execute` always passes `inner`, so the right-hand
+        # side never evaluates for a compiled manifest -- the first attempt at this field
+        # wired it here, which left it as inert as before and, worse, satisfied the textual
+        # ratchet in `test_inert_manifest_fields.py`. A second copy of the rule on a branch
+        # no test can reach is how it would come back, so there is one copy, where the
+        # executor is built.
         executor = self.inner or self._base_agent(recursion_limit=cfg.executor_recursion_limit)
 
         notes: list[str] = []
-        for i, step in enumerate(lines, 1):
+        index = 0
+        while index < len(lines):
+            step = lines[index]
             step_input = self._child_input(
                 input,
                 [
                     ChatMessage(
                         role="user",
-                        content=f"Subtask {i}/{len(lines)}: {step}\nPrior notes:\n" + "\n".join(notes),
+                        content=f"Subtask {index + 1}/{len(lines)}: {step}\nPrior notes:\n"
+                        + "\n".join(notes),
                     )
                 ],
             )
             step_text = ""
+            step_stop: str = "end_turn"
             async for item in self._delegate(executor, step_input, emit_events=emit_events):
                 if isinstance(item, InvokeOutput):
                     step_text = item.final.content
+                    step_stop = str(item.stop_reason or "end_turn")
                 else:
                     yield item
-            notes.append(f"{i}. {step} → {step_text}")
+
+            if _step_failed(step_stop) and cfg.replan_on_failure and replans < cfg.max_replans:
+                replans += 1
+                logger.info(
+                    "plan_execute replanning after subtask %d stopped on %s (replan %d/%d, manifest=%s)",
+                    index + 1,
+                    loggable(step_stop, limit=32),
+                    replans,
+                    cfg.max_replans,
+                    loggable(self.manifest_id, limit=64),
+                )
+                # The budget a replan is asked for is what the ceiling has left, so the
+                # planner is told the truth and its answer is used whole. `index` is at most
+                # `len(lines) - 1`, and `lines` is already bounded by `max_subtasks`, so the
+                # remaining budget is never below one.
+                remainder = await plan_subtasks(
+                    _replan_request(list(input.messages), notes, step, step_stop, index),
+                    max_subtasks=max_subtasks - index,
+                )
+                if remainder:
+                    # Keep what is done, replace what is not.
+                    lines = lines[:index] + remainder
+                    continue
+                # A planner with nothing to say is not a reason to stop: fall through and
+                # record the step as it ended, which is what the pre-replan loop always did.
+
+            notes.append(f"{index + 1}. {step} → {step_text}")
+            index += 1
 
         final = ChatMessage(role="assistant", content="")
         async for item in self._generate(
