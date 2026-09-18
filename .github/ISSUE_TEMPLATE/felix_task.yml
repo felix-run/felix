@@ -1,0 +1,91 @@
+name: Felix task
+description: A ticket complete enough for Felix (or anyone) to implement — the Definition of Ready in docs/SELF.md
+labels: ["felix:task"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Every section below is scored by the readiness check in [docs/SELF.md](https://github.com/felix-run/felix/blob/main/docs/SELF.md).
+        A section that is present but not specific scores zero. Priority (`p1`–`p3`) and `felix:go` are set by a person, never by Felix.
+  - type: input
+    id: evidence
+    attributes:
+      label: Evidence
+      description: "One accepted shape: an audit event id (32 hex), an Actions run URL, an eval run id, `ROADMAP.md:<line>@<sha>`, `usage:<manifest>:<window>`, or `#<issue>` filed by a person. Anything else makes this `felix:meta`."
+      placeholder: "ROADMAP.md:214@3bc66e1"
+    validations:
+      required: true
+  - type: input
+    id: outcome
+    attributes:
+      label: User-visible outcome
+      description: One sentence a user or operator would notice. Naming a file is not an outcome.
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Surface
+      description: The kind of thing that changes.
+      options:
+        - manifest
+        - route
+        - pattern
+        - tool
+        - worker task
+        - docs only
+        - CI
+    validations:
+      required: true
+  - type: textarea
+    id: files
+    attributes:
+      label: Files expected to change
+      description: One path per line. A pull request that changes paths outside this list is flagged.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance test
+      description: "The exact command and its expected result, e.g. `./scripts/test.sh -k test_x` → `1 passed`. \"Tests pass\" scores zero."
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: out_of_scope
+    attributes:
+      label: Out of scope
+      description: What an implementer must not touch. Type `none` if there is nothing.
+    validations:
+      required: true
+  - type: checkboxes
+    id: companions
+    attributes:
+      label: Companion updates this needs
+      options:
+        - label: "`changelog.d/<section>-<slug>.md` fragment"
+        - label: "`.env.example` and the README settings table"
+        - label: "`make schema` (manifest schema changed)"
+        - label: "felix-web docs page (docs-sync skill names it)"
+        - label: "`docs/OBSERVABILITY.md` (metric, audit or span changed)"
+        - label: "none of these"
+  - type: dropdown
+    id: risk
+    attributes:
+      label: Risk class
+      description: "`control-path` = auth, governance, screening, secrets, egress, sandbox, tenancy, or `manifests/builder.py`. It adds `felix:security-review`."
+      options:
+        - none
+        - control-path
+    validations:
+      required: true
+  - type: input
+    id: estimate
+    attributes:
+      label: Estimate
+      description: Tool calls and turns. Over 120 calls means split this with sub-issues.
+      placeholder: "~40 tool calls, ~10 turns"
+    validations:
+      required: true
