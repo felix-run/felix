@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+import os
+import socket
 from functools import lru_cache
 from typing import Any, Literal
 
@@ -32,6 +34,21 @@ def _is_loopback_host(host: str) -> bool:
 
 
 ProcessRole = Literal["api", "worker", "scheduler", "temporal-worker", "cli"]
+
+
+def process_identity() -> str:
+    """This process's name, for a fiber lease row and a log line.
+
+    Stable within a process and distinct across them, which is the property
+    `durability/fibers.py` needs: it compares this against a claim's `lease_owner` to decide
+    whether the claim is its own. Host and pid rather than a uuid because an operator reads
+    it -- in Kubernetes the hostname is the pod name, so a lease row names the pod holding it.
+
+    Named rather than inlined into the field default so the lease predicates can fall back to
+    the *same* rule for a settings-like object that has no `replica_id`. Their fallback used
+    to be the literal `"local"`, which is the shared name this replaced.
+    """
+    return f"{socket.gethostname()}:{os.getpid()}"
 
 
 class Settings(BaseSettings):
@@ -191,7 +208,23 @@ class Settings(BaseSettings):
 
     # --- scale-out ---
     scale_out: bool = False
-    replica_id: str = "local"
+    # Who this process is, in a lease row and a log line. It has to be unique per *process*,
+    # because `durability/fibers.py` compares it to decide whether a claim is its own —
+    # `_release_fiber`, `_renew_lease` and `_record_attempt` all carry a
+    # `lease_owner == replica_id` predicate.
+    #
+    # It was `"local"`, and nothing set it: not the Helm chart, not a Compose overlay, and
+    # `validate_runtime()` did not ask for it under `scale_out`. So every worker in a scaled
+    # deployment claimed under the same name and those three predicates matched every claim
+    # including other workers' — guards that read as protection and decided nothing. Found by
+    # the security review on #262.
+    #
+    # Host plus pid rather than a uuid, because this is a value an operator reads: in
+    # Kubernetes the hostname is the pod name, so a lease row names the pod that holds it.
+    # Stable within a process and distinct across them, which is exactly the property the
+    # predicates need. The Helm chart also sets it explicitly from the downward API, so the
+    # identity does not depend on the container's hostname being meaningful.
+    replica_id: str = Field(default_factory=process_identity)
 
     # --- observability ---
     otel_enabled: bool = False
@@ -395,6 +428,22 @@ class Settings(BaseSettings):
     @classmethod
     def _strip_keys(cls, v: Any) -> Any:
         return v if v is not None else ""
+
+    @field_validator("replica_id")
+    @classmethod
+    def _replica_id_identifies_someone(cls, v: str) -> str:
+        """An empty one is the state the default was just changed to avoid.
+
+        The fiber claim predicates compare `lease_owner` to this, and `lease_owner` is `""`
+        on every unclaimed row -- so a deployment that sets `FELIX_REPLICA_ID=` (or to
+        whitespace) would have every worker matching every *released* claim as its own, which
+        is worse than the shared `"local"` this replaced. Refused rather than silently
+        defaulted, because an operator who set it meant to set it.
+        """
+        cleaned = v.strip()
+        if not cleaned:
+            raise ValueError("FELIX_REPLICA_ID must name this process; leave it unset for the default")
+        return cleaned
 
     @property
     def bundled_only(self) -> bool:
