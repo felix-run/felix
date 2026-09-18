@@ -36,6 +36,21 @@ def _is_loopback_host(host: str) -> bool:
 ProcessRole = Literal["api", "worker", "scheduler", "temporal-worker", "cli"]
 
 
+def process_identity() -> str:
+    """This process's name, for a fiber lease row and a log line.
+
+    Stable within a process and distinct across them, which is the property
+    `durability/fibers.py` needs: it compares this against a claim's `lease_owner` to decide
+    whether the claim is its own. Host and pid rather than a uuid because an operator reads
+    it -- in Kubernetes the hostname is the pod name, so a lease row names the pod holding it.
+
+    Named rather than inlined into the field default so the lease predicates can fall back to
+    the *same* rule for a settings-like object that has no `replica_id`. Their fallback used
+    to be the literal `"local"`, which is the shared name this replaced.
+    """
+    return f"{socket.gethostname()}:{os.getpid()}"
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="FELIX_",
@@ -209,7 +224,7 @@ class Settings(BaseSettings):
     # Stable within a process and distinct across them, which is exactly the property the
     # predicates need. The Helm chart also sets it explicitly from the downward API, so the
     # identity does not depend on the container's hostname being meaningful.
-    replica_id: str = Field(default_factory=lambda: f"{socket.gethostname()}:{os.getpid()}")
+    replica_id: str = Field(default_factory=process_identity)
 
     # --- observability ---
     otel_enabled: bool = False

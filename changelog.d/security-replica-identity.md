@@ -23,6 +23,11 @@ Two changes, because the default and the deployment are separate failures:
   every Felix deployment shares, so the identity does not depend on the container's hostname
   being meaningful and a new deployment template inherits it.
 
+The five places in `durability/fibers.py` that read the identity used to fall back to the
+literal `"local"` for a settings-like object without the field — recreating, in the one code
+path left, exactly the shared name this removes. They go through one helper now, whose
+fallback is the same per-process rule.
+
 An empty `FELIX_REPLICA_ID` is now refused rather than silently defaulted. It would be worse
 than the constant it replaces: `lease_owner` is `""` on every *unclaimed* row, so an empty id
 would match every released claim as this worker's own.

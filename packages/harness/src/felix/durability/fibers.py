@@ -11,7 +11,7 @@ from typing import Any
 
 from sqlalchemy import select
 
-from felix.config import Settings
+from felix.config import Settings, process_identity
 from felix.db.models import Fiber
 from felix.db.session import _use_memory, get_session_factory
 
@@ -68,6 +68,17 @@ FIBER_TERMINAL_STATUSES = frozenset({"completed", "failed", "expired", "dead"})
 # above any shape the harness itself builds — a durable chat has one step — because the real
 # bound on wall-clock is the one below it: at most one `invoke` per claim.
 FIBER_MAX_OPS_PER_CLAIM = 64
+
+
+def _claim_owner(settings: Any) -> str:
+    """Who this process is, for the predicates that ask whose claim a fiber's is.
+
+    `Settings.replica_id` is process-unique and refused when empty, so the fallback is only
+    for a settings-like object with no such field. It must not be a shared constant: the
+    fallback here *was* the literal "local", which is the very name two workers used to claim
+    under -- a predicate that cannot tell two callers apart is not a predicate.
+    """
+    return str(getattr(settings, "replica_id", "") or "") or process_identity()
 
 
 def fiber_thread_id(tenant_id: str, fiber_id: str) -> str:
@@ -448,7 +459,7 @@ async def _claim_due_memory(settings: Settings, ts: int) -> list[dict[str, Any]]
             continue
         row["status"] = "running"
         row["wake_at"] = None
-        row["lease_owner"] = str(getattr(settings, "replica_id", "local") or "local")
+        row["lease_owner"] = _claim_owner(settings)
         row["lease_until"] = ts + FIBER_LEASE_MS
         # Bumped the way the Postgres claim bumps them. `updated_at` is not bookkeeping here:
         # the claim orders by it, so a re-claimed fiber goes to the back of the queue. Leaving
@@ -471,7 +482,7 @@ async def _claim_due_postgres(settings: Settings, ts: int) -> list[dict[str, Any
     """
     from felix.db.session import rls_bypass
 
-    owner = str(getattr(settings, "replica_id", "local") or "local")
+    owner = _claim_owner(settings)
     factory = get_session_factory(settings=settings)
     # The sweep is cross-tenant maintenance, like retention: without a bypass this runs
     # with no app.tenant_id GUC and RLS silently returns nothing, stalling durability.
@@ -623,7 +634,7 @@ async def _record_attempt(settings: Settings, row: dict[str, Any]) -> None:
     owns it. No compare-and-set, deliberately: this path exists because the versioned write
     is what failed.
     """
-    owner = str(getattr(settings, "replica_id", "local") or "local")
+    owner = _claim_owner(settings)
     row["updated_at"] = now_ms()
     row["lease_owner"] = ""
     row["lease_until"] = None
@@ -657,7 +668,7 @@ async def _record_attempt(settings: Settings, row: dict[str, Any]) -> None:
 async def _renew_lease(settings: Settings, row: dict[str, Any]) -> None:
     """Push this worker's claim out by another lease window."""
     until = now_ms() + FIBER_LEASE_MS
-    owner = str(getattr(settings, "replica_id", "local") or "local")
+    owner = _claim_owner(settings)
     if _use_memory(settings):
         stored = _memory_fibers.get((row["tenant_id"], row["id"]))
         # Only if we still hold it: a lease we already lost must not be stolen back mid-step.
@@ -804,16 +815,18 @@ async def _release_fiber(settings: Settings, row: dict[str, Any]) -> None:
     columns unconditionally, which was harmless while the only caller was the failure path of
     a claim it certainly held; it is not harmless now that a claim spans several steps.
 
-    **This is a second line of defence, not the first, and on a default deployment it decides
-    nothing** -- `Settings.replica_id` is `"local"` and neither the Helm chart nor any Compose
-    overlay sets `FELIX_REPLICA_ID`, so every worker claims under the same name and this
-    predicate matches every claim including other workers'. The same is true of
-    `_renew_lease`'s guard. What actually keeps two workers off one fiber is the claim itself
-    (`lease_until` plus `FOR UPDATE SKIP LOCKED`), and, inside a multi-step claim, the
-    compare-and-set check in `_step_with_lease` -- which is why that check reads the version
-    rather than the owner. Fixing the identity is tracked in `docs/ROADMAP.md`.
+    **This is a second line of defence, not the first.** What keeps two workers off one fiber
+    is the claim itself (`lease_until` plus `FOR UPDATE SKIP LOCKED`), and inside a multi-step
+    claim the compare-and-set check in `_step_with_lease` -- which is why that check reads the
+    version and not the owner.
+
+    It decided nothing at all until `replica_id` stopped defaulting to the constant "local":
+    every worker claimed under one name, so this predicate matched every claim including other
+    workers'. The identity is `{hostname}:{pid}` now and the Helm chart sets it from the pod
+    name, so the guard discriminates -- but it is only ever as good as that setting, which is
+    why it is not the thing being relied on.
     """
-    owner = str(getattr(settings, "replica_id", "local") or "local")
+    owner = _claim_owner(settings)
     if _use_memory(settings):
         stored = _memory_fibers.get((row["tenant_id"], row["id"]))
         if stored is not None and stored.get("lease_owner") == owner:
