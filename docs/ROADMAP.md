@@ -284,7 +284,11 @@ live again. Revisit after the first three land, on evidence, not before.
       answers `-32602` before writing the task row, and an
       eval item with an unusable id fails that item rather than the run. `:` stays legal in the
       last segment so `urn:uuid:…` task ids keep working. `felix_api/threads.py` moved to
-      `felix/thread_ids.py` to make one definition reachable from the harness.
+      `felix/thread_ids.py` to make one definition reachable from the harness. The security
+      review then found the half this missed: `PUT /eval/datasets/{name}` writes `item_id`
+      into the `eval_dataset_items` primary key, so the same insert failure sat one route
+      *earlier* than the new guard. `validate_items` refuses it now — a new 422 on ids that
+      were already unrunnable.
 - [x] **`replica_id` was `"local"` on every worker, so lease ownership named nothing.**
       `durability/fibers.py` decides whether a claim is its own with
       `lease_owner == replica_id`, and nothing ever set `FELIX_REPLICA_ID` — not the chart,

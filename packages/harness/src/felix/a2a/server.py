@@ -69,7 +69,18 @@ async def handle_rpc(
                 "id": rpc_id,
                 "error": {"code": -32602, "message": "message text required"},
             }
-        task_id = str(params.get("taskId") or uuid.uuid4())
+        raw_task_id = params.get("taskId")
+        if raw_task_id is not None and not isinstance(raw_task_id, str):
+            # `params` is `dict[str, Any]`, so `str()` would turn a JSON object or array into
+            # a thread id from its Python repr — validating the stringified value rather than
+            # the caller's. Harmless in practice (same tenant, still injective), but the guard
+            # below is worth applying to what was actually sent.
+            return {
+                "jsonrpc": "2.0",
+                "id": rpc_id,
+                "error": {"code": -32602, "message": "taskId must be a string"},
+            }
+        task_id = str(raw_task_id or uuid.uuid4())
         thread = a2a_thread_id(tenant_id, task_id)
         if thread is None:
             # Before `put_task`, deliberately: `task_id` is half of the `a2a_tasks`

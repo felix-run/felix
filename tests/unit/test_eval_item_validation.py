@@ -365,3 +365,51 @@ def test_the_cli_still_runs_a_good_fixture() -> None:
 
     assert result.exception is None, result.exception
     assert json.loads(result.stdout)["pass_count"] == len(_fixture("smoke")["items"])
+
+
+def test_an_item_id_that_cannot_become_a_thread_is_refused_at_write() -> None:
+    """The half of felix#255 that the run-time guard does not reach.
+
+    `eval_thread_id` refuses an unusable `item_id` when the run reaches it, which makes that
+    item fail every run forever with an error buried in `scores`. The row should never have
+    been stored: `item_id` is a third of the `eval_dataset_items` primary key, plain btree,
+    so on Postgres a long enough one does not even get that far —
+
+        ERROR: index row size 3864 exceeds btree version 4 maximum 2704 for index "items_pkey"
+
+    — which is a 500 at write, repeatable at the rate limit. Verified against a throwaway
+    Postgres; `memory://` keys a dict and shows none of it. Refusing here is this module's
+    stated remit: an item that would be stored and then score nothing.
+    """
+    from felix.eval.validation import MAX_EVAL_ITEM_ID, validate_items
+
+    good = {"item_id": "x" * MAX_EVAL_ITEM_ID, "user_input": "hi", "rubric": {"min_chars": 1}}
+    assert validate_items([good]).ok, "an id exactly at the limit was refused"
+
+    for label, item_id in [
+        ("one character over the limit", "x" * (MAX_EVAL_ITEM_ID + 1)),
+        ("long enough to fail the btree index row", "x" * 3000),
+        ("carries the '#' no thread id may contain", "item#3"),
+    ]:
+        report = validate_items([{"item_id": item_id, "user_input": "hi", "rubric": {"min_chars": 1}}])
+        assert not report.ok, f"accepted an item_id that {label}"
+        assert any("item_id" in e for e in report.errors), report.errors
+
+
+def test_the_item_id_limit_does_not_depend_on_the_tenant_storing_it() -> None:
+    """Deliberate, and the reason the cap is a constant rather than a computation.
+
+    The composed thread is `{tenant}:eval:{run}:{item}`, so a tenant-derived limit would make
+    the same dataset file valid in one deployment and refused in another. The constant is
+    sized for the longest legal tenant, which is why it is pinned against the pieces it is
+    derived from rather than as a bare number.
+    """
+    from felix.auth.context import MAX_TENANT_ID
+    from felix.eval.validation import MAX_EVAL_ITEM_ID
+    from felix.thread_ids import MAX_THREAD_ID, eval_thread_id
+
+    worst_case = eval_thread_id("t" * MAX_TENANT_ID, "0" * 32, "x" * MAX_EVAL_ITEM_ID)
+    assert worst_case is not None, "the cap admits an id the composer then refuses"
+    assert len(worst_case) <= MAX_THREAD_ID, len(worst_case)
+    # And it is not needlessly small: one more character does not fit.
+    assert eval_thread_id("t" * MAX_TENANT_ID, "0" * 32, "x" * (MAX_EVAL_ITEM_ID + 1)) is None
