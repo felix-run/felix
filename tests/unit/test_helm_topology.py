@@ -146,9 +146,22 @@ def test_the_worker_carries_the_credentials_the_agent_loop_needs_and_no_more(ren
 
 
 def test_the_scheduler_only_gets_the_datastore_urls(rendered: dict) -> None:
-    """It enqueues; it never runs a model. Least privilege is the point of the split."""
+    """It enqueues; it never runs a model. Least privilege is the point of the split.
+
+    The set is exact so that env arriving here is a decision rather than a side effect of
+    editing a shared helper — which is how `FELIX_REPLICA_ID` was caught. It stays, and it is
+    named below rather than exempted: it carries no authority, it names the pod in a log line,
+    and keeping the identity in the tier every process shares is what stops the next thing
+    that needs a name from having to remember which deployments get one.
+    """
     scheduler = _env_names(_container(_deployments(rendered)["scheduler"], "scheduler"))
-    assert scheduler == {"FELIX_DATA_DIR", "FELIX_DATABASE_URL", "FELIX_REDIS_URL"}, scheduler
+    assert scheduler == {
+        "FELIX_DATA_DIR",
+        "FELIX_DATABASE_URL",
+        "FELIX_REDIS_URL",
+        # Not a credential: the pod's own name, from the downward API.
+        "FELIX_REPLICA_ID",
+    }, scheduler
 
 
 def test_the_worker_liveness_probe_is_its_metrics_port(rendered: dict) -> None:

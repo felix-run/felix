@@ -64,8 +64,19 @@ Environment, in three tiers so each process gets what it reads and nothing more.
                 so a file-read primitive there must not find a token-signing key.
 
 Keys marked optional are absent from the Secret in deployments that do not use them.
+
+FELIX_REPLICA_ID rides in the first tier because every process needs a name, not just the
+one that claims fibers. `durability/fibers.py` compares it against a claim's `lease_owner`
+to decide whether the claim is its own, so it has to differ between replicas — it defaulted
+to "local" and nothing here set it, so every worker pod claimed under the same name and
+those predicates matched each other's claims. The pod name is unique per pod and is what an
+operator greps for, which a uuid would not be.
 */}}
 {{- define "felix.datastoreEnv" -}}
+- name: FELIX_REPLICA_ID
+  valueFrom:
+    fieldRef:
+      fieldPath: metadata.name
 - name: FELIX_DATA_DIR
   value: /data
 - name: FELIX_DATABASE_URL
