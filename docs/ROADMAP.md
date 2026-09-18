@@ -285,6 +285,25 @@ live again. Revisit after the first three land, on evidence, not before.
       eval item with an unusable id fails that item rather than the run. `:` stays legal in the
       last segment so `urn:uuid:…` task ids keep working. `felix_api/threads.py` moved to
       `felix/thread_ids.py` to make one definition reachable from the harness.
+- [ ] **`replica_id` is `"local"` on every worker, so lease ownership names nothing.**
+      `config.py:194` defaults it, and nothing sets `FELIX_REPLICA_ID`: not
+      `deployment-worker.yaml`, not `felix.datastoreEnv` / `felix.agentEnv`, not any Compose
+      overlay, and `validate_runtime()` does not require it under `scale_out`. The only
+      mention in the tree is a commented-out line in `.env.example`. So with
+      `worker.replicaCount: 2` every pod claims as `"local"`, and `WHERE lease_owner = 'local'`
+      matches every claim including other pods' — which makes the owner guards in
+      `_release_fiber`, `_renew_lease` and `_record_attempt` inert exactly where they matter.
+      Found by the security review on #262. **Not a standalone break**: claim *exclusion*
+      rests on `lease_until` plus `FOR UPDATE SKIP LOCKED`, and within a multi-step claim on
+      the compare-and-set check, so those guards are a second line of defence that is
+      currently absent rather than the only one. It is worth noting against
+      `deployment-worker.yaml`'s own header — "Safe to scale: every task is lease- or
+      lock-protected" — which now rests on an identity the chart does not provide.
+      Two ways, and it is a **decision**: default it to something process-unique
+      (`gethostname()` + pid, or `uuid4().hex[:8]`) and template it in Helm from the downward
+      API — but `replica_id` appears in log lines and lease rows, so a stable `"local"` may be
+      something an operator reads; or leave the default and make `validate_runtime()` refuse
+      `scale_out` without an explicit one, which is fail-closed and louder.
 - [ ] **The `ui` waiter is a bearer capability with no tenant in it.** `ui:{request_id}` carries
       no tenant (`ui/prompts.py`), and `POST /chat/ui` does `_ = request` — no tenant, no thread,
       no ownership check (`routes/chat.py:952-963`). The whole control is the secrecy of a 96-bit

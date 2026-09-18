@@ -513,7 +513,10 @@ async def _claim_due_postgres(settings: Settings, ts: int) -> list[dict[str, Any
 
 
 async def resume_due_fibers(settings: Settings) -> int:
-    """Claim and advance due fibers. Returns steps run.
+    """Claim and advance due fibers. Returns how many were stepped.
+
+    "Steps run" until now, which was the same number while a claim ran one op. It is not any
+    more, and the callers were always counting fibers: `tasks.py` logs it as the sweep's size.
 
     Each fiber is claimed before it is stepped, so a step still running when the next
     scheduler tick fires is not picked up again.
@@ -613,7 +616,14 @@ async def _record_attempt(settings: Settings, row: dict[str, Any]) -> None:
     `_save_fiber` also writes `state_json`, through `redact_json`; when that is what raised,
     this is the write that still lands. The run view derives the error from `attempts`
     when `dead` carries none.
+
+    Scoped to this worker's claim, like `_release_fiber` and `_renew_lease`. It is the last
+    write in the module that was not, and it clears the lease *and* overwrites `status` --
+    so on a worker that has lost its claim it would take the row out from under whoever now
+    owns it. No compare-and-set, deliberately: this path exists because the versioned write
+    is what failed.
     """
+    owner = str(getattr(settings, "replica_id", "local") or "local")
     row["updated_at"] = now_ms()
     row["lease_owner"] = ""
     row["lease_until"] = None
@@ -622,7 +632,7 @@ async def _record_attempt(settings: Settings, row: dict[str, Any]) -> None:
     }
     if _use_memory(settings):
         stored = _memory_fibers.get((row["tenant_id"], row["id"]))
-        if stored is not None:
+        if stored is not None and stored.get("lease_owner") in (owner, ""):
             stored.update(fields)
         return
     from sqlalchemy import update
@@ -634,7 +644,11 @@ async def _record_attempt(settings: Settings, row: dict[str, Any]) -> None:
         async with factory() as db:
             await db.execute(
                 update(Fiber)
-                .where(Fiber.tenant_id == row["tenant_id"], Fiber.id == row["id"])
+                .where(
+                    Fiber.tenant_id == row["tenant_id"],
+                    Fiber.id == row["id"],
+                    Fiber.lease_owner.in_((owner, "")),
+                )
                 .values(**fields)
             )
             await db.commit()
@@ -733,12 +747,27 @@ async def _step_with_lease(settings: Settings, row: dict[str, Any]) -> tuple[int
             # An empty pending op is the completion flip, and running it here is the whole
             # point: it is the step that used to cost a minute of pure latency.
             before = int((row.get("state_json") or {}).get("cursor") or 0)
+            before_version = int(row.get("version") or 0)
             try:
                 await _run_fiber_step(settings, row, hold_claim=True)
             except Exception as exc:
                 failure = exc
                 break
             landed += 1
+            if int(row.get("version") or 0) == before_version:
+                # The save lost its compare-and-set, which `_save_fiber` reports by logging
+                # and returning — it bumps `row["version"]` only when the write actually
+                # landed, and every branch of `_run_fiber_step` saves exactly once, so an
+                # unchanged version here means this fiber's row now belongs to someone else.
+                #
+                # Stopping matters more than it used to. `row` was mutated in place before
+                # the save, so `status` and `cursor` still look like progress and the checks
+                # below would wave the loop on -- for up to `FIBER_MAX_OPS_PER_CLAIM` more
+                # ops, including its one `invoke`, whose tool side effects would happen and
+                # never be persisted. One step per claim made this self-limiting; a loop
+                # does not. The next sweep re-reads the row and starts from the truth.
+                logger.warning("fiber write was discarded id=%s; yielding the claim", row.get("id"))
+                break
             if row.get("status") != "running":
                 break  # terminal, or suspended on a sleep — either way this claim is done
             if int((row.get("state_json") or {}).get("cursor") or 0) <= before:
@@ -751,10 +780,20 @@ async def _step_with_lease(settings: Settings, row: dict[str, Any]) -> tuple[int
         beat.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await beat
-        # Every save above kept the claim, so exactly one release closes it — including on
-        # the exception path, where `_retry_or_dead` then writes the attempt.
-        with contextlib.suppress(Exception):
-            await _release_fiber(settings, row)
+        # Every save above kept the claim, so exactly one release closes it -- but *only*
+        # when the claim ended cleanly.
+        #
+        # Releasing after a failure too was a race I introduced. `_retry_or_dead` parks the
+        # fiber in a transaction of its own, so between this release and that park the row
+        # is `status="running"` with a null `lease_until`, which is precisely what
+        # `_claim_due_postgres` selects: a concurrent sweep claims it and re-runs the step
+        # that just failed -- for a durable chat, the `invoke`, side effects and all. Before
+        # the loop existed the failure path never reached a release at all; `_retry_or_dead`
+        # wrote status, `wake_at` and the lease clear in one `UPDATE`, atomically, and it
+        # still does. So the failure path keeps its claim until that write releases it.
+        if failure is None:
+            with contextlib.suppress(Exception):
+                await _release_fiber(settings, row)
     return landed, failure
 
 
@@ -763,9 +802,16 @@ async def _release_fiber(settings: Settings, row: dict[str, Any]) -> None:
 
     Scoped to this worker's own claim, matching `_renew_lease`. It used to clear the lease
     columns unconditionally, which was harmless while the only caller was the failure path of
-    a claim it certainly held. It is not harmless now that a claim spans several steps: a save
-    that lost its compare-and-set means some other worker is holding this fiber, and an
-    unscoped release would hand it to a third while the second was mid-`invoke`.
+    a claim it certainly held; it is not harmless now that a claim spans several steps.
+
+    **This is a second line of defence, not the first, and on a default deployment it decides
+    nothing** -- `Settings.replica_id` is `"local"` and neither the Helm chart nor any Compose
+    overlay sets `FELIX_REPLICA_ID`, so every worker claims under the same name and this
+    predicate matches every claim including other workers'. The same is true of
+    `_renew_lease`'s guard. What actually keeps two workers off one fiber is the claim itself
+    (`lease_until` plus `FOR UPDATE SKIP LOCKED`), and, inside a multi-step claim, the
+    compare-and-set check in `_step_with_lease` -- which is why that check reads the version
+    rather than the owner. Fixing the identity is tracked in `docs/ROADMAP.md`.
     """
     owner = str(getattr(settings, "replica_id", "local") or "local")
     if _use_memory(settings):
