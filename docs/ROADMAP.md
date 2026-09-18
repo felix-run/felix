@@ -207,13 +207,23 @@ live again. Revisit after the first three land, on evidence, not before.
 
 ### B. Close the durable loop
 
-- [ ] **Run a fiber to suspension inside one claim.** `resume_due_fibers` calls
-      `_step_with_lease` once per claimed row and `_run_fiber_step` advances exactly one op, so
-      a durable chat — whose `steps` has length 1 — needs **two `* * * * *` ticks**: one to run
-      `invoke` and set `running`, a second to notice `cursor >= len(steps)` and flip `completed`.
-      Minimum ~2 minutes, and the second is pure scheduler latency. A *failure* terminates in one
-      sweep, so a failed run reaches its terminal state a full minute faster than a successful
-      one. Clear `heartbeat_at` on suspend so sleeping is distinguishable from crashed.
+- [x] **Run a fiber to suspension inside one claim.** Closed. The entry undercounted it: the
+      cost is one tick *per op* plus one, not two overall — measured before and after rather
+      than reasoned about, three stashes took four sweeps and now take one, a durable chat two
+      and now one. A claim runs the fiber until it suspends, where suspension is exactly
+      `status != "running"`. Fairness is what makes it safe and it is unchanged: a claim runs
+      at most one `invoke` — the only op that can take seconds — so wall-clock per fiber per
+      sweep is what it always was, and only the bookkeeping ticks go away.
+      Two things the change turned up that the entry did not predict. The claim has to be held
+      across the loop and released once at the end (`hold_claim`), because releasing per step
+      and re-acquiring is *not* equivalent — `_renew_lease` only renews a lease this worker
+      still holds, so the gap lets a second worker take the fiber and run the next `invoke`
+      concurrently: a duplicated side effect, not a lost write. And `attempts` counts
+      consecutive failures, which a landed step and a failed step sharing one claim would
+      otherwise break — a failure after progress is charged as the first of a new streak.
+      The entry's last sentence was stale rather than wrong: **there is no `heartbeat_at`
+      column**, anywhere in the models or migrations. Sleeping is already distinguishable from
+      crashed by `status` plus `lease_until`, which `_save_fiber` clears on every save.
 - [x] **A durable run streams its transcript** (felix-run/felix#238). `POST /chat/stream` on a
       durable manifest sent `run_accepted` → `run_status` → `final` and nothing between, so the
       answer arrived and the tool calls behind it did not. Correction to the premise this started
@@ -275,6 +285,25 @@ live again. Revisit after the first three land, on evidence, not before.
       eval item with an unusable id fails that item rather than the run. `:` stays legal in the
       last segment so `urn:uuid:…` task ids keep working. `felix_api/threads.py` moved to
       `felix/thread_ids.py` to make one definition reachable from the harness.
+- [ ] **`replica_id` is `"local"` on every worker, so lease ownership names nothing.**
+      `config.py:194` defaults it, and nothing sets `FELIX_REPLICA_ID`: not
+      `deployment-worker.yaml`, not `felix.datastoreEnv` / `felix.agentEnv`, not any Compose
+      overlay, and `validate_runtime()` does not require it under `scale_out`. The only
+      mention in the tree is a commented-out line in `.env.example`. So with
+      `worker.replicaCount: 2` every pod claims as `"local"`, and `WHERE lease_owner = 'local'`
+      matches every claim including other pods' — which makes the owner guards in
+      `_release_fiber`, `_renew_lease` and `_record_attempt` inert exactly where they matter.
+      Found by the security review on #262. **Not a standalone break**: claim *exclusion*
+      rests on `lease_until` plus `FOR UPDATE SKIP LOCKED`, and within a multi-step claim on
+      the compare-and-set check, so those guards are a second line of defence that is
+      currently absent rather than the only one. It is worth noting against
+      `deployment-worker.yaml`'s own header — "Safe to scale: every task is lease- or
+      lock-protected" — which now rests on an identity the chart does not provide.
+      Two ways, and it is a **decision**: default it to something process-unique
+      (`gethostname()` + pid, or `uuid4().hex[:8]`) and template it in Helm from the downward
+      API — but `replica_id` appears in log lines and lease rows, so a stable `"local"` may be
+      something an operator reads; or leave the default and make `validate_runtime()` refuse
+      `scale_out` without an explicit one, which is fail-closed and louder.
 - [ ] **The `ui` waiter is a bearer capability with no tenant in it.** `ui:{request_id}` carries
       no tenant (`ui/prompts.py`), and `POST /chat/ui` does `_ = request` — no tenant, no thread,
       no ownership check (`routes/chat.py:952-963`). The whole control is the secrecy of a 96-bit

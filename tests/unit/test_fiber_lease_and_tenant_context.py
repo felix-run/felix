@@ -166,8 +166,16 @@ async def test_resume_renews_the_lease_while_a_step_is_actually_running(monkeypa
 
     monkeypatch.setattr(F, "FIBER_LEASE_RENEW_MS", 10)
 
-    async def _slow_step(_settings, _row):
+    # Sampled from *inside* the step, which is the only place the question has an answer.
+    # `_step_with_lease` releases the claim when it is done with the fiber, so reading
+    # `lease_until` after the sweep now reads a released claim — `None` — whether the
+    # heartbeat ran or not. That would be a test unable to fail, which is what the docstring
+    # above records this one already being once.
+    while_running: list[int | None] = []
+
+    async def _slow_step(_settings, _row, **_kw):
         await asyncio.sleep(0.08)  # several renewal intervals
+        while_running.append(F._memory_fibers[("t", row["id"])]["lease_until"])
 
     monkeypatch.setattr(F, "_run_fiber_step", _slow_step)
 
@@ -184,10 +192,14 @@ async def test_resume_renews_the_lease_while_a_step_is_actually_running(monkeypa
 
     monkeypatch.setattr(F, "_claim_due_memory", _record)
 
-    stored = F._memory_fibers[("t", row["id"])]
     await F.resume_due_fibers(settings)
 
     assert at_claim, "the fiber was never claimed"
-    assert stored["lease_until"] > at_claim[0], (
+    assert while_running and while_running[0] is not None, "the claim was gone mid-step"
+    assert while_running[0] > at_claim[0], (
         "the lease did not move while the step ran; a step outlasting the lease loses its claim"
     )
+    # And the other half, which is new: the claim is dropped once the sweep is finished with
+    # the fiber. A claim spanning several steps has to be released somewhere, and if that
+    # stopped happening the fiber would be unclaimable for the whole `FIBER_LEASE_MS` window.
+    assert F._memory_fibers[("t", row["id"])]["lease_until"] is None, "the claim outlived the sweep"

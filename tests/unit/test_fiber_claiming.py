@@ -68,11 +68,11 @@ async def test_a_claimed_fiber_is_not_picked_up_again(settings: Settings) -> Non
     seen: list[str] = []
     original = fibers._run_fiber_step
 
-    async def _slow_step(s: Settings, row: dict) -> dict:
+    async def _slow_step(s: Settings, row: dict, **kw: object) -> dict:
         seen.append(str(row["id"]))
         started.set()
         await release.wait()
-        return await original(s, row)
+        return await original(s, row, **kw)  # type: ignore[arg-type]
 
     fibers._run_fiber_step = _slow_step  # type: ignore[assignment]
     try:

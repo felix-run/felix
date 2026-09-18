@@ -63,6 +63,11 @@ FIBER_RETRY_MAX_MS = 60 * 60 * 1000
 # again. Every consumer that decides "is this run over" — the resume stream, the SDK poller,
 # the Temporal workflow loop — is checked against this set in `tests/unit/test_invariants.py`.
 FIBER_TERMINAL_STATUSES = frozenset({"completed", "failed", "expired", "dead"})
+# A backstop on how many ops one claim may run, for a `steps` list long enough that running
+# it whole would hold the worker off the other 49 fibers in the batch. It is deliberately far
+# above any shape the harness itself builds — a durable chat has one step — because the real
+# bound on wall-clock is the one below it: at most one `invoke` per claim.
+FIBER_MAX_OPS_PER_CLAIM = 64
 
 
 def fiber_thread_id(tenant_id: str, fiber_id: str) -> str:
@@ -149,18 +154,24 @@ async def create_fiber(
         return row
 
 
-async def _save_fiber(settings: Settings, row: dict[str, Any]) -> None:
+async def _save_fiber(settings: Settings, row: dict[str, Any], *, hold_claim: bool = False) -> None:
     from felix.secrets import redact_json
 
     row["updated_at"] = now_ms()
     state = row.get("state_json") or {}
     safe = redact_json(state)
     row["state_json"] = safe if isinstance(safe, dict) else {}
-    # The claim covers the duration of one step, not the life of the fiber. Every
-    # _save_fiber call ends a step transition, so release it here: a still-runnable
-    # fiber must be claimable again on the next tick, and a sleeping one when it wakes.
-    row["lease_owner"] = ""
-    row["lease_until"] = None
+    if not hold_claim:
+        # The claim covers the duration of one step, not the life of the fiber. Every
+        # _save_fiber call ends a step transition, so release it here: a still-runnable
+        # fiber must be claimable again on the next tick, and a sleeping one when it wakes.
+        #
+        # `hold_claim` is for the one caller that runs several steps under a single claim
+        # (`_step_with_lease`) and releases once at the end. It cannot be the default: a
+        # released claim is what lets the *next* tick pick the fiber up, and a save that
+        # kept it would strand a runnable fiber for the whole `FIBER_LEASE_MS` window.
+        row["lease_owner"] = ""
+        row["lease_until"] = None
 
     if _use_memory(settings):
         stored = _memory_fibers.get((row["tenant_id"], row["id"]))
@@ -210,7 +221,9 @@ async def _save_fiber(settings: Settings, row: dict[str, Any]) -> None:
     row["version"] = expected + 1
 
 
-async def _run_fiber_step(settings: Settings, row: dict[str, Any]) -> dict[str, Any]:
+async def _run_fiber_step(
+    settings: Settings, row: dict[str, Any], *, hold_claim: bool = False
+) -> dict[str, Any]:
     """Advance one fiber step.
 
     ``state_json`` schema:
@@ -231,14 +244,14 @@ async def _run_fiber_step(settings: Settings, row: dict[str, Any]) -> dict[str, 
         state["result"] = stash.get("last") or state.get("result")
         row["state_json"] = state
         row["wake_at"] = None
-        await _save_fiber(settings, row)
+        await _save_fiber(settings, row, hold_claim=hold_claim)
         return row
 
     expires_at = state.get("expires_at")
     if expires_at is not None and now_ms() > int(expires_at):
         row["status"] = "expired"
         row["wake_at"] = None
-        await _save_fiber(settings, row)
+        await _save_fiber(settings, row, hold_claim=hold_claim)
         return row
 
     step = steps[cursor]
@@ -250,7 +263,7 @@ async def _run_fiber_step(settings: Settings, row: dict[str, Any]) -> dict[str, 
         row["wake_at"] = now_ms() + max(delay_ms, 0)
         state["cursor"] = cursor + 1
         row["state_json"] = state
-        await _save_fiber(settings, row)
+        await _save_fiber(settings, row, hold_claim=hold_claim)
         return row
 
     if op == "stash":
@@ -259,7 +272,7 @@ async def _run_fiber_step(settings: Settings, row: dict[str, Any]) -> dict[str, 
         state["cursor"] = cursor + 1
         row["state_json"] = state
         row["status"] = "running"
-        await _save_fiber(settings, row)
+        await _save_fiber(settings, row, hold_claim=hold_claim)
         return row
 
     if op == "invoke":
@@ -394,7 +407,7 @@ async def _run_fiber_step(settings: Settings, row: dict[str, Any]) -> dict[str, 
                     state["screener_retries"] = retries + 1
                     row["state_json"] = state
                     _park(row, FIBER_SCREENER_RETRY_MS)
-                    await _save_fiber(settings, row)
+                    await _save_fiber(settings, row, hold_claim=hold_claim)
                     return row
                 logger.exception("fiber_invoke_failed id=%s", row["id"])
                 error = str(exc)
@@ -409,7 +422,7 @@ async def _run_fiber_step(settings: Settings, row: dict[str, Any]) -> dict[str, 
         row["state_json"] = state
         row["status"] = "failed" if error else "running"
         row["wake_at"] = None
-        await _save_fiber(settings, row)
+        await _save_fiber(settings, row, hold_claim=hold_claim)
         return row
 
     # complete / unknown
@@ -418,7 +431,7 @@ async def _run_fiber_step(settings: Settings, row: dict[str, Any]) -> dict[str, 
     state["result"] = stash.get("last") or step.get("result")
     row["state_json"] = state
     row["wake_at"] = None
-    await _save_fiber(settings, row)
+    await _save_fiber(settings, row, hold_claim=hold_claim)
     return row
 
 
@@ -500,7 +513,10 @@ async def _claim_due_postgres(settings: Settings, ts: int) -> list[dict[str, Any
 
 
 async def resume_due_fibers(settings: Settings) -> int:
-    """Claim and advance due fibers. Returns steps run.
+    """Claim and advance due fibers. Returns how many were stepped.
+
+    "Steps run" until now, which was the same number while a claim ran one op. It is not any
+    more, and the callers were always counting fibers: `tasks.py` logs it as the sweep's size.
 
     Each fiber is claimed before it is stepped, so a step still running when the next
     scheduler tick fires is not picked up again.
@@ -518,12 +534,18 @@ async def resume_due_fibers(settings: Settings) -> int:
         prior_failures = int(row.get("attempts") or 0)
         row["attempts"] = 0
         try:
-            await _step_with_lease(settings, row)
-        except Exception as exc:
-            logger.warning(
-                "fiber step failed id=%s attempt=%d", row.get("id"), prior_failures + 1, exc_info=True
-            )
-            await _retry_or_dead(settings, row, prior_failures + 1, exc)
+            landed, failure = await _step_with_lease(settings, row)
+        except Exception as exc:  # the lease bookkeeping itself, not a step
+            landed, failure = 0, exc
+        if failure is not None:
+            # `attempts` counts *consecutive* failures, and a claim now runs several steps.
+            # If any of them landed before this one failed, the streak was broken inside this
+            # sweep and the charge is 1 — the same arithmetic as before, when a landed step
+            # and a failed step could never share a claim. Charging `prior_failures + 1`
+            # regardless would bury a fiber that had just made progress.
+            attempt = 1 if landed else prior_failures + 1
+            logger.warning("fiber step failed id=%s attempt=%d", row.get("id"), attempt, exc_info=failure)
+            await _retry_or_dead(settings, row, attempt, failure)
         ran += 1
     return ran
 
@@ -594,7 +616,14 @@ async def _record_attempt(settings: Settings, row: dict[str, Any]) -> None:
     `_save_fiber` also writes `state_json`, through `redact_json`; when that is what raised,
     this is the write that still lands. The run view derives the error from `attempts`
     when `dead` carries none.
+
+    Scoped to this worker's claim, like `_release_fiber` and `_renew_lease`. It is the last
+    write in the module that was not, and it clears the lease *and* overwrites `status` --
+    so on a worker that has lost its claim it would take the row out from under whoever now
+    owns it. No compare-and-set, deliberately: this path exists because the versioned write
+    is what failed.
     """
+    owner = str(getattr(settings, "replica_id", "local") or "local")
     row["updated_at"] = now_ms()
     row["lease_owner"] = ""
     row["lease_until"] = None
@@ -603,7 +632,7 @@ async def _record_attempt(settings: Settings, row: dict[str, Any]) -> None:
     }
     if _use_memory(settings):
         stored = _memory_fibers.get((row["tenant_id"], row["id"]))
-        if stored is not None:
+        if stored is not None and stored.get("lease_owner") in (owner, ""):
             stored.update(fields)
         return
     from sqlalchemy import update
@@ -615,7 +644,11 @@ async def _record_attempt(settings: Settings, row: dict[str, Any]) -> None:
         async with factory() as db:
             await db.execute(
                 update(Fiber)
-                .where(Fiber.tenant_id == row["tenant_id"], Fiber.id == row["id"])
+                .where(
+                    Fiber.tenant_id == row["tenant_id"],
+                    Fiber.id == row["id"],
+                    Fiber.lease_owner.in_((owner, "")),
+                )
                 .values(**fields)
             )
             await db.commit()
@@ -650,8 +683,47 @@ async def _renew_lease(settings: Settings, row: dict[str, Any]) -> None:
             await db.commit()
 
 
-async def _step_with_lease(settings: Settings, row: dict[str, Any]) -> None:
-    """Run one step, renewing the claim for as long as it is actually running."""
+def _pending_op(row: dict[str, Any]) -> str:
+    """The op the next step will run, or "" when the fiber is out of steps."""
+    state = row.get("state_json") or {}
+    steps = list(state.get("steps") or [])
+    cursor = int(state.get("cursor") or 0)
+    if cursor >= len(steps):
+        return ""
+    return str((steps[cursor] or {}).get("op") or "complete")
+
+
+async def _step_with_lease(settings: Settings, row: dict[str, Any]) -> tuple[int, Exception | None]:
+    """Run this fiber to its next suspension, renewing the claim while it works.
+
+    Returns how many steps landed and the failure that stopped the loop, if any. It reports
+    the failure rather than raising it because the count is only useful *with* it:
+    `attempts` counts consecutive failures, and a claim can now land a step and then fail
+    one, which a raise would lose on its way out.
+
+    One step per claim was a whole scheduler tick per op, and the last of them did no work
+    at all: `_run_fiber_step` flips a fiber to `completed` on the tick *after* the one that
+    ran its final step, when it notices `cursor >= len(steps)`. A durable chat's `steps` has
+    length one, so the cheapest possible run took two `* * * * *` ticks — around two minutes,
+    the second of which was pure latency. A *failure* terminates inside one sweep, so a failed
+    run reached its terminal state a full minute before a successful one.
+
+    So the loop runs until the fiber suspends. "Suspends" is exactly `status != "running"`:
+    terminal, `sleeping` after a `sleep` op, or parked by the screener retry. Two bounds keep
+    a long `steps` list from holding the worker off the rest of its batch:
+
+    * **At most one `invoke` per claim.** That is the only op that can take seconds, so this
+      keeps wall-clock per fiber per sweep exactly what it was before — one model turn — and
+      removes only the ticks that were doing bookkeeping. A two-invoke fiber still takes two
+      sweeps; it no longer takes three.
+    * `FIBER_MAX_OPS_PER_CLAIM`, plus a cursor-advance check, as a backstop.
+
+    The claim is held across the whole loop (`hold_claim=True`) and released once at the end.
+    It cannot be re-taken in between: `_save_fiber` clears the lease by default, and
+    `_renew_lease` only renews a lease this worker still owns — so releasing per step and
+    re-acquiring would leave a window where a second worker claims the fiber and runs the
+    next `invoke` concurrently, which is a duplicated side effect rather than a lost write.
+    """
 
     async def _heartbeat() -> None:
         while True:
@@ -663,19 +735,88 @@ async def _step_with_lease(settings: Settings, row: dict[str, Any]) -> None:
                 return
 
     beat = asyncio.create_task(_heartbeat())
+    landed = 0
+    failure: Exception | None = None
     try:
-        await _run_fiber_step(settings, row)
+        invokes = 0
+        for _ in range(FIBER_MAX_OPS_PER_CLAIM):
+            if _pending_op(row) == "invoke":
+                if invokes:
+                    break  # one model turn per fiber per sweep, unchanged from before
+                invokes += 1
+            # An empty pending op is the completion flip, and running it here is the whole
+            # point: it is the step that used to cost a minute of pure latency.
+            before = int((row.get("state_json") or {}).get("cursor") or 0)
+            before_version = int(row.get("version") or 0)
+            try:
+                await _run_fiber_step(settings, row, hold_claim=True)
+            except Exception as exc:
+                failure = exc
+                break
+            landed += 1
+            if int(row.get("version") or 0) == before_version:
+                # The save lost its compare-and-set, which `_save_fiber` reports by logging
+                # and returning — it bumps `row["version"]` only when the write actually
+                # landed, and every branch of `_run_fiber_step` saves exactly once, so an
+                # unchanged version here means this fiber's row now belongs to someone else.
+                #
+                # Stopping matters more than it used to. `row` was mutated in place before
+                # the save, so `status` and `cursor` still look like progress and the checks
+                # below would wave the loop on -- for up to `FIBER_MAX_OPS_PER_CLAIM` more
+                # ops, including its one `invoke`, whose tool side effects would happen and
+                # never be persisted. One step per claim made this self-limiting; a loop
+                # does not. The next sweep re-reads the row and starts from the truth.
+                logger.warning("fiber write was discarded id=%s; yielding the claim", row.get("id"))
+                break
+            if row.get("status") != "running":
+                break  # terminal, or suspended on a sleep — either way this claim is done
+            if int((row.get("state_json") or {}).get("cursor") or 0) <= before:
+                # No op in the tree does this today. If one ever leaves the fiber runnable
+                # without consuming a step, the next tick retries it rather than this loop
+                # spinning on it inside a claim nobody else can take.
+                logger.warning("fiber step did not advance id=%s; yielding the claim", row.get("id"))
+                break
     finally:
         beat.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await beat
+        # Every save above kept the claim, so exactly one release closes it -- but *only*
+        # when the claim ended cleanly.
+        #
+        # Releasing after a failure too was a race I introduced. `_retry_or_dead` parks the
+        # fiber in a transaction of its own, so between this release and that park the row
+        # is `status="running"` with a null `lease_until`, which is precisely what
+        # `_claim_due_postgres` selects: a concurrent sweep claims it and re-runs the step
+        # that just failed -- for a durable chat, the `invoke`, side effects and all. Before
+        # the loop existed the failure path never reached a release at all; `_retry_or_dead`
+        # wrote status, `wake_at` and the lease clear in one `UPDATE`, atomically, and it
+        # still does. So the failure path keeps its claim until that write releases it.
+        if failure is None:
+            with contextlib.suppress(Exception):
+                await _release_fiber(settings, row)
+    return landed, failure
 
 
 async def _release_fiber(settings: Settings, row: dict[str, Any]) -> None:
-    """Drop the claim so a failed step is retried rather than stranded until expiry."""
+    """Drop the claim so a failed step is retried rather than stranded until expiry.
+
+    Scoped to this worker's own claim, matching `_renew_lease`. It used to clear the lease
+    columns unconditionally, which was harmless while the only caller was the failure path of
+    a claim it certainly held; it is not harmless now that a claim spans several steps.
+
+    **This is a second line of defence, not the first, and on a default deployment it decides
+    nothing** -- `Settings.replica_id` is `"local"` and neither the Helm chart nor any Compose
+    overlay sets `FELIX_REPLICA_ID`, so every worker claims under the same name and this
+    predicate matches every claim including other workers'. The same is true of
+    `_renew_lease`'s guard. What actually keeps two workers off one fiber is the claim itself
+    (`lease_until` plus `FOR UPDATE SKIP LOCKED`), and, inside a multi-step claim, the
+    compare-and-set check in `_step_with_lease` -- which is why that check reads the version
+    rather than the owner. Fixing the identity is tracked in `docs/ROADMAP.md`.
+    """
+    owner = str(getattr(settings, "replica_id", "local") or "local")
     if _use_memory(settings):
         stored = _memory_fibers.get((row["tenant_id"], row["id"]))
-        if stored is not None:
+        if stored is not None and stored.get("lease_owner") == owner:
             stored["lease_owner"] = ""
             stored["lease_until"] = None
         return
@@ -688,7 +829,11 @@ async def _release_fiber(settings: Settings, row: dict[str, Any]) -> None:
         async with factory() as db:
             await db.execute(
                 update(Fiber)
-                .where(Fiber.tenant_id == row["tenant_id"], Fiber.id == row["id"])
+                .where(
+                    Fiber.tenant_id == row["tenant_id"],
+                    Fiber.id == row["id"],
+                    Fiber.lease_owner == owner,
+                )
                 .values(lease_owner="", lease_until=None)
             )
             await db.commit()
