@@ -5,48 +5,65 @@ so the assertions here are about the controls, not the plumbing. Every outbound 
 `builder.py` degrades to a warning rather than an error, which means a misconfigured control
 does not fail the build — it produces a quieter agent that still has the dangerous tools.
 
-Two limits on what any unit test here can prove, worth stating so nobody reads more into a
-green run than it earns:
+What a unit test here can and cannot prove, so nobody reads more into a green run than it earns:
 
-* `MUTATING_GITHUB_TOOLS` is a snapshot of the remote catalog, so the approval test compares
-  this file to the manifest and not to what GitHub actually serves. A write tool that GitHub
-  adds or renames binds ungated and this suite stays green. The structural fix is a tool
-  allowlist on `McpServerRef`, which does not exist yet.
-* Approval rules, policies, judges and screening match tool names by glob (`fnmatch`,
-  case-sensitive). The lists below stay enumerations anyway: this file's point is that the
-  set of mutating GitHub tools is pinned by name, and `github__*` would gate the read-only
-  ones too. A pattern here would hide the drift it exists to catch.
+* `McpServerRef.tools` is an allowlist over the remote catalogue, so the bound set is the
+  manifest's own list and `test_every_bound_write_tool_is_gated` is a real proof: a write tool
+  added to the allowlist without an approval rule goes red. What it still cannot see is a tool
+  GitHub *renames* — that binds nothing and is logged by `tools_from_mcp_servers`, not failed.
+* `READ_ONLY_GITHUB_TOOLS` is the one snapshot left: it says which allowlisted names are reads.
+  A read tool GitHub turns into a write would be gated only once someone moves it. Keep the list
+  short and keep it read-only by construction (nothing in it takes a body to create or change).
+* Approval rules match by glob (`fnmatch`, case-sensitive). The lists stay enumerations anyway:
+  `github__*` would gate the read-only tools too, and a pattern here would hide the drift the
+  allowlist exists to catch.
 """
 
 from __future__ import annotations
 
 import pytest
 from felix.manifests.loader import load_bundled
-from felix.manifests.schema import Manifest
+from felix.manifests.schema import Manifest, McpServerRef
 from felix.secrets import secret_ref_name
 from felix.tools.sandboxes import DEFAULT_SANDBOX_IMAGE, assert_sandbox_image_allowed
 
-# Every mutating tool the GitHub MCP server exposed when this manifest was written.
-MUTATING_GITHUB_TOOLS = frozenset(
+# Allowlisted remote tools that only read. Everything else the manifest allowlists is a write
+# and must be gated. Nothing here takes a body that creates or changes a GitHub object.
+READ_ONLY_GITHUB_TOOLS = frozenset(
     {
-        "github__create_branch",
-        "github__create_or_update_file",
-        "github__push_files",
-        "github__delete_file",
-        "github__create_repository",
-        "github__fork_repository",
-        "github__create_pull_request",
-        "github__update_pull_request",
-        "github__update_pull_request_branch",
-        "github__merge_pull_request",
-        "github__pull_request_review_write",
-        "github__add_comment_to_pending_review",
-        "github__add_reply_to_pull_request_comment",
-        "github__request_copilot_review",
-        "github__issue_write",
-        "github__sub_issue_write",
-        "github__add_issue_comment",
-        "github__run_secret_scanning",
+        "get_me",
+        "get_file_contents",
+        "search_code",
+        "search_issues",
+        "search_pull_requests",
+        "list_issues",
+        "issue_read",
+        "list_pull_requests",
+        "pull_request_read",
+        "list_commits",
+        "get_commit",
+        "list_branches",
+        "list_workflow_runs",
+        "get_workflow_run",
+        "list_workflow_jobs",
+        "get_job_logs",
+    }
+)
+
+# Remote tools that must never be bound at all: merging and reviewing are a person's act, and
+# the rest reach beyond this repository or delete from it. A tool that is not bound needs no
+# approval rule, which is a smaller thing to keep true than a rule per tool.
+NEVER_BOUND_GITHUB_TOOLS = frozenset(
+    {
+        "merge_pull_request",
+        "pull_request_review_write",
+        "add_comment_to_pending_review",
+        "add_reply_to_pull_request_comment",
+        "request_copilot_review",
+        "delete_file",
+        "create_repository",
+        "fork_repository",
+        "run_secret_scanning",
     }
 )
 
@@ -82,14 +99,35 @@ def test_workspace_writes_require_approval(manifest: Manifest) -> None:
     assert "write_file" in _approval_gated_tools(manifest)
 
 
-def test_known_mutating_github_tools_are_gated(manifest: Manifest) -> None:
-    """Every write tool in the recorded catalog is named in an approval rule.
+def test_every_bound_write_tool_is_gated(manifest: Manifest) -> None:
+    """Allowlist minus the read set is a subset of the approval rule.
 
-    This cannot prove totality — see the module docstring. It proves the manifest has not
-    dropped one of the tools we know exist.
+    The allowlist is what makes this provable: the bound set is this file's list, not whatever
+    the server happens to serve. An empty allowlist or a glob in it would bind tools this test
+    cannot name, so both are refused here rather than tolerated.
     """
-    missing = MUTATING_GITHUB_TOOLS - _approval_gated_tools(manifest)
+    github = _github_ref(manifest)
+    assert github.tools, "an empty allowlist binds every remote tool, including ones added later"
+    globs = [p for p in github.tools if "*" in p or "?" in p]
+    assert not globs, f"a pattern binds tools this file cannot name: {globs}"
+    writes = {f"github__{n}" for n in github.tools if n not in READ_ONLY_GITHUB_TOOLS}
+    assert writes, "the publish path is gone — no write tool is bound"
+    missing = writes - _approval_gated_tools(manifest)
     assert not missing, f"ungated GitHub write tools: {sorted(missing)}"
+
+
+def test_the_tools_a_person_owns_are_not_bound(manifest: Manifest) -> None:
+    bound = set(_github_ref(manifest).tools)
+    leaked = bound & NEVER_BOUND_GITHUB_TOOLS
+    assert not leaked, f"bound a tool this manifest must never hold: {sorted(leaked)}"
+
+
+def test_approval_rules_name_only_bound_tools(manifest: Manifest) -> None:
+    """A rule for a tool that is not bound is inert and looks like coverage."""
+    bound = {f"github__{n}" for n in _github_ref(manifest).tools}
+    for rule in manifest.spec.approvals:
+        stray = {t for t in rule.tools if t.startswith("github__")} - bound
+        assert not stray, f"{rule.id} gates tools that are not bound: {sorted(stray)}"
 
 
 def test_approval_rules_cannot_be_silently_disarmed(manifest: Manifest) -> None:
@@ -121,9 +159,7 @@ def test_unattended_approval_is_actually_enforced(manifest: Manifest) -> None:
 
 
 def test_github_token_is_a_secret_ref(manifest: Manifest) -> None:
-    servers = {ref.name: ref for ref in manifest.spec.mcp}
-    assert "github" in servers, "the PR path is the github MCP server"
-    assert secret_ref_name(servers["github"].auth) == "GITHUB_MCP_TOKEN"
+    assert secret_ref_name(_github_ref(manifest).auth) == "GITHUB_MCP_TOKEN"
 
 
 def test_untrusted_mcp_output_is_screened(manifest: Manifest) -> None:
@@ -175,6 +211,12 @@ def test_code_execution_is_the_sandbox_and_nothing_else(manifest: Manifest) -> N
     assert spec.peers == []
     assert spec.sub_agents == []
     assert all(ref.transport in {"http", "sse"} for ref in spec.mcp), "stdio MCP spawns a subprocess"
+
+
+def _github_ref(manifest: Manifest) -> McpServerRef:
+    servers = {ref.name: ref for ref in manifest.spec.mcp}
+    assert "github" in servers, "the PR path is the github MCP server"
+    return servers["github"]
 
 
 def _approval_gated_tools(manifest: Manifest) -> set[str]:

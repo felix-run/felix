@@ -99,25 +99,59 @@ spec:
       binding: python:3.14-slim
       timeout_ms: 30000
 
-  # Tools bind as github__<remote tool>: github__create_branch, github__push_files,
-  # github__create_pull_request, github__get_file_contents, and so on. Binding failure is
-  # logged and non-fatal, so an unreachable server yields an agent with no GitHub tools
-  # rather than an error — check the log, not the reply, before believing this works.
+  # Tools bind as github__<remote tool>. `tools:` is an allowlist over the remote names — it is
+  # what makes the surface below enumerable. Without it the whole catalogue binds, and a write tool
+  # GitHub adds or renames binds ungated with nothing to go red; with it, a tool this file does not
+  # name does not exist for the agent, and tests/unit/test_contributor_manifest.py can prove every
+  # bound write tool is gated instead of comparing this file to itself. A name GitHub no longer
+  # serves is logged at bind time, not refused. Binding failure as a whole is logged and non-fatal,
+  # so an unreachable server yields an agent with no GitHub tools rather than an error — check the
+  # log, not the reply, before believing this works.
+  #
+  # Never bound, on purpose: merge_pull_request, pull_request_review_write,
+  # add_comment_to_pending_review, request_copilot_review, delete_file, create_repository,
+  # fork_repository, run_secret_scanning. Merging and reviewing are a person's; a tool that is not
+  # bound needs no approval rule.
   mcp_servers:
     - name: github
       transport: http
       url: https://api.githubcopilot.com/mcp/
       auth: secret:GITHUB_MCP_TOKEN
+      tools:
+        # read
+        - get_me
+        - get_file_contents
+        - search_code
+        - search_issues
+        - search_pull_requests
+        - list_issues
+        - issue_read
+        - list_pull_requests
+        - pull_request_read
+        - list_commits
+        - get_commit
+        - list_branches
+        - list_workflow_runs
+        - get_workflow_run
+        - list_workflow_jobs
+        - get_job_logs
+        # write — every one of these is named in the approval rule below
+        - create_branch
+        - push_files
+        - create_or_update_file
+        - create_pull_request
+        - update_pull_request
+        - update_pull_request_branch
+        - issue_write
+        - sub_issue_write
+        - add_issue_comment
 
   # Approvals pause the run; resume with POST /approvals/{id}/decide.
   #
-  # Read the scope of this honestly. Approval rules match tool names exactly — there are no
-  # globs anywhere in the governance stack — and McpServerRef has no per-server tool allowlist,
-  # so the whole remote catalog binds as github__*. The list below is every mutating tool the
-  # GitHub MCP server exposed when this manifest was written. If GitHub adds or renames a write
-  # tool it binds UNGATED and no test here goes red, because a unit test can only compare this
-  # file to itself. Closing that properly needs a tool allowlist on McpServerRef, or a
-  # toolset-scoped MCP URL so fewer mutating tools bind at all.
+  # Rules match tool names by glob (`tool_match.matches_any`), and a literal name beats a pattern.
+  # The write tools are still listed by name rather than as `github__*`, because a glob would gate
+  # the read tools too and would hide a write tool that slipped into the allowlist above without a
+  # rule here — the test checks allowlist minus read set is a subset of this list.
   #
   # allow_unattended is only enforced under eu_ai_act at risk_tier high, which is why the
   # governance block below sets exactly that — otherwise the field is decoration.
@@ -128,30 +162,17 @@ spec:
       ttl_seconds: 600
       allow_unattended: false
     - id: github-mutate
-      description: Confirm a branch, commit, or pull request against the repository
+      description: Confirm a branch, commit, pull request, or issue against the repository
       tools:
-        # repository contents
         - github__create_branch
-        - github__create_or_update_file
         - github__push_files
-        - github__delete_file
-        - github__create_repository
-        - github__fork_repository
-        # pull requests
+        - github__create_or_update_file
         - github__create_pull_request
         - github__update_pull_request
         - github__update_pull_request_branch
-        - github__merge_pull_request
-        - github__pull_request_review_write
-        - github__add_comment_to_pending_review
-        - github__add_reply_to_pull_request_comment
-        - github__request_copilot_review
-        # issues
         - github__issue_write
         - github__sub_issue_write
         - github__add_issue_comment
-        # scanning
-        - github__run_secret_scanning
       ttl_seconds: 600
       allow_unattended: false
 

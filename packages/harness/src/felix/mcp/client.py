@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 
 from felix.manifests.schema import McpServerRef
+from felix.manifests.tool_match import matches_any, unmatched_patterns
 from felix.security.egress import safe_async_client
 from felix.security.ssrf import assert_safe_outbound_url
 from felix.timeouts import DEFAULT_CONNECT_TIMEOUT_S, timeout_seconds
@@ -202,6 +203,14 @@ async def tools_from_mcp_servers(
         except Exception:
             logger.warning("failed to list MCP tools from %s", ref.name, exc_info=True)
             continue
+        if ref.tools:
+            names = [str(r["name"]) for r in remotes]
+            missing = unmatched_patterns(ref.tools, names)
+            if missing:
+                # The server renamed or dropped a tool the manifest names. Not fatal — the
+                # rest still bind — but the manifest author wrote that name for a reason.
+                logger.warning("MCP server %s lists no tool matching %s", ref.name, missing)
+            remotes = [r for r in remotes if matches_any(ref.tools, str(r["name"]))]
         for remote in remotes:
             try:
                 out.append(_bind_remote_tool(ref, remote, allow_http=allow_http))

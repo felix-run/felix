@@ -1020,6 +1020,13 @@
           ],
           "default": null,
           "title": "Timeout Ms"
+        },
+        "tools": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Tools",
+          "type": "array"
         }
       },
       "required": [
