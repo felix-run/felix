@@ -411,9 +411,21 @@ Small, and blocking for the adopter goal: anyone evaluating Felix on its governa
       Implemented: the reply-path wrapper redacts (or blocks) PII in the agent's reply on
       `invoke` and on the streaming path; `output` covers tool output and the reply,
       `final_response` the reply alone. `deploy/GOVERNANCE.md` says so.
-- [ ] **Five `PlanExecuteSpec` fields are inert** — `planner_model`, `executor_model`,
-      `replan_on_failure`, `max_replans`, `planner_few_shots` (`schema.py:435-442`) each have
-      exactly one reference: their own definition. The documented replan behaviour does not exist.
+- [x] **Five `PlanExecuteSpec` fields were inert** — four are wired and one is gone.
+      `planner_model` and `executor_model` route the planning call and the subtask agent;
+      `replan_on_failure` and `max_replans` replan the *remainder* when a step ends early, on a
+      deliberately narrow definition of "early" (`_FAILED_STOP_REASONS` — a refusal or a cut-off
+      answer, not an empty one). `planner_few_shots` was removed rather than wired: it named a
+      count of examples with no corpus behind it, so there was nothing to make it mean, and it is
+      in `RETIRED` so stored manifests keep loading. Two things found on the way.
+      `_pipe_stream` keeps the *last* terminal event and `react` puts `stop_reason` on `done`
+      as well as `on_chain_end`, so a test double that omits it reports every streamed step
+      as `end_turn` — which looks exactly like a streaming bug in the pattern; the composite
+      `_terminal_events` had the same hole, which also meant `/v1` reported a default
+      `finish_reason` for every streamed composite run. And `executor_model` was wired first
+      on `_DelegatingAgent`'s `self.inner or self._base_agent(...)` fallback, which is dead
+      from core because `_build_plan_execute` always passes `inner` — the field stayed inert
+      *and* the textual ratchet started reporting it as fixed.
 - [ ] **The session log keeps the unscreened reply.** The reply controls above govern the
       reply as it leaves the run; the react loop appends the assistant message to the session
       log before the wrapper sees it, so a resume stream or a thread export replays the raw

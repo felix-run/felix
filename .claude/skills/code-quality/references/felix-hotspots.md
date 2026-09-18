@@ -58,16 +58,17 @@ Current, largest first:
 
 | Lines | Module |
 |---|---|
-| 1,509 | `apps/api/src/felix_api/routes/chat.py` |
-| 1,497 | `packages/harness/src/felix/manifests/builder.py` |
-| 1,084 | `packages/harness/src/felix/patterns/react.py` |
-| 867 | `packages/harness/src/felix/memory/store.py` |
-| 798 | `packages/harness/src/felix/manifests/schema.py` |
-| 730 | `packages/harness/src/felix/patterns/delegating.py` |
+| 1,455 | `packages/harness/src/felix/manifests/builder.py` |
+| 1,329 | `apps/api/src/felix_api/routes/chat.py` |
+| 1,143 | `packages/harness/src/felix/patterns/react.py` |
+| 886 | `packages/harness/src/felix/memory/store.py` |
+| 873 | `packages/harness/src/felix/manifests/schema.py` |
+| 831 | `packages/harness/src/felix/patterns/delegating.py` |
+| 731 | `packages/cli/src/felix_cli/main.py` |
 
 `builder.py` has a partial defense — the governance wrapper order is load-bearing and must
 stay one readable sequence — but that argument covers the `apply_*` chain, not the whole
-file. The other five have none.
+file. The other six have none.
 
 ### Settled, and why the entry is kept
 
@@ -91,7 +92,13 @@ only meter what it is handed.
 `packages/harness/src/felix/patterns/__init__.py` was 920 lines and is now 152: the composite
 agent moved to `patterns/delegating.py` and the deep pattern's plan tools to
 `patterns/plan_tools.py`, which also removed both of that file's `noqa: E402` imports.
-`delegating.py` is 730 lines and holds one `_run_*` per pattern.
+`delegating.py` holds one `_run_*` per pattern. It is the split to repeat when it grows: wiring
+the `plan_execute` manifest fields in #261 added a replan loop, and that pattern's own
+vocabulary — what counts as a failed subtask, what a replan is asked for — went to
+`patterns/plan_execute.py` rather than into the shared file. `_spec_with_model` went the other
+way in the same pass, to `patterns/model.py` beside `build_model`: it is a `ModelSpec`
+transform with callers in two modules, and leaving it in `delegating` made the package entry
+point import a private from a sibling.
 
 ## Duplication that is a defect, not a counter-rule
 

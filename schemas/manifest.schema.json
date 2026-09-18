@@ -1307,6 +1307,7 @@
     },
     "PlanExecuteSpec": {
       "additionalProperties": false,
+      "description": "`pattern: plan_execute` \u2014 plan the work, run the steps, synthesise an answer.\n\nThe split is the reason to choose this pattern over `react`: planning is one call whose\nquality shapes everything after it, execution is many narrow calls. `planner_model` and\n`executor_model` are what let those be different models, and `replan_on_failure` is what\nkeeps one refused step from poisoning the notes the answer is synthesised from.",
       "properties": {
         "planner_model": {
           "default": "",
@@ -1342,13 +1343,6 @@
           "maximum": 20,
           "minimum": 1,
           "title": "Executor Recursion Limit",
-          "type": "integer"
-        },
-        "planner_few_shots": {
-          "default": 3,
-          "maximum": 10,
-          "minimum": 0,
-          "title": "Planner Few Shots",
           "type": "integer"
         }
       },

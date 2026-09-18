@@ -544,14 +544,37 @@ class ToolsRetrievalSpec(_Strict):
     model: str = "bge-base-en-v1.5"
 
 
+# Five fields here validated and were read by nothing until #261 — `planner_model`,
+# `executor_model`, `replan_on_failure`, `max_replans` and `planner_few_shots`, the last of
+# which was removed rather than wired. That history belongs in a comment rather than in the
+# docstring below, which is generated into `schemas/manifest.schema.json` and reaches a
+# manifest author's editor, where a note about the harness's past means nothing.
 class PlanExecuteSpec(_Strict):
+    """`pattern: plan_execute` — plan the work, run the steps, synthesise an answer.
+
+    The split is the reason to choose this pattern over `react`: planning is one call whose
+    quality shapes everything after it, execution is many narrow calls. `planner_model` and
+    `executor_model` are what let those be different models, and `replan_on_failure` is what
+    keeps one refused step from poisoning the notes the answer is synthesised from.
+    """
+
+    #: Route that produces the plan. Empty keeps the manifest's own model. The asymmetry is
+    #: the point: planning is one call whose quality shapes every step after it, execution is
+    #: many narrow calls, so this is the lever a plan/execute split exists to offer.
     planner_model: str = ""
+    #: Route the subtask agent runs on. Empty keeps the manifest's model. Applied where the
+    #: executor is built (`patterns/__init__.py:_build_plan_execute`), beside its sibling
+    #: `executor_recursion_limit`; a caller that supplies a finished agent of its own keeps it.
     executor_model: str = ""
     max_subtasks: int = Field(default=8, ge=1, le=20)
+    #: Replan the remaining steps when one ends early rather than carrying the failure into
+    #: the notes the answer is synthesised from. "Ends early" is narrow on purpose --
+    #: `patterns/plan_execute.py:_FAILED_STOP_REASONS` has the list and the reasoning.
     replan_on_failure: bool = True
+    #: Ceiling on replans for one run, so a step that always fails cannot spend the budget.
+    #: `0` disables replanning as surely as `replan_on_failure: false`.
     max_replans: int = Field(default=2, ge=0, le=5)
     executor_recursion_limit: int = Field(default=6, ge=1, le=20)
-    planner_few_shots: int = Field(default=3, ge=0, le=10)
 
 
 class ExecutionSpec(_Strict):

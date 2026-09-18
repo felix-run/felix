@@ -59,6 +59,10 @@ logger = logging.getLogger("felix.manifests.compat")
 #   the outage this exists to end, half-fixed.
 RETIRED: dict[tuple[str, ...], str] = {
     ("spec", "model", "region"): "removed in 0.3.0 (#125); was declared and read by nothing",
+    ("spec", "plan_execute", "planner_few_shots"): (
+        "removed after 0.3.0 (#261); named a count of planner examples with no corpus "
+        "behind it anywhere, and was read by nothing"
+    ),
 }
 
 

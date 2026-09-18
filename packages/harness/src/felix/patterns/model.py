@@ -54,6 +54,7 @@ from felix_ai.wire import (
 
 from felix.config import DEFAULT_MODEL_ROUTES, Settings, get_settings
 from felix.context import try_get_context
+from felix.logging_setup import loggable
 from felix.observability.genai import (
     record_input_on_span,
     record_result_on_span,
@@ -576,6 +577,46 @@ def price_override_for(spec: Any) -> dict[str, float] | None:
     if not isinstance(raw, dict) or not raw:
         return None
     return {str(k): float(v) for k, v in raw.items()}
+
+
+def _spec_with_model(model_spec: Any, model_id: str) -> Any:
+    """`model_spec` with its id replaced, or the original when there is nothing to replace.
+
+    The id is a *route* name resolved against `FELIX_MODEL_ROUTES`, not a wire model, so
+    everything else on the spec -- price overrides, fallbacks, thinking level -- is carried
+    across deliberately: a manifest that sets a planner model is choosing which route plans,
+    not opting out of the rest of its own model configuration.
+
+    An unroutable id raises from `build_one_model` when the client is built, which is the
+    same failure a bad `spec.model.id` gives and in the same place. Validating it here would
+    mean resolving routes at compile time for a value only used if this pattern runs.
+    """
+    if not model_id:
+        return model_spec
+
+    from felix.manifests.schema import ModelSpec
+
+    if isinstance(model_spec, ModelSpec):
+        data = model_spec.model_dump()
+        data["id"] = model_id
+        return ModelSpec.model_validate(data)
+
+    from copy import deepcopy
+
+    try:
+        spec = deepcopy(model_spec)
+        spec.id = model_id
+    except Exception:
+        # `None`, a dict, a frozen dataclass from a plugin-built agent. Core always supplies
+        # a real `ModelSpec`, so this is the plugin seam -- and silence here would put the
+        # field straight back to being inert for exactly the caller who cannot see why.
+        logger.warning(
+            "plan_execute model route %s ignored: a %s cannot carry an id",
+            loggable(model_id, limit=64),
+            type(model_spec).__name__,
+        )
+        return model_spec
+    return spec
 
 
 def build_model(settings: Settings | None, spec: Any) -> ModelClient:
