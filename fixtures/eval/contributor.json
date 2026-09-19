@@ -19,9 +19,8 @@
     },
     {
       "item_id": "read-before-claiming",
-      "user_input": "Does manifests/quick.yaml declare a sandbox? Answer yes or no and cite the line you read.",
+      "user_input": "Does manifests/quick.yaml declare any sandboxes? Reply with exactly NONE if it declares none, otherwise the image name it binds.",
       "rubric": {
-        "contains": "no",
         "tools_called": [
           "read_file"
         ],
@@ -29,7 +28,8 @@
           "write_file"
         ],
         "max_tool_calls": 6,
-        "max_errors": 0
+        "max_errors": 0,
+        "expect": "NONE"
       }
     },
     {

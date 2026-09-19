@@ -13,6 +13,7 @@ from felix.logging_setup import loggable
 from felix.patterns.types import ChatMessage, InvokeInput
 from felix.runtime import build_tenant_agent, resolve_tenant_manifest
 from felix.thread_ids import eval_thread_id
+from felix.tools.types import is_failure_content
 
 logger = logging.getLogger("felix.eval.runner")
 
@@ -29,19 +30,40 @@ class Trajectory:
     errors: int = 0
 
 
-_TOOL_FAILURE_PREFIXES = ("[error/", "[fatal/", "[policy denied]", "[approval denied]", "[shell denied]")
-
-
 def trajectory_of(messages: list[ChatMessage]) -> Trajectory:
-    """Read the trajectory off the messages a run produced."""
+    """Read the trajectory off the messages a run produced.
+
+    A tool message carries only text by the time it is here — the deny and error markers on
+    the `ToolOutput` do not survive into a `ChatMessage` — so a failure is recognised by the
+    spelling every producer uses, `FAILURE_CONTENT_PREFIXES`, which lives beside `deny_output`.
+    """
     names: list[str] = []
     errors = 0
     for m in messages:
         if m.role == "assistant" and m.tool_calls:
             names.extend(tc.name for tc in m.tool_calls)
-        elif m.role == "tool" and (m.content or "").startswith(_TOOL_FAILURE_PREFIXES):
+        elif m.role == "tool" and is_failure_content(m.content):
             errors += 1
     return Trajectory(tool_names=tuple(names), errors=errors)
+
+
+_INVALID = object()
+
+
+def _ceiling(raw: Any) -> int | object | None:
+    """An integer ceiling from a rubric value: None when absent, `_INVALID` when unscoreable.
+
+    The shape `min_chars` had already worked out — `""` means no rule, a value `int()` rejects
+    is a rubric nobody can score, a negative one could never say no — written once so the next
+    ceiling rule does not re-remember `OverflowError`.
+    """
+    if raw is None or raw == "":
+        return None
+    try:
+        value = int(raw)
+    except TypeError, ValueError, OverflowError:
+        return _INVALID
+    return _INVALID if value < 0 else value
 
 
 def _mock_trajectory(rubric: dict[str, Any]) -> Trajectory:
@@ -100,26 +122,16 @@ def _score_answer(
         seen = [str(t) for t in not_called if str(t) in traj.tool_names]
         if seen:
             return False, 0.0, "tools_not_called"
-    max_calls_raw = rubric.get("max_tool_calls")
-    if max_calls_raw is not None and max_calls_raw != "":
-        try:
-            max_calls = int(max_calls_raw)
-        except TypeError, ValueError, OverflowError:
-            return False, 0.0, "invalid_rubric"
-        if max_calls < 0:
-            return False, 0.0, "invalid_rubric"
-        if len(traj.tool_names) > max_calls:
-            return False, 0.0, "max_tool_calls"
-    max_errors_raw = rubric.get("max_errors")
-    if max_errors_raw is not None and max_errors_raw != "":
-        try:
-            max_errors = int(max_errors_raw)
-        except TypeError, ValueError, OverflowError:
-            return False, 0.0, "invalid_rubric"
-        if max_errors < 0:
-            return False, 0.0, "invalid_rubric"
-        if traj.errors > max_errors:
-            return False, 0.0, "max_errors"
+    max_calls = _ceiling(rubric.get("max_tool_calls"))
+    if max_calls is _INVALID:
+        return False, 0.0, "invalid_rubric"
+    if isinstance(max_calls, int) and len(traj.tool_names) > max_calls:
+        return False, 0.0, "max_tool_calls"
+    max_errors = _ceiling(rubric.get("max_errors"))
+    if max_errors is _INVALID:
+        return False, 0.0, "invalid_rubric"
+    if isinstance(max_errors, int) and traj.errors > max_errors:
+        return False, 0.0, "max_errors"
     expect = rubric.get("expect")
     if expect is None:
         expect = rubric.get("equals")
@@ -272,6 +284,8 @@ async def start_run(
                 run["id"],
                 pass_count=0,
                 fail_count=len(items),
+                # Every one of them raised before it could be scored.
+                error_count=len(items),
                 scores=[{"error": str(exc)}],
             )
             return completed or run

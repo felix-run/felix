@@ -431,6 +431,12 @@ def test_the_smoke_fixture_is_positive_by_construction() -> None:
     # A subset by necessity, unlike the negative half: the rules that only ever reject —
     # `invalid_rubric` today — cannot appear in a fixture whose every item must pass.
     assert {"equals", "contains", "min_chars"} <= rules, rules
+    # A satisfied trajectory rule falls through to the answer rule's name, so it cannot show
+    # in `rules`; the mock wiring is pinned by the item existing at all — drop
+    # `_mock_trajectory` from `start_run` and `test_usage_eval` fails on this item.
+    assert any("tools_called" in item["rubric"] for item in payload["items"]), (
+        "the smoke fixture must carry a trajectory rule so the --mock trajectory path is exercised"
+    )
 
 
 def test_the_negative_fixture_is_negative_by_construction() -> None:
