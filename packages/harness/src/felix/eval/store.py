@@ -79,6 +79,7 @@ def _run_dict(row: EvalRun | dict[str, Any]) -> dict[str, Any]:
             "status": row.get("status", "in_progress"),
             "pass_count": row.get("pass_count", 0),
             "fail_count": row.get("fail_count", 0),
+            "error_count": row.get("error_count", 0),
             "scores": row.get("scores_json") or row.get("scores") or [],
             "manifest_version": row.get("manifest_version"),
         }
@@ -92,6 +93,7 @@ def _run_dict(row: EvalRun | dict[str, Any]) -> dict[str, Any]:
         "status": row.status,
         "pass_count": row.pass_count,
         "fail_count": row.fail_count,
+        "error_count": row.error_count,
         "scores": row.scores_json,
         "manifest_version": row.manifest_version,
     }
@@ -262,6 +264,7 @@ async def create_run(
     status: str = "in_progress",
     pass_count: int = 0,
     fail_count: int = 0,
+    error_count: int = 0,
     scores: list[Any] | None = None,
     finished_at: int | None = None,
 ) -> dict[str, Any]:
@@ -279,6 +282,7 @@ async def create_run(
             "status": status,
             "pass_count": pass_count,
             "fail_count": fail_count,
+            "error_count": error_count,
             "scores_json": scores or [],
             "manifest_version": manifest_version,
         }
@@ -297,6 +301,7 @@ async def create_run(
             status=status,
             pass_count=pass_count,
             fail_count=fail_count,
+            error_count=error_count,
             scores_json=scores or [],
             manifest_version=manifest_version,
         )
@@ -312,6 +317,7 @@ async def complete_run(
     *,
     pass_count: int = 0,
     fail_count: int = 0,
+    error_count: int = 0,
     scores: list[Any] | None = None,
 ) -> dict[str, Any] | None:
     finished_at = now_ms()
@@ -324,6 +330,7 @@ async def complete_run(
         row["finished_at"] = finished_at
         row["pass_count"] = pass_count
         row["fail_count"] = fail_count
+        row["error_count"] = error_count
         row["scores_json"] = scores or []
         return _run_dict(row)
 
@@ -336,6 +343,7 @@ async def complete_run(
         row.finished_at = finished_at
         row.pass_count = pass_count
         row.fail_count = fail_count
+        row.error_count = error_count
         row.scores_json = scores or []
         await db.commit()
         return _run_dict(row)

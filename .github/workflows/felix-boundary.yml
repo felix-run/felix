@@ -1,0 +1,70 @@
+name: felix-boundary
+
+# The one gate the loop cannot reach. A Felix-authored pull request (docs/SELF.md) may not
+# touch the files that constrain Felix, must close exactly one `felix:go` ticket, must carry the
+# PR contract, and may not change paths the ticket did not name. For a person's pull request
+# this job passes without looking.
+#
+# `pull_request_target`, deliberately: the workflow and `scripts/felix_boundary.py` that run
+# are the BASE branch's, so a PR that edits either is judged by the copy it tried to replace.
+# For the same reason nothing from the head is checked out or executed — the changed paths,
+# the body and the ticket are read through the API. That is what makes this safe to run on
+# `pull_request_target` at all; do not add a head checkout to this file.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+
+concurrency:
+  group: felix-boundary-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  felix-boundary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+    steps:
+      # The base ref, explicitly. `pull_request_target` already defaults to it, and saying so
+      # is what a reader checks first.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          sparse-checkout: |
+            scripts/felix_boundary.py
+          sparse-checkout-cone-mode: false
+
+      - name: Read the pull request through the API
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}/files" --paginate --jq '.[].filename' > changed.txt
+          printf '%s' "$BODY" > body.md
+          # The ticket the body closes, read by the same function that judges the body — one
+          # regex, one file. A ticket that cannot be fetched is judged as unreadable, not
+          # skipped: the script refuses a `Closes` it was handed no ticket for.
+          n=$(python3 scripts/felix_boundary.py --print-closes body.md)
+          if [ -n "$n" ] && gh api "repos/${GITHUB_REPOSITORY}/issues/${n}" > ticket.json 2>/dev/null; then
+            echo "ticket=ticket.json" >> "$GITHUB_ENV"
+          else
+            echo "ticket=" >> "$GITHUB_ENV"
+          fi
+
+      - name: Judge
+        env:
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          python3 scripts/felix_boundary.py \
+            --author "$AUTHOR" --branch "$BRANCH" --changed changed.txt --body body.md \
+            ${ticket:+--ticket "$ticket"}

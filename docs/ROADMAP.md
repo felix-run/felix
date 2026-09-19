@@ -28,6 +28,10 @@ Pick from **Now** unless a demo needs something from **Next**.
 
 **Dogfood `contributor.yaml` on real Felix work → fix what breaks → write it down here.**
 
+The program that turns that sentence into rungs — who proposes, who decides, what a ticket must
+cite, what Felix may never edit, and the numbers that graduate each rung — is
+[SELF.md](SELF.md). This file stays the *what*; that one is the *how*.
+
 This replaces the loop this file carried until 2026-09-02, which read "dogfood float". `float`
 was deleted from `felix-run/web` on 2026-08-23 — *"what it actually contributed was a mode, not
 a product"* — and the line survived it by ten days. That matters more than a stale link: with
@@ -200,10 +204,13 @@ First, because everything else governs it.
       on, which is what keeps the unscreened-tools warning silent on what we ship. A tool no
       manifest declares is inert by this repo's own definition, and none of these are now.
 
-Decision gate, not a commitment: the **governed coding toolset** (`read`/`edit`/`bash` behind a
-`FilesystemBackend` + `ShellBackend` pair) was deferred as "large, and conditional — only worth
-starting if coding-agent use cases are actually on the roadmap". The daily-driver goal makes it
-live again. Revisit after the first three land, on evidence, not before.
+- [~] **Governed shell tool.** The decision gate that sat here — the `read`/`edit`/`bash` coding
+      toolset, deferred as "only worth starting if coding-agent use cases are actually on the
+      roadmap" — is decided: [SELF.md](SELF.md) puts Felix building Felix on the roadmap,
+      and rung 2 of it cannot exist without a way to run `./scripts/test.sh`. Landing as
+      `spec.shell_tools` behind `FELIX_SHELL_ALLOWED_COMMANDS` (argv prefixes, no shell interpreter,
+      scrubbed env, cwd pinned under the workspace root), not as a `ShellBackend` registry — one
+      implementation does not earn a registry.
 
 ### B. Close the durable loop
 
@@ -396,10 +403,10 @@ and fixed; the comment at `fibers.py:36-46` is the record.
       the half with nothing to attribute. It is the *originating* thread, because `create_pending`
       still reuses a pending row across threads. Widening that reuse key would change grant scope
       and is a product decision, not part of this.
-- [ ] **Attribute denials in the audit record.** Every wrapper denial emits one undifferentiated
-      `policy_deny` carrying `{tool, tool_call_id, thread_id}` — which control fired, and why,
-      exists only in the tool message. The wrappers emit Prometheus counters, not audit events.
-      An auditor cannot answer "show me every call blocked by policy X in Q3". Then
+- [~] **Attribute denials in the audit record.** Landed: `policy_deny` rows carry
+      `payload.control` naming the wrapper that refused — the source was on every deny output
+      already (`deny_output` stamps it) and the loop was the one reader that dropped it, so the
+      fix was a read, not a design. Not landed, and still the auditor's second question:
       `GET /audit/export` over a time range; `audit.py`'s docstring already promises an export
       that does not exist.
 - [ ] **Surface eval instrumentation** — `EvalRun.started_at/finished_at` and `ItemScore`'s
@@ -547,17 +554,16 @@ comment explaining exactly that. It is conditional, not inert.
       and now guards only the paths that bypass validation — items written straight to the
       store by the continuous-eval job, and a manifest that fails to resolve.
 
-- [ ] **An eval run cannot report how many items errored.** `fail_count` counts an item the
-      scorer rejected and an item that raised as the same thing, and the run row carries no
-      `error_count`. That is the ambiguity `scripts/eval-counter-smoke.sh` resolves out of band
-      for CI — it greps the printed rows for `error` — and nothing on the API surface offers the
-      equivalent, so an operator reading a failing run cannot tell a model regression from a
-      malformed dataset. Pairs with the item above.
+- [x] **An eval run cannot report how many items errored.** `error_count` is on the run row
+      (migration `0017`) as the subset of `fail_count` that never reached the scorer;
+      `fail_count` keeps meaning "did not pass", which the CLI exit code relies on. The
+      counter-smoke checks both, so the row and the score rows cannot drift.
 
-- [ ] **Eval scoring depth** — four string rules (`equals` / `contains` / `min_chars` / non-empty)
-      plus one judge, and `invalid_rubric` for a rule that could never reject. No regex, no schema
-      check, no tool-call or trajectory assertions, no numeric tolerance, no significance test on
-      comparative runs. Nobody can gate a model change on this without writing their own scorer.
+- [~] **Eval scoring depth** — landed: trajectory rules (`tools_called`, `tools_not_called`,
+      `max_tool_calls`, `max_errors`), read off the run's messages and off `mock_tool_calls` /
+      `mock_tool_errors` under `--mock`, with `invalid_rubric` for the shapes that cannot reject.
+      `fixtures/eval/contributor.json` is the first dataset that scores the *agent*. Still no
+      regex, no schema check, no numeric tolerance, no significance test on comparative runs. Nobody can gate a model change on this without writing their own scorer.
       A new rule inherits two things: `_score_answer`'s docstring states the empty-value policy,
       and `tests/unit/test_eval_gate_can_fail.py` reads the rule names off the function, so the
       rule fails there until `negative.json` has an item that has seen it reject something.

@@ -416,7 +416,7 @@ def test_the_smoke_fixture_is_positive_by_construction() -> None:
     `equals`, `contains` and `min_chars` entirely. The pair only means something for as long as
     both halves reach the same rules.
     """
-    from felix.eval.runner import _mock_answer, _score_answer
+    from felix.eval.runner import _mock_answer, _mock_trajectory, _score_answer
 
     payload = _fixture("smoke")
     assert payload["items"], "the smoke fixture is empty"
@@ -424,13 +424,19 @@ def test_the_smoke_fixture_is_positive_by_construction() -> None:
     rules = set()
     for item in payload["items"]:
         rubric = item["rubric"]
-        ok, _score, rule = _score_answer(_mock_answer(rubric), rubric)
+        ok, _score, rule = _score_answer(_mock_answer(rubric), rubric, _mock_trajectory(rubric))
         assert ok is True, f"{item['item_id']} would fail; the smoke fixture must pass every item"
         rules.add(rule)
 
     # A subset by necessity, unlike the negative half: the rules that only ever reject —
     # `invalid_rubric` today — cannot appear in a fixture whose every item must pass.
     assert {"equals", "contains", "min_chars"} <= rules, rules
+    # A satisfied trajectory rule falls through to the answer rule's name, so it cannot show
+    # in `rules`; the mock wiring is pinned by the item existing at all — drop
+    # `_mock_trajectory` from `start_run` and `test_usage_eval` fails on this item.
+    assert any("tools_called" in item["rubric"] for item in payload["items"]), (
+        "the smoke fixture must carry a trajectory rule so the --mock trajectory path is exercised"
+    )
 
 
 def test_the_negative_fixture_is_negative_by_construction() -> None:
@@ -438,9 +444,11 @@ def test_the_negative_fixture_is_negative_by_construction() -> None:
 
     A `mock_answer` edited to satisfy its rubric would make the run above pass and quietly
     remove the only thing proving the gate can fail. `_mock_answer` returns `mock_answer`
-    verbatim, so scoring each item's answer against its own rubric is exactly what the run does.
+    verbatim and `_mock_trajectory` returns `mock_tool_calls` / `mock_tool_errors` the same way,
+    so scoring each item's answer and trajectory against its own rubric is exactly what the
+    run does.
     """
-    from felix.eval.runner import _mock_answer, _score_answer
+    from felix.eval.runner import _mock_answer, _mock_trajectory, _score_answer
 
     payload = _fixture("negative")
     assert payload["items"], "the negative fixture is empty"
@@ -449,7 +457,7 @@ def test_the_negative_fixture_is_negative_by_construction() -> None:
     for item in payload["items"]:
         rubric = item["rubric"]
         assert "mock_answer" in rubric, item
-        ok, _score, rule = _score_answer(_mock_answer(rubric), rubric)
+        ok, _score, rule = _score_answer(_mock_answer(rubric), rubric, _mock_trajectory(rubric))
         assert ok is False, f"{item['item_id']} would pass; the fixture must fail every item"
         rules.add(rule)
 

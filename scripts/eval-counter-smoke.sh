@@ -9,8 +9,9 @@
 # `start_run` counts an item that *raised* as a failure just like one it scored down, so a
 # scorer that crashed on everything would read exactly like a scorer that rejected everything.
 #
-# Four checks, therefore: the run exited 1, it reported every item failing, it scored rows at
-# all (without them the last check has nothing to look at), and none of those rows errored.
+# Five checks, therefore: the run exited 1, it reported every item failing, it scored rows at
+# all (without them the last check has nothing to look at), none of those rows errored, and
+# the run row's `error_count` agrees.
 #
 # Both the `eval` CI job and `make check-ci` run this script. They used to carry their own
 # copies of the shell, and the copies drifted: the local one accepted a bare exit 1, so a
@@ -69,5 +70,8 @@ if not rows:
 errored = [row.get("item_id") for row in rows if "error" in row]
 if errored:
     sys.exit("items errored instead of being scored down: %s" % errored)
+# The run row now says the same thing the rows do; both are checked so the two cannot drift.
+if run.get("error_count") != 0:
+    sys.exit("error_count is %r, want 0 — the run counted an error the rows do not show" % run.get("error_count"))
 print("eval counter-smoke: %d items scored down, exit 1, no errors — as required" % len(rows))
 ' || fail "the negative run did not reject its fixture the way a working scorer would"

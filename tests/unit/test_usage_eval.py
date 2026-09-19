@@ -66,5 +66,6 @@ async def test_mock_eval_fixture(memory_settings: Settings) -> None:
         candidate_manifest="quick",
         mock=True,
     )
-    assert result["pass_count"] == 3
+    # The fixture's own length, not a literal a new item would falsify.
+    assert result["pass_count"] == len(payload["items"])
     assert result["fail_count"] == 0

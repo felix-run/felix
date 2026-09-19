@@ -81,7 +81,8 @@ def resolve_under_root(root: Path, user_path: str) -> Path:
     return target
 
 
-def _workspace_root() -> Path:
+def workspace_root() -> Path:
+    """The checkout every workspace tool — and the shell tool — is confined to."""
     ctx = try_get_context()
     root = ""
     if ctx is not None:
@@ -98,7 +99,7 @@ def _workspace_root() -> Path:
 
 async def _list_dir(args: PathArgs) -> str:
     try:
-        root = _workspace_root()
+        root = workspace_root()
         target = resolve_under_root(root, args.path)
     except ValueError as exc:
         return f"error: {exc}"
@@ -122,7 +123,7 @@ async def _list_dir(args: PathArgs) -> str:
 
 async def _read_file(args: ReadFileArgs) -> str:
     try:
-        root = _workspace_root()
+        root = workspace_root()
         target = resolve_under_root(root, args.path)
     except ValueError as exc:
         return f"error: {exc}"
@@ -172,7 +173,7 @@ def _write_lock(target: Path) -> asyncio.Lock:
 
 async def _write_file(args: WriteFileArgs) -> str:
     try:
-        root = _workspace_root()
+        root = workspace_root()
         target = resolve_under_root(root, args.path)
     except ValueError as exc:
         return f"error: {exc}"
@@ -285,7 +286,7 @@ def _scan_files(
 
 async def _search_files(args: SearchFilesArgs) -> str:
     try:
-        root = _workspace_root()
+        root = workspace_root()
         target = resolve_under_root(root, args.path)
     except ValueError as exc:
         return f"error: {exc}"
@@ -368,4 +369,5 @@ __all__ = [
     "WriteFileArgs",
     "register_workspace_tools",
     "resolve_under_root",
+    "workspace_root",
 ]

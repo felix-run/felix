@@ -530,6 +530,12 @@ def doctor_cmd() -> None:
         f"  [green]ok[/green]  mcp stdio — {describe_allowlist(settings)}"
         + ("" if allowed_commands(settings) else " (safe default)")
     )
+    from felix.security import shell_policy
+
+    rprint(
+        f"  [green]ok[/green]  shell tools — {shell_policy.describe_allowlist(settings)}"
+        + ("" if shell_policy.allowed_prefixes(settings) else " (safe default)")
+    )
     if settings.auth_mode == "jwt":
         check("jwks_public configured", bool(settings.jwks_public.strip()))
         check("jwt_verifiers configured", bool(settings.jwt_verifiers.strip()))
