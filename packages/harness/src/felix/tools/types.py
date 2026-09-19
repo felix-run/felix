@@ -130,6 +130,19 @@ def is_wrapper_deny(output: ToolOutput) -> bool:
     return False
 
 
+def deny_source(output: ToolOutput) -> str | None:
+    """Which governance wrapper produced this deny, or None when it is not a wrapper deny.
+
+    `deny_output` stamps the source on every denial; this is the read side. It is what lets an
+    audit row say *which* control refused a call rather than only that one did.
+    """
+    if not is_wrapper_deny(output):
+        return None
+    md = output.metadata if isinstance(output, ToolOutputDict) else output.get("metadata")  # type: ignore[union-attr]
+    source = md.get("source") if isinstance(md, dict) else None
+    return str(source) if source else None
+
+
 def tool_output_content(output: ToolOutput) -> str:
     if isinstance(output, str):
         return output
@@ -249,6 +262,7 @@ __all__ = [
     "define_tool",
     "define_tool_with_executor",
     "deny_output",
+    "deny_source",
     "is_wrapper_deny",
     "output_text",
     "tool_output_content",

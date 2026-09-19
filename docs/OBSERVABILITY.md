@@ -222,6 +222,11 @@ Real, documented rather than hidden:
 - **A reused metric name degrades silently.** `observability/metrics.py` catches the
   `ValueError` from registering a name under a second label set and writes the sample as a
   `logger.info` line instead. The series simply never appears in `/metrics`.
+- **`policy_deny` rows carry `payload.control`.** One of `policy`, `limits`, `guardrails`,
+  `approvals`, `command`, `screening` — the wrapper that refused the call, read from the deny
+  marker every wrapper already stamps. `GET /audit?event_type=policy_deny` plus that key answers
+  "every call blocked by approvals this week"; before it, the layer existed only in the tool
+  message. A `tool_call` row never carries the key.
 - **`GET /audit/metrics` reports `avg_latency_ms: 0`.** It reads `payload.latency_ms` /
   `payload.duration_ms`, which the `tool_call` audit payload does not write. Use
   `felix_tool_call_seconds` instead.
