@@ -22,13 +22,15 @@ What a unit test here can and cannot prove, so nobody reads more into a green ru
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 import pytest
 from felix.manifests.loader import load_bundled
 from felix.manifests.schema import Manifest, McpServerRef
 from felix.manifests.tool_match import select
 from felix.secrets import secret_ref_name
-from felix.tools.sandboxes import DEFAULT_SANDBOX_IMAGE, assert_sandbox_image_allowed
+
+ROOT = Path(__file__).resolve().parents[2]
 
 # Allowlisted remote tools that only read. Everything else the manifest allowlists is a write
 # and must be gated. Nothing here takes a body that creates or changes a GitHub object.
@@ -83,23 +85,54 @@ def test_loads_under_its_own_name(manifest: Manifest) -> None:
     assert manifest.spec.pattern == "react"
 
 
-def test_sandbox_image_is_allowed_by_default(manifest: Manifest) -> None:
-    """The sandbox must bind with no operator configuration.
-
-    `tools_from_sandboxes` raises on a non-allowlisted image and `build_agent` catches that
-    and logs a warning, so an image outside the default allowlist silently produces an agent
-    with no sandbox at all.
-    """
-    images = [ref.binding for ref in manifest.spec.sandboxes]
-    assert images, "the coding agent must declare a sandbox"
-    for image in images:
-        assert image == DEFAULT_SANDBOX_IMAGE
-        assert_sandbox_image_allowed(image, _NoExtraImages())
+def _compose_allowlist() -> list[str]:
+    """The prefixes deploy/docker/compose.self.yml exports as FELIX_SHELL_ALLOWED_COMMANDS."""
+    text = (ROOT / "deploy/docker/compose.self.yml").read_text(encoding="utf-8")
+    m = re.search(r"FELIX_SHELL_ALLOWED_COMMANDS: \$\{FELIX_SHELL_ALLOWED_COMMANDS:-([^}]+)\}", text)
+    assert m, "compose.self.yml no longer exports the allowlist this manifest is written against"
+    return [p.strip() for p in m.group(1).split(",") if p.strip()]
 
 
-def test_workspace_writes_require_approval(manifest: Manifest) -> None:
+def test_the_shell_tool_binds_exactly_what_the_builder_allows(manifest: Manifest) -> None:
+    """Manifest narrows, operator bounds. Written to be equal, so a prefix added to one side
+    and not the other goes red instead of binding a tool that fails on every call."""
+    (ref,) = manifest.spec.shell_tools
+    assert ref.name == "run"
+    assert sorted(ref.commands) == sorted(_compose_allowlist())
+
+
+def test_no_shell_prefix_can_publish_or_run_arbitrary_code(manifest: Manifest) -> None:
+    (ref,) = manifest.spec.shell_tools
+    tokens = {tuple(c.split()) for c in ref.commands}
+    forbidden = {
+        ("git", "push"),
+        ("git", "remote"),
+        ("git", "config"),
+        ("gh",),
+        ("python",),
+        ("python3",),
+        ("uv", "run", "python"),
+        ("sh",),
+        ("bash",),
+    }
+    assert not (tokens & forbidden), tokens & forbidden
+    assert ("git",) not in tokens and ("uv",) not in tokens and ("uv", "run") not in tokens, (
+        "a bare verb covers everything under it"
+    )
+
+
+def test_workspace_writes_are_not_gated_the_host_is(manifest: Manifest) -> None:
+    """Deliberate: approvals sit at publication. A person approving every write_file stops
+    reading them; the push_files approval carries the diff. deploy/GOVERNANCE.md 'Shell tools'
+    is what makes the checkout safe to write to ungated."""
     assert "write_file" in manifest.spec.tools
-    assert "write_file" in _approval_gated_tools(manifest)
+    assert "write_file" not in _approval_gated_tools(manifest)
+    assert "run" not in _approval_gated_tools(manifest)
+
+
+def test_anonymous_callers_are_refused(manifest: Manifest) -> None:
+    """validate_for_write refuses a shell tool behind allow_anonymous outside development."""
+    assert manifest.spec.auth.inbound.allow_anonymous is False
 
 
 def test_every_bound_write_tool_is_gated(manifest: Manifest) -> None:
@@ -208,17 +241,19 @@ def test_the_run_is_bounded(manifest: Manifest) -> None:
     assert manifest.spec.max_turns and manifest.spec.max_turns > 0
 
 
-def test_code_execution_is_the_sandbox_and_nothing_else(manifest: Manifest) -> None:
+def test_code_execution_is_the_shell_tool_and_nothing_else(manifest: Manifest) -> None:
     """Close the other routes to execution, not just the obvious one.
 
     A client tool is arbitrary command execution on the operator's machine. A stdio MCP server
     is a subprocess spawned as the API process, gated only by operator config rather than by
     this file. A container runs an arbitrary image behind a gateway. `sub_agents` is the
     quietest of all: `builder.py` skips this manifest's own tool resolution when it is set, and
-    each child compiles under *its own* approvals block, so a child holding `write_file` with no
-    approvals bypasses every gate above.
+    each child compiles under *its own* approvals block. The one-shot sandbox is gone too: the
+    shell tool made it redundant, and two execution routes are two allowlists to keep true.
     """
     spec = manifest.spec
+    assert len(spec.shell_tools) == 1
+    assert spec.sandboxes == []
     assert spec.client_tools == []
     assert spec.containers == []
     assert spec.queues == []
@@ -239,13 +274,3 @@ def _approval_gated_tools(manifest: Manifest) -> set[str]:
     for rule in manifest.spec.approvals:
         gated.update(rule.tools)
     return gated
-
-
-class _NoExtraImages:
-    """Settings stand-in with an empty FELIX_SANDBOX_ALLOWED_IMAGES.
-
-    Real `Settings` would read the developer's `.env`, where `FELIX_SANDBOX_ALLOWED_IMAGES` is
-    a live key — making this test pass or fail depending on the machine.
-    """
-
-    sandbox_allowed_images = ""
