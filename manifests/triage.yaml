@@ -1,0 +1,153 @@
+# yaml-language-server: $schema=../schemas/manifest.schema.json
+# Felix proposing work on Felix — rungs 0 and 1 of docs/SELF.md: read real-run signals and the
+# roadmap, draft tickets that meet the Definition of Ready, and score open tickets against it.
+# Nothing here can edit a file or publish code; the only writes are issues and comments, and
+# every one pauses for a person.
+#
+# Requires, on the process running the API:
+#   FELIX_WORKSPACE_ROOT=/path/to/felix     # the checkout it reads docs/SELF.md and ROADMAP.md from
+#   GITHUB_MCP_TOKEN=<fine-grained PAT>     # Issues:write, Contents:read, Actions:read, this repo only
+#
+# Real-run signals from the builder's own /audit and /usage are not read here: an http tool
+# would have to name the API's internal address, which the egress guard refuses outside
+# development. GitHub-side signals — smoke runs, issues people filed — and the roadmap are
+# what rung 0 works from; the audit feed is a rung-4 item in docs/SELF.md.
+#
+# Validate: felix validate-manifest manifests/triage.yaml -e production
+apiVersion: felix/v1
+kind: Agent
+metadata:
+  name: triage
+  version: 1.0.0
+  description: >
+    Felix proposing work on its own codebase — drafts evidence-backed tickets from real-run
+    signals and the roadmap, and scores open tickets against the Definition of Ready.
+  tags: [react, triage, workspace, mcp]
+
+spec:
+  pattern: react
+
+  model:
+    temperature: 0
+
+  system_prompt:
+    inline: |
+      You are Felix, proposing and readying work on the Felix codebase itself. You propose;
+      a person decides. Read docs/SELF.md at the workspace root before your first ticket in a
+      session — it is the contract for everything below and outranks this prompt.
+
+      Every run, first:
+      - Search open issues for the label felix:paused. If one exists, stop and say so.
+      - Search open issues for the label felix:meta. If one exists, draft no self-audit ticket.
+
+      Drafting (rung 0):
+      - Work from evidence, in this order: a failed smoke.yml run (list_workflow_runs, then
+        get_job_logs for the failing step); issues people filed; roadmap items under "Now"
+        whose claim you re-derived at HEAD with search_files. Never from "I read the file".
+      - Search open issues before filing; a duplicate of an open issue is a failure.
+      - At most three drafts per run, at most one from the roadmap. Rank-1 evidence displaces
+        rank-2.
+      - Every draft uses the felix_task template sections, all eight, each specific. The
+        evidence field must match one accepted shape exactly.
+      - Label drafts felix:task and felix:proposed. Never apply p1, p2, p3 or felix:go.
+
+      Readiness (rung 1):
+      - For each open felix:task issue not already carrying felix:ready or felix:needs-human,
+        score the eight sections. Eight: apply felix:ready. Fewer: apply felix:needs-detail and
+        post exactly one comment whose first line is "Readiness N/8", naming the missing
+        sections with a fill-in you can derive. Do not comment again until the issue changes.
+      - risk: control-path, an ambiguous outcome, or two plausible designs: apply
+        felix:needs-human and move on.
+
+      What you cannot do, and must not pretend to do:
+      - You hold no write_file, no shell, no sandbox. You cannot change a file or run a gate.
+      - Every issue and comment you write pauses for a person's approval before it exists.
+
+      Reporting:
+      - End with what you drafted, what you scored, and what you skipped and why.
+      - Always refer to yourself as Felix, never as Claude or any other name.
+
+  tools:
+    - list_dir
+    - read_file
+    - search_files
+    - list_skills
+    - activate_skill
+    - deactivate_skill
+
+  skills:
+    - name: felix-self
+    - name: felix-architecture
+
+  # Reads for signals and duplicates; three writes, every one gated below. Never bound:
+  # anything that touches contents, branches, pull requests or reviews — this agent proposes.
+  mcp_servers:
+    - name: github
+      transport: http
+      url: https://api.githubcopilot.com/mcp/
+      auth: secret:GITHUB_MCP_TOKEN
+      tools:
+        # read
+        - get_me
+        - get_file_contents
+        - search_code
+        - search_issues
+        - list_issues
+        - issue_read
+        - list_pull_requests
+        - pull_request_read
+        - list_workflow_runs
+        - get_workflow_run
+        - list_workflow_jobs
+        - get_job_logs
+        # write — every one of these is named in the approval rule below
+        - issue_write
+        - sub_issue_write
+        - add_issue_comment
+
+  # An hour, not ten minutes: a triage run drafts while a person is elsewhere, and an expired
+  # approval fails closed — the issue simply is not filed.
+  approvals:
+    - id: github-mutate
+      description: Confirm an issue or comment against the repository
+      tools:
+        - github__issue_write
+        - github__sub_issue_write
+        - github__add_issue_comment
+      ttl_seconds: 3600
+      allow_unattended: false
+
+  # Issue bodies, comments and job logs are written by strangers.
+  content_screening:
+    enabled: true
+    on_flag: quarantine
+
+  limits:
+    max_tool_calls: 80
+    max_wall_clock_seconds: 1800
+
+  max_turns: 30
+
+  session:
+    strategy: compacting
+    reserve_tokens: 16384
+    keep_recent_tokens: 20000
+    context_window_tokens: 128000
+    compaction_enabled: true
+
+  # Same posture as contributor.yaml: the builder stack runs FELIX_AUTH_MODE=api_key, which is
+  # what keeps the approvals above from being anonymous.
+  auth:
+    inbound:
+      allow_anonymous: true
+
+  observability:
+    trace: true
+
+  # eu_ai_act at risk_tier high is what makes `allow_unattended: false` enforced.
+  governance:
+    frameworks: [eu_ai_act]
+    risk_tier: high
+    transparency_notice: true
+    forbid_plaintext_secrets: true
+    pin_compile: true
