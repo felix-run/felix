@@ -189,6 +189,8 @@ table; nothing is posted automatically in this pass.
 | Human-priority violations | `labeled p*` timeline events by the bot | 0 |
 | Verdict overrides | a verdict label the bot applied, removed by a person within 7 days | ≤ 2 in 10 — **rung 1 gate** |
 | Gates green locally | contributor transcripts whose report carries a real `./scripts/test.sh` tail with 0 failed | 3 tickets — **rung 2 gate** |
+| Felix PRs opened | pull requests by the bot (login or `felix:authored`) in the window | tracked |
+| Merge rate | merged ÷ opened | ≥ 60 % over 10 PRs — part of the **rung 3 gate** |
 | Merged without human commits | merged Felix PRs (bot login or `felix:authored`) whose every commit author is the bot ÷ merged | ≥ 50 % |
 | Rework rate | Felix PRs closed unmerged ÷ opened | ≤ 30 % |
 | Review rounds | distinct commits that drew an approve or a changes-requested before merge, median | ≤ 2 |

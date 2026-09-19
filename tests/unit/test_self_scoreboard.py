@@ -272,7 +272,7 @@ def test_render_names_every_row_its_gate_and_the_list_branch() -> None:
     for label, _key, _threshold, _gate in board.ROWS:
         assert label in out
     assert "rung 0" in out and "rung 1" in out and "rung 3" in out
-    assert "| Merge % | n/a |" in out, "an empty window renders as n/a, not as 0 %"
+    assert "| Merge rate (%) | n/a |" in out, "an empty window renders as n/a, not as 0 %"
     assert "| PRs missing the contract | none |" in out
     m["pulls_missing_contract"] = [13, 15]
     assert "| PRs missing the contract | #13, #15 |" in board.render(

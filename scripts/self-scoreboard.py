@@ -265,15 +265,15 @@ def metrics(data: dict[str, Any]) -> dict[str, Any]:
 
 # (label, key, threshold text, gate) — the table docs/SELF.md carries. Edit both.
 ROWS = (
-    ("Evidence-cited issues %", "evidence_cited_pct", "≥ 90", "rung 0"),
-    ("Meta-work ratio %", "meta_work_pct", "≤ 20", ""),
+    ("Evidence-cited issues (%)", "evidence_cited_pct", "≥ 90", "rung 0"),
+    ("Meta-work ratio (%)", "meta_work_pct", "≤ 20", ""),
     ("Human-priority violations", "human_priority_violations", "0", ""),
     ("Readiness at first check (median /8)", "readiness_first_check_median", "≥ 6 human / 8 Felix", ""),
     ("Verdict overrides", "verdict_overrides", "≤ 2 in 10", "rung 1"),
     ("Felix PRs opened", "bot_pulls", "—", ""),
-    ("Merge %", "merge_pct", "≥ 60 over 10", "rung 3"),
-    ("Rework % (closed unmerged)", "rework_pct", "≤ 30", ""),
-    ("Merged without human commits %", "merged_without_human_commits_pct", "≥ 50", ""),
+    ("Merge rate (%)", "merge_pct", "≥ 60 over 10", "rung 3"),
+    ("Rework rate (% closed unmerged)", "rework_pct", "≤ 30", ""),
+    ("Merged without human commits (%)", "merged_without_human_commits_pct", "≥ 50", ""),
     ("Review rounds (median)", "review_rounds_median", "≤ 2", ""),
     ("Regressions (smoke failures within 48 h of a Felix merge)", "regressions", "0", "rung 3"),
     ("PRs missing the contract", "pulls_missing_contract", "none", ""),
