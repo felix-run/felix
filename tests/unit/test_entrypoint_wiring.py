@@ -73,6 +73,8 @@ FELIX_BINARY = re.compile(r"^felix[\w-]*$")
 # Four near-identical blocks in one file is the copy-paste these formats invite.
 EXPECTED_COMMANDS = {
     "deploy/docker/Dockerfile": ["felix-api"],
+    # The builder image: the same felix-api, behind a shell entrypoint that prepares /workspace.
+    "deploy/docker/Dockerfile.builder": ["felix-api"],
     "deploy/docker/compose.yml": ["felix", "felix-api", "felix-worker", "felix-scheduler"],
     # The Temporal overlay is the only deploy surface that runs the fourth binary. It has
     # no `felix-api` of its own — it layers onto compose.yml, which supplies the rest.
