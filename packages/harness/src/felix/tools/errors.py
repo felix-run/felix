@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from felix.tools.types import ToolOutput, ToolOutputDict, tool_output_content
+from felix.tools.types import ToolOutput, ToolOutputDict, output_metadata, tool_output_content
 
 _TOOL_ERROR_MARKER: object = object()
 
@@ -38,15 +38,8 @@ def tool_error_output(code: ToolErrorCode | str, content: str) -> ToolOutputDict
 
 
 def read_tool_error_code(output: ToolOutput) -> ToolErrorCode | None:
-    if isinstance(output, str):
-        return None
-    if isinstance(output, ToolOutputDict):
-        md = output.metadata
-    elif isinstance(output, dict):
-        md = output.get("metadata")
-        if not isinstance(md, dict):
-            return None
-    else:
+    md = output_metadata(output)
+    if md is None:
         return None
     if md.get(_TOOL_ERROR_MARKER) is not True and "error_code" not in md:
         # Accept legacy unbranded error_code for parallel-agent compatibility.

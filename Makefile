@@ -7,6 +7,7 @@ COMPOSE_PGB := $(COMPOSE) -f deploy/docker/compose.pgbouncer.yml
 COMPOSE_REPLICAS := $(COMPOSE) -f deploy/docker/compose.replicas.yml
 COMPOSE_OBS := $(COMPOSE) -f deploy/docker/compose.observability.yml
 COMPOSE_TEMPORAL := $(COMPOSE) -f deploy/docker/compose.temporal.yml
+COMPOSE_SELF := $(COMPOSE) -f deploy/docker/compose.self.yml
 
 help:
 	@echo "Felix dev targets:"
@@ -160,6 +161,12 @@ metrics-token:
 # image build there too, since durability/temporal.py raises without temporalio.
 up-temporal: dev-key
 	$(COMPOSE_TEMPORAL) up --build
+
+# Felix builds Felix (docs/SELF.md). The builder image is FROM felix:latest, so the base
+# image must exist before the overlay builds on top of it.
+up-self: dev-key
+	$(COMPOSE) build api
+	$(COMPOSE_SELF) up --build
 
 up-full: dev-key
 	FELIX_DOCKER_EXTRAS=$${FELIX_DOCKER_EXTRAS:-aws} FELIX_OBJECT_STORE=s3 \

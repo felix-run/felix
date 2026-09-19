@@ -201,6 +201,39 @@ Known gap, unchanged by this overlay: `Client.connect` takes no TLS or API-key o
 To scrape Temporal's own metrics alongside the observability overlay, add a target file —
 see `config/prometheus-targets/README.md`.
 
+## Felix builds Felix
+
+`compose.self.yml` runs the loop described in [`docs/SELF.md`](../../docs/SELF.md): the `api`
+and `worker` services switch to `Dockerfile.builder` — the lean image plus `git`, `make` and
+`uv` — with a **separate clone** of the repository at `/workspace` that the `contributor` and
+`triage` manifests edit and run the gates in.
+
+```bash
+make up-self            # builds felix:latest, then the builder image on top of it
+```
+
+Two trees, on purpose. The Felix that *runs* the loop is the image's own venv at `/app`, built
+from the commit that built the image. The Felix being *edited* is `/workspace`, with its own
+venv synced by the entrypoint with the extras CI's test job installs. `write_file` and the
+shell tool touch the second; a restart never boots the first from it — so "Felix changed a
+file" and "Felix is running changed code" stay two different events.
+
+What the entrypoint does on every start: clone `FELIX_SELF_REPO` (`felix-run/felix`) at
+`FELIX_SELF_BRANCH` (`main`) into the `felix-self-workspace` volume if it is empty, otherwise
+`git fetch`; set a repo-local commit identity (`felix-bot`); `uv sync` the workspace venv
+(`FELIX_SELF_SYNC=0` skips it); then `exec` the Felix process. An existing clone is never
+reset, so a run's uncommitted edits survive a restart and can be inspected.
+
+What to put in `.env`: `GITHUB_MCP_TOKEN` (the bot's fine-grained PAT — `docs/SELF.md` lists
+the permissions per rung; empty binds an agent with no GitHub tools, logged and not fatal) and,
+optionally, `FELIX_SHELL_ALLOWED_COMMANDS` to narrow the default prefix list the overlay sets.
+
+What is deliberately not here, because these two containers are the shell tool's boundary
+(`deploy/GOVERNANCE.md`, "Shell tools"): no Docker socket, no cloud credentials, no `.env` inside
+the workspace, no workspace shared with a person or another agent, and one tenant. The
+suite runs inside the `api` container, so both services get `FELIX_SELF_MEM_LIMIT` (3g) rather
+than the lean limits.
+
 ## Sending traces to an external backend
 
 Felix exports OTLP, so any backend that reads it works — an OTel Collector you already run,

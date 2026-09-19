@@ -350,6 +350,49 @@ Browser tools additionally register a Playwright request interceptor, so redirec
 and subresources are re-checked — `page.goto()` follows both, and the URL is
 model-supplied. Every other outbound client sets `follow_redirects=False`.
 
+## Shell tools
+
+`spec.shell_tools` execs an argv on the host the API runs on, in the `FELIX_WORKSPACE_ROOT`
+checkout. There is no shell interpreter: `&&`, `|` and `;` are literal arguments. The
+manifest's `commands` are argv prefixes (`git status` covers `git status --short`, not
+`git push` and not `git -c … status`), and every one must be covered by a prefix in
+`FELIX_SHELL_ALLOWED_COMMANDS` — checked at manifest write, at compile, and per call.
+Empty, the default, refuses every shell tool. The child inherits only `PATH`, `HOME`, `LANG`,
+`LC_ALL`, `TZ`; `cwd` resolves under the workspace root; the run is killed at `timeout_ms`;
+output is capped and marked truncated.
+
+The run is a process group of its own: at `timeout_ms`, past `MAX_TOTAL_OUTPUT_BYTES`, or
+when the calling request is cancelled, the whole group is killed — the pytest a test script
+spawned dies with the script rather than holding the pipes open. Output is read in bounded
+chunks and only a tail is kept, so a command that prints without end costs the API a fixed
+amount of memory and then its life. A refused argv or `cwd` is a `permission_denied` tool
+error counted as `felix_shell_denied`, so a model probing the allowlist is visible on the same
+dashboards a policy deny is. A manifest that binds a shell tool may not allow anonymous callers
+outside development — the same rule `cowork.yaml` records for its client shell — because the
+approvals that would gate the tool are anonymous too when the caller is.
+
+What the allowlist cannot bound, and a deployment that binds a shell tool must hold true on its
+own:
+
+- **A listed command runs repository code as the API's user.** `./scripts/test.sh` imports
+  whatever the agent wrote; `uv run ruff` reads the workspace's `pyproject.toml`. The uid is the
+  boundary — not `HOME`, which only decides which config files a tool reads silently
+  (`~/.gitconfig` credential helpers, `~/.netrc`, `~/.config/gh`). The host holds no cloud
+  credentials, no Docker socket, and no credentials in that user's home.
+- **A relative `argv[0]` resolves against the `cwd` the model chose.** The prefix pins a
+  string, not a file. `write_file` can replace `scripts/test.sh` before `run` execs it.
+- **Choose commands with no argument-driven code execution and no network.** `git status`
+  is safe by git's grammar; `pytest -p`, `make -f`, `node -r`, `find -exec`, `ruff --config`
+  take a module or file to run from their arguments. The prefix grammar cannot see past the
+  prefix.
+- **A shell tool voids two guarantees the rest of the harness keeps.** The egress guard
+  (`security/ssrf.py`) covers every outbound client Felix builds, not a command the model runs
+  — `uv` resolves an index the workspace names. And secret confinement covers what Felix
+  masks, not a file in the checkout — the workspace holds no `.env` and no deployment secret,
+  because an allowlisted `git diff` or a failing test can print one into the transcript.
+- **One tenant per process.** `FELIX_WORKSPACE_ROOT` is process-global; every tenant's shell
+  tool reads and writes the same tree. A multi-tenant deployment does not bind one.
+
 ## Sandbox confinement
 
 `spec.sandboxes[].binding` names a container image and reaches `docker run`, so images

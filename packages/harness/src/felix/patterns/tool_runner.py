@@ -21,7 +21,7 @@ from felix.observability.tracing import timed_span
 from felix.patterns.types import ChatMessage, ToolCall
 from felix.steer import should_cancel_remaining_tools
 from felix.tools.errors import infer_error_code, read_tool_error_code, tool_output_content
-from felix.tools.types import Tool, ToolInvocationCtx, is_wrapper_deny
+from felix.tools.types import Tool, ToolInvocationCtx, deny_source, is_wrapper_deny
 
 logger = logging.getLogger("felix.patterns.tool_runner")
 
@@ -227,11 +227,17 @@ class ToolRunner:
                     "manifest_id": self.manifest_id,
                 },
             )
+            payload: dict[str, Any] = {"tool": call.name, "tool_call_id": call.id, "thread_id": thread_id}
+            if status == "denied":
+                # Every wrapper deny used to land here as one undifferentiated `policy_deny`;
+                # which control refused existed only in the tool message. The source has been
+                # on the deny output all along — this is the first place that reads it.
+                payload["control"] = deny_source(result)
             emit_agent_audit(
                 "tool_call" if status != "denied" else "policy_deny",
                 status=status,
                 manifest_id=self.manifest_id,
-                payload={"tool": call.name, "tool_call_id": call.id, "thread_id": thread_id},
+                payload=payload,
             )
             after = await run_after_tool(
                 {"id": call.id, "name": call.name, "args": call.args},

@@ -91,6 +91,7 @@ worth having at all — each one means a control did not do what the manifest im
 | `felix_policy_deny` | `manifest_id`, `policy`, `tool` | A policy blocked a call. |
 | `felix_policy_unsatisfiable` | `manifest_id` | A policy can never pass — it reads as a control and is one only in the sense that it denies everything. |
 | `felix_rule_targets_nothing` | `manifest_id`, `rule`, `kind` | A rule matches no tool. Looks like a control; is not one. |
+| `felix_shell_denied` | `tool`, `reason` | A shell tool refused an argv outside its prefixes (`argv`) or a `cwd` outside the workspace (`cwd`). A model probing the allowlist shows here, not only in the transcript. |
 | `felix_untrusted_tools_unscreened` | `manifest_id` | Untrusted tool output reached the model without content screening. |
 | `felix_content_screening` | `manifest_id`, `tool`, `action` | Screening ran; `action` says what it did. |
 | `felix_inbound_screening` | `manifest_id`, `surface`, `action` | Inbound screening acted on a user turn (`surface=turn`) or on MCP tool-call arguments (`surface=tool_arguments`); `action` is `denied`, `quarantined` or `unavailable`. |
@@ -222,6 +223,11 @@ Real, documented rather than hidden:
 - **A reused metric name degrades silently.** `observability/metrics.py` catches the
   `ValueError` from registering a name under a second label set and writes the sample as a
   `logger.info` line instead. The series simply never appears in `/metrics`.
+- **`policy_deny` rows carry `payload.control`.** One of `policy`, `limits`, `guardrails`,
+  `approvals`, `command`, `screening` — the wrapper that refused the call, read from the deny
+  marker every wrapper already stamps. `GET /audit?event_type=policy_deny` plus that key answers
+  "every call blocked by approvals this week"; before it, the layer existed only in the tool
+  message. A `tool_call` row never carries the key.
 - **`GET /audit/metrics` reports `avg_latency_ms: 0`.** It reads `payload.latency_ms` /
   `payload.duration_ms`, which the `tool_call` audit payload does not write. Use
   `felix_tool_call_seconds` instead.
