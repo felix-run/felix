@@ -145,7 +145,7 @@ def metrics(data: dict[str, Any]) -> dict[str, Any]:
     # Priority is a person's. Every `labeled p*` event by the bot is a violation.
     violations = 0
     overrides = 0
-    for n, events in data["timelines"].items():
+    for events in data["timelines"].values():
         for ev in events:
             if ev.get("event") == "labeled" and re.fullmatch(
                 r"p[123]", (ev.get("label") or {}).get("name") or ""
@@ -162,7 +162,7 @@ def metrics(data: dict[str, Any]) -> dict[str, Any]:
 
     # Readiness at first check: the score in the bot's first comment on each task.
     first_scores: list[int] = []
-    for n, cs in data["comments"].items():
+    for cs in data["comments"].values():
         for c in cs:
             if _login(c) in BOT_LOGINS:
                 m = _READINESS_SCORE.search(c.get("body") or "")
@@ -244,6 +244,12 @@ def builder_cost(days: int) -> dict[str, Any] | None:
         return json.load(resp)
 
 
+def _usage(t: dict[str, Any]) -> str:
+    return (
+        f"cost_usd={t.get('cost_usd')} tokens_in={t.get('tokens_input')} tokens_out={t.get('tokens_output')}"
+    )
+
+
 def render(m: dict[str, Any], cost: dict[str, Any] | None, days: int) -> str:
     lines = [
         f"## Self-build scoreboard — last {days} days",
@@ -267,11 +273,12 @@ def render(m: dict[str, Any], cost: dict[str, Any] | None, days: int) -> str:
         totals = cost.get("totals") or {}
         lines += [
             "",
-            f"Builder usage since {cost.get('since_ms')}: cost_usd={totals.get('cost_usd')} tokens_in={totals.get('tokens_input')} tokens_out={totals.get('tokens_output')}",
+            f"Builder usage since {cost.get('since_ms')}: {_usage(totals)}",
         ]
     lines += [
         "",
-        f"{m['bot_issues']} issues and {m['bot_pulls']} pull requests by the bot in the window; {m['tasks']} felix:task issues total.",
+        f"{m['bot_issues']} issues and {m['bot_pulls']} pull requests by the bot in the window; "
+        f"{m['tasks']} felix:task issues total.",
     ]
     return "\n".join(lines)
 
