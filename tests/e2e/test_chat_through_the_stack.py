@@ -87,6 +87,21 @@ async def _audit(settings: Any) -> list[tuple[str, str, str]]:
     ]
 
 
+async def _audit_controls(settings: Any) -> list[tuple[str, str, str]]:
+    """`(event_type, tool, payload.control)` for every row that carries a control."""
+    from felix.audit import store as audit_store
+    from felix.flush import flush_all
+
+    await flush_all(settings)
+    rows, _ = await audit_store.query(settings, "default", limit=200)
+    out: list[tuple[str, str, str]] = []
+    for row in rows:
+        payload = row.get("payload_json") or {}
+        if "control" in payload:
+            out.append((row["event_type"], payload.get("tool") or "", payload.get("control") or ""))
+    return out
+
+
 # --- the happy path ------------------------------------------------------------------------
 
 
@@ -163,6 +178,9 @@ async def test_a_policy_denies_the_tool_for_a_caller_without_the_scope(boot: Any
         assert "4" not in tool_messages[0]["content"], "the calculator must not have run"
 
         assert ("policy_deny", "denied", "calculator") in await _audit(app.settings)
+        # The documented read side: the row a `GET /audit` consumer sees names the control,
+        # after redaction, the buffer and the store — not only the payload the loop built.
+        assert ("policy_deny", "calculator", "policy") in await _audit_controls(app.settings)
 
 
 async def test_the_reply_is_screened_on_the_way_out(boot: Any) -> None:

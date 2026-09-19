@@ -403,10 +403,10 @@ and fixed; the comment at `fibers.py:36-46` is the record.
       the half with nothing to attribute. It is the *originating* thread, because `create_pending`
       still reuses a pending row across threads. Widening that reuse key would change grant scope
       and is a product decision, not part of this.
-- [ ] **Attribute denials in the audit record.** Every wrapper denial emits one undifferentiated
-      `policy_deny` carrying `{tool, tool_call_id, thread_id}` — which control fired, and why,
-      exists only in the tool message. The wrappers emit Prometheus counters, not audit events.
-      An auditor cannot answer "show me every call blocked by policy X in Q3". Then
+- [~] **Attribute denials in the audit record.** Landed: `policy_deny` rows carry
+      `payload.control` naming the wrapper that refused — the source was on every deny output
+      already (`deny_output` stamps it) and the loop was the one reader that dropped it, so the
+      fix was a read, not a design. Not landed, and still the auditor's second question:
       `GET /audit/export` over a time range; `audit.py`'s docstring already promises an export
       that does not exist.
 - [ ] **Surface eval instrumentation** — `EvalRun.started_at/finished_at` and `ItemScore`'s
