@@ -138,7 +138,12 @@ def deny_source(output: ToolOutput) -> str | None:
     """
     if not is_wrapper_deny(output):
         return None
-    md = output.metadata if isinstance(output, ToolOutputDict) else output.get("metadata")  # type: ignore[union-attr]
+    if isinstance(output, ToolOutputDict):
+        md: Any = output.metadata
+    elif isinstance(output, dict):
+        md = output.get("metadata")
+    else:
+        return None
     source = md.get("source") if isinstance(md, dict) else None
     return str(source) if source else None
 
