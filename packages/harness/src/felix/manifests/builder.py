@@ -188,7 +188,7 @@ _COMMAND_ARG_KEYS = ("command", "cmd", "code", "script", "stdin", "argv", "shell
 
 # For these transports the payload *is* the program, so every string argument is
 # execution-bearing regardless of what the remote tool decided to call it.
-_EXECUTION_TRANSPORTS = frozenset({"sandbox", "container"})
+_EXECUTION_TRANSPORTS = frozenset({"sandbox", "container", "shell"})
 
 
 def _screenable_command_text(args: ToolInput, transport: str) -> str:
@@ -1213,6 +1213,17 @@ async def build_agent(
                 )
             except Exception:
                 logger.warning("sandbox tool binding failed", exc_info=True)
+
+        # Allowlisted argv on the API host, in the workspace checkout.
+        if m.spec.shell_tools:
+            try:
+                from felix.tools.shell import tools_from_shell_refs
+
+                _append_unique_tools(
+                    resolved, tools_from_shell_refs(list(m.spec.shell_tools), settings=deps.settings)
+                )
+            except Exception:
+                logger.warning("shell tool binding failed", exc_info=True)
 
         if container_refs:
             try:

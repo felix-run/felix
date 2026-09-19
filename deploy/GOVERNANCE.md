@@ -350,6 +350,21 @@ Browser tools additionally register a Playwright request interceptor, so redirec
 and subresources are re-checked — `page.goto()` follows both, and the URL is
 model-supplied. Every other outbound client sets `follow_redirects=False`.
 
+## Shell tools
+
+`spec.shell_tools` execs an argv on the host the API runs on, in the `FELIX_WORKSPACE_ROOT`
+checkout. There is no shell interpreter: `&&`, `|` and `;` are literal arguments. The
+manifest's `commands` are argv prefixes (`git status` covers `git status --short`, not
+`git push` and not `git -c … status`), and every one must be covered by a prefix in
+`FELIX_SHELL_ALLOWED_COMMANDS` — checked at manifest write, at compile, and per call.
+Empty, the default, refuses every shell tool. The child inherits only `PATH`, `HOME`, `LANG`,
+`LC_ALL`, `TZ`; `cwd` resolves under the workspace root; the run is killed at `timeout_ms`;
+output is capped and marked truncated.
+
+What the allowlist cannot bound: a listed command runs repository code as the API's user, so
+the host is the boundary. A deployment that binds a shell tool holds no cloud credentials, no
+Docker socket, and no checkout a person also works in.
+
 ## Sandbox confinement
 
 `spec.sandboxes[].binding` names a container image and reaches `docker run`, so images

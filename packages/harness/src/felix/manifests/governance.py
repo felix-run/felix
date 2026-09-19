@@ -197,6 +197,12 @@ def validate_for_write(manifest: Manifest, settings: Any | None = None) -> None:
         assert_sandbox_images_allowed(manifest.spec.sandboxes, settings)
     except SandboxImageNotAllowed as exc:
         raise GovernanceError(str(exc)) from exc
+    from felix.security.shell_policy import ShellNotAllowedError, assert_shell_commands_allowed
+
+    try:
+        assert_shell_commands_allowed(manifest.spec.shell_tools, settings)
+    except ShellNotAllowedError as exc:
+        raise GovernanceError(str(exc)) from exc
 
 
 def validate_governance(manifest: Manifest, settings: Any | None = None) -> None:
