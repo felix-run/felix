@@ -199,9 +199,13 @@ Detection of the failure modes the program forbids, one mechanism each:
 
 - **Issue spam** — more than five issues by the bot in a week, or two with identical `evidence`,
   is a scoreboard violation and the next triage run is skipped.
-- **Rubric gaming** — the `acceptance` command is run verbatim by the boundary check on the PR; a
-  command that cannot run scores the ticket zero retroactively.
-- **Silent narrowing** — a merged PR whose ticket's acceptance command fails counts as rework.
+- **Rubric gaming** — the `acceptance` command is what the implementer runs and pastes, output
+  and all, under **Gates run**; the boundary check cannot run it (it checks out nothing from the
+  head, on purpose), so a command that cannot run is caught at the readiness check — a ticket
+  whose acceptance names no runnable command scores zero there — and a pasted result that CI
+  contradicts is caught by CI.
+- **Silent narrowing** — a merged PR whose ticket's acceptance command fails afterwards counts
+  as rework on the scoreboard.
 - **Scope creep** — changed paths outside the ticket's `surface` fail the boundary check for the bot
   and are a comment for a person.
 - **Editing its own gates** — the boundary list above, plus a scoreboard grep of merged bot PRs for
