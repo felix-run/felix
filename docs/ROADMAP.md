@@ -28,6 +28,10 @@ Pick from **Now** unless a demo needs something from **Next**.
 
 **Dogfood `contributor.yaml` on real Felix work → fix what breaks → write it down here.**
 
+The program that turns that sentence into rungs — who proposes, who decides, what a ticket must
+cite, what Felix may never edit, and the numbers that graduate each rung — is
+[SELF.md](SELF.md). This file stays the *what*; that one is the *how*.
+
 This replaces the loop this file carried until 2026-09-02, which read "dogfood float". `float`
 was deleted from `felix-run/web` on 2026-08-23 — *"what it actually contributed was a mode, not
 a product"* — and the line survived it by ten days. That matters more than a stale link: with
@@ -200,10 +204,13 @@ First, because everything else governs it.
       on, which is what keeps the unscreened-tools warning silent on what we ship. A tool no
       manifest declares is inert by this repo's own definition, and none of these are now.
 
-Decision gate, not a commitment: the **governed coding toolset** (`read`/`edit`/`bash` behind a
-`FilesystemBackend` + `ShellBackend` pair) was deferred as "large, and conditional — only worth
-starting if coding-agent use cases are actually on the roadmap". The daily-driver goal makes it
-live again. Revisit after the first three land, on evidence, not before.
+- [~] **Governed shell tool.** The decision gate that sat here — the `read`/`edit`/`bash` coding
+      toolset, deferred as "only worth starting if coding-agent use cases are actually on the
+      roadmap" — is decided: [SELF.md](SELF.md) puts Felix building Felix on the roadmap,
+      and rung 2 of it cannot exist without a way to run `./scripts/test.sh`. Landing as
+      `spec.shell_tools` behind `FELIX_SHELL_ALLOWED_COMMANDS` (argv prefixes, no shell interpreter,
+      scrubbed env, cwd pinned under the workspace root), not as a `ShellBackend` registry — one
+      implementation does not earn a registry.
 
 ### B. Close the durable loop
 
