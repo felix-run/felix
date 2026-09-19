@@ -8,6 +8,8 @@ from typing import Any
 import httpx
 
 from felix.manifests.schema import McpServerRef
+from felix.manifests.tool_match import matches_any, unmatched_patterns
+from felix.observability.metrics import record_counter
 from felix.security.egress import safe_async_client
 from felix.security.ssrf import assert_safe_outbound_url
 from felix.timeouts import DEFAULT_CONNECT_TIMEOUT_S, timeout_seconds
@@ -189,10 +191,23 @@ def _bind_remote_tool(
     )
 
 
+def _allowlist_patterns(ref: McpServerRef) -> list[str]:
+    """`ref.tools` as patterns over the *remote* names.
+
+    Every other `tools:` list in a manifest — approvals, policies, screening — is written over
+    the *bound* name, `github__issue_write`. An author copying a name from the approval block
+    into this list would otherwise bind nothing and get a warning. Accept both spellings: a
+    pattern carrying this server's own prefix is the same pattern without it.
+    """
+    prefix = f"{ref.name}__"
+    return [p[len(prefix) :] if p.startswith(prefix) else p for p in ref.tools]
+
+
 async def tools_from_mcp_servers(
     refs: list[McpServerRef],
     *,
     allow_http: bool = False,
+    manifest_id: str = "",
 ) -> list[Tool]:
     """Discover and bind tools from each MCP server ref."""
     out: list[Tool] = []
@@ -202,6 +217,21 @@ async def tools_from_mcp_servers(
         except Exception:
             logger.warning("failed to list MCP tools from %s", ref.name, exc_info=True)
             continue
+        if ref.tools:
+            patterns = _allowlist_patterns(ref)
+            names = [str(r["name"]) for r in remotes]
+            missing = unmatched_patterns(patterns, names)
+            if missing:
+                # The server renamed or dropped a tool the manifest names. Not fatal — the
+                # rest still bind — but the manifest author wrote that name for a reason, and
+                # it is the same inert-rule shape `builder.py` counts for approvals and
+                # policies, so it lands on the same counter an operator already watches.
+                logger.warning("MCP server %s lists no tool matching %s", ref.name, missing)
+                record_counter(
+                    "felix_rule_targets_nothing",
+                    {"manifest_id": manifest_id, "kind": "mcp_allowlist", "rule": ref.name},
+                )
+            remotes = [r for r in remotes if matches_any(patterns, str(r["name"]))]
         for remote in remotes:
             try:
                 out.append(_bind_remote_tool(ref, remote, allow_http=allow_http))

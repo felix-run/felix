@@ -1122,7 +1122,9 @@ async def build_agent(
             try:
                 from felix.mcp.client import tools_from_mcp_servers
 
-                mcp_tools = await tools_from_mcp_servers(mcp_refs, allow_http=allow_http)
+                mcp_tools = await tools_from_mcp_servers(
+                    mcp_refs, allow_http=allow_http, manifest_id=m.metadata.name
+                )
                 _append_unique_tools(resolved, mcp_tools)
             except Exception:
                 logger.warning("MCP client tool binding failed", exc_info=True)
