@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 from felix.config import Settings
@@ -16,8 +17,58 @@ from felix.thread_ids import eval_thread_id
 logger = logging.getLogger("felix.eval.runner")
 
 
-def _score_answer(answer: str, rubric: dict[str, Any]) -> tuple[bool, float, str]:
-    """Heuristic scorer — expects / contains / min_chars.
+@dataclass(frozen=True, slots=True)
+class Trajectory:
+    """What the run *did*, as opposed to what it said.
+
+    `tool_names` in call order, one entry per tool invocation; `errors` is how many of those
+    came back as a tool error (`[error/...]`, `[fatal/...]`) or a governance denial.
+    """
+
+    tool_names: tuple[str, ...] = ()
+    errors: int = 0
+
+
+_TOOL_FAILURE_PREFIXES = ("[error/", "[fatal/", "[policy denied]", "[approval denied]", "[shell denied]")
+
+
+def trajectory_of(messages: list[ChatMessage]) -> Trajectory:
+    """Read the trajectory off the messages a run produced."""
+    names: list[str] = []
+    errors = 0
+    for m in messages:
+        if m.role == "assistant" and m.tool_calls:
+            names.extend(tc.name for tc in m.tool_calls)
+        elif m.role == "tool" and (m.content or "").startswith(_TOOL_FAILURE_PREFIXES):
+            errors += 1
+    return Trajectory(tool_names=tuple(names), errors=errors)
+
+
+def _mock_trajectory(rubric: dict[str, Any]) -> Trajectory:
+    """The trajectory `--mock` scores, the way `mock_answer` is the answer it scores.
+
+    Without it a trajectory rule could only ever pass under `--mock` (no tool ran), and the
+    counter-smoke could never show one saying no.
+    """
+    raw = rubric.get("mock_tool_calls") or []
+    names = tuple(str(n) for n in raw) if isinstance(raw, list) else ()
+    try:
+        errors = int(rubric.get("mock_tool_errors") or 0)
+    except TypeError, ValueError, OverflowError:
+        errors = 0
+    return Trajectory(tool_names=names, errors=errors)
+
+
+def _score_answer(
+    answer: str, rubric: dict[str, Any], trajectory: Trajectory | None = None
+) -> tuple[bool, float, str]:
+    """Heuristic scorer — trajectory rules, then expects / contains / min_chars.
+
+    Trajectory rules (`tools_called`, `tools_not_called`, `max_tool_calls`, `max_errors`) are
+    read first and can only *reject*: an item that names one and an answer rule needs both,
+    and one that names only a trajectory rule falls through to the answer rules once the
+    trajectory is right. A trajectory rule that could never reject — an empty list, a negative
+    ceiling — is `invalid_rubric`, for the reason `contains: ""` is.
 
     `expect`, `equals` and `contains` count as present when they are not None, which is how
     `_mock_answer` already reads them. Reading them with `or` instead meant `{"expect": ""}`
@@ -33,6 +84,42 @@ def _score_answer(answer: str, rubric: dict[str, Any]) -> tuple[bool, float, str
     `min_chars`). The second kind is a rubric that could never say no, and it fails in the
     direction that hides problems — so it fails closed instead.
     """
+    traj = trajectory or Trajectory()
+    called = rubric.get("tools_called")
+    if called is not None:
+        if not isinstance(called, list) or not called:
+            # Every trajectory contains every tool in an empty list.
+            return False, 0.0, "invalid_rubric"
+        missing = [str(t) for t in called if str(t) not in traj.tool_names]
+        if missing:
+            return False, 0.0, "tools_called"
+    not_called = rubric.get("tools_not_called")
+    if not_called is not None:
+        if not isinstance(not_called, list) or not not_called:
+            return False, 0.0, "invalid_rubric"
+        seen = [str(t) for t in not_called if str(t) in traj.tool_names]
+        if seen:
+            return False, 0.0, "tools_not_called"
+    max_calls_raw = rubric.get("max_tool_calls")
+    if max_calls_raw is not None and max_calls_raw != "":
+        try:
+            max_calls = int(max_calls_raw)
+        except TypeError, ValueError, OverflowError:
+            return False, 0.0, "invalid_rubric"
+        if max_calls < 0:
+            return False, 0.0, "invalid_rubric"
+        if len(traj.tool_names) > max_calls:
+            return False, 0.0, "max_tool_calls"
+    max_errors_raw = rubric.get("max_errors")
+    if max_errors_raw is not None and max_errors_raw != "":
+        try:
+            max_errors = int(max_errors_raw)
+        except TypeError, ValueError, OverflowError:
+            return False, 0.0, "invalid_rubric"
+        if max_errors < 0:
+            return False, 0.0, "invalid_rubric"
+        if traj.errors > max_errors:
+            return False, 0.0, "max_errors"
     expect = rubric.get("expect")
     if expect is None:
         expect = rubric.get("equals")
@@ -167,6 +254,7 @@ async def start_run(
     scores: list[dict[str, Any]] = []
     passes = 0
     fails = 0
+    errors = 0
 
     resolved = None
     if not mock:
@@ -227,6 +315,7 @@ async def start_run(
                 rubric = {**rubric, "llm_judge": True}
             if mock:
                 answer = _mock_answer(rubric)
+                trajectory = _mock_trajectory(rubric)
             else:
                 assert resolved is not None
                 async with async_run_with_context(req_ctx):
@@ -241,7 +330,8 @@ async def start_run(
                     )
                     result = await agent.invoke(InvokeInput(messages=messages, thread_id=req_ctx.thread_id))
                 answer = result.final.content if result.final else ""
-            heuristic = _score_answer(answer, rubric)
+                trajectory = trajectory_of(list(result.messages))
+            heuristic = _score_answer(answer, rubric, trajectory)
             if _wants_llm_judge(rubric, deterministic_judge=deterministic_judge) and not mock:
                 judged = await _maybe_llm_judge(
                     settings,
@@ -270,13 +360,19 @@ async def start_run(
                     "answer": answer[:500],
                     "mock": mock,
                 }
+            score_row["tool_calls"] = len(trajectory.tool_names)
+            score_row["tool_errors"] = trajectory.errors
             if ok:
                 passes += 1
             else:
                 fails += 1
             scores.append(score_row)
         except Exception as exc:
+            # Counted in both: `fail_count` keeps meaning "did not pass", which the CLI's exit
+            # code and every existing reader rely on; `error_count` is the subset that never
+            # reached the scorer, so a malformed dataset reads differently from a rejected one.
             fails += 1
+            errors += 1
             scores.append({"item_id": item_id, "pass": False, "error": str(exc)})
             # `loggable`, because `item_id` is dataset content and this line is now reachable
             # deliberately -- an id chosen to be unusable takes the branch above straight here.
@@ -289,9 +385,16 @@ async def start_run(
         run["id"],
         pass_count=passes,
         fail_count=fails,
+        error_count=errors,
         scores=scores,
     )
-    return completed or {**run, "pass_count": passes, "fail_count": fails, "scores": scores}
+    return completed or {
+        **run,
+        "pass_count": passes,
+        "fail_count": fails,
+        "error_count": errors,
+        "scores": scores,
+    }
 
 
 def _mock_answer(rubric: dict[str, Any]) -> str:
@@ -316,4 +419,4 @@ def _mock_answer(rubric: dict[str, Any]) -> str:
     return "ok"
 
 
-__all__ = ["start_run"]
+__all__ = ["Trajectory", "start_run", "trajectory_of"]

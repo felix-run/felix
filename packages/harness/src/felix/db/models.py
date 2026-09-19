@@ -180,6 +180,9 @@ class EvalRun(Base):
     status: Mapped[str] = mapped_column(Text, server_default="in_progress", default="in_progress")
     pass_count: Mapped[int] = mapped_column(Integer, server_default="0", default=0)
     fail_count: Mapped[int] = mapped_column(Integer, server_default="0", default=0)
+    # The subset of `fail_count` that never reached the scorer — the item raised. A run
+    # whose failures are all errors is a broken dataset, not a model regression.
+    error_count: Mapped[int] = mapped_column(Integer, server_default="0", default=0)
     scores_json: Mapped[list[Any]] = mapped_column(JSONB, server_default=text("'[]'::jsonb"), default=list)
     manifest_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
