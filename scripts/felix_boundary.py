@@ -29,7 +29,6 @@ PROTECTED_PATHS: tuple[str, ...] = (
     ".github/**",
     ".claude/**",
     "CODEOWNERS",
-    ".github/CODEOWNERS",
     "uv.lock",
     "migrations/**",
     "deploy/**",
@@ -49,6 +48,20 @@ PROTECTED_PATHS: tuple[str, ...] = (
 BRANCH_PREFIX = "felix/"
 
 _CLOSES = re.compile(r"(?im)^\s*closes\s+#(\d+)\s*$")
+_FENCED = re.compile(r"```.*?```", re.S)
+
+
+def _outside_fences(body: str) -> str:
+    """The body with fenced blocks removed — GitHub links no keyword inside one, and the
+    `Gates run` section is exactly where a bot pastes command output."""
+    return _FENCED.sub("", body or "")
+
+
+def closes(body: str) -> list[int]:
+    """Every `Closes #N` line outside a code fence. The one place the pattern is read."""
+    return [int(n) for n in _CLOSES.findall(_outside_fences(body))]
+
+
 _THREAD = re.compile(r"(?im)^\s*Felix-Thread:\s*(\S+)\s*$")
 _GATES_HEADING = re.compile(r"(?im)^##\s+Gates run\s*$")
 _NOT_VERIFIED_HEADING = re.compile(r"(?im)^##\s+Not verified\s*$")
@@ -92,9 +105,9 @@ def surface_from_issue_body(body: str) -> list[str]:
     m = _SURFACE_HEADING.search(body or "")
     if not m:
         return []
-    rest = (body or "")[m.end() :]
+    rest = (body or "")[m.end() :].split("\n###", 1)[0]
     fence = _FENCE.search(rest)
-    block = fence.group(1) if fence else rest.split("\n###", 1)[0]
+    block = fence.group(1) if fence else rest
     out: list[str] = []
     for line in block.splitlines():
         item = line.strip().lstrip("-*").strip().strip("`").strip()
@@ -106,33 +119,30 @@ def surface_from_issue_body(body: str) -> list[str]:
 @dataclass
 class Contract:
     closes: int | None = None
+    # Read by nothing here yet: the scoreboard joins a PR to its run on this key.
     thread: str | None = None
-    gates_section: bool = False
-    not_verified_section: bool = False
     missing: list[str] = field(default_factory=list)
 
 
 def parse_contract(body: str) -> Contract:
     """The sections `.github/PULL_REQUEST_TEMPLATE.md` requires of a Felix-authored PR."""
     c = Contract()
-    closes = _CLOSES.findall(body or "")
-    if len(closes) == 1:
-        c.closes = int(closes[0])
-    elif not closes:
-        c.missing.append("Closes #N (exactly one felix:go issue)")
+    found = closes(body)
+    if len(found) == 1:
+        c.closes = found[0]
+    elif not found:
+        c.missing.append("a `Closes #N` line (exactly one felix:go issue)")
     else:
-        c.missing.append(f"Closes #N names {len(closes)} issues; a Felix PR closes exactly one")
+        c.missing.append(f"a single `Closes #N`: it names {len(found)} issues")
     thread = _THREAD.search(body or "")
     if thread:
         c.thread = thread.group(1)
     else:
-        c.missing.append("Felix-Thread: <thread_id> trailer")
-    c.gates_section = bool(_GATES_HEADING.search(body or ""))
-    if not c.gates_section:
-        c.missing.append("## Gates run section")
-    c.not_verified_section = bool(_NOT_VERIFIED_HEADING.search(body or ""))
-    if not c.not_verified_section:
-        c.missing.append("## Not verified section")
+        c.missing.append("a `Felix-Thread: <thread_id>` trailer")
+    if not _GATES_HEADING.search(body or ""):
+        c.missing.append("a `## Gates run` section")
+    if not _NOT_VERIFIED_HEADING.search(body or ""):
+        c.missing.append("a `## Not verified` section")
     return c
 
 
@@ -148,8 +158,9 @@ def judge(
     """Every reason this pull request fails the boundary. Empty means it passes.
 
     A person's PR never fails here; the list is about what the loop may do. `ticket_labels`
-    and `ticket_surface` are None when the workflow could not read the ticket (no `Closes`,
-    or the issue does not exist), which is itself reported by the contract check.
+    and `ticket_surface` are None when the workflow could not read the ticket. With no
+    `Closes` that is the contract check's finding; with one, it is a finding of its own —
+    a ticket that cannot be read cannot have been authorised.
     """
     if author not in BOT_LOGINS:
         return []
@@ -162,8 +173,11 @@ def judge(
     contract = parse_contract(body)
     for m in contract.missing:
         problems.append("PR body lacks " + m)
-    if contract.closes is not None and ticket_labels is not None and "felix:go" not in ticket_labels:
-        problems.append(f"#{contract.closes} does not carry felix:go — a person has not authorised it")
+    if contract.closes is not None:
+        if ticket_labels is None:
+            problems.append(f"#{contract.closes} could not be read, so nothing shows a person authorised it")
+        elif "felix:go" not in ticket_labels:
+            problems.append(f"#{contract.closes} does not carry felix:go — a person has not authorised it")
     if ticket_surface:
         stray = outside_surface(changed, ticket_surface)
         if stray:
@@ -173,14 +187,26 @@ def judge(
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--author", required=True)
-    ap.add_argument("--branch", required=True)
-    ap.add_argument("--changed", required=True, help="path to a file with one changed path per line")
-    ap.add_argument("--body", required=True, help="path to a file holding the PR body")
+    ap.add_argument(
+        "--print-closes",
+        metavar="BODY",
+        help="print the one issue number the body closes (nothing when absent or ambiguous) and exit",
+    )
+    ap.add_argument("--author")
+    ap.add_argument("--branch")
+    ap.add_argument("--changed", help="path to a file with one changed path per line")
+    ap.add_argument("--body", help="path to a file holding the PR body")
     ap.add_argument(
         "--ticket", help="path to a JSON file {labels: [...], body: str} for the closed issue, or absent"
     )
     args = ap.parse_args(argv)
+    if args.print_closes:
+        with open(args.print_closes, encoding="utf-8") as fh:
+            found = closes(fh.read())
+        print(found[0] if len(found) == 1 else "")
+        return 0
+    if not (args.author and args.branch and args.changed and args.body):
+        ap.error("--author, --branch, --changed and --body are required to judge")
     with open(args.changed, encoding="utf-8") as fh:
         changed = [line.strip() for line in fh if line.strip()]
     with open(args.body, encoding="utf-8") as fh:

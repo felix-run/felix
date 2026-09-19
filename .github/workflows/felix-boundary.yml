@@ -49,14 +49,10 @@ jobs:
           set -euo pipefail
           gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}/files" --paginate --jq '.[].filename' > changed.txt
           printf '%s' "$BODY" > body.md
-          # The ticket the body closes, when it names exactly one; the script reports a missing
-          # or ambiguous `Closes` itself, so this only fetches what it can.
-          n=$(python3 - <<'PY'
-          import re, sys
-          m = re.findall(r"(?im)^\s*closes\s+#(\d+)\s*$", open("body.md", encoding="utf-8").read())
-          print(m[0] if len(m) == 1 else "")
-          PY
-          )
+          # The ticket the body closes, read by the same function that judges the body — one
+          # regex, one file. A ticket that cannot be fetched is judged as unreadable, not
+          # skipped: the script refuses a `Closes` it was handed no ticket for.
+          n=$(python3 scripts/felix_boundary.py --print-closes body.md)
           if [ -n "$n" ] && gh api "repos/${GITHUB_REPOSITORY}/issues/${n}" > ticket.json 2>/dev/null; then
             echo "ticket=ticket.json" >> "$GITHUB_ENV"
           else
