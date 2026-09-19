@@ -17,16 +17,16 @@ Status updated in place as each piece lands; the ladder below is only as real as
 | Artifact | Status | Lands with |
 |---|---|---|
 | This spec, the `felix_task` issue template, the PR contract, labels | `[x]` | docs/self-program |
-| Audit rows carry which control denied a call (`policy_deny.control`) | `[ ]` | feat/audit-deny-control |
-| `McpServerRef.tools` allowlist, so the GitHub surface is enumerable | `[ ]` | feat/mcp-tool-allowlist |
-| `manifests/triage.yaml` + `skills/felix-self` (rungs 0–1) | `[ ]` | feat/triage-manifest |
-| Governed shell tool (`spec.shell_tools`, `FELIX_SHELL_ALLOWED_COMMANDS`) | `[ ]` | feat/shell-tool |
+| Audit rows carry which control denied a call (`policy_deny.control`) | `[x]` | feat/audit-deny-control |
+| `McpServerRef.tools` allowlist, so the GitHub surface is enumerable | `[x]` | feat/mcp-tool-allowlist |
+| `manifests/triage.yaml` + `skills/felix-self` (rungs 0–1) | `[x]` | feat/triage-manifest |
+| Governed shell tool (`spec.shell_tools`, `FELIX_SHELL_ALLOWED_COMMANDS`) | `[x]` | feat/shell-tool |
 | `contributor.yaml` v2 — runs the gates, publishes over GitHub MCP | `[ ]` | feat/contributor-v2 |
-| Builder container (`deploy/docker/compose.self.yml`) | `[ ]` | feat/builder-container |
-| `felix-boundary` required check (`.github/workflows/felix-boundary.yml`) | `[ ]` | feat/felix-boundary |
-| Eval rules that score a trajectory (`tools_called`, `max_errors`, …) | `[ ]` | feat/eval-trajectory-rules |
-| `scripts/self-scoreboard.py` | `[ ]` | feat/self-scoreboard |
-| Scheduled triage / implement jobs (`payload.fresh_thread`) | `[ ]` | feat/job-fresh-thread |
+| Builder container (`deploy/docker/compose.self.yml`) | `[x]` | feat/builder-container |
+| `felix-boundary` required check (`.github/workflows/felix-boundary.yml`) | `[x]` | feat/felix-boundary |
+| Eval rules that score a trajectory (`tools_called`, `max_errors`, …) | `[x]` | feat/eval-trajectory-rules |
+| `scripts/self-scoreboard.py` | `[x]` | feat/self-scoreboard |
+| Scheduled triage / implement jobs (`payload.fresh_thread`) | `[x]` | feat/job-fresh-thread |
 
 ## The ladder
 
