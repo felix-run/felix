@@ -21,7 +21,7 @@ Status updated in place as each piece lands; the ladder below is only as real as
 | `McpServerRef.tools` allowlist, so the GitHub surface is enumerable | `[x]` | feat/mcp-tool-allowlist |
 | `manifests/triage.yaml` + `skills/felix-self` (rungs 0–1) | `[x]` | feat/triage-manifest |
 | Governed shell tool (`spec.shell_tools`, `FELIX_SHELL_ALLOWED_COMMANDS`) | `[x]` | feat/shell-tool |
-| `contributor.yaml` v2 — runs the gates, publishes over GitHub MCP | `[ ]` | feat/contributor-v2 |
+| `contributor.yaml` v2 — runs the gates, publishes over GitHub MCP | `[x]` | feat/contributor-v2 |
 | Builder container (`deploy/docker/compose.self.yml`) | `[x]` | feat/builder-container |
 | `felix-boundary` required check (`.github/workflows/felix-boundary.yml`) | `[x]` | feat/felix-boundary |
 | Eval rules that score a trajectory (`tools_called`, `max_errors`, …) | `[x]` | feat/eval-trajectory-rules |

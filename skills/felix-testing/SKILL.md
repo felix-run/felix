@@ -5,9 +5,9 @@ description: How to run and write tests for the Felix harness — the in-memory 
 
 > This is a summary. The source of truth is CLAUDE.md (Running tests) and `.claude/skills/felix-dev-loop/SKILL.md` — read it with `read_file` when
 > the two disagree, and trust the checkout over this file.
-> The commands below are what a human or CI runs on your change. You cannot run
-> them: you have no shell. Name the ones that still need running instead of
-> reporting them as done.
+> You run the commands below with the `run` tool — argv only, one token per list item, no
+> shell — and paste the literal tail of the output into your report. A gate you did not run
+> is listed as not run, never described as passed.
 
 # Felix testing
 
