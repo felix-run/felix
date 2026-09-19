@@ -99,14 +99,12 @@ spec:
       binding: python:3.14-slim
       timeout_ms: 30000
 
-  # Tools bind as github__<remote tool>. `tools:` is an allowlist over the remote names — it is
-  # what makes the surface below enumerable. Without it the whole catalogue binds, and a write tool
-  # GitHub adds or renames binds ungated with nothing to go red; with it, a tool this file does not
-  # name does not exist for the agent, and tests/unit/test_contributor_manifest.py can prove every
-  # bound write tool is gated instead of comparing this file to itself. A name GitHub no longer
-  # serves is logged at bind time, not refused. Binding failure as a whole is logged and non-fatal,
-  # so an unreachable server yields an agent with no GitHub tools rather than an error — check the
-  # log, not the reply, before believing this works.
+  # Tools bind as github__<remote tool>. `tools:` is an allowlist over the remote catalogue
+  # (`McpServerRef.tools` in manifests/schema.py says why); every write below has an approval
+  # rule, and tests/unit/test_contributor_manifest.py proves it. A name GitHub no longer serves
+  # is logged at bind time, not refused. Binding failure as a whole is logged and non-fatal, so an
+  # unreachable server yields an agent with no GitHub tools rather than an error — check the log,
+  # not the reply, before believing this works.
   #
   # Never bound, on purpose: merge_pull_request, pull_request_review_write,
   # add_comment_to_pending_review, request_copilot_review, delete_file, create_repository,

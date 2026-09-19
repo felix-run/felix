@@ -154,12 +154,14 @@ class McpServerRef(_Strict):
     # result that reads like the server refused. Over stdio this bounds each read — the
     # handshake and the call each get it — rather than the exchange as a whole.
     timeout_ms: int | None = Field(default=None, gt=0, le=MAX_INTEGRATION_TIMEOUT_MS)
-    # Remote tools to bind, as glob patterns over the *remote* names (`issue_write`, not
-    # `github__issue_write`). Empty binds everything the server lists, which is what every
-    # manifest before this field was written against. A non-empty list is what makes a server's
-    # mutating surface enumerable: an approval rule can only gate a tool it can name, so without
-    # this a write tool the server adds overnight binds ungated and no test goes red. A pattern
-    # that matches nothing is logged at bind time rather than refused, for the reason discovery
+    # Remote tools to bind, as glob patterns. Written over the remote name (`issue_write`); the
+    # bound spelling (`github__issue_write`, as every other `tools:` list in a manifest uses) is
+    # accepted too, so a name copied from an approval rule works. Empty binds everything the
+    # server lists, which is what every manifest before this field was written against. A
+    # non-empty list is what makes a server's mutating surface enumerable: an approval rule can
+    # only gate a tool it can name, so without this a write tool the server adds overnight binds
+    # ungated and no test goes red. A pattern that matches nothing is logged and counted under
+    # `felix_rule_targets_nothing` at bind time rather than refused, for the reason discovery
     # failures are: the bound set legitimately varies with the server.
     tools: list[str] = Field(default_factory=list)
 

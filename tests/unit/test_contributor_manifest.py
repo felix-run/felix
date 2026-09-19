@@ -21,9 +21,12 @@ What a unit test here can and cannot prove, so nobody reads more into a green ru
 
 from __future__ import annotations
 
+import re
+
 import pytest
 from felix.manifests.loader import load_bundled
 from felix.manifests.schema import Manifest, McpServerRef
+from felix.manifests.tool_match import select
 from felix.secrets import secret_ref_name
 from felix.tools.sandboxes import DEFAULT_SANDBOX_IMAGE, assert_sandbox_image_allowed
 
@@ -117,9 +120,21 @@ def test_every_bound_write_tool_is_gated(manifest: Manifest) -> None:
 
 
 def test_the_tools_a_person_owns_are_not_bound(manifest: Manifest) -> None:
-    bound = set(_github_ref(manifest).tools)
-    leaked = bound & NEVER_BOUND_GITHUB_TOOLS
+    # `select`, not set intersection: `merge_*` in the allowlist would bind merge_pull_request
+    # and pass a literal comparison. Sound on its own, not only because a sibling refuses globs.
+    leaked = select(_github_ref(manifest).tools, NEVER_BOUND_GITHUB_TOOLS)
     assert not leaked, f"bound a tool this manifest must never hold: {sorted(leaked)}"
+
+
+_WRITE_SHAPED = re.compile(r"^(create|update|push|delete|merge|add|run|fork|request)_|_write$")
+
+
+def test_the_read_only_snapshot_is_read_only_by_construction() -> None:
+    """`READ_ONLY_GITHUB_TOOLS` is the one list nothing else checks. A write tool misfiled into
+    it would be exempt from the gating proof with every test green, so its members are held to
+    the naming GitHub's catalogue uses for writes."""
+    misfiled = sorted(n for n in READ_ONLY_GITHUB_TOOLS if _WRITE_SHAPED.search(n))
+    assert not misfiled, f"write-shaped names in the read-only set: {misfiled}"
 
 
 def test_approval_rules_name_only_bound_tools(manifest: Manifest) -> None:
