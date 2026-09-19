@@ -125,6 +125,10 @@ class Settings(BaseSettings):
     # allows only the built-in python image — `spec.sandboxes[].binding` is
     # manifest-supplied, so an unrestricted value is arbitrary image pull-and-run.
     sandbox_allowed_images: str = ""
+    # argv prefixes `spec.shell_tools` may exec on this host (comma-separated, e.g.
+    # `uv run ruff,./scripts/test.sh,git status`). Empty (default) disables shell tools —
+    # a manifest's prefixes must each be covered by one listed here.
+    shell_allowed_commands: str = ""
 
     # --- data plane (cloud-agnostic; AWS + GCP first) ---
     database_url: str = "postgresql+psycopg://felix:felix@localhost:5432/felix"
