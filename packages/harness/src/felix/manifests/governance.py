@@ -203,6 +203,14 @@ def validate_for_write(manifest: Manifest, settings: Any | None = None) -> None:
         assert_shell_commands_allowed(manifest.spec.shell_tools, settings)
     except ShellNotAllowedError as exc:
         raise GovernanceError(str(exc)) from exc
+    # The cowork precedent, as a rule instead of a manifest comment: a tool that execs on the
+    # host is reachable by whoever can call the manifest, and the approvals that would gate
+    # it are anonymous too when the caller is. Development keeps `make dev` usable.
+    env = getattr(settings, "environment", "development") if settings is not None else "development"
+    if manifest.spec.shell_tools and manifest.spec.auth.inbound.allow_anonymous and env != "development":
+        raise GovernanceError(
+            "shell_tools require an authenticated caller: set auth.inbound.allow_anonymous to false"
+        )
 
 
 def validate_governance(manifest: Manifest, settings: Any | None = None) -> None:

@@ -7,8 +7,11 @@ under test is the boundary between the model's argv and the host.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import os
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +27,9 @@ from felix.security.shell_policy import (
     assert_shell_commands_allowed,
     prefix_covers,
 )
-from felix.tools.shell import MAX_OUTPUT_BYTES, tools_from_shell_refs
+from felix.tools import shell as shell_mod
+from felix.tools.errors import ToolErrorCode, read_tool_error_code
+from felix.tools.shell import MAX_OUTPUT_BYTES, MAX_TOTAL_OUTPUT_BYTES, ShellArgs, tools_from_shell_refs
 from felix.tools.types import Tool, ToolInvocationCtx, is_wrapper_deny, tool_output_content
 
 PY = sys.executable
@@ -53,8 +58,26 @@ async def _run(tool: Tool, ws: Path, args: dict[str, Any], *, allowed: str = "")
 
 def _result(out: Any) -> dict[str, Any]:
     text = tool_output_content(out)
-    assert not text.startswith("shell_error"), text
+    assert read_tool_error_code(out) is None, text
     return json.loads(text)
+
+
+def _refused(out: Any) -> str:
+    """The refusal text, having asserted the output is a counted permission_denied tool error."""
+    assert read_tool_error_code(out) == ToolErrorCode.PERMISSION_DENIED, tool_output_content(out)
+    return tool_output_content(out)
+
+
+# A child that writes a heartbeat file forever; "is it dead" is "did the heartbeat stop".
+_HEARTBEAT = "import time, pathlib, sys; p = pathlib.Path(sys.argv[1]); [p.write_text(str(time.time())) or time.sleep(0.05) for _ in iter(int, 1)]"
+
+
+def _heartbeat_stopped(path: Path) -> bool:
+    if not path.exists():
+        return True
+    first = path.read_text()
+    time.sleep(0.4)
+    return path.read_text() == first
 
 
 # ---------------------------------------------------------------------------
@@ -110,7 +133,7 @@ async def test_an_unlisted_command_is_refused_before_it_runs(tmp_path: Path) -> 
     marker = tmp_path / "touched"
     tool = _tool(tmp_path, commands=["git status"])
     out = await _run(tool, tmp_path, {"argv": ["touch", str(marker)]})
-    assert "shell_error" in tool_output_content(out)
+    _refused(out)
     assert not marker.exists()
 
 
@@ -118,7 +141,7 @@ async def test_an_unlisted_command_is_refused_before_it_runs(tmp_path: Path) -> 
 async def test_an_option_before_the_subcommand_is_refused(tmp_path: Path) -> None:
     tool = _tool(tmp_path, commands=["git status"])
     out = await _run(tool, tmp_path, {"argv": ["git", "-c", "core.pager=cat", "status"]})
-    assert "shell_error" in tool_output_content(out)
+    _refused(out)
 
 
 @pytest.mark.asyncio
@@ -126,7 +149,7 @@ async def test_the_operator_allowlist_is_checked_per_call_too(tmp_path: Path) ->
     """A manifest bound when the host allowed `git` is still refused if the host no longer does."""
     tool = _tool(tmp_path, commands=["git status"], allowed="git")
     out = await _run(tool, tmp_path, {"argv": ["git", "status"]}, allowed="uv run ruff")
-    assert "FELIX_SHELL_ALLOWED_COMMANDS" in tool_output_content(out)
+    assert "FELIX_SHELL_ALLOWED_COMMANDS" in _refused(out)
 
 
 @pytest.mark.asyncio
@@ -141,9 +164,9 @@ async def test_shell_metacharacters_are_arguments_not_syntax(tmp_path: Path) -> 
 async def test_cwd_cannot_leave_the_workspace(tmp_path: Path) -> None:
     tool = _tool(tmp_path, commands=["pwd"])
     out = await _run(tool, tmp_path, {"argv": ["pwd"], "cwd": ".."})
-    assert "escapes workspace root" in tool_output_content(out)
+    assert "escapes workspace root" in _refused(out)
     out = await _run(tool, tmp_path, {"argv": ["pwd"], "cwd": "/"})
-    assert "absolute paths" in tool_output_content(out)
+    assert "absolute paths" in _refused(out)
     (tmp_path / "sub").mkdir()
     res = _result(await _run(tool, tmp_path, {"argv": ["pwd"], "cwd": "sub"}))
     assert res["cwd"] == "sub"
@@ -177,6 +200,109 @@ async def test_a_run_is_killed_at_its_timeout(tmp_path: Path) -> None:
     res = _result(await _run(tool, tmp_path, {"argv": [PY, "-c", "import time; time.sleep(30)"]}))
     assert res["timed_out"] is True
     assert res["duration_ms"] < 10_000
+
+
+@pytest.mark.asyncio
+async def test_a_timed_out_command_takes_its_children_with_it(tmp_path: Path) -> None:
+    """The documented use — a test script that spawns pytest — is a process *tree*.
+
+    Killing only the direct child leaves a grandchild holding the pipes, and the tool would
+    wait on them forever. The group is killed, and the grandchild's heartbeat stops.
+    """
+    beat = tmp_path / "beat"
+    parent = (
+        "import subprocess, sys, time; "
+        f"subprocess.Popen([sys.executable, '-c', {_HEARTBEAT!r}, {str(beat)!r}]); time.sleep(60)"
+    )
+    tool = _tool(tmp_path, commands=[PY], timeout_ms=1000)
+    res = _result(await _run(tool, tmp_path, {"argv": [PY, "-c", parent]}))
+    assert res["timed_out"] is True
+    assert res["duration_ms"] < 10_000, "the tool must not wait on an orphan's pipe"
+    assert _heartbeat_stopped(beat), "the grandchild outlived the timeout"
+
+
+@pytest.mark.asyncio
+async def test_output_past_the_budget_kills_the_command(tmp_path: Path) -> None:
+    """`MAX_OUTPUT_BYTES` bounds what the model sees; `MAX_TOTAL_OUTPUT_BYTES` bounds the API."""
+    tool = _tool(tmp_path, commands=[PY], timeout_ms=60_000)
+    code = "import sys\nwhile True:\n    sys.stdout.write('x' * 65536)"
+    res = _result(await _run(tool, tmp_path, {"argv": [PY, "-c", code]}))
+    assert res["output_exceeded"] is True
+    assert res["truncated"] is True
+    assert res["timed_out"] is False, "the budget, not the clock, ended it"
+    assert len(res["stdout"].encode()) <= MAX_OUTPUT_BYTES
+    assert res["duration_ms"] < 30_000
+    assert MAX_TOTAL_OUTPUT_BYTES > MAX_OUTPUT_BYTES
+
+
+@pytest.mark.asyncio
+async def test_cancelling_the_call_kills_the_command(tmp_path: Path) -> None:
+    """A client that disconnects cancels the task; nothing it spawned may survive that."""
+    beat = tmp_path / "beat"
+    tool = _tool(tmp_path, commands=[PY], timeout_ms=60_000)
+    task = asyncio.create_task(_run(tool, tmp_path, {"argv": [PY, "-c", _HEARTBEAT, str(beat)]}))
+    await asyncio.sleep(0.5)
+    assert beat.exists(), "the child never started"
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert _heartbeat_stopped(beat), "the child outlived the cancelled call"
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_is_counted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    counted: list[tuple[str, dict[str, str]]] = []
+    monkeypatch.setattr(
+        shell_mod, "record_counter", lambda name, labels: counted.append((name, dict(labels)))
+    )
+    tool = _tool(tmp_path, commands=["git status"])
+    _refused(await _run(tool, tmp_path, {"argv": ["id"]}))
+    _refused(await _run(tool, tmp_path, {"argv": ["git", "status"], "cwd": ".."}))
+    assert counted == [
+        ("felix_shell_denied", {"tool": "run", "reason": "argv"}),
+        ("felix_shell_denied", {"tool": "run", "reason": "cwd"}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_relative_path_entries_do_not_reach_the_child(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A relative PATH entry resolves against the cwd the model chose."""
+    monkeypatch.setenv("PATH", os.pathsep.join(["/usr/bin", ".", "node_modules/.bin", "/bin"]))
+    tool = _tool(tmp_path, commands=[PY])
+    res = _result(await _run(tool, tmp_path, {"argv": [PY, "-c", "import os; print(os.environ['PATH'])"]}))
+    assert res["stdout"].strip().split(os.pathsep) == ["/usr/bin", "/bin"]
+
+
+def test_argv_is_bounded() -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        ShellArgs(argv=["x"] * 257)
+    with pytest.raises(ValidationError, match="bytes"):
+        ShellArgs(argv=["x" * 70_000])
+    assert ShellArgs(argv=["x"] * 256).argv
+
+
+def test_a_shell_tool_may_not_be_reached_anonymously_outside_development(tmp_path: Path) -> None:
+    """The cowork precedent as a rule: anonymous callers make the gating approvals anonymous."""
+    spec = {
+        "shell_tools": [{"name": "run", "commands": ["git status"]}],
+        "auth": {"inbound": {"allow_anonymous": True}},
+    }
+    manifest = parse_manifest(
+        {"apiVersion": "felix/v1", "kind": "Agent", "metadata": {"name": "m"}, "spec": spec}
+    )
+    prod = Settings(
+        workspace_root=str(tmp_path), shell_allowed_commands="git status", environment="production"
+    )
+    with pytest.raises(GovernanceError, match="allow_anonymous"):
+        validate_for_write(manifest, prod)
+    dev = Settings(
+        workspace_root=str(tmp_path), shell_allowed_commands="git status", environment="development"
+    )
+    validate_for_write(manifest, dev)
 
 
 @pytest.mark.asyncio

@@ -14,6 +14,7 @@ extra shape is a way for a listed command to run something that was not listed.
 
 from __future__ import annotations
 
+import shlex
 from collections.abc import Iterable, Sequence
 from typing import TYPE_CHECKING, Any
 
@@ -94,7 +95,7 @@ def describe_allowlist(settings: Any) -> str:
     prefixes = allowed_prefixes(settings)
     if not prefixes:
         return "disabled (no FELIX_SHELL_ALLOWED_COMMANDS)"
-    return ", ".join(" ".join(p) for p in prefixes)
+    return ", ".join(shlex.quote(" ".join(p)) for p in prefixes)
 
 
 __all__ = [
