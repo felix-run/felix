@@ -24,12 +24,15 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*; \
     mkdir -p /workspace; \
     chown felix:felix /workspace
-COPY --chown=felix:felix --chmod=755 deploy/docker/self-entrypoint.sh /usr/local/bin/felix-self-entrypoint
+# Not `felix-` prefixed on purpose: tests/unit/test_entrypoint_wiring.py holds every
+# `felix-*` a container runs to the console scripts in pyproject, and this is a shell
+# wrapper that prepares /workspace and then execs the real one — `felix-api`, in CMD.
+COPY --chown=felix:felix --chmod=755 deploy/docker/self-entrypoint.sh /usr/local/bin/self-entrypoint
 USER felix
 # uv's cache and the workspace venv live inside the workspace volume, so a first boot's
 # sync is paid once and the running image stays read-only apart from /data.
 ENV UV_CACHE_DIR=/workspace/.uv-cache \
     UV_PYTHON_DOWNLOADS=never \
     FELIX_WORKSPACE_ROOT=/workspace
-ENTRYPOINT ["felix-self-entrypoint"]
+ENTRYPOINT ["self-entrypoint"]
 CMD ["felix-api"]
