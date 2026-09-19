@@ -554,17 +554,16 @@ comment explaining exactly that. It is conditional, not inert.
       and now guards only the paths that bypass validation — items written straight to the
       store by the continuous-eval job, and a manifest that fails to resolve.
 
-- [ ] **An eval run cannot report how many items errored.** `fail_count` counts an item the
-      scorer rejected and an item that raised as the same thing, and the run row carries no
-      `error_count`. That is the ambiguity `scripts/eval-counter-smoke.sh` resolves out of band
-      for CI — it greps the printed rows for `error` — and nothing on the API surface offers the
-      equivalent, so an operator reading a failing run cannot tell a model regression from a
-      malformed dataset. Pairs with the item above.
+- [x] **An eval run cannot report how many items errored.** `error_count` is on the run row
+      (migration `0017`) as the subset of `fail_count` that never reached the scorer;
+      `fail_count` keeps meaning "did not pass", which the CLI exit code relies on. The
+      counter-smoke checks both, so the row and the score rows cannot drift.
 
-- [ ] **Eval scoring depth** — four string rules (`equals` / `contains` / `min_chars` / non-empty)
-      plus one judge, and `invalid_rubric` for a rule that could never reject. No regex, no schema
-      check, no tool-call or trajectory assertions, no numeric tolerance, no significance test on
-      comparative runs. Nobody can gate a model change on this without writing their own scorer.
+- [~] **Eval scoring depth** — landed: trajectory rules (`tools_called`, `tools_not_called`,
+      `max_tool_calls`, `max_errors`), read off the run's messages and off `mock_tool_calls` /
+      `mock_tool_errors` under `--mock`, with `invalid_rubric` for the shapes that cannot reject.
+      `fixtures/eval/contributor.json` is the first dataset that scores the *agent*. Still no
+      regex, no schema check, no numeric tolerance, no significance test on comparative runs. Nobody can gate a model change on this without writing their own scorer.
       A new rule inherits two things: `_score_answer`'s docstring states the empty-value policy,
       and `tests/unit/test_eval_gate_can_fail.py` reads the rule names off the function, so the
       rule fails there until `negative.json` has an item that has seen it reject something.

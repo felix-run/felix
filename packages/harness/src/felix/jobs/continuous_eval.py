@@ -69,6 +69,8 @@ async def run_continuous_eval(settings: Settings, *, tenant_id: str = "default")
                     "run_id": completed.get("id"),
                     "pass_count": completed.get("pass_count"),
                     "fail_count": completed.get("fail_count"),
+                    # Failures that never reached the scorer: a broken dataset, not a canary.
+                    "error_count": completed.get("error_count"),
                 }
             )
             runs += 1

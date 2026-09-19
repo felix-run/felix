@@ -25,6 +25,26 @@
         "min_chars": 8,
         "mock_answer": "long enough"
       }
+    },
+    {
+      "item_id": "looked-it-up",
+      "user_input": "Look it up, then answer hello",
+      "rubric": {
+        "tools_called": [
+          "search_files"
+        ],
+        "tools_not_called": [
+          "write_file"
+        ],
+        "max_tool_calls": 3,
+        "max_errors": 0,
+        "contains": "hello",
+        "mock_tool_calls": [
+          "search_files",
+          "read_file"
+        ],
+        "mock_answer": "hello, found it"
+      }
     }
   ]
 }

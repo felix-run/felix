@@ -112,6 +112,30 @@ class Tool:
             self.peer = True
 
 
+# How a refused or failed tool call reads once it is a `ChatMessage` and the metadata markers
+# are gone. Every `deny_output` text a wrapper writes starts with one of these, and every
+# error the runner writes into a tool message does too; `tests/unit/test_eval_trajectory_rules.py`
+# scans the producers so a new spelling fails there rather than going uncounted. Read by
+# `felix.eval.runner.trajectory_of` — the one consumer that only has the text.
+FAILURE_CONTENT_PREFIXES: tuple[str, ...] = (
+    "[error/",
+    "[fatal/",
+    "[tool error/",
+    "[policy ",
+    "[command ",
+    "[screening ",
+    "[limits]",
+    "[guardrails]",
+    "[judge ",
+    "[approval ",
+)
+
+
+def is_failure_content(text: str) -> bool:
+    """Does this tool-message text record a denial or a failure, by its spelling alone?"""
+    return (text or "").startswith(FAILURE_CONTENT_PREFIXES)
+
+
 def deny_output(content: str, source: WrapperSource) -> ToolOutputDict:
     return ToolOutputDict(
         content=content,
@@ -262,6 +286,7 @@ def define_tool_with_executor(
 
 
 __all__ = [
+    "FAILURE_CONTENT_PREFIXES",
     "Tool",
     "ToolExecutor",
     "ToolInput",
@@ -274,6 +299,7 @@ __all__ = [
     "define_tool_with_executor",
     "deny_output",
     "deny_source",
+    "is_failure_content",
     "is_wrapper_deny",
     "output_metadata",
     "output_text",
