@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+import uuid
 from typing import Any
 
 from felix.config import Settings
@@ -69,7 +70,14 @@ async def _invoke_job_manifest(
     provider = default_tool_provider()
 
     auth = AuthContext(tenant_id=tenant_id, principal_sub="cron", anonymous=False)
+    # One thread per job by default, so a digest job keeps its own history. `fresh_thread`
+    # gives each firing a thread of its own: a job that works a *different* ticket every run
+    # must not carry ticket N's transcript into ticket N+1's context.
     thread = f"{tenant_id}:job:{job['name']}"
+    if payload.get("fresh_thread"):
+        # A uuid, not the clock: two firings in one millisecond — a sweep that claims twice,
+        # a test — would share a thread again, which is the one thing this exists to prevent.
+        thread = f"{thread}:{uuid.uuid4().hex[:16]}"
     resolved = await resolve_tenant_manifest(settings, tenant_id, manifest_id, thread_id=thread)
     req_ctx = RequestContext(settings=settings, auth=auth, manifest_id=manifest_id, thread_id=thread)
     async with async_run_with_context(req_ctx):
