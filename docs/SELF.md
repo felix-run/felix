@@ -100,7 +100,8 @@ ticket is ready when every section is present *and specific*:
 **The readiness check** (rung 1) scores eight points, one per section. Eight → `felix:ready`. Fewer →
 `felix:needs-detail` and exactly one comment listing the missing sections with a proposed fill-in for
 each Felix can derive (it can propose an acceptance command; it cannot invent evidence). No second
-comment until the issue changes. `risk: control-path`, an ambiguous outcome, or two plausible designs
+comment until the issue changes. The comment's first line is `Readiness N/8` — the scoreboard reads
+the score from that line and nothing else. `risk: control-path`, an ambiguous outcome, or two plausible designs
 → `felix:needs-human` and Felix stops.
 
 **Priority is human-only.** `p1` / `p2` / `p3` are set by a person. Felix works only tickets carrying
@@ -186,12 +187,13 @@ table; nothing is posted automatically in this pass.
 | Readiness at first check | rubric score in the first readiness comment, median | ≥ 6/8 for human tickets after Felix's proposal; 8/8 for Felix's own |
 | Meta-work ratio | `felix:meta` opened ÷ all opened by the bot | ≤ 20 % |
 | Human-priority violations | `labeled p*` timeline events by the bot | 0 |
-| Verdict overrides | `felix:ready` removed or `felix:needs-detail` removed by a person within 7 days | ≤ 2 in 10 — **rung 1 gate** |
+| Verdict overrides | a verdict label the bot applied, removed by a person within 7 days | ≤ 2 in 10 — **rung 1 gate** |
 | Gates green locally | contributor transcripts whose report carries a real `./scripts/test.sh` tail with 0 failed | 3 tickets — **rung 2 gate** |
-| Merged without human commits | merged `felix:authored` PRs whose every commit author is the bot ÷ merged | ≥ 50 % |
-| Rework rate | `felix:authored` PRs closed unmerged ÷ opened | ≤ 30 % |
-| Review rounds | review submissions before merge, median | ≤ 2 |
-| Regression rate | smoke failures or eval `fail_count > 0` within 48 h of a Felix merge | 0 — **rung 3 gate**, with merge rate ≥ 60 % over 10 PRs |
+| Merged without human commits | merged Felix PRs (bot login or `felix:authored`) whose every commit author is the bot ÷ merged | ≥ 50 % |
+| Rework rate | Felix PRs closed unmerged ÷ opened | ≤ 30 % |
+| Review rounds | distinct commits that drew an approve or a changes-requested before merge, median | ≤ 2 |
+| Regressions | smoke failures within 48 h of a Felix merge | 0 — **rung 3 gate**, with merge rate ≥ 60 % over 10 PRs |
+| PRs missing the contract | open Felix PRs whose body lacks the `Felix-Thread` trailer | none |
 | Time-horizon | tool calls and wall-clock from first to last audit row on the PR's `Felix-Thread` | tracked; a rung is revisited when the median doubles without regressions |
 | Cost per merged PR | `GET /usage/summary` for the thread's manifest and window | tracked; alert at 3× the four-week median |
 
