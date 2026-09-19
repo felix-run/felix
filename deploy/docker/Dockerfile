@@ -16,7 +16,7 @@
 # Default image is LEAN (no aws/gcp/embeddings extras) for small VMs.
 # Build with extras: docker build --build-arg FELIX_EXTRAS="aws,gcp" .
 
-FROM ghcr.io/astral-sh/uv:0.12@sha256:b485bd65cc2cf1c9a93b3554012c9c3778cf7b1b5fd3d3096ce9e1226c97e1e6 AS uv
+FROM ghcr.io/astral-sh/uv:0.12@sha256:10787c682e4184e4f290de1171fd4703dc63de99221f10fe1c99002ce7fa9acc AS uv
 
 FROM python:3.14-slim@sha256:cad9a2c871761c413caa6fdd6441c783451e740a48aaeba60ae62a8b53525ef6 AS builder
 COPY --from=uv /uv /uvx /bin/
