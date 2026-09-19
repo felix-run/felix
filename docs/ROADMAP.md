@@ -28,6 +28,10 @@ Pick from **Now** unless a demo needs something from **Next**.
 
 **Dogfood `contributor.yaml` on real Felix work → fix what breaks → write it down here.**
 
+The program that turns that sentence into rungs — who proposes, who decides, what a ticket must
+cite, what Felix may never edit, and the numbers that graduate each rung — is
+[SELF.md](SELF.md). This file stays the *what*; that one is the *how*.
+
 This replaces the loop this file carried until 2026-09-02, which read "dogfood float". `float`
 was deleted from `felix-run/web` on 2026-08-23 — *"what it actually contributed was a mode, not
 a product"* — and the line survived it by ten days. That matters more than a stale link: with
@@ -200,10 +204,13 @@ First, because everything else governs it.
       on, which is what keeps the unscreened-tools warning silent on what we ship. A tool no
       manifest declares is inert by this repo's own definition, and none of these are now.
 
-Decision gate, not a commitment: the **governed coding toolset** (`read`/`edit`/`bash` behind a
-`FilesystemBackend` + `ShellBackend` pair) was deferred as "large, and conditional — only worth
-starting if coding-agent use cases are actually on the roadmap". The daily-driver goal makes it
-live again. Revisit after the first three land, on evidence, not before.
+- [~] **Governed shell tool.** The decision gate that sat here — the `read`/`edit`/`bash` coding
+      toolset, deferred as "only worth starting if coding-agent use cases are actually on the
+      roadmap" — is decided: [SELF.md](SELF.md) puts Felix building Felix on the roadmap,
+      and rung 2 of it cannot exist without a way to run `./scripts/test.sh`. Landing as
+      `spec.shell_tools` behind `FELIX_SHELL_ALLOWED_COMMANDS` (argv prefixes, no shell interpreter,
+      scrubbed env, cwd pinned under the workspace root), not as a `ShellBackend` registry — one
+      implementation does not earn a registry.
 
 ### B. Close the durable loop
 
@@ -396,10 +403,10 @@ and fixed; the comment at `fibers.py:36-46` is the record.
       the half with nothing to attribute. It is the *originating* thread, because `create_pending`
       still reuses a pending row across threads. Widening that reuse key would change grant scope
       and is a product decision, not part of this.
-- [ ] **Attribute denials in the audit record.** Every wrapper denial emits one undifferentiated
-      `policy_deny` carrying `{tool, tool_call_id, thread_id}` — which control fired, and why,
-      exists only in the tool message. The wrappers emit Prometheus counters, not audit events.
-      An auditor cannot answer "show me every call blocked by policy X in Q3". Then
+- [~] **Attribute denials in the audit record.** Landed: `policy_deny` rows carry
+      `payload.control` naming the wrapper that refused — the source was on every deny output
+      already (`deny_output` stamps it) and the loop was the one reader that dropped it, so the
+      fix was a read, not a design. Not landed, and still the auditor's second question:
       `GET /audit/export` over a time range; `audit.py`'s docstring already promises an export
       that does not exist.
 - [ ] **Surface eval instrumentation** — `EvalRun.started_at/finished_at` and `ItemScore`'s

@@ -154,6 +154,16 @@ class McpServerRef(_Strict):
     # result that reads like the server refused. Over stdio this bounds each read — the
     # handshake and the call each get it — rather than the exchange as a whole.
     timeout_ms: int | None = Field(default=None, gt=0, le=MAX_INTEGRATION_TIMEOUT_MS)
+    # Remote tools to bind, as glob patterns. Written over the remote name (`issue_write`); the
+    # bound spelling (`github__issue_write`, as every other `tools:` list in a manifest uses) is
+    # accepted too, so a name copied from an approval rule works. Empty binds everything the
+    # server lists, which is what every manifest before this field was written against. A
+    # non-empty list is what makes a server's mutating surface enumerable: an approval rule can
+    # only gate a tool it can name, so without this a write tool the server adds overnight binds
+    # ungated and no test goes red. A pattern that matches nothing is logged and counted under
+    # `felix_rule_targets_nothing` at bind time rather than refused, for the reason discovery
+    # failures are: the bound set legitimately varies with the server.
+    tools: list[str] = Field(default_factory=list)
 
     @field_validator("auth", mode="before")
     @classmethod
@@ -275,6 +285,38 @@ class SandboxRef(_Strict):
     timeout_ms: int | None = Field(default=None, gt=0, le=MAX_INTEGRATION_TIMEOUT_MS)
     path_prefix: str = ""
     fatal: bool = False
+
+
+class ShellToolRef(_Strict):
+    """A subprocess on the host the API runs on, bounded by argv prefixes.
+
+    The capability the sandbox does not give: running the repository's own gates —
+    `./scripts/test.sh`, `ruff`, `ty`, `git` — in the checkout `write_file` edits. There is no
+    shell interpreter behind it: the model supplies `argv`, the tool execs it, and `&&`, `|`
+    and `;` are literal arguments. `commands` are prefixes over that argv — `"git status"`
+    allows `git status …` and nothing else under `git`; `"./scripts/test.sh"` allows any
+    arguments. The operator bounds every manifest with `FELIX_SHELL_ALLOWED_COMMANDS`, which
+    must cover each prefix here (a manifest narrows; it cannot widen), and which is empty by
+    default — a shell tool on a deployment that has not opted in is refused at manifest write.
+
+    What it cannot bound: the listed command runs repo code as the API's user. The host it
+    runs on is the boundary — `deploy/GOVERNANCE.md` says what that host must not hold.
+    """
+
+    name: str = Field(min_length=1)
+    description: str = ""
+    # argv prefixes, whitespace-separated. Matched token for token from argv[0].
+    commands: list[str] = Field(min_length=1, max_length=64)
+    timeout_ms: int | None = Field(default=None, gt=0, le=MAX_INTEGRATION_TIMEOUT_MS)
+    fatal: bool = False
+
+    @field_validator("commands")
+    @classmethod
+    def _non_empty_prefixes(cls, v: list[str]) -> list[str]:
+        cleaned = [" ".join(c.split()) for c in v]
+        if any(not c for c in cleaned):
+            raise ValueError("shell_tools[].commands entries must not be empty")
+        return cleaned
 
 
 class BrowserToolRef(_Strict):
@@ -753,6 +795,7 @@ class Spec(_Strict):
     containers: list[ContainerRef] = Field(default_factory=list, max_length=MAX_REFS)
     queues: list[QueueRef] = Field(default_factory=list, max_length=MAX_REFS)
     sandboxes: list[SandboxRef] = Field(default_factory=list, max_length=MAX_REFS)
+    shell_tools: list[ShellToolRef] = Field(default_factory=list, max_length=MAX_REFS)
     browser_tools: list[BrowserToolRef] = Field(default_factory=list, max_length=MAX_REFS)
     http_tools: list[HttpFetchToolRef] = Field(default_factory=list, max_length=MAX_REFS)
     search_tools: list[SearchToolRef] = Field(default_factory=list, max_length=MAX_REFS)

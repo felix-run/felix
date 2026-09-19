@@ -5,7 +5,7 @@ from __future__ import annotations
 import inspect
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, get_args, runtime_checkable
 
 if TYPE_CHECKING:
     pass
@@ -143,15 +143,39 @@ def deny_output(content: str, source: WrapperSource) -> ToolOutputDict:
     )
 
 
-def is_wrapper_deny(output: ToolOutput) -> bool:
-    if isinstance(output, str):
-        return False
+def output_metadata(output: ToolOutput) -> dict[Any, Any] | None:
+    """The metadata dict of a tool output, whichever of its three shapes it takes.
+
+    The one place the `str | ToolOutputDict | dict` ladder is written; every marker check
+    (`is_wrapper_deny`, `deny_source`, `read_tool_error_code`) reads through it, so a change to
+    the output shape is a change here and not a hunt.
+    """
     if isinstance(output, ToolOutputDict):
-        return output.metadata.get(_WRAPPER_DENY_MARKER) is True
+        return output.metadata
     if isinstance(output, dict):
         md = output.get("metadata")
-        return isinstance(md, dict) and md.get(_WRAPPER_DENY_MARKER) is True
-    return False
+        return md if isinstance(md, dict) else None
+    return None
+
+
+def is_wrapper_deny(output: ToolOutput) -> bool:
+    md = output_metadata(output)
+    return md is not None and md.get(_WRAPPER_DENY_MARKER) is True
+
+
+def deny_source(output: ToolOutput) -> WrapperSource | None:
+    """Which governance wrapper produced this deny, or None when it is not a wrapper deny.
+
+    `deny_output` stamps the source on every denial; this is the read side. It is what lets an
+    audit row say *which* control refused a call rather than only that one did. The marker is
+    unforgeable, so the value can only be one of `WrapperSource`; the membership check is what
+    lets the return type say so.
+    """
+    md = output_metadata(output)
+    if md is None or md.get(_WRAPPER_DENY_MARKER) is not True:
+        return None
+    source = md.get("source")
+    return source if source in get_args(WrapperSource) else None
 
 
 def tool_output_content(output: ToolOutput) -> str:
@@ -274,8 +298,10 @@ __all__ = [
     "define_tool",
     "define_tool_with_executor",
     "deny_output",
+    "deny_source",
     "is_failure_content",
     "is_wrapper_deny",
+    "output_metadata",
     "output_text",
     "tool_output_content",
 ]
