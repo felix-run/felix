@@ -188,7 +188,7 @@ _COMMAND_ARG_KEYS = ("command", "cmd", "code", "script", "stdin", "argv", "shell
 
 # For these transports the payload *is* the program, so every string argument is
 # execution-bearing regardless of what the remote tool decided to call it.
-_EXECUTION_TRANSPORTS = frozenset({"sandbox", "container"})
+_EXECUTION_TRANSPORTS = frozenset({"sandbox", "container", "shell"})
 
 
 def _screenable_command_text(args: ToolInput, transport: str) -> str:
@@ -228,10 +228,14 @@ def apply_command_screening(
     targets = list(screening.target_tools)
 
     def wrap_one(tool: Tool) -> Tool:
+        # An execution transport is screened whatever `target_tools` says and even with no
+        # rules compiled: for those the payload *is* the program. One set, `_EXECUTION_TRANSPORTS`,
+        # decides that here and in `_screenable_command_text` — it was a literal in both of
+        # these lines once, and the shell transport was added to the set and not to them.
         if targets and not matches_any(targets, tool.name):
-            if tool.executor.transport not in {"sandbox", "container"}:
+            if tool.executor.transport not in _EXECUTION_TRANSPORTS:
                 return tool
-        if not compiled and tool.executor.transport not in {"sandbox", "container"}:
+        if not compiled and tool.executor.transport not in _EXECUTION_TRANSPORTS:
             return tool
         inner = tool.executor
 
@@ -1215,6 +1219,17 @@ async def build_agent(
                 )
             except Exception:
                 logger.warning("sandbox tool binding failed", exc_info=True)
+
+        # Allowlisted argv on the API host, in the workspace checkout.
+        if m.spec.shell_tools:
+            try:
+                from felix.tools.shell import tools_from_shell_refs
+
+                _append_unique_tools(
+                    resolved, tools_from_shell_refs(list(m.spec.shell_tools), settings=deps.settings)
+                )
+            except Exception:
+                logger.warning("shell tool binding failed", exc_info=True)
 
         if container_refs:
             try:

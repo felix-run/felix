@@ -480,11 +480,13 @@ Outbound integrations, all declared on the manifest:
 | `spec.peers` | A2A peers → `peer__name` tools |
 | `spec.browser_tools` | Playwright (via the `browser` extra) |
 | `spec.sandboxes` / `spec.containers` | Isolated execution |
+| `spec.shell_tools` | Allowlisted argv on the API host, in the workspace checkout — no shell interpreter |
 | `spec.queues` | Redis list enqueue and dequeue |
 
 > [!WARNING]
 > **stdio MCP is disabled** unless `FELIX_MCP_STDIO_ALLOWED_COMMANDS` names the exact commands
-> allowed. Manifest-supplied argv is arbitrary code execution.
+> allowed, and **shell tools are disabled** unless `FELIX_SHELL_ALLOWED_COMMANDS` names the argv
+> prefixes allowed. Manifest-supplied argv is arbitrary code execution.
 
 Structured output — `spec.output_schema` is a JSON Schema the agent's answer must match, and the
 model provider is what enforces it rather than the prompt:

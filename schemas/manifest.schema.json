@@ -1692,6 +1692,56 @@
       "title": "SessionSpec",
       "type": "object"
     },
+    "ShellToolRef": {
+      "additionalProperties": false,
+      "description": "A subprocess on the host the API runs on, bounded by argv prefixes.\n\nThe capability the sandbox does not give: running the repository's own gates \u2014\n`./scripts/test.sh`, `ruff`, `ty`, `git` \u2014 in the checkout `write_file` edits. There is no\nshell interpreter behind it: the model supplies `argv`, the tool execs it, and `&&`, `|`\nand `;` are literal arguments. `commands` are prefixes over that argv \u2014 `\"git status\"`\nallows `git status \u2026` and nothing else under `git`; `\"./scripts/test.sh\"` allows any\narguments. The operator bounds every manifest with `FELIX_SHELL_ALLOWED_COMMANDS`, which\nmust cover each prefix here (a manifest narrows; it cannot widen), and which is empty by\ndefault \u2014 a shell tool on a deployment that has not opted in is refused at manifest write.\n\nWhat it cannot bound: the listed command runs repo code as the API's user. The host it\nruns on is the boundary \u2014 `deploy/GOVERNANCE.md` says what that host must not hold.",
+      "properties": {
+        "name": {
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "commands": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 64,
+          "minItems": 1,
+          "title": "Commands",
+          "type": "array"
+        },
+        "timeout_ms": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "maximum": 3600000,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timeout Ms"
+        },
+        "fatal": {
+          "default": false,
+          "title": "Fatal",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "commands"
+      ],
+      "title": "ShellToolRef",
+      "type": "object"
+    },
     "SkillRef": {
       "additionalProperties": false,
       "properties": {
@@ -1809,6 +1859,14 @@
           },
           "maxItems": 64,
           "title": "Sandboxes",
+          "type": "array"
+        },
+        "shell_tools": {
+          "items": {
+            "$ref": "#/$defs/ShellToolRef"
+          },
+          "maxItems": 64,
+          "title": "Shell Tools",
           "type": "array"
         },
         "browser_tools": {
