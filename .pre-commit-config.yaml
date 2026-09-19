@@ -18,7 +18,7 @@ repos:
         # `helm lint` and `docker compose config -q` over every overlay --
         # which the docker job did only for the base file until #104, so the
         # exclusions here had been trading one check for none.
-        exclude: ^(deploy/helm/|deploy/docker/compose\.(lite|gcp|replicas)\.yml$)
+        exclude: ^(deploy/helm/|deploy/docker/compose\.(lite|gcp|replicas|self)\.yml$)
       - id: check-added-large-files
         args: [--maxkb=1000]
       - id: check-merge-conflict

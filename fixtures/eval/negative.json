@@ -1,6 +1,6 @@
 {
   "name": "negative",
-  "description": "CI counter-smoke \u2014 every item must FAIL. Proves the scorer can say no.",
+  "description": "CI counter-smoke — every item must FAIL. Proves the scorer can say no.",
   "items": [
     {
       "item_id": "equals-mismatch",
@@ -46,6 +46,63 @@
       "user_input": "Say anything",
       "rubric": {
         "contains": "",
+        "mock_answer": "anything at all"
+      }
+    },
+    {
+      "item_id": "tool-not-called",
+      "user_input": "Look it up before answering",
+      "rubric": {
+        "tools_called": [
+          "search_files"
+        ],
+        "mock_answer": "I guessed"
+      }
+    },
+    {
+      "item_id": "forbidden-tool-called",
+      "user_input": "Answer without writing anything",
+      "rubric": {
+        "tools_not_called": [
+          "write_file"
+        ],
+        "mock_tool_calls": [
+          "read_file",
+          "write_file"
+        ],
+        "mock_answer": "done"
+      }
+    },
+    {
+      "item_id": "too-many-tool-calls",
+      "user_input": "Answer in at most two calls",
+      "rubric": {
+        "max_tool_calls": 2,
+        "mock_tool_calls": [
+          "a",
+          "b",
+          "c"
+        ],
+        "mock_answer": "done"
+      }
+    },
+    {
+      "item_id": "a-tool-errored",
+      "user_input": "Answer with no tool errors",
+      "rubric": {
+        "max_errors": 0,
+        "mock_tool_calls": [
+          "read_file"
+        ],
+        "mock_tool_errors": 1,
+        "mock_answer": "done"
+      }
+    },
+    {
+      "item_id": "unfillable-trajectory-rubric",
+      "user_input": "Say anything",
+      "rubric": {
+        "tools_called": [],
         "mock_answer": "anything at all"
       }
     }

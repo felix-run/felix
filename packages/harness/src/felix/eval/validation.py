@@ -29,7 +29,16 @@ from felix.thread_ids import MAX_THREAD_ID
 # order. A rubric carrying none of these is not invalid — it scores as `nonempty`.
 # `test_eval_item_validation.py` reads the same set off `_score_answer`'s source, so a new
 # rule fails there until this list knows about it.
-RUBRIC_RULE_KEYS = ("expect", "equals", "contains", "min_chars")
+RUBRIC_RULE_KEYS = (
+    "tools_called",
+    "tools_not_called",
+    "max_tool_calls",
+    "max_errors",
+    "expect",
+    "equals",
+    "contains",
+    "min_chars",
+)
 
 # Keys `_maybe_llm_judge` reads to *tune* a judge. They do not select one — `_wants_llm_judge`
 # looks at `llm_judge` / `judge_criteria` / `judge_model` and nothing else — so a rubric

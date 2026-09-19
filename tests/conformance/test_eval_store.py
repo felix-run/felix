@@ -229,7 +229,7 @@ async def test_a_run_completes_and_keeps_its_scores(store_settings: Any) -> None
 
     scores = [{"item_id": "a", "pass": True, "score": 1.0, "rule": "contains"}]
     completed = await eval_store.complete_run(
-        store_settings, TENANT, run["id"], pass_count=1, fail_count=0, scores=scores
+        store_settings, TENANT, run["id"], pass_count=1, fail_count=2, error_count=1, scores=scores
     )
 
     assert completed is not None
@@ -238,6 +238,7 @@ async def test_a_run_completes_and_keeps_its_scores(store_settings: Any) -> None
     assert fetched["status"] == "completed"
     assert fetched["finished_at"] is not None
     assert fetched["pass_count"] == 1
+    assert (fetched["fail_count"], fetched["error_count"]) == (2, 1), "both arms carry error_count"
     assert fetched["manifest_version"] == 3
     assert fetched["scores"] == scores
 
