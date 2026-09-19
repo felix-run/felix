@@ -32,7 +32,7 @@ from felix.security.shell_policy import (
 from felix.security.stdio_policy import stdio_child_env
 from felix.timeouts import timeout_seconds
 from felix.tools.types import Tool, ToolInput, ToolInvocationCtx, ToolOutput, define_tool_with_executor
-from felix.tools.workspace import _workspace_root, resolve_under_root
+from felix.tools.workspace import resolve_under_root, workspace_root
 
 DEFAULT_SHELL_TIMEOUT_S = 300.0
 # stdout and stderr each. A test suite's tail is what the model needs; the head is not.
@@ -57,7 +57,7 @@ def _cap(data: bytes) -> tuple[str, bool]:
 class _ShellExecutor:
     transport = "shell"
 
-    def __init__(self, *, prefixes: list[tuple[str, ...]], timeout_s: float, settings: Any | None) -> None:
+    def __init__(self, *, prefixes: list[tuple[str, ...]], timeout_s: float, settings: Any) -> None:
         self._prefixes = prefixes
         self._timeout_s = timeout_s
         self._settings = settings
@@ -71,7 +71,7 @@ class _ShellExecutor:
         settings = req.settings if req is not None and req.settings is not None else self._settings
         try:
             assert_argv_allowed(argv, self._prefixes, settings)
-            root = _workspace_root()
+            root = workspace_root()
             cwd = resolve_under_root(root, str(args.get("cwd") or "."))
         except (ShellNotAllowedError, ValueError) as exc:
             return f"shell_error: {exc}"
@@ -115,6 +115,10 @@ class _ShellExecutor:
 
 
 def tools_from_shell_refs(refs: list[ShellToolRef], *, settings: Any | None = None) -> list[Tool]:
+    if settings is None:
+        from felix.config import get_settings
+
+        settings = get_settings()
     assert_shell_commands_allowed(refs, settings)
     out: list[Tool] = []
     for ref in refs:

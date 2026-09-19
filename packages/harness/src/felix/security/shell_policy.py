@@ -15,7 +15,10 @@ extra shape is a way for a listed command to run something that was not listed.
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from felix.manifests.schema import ShellToolRef
 
 
 class ShellNotAllowedError(ValueError):
@@ -26,12 +29,8 @@ def split_prefix(text: str) -> tuple[str, ...]:
     return tuple(text.split())
 
 
-def allowed_prefixes(settings: Any | None = None) -> tuple[tuple[str, ...], ...]:
+def allowed_prefixes(settings: Any) -> tuple[tuple[str, ...], ...]:
     """Parse `FELIX_SHELL_ALLOWED_COMMANDS`. Empty (the default) disables shell tools."""
-    if settings is None:
-        from felix.config import get_settings
-
-        settings = get_settings()
     raw = getattr(settings, "shell_allowed_commands", "") or ""
     return tuple(split_prefix(part) for part in raw.split(",") if part.strip())
 
@@ -44,7 +43,7 @@ def prefix_covers(prefix: Sequence[str], argv: Sequence[str]) -> bool:
 def assert_argv_allowed(
     argv: Sequence[str],
     manifest_prefixes: Iterable[Sequence[str]],
-    settings: Any | None = None,
+    settings: Any,
 ) -> None:
     """Refuse an argv outside the tool's own prefixes or the operator's."""
     if not argv or not str(argv[0]).strip():
@@ -61,7 +60,7 @@ def assert_argv_allowed(
         raise ShellNotAllowedError(f"{argv[0]!r} is not under any prefix in FELIX_SHELL_ALLOWED_COMMANDS")
 
 
-def assert_shell_commands_allowed(refs: Iterable[Any], settings: Any | None = None) -> None:
+def assert_shell_commands_allowed(refs: Iterable[ShellToolRef], settings: Any) -> None:
     """Every manifest prefix is covered by an operator prefix.
 
     Checked at manifest write and at compile, like sandbox images: a manifest that names
@@ -90,7 +89,7 @@ def assert_shell_commands_allowed(refs: Iterable[Any], settings: Any | None = No
         raise ShellNotAllowedError("; ".join(errors))
 
 
-def describe_allowlist(settings: Any | None = None) -> str:
+def describe_allowlist(settings: Any) -> str:
     """Human-readable summary for `felix doctor`."""
     prefixes = allowed_prefixes(settings)
     if not prefixes:

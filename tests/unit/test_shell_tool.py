@@ -226,6 +226,20 @@ async def test_command_screening_sees_argv(tmp_path: Path) -> None:
     assert out.metadata.get("source") == "command"  # type: ignore[union-attr]
 
 
+@pytest.mark.asyncio
+async def test_target_tools_that_miss_the_shell_tool_still_screen_it(tmp_path: Path) -> None:
+    """`command_screening.target_tools` narrows screening for ordinary tools. An execution
+    transport is screened regardless — the literal set that decided this was updated for
+    sandbox and container and not for shell, which is the gap this pins."""
+    from felix.manifests.schema import CommandScreening
+
+    tool = _tool(tmp_path, commands=["rm"])
+    screening = CommandScreening(enabled=True, include_defaults=True, target_tools=["some_other_tool"])
+    screened = builder.apply_command_screening([tool], screening, "m")[0]
+    out = await _run(screened, tmp_path, {"argv": ["rm", "-rf", "/"]}, allowed="rm")
+    assert is_wrapper_deny(out), tool_output_content(out)
+
+
 def test_the_bound_tool_carries_the_shell_transport(tmp_path: Path) -> None:
     tool = _tool(tmp_path, commands=["git status", "./scripts/test.sh"])
     assert tool.name == "run"

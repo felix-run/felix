@@ -228,10 +228,14 @@ def apply_command_screening(
     targets = list(screening.target_tools)
 
     def wrap_one(tool: Tool) -> Tool:
+        # An execution transport is screened whatever `target_tools` says and even with no
+        # rules compiled: for those the payload *is* the program. One set, `_EXECUTION_TRANSPORTS`,
+        # decides that here and in `_screenable_command_text` — it was a literal in both of
+        # these lines once, and the shell transport was added to the set and not to them.
         if targets and not matches_any(targets, tool.name):
-            if tool.executor.transport not in {"sandbox", "container"}:
+            if tool.executor.transport not in _EXECUTION_TRANSPORTS:
                 return tool
-        if not compiled and tool.executor.transport not in {"sandbox", "container"}:
+        if not compiled and tool.executor.transport not in _EXECUTION_TRANSPORTS:
             return tool
         inner = tool.executor
 
