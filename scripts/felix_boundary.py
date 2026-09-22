@@ -20,7 +20,7 @@ import sys
 from dataclasses import dataclass, field
 
 # Who the loop acts as on GitHub. A second bot is a second entry here, judged by a person.
-BOT_LOGINS = frozenset({"felix-bot", "felix-bot[bot]"})
+BOT_LOGINS = frozenset({"felix-run-bot", "felix-run-bot[bot]"})
 
 # Paths a Felix-authored pull request may not touch. Globs over the repo-relative path; a
 # trailing `/**` matches the directory and everything under it. Kept as one list a person

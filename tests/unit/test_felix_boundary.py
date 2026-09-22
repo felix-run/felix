@@ -16,9 +16,9 @@ from tests._scripts import load_script
 
 boundary = load_script("felix_boundary")
 
-BOT = "felix-bot"
+BOT = "felix-run-bot"
 # Literal, not `boundary.BOT_LOGINS`: a login dropped from the control must go red here.
-BOT_LOGINS = ["felix-bot", "felix-bot[bot]"]
+BOT_LOGINS = ["felix-run-bot", "felix-run-bot[bot]"]
 GOOD_BODY = """## Summary
 
 - did the thing
@@ -209,7 +209,7 @@ def test_main_judges_a_bot_pr_through_the_github_ticket_shape(tmp_path: Path, ca
         str(tmp_path / "body"),
     ]
     assert boundary.main([*args, "--ticket", str(tmp_path / "ticket.json")]) == 0
-    assert "ok (felix-bot" in capsys.readouterr().out
+    assert "ok (felix-run-bot" in capsys.readouterr().out
     # Without the ticket the same PR is refused: a `Closes` nobody could read.
     assert boundary.main(args) == 1
     assert "could not be read" in capsys.readouterr().out
