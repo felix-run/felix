@@ -29,6 +29,10 @@ spec:
 
   model:
     temperature: 0
+    # Ephemeral prompt caching on the system prompt and the conversation tail. The first
+    # triage run paid $1.04 for ten model calls with zero cache reads — 339k input tokens
+    # of the same skill catalogue and transcript re-sent every turn.
+    cache: true
 
   system_prompt:
     inline: |
@@ -81,10 +85,13 @@ spec:
 
   # Reads for signals and duplicates; three writes, every one gated below. Never bound:
   # anything that touches contents, branches, pull requests or reviews — this agent proposes.
+  # `/mcp/x/all` rather than `/mcp/`: the default catalogue carries no actions toolset, so the
+  # smoke-run evidence source — actions_list, actions_get, get_job_logs — bound nothing there.
+  # The allowlist is what narrows the 94-tool catalogue back down.
   mcp_servers:
     - name: github
       transport: http
-      url: https://api.githubcopilot.com/mcp/
+      url: https://api.githubcopilot.com/mcp/x/all
       auth: secret:GITHUB_MCP_TOKEN
       tools:
         # read
@@ -96,9 +103,8 @@ spec:
         - issue_read
         - list_pull_requests
         - pull_request_read
-        - list_workflow_runs
-        - get_workflow_run
-        - list_workflow_jobs
+        - actions_list
+        - actions_get
         - get_job_logs
         # write — every one of these is named in the approval rule below
         - issue_write

@@ -30,6 +30,10 @@ spec:
 
   model:
     temperature: 0
+    # Ephemeral prompt caching on the system prompt and the conversation tail. The first
+    # triage run paid $1.04 for ten model calls with zero cache reads — 339k input tokens
+    # of the same skill catalogue and transcript re-sent every turn.
+    cache: true
 
   system_prompt:
     # No `files:` here on purpose. context_files._tenant_key rewrites every system_prompt.files
@@ -155,7 +159,7 @@ spec:
   mcp_servers:
     - name: github
       transport: http
-      url: https://api.githubcopilot.com/mcp/
+      url: https://api.githubcopilot.com/mcp/x/all
       auth: secret:GITHUB_MCP_TOKEN
       tools:
         # read
@@ -171,9 +175,8 @@ spec:
         - list_commits
         - get_commit
         - list_branches
-        - list_workflow_runs
-        - get_workflow_run
-        - list_workflow_jobs
+        - actions_list
+        - actions_get
         - get_job_logs
         # write — every one of these is named in the approval rule below
         - create_branch
