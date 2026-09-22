@@ -157,6 +157,8 @@ _FINISH_REASON: dict[StopReason, str] = {
     "end_turn": "stop",
     "tool_use": "stop",
     "max_tokens": "length",
+    # The harness ran out of loop steps: cut off, like a token limit, not a clean stop.
+    "max_turns": "length",
     "stop_sequence": "stop",
     "pause_turn": "stop",
     "refusal": "content_filter",
