@@ -24,5 +24,7 @@ scripts
 tests
 docs
 deploy
+# The builder image's entrypoint is the one file under deploy/ an image copies in.
+!deploy/docker/self-entrypoint.sh
 *.md
 !README.md
