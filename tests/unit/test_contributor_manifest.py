@@ -48,9 +48,8 @@ READ_ONLY_GITHUB_TOOLS = frozenset(
         "list_commits",
         "get_commit",
         "list_branches",
-        "list_workflow_runs",
-        "get_workflow_run",
-        "list_workflow_jobs",
+        "actions_list",
+        "actions_get",
         "get_job_logs",
     }
 )
