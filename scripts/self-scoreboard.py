@@ -29,7 +29,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 REPO = os.environ.get("FELIX_SELF_REPO_SLUG", "felix-run/felix")
-BOT_LOGINS = frozenset({"felix-bot", "felix-bot[bot]"})
+BOT_LOGINS = frozenset({"felix-run-bot", "felix-run-bot[bot]"})
 AUTHORED_LABEL = "felix:authored"
 VERDICT_LABELS = frozenset({"felix:ready", "felix:needs-detail"})
 # A person removing Felix's verdict counts as an override only this soon after it was given;

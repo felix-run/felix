@@ -220,7 +220,7 @@ file" and "Felix is running changed code" stay two different events.
 
 What the entrypoint does on every start: clone `FELIX_SELF_REPO` (`felix-run/felix`) at
 `FELIX_SELF_BRANCH` (`main`) into the `felix-self-workspace` volume if it is empty, otherwise
-`git fetch`; set a repo-local commit identity (`felix-bot`); `uv sync` the workspace venv
+`git fetch`; set a repo-local commit identity (`felix-run-bot`); `uv sync` the workspace venv
 (`FELIX_SELF_SYNC=0` skips it); then `exec` the Felix process. An existing clone is never
 reset, so a run's uncommitted edits survive a restart and can be inspected.
 

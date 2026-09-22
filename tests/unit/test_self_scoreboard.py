@@ -18,8 +18,8 @@ from tests._scripts import load_script
 
 board = load_script("self-scoreboard")
 ROOT = Path(__file__).resolve().parents[2]
-BOT = {"login": "felix-bot"}
-APP = {"login": "felix-bot[bot]"}
+BOT = {"login": "felix-run-bot"}
+APP = {"login": "felix-run-bot[bot]"}
 HUMAN = {"login": "blakebauman"}
 NOW = datetime.now(UTC)
 

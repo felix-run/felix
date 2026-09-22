@@ -218,7 +218,7 @@ Detection of the failure modes the program forbids, one mechanism each:
 
 ## Runbook — GitHub side (a person, once)
 
-1. Create the `felix-bot` GitHub user and invite it as a collaborator with **write** on
+1. Create the `felix-run-bot` GitHub user and invite it as a collaborator with **write** on
    `felix-run/felix`. Write is needed to push branches and open pull requests; the protections
    below are what keep write from meaning merge.
 2. Fine-grained PAT on this repository only. Rungs 0–1: Issues read/write, Metadata read, Contents

@@ -19,8 +19,8 @@ fi
 
 # Repo-local identity for the commits the agent makes inside the checkout. Publishing goes
 # through GitHub MCP with the bot's token, never `git push` from here.
-git -C "$ws" config user.name "${FELIX_SELF_GIT_NAME:-felix-bot}"
-git -C "$ws" config user.email "${FELIX_SELF_GIT_EMAIL:-felix-bot@users.noreply.github.com}"
+git -C "$ws" config user.name "${FELIX_SELF_GIT_NAME:-felix-run-bot}"
+git -C "$ws" config user.email "${FELIX_SELF_GIT_EMAIL:-felix-run-bot@users.noreply.github.com}"
 
 if [ "${FELIX_SELF_SYNC:-1}" = "1" ]; then
   echo "self-entrypoint: syncing the workspace venv" >&2
