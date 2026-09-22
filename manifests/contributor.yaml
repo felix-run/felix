@@ -247,7 +247,9 @@ spec:
     max_wall_clock_seconds: 3600
     max_cost_usd: 20
 
-  max_turns: 40
+  # Steps the react loop may take; `max_turns` is for the multi-agent patterns and bounds
+  # nothing on a react agent.
+  recursion_limit: 40
 
   session:
     strategy: compacting

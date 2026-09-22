@@ -237,7 +237,8 @@ def test_the_run_is_bounded(manifest: Manifest) -> None:
     limits = manifest.spec.limits
     assert limits.max_tool_calls and limits.max_tool_calls > 0
     assert limits.max_wall_clock_seconds and limits.max_wall_clock_seconds > 0
-    assert manifest.spec.max_turns and manifest.spec.max_turns > 0
+    # `recursion_limit`, not `max_turns`: the latter is read by the multi-agent patterns only.
+    assert manifest.spec.recursion_limit and manifest.spec.recursion_limit > 0
 
 
 def test_code_execution_is_the_shell_tool_and_nothing_else(manifest: Manifest) -> None:

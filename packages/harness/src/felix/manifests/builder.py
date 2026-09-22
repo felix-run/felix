@@ -972,6 +972,31 @@ def _summarise(names: list[str], limit: int = 8) -> str:
     return f"{shown} and {extra} more" if extra > 0 else shown
 
 
+def _warn_max_turns_does_not_bound_this_loop(m: Manifest) -> None:
+    """A single-agent manifest that sets `max_turns` and not `recursion_limit` bounded nothing.
+
+    `max_turns` is read by the delegating patterns; a `react` loop is bounded by
+    `recursion_limit`. Three bundled manifests carried `max_turns: 40` on a react agent, and
+    the first live run stopped at the default ten steps. A warning and the inert-rule counter
+    rather than a refusal: a stored manifest with the field must keep compiling.
+    """
+    from felix.patterns.registry import is_multi_agent_pattern
+
+    if is_multi_agent_pattern(m.spec.pattern):
+        return
+    if "max_turns" in m.spec.model_fields_set and m.spec.recursion_limit is None:
+        logger.warning(
+            "spec.max_turns is set on a %r agent, which is bounded by spec.recursion_limit — "
+            "max_turns bounds nothing here (manifest=%s)",
+            m.spec.pattern,
+            m.metadata.name,
+        )
+        record_counter(
+            "felix_rule_targets_nothing",
+            {"manifest_id": m.metadata.name, "kind": "max_turns", "rule": "max_turns"},
+        )
+
+
 def _warn_untrusted_tools_are_unscreened(m: Manifest, untrusted: list[str]) -> None:
     """Say so when untrusted tool output reaches the model with nothing looking at it.
 
@@ -1371,6 +1396,7 @@ async def build_agent(
         # shipping, and globs make one easier to write by hand.
         _warn_unmatched_tool_patterns(m, [t.name for t in resolved])
         _warn_policies_cannot_be_satisfied(m, deps.settings)
+        _warn_max_turns_does_not_bound_this_loop(m)
         _warn_untrusted_tools_are_unscreened(m, [t.name for t in resolved if _is_untrusted_tool(t)])
 
         # Governance pipeline (order matters — matches TS builder).

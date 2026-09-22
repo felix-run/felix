@@ -803,6 +803,9 @@ class Spec(_Strict):
     client_tools: list[ClientToolRef] = Field(default_factory=list, max_length=MAX_REFS)
     sub_agents: list[str] = Field(default_factory=list)
     aggregator_prompt: str = ""
+    #: Rounds for the multi-agent patterns — `groupchat`, `plan_execute` and friends. A `react`
+    #: agent's loop is bounded by `recursion_limit` below and never reads this; setting it on
+    #: one is the inert-control shape, and the compile step warns.
     max_turns: int = Field(default=4, ge=1, le=ABSOLUTE_LIMITS["max_turns"])
     memory: MemorySpec = Field(default_factory=MemorySpec)
     session: SessionSpec = Field(default_factory=SessionSpec)
@@ -827,6 +830,8 @@ class Spec(_Strict):
     anomaly: AnomalySpec = Field(default_factory=AnomalySpec)
     approvals: list[ApprovalRule] = Field(default_factory=list, max_length=MAX_REFS)
     governance: GovernanceSpec = Field(default_factory=GovernanceSpec)
+    #: Steps a `react` loop may take — one model call plus its tool batch is one step. Unset
+    #: means `patterns/react.py:DEFAULT_RECURSION`. Running out reports `stop_reason: max_turns`.
     recursion_limit: int | None = Field(default=None, ge=1, le=ABSOLUTE_LIMITS["recursion_limit"])
     # A JSON Schema the agent's final answer must match, enforced by the model provider
     # rather than asked for in the prompt. Set it and `message.content` is a JSON document on

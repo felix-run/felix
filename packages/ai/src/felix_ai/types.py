@@ -305,6 +305,9 @@ StopReason = Literal[
     "stop_sequence",
     "pause_turn",
     "refusal",
+    # Not a provider value: the harness's own loop ran out of steps with tool calls still
+    # pending. Reported so a run cut short reads as cut short, not as a completed turn.
+    "max_turns",
     "unknown",
 ]
 

@@ -68,7 +68,7 @@ def _status_for_stop(stop: str) -> str:
     classifier declined. Neither is a completed turn, and recording either as one hides
     a partial or absent answer behind a successful-looking run.
     """
-    if stop == "max_tokens":
+    if stop in {"max_tokens", "max_turns"}:
         return "truncated"
     if stop == "refusal":
         return "refused"
@@ -1033,6 +1033,19 @@ class _ReactAgent:
                         if emit_events:
                             yield Event(event="steer", data={"content": steermsg.text})
                         await self._append_produced(input.thread_id, [steer_chat])
+            else:
+                # `range(recursion_limit)` ran out with the model still asking for tools: the
+                # last assistant message carries calls nothing executed. Until this branch the
+                # run reported the model's own `tool_use` and a session status of complete —
+                # the first live triage run stopped mid-sentence at step ten and nothing said
+                # so. `_note_stop_reason` writes the warning and the counter; the status is
+                # `truncated`, the same reading `max_tokens` gets.
+                last_stop = "max_turns"
+                await self._append_produced(
+                    input.thread_id, [], status=self._note_stop_reason("max_turns", input.thread_id)
+                )
+                if emit_events:
+                    yield Event(event="max_turns", data={"limit": self.recursion_limit})
 
             if not fatal and input.thread_id and not await is_aborted(tenant_id, input.thread_id):
                 for follow in await drain_follow_up(

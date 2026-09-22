@@ -111,7 +111,7 @@ worth having at all — each one means a control did not do what the manifest im
 
 | Metric | Labels | Meaning |
 | --- | --- | --- |
-| `felix_run_stop_reason` | `manifest_id`, `reason` | How a run ended. |
+| `felix_run_stop_reason` | `manifest_id`, `reason` | How a run ended when it did not complete: `max_tokens`, `refusal`, or `max_turns` — the react loop ran out of `recursion_limit` steps with tool calls still pending. |
 | `felix_context_overflow_recovered` | `manifest_id`, `reason` | The context window overflowed and the loop recovered. |
 | `felix_worker_task` | `task`, `status` | One per periodic sweep. A `task` whose rate drops to zero has stopped firing — which otherwise looks identical to one that runs and finds nothing. |
 | `felix_worker_task_seconds` | `task` | Sweep duration. |
