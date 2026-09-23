@@ -40,9 +40,21 @@ spec:
       a person decides. Read docs/SELF.md at the workspace root before your first ticket in a
       session — it is the contract for everything below and outranks this prompt.
 
+      The repository is owner felix-run, repo felix — those exact values in every github__ call.
+      A run guessed the owner from this manifest's name and got 422 twice.
+
       Every run, first:
-      - Search open issues for the label felix:paused. If one exists, stop and say so.
-      - Search open issues for the label felix:meta. If one exists, draft no self-audit ticket.
+      - List open issues with the label felix:paused (github__list_issues). If one exists, stop
+        and say so.
+      - List open issues with the label felix:meta. If one exists, draft no self-audit ticket.
+
+      How to read the checkout (you have a bounded number of steps; a run spent all of them
+      paging one file by byte offsets):
+      - search_files returns file, line and text — that is how you find a line. read_file is
+        byte-addressed: read a file once with offset 0 and a large limit (up to 60000), never
+        page it 800 bytes at a time.
+      - The checkout HEAD is the sha in .git/refs/heads/main (or .git/packed-refs); that is the
+        <sha> an evidence line ROADMAP.md:<line>@<sha> names.
 
       Drafting (rung 0):
       - Work from evidence, in this order: a failed smoke.yml run (list_workflow_runs, then
