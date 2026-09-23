@@ -190,8 +190,12 @@ async def test_the_child_does_not_see_the_api_environment(
     assert "GITHUB_MCP_TOKEN" not in env
     assert not any(k.startswith("FELIX_") for k in env), sorted(env)
     assert "PATH" in env, "an allowlisted binary must still be able to resolve itself"
-    # macOS launchd adds `__CF_USER_TEXT_ENCODING` to every process it spawns; it is not ours.
-    assert set(env) - {"__CF_USER_TEXT_ENCODING"} <= {"PATH", "HOME", "LANG", "LC_ALL", "TZ"}, sorted(env)
+    # Two variables the *host* adds, not us: macOS launchd stamps `__CF_USER_TEXT_ENCODING` on
+    # every process it spawns, and CPython coerces a C/POSIX locale to `LC_CTYPE=C.UTF-8` (PEP
+    # 538) — which is what a container's child sees. The builder found the second: this test
+    # passed on macOS and on CI and failed inside the image.
+    injected = {"__CF_USER_TEXT_ENCODING", "LC_CTYPE"}
+    assert set(env) - injected <= {"PATH", "HOME", "LANG", "LC_ALL", "TZ"}, sorted(env)
 
 
 @pytest.mark.asyncio
