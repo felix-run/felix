@@ -28,7 +28,7 @@ x-self-env: &self-env
   # The argv prefixes the shell tool may exec — exactly what `contributor.yaml` declares, so
   # the manifest's own list is what narrows. `git push`, `git remote`, `gh`, `uv run python`
   # are deliberately absent; publishing goes through GitHub MCP with the bot's token.
-  FELIX_SHELL_ALLOWED_COMMANDS: ${FELIX_SHELL_ALLOWED_COMMANDS:-uv run ruff,uv run ty,./scripts/test.sh,make lint,make type,make test,make schema,uv run felix validate-manifest,git status,git diff,git log,git fetch,git switch,git restore,git stash,git add,git commit,git branch}
+  FELIX_SHELL_ALLOWED_COMMANDS: ${FELIX_SHELL_ALLOWED_COMMANDS:-uv run ruff,uv run ty,./scripts/test.sh,make lint,make type,make test,make schema,uv run felix validate-manifest,git status,git diff,git log,git fetch,git switch,git restore,git stash,git add,git commit,git branch,git show,git rev-parse}
   # Resolved by the `env` secrets backend for `mcp_servers[].auth: secret:GITHUB_MCP_TOKEN`.
   # Empty binds an agent with no GitHub tools (logged, not fatal) — set it in .env.
   GITHUB_MCP_TOKEN: ${GITHUB_MCP_TOKEN:-}

@@ -144,6 +144,9 @@ spec:
         - git add
         - git commit
         - git branch
+        # Read-only: what origin/main holds, and the sha an evidence line names.
+        - git show
+        - git rev-parse
 
   # Tools bind as github__<remote tool>. `tools:` is an allowlist over the remote catalogue
   # (`McpServerRef.tools` in manifests/schema.py says why); every write below has an approval
