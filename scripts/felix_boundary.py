@@ -110,8 +110,10 @@ def surface_from_issue_body(body: str) -> list[str]:
     block = fence.group(1) if fence else rest
     out: list[str] = []
     for line in block.splitlines():
+        if line.strip().lower().startswith("_no response_"):
+            continue  # the form's placeholder for an empty field
         path = _first_path(line)
-        if path and not path.lower().startswith("_no response_"):
+        if path:
             out.append(path)
     return out
 
