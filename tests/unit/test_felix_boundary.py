@@ -182,6 +182,24 @@ def test_surface_is_read_from_the_issue_form() -> None:
     assert boundary.surface_from_issue_body("no such section") == []
 
 
+def test_a_surface_line_may_carry_prose_after_the_path() -> None:
+    """The first bot PR (#290) failed the surface check on all three files: its ticket wrote
+    `- \`path\` — reason` per line and the whole line was read as a glob."""
+    body = (
+        "### Files expected to change\n\n"
+        "- `packages/harness/src/felix/waiters.py` — add TTL-based eviction or size cap\n"
+        "- `tests/unit/test_waiters.py` or new test file — verify the bound\n"
+        "changelog.d/fixed-thing.md (new file)\n"
+        "packages/**/x.py: every module\n"
+    )
+    assert boundary.surface_from_issue_body(body) == [
+        "packages/harness/src/felix/waiters.py",
+        "tests/unit/test_waiters.py",
+        "changelog.d/fixed-thing.md",
+        "packages/**/x.py",
+    ]
+
+
 def test_an_unfenced_surface_does_not_borrow_the_next_sections_fence() -> None:
     """A person editing the issue by hand drops the fence; the acceptance command must not
     become the surface."""

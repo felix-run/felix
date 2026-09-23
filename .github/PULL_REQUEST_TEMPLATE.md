@@ -26,6 +26,6 @@ Closes #
 - [ ] `make check` (or `uv run ruff check . && ./scripts/test.sh`)
 - [ ] Touched settings documented in `.env.example` / README if applicable
 - [ ] Compose / Helm notes updated if deploy behavior changed
-- [ ] `changelog.d/` fragment, `make schema`, felix-web page, `docs/OBSERVABILITY.md` — whichever the ticket named
+- [ ] `CHANGELOG.md` entry, `make schema`, felix-web page, `docs/OBSERVABILITY.md` — whichever the ticket named
 
 Felix-Thread:

@@ -110,10 +110,31 @@ def surface_from_issue_body(body: str) -> list[str]:
     block = fence.group(1) if fence else rest
     out: list[str] = []
     for line in block.splitlines():
-        item = line.strip().lstrip("-*").strip().strip("`").strip()
-        if item and not item.lower().startswith("_no response_"):
-            out.append(item)
+        path = _first_path(line)
+        if path and not path.lower().startswith("_no response_"):
+            out.append(path)
     return out
+
+
+_PATH_TOKEN = re.compile(r"[A-Za-z0-9_./*?\[\]-]+")
+
+
+def _first_path(line: str) -> str:
+    """The path a `Files expected to change` line names, ignoring what follows it.
+
+    People — and Felix — write `- \`path\` — why` or `path (new file)`. The first bot PR failed
+    the surface check on every file because each whole line, prose included, was read as a
+    glob. A path is the first backticked span when there is one, else the first path-shaped
+    token; the rest of the line is commentary.
+    """
+    text = line.strip().lstrip("-*").strip()
+    if not text:
+        return ""
+    tick = re.search(r"`([^`]+)`", text)
+    if tick:
+        text = tick.group(1).strip()
+    m = _PATH_TOKEN.match(text)
+    return m.group(0) if m else ""
 
 
 @dataclass
