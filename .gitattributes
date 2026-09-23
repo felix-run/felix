@@ -1,4 +1,0 @@
-# CHANGELOG.md is edited directly by every pull request. Two of them inserting under
-# [Unreleased] at once used to conflict, and one hand-resolved conflict dropped six entries.
-# A union merge keeps both sides instead of asking; read the section before a release.
-CHANGELOG.md merge=union

@@ -32,7 +32,7 @@ An Actions run URL · `ROADMAP.md:<line>@<sha>` · a 32-hex audit event id · an
 `evidence` (a shape above) · `outcome` (one sentence a user or operator would notice; a file name
 scores zero) · `surface` (kind + files expected to change) · `acceptance` (an exact command → its
 expected result; "tests pass" scores zero) · `out_of_scope` ("none" must be typed) · `companions`
-(`CHANGELOG.md` entry, `.env.example`+README, `make schema`, docs page, OBSERVABILITY.md) · `risk`
+(changelog fragment, `.env.example`+README, `make schema`, docs page, OBSERVABILITY.md) · `risk`
 (`none` / `control-path` — auth, governance, screening, secrets, egress, sandbox, tenancy,
 `builder.py`) · `estimate` (tool calls and turns; over 120 calls means split it).
 

@@ -93,7 +93,7 @@ ticket is ready when every section is present *and specific*:
 | `surface` | the kind of thing that changes (manifest, route, pattern, tool, worker task, docs, CI) and the files expected to change |
 | `acceptance` | the exact command and its expected result — `./scripts/test.sh -k test_x` → `1 passed`; "tests pass" scores zero |
 | `out_of_scope` | what an implementer must not touch; "none" must be typed |
-| `companions` | which of `CHANGELOG.md` (an `[Unreleased]` entry), `.env.example` + README, `make schema`, the felix-web page, `docs/OBSERVABILITY.md` this touches |
+| `companions` | which of `changelog.d/`, `.env.example` + README, `make schema`, the felix-web page, `docs/OBSERVABILITY.md` this touches |
 | `risk` | `none`, or `control-path` — auth, governance, screening, secrets, egress, sandbox, tenancy, `builder.py` (the same list `.claude/hooks/pr-quality-gate.sh` uses) — which adds `felix:security-review` |
 | `estimate` | tool calls and turns, inside `contributor.yaml`'s limits; over 120 calls means split it with `github__sub_issue_write` |
 
