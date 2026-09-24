@@ -148,6 +148,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The contributor may rename and remove files in its checkout.** `write_file` only writes, so a
+  misnamed file was permanent: the second rung-2 run created a changelog fragment under the wrong
+  name and had no tool to fix it. `git mv` and `git rm` join the allowlist; both act inside the
+  checkout, and a commit is what makes either matter.
+
+- **The boundary check judges with the base branch's current script.** It checked out `base.sha`,
+  which is the base as of the pull request's last synchronize, so a parser fix on `main` never reached
+  an open Felix PR until its branch moved. It checks out `base.ref` now.
+
+- **The boundary check reads the path, not the sentence.** A ticket's `Files expected to change`
+  lines are written as `- `path` — why`, and the first Felix-authored pull request (#290) failed
+  the surface check on every file because each whole line was read as a glob. The path is now the
+  first backticked span or path-shaped token on the line; the rest is commentary.
+
+- **The in-process waiter fallback no longer accumulates unbounded state.** When Redis is unavailable and `signal()` is called before `wait()`, the fallback stores a completed future in `_local` so the later wait can retrieve it. Without a bound, an authenticated caller POSTing `/chat/tool_result` with random `tool_call_id`s could grow the dict without limit. Signal-first entries are now capped at 1000; when the cap is reached, the oldest entry is evicted. A signal-first entry that is evicted before its wait arrives behaves identically to a signal that never happened, which is already the at-most-once contract the fallback provides.
+
+- **The scoreboard no longer counts an "update branch" merge as a human commit.** The first Felix
+  PR scored 0 % on "merged without human commits" because a person pressed GitHub's update-branch
+  button, which authors a merge commit with no change of its own. Merge commits are skipped.
+
 - **The builder image builds.** `.dockerignore` excluded `deploy/`, so `Dockerfile.builder`'s `COPY` of
   its own entrypoint failed with "not found" the first time anyone ran `make up-self`; the one file an
   image needs from `deploy/` is now let through.
