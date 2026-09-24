@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`edit_file` changes one exact string and leaves the rest of the file where it was.** Until
+  now the only way to change a file was `write_file`, which replaces the whole thing: the model
+  reproduces every byte it is not editing, and the bytes it fails to reproduce are gone. That is
+  how a stray docstring edit reached a Felix-authored branch. It also put `CHANGELOG.md` — 190 KiB
+  now that entries are written in place — out of reach of any agent, since adding one paragraph
+  meant sending the file back whole. `edit_file` takes `old_string` / `new_string`, refuses a
+  match it finds twice unless `replace_all` says otherwise, refuses one it cannot find at all,
+  and reads and writes under the same per-path lock as `write_file` so two edits in a parallel
+  batch cannot lose each other. `contributor.yaml` and `cowork.yaml` bind it — gated in `cowork`
+  beside `write_file`, ungated in `contributor` where the builder container is the boundary.
+
 - **A `policy_deny` audit row says which control refused the call.** `payload.control` is one of
   `policy`, `limits`, `guardrails`, `approvals`, `command`, `screening`. Every wrapper stamped its
   source on the deny it returned; the loop was the one reader that dropped it, so "show me every

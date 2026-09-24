@@ -71,7 +71,8 @@ def test_loads_under_its_own_name(manifest: Manifest) -> None:
 
 def test_it_holds_no_way_to_change_a_file_or_run_anything(manifest: Manifest) -> None:
     spec = manifest.spec
-    assert "write_file" not in spec.tools
+    # Every workspace tool that changes a file, not just the first one that existed.
+    assert not ({"write_file", "edit_file"} & set(spec.tools))
     assert spec.sandboxes == [] and spec.shell_tools == [] and spec.containers == []
     assert spec.client_tools == [] and spec.queues == [] and spec.browser_tools == []
     assert spec.peers == [] and spec.sub_agents == []

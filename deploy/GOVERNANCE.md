@@ -380,7 +380,7 @@ own:
   (`~/.gitconfig` credential helpers, `~/.netrc`, `~/.config/gh`). The host holds no cloud
   credentials, no Docker socket, and no credentials in that user's home.
 - **A relative `argv[0]` resolves against the `cwd` the model chose.** The prefix pins a
-  string, not a file. `write_file` can replace `scripts/test.sh` before `run` execs it.
+  string, not a file. `write_file` and `edit_file` can replace `scripts/test.sh` before `run` execs it.
 - **Choose commands with no argument-driven code execution and no network.** `git status`
   is safe by git's grammar; `pytest -p`, `make -f`, `node -r`, `find -exec`, `ruff --config`
   take a module or file to run from their arguments. The prefix grammar cannot see past the

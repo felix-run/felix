@@ -63,11 +63,11 @@ Audited 2026-09-02. Every number re-derived against the tree, not read from a pr
 | `felix/tools/` — the capability surface | 2,142 lines |
 | `.claude/` — scaffolding for the agent that edits Felix | 3,200 lines |
 | `manifests/builder.py` — governance wrapping that surface | 1,401 lines |
-| Built-in tool registry | 8 tools |
+| Built-in tool registry | 9 tools |
 | `skills/` shipped Agent Skills | 5, of which 4 document Felix itself |
 
 The built-in registry in full: `calculator`, `list_dir`, `read_file`, `write_file`,
-`search_files`, `list_skills`, `activate_skill`, `deactivate_skill` — and the three skill tools
+`edit_file`, `search_files`, `list_skills`, `activate_skill`, `deactivate_skill` — and the three skill tools
 are stubs returning `[]` until `builder.py:1251` rebinds them against a catalog.
 
 `manifests/support.yaml` declares `tools: [calculator, list_skills]` — a support agent that

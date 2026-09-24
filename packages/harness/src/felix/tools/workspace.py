@@ -17,6 +17,10 @@ from felix.tools.types import define_tool
 
 _MAX_READ_BYTES = 512_000
 _MAX_WRITE_BYTES = 512_000
+# An in-place edit carries only the two strings, so the file it edits may be far larger
+# than a model could write whole. CHANGELOG.md is 190 KiB and every pull request adds a
+# paragraph to it; under `write_file` that is a 190 KiB round trip per entry.
+_MAX_EDIT_FILE_BYTES = 4_000_000
 _MAX_LIST_ENTRIES = 500
 _MAX_SEARCH_HITS = 50
 _MAX_SEARCH_FILE_BYTES = 256_000
@@ -54,6 +58,21 @@ class WriteFileArgs(BaseModel):
     path: str = Field(min_length=1, description="File path relative to the workspace root.")
     content: str = Field(description="UTF-8 text to write.")
     append: bool = Field(default=False, description="Append instead of overwrite.")
+
+
+class EditFileArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(min_length=1, description="File path relative to the workspace root.")
+    old_string: str = Field(
+        min_length=1,
+        description="Exact text to find. Include enough surrounding lines to appear once.",
+    )
+    new_string: str = Field(description="Text to put in its place. Empty deletes the match.")
+    replace_all: bool = Field(
+        default=False,
+        description="Replace every occurrence instead of refusing an ambiguous match.",
+    )
 
 
 class SearchFilesArgs(BaseModel):
@@ -195,6 +214,55 @@ async def _write_file(args: WriteFileArgs) -> str:
             "path": str(target.relative_to(root)),
             "bytes": len(payload),
             "append": args.append,
+        }
+    )
+
+
+async def _edit_file(args: EditFileArgs) -> str:
+    """Replace an exact string in a file, leaving every other byte where it was.
+
+    The read and the write are both inside the file's lock: an edit is a read-modify-write,
+    and two of them in one parallel batch would otherwise both read the original and the
+    second would drop the first's change.
+    """
+    try:
+        root = workspace_root()
+        target = resolve_under_root(root, args.path)
+    except ValueError as exc:
+        return f"error: {exc}"
+    if not target.is_file():
+        return f"error: not a file: {args.path}"
+    if args.old_string == args.new_string:
+        return "error: old_string and new_string are identical"
+    if len(args.new_string.encode("utf-8")) > _MAX_WRITE_BYTES:
+        return f"error: new_string exceeds {_MAX_WRITE_BYTES} bytes"
+    try:
+        async with _write_lock(target):
+            if target.stat().st_size > _MAX_EDIT_FILE_BYTES:
+                return f"error: file exceeds {_MAX_EDIT_FILE_BYTES} bytes"
+            try:
+                text = target.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                return f"error: not UTF-8 text: {args.path}"
+            found = text.count(args.old_string)
+            if found == 0:
+                return f"error: old_string not found in {args.path}"
+            if found > 1 and not args.replace_all:
+                return (
+                    f"error: old_string appears {found} times in {args.path} — extend it with "
+                    "surrounding lines until it is unique, or pass replace_all"
+                )
+            # `found` is 1 unless replace_all said otherwise, so this replaces exactly the
+            # matches the guards above allowed.
+            updated = text.replace(args.old_string, args.new_string)
+            target.write_bytes(updated.encode("utf-8"))
+    except OSError as exc:
+        return f"error: {exc}"
+    return json.dumps(
+        {
+            "path": str(target.relative_to(root)),
+            "replacements": found,
+            "bytes": len(updated.encode("utf-8")),
         }
     )
 
@@ -348,6 +416,18 @@ def register_workspace_tools(provider: InMemoryToolProvider) -> None:
             description="Write a UTF-8 text file in the workspace.",
             args=WriteFileArgs,
             handler=_write_file,
+        ),
+    )
+    provider.register(
+        "edit_file",
+        lambda: define_tool(
+            name="edit_file",
+            description=(
+                "Replace an exact string in a workspace file, leaving the rest of it untouched. "
+                "Use this rather than write_file on any file you did not just create."
+            ),
+            args=EditFileArgs,
+            handler=_edit_file,
         ),
     )
     provider.register(

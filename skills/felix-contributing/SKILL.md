@@ -47,6 +47,16 @@ the failure later.
 If the change touches a manifest field or the schema, run `make schema` — the checked-in
 `schemas/manifest.schema.json` is generated, and a stale copy fails the build.
 
+## Editing files
+
+`edit_file` replaces one exact string and leaves the rest of the file where it was; `write_file`
+replaces the whole file. Use `edit_file` on anything that already exists — read the lines around
+the edit first so `old_string` matches once — and keep `write_file` for files you are creating.
+
+A user-visible change writes its entry under `## [Unreleased]` in `CHANGELOG.md` directly. There
+is no `changelog.d/` directory: the file carries a union merge, so two pull requests adding an
+entry at once keep both instead of conflicting.
+
 ## Commit messages
 
 An imperative subject describing the change, and a body that explains *why* rather than
