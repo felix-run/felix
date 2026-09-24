@@ -147,6 +147,10 @@ spec:
         # Read-only: what origin/main holds, and the sha an evidence line names.
         - git show
         - git rev-parse
+        # The only way to rename or remove a file: write_file only writes. Both stay inside
+        # the checkout, and a commit is what makes either matter.
+        - git mv
+        - git rm
 
   # Tools bind as github__<remote tool>. `tools:` is an allowlist over the remote catalogue
   # (`McpServerRef.tools` in manifests/schema.py says why); every write below has an approval
