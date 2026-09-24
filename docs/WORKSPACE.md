@@ -266,8 +266,8 @@ registered prefix now: today a write that fails with `Errno 13` is audited as `o
 
 | Phase | What | Changes behaviour? | Status |
 |---|---|---|---|
-| 0 | Stop defaulting the workspace to the checkout: `compose.yml` mounts a named `felix-workspace` volume, initialised to the image's uid, instead of `./workspace` | fresh deployments only | `[ ]` in the repo; done by hand on the reference host 2026-09-24 (`FELIX_WORKSPACE_HOST=/srv/felix/workspace`) |
-| 1 | Register a failure prefix for workspace tool errors | audit rows become truthful | `[ ]` |
+| 0 | Stop defaulting the workspace to the checkout: `compose.yml` mounts a named `felix-workspace` volume, initialised to the image's uid, instead of `./workspace` | fresh deployments; existing ones on the old default see an empty workspace (`UPGRADING.md`) | `[x]` fix/workspace-default-volume; the reference host set `FELIX_WORKSPACE_HOST=/srv/felix/workspace` by hand first |
+| 1 | Register a failure prefix for workspace tool errors | audit rows become truthful | `[x]` #308 — every failure goes through `tool_error_output` |
 | 2 | `WorkspaceBackend` seam with the `local` backend, plus `spec.workspace.scope` (default `thread`) | yes — see migration | `[ ]` |
 | 3 | `hosted` backend: the `SandboxProvider` protocol, the Cloudflare Sandboxes adapter and its gateway Worker in `felix-run/web`, the `workspace_sandboxes` table, the adapter conformance suite | opt-in via `FELIX_WORKSPACE_BACKEND=hosted` | `[ ]` |
 | 4 | Retention and reconcile sweeps, and the export route | opt-in | `[ ]` |
