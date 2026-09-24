@@ -18,6 +18,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   without that override. **A deployment relying on the old default starts with an empty
   workspace** — `UPGRADING.md` says how to keep or copy the old directory. Phase 0 of
   `docs/WORKSPACE.md`.
+### Fixed
+
+- **A workspace tool that fails is audited as failing.** `list_dir`, `read_file`, `write_file`,
+  `edit_file` and `search_files` returned every failure as plain `error: …` text, which carries
+  no error marker, so the tool runner wrote the audit row as `tool_call` / `ok`, the metrics
+  counted a success, and the eval trajectory did not count a failure. On the reference
+  deployment an approved `write_file` failed with `Errno 13` twice and both rows said `ok`. Every
+  failure now goes through `tool_error_output`: `permission_denied` for a filesystem refusal,
+  `invalid_arguments` for a bad path, missing file or ambiguous edit, `transport_unavailable`
+  when no workspace is configured, `timeout` for a search past its budget, `internal`
+  otherwise. The text the model reads keeps its wording, now under a `[tool error/<code>]`
+  prefix. An `OSError` is rendered as `PermissionError: [Errno 13] …`, because
+  `tool_error_output` skips its prefix for text that already starts with `[`.
 
 
 ## [0.4.0] — 2026-09-24
