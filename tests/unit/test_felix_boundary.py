@@ -266,6 +266,15 @@ def test_main_exits_nonzero_with_annotations(tmp_path: Path, capsys) -> None:
     assert rc == 0
 
 
+def test_the_workflow_judges_with_the_base_branch_tip() -> None:
+    """`base.sha` is the base as of the PR's last synchronize; a fix to the script on main
+    never reached an open PR that way. The checkout must name the branch."""
+    workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/felix-boundary.yml").read_text()
+    assert "ref: ${{ github.event.pull_request.base.ref }}" in workflow
+    assert "pull_request.base.sha" not in workflow
+    assert "pull_request.head" not in workflow.split("Read the pull request")[0], "never check out the head"
+
+
 def test_print_closes_is_what_the_workflow_fetches_with(tmp_path: Path, capsys) -> None:
     """One regex: the workflow asks the script which ticket to fetch."""
     (tmp_path / "body").write_text(GOOD_BODY)
