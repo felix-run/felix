@@ -209,8 +209,15 @@ def test_pull_request_metrics() -> None:
             _pr(13, user=BOT, state="open", merged_at=None, body="no trailer"),
             _pr(14, user=HUMAN, state="closed", merged_at=merged),
         ],
-        "pulls/10/commits": [{"author": BOT}],
-        "pulls/11/commits": [{"author": APP}, {"author": HUMAN}],
+        "pulls/10/commits": [
+            {"author": BOT, "parents": [{"sha": "a"}]},
+            # GitHub's "update branch" merge from main, pressed by a person: no change of its own.
+            {"author": HUMAN, "parents": [{"sha": "b"}, {"sha": "c"}]},
+        ],
+        "pulls/11/commits": [
+            {"author": APP, "parents": [{"sha": "d"}]},
+            {"author": HUMAN, "parents": [{"sha": "e"}]},
+        ],
         "pulls/10/reviews": [
             {"state": "COMMENTED", "commit_id": "a"},
             {"state": "CHANGES_REQUESTED", "commit_id": "a"},
@@ -223,7 +230,7 @@ def test_pull_request_metrics() -> None:
     assert m["bot_pulls"] == 4, "a person's unlabelled PR is not the bot's"
     assert m["merged"] == 2 and m["merge_pct"] == 50.0
     assert m["rework_pct"] == 25.0
-    assert m["merged_without_human_commits_pct"] == 50.0
+    assert m["merged_without_human_commits_pct"] == 50.0, "a person's merge-from-main is not a human change"
     assert m["review_rounds_median"] == 1.5, "a round is a reviewed commit, not a comment"
     assert m["pulls_with_thread"] == 3
     assert m["pulls_missing_contract"] == [13]
