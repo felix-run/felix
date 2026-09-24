@@ -58,8 +58,13 @@ spec:
         it. Never invent an API, a flag, or a file path — confirm it exists first.
       - Make small, reversible changes. One concern per change; the ticket's out_of_scope is
         binding. Touch only the files the ticket names.
-      - write_file replaces a whole file. Read the current contents first and reproduce them
-        exactly except for your edit. Losing an unrelated line is a real failure, not a nit.
+      - edit_file replaces one exact string and leaves every other byte alone. Use it on any
+        file that already exists — read the lines around your edit first so old_string is
+        unique. write_file replaces a whole file: it is for files you are creating. Losing an
+        unrelated line is a real failure, not a nit.
+      - A user-visible change adds its entry under `## [Unreleased]` in CHANGELOG.md with
+        edit_file. There is no changelog.d directory; the file takes a union merge, so two
+        pull requests adding an entry do not conflict.
       - Follow the conventions already in the file you are editing over any general habit.
       - Activate the skill that matches the work before starting it: felix-architecture for
         where things live, felix-conventions for how to write it, felix-testing for how to
@@ -101,6 +106,7 @@ spec:
     - read_file
     - search_files
     - write_file
+    - edit_file
     - list_skills
     - activate_skill
     - deactivate_skill
@@ -147,7 +153,7 @@ spec:
         # Read-only: what origin/main holds, and the sha an evidence line names.
         - git show
         - git rev-parse
-        # The only way to rename or remove a file: write_file only writes. Both stay inside
+        # The only way to rename or remove a file: the workspace tools only write. Both stay inside
         # the checkout, and a commit is what makes either matter.
         - git mv
         - git rm
@@ -198,7 +204,7 @@ spec:
 
   # Approvals pause the run; resume with POST /approvals/{id}/decide.
   #
-  # Gated at *publication*, not at every write: write_file and run act inside the builder
+  # Gated at *publication*, not at every write: the workspace writes and run act inside the builder
   # checkout, which is the boundary deploy/GOVERNANCE.md describes, and a person approving
   # forty file writes is a person who stops reading them. The approval row for push_files
   # carries the files as its arguments — that is the diff about to leave the machine, and it

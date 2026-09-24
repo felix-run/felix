@@ -214,7 +214,7 @@ make up-self            # builds felix:latest, then the builder image on top of 
 
 Two trees, on purpose. The Felix that *runs* the loop is the image's own venv at `/app`, built
 from the commit that built the image. The Felix being *edited* is `/workspace`, with its own
-venv synced by the entrypoint with the extras CI's test job installs. `write_file` and the
+venv synced by the entrypoint with the extras CI's test job installs. The workspace tools and the
 shell tool touch the second; a restart never boots the first from it — so "Felix changed a
 file" and "Felix is running changed code" stay two different events.
 
