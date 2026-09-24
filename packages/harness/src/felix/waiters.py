@@ -19,6 +19,22 @@ _conn = RedisConnection(
     fallback_consequence="approvals, prompts and client-tool answers decided in another process never arrive",
 )
 
+#: Maximum number of signal-first entries in the fallback dict.
+#:
+#: When Redis is unavailable, `signal()` stores a completed future in `_local` so a later
+#: `wait()` can retrieve it. Without a bound, an authenticated caller POSTing
+#: `/chat/tool_result` with random `tool_call_id`s grows the dict without limit.
+#:
+#: The cap is enforced only on signal-first entries (futures that are already done when
+#: stored). Active waits — futures created by `wait()` that are not yet resolved — are
+#: exempt, because those are bounded by the number of concurrent requests the server can
+#: handle, which is already capped by Granian's worker and connection limits.
+#:
+#: When the cap is reached, the oldest signal-first entry is evicted. A signal-first entry
+#: that is evicted before its wait arrives behaves identically to a signal that never
+#: happened, which is already the at-most-once contract the fallback provides.
+MAX_LOCAL_SIGNAL_FIRST = 1000
+
 
 def _key(name: str) -> str:
     return f"{_PREFIX}{name}"
@@ -147,6 +163,16 @@ async def signal(name: str, payload: dict[str, Any]) -> bool:
     async with _lock:
         fut = _local.get(name)
         if fut is None:
+            # Signal arrived before wait. Store a completed future so the wait can retrieve it.
+            # Enforce the cap on signal-first entries to prevent unbounded growth.
+            done_futures = [(k, f) for k, f in _local.items() if f.done()]
+            if len(done_futures) >= MAX_LOCAL_SIGNAL_FIRST:
+                # Evict the oldest signal-first entry. We can't track insertion order directly
+                # without changing the data structure, but dict iteration order is insertion
+                # order in Python 3.7+, so the first done future we encounter is the oldest.
+                oldest_name = done_futures[0][0]
+                _local.pop(oldest_name, None)
+
             fut = asyncio.get_running_loop().create_future()
             fut.set_result(raw)
             _local[name] = fut
