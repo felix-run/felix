@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -218,12 +219,37 @@ async def _write_file(args: WriteFileArgs) -> str:
     )
 
 
+def _replace_file(target: Path, payload: bytes) -> None:
+    """Write `payload` over `target` without ever leaving it half-written.
+
+    `write_bytes` truncates first, so a failure partway leaves a file whose prior contents
+    exist nowhere: an edit carries only the two strings, not the pre-image a whole-file write
+    still has in its own arguments. The temporary file is a sibling, so the rename is atomic,
+    and it inherits the target's mode — an edited `scripts/test.sh` that came back without its
+    executable bit would be a strange way to break the gates.
+    """
+    tmp = target.with_name(f".{target.name}.felix-edit")
+    try:
+        tmp.write_bytes(payload)
+        os.chmod(tmp, target.stat().st_mode)
+        os.replace(tmp, target)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
 async def _edit_file(args: EditFileArgs) -> str:
     """Replace an exact string in a file, leaving every other byte where it was.
 
-    The read and the write are both inside the file's lock: an edit is a read-modify-write,
-    and two of them in one parallel batch would otherwise both read the original and the
-    second would drop the first's change.
+    Bytes in and bytes out, like `_read_file`: `read_text` would open in universal-newline
+    mode and hand back `\n` for every `\r\n`, so writing the result would rewrite every line
+    ending in a CRLF file that the edit never touched — and an `old_string` the model copied
+    out of `read_file` would not match, because that tool preserves them.
+
+    The lock is held across the read and the write. There is no `await` between them today,
+    so within one event loop the body is already atomic and the lock cannot be observed to
+    do anything; it is here because an edit is a read-modify-write, and the first person to
+    move this I/O to a thread would otherwise have to notice that on their own.
     """
     try:
         root = workspace_root()
@@ -232,37 +258,48 @@ async def _edit_file(args: EditFileArgs) -> str:
         return f"error: {exc}"
     if not target.is_file():
         return f"error: not a file: {args.path}"
-    if args.old_string == args.new_string:
-        return "error: old_string and new_string are identical"
     if len(args.new_string.encode("utf-8")) > _MAX_WRITE_BYTES:
         return f"error: new_string exceeds {_MAX_WRITE_BYTES} bytes"
     try:
         async with _write_lock(target):
-            if target.stat().st_size > _MAX_EDIT_FILE_BYTES:
-                return f"error: file exceeds {_MAX_EDIT_FILE_BYTES} bytes"
+            size = target.stat().st_size
+            if size > _MAX_EDIT_FILE_BYTES:
+                return f"error: {args.path} exceeds {_MAX_EDIT_FILE_BYTES} bytes"
             try:
-                text = target.read_text(encoding="utf-8")
+                text = target.read_bytes().decode("utf-8")
             except UnicodeDecodeError:
                 return f"error: not UTF-8 text: {args.path}"
             found = text.count(args.old_string)
             if found == 0:
                 return f"error: old_string not found in {args.path}"
+            if args.old_string == args.new_string:
+                return f"error: old_string and new_string are identical in {args.path}"
             if found > 1 and not args.replace_all:
                 return (
                     f"error: old_string appears {found} times in {args.path} — extend it with "
                     "surrounding lines until it is unique, or pass replace_all"
                 )
+            # Both caps above bound an *input*, and `replace_all` multiplies them: the size of
+            # what would be written is projected from the byte delta per match and refused
+            # before `str.replace` builds it, because checking afterwards still allocates it.
+            grew = len(args.new_string.encode("utf-8")) - len(args.old_string.encode("utf-8"))
+            projected = size + found * grew
+            if projected > _MAX_EDIT_FILE_BYTES:
+                return (
+                    f"error: the edit would make {args.path} {projected} bytes, over the "
+                    f"{_MAX_EDIT_FILE_BYTES} limit"
+                )
             # `found` is 1 unless replace_all said otherwise, so this replaces exactly the
             # matches the guards above allowed.
-            updated = text.replace(args.old_string, args.new_string)
-            target.write_bytes(updated.encode("utf-8"))
+            payload = text.replace(args.old_string, args.new_string).encode("utf-8")
+            _replace_file(target, payload)
     except OSError as exc:
         return f"error: {exc}"
     return json.dumps(
         {
             "path": str(target.relative_to(root)),
             "replacements": found,
-            "bytes": len(updated.encode("utf-8")),
+            "bytes": len(payload),
         }
     )
 
@@ -443,6 +480,7 @@ def register_workspace_tools(provider: InMemoryToolProvider) -> None:
 
 
 __all__ = [
+    "EditFileArgs",
     "PathArgs",
     "ReadFileArgs",
     "SearchFilesArgs",
