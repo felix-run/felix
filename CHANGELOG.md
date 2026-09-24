@@ -18,6 +18,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the frame: a block's `signature` and any `redacted_thinking` exist to be replayed to the
   provider, and stay in the log. The key is omitted when there is nothing readable, and the
   reattach stream gets it too, since both go through `session_event_frame`.
+- **`edit_file` changes one exact string and leaves the rest of the file where it was.** Until
+  now the only way to change a file was `write_file`, which replaces the whole thing: the model
+  reproduces every byte it is not editing, and the bytes it fails to reproduce are gone. That is
+  how a stray docstring edit reached a Felix-authored branch. It also put `CHANGELOG.md` — 190 KiB
+  now that entries are written in place — out of reach of any agent, since adding one paragraph
+  meant sending the file back whole. `edit_file` takes `old_string` / `new_string`, refuses a
+  match it finds twice unless `replace_all` says otherwise, refuses one it cannot find at all,
+  and projects the resulting size before building it, so `replace_all` cannot inflate a file past
+  the ceiling. It reads and writes bytes rather than text, because a universal-newline read would
+  hand back `\n` for every `\r\n` and the write-back would rewrite every line ending in a CRLF
+  file the edit never touched — the exact damage the tool exists to prevent. The write goes to a
+  sibling temporary file and is renamed into place, carrying the mode across, so a write that
+  fails partway leaves the original where it was: unlike a whole-file write, an edit's arguments
+  do not carry the pre-image to retry from. `contributor.yaml` and `cowork.yaml` bind it — gated
+  in `cowork` beside `write_file`, ungated in `contributor` where the builder container is the
+  boundary.
 
 - **A `policy_deny` audit row says which control refused the call.** `payload.control` is one of
   `policy`, `limits`, `guardrails`, `approvals`, `command`, `screening`. Every wrapper stamped its

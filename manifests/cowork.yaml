@@ -27,6 +27,7 @@ spec:
     - list_dir
     - read_file
     - write_file
+    - edit_file
     - search_files
     - list_skills
     - activate_skill
@@ -65,7 +66,7 @@ spec:
   approvals:
     - id: workspace-write
       description: Confirm writes to the workspace
-      tools: [write_file]
+      tools: [write_file, edit_file]
       ttl_seconds: 600
     - id: client-shell
       description: Confirm local shell commands
