@@ -202,7 +202,13 @@ def _first_readiness_scores(comments: dict[int, list[dict[str, Any]]]) -> list[i
 
 
 def _every_commit_is_the_bots(commits: list[dict[str, Any]]) -> bool:
-    return all(_is_bot(c, "author") for c in commits)
+    """Every *change* on the branch is the bot's.
+
+    A merge commit — GitHub's "update branch" button under strict status checks — carries no
+    change of its own and is authored by whoever pressed it. The first bot PR had one from a
+    person and scored 0 % here, which said something false.
+    """
+    return all(_is_bot(c, "author") for c in commits if len(c.get("parents") or []) <= 1)
 
 
 def _rounds(reviews: list[dict[str, Any]]) -> int:
