@@ -14,6 +14,7 @@ site at **[docs.felix.run](https://docs.felix.run)**, authored in the separate
 |---|---|
 | [`ROADMAP.md`](ROADMAP.md) | Living tracker of what to build next; status updated in place |
 | [`SELF.md`](SELF.md) | The program by which Felix contributes to its own repository — the rungs, the evidence a ticket must cite, the boundary Felix may not cross, and the scoreboard |
+| [`WORKSPACE.md`](WORKSPACE.md) | Proposal: move the workspace tools out of the process that holds credentials, scope them per tenant and thread, and sandbox them — backends, phases, migration |
 | [`HISTORY.md`](HISTORY.md) | Wave-by-wave record of what shipped and what each wave taught, including the conclusions that did not survive being measured |
 | [`RELEASING.md`](RELEASING.md) | Cutting a release: version, changelog, tag, and what CI does |
 | [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) | Local failure modes and the actual fix for each |
