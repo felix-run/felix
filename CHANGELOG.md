@@ -33,6 +33,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `tool_error_output` skips its prefix for text that already starts with `[`.
 
 
+### Added
+
+- **The gpt-4.1 family now carries pricing in the model catalog.** Usage rows and cost caps for
+  gpt-4.1, gpt-4.1-mini, and gpt-4.1-nano are now computed instead of silently zero. An unpriced
+  model reports zero cost, so a cost cap never fires on it.
+
 ## [0.4.0] — 2026-09-24
 
 ### Added
