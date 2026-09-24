@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A durable run's reasoning reaches a watching client while the run is going.** A durable
+  stream carries no deltas, so the `session_event` frames tailed from the log are the only live
+  view of the work, and they left out the assistant row's `metadata.thinking` — reasoning
+  appeared only once the run had landed and the client re-read the snapshot. The frame now
+  carries the readable blocks as `metadata.thinking: [{type: "thinking", thinking}]`, the key the
+  snapshot already uses, so a client folds both with one function. Only readable text goes on
+  the frame: a block's `signature` and any `redacted_thinking` exist to be replayed to the
+  provider, and stay in the log. The key is omitted when there is nothing readable, and the
+  reattach stream gets it too, since both go through `session_event_frame`.
+
 - **A `policy_deny` audit row says which control refused the call.** `payload.control` is one of
   `policy`, `limits`, `guardrails`, `approvals`, `command`, `screening`. Every wrapper stamped its
   source on the deny it returned; the loop was the one reader that dropped it, so "show me every
