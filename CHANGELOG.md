@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The gpt-4.1 family now carries pricing in the model catalog.** Usage rows and cost caps for
+  gpt-4.1, gpt-4.1-mini, and gpt-4.1-nano are now computed instead of silently zero. An unpriced
+  model reports zero cost, so a cost cap never fires on it.
+
 - **`edit_file` changes one exact string and leaves the rest of the file where it was.** Until
   now the only way to change a file was `write_file`, which replaces the whole thing: the model
   reproduces every byte it is not editing, and the bytes it fails to reproduce are gone. That is
