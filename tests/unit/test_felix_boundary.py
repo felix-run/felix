@@ -182,6 +182,24 @@ def test_surface_is_read_from_the_issue_form() -> None:
     assert boundary.surface_from_issue_body("no such section") == []
 
 
+def test_a_surface_line_may_carry_prose_after_the_path() -> None:
+    """The first bot PR (#290) failed the surface check on all three files: its ticket wrote
+    `- \`path\` — reason` per line and the whole line was read as a glob."""
+    body = (
+        "### Files expected to change\n\n"
+        "- `packages/harness/src/felix/waiters.py` — add TTL-based eviction or size cap\n"
+        "- `tests/unit/test_waiters.py` or new test file — verify the bound\n"
+        "changelog.d/fixed-thing.md (new file)\n"
+        "packages/**/x.py: every module\n"
+    )
+    assert boundary.surface_from_issue_body(body) == [
+        "packages/harness/src/felix/waiters.py",
+        "tests/unit/test_waiters.py",
+        "changelog.d/fixed-thing.md",
+        "packages/**/x.py",
+    ]
+
+
 def test_an_unfenced_surface_does_not_borrow_the_next_sections_fence() -> None:
     """A person editing the issue by hand drops the fence; the acceptance command must not
     become the surface."""
@@ -246,6 +264,15 @@ def test_main_exits_nonzero_with_annotations(tmp_path: Path, capsys) -> None:
         ]
     )
     assert rc == 0
+
+
+def test_the_workflow_judges_with_the_base_branch_tip() -> None:
+    """`base.sha` is the base as of the PR's last synchronize; a fix to the script on main
+    never reached an open PR that way. The checkout must name the branch."""
+    workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/felix-boundary.yml").read_text()
+    assert "ref: ${{ github.event.pull_request.base.ref }}" in workflow
+    assert "pull_request.base.sha" not in workflow
+    assert "pull_request.head" not in workflow.split("Read the pull request")[0], "never check out the head"
 
 
 def test_print_closes_is_what_the_workflow_fetches_with(tmp_path: Path, capsys) -> None:

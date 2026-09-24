@@ -31,11 +31,14 @@ jobs:
       pull-requests: read
       issues: read
     steps:
-      # The base ref, explicitly. `pull_request_target` already defaults to it, and saying so
-      # is what a reader checks first.
+      # The base *branch tip*, by name. `base.sha` is the base as of the pull request's last
+      # synchronize, not main's current tip, so a fix to this script never reached an open PR
+      # until its branch moved — the first bot PR was judged three times by a parser that had
+      # already been replaced on main. `pull_request_target` runs the workflow file from the
+      # base branch; this checkout makes the script it runs match.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
+          ref: ${{ github.event.pull_request.base.ref }}
           sparse-checkout: |
             scripts/felix_boundary.py
           sparse-checkout-cone-mode: false
