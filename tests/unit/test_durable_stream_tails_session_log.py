@@ -302,6 +302,58 @@ async def test_a_session_event_carries_what_a_tool_card_is_built_from(
 
 
 @pytest.mark.asyncio
+async def test_a_session_event_carries_the_reasoning_a_person_can_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A durable run's reasoning reaches a watching client while the run is going.
+
+    `chat_message_to_event` keeps the provider's reasoning blocks on the assistant row as
+    `metadata.thinking`, and the snapshot sends them. The tail frame did not, so on a
+    durable run — which streams no deltas at all — reasoning appeared only after the run
+    had landed and the client re-read the snapshot. The frame now carries the readable
+    blocks, and only those: a `signature` and a `redacted_thinking` block exist to be
+    replayed to the provider, and neither belongs in front of a person.
+    """
+    settings = _settings("tail-thinking")
+    thread = "default:thinking"
+    _force_durable(monkeypatch)
+
+    async def worker_thought_then_answered() -> None:
+        await _append(
+            settings,
+            thread,
+            AppendableEvent(
+                kind="message",
+                role="assistant",
+                content="the answer",
+                metadata={
+                    "thinking": [
+                        {"type": "thinking", "thinking": "weigh the options", "signature": "sig-abc"},
+                        {"type": "redacted_thinking", "data": "opaque-xyz"},
+                        {"type": "thinking", "thinking": "   ", "signature": "sig-empty"},
+                    ]
+                },
+            ),
+            AppendableEvent(kind="message", role="assistant", content="no reasoning here"),
+        )
+
+    _stub_fiber(monkeypatch, on_poll=[worker_thought_then_answered], statuses=["running"])
+
+    async with _client(settings) as client:
+        body = await _post_stream(client, "thinking")
+
+    events = [p["data"] for _, p in _blocks(body) if p.get("event") == "session_event"]
+    thought = next(e for e in events if e["content"] == "the answer")
+    plain = next(e for e in events if e["content"] == "no reasoning here")
+
+    assert thought.get("metadata") == {"thinking": [{"type": "thinking", "thinking": "weigh the options"}]}
+    # Opaque on purpose, and replay-only: never on the frame.
+    assert "sig-abc" not in body and "opaque-xyz" not in body
+    # Nothing readable means no key at all, the way `tool_calls` is omitted when empty.
+    assert "metadata" not in plain
+
+
+@pytest.mark.asyncio
 async def test_progress_the_worker_made_before_the_stream_polled_is_not_skipped(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

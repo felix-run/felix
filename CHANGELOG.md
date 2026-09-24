@@ -13,6 +13,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gpt-4.1, gpt-4.1-mini, and gpt-4.1-nano are now computed instead of silently zero. An unpriced
   model reports zero cost, so a cost cap never fires on it.
 
+## [0.4.0] — 2026-09-24
+
+### Added
+
+- **A durable run's reasoning reaches a watching client while the run is going.** A durable
+  stream carries no deltas, so the `session_event` frames tailed from the log are the only live
+  view of the work, and they left out the assistant row's `metadata.thinking` — reasoning
+  appeared only once the run had landed and the client re-read the snapshot. The frame now
+  carries the readable blocks as `metadata.thinking: [{type: "thinking", thinking}]`, the key the
+  snapshot already uses, so a client folds both with one function. Only readable text goes on
+  the frame: a block's `signature` and any `redacted_thinking` exist to be replayed to the
+  provider, and stay in the log. The key is omitted when there is nothing readable, and the
+  reattach stream gets it too, since both go through `session_event_frame`.
 - **`edit_file` changes one exact string and leaves the rest of the file where it was.** Until
   now the only way to change a file was `write_file`, which replaces the whole thing: the model
   reproduces every byte it is not editing, and the bytes it fails to reproduce are gone. That is
@@ -2790,3 +2803,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.2.0]: https://github.com/felix-run/felix/releases/tag/v0.2.0
 [0.1.0]: https://github.com/felix-run/felix/releases/tag/v0.1.0
 [0.3.0]: https://github.com/felix-run/felix/releases/tag/v0.3.0
+[0.4.0]: https://github.com/felix-run/felix/releases/tag/v0.4.0

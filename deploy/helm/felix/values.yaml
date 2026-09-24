@@ -3,7 +3,7 @@ image:
   # which does not exist, so `helm install` from the tree went straight to
   # ImagePullBackOff.
   repository: ghcr.io/felix-run/felix
-  tag: "0.3.0"
+  tag: "0.4.0"
   pullPolicy: IfNotPresent
 
 # One Deployment per process. The Service, the HPA and the PDB select the api alone;
