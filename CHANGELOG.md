@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Changed
+
+- **The workspace is a named volume, not the deployment's checkout.** Compose mounted
+  `${FELIX_WORKSPACE_HOST:-./workspace}` at `/workspace`, so an agent's files landed inside the
+  deployment's own git checkout unless the operator overrode it, and the published image — uid
+  `10001` — could not write a directory the host owned (`Errno 13` on the reference deployment).
+  The default is now the named `felix-workspace` volume; the image creates `/workspace` owned by
+  its runtime user so a new volume is seeded writable; `FELIX_WORKSPACE_HOST` still overrides it;
+  and `scripts/check-compose-render.py` fails a render that bind-mounts a host directory there
+  without that override. **A deployment relying on the old default starts with an empty
+  workspace** — `UPGRADING.md` says how to keep or copy the old directory. Phase 0 of
+  `docs/WORKSPACE.md`.
+
 
 ## [0.4.0] — 2026-09-24
 
