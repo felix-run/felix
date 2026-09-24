@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Changed
+
+- **The workspace is a named volume, not the deployment's checkout.** Compose mounted
+  `${FELIX_WORKSPACE_HOST:-./workspace}` at `/workspace`, so an agent's files landed inside the
+  deployment's own git checkout unless the operator overrode it, and the published image — uid
+  `10001` — could not write a directory the host owned (`Errno 13` on the reference deployment).
+  The default is now the named `felix-workspace` volume; the image creates `/workspace` owned by
+  its runtime user so a new volume is seeded writable; `FELIX_WORKSPACE_HOST` still overrides it;
+  and `scripts/check-compose-render.py` fails a render that bind-mounts a host directory there
+  without that override. **A deployment relying on the old default starts with an empty
+  workspace** — `UPGRADING.md` says how to keep or copy the old directory. Phase 0 of
+  `docs/WORKSPACE.md`.
+### Fixed
+
+- **A workspace tool that fails is audited as failing.** `list_dir`, `read_file`, `write_file`,
+  `edit_file` and `search_files` returned every failure as plain `error: …` text, which carries
+  no error marker, so the tool runner wrote the audit row as `tool_call` / `ok`, the metrics
+  counted a success, and the eval trajectory did not count a failure. On the reference
+  deployment an approved `write_file` failed with `Errno 13` twice and both rows said `ok`. Every
+  failure now goes through `tool_error_output`: `permission_denied` for a filesystem refusal,
+  `invalid_arguments` for a bad path, missing file or ambiguous edit, `transport_unavailable`
+  when no workspace is configured, `timeout` for a search past its budget, `internal`
+  otherwise. The text the model reads keeps its wording, now under a `[tool error/<code>]`
+  prefix. An `OSError` is rendered as `PermissionError: [Errno 13] …`, because
+  `tool_error_output` skips its prefix for text that already starts with `[`.
+
 
 ### Added
 

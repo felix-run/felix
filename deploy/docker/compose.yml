@@ -124,7 +124,7 @@ services:
       FELIX_S3_BUCKET: felix-bundles
     volumes:
       - felix-data:/data
-      - ${FELIX_WORKSPACE_HOST:-./workspace}:/workspace
+      - ${FELIX_WORKSPACE_HOST:-felix-workspace}:/workspace
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -148,7 +148,7 @@ services:
       FELIX_S3_BUCKET: felix-bundles
     volumes:
       - felix-data:/data
-      - ${FELIX_WORKSPACE_HOST:-./workspace}:/workspace
+      - ${FELIX_WORKSPACE_HOST:-felix-workspace}:/workspace
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -269,6 +269,11 @@ services:
 
 volumes:
   felix-data:
+  # What the workspace tools read and write. A named volume, not `./workspace`: that default
+  # put every agent's files inside the deployment's own checkout, beside the compose files and
+  # `.env`. `FELIX_WORKSPACE_HOST` still overrides it with a host path. docs/WORKSPACE.md is the
+  # design this is phase 0 of.
+  felix-workspace:
   postgres-data:
   valkey-data:
   minio-data:
