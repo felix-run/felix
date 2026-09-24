@@ -608,7 +608,8 @@ comment explaining exactly that. It is conditional, not inert.
       authenticated on purpose.
 - [ ] **Sandbox ladder extras** — capability-bridge / gVisor as documented extras, not the default
       lean image. The workspace tools need this more than the snippet rung does: see
-      [WORKSPACE.md](WORKSPACE.md), where gVisor is the runtime the proposed workspace broker requires.
+      [WORKSPACE.md](WORKSPACE.md), which puts workspaces in a hosted sandbox service in production and keeps gVisor for the
+      `broker` fallback.
 - [ ] **OAuth / dynamic provider keys** — secrets backends cover static keys; refresh /
       `getApiKey(provider)` only if a real customer path needs it.
 - [ ] **`append_batch` read-modify-write** — fold the read into the insert
