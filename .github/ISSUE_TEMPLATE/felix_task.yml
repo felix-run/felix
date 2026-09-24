@@ -65,7 +65,7 @@ body:
     attributes:
       label: Companion updates this needs
       options:
-        - label: "`changelog.d/<section>-<slug>.md` fragment"
+        - label: "`CHANGELOG.md` entry under `[Unreleased]`"
         - label: "`.env.example` and the README settings table"
         - label: "`make schema` (manifest schema changed)"
         - label: "felix-web docs page (docs-sync skill names it)"
