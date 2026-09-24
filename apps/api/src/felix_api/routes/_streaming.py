@@ -113,7 +113,35 @@ def session_event_frame(event: SessionEvent, cursor: int) -> str:
         data["tool_call_id"] = event.tool_call_id
     if event.tool_calls:
         data["tool_calls"] = event.tool_calls
+    # The reasoning behind an assistant turn, and only the part a person can read.
+    #
+    # A durable run's stream carries no deltas, so this frame is the only way its
+    # reasoning reaches a watching client while the run is going; before this it arrived
+    # only once the run had landed and the client re-read the snapshot. The snapshot sends
+    # `metadata` whole. This frame does not, on purpose: it is the thin, folded shape, and
+    # the stored blocks carry a provider `signature` (and `redacted_thinking` carries only
+    # opaque `data`) that exist to be *replayed to the provider*, not shown. So the frame
+    # carries `{type: "thinking", thinking}` per readable block, under the same
+    # `metadata.thinking` key the snapshot uses, which lets a client fold both with one
+    # function. Omitted when there is nothing readable, like the keys above.
+    thinking = readable_thinking(md.get("thinking"))
+    if thinking:
+        data["metadata"] = {"thinking": thinking}
     return frame({"event": "session_event", "data": data}, cursor=cursor)
+
+
+def readable_thinking(blocks: Any) -> list[dict[str, str]]:
+    """The readable reasoning blocks stored on a message, stripped of what is not for reading."""
+    if not isinstance(blocks, list):
+        return []
+    out: list[dict[str, str]] = []
+    for block in blocks:
+        if not isinstance(block, dict) or block.get("type") != "thinking":
+            continue
+        text = block.get("thinking")
+        if isinstance(text, str) and text.strip():
+            out.append({"type": "thinking", "thinking": text})
+    return out
 
 
 async def drain_session_events(reader: Session, cursor: int) -> tuple[list[str], int]:
