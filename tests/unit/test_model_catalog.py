@@ -9,7 +9,7 @@ winning in `usage/pricing.py`. They overlapped, and on context window they disag
 from __future__ import annotations
 
 import pytest
-from felix.model_catalog import ModelCatalogEntry, all_entries, clamp_effort, entry_for
+from felix.model_catalog import ModelCatalogEntry, all_entries, clamp_effort, entry_for, is_priced
 from felix.usage.catalog import context_window_for, modalities_for, supported_thinking_levels
 from felix.usage.pricing import _lookup_price
 
@@ -108,7 +108,7 @@ def test_the_unpriced_set_is_exactly_this() -> None:
     spend for a model that costs money, and the coherence assertions above now skip
     unpriced entries. Adding one has to be a decision someone makes here."""
     unpriced = {key for key, entry in all_entries().items() if entry.pricing is None}
-    assert unpriced == {"gpt-4.1", "gpt-4", "o1", "o3", "o4", "llama"}
+    assert unpriced == {"gpt-4", "o1", "o3", "o4", "llama"}
 
 
 def test_an_entry_that_states_no_rates_has_none() -> None:
@@ -116,7 +116,7 @@ def test_an_entry_that_states_no_rates_has_none() -> None:
     while it was the field default, every entry that simply omitted rates billed at $3/$15
     per Mtok. Several entries say in a comment that they have no bundled rate — and were
     priced as Sonnet regardless."""
-    for model_id in ("gpt-4.1", "gpt-4", "o1", "o3", "o4", "llama"):
+    for model_id in ("gpt-4", "o1", "o3", "o4", "llama"):
         assert all_entries()[model_id].pricing is None, model_id
 
 
@@ -124,7 +124,29 @@ def test_a_hosted_llama_is_not_free_just_because_it_says_llama() -> None:
     """`entry_for` matches by substring, and Llama is served for money by Workers AI, Groq,
     Together and Fireworks. Pricing the `llama` entry at zero would have made all of them
     free to `limits.max_cost_usd`."""
-    from felix.model_catalog import is_priced
-
     assert not is_priced("@cf/meta/llama-3.3-70b-instruct-fp8-fast")
     assert entry_for("@cf/meta/llama-3.3-70b-instruct-fp8-fast").pricing is None
+
+
+def test_gpt_4_1_family_is_priced() -> None:
+    """gpt-4.1 family models return is_priced() == True and have correct OpenAI rates."""
+    # gpt-4.1
+    assert is_priced("gpt-4.1")
+    assert entry_for("gpt-4.1").pricing.input == 2.0
+    assert entry_for("gpt-4.1").pricing.output == 8.0
+    assert entry_for("gpt-4.1").pricing.cache_read == 0.5
+    assert entry_for("gpt-4.1").pricing.cache_write == 2.0
+
+    # gpt-4.1-mini
+    assert is_priced("gpt-4.1-mini")
+    assert entry_for("gpt-4.1-mini").pricing.input == 0.4
+    assert entry_for("gpt-4.1-mini").pricing.output == 1.6
+    assert entry_for("gpt-4.1-mini").pricing.cache_read == 0.1
+    assert entry_for("gpt-4.1-mini").pricing.cache_write == 0.4
+
+    # gpt-4.1-nano
+    assert is_priced("gpt-4.1-nano")
+    assert entry_for("gpt-4.1-nano").pricing.input == 0.1
+    assert entry_for("gpt-4.1-nano").pricing.output == 0.4
+    assert entry_for("gpt-4.1-nano").pricing.cache_read == 0.025
+    assert entry_for("gpt-4.1-nano").pricing.cache_write == 0.1

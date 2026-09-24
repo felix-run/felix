@@ -68,6 +68,43 @@ Configuration is checked too, and that failure is loud: a tenant id pinned in
 that does not match the rule now refuses to start, naming the setting. Before this it
 started and returned `401` to every request from that issuer with nothing in the log.
 
+## The workspace is a named volume, not the checkout
+
+**No migration, and it can make an agent's files look gone — check before you deploy.**
+
+Compose used to mount `${FELIX_WORKSPACE_HOST:-./workspace}` at `/workspace`, so a deployment
+that never set `FELIX_WORKSPACE_HOST` had every file an agent wrote inside its own git checkout,
+beside the compose files and `.env`. The default is now a named volume, `felix-workspace`, and the
+image creates `/workspace` owned by its runtime user (uid `10001`) so a new volume is writable from
+the first call. `scripts/check-compose-render.py` fails any render that bind-mounts a host directory
+there without `FELIX_WORKSPACE_HOST` set. [`WORKSPACE.md`](WORKSPACE.md) is the design this starts.
+
+**If you set `FELIX_WORKSPACE_HOST`, nothing changes.** It still overrides the default with a host
+path; the directory must be writable by uid `10001`:
+
+```bash
+sudo chown -R 10001:10001 "$FELIX_WORKSPACE_HOST"
+```
+
+**If you did not, the workspace starts empty after the upgrade**, because the new volume is not the
+old directory. Either keep the old location, explicitly:
+
+```bash
+echo 'FELIX_WORKSPACE_HOST=./workspace' >> .env
+sudo chown -R 10001:10001 ./workspace      # the published image cannot write a host-owned dir
+```
+
+or copy what is there into the volume once, after the first `up` has created it:
+
+```bash
+docker run --rm -v "$PWD/workspace:/from:ro" -v felix_felix-workspace:/to alpine \
+  sh -c 'cp -a /from/. /to/ && chown -R 10001:10001 /to'
+```
+
+The volume is seeded with the image's ownership only when it is first created. A `felix-workspace`
+volume that an older image created belongs to root and stays that way; the `chown` in the copy
+above, or the same command with only `-v felix_felix-workspace:/to`, fixes it.
+
 ## v0.1.0 → v0.2.0
 
 Five migrations apply: `0005_session_fts`, `0006_tenant_rls`, `0007_approval_consumed_at`,

@@ -58,7 +58,7 @@ services:
       FELIX_WORKSPACE_ROOT: ${FELIX_WORKSPACE_ROOT:-/workspace}
     volumes:
       - felix-data:/data
-      - ${FELIX_WORKSPACE_HOST:-./workspace}:/workspace
+      - ${FELIX_WORKSPACE_HOST:-felix-workspace}:/workspace
     depends_on:
       migrate:
         condition: service_completed_successfully

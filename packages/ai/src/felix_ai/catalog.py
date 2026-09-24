@@ -192,11 +192,24 @@ _CATALOG: dict[str, ModelCatalogEntry] = {
     "claude-mythos": replace(_FAMILY, pricing=_FABLE_PRICE),
     "claude": _FAMILY,
     # --- OpenAI ---
-    # No bundled rate: this family had no entry in the price table and billed at the
-    # default. Consolidating must not quietly introduce pricing that was never asserted.
     "gpt-4.1": ModelCatalogEntry(
         context_window=1_047_576,
         max_output_tokens=32_768,
+        pricing=ModelPricing(input=2.0, output=8.0, cache_read=0.5, cache_write=2.0),
+        supports_thinking=True,
+        input_modalities=_TEXT_AND_IMAGE,
+    ),
+    "gpt-4.1-mini": ModelCatalogEntry(
+        context_window=1_047_576,
+        max_output_tokens=32_768,
+        pricing=ModelPricing(input=0.4, output=1.6, cache_read=0.1, cache_write=0.4),
+        supports_thinking=True,
+        input_modalities=_TEXT_AND_IMAGE,
+    ),
+    "gpt-4.1-nano": ModelCatalogEntry(
+        context_window=1_047_576,
+        max_output_tokens=32_768,
+        pricing=ModelPricing(input=0.1, output=0.4, cache_read=0.025, cache_write=0.1),
         supports_thinking=True,
         input_modalities=_TEXT_AND_IMAGE,
     ),
