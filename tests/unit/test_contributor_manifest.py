@@ -275,3 +275,14 @@ def _approval_gated_tools(manifest: Manifest) -> set[str]:
     for rule in manifest.spec.approvals:
         gated.update(rule.tools)
     return gated
+
+
+def test_it_declares_a_token_budget_a_whole_ticket_fits_in(manifest: Manifest) -> None:
+    """Unset means 1M, and this agent spends roughly 38k a turn — a run then stops mid-edit at
+    about turn 26 with `policy_deny control=limits`, which is how ticket #306's first attempt
+    ended. Dropping the declaration would re-impose that silently."""
+    from felix.manifests.schema import ABSOLUTE_LIMITS, DEFAULT_LIMITS
+
+    declared = manifest.spec.limits.max_input_tokens
+    assert declared is not None, "an unset budget is the 1M default, which is under a run"
+    assert DEFAULT_LIMITS["max_input_tokens"] < declared <= ABSOLUTE_LIMITS["max_input_tokens"]

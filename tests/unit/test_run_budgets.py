@@ -14,7 +14,8 @@ import time
 import pytest
 from felix.context import LimitState
 from felix.limits import check_budgets, effective_limits, trip
-from felix.manifests.schema import ABSOLUTE_LIMITS, Limits
+from felix.manifests.schema import ABSOLUTE_LIMITS, DEFAULT_LIMITS, Limits
+from pydantic import ValidationError
 
 
 def _state(**kw: object) -> LimitState:
@@ -77,10 +78,28 @@ def test_trip_records_the_first_reason() -> None:
 def test_absolute_limits_fill_undeclared_fields() -> None:
     """A manifest that declares nothing previously got no cap of any kind."""
     eff = effective_limits(Limits())
-    assert eff.max_tool_calls == ABSOLUTE_LIMITS["max_tool_calls"]
-    assert eff.max_wall_clock_seconds == ABSOLUTE_LIMITS["max_wall_clock_seconds"]
-    assert eff.max_input_tokens == ABSOLUTE_LIMITS["max_input_tokens"]
-    assert eff.max_cost_usd == ABSOLUTE_LIMITS["max_cost_usd"]
+    assert eff.max_tool_calls == DEFAULT_LIMITS["max_tool_calls"]
+    assert eff.max_wall_clock_seconds == DEFAULT_LIMITS["max_wall_clock_seconds"]
+    assert eff.max_input_tokens == DEFAULT_LIMITS["max_input_tokens"]
+    assert eff.max_cost_usd == DEFAULT_LIMITS["max_cost_usd"]
+
+
+def test_an_unset_field_falls_back_to_the_default_not_the_maximum() -> None:
+    """The distinction the two constants exist for. `max_input_tokens` is the field where
+    they differ: declaring nothing still means 1M, and only a manifest that asks gets more."""
+    assert DEFAULT_LIMITS["max_input_tokens"] < ABSOLUTE_LIMITS["max_input_tokens"]
+    assert effective_limits(Limits()).max_input_tokens == DEFAULT_LIMITS["max_input_tokens"]
+
+
+def test_a_manifest_may_declare_more_than_the_default_and_no_more_than_the_maximum() -> None:
+    """Before the split there was no such value: the default *was* the maximum, so a long
+    agentic run could not be given a budget at all."""
+    above_default = DEFAULT_LIMITS["max_input_tokens"] * 8
+    assert above_default <= ABSOLUTE_LIMITS["max_input_tokens"]
+    assert effective_limits(Limits(max_input_tokens=above_default)).max_input_tokens == above_default
+
+    with pytest.raises(ValidationError):
+        Limits(max_input_tokens=ABSOLUTE_LIMITS["max_input_tokens"] + 1)
 
 
 def test_declared_limits_win_over_absolutes() -> None:

@@ -512,9 +512,23 @@ the highest matching threshold replaces the base rates entirely. No bundled entr
 tiers: the thresholds and rates move, and a stale number here both mis-charges the tenant
 and lets the budget cap admit more spend than it should.
 
-**Undeclared fields fall back to `ABSOLUTE_LIMITS`**, so a manifest that declares no
+**Undeclared fields fall back to `DEFAULT_LIMITS`**, so a manifest that declares no
 limits is still bounded (500 tool calls, 3600s, 1M input tokens, 100k output tokens,
-$1000). Declared values may only tighten those; the schema rejects anything larger.
+$1000). **`ABSOLUTE_LIMITS` is the separate, higher ceiling a manifest may declare up
+to**, and the schema rejects anything above it.
+
+The two were one constant, which made the default unraisable: `max_input_tokens` was
+1,000,000 as both the fallback and the maximum, and since the counter sums the tokens
+each turn actually processed — a react run re-sends its prefix every turn — an agent
+carrying a 38 KiB prompt reaches it in about 26 turns. There was no way to declare a
+budget for a longer run without raising the floor under every manifest that declares
+nothing. A manifest may now declare up to 20M input tokens; unset still means 1M.
+
+Cache reads count in full, and that is deliberate: they are tokens the provider
+processed. On the Anthropic wire `input` excludes them and `cache_read` reports them
+separately; on the OpenAI wire `prompt_tokens` already includes them and `cache_read` is
+zero. Summing all three is what makes the same budget mean the same thing on both. The
+*price* difference is `max_cost_usd`'s job, which prices a cache read at its own rate.
 
 A tool invoked with no request context is **denied** rather than run unbudgeted.
 

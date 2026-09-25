@@ -1667,3 +1667,19 @@ def test_codeowners_covers_the_controls_and_the_supply_chain() -> None:
         "/uv.lock",
     ):
         assert path in rules, path
+
+
+def test_no_default_limit_exceeds_the_maximum_a_manifest_may_declare() -> None:
+    """`DEFAULT_LIMITS` fills an unset field and `ABSOLUTE_LIMITS` bounds a declared one, so a
+    default above its own maximum would hand an undeclared manifest a budget the schema refuses
+    to let anyone ask for — and `effective_limits` would never notice, because it does not
+    validate what it fills with."""
+    from felix.manifests.schema import ABSOLUTE_LIMITS, DEFAULT_LIMITS
+
+    assert set(DEFAULT_LIMITS) == set(ABSOLUTE_LIMITS), "every default needs a ceiling to sit under"
+    too_high = {
+        name: (value, ABSOLUTE_LIMITS[name])
+        for name, value in DEFAULT_LIMITS.items()
+        if value > ABSOLUTE_LIMITS[name]
+    }
+    assert not too_high, f"default above the declarable maximum: {too_high}"

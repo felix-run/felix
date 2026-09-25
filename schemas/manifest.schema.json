@@ -908,7 +908,7 @@
         "max_input_tokens": {
           "anyOf": [
             {
-              "maximum": 1000000,
+              "maximum": 20000000,
               "minimum": 1,
               "type": "integer"
             },

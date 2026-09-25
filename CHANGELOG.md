@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+### Fixed
+
+- **A manifest can declare a token budget for a long agentic run.** `ABSOLUTE_LIMITS` was both
+  the value an unset field fell back to and the maximum a manifest could declare, so raising the
+  cap for one agent meant raising the floor under every agent that declares nothing — and
+  `max_input_tokens` was 1,000,000 for both. The counter sums the tokens each turn actually
+  processed, and a react run re-sends its prefix every turn, so an agent with a 38 KiB prompt hit
+  the ceiling in about 26 turns and stopped mid-work with `policy_deny control=limits`. The two
+  are separate now: `DEFAULT_LIMITS` fills an unset field and is unchanged, `ABSOLUTE_LIMITS`
+  bounds what may be declared and allows 20M input tokens. Cache reads still count in full —
+  they are tokens the provider processed, and summing them is what makes the budget mean the same
+  thing on the Anthropic wire, where `input` excludes them, and the OpenAI wire, where
+  `prompt_tokens` already includes them.
+
 ### Changed
 
 - **The workspace is a named volume, not the deployment's checkout.** Compose mounted

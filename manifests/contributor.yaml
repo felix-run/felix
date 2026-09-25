@@ -259,6 +259,12 @@ spec:
     max_tool_calls: 200
     max_wall_clock_seconds: 3600
     max_cost_usd: 20
+    # The budget counts what each turn processed, and a react turn re-sends its prefix, so this
+    # agent — skill catalogue, a long transcript, a repository under it — spends roughly 38k a
+    # turn. At the 1,000,000 an unset field falls back to, a run stops mid-edit at about turn 26
+    # with `policy_deny control=limits`; a ticket takes more turns than that. `max_cost_usd`
+    # above is what actually bounds the spend.
+    max_input_tokens: 8000000
 
   # Steps the react loop may take; `max_turns` is for the multi-agent patterns and bounds
   # nothing on a react agent.

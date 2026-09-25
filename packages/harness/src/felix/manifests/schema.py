@@ -13,13 +13,22 @@ API_VERSION = "felix/v1"
 MANIFEST_KIND = "Agent"
 MANIFEST_NAME_RE = re.compile(r"^[a-zA-Z0-9._-]+$")
 
+# The ceiling a manifest may *declare*. Every `Limits` field is bounded by its entry here,
+# so an author cannot write themselves a larger budget than the operator allows.
+#
+# This is not the value an unset field gets: see DEFAULT_LIMITS below. The two were one
+# constant, which made the cap unraisable — `max_input_tokens` was 1,000,000 as both the
+# default and the maximum, and a react run carrying a 38 KiB prompt reaches that in about
+# 26 turns, so no manifest could declare a budget for a longer agentic run. The number a
+# careful operator picks for "if you say nothing" is not the number they would refuse
+# outright, and conflating them meant raising one raised the other.
 ABSOLUTE_LIMITS = {
     "max_tool_calls": 500,
     "max_wall_clock_seconds": 3600,
     "max_peer_hops": 5,
     "recursion_limit": 50,
     "max_turns": 100,
-    "max_input_tokens": 1_000_000,
+    "max_input_tokens": 20_000_000,
     "max_output_tokens": 100_000,
     "max_cost_usd": 1_000.0,
     # A durable run's resume token, and therefore the lifetime of the caller scopes the fiber
@@ -27,6 +36,12 @@ ABSOLUTE_LIMITS = {
     # authority dies with the run" a promise the manifest author could set to ten years.
     "resume_token_ttl_seconds": 86_400,
 }
+
+# What an unset field is worth. `effective_limits` fills from here, so a manifest that
+# declares nothing keeps the conservative posture it has always had; only a manifest that
+# asks for more, and stays under ABSOLUTE_LIMITS, gets more. Every key here must exist in
+# ABSOLUTE_LIMITS and must not exceed it — `tests/unit/test_invariants.py` enforces both.
+DEFAULT_LIMITS = {**ABSOLUTE_LIMITS, "max_input_tokens": 1_000_000}
 
 
 # Without a bound a tenant-supplied manifest can pin a connection open for as long as it
