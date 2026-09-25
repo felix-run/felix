@@ -16,6 +16,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `final_response` with `status=error` when the run ends with that denial — a denial followed by
   a closing message is an error row; a denial followed by more tool calls is not.
 
+- **Prompt caching covers the conversation, not just the preamble.** `spec.model.cache: true` put a
+  cache breakpoint on the system block and the last tool definition — a few thousand fixed tokens —
+  and left the conversation uncached, so every file an agent had read and every tool result it had
+  received was re-billed at full input price on every subsequent turn. For an agentic run that is
+  nearly the entire bill: one 212-call run metered 16.25M uncached input tokens against 2.7M read
+  from cache, a 14% hit rate, and $48.76 of its $51.07 was that uncached input. The newest message
+  now carries a breakpoint too, so each turn reads the turns before it at a tenth of base input and
+  pays the write premium only on the delta. Blocks that may not carry a marker are skipped —
+  notably `thinking`, which a run with extended thinking replays verbatim — and an isolated request
+  still caches nothing.
+
 - **A manifest can declare a token budget for a long agentic run.** `ABSOLUTE_LIMITS` was both
   the value an unset field fell back to and the maximum a manifest could declare, so raising the
   cap for one agent meant raising the floor under every agent that declares nothing — and

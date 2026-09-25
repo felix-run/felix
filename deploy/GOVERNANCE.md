@@ -490,6 +490,12 @@ per-turn ceiling (`spec.model.max_tokens`, or `limits.max_output_tokens` when th
 never raises it — the output budget is checked at the top of a turn, so a caller-sized turn
 would otherwise run a full turn past the declared bound before it tripped.
 
+`spec.model.cache: true` sets three breakpoints on the Anthropic wire: the system block, the
+last tool definition, and the newest message. The third is the one that matters for a long run —
+without it the transcript is re-billed at full input price every turn, and the transcript is where
+an agentic run's tokens are. Cache reads are counted in full against `max_input_tokens`, because
+they are tokens the provider processed; their lower price is `max_cost_usd`'s business.
+
 Side requests are metered but deliberately uncached. Compaction, memory capture, inbound
 screening and branch summarisation each issue a model call in the middle of a turn, and
 each carries a different prefix from the conversation around it — so they opt out of the

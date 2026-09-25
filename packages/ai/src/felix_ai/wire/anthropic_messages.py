@@ -114,6 +114,55 @@ def apply_anthropic_thinking_cache(
             last = dict(tools[-1])
             last["cache_control"] = {"type": "ephemeral"}
             tools[-1] = last
+        _cache_the_conversation(body)
+
+
+# A cache breakpoint marks the end of a prefix, and everything before it is what gets
+# reused. `text`, `tool_use`, `tool_result`, `image` and `document` blocks may carry one;
+# `thinking` may not, and a run with extended thinking on replays signed reasoning as the
+# first block of an assistant turn.
+_CACHEABLE_BLOCKS = frozenset({"text", "tool_use", "tool_result", "image", "document"})
+
+
+def _cache_the_conversation(body: dict[str, Any]) -> None:
+    """Mark the newest message, so the turns before it are read from cache, not re-billed.
+
+    Caching the system block and the tool definitions covers a fixed few thousand tokens.
+    It leaves the conversation — every file the agent read, every tool result it got — paid
+    for at full input price on *every* subsequent turn, which for an agentic run is nearly
+    the whole bill: one 212-call run metered 16.25M uncached input tokens against 2.7M read
+    from cache, a 14% hit rate, and 95% of its cost was that uncached input.
+
+    A breakpoint on the last message makes the next turn's prefix a cache read at a tenth
+    of the price. The write costs a quarter more than base input, but only for the delta
+    since the previous turn, and a run re-reads its prefix once per step.
+
+    Anthropic allows four breakpoints; this is the third, after `system` and the last tool.
+    """
+    messages = body.get("messages")
+    if not isinstance(messages, list) or not messages:
+        return
+    last = messages[-1]
+    if not isinstance(last, dict):
+        return
+    content = last.get("content")
+    if isinstance(content, str):
+        if not content:
+            return
+        messages[-1] = {
+            **last,
+            "content": [{"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}],
+        }
+        return
+    if not isinstance(content, list) or not content:
+        return
+    tail = content[-1]
+    if not isinstance(tail, dict) or tail.get("type") not in _CACHEABLE_BLOCKS:
+        return
+    messages[-1] = {
+        **last,
+        "content": [*content[:-1], {**tail, "cache_control": {"type": "ephemeral"}}],
+    }
 
 
 _ANTHROPIC_STOP: dict[str, StopReason] = {
