@@ -51,7 +51,7 @@ async def _run(
     )
     provider = default_tool_provider()
     async with async_run_with_context(ctx):
-        msgs, _, _ = await ToolRunner(tool_map={tool: provider.get(tool)}, manifest_id="m").run_batch(
+        msgs, _, _, _ = await ToolRunner(tool_map={tool: provider.get(tool)}, manifest_id="m").run_batch(
             [ToolCall(id="1", name=tool, args=args)], thread_id="th", tenant_id="t"
         )
     return audited, str(msgs[0].content)

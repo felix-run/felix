@@ -82,7 +82,7 @@ async def test_a_successful_call_is_not_reported_to_the_model_as_an_error() -> N
     get_agent_hooks().register_after_tool(hook)
     executor = _Succeeds()
 
-    messages, had_fatal, _ = await _runner(executor).run_batch(
+    messages, had_fatal, _, _ = await _runner(executor).run_batch(
         [ToolCall(id="1", name="t", args={})], thread_id="th", tenant_id="t"
     )
 
@@ -111,7 +111,7 @@ async def test_a_genuinely_failing_tool_still_reports_an_error_and_hooks_once() 
         async def execute(self, args: ToolInput, ctx: ToolInvocationCtx | None = None) -> ToolOutput:
             raise RuntimeError("the tool itself failed")
 
-    messages, _, _ = await _runner(_Fails()).run_batch(
+    messages, _, _, _ = await _runner(_Fails()).run_batch(
         [ToolCall(id="1", name="t", args={})], thread_id="th", tenant_id="t"
     )
 
@@ -128,7 +128,7 @@ async def test_a_hook_can_still_replace_content_and_terminate() -> None:
 
     get_agent_hooks().register_after_tool(hook)
 
-    messages, _, all_terminate = await _runner(_Succeeds()).run_batch(
+    messages, _, all_terminate, _ = await _runner(_Succeeds()).run_batch(
         [ToolCall(id="1", name="t", args={})], thread_id="th", tenant_id="t"
     )
 

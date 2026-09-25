@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A run ending on a denied tool is recorded with `final_response` status reflecting the
+  denial.** Until now, a run that ended because an approval timed out or a tool was denied still
+  wrote `final_response` with `status=ok`, so a denied run read as a successful completion in the
+  audit log. The turn loop now tracks whether the last tool batch had a denial and records
+  `final_response` with `status=error` when the run ends with that denial — a denial followed by
+  a closing message is an error row; a denial followed by more tool calls is not.
+
 - **A manifest can declare a token budget for a long agentic run.** `ABSOLUTE_LIMITS` was both
   the value an unset field fell back to and the maximum a manifest could declare, so raising the
   cap for one agent meant raising the floor under every agent that declares nothing — and

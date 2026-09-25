@@ -231,5 +231,10 @@ Real, documented rather than hidden:
 - **`GET /audit/metrics` reports `avg_latency_ms: 0`.** It reads `payload.latency_ms` /
   `payload.duration_ms`, which the `tool_call` audit payload does not write. Use
   `felix_tool_call_seconds` instead.
+- **`final_response` rows with `status=error` include runs ending on a denied tool.** A run that
+  ends because an approval timed out or a tool was denied records `final_response` with
+  `status=error`, distinguishing it from a successful completion. This applies when the last tool
+  batch had a denial — a denial followed by a closing message is an error row; a denial followed
+  by more tool calls is not.
 - **No sampling below the trace root.** `FELIX_OTEL_SAMPLE_RATIO` is head-based and
   parent-respecting: a sampled request keeps all of its child spans.

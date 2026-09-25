@@ -59,8 +59,8 @@ class ToolRunner:
                 return "sequential"
         return "parallel"
 
-    async def dispatch(self, call: ToolCall, thread_id: str | None) -> tuple[str, ChatMessage, bool]:
-        """Return (kind, tool_message, terminate)."""
+    async def dispatch(self, call: ToolCall, thread_id: str | None) -> tuple[str, ChatMessage, bool, bool]:
+        """Return (kind, tool_message, terminate, denied)."""
         preflight = await run_before_tool(
             {"id": call.id, "name": call.name, "args": call.args},
             context={"manifest_id": self.manifest_id, "thread_id": thread_id},
@@ -77,9 +77,10 @@ class ToolRunner:
                     content=f"[error/blocked] {reason}",
                 ),
                 terminate,
+                False,
             )
 
-        async def _run(span: Any) -> tuple[str, ChatMessage, bool]:
+        async def _run(span: Any) -> tuple[str, ChatMessage, bool, bool]:
             tool = self.tool_map.get(call.name)
             if tool is None:
                 span.set_attribute("status", "error")
@@ -99,6 +100,7 @@ class ToolRunner:
                         name=call.name,
                         content=f"[error/invalid_arguments] unknown tool: {call.name}",
                     ),
+                    False,
                     False,
                 )
             span.set_attribute("tool.transport", tool.executor.transport)
@@ -151,6 +153,7 @@ class ToolRunner:
                             content=f"[fatal/{code.value}] {exc}",
                         ),
                         terminate,
+                        False,
                     )
                 return (
                     "ok",
@@ -161,9 +164,12 @@ class ToolRunner:
                         content=f"[error/{code.value}] {exc}",
                     ),
                     terminate,
+                    False,
                 )
 
-            content, terminate = await self._record_and_postprocess(tool, call, result, thread_id=thread_id)
+            content, terminate, denied = await self._record_and_postprocess(
+                tool, call, result, thread_id=thread_id
+            )
 
             return (
                 "ok",
@@ -174,6 +180,7 @@ class ToolRunner:
                     content=content,
                 ),
                 terminate,
+                denied,
             )
 
         # Labels mirror `felix_tool_calls` — transport and manifest, never the tool name.
@@ -202,7 +209,7 @@ class ToolRunner:
         result: Any,
         *,
         thread_id: str | None,
-    ) -> tuple[str, bool]:
+    ) -> tuple[str, bool, bool]:
         """Metering, audit and the after-tool hook, for a tool that has already run.
 
         Separate from the call itself because none of it can undo the call. It used to share
@@ -215,10 +222,12 @@ class ToolRunner:
         """
         content = ""
         terminate = False
+        denied = False
         try:
             content = tool_output_content(result)
             err = read_tool_error_code(result)
-            status = "denied" if is_wrapper_deny(result) else ("error" if err else "ok")
+            denied = is_wrapper_deny(result)
+            status = "denied" if denied else ("error" if err else "ok")
             record_counter(
                 "felix_tool_calls",
                 {
@@ -254,7 +263,7 @@ class ToolRunner:
                 "felix_control_degraded",
                 {"control": "after_tool", "manifest_id": self.manifest_id},
             )
-        return content, terminate
+        return content, terminate, denied
 
     async def run_batch(
         self,
@@ -262,8 +271,8 @@ class ToolRunner:
         *,
         thread_id: str | None,
         tenant_id: str,
-    ) -> tuple[list[ChatMessage], bool, bool]:
-        """Execute tool calls. Returns (tool_msgs, had_fatal, all_terminate)."""
+    ) -> tuple[list[ChatMessage], bool, bool, bool]:
+        """Execute tool calls. Returns (tool_msgs, had_fatal, all_terminate, had_denied)."""
         for call in calls:
             if not call.id:
                 call.id = f"call_{uuid.uuid4().hex[:12]}"
@@ -272,6 +281,7 @@ class ToolRunner:
         tool_msgs: list[ChatMessage] = []
         terminates: list[bool] = []
         had_fatal = False
+        had_denied = False
 
         if mode == "parallel" and len(calls) > 1:
             results = await asyncio.gather(
@@ -290,11 +300,13 @@ class ToolRunner:
                     )
                     terminates.append(False)
                     continue
-                kind, tool_msg, terminate = res
+                kind, tool_msg, terminate, denied = res
                 tool_msgs.append(tool_msg)
                 terminates.append(terminate)
                 if kind == "fatal":
                     had_fatal = True
+                if denied:
+                    had_denied = True
         else:
             for i, call in enumerate(calls):
                 if thread_id and i > 0 and await should_cancel_remaining_tools(tenant_id, thread_id):
@@ -307,12 +319,14 @@ class ToolRunner:
                     tool_msgs.append(skipped)
                     terminates.append(True)
                     continue
-                kind, tool_msg, terminate = await self.dispatch(call, thread_id)
+                kind, tool_msg, terminate, denied = await self.dispatch(call, thread_id)
                 tool_msgs.append(tool_msg)
                 terminates.append(terminate)
                 if kind == "fatal":
                     had_fatal = True
                     break
+                if denied:
+                    had_denied = True
 
         all_terminate = bool(terminates) and all(terminates)
-        return tool_msgs, had_fatal, all_terminate
+        return tool_msgs, had_fatal, all_terminate, had_denied
