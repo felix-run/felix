@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A run ending on a denied tool is recorded with `final_response` status reflecting the
+  denial.** Until now, a run that ended because an approval timed out or a tool was denied still
+  wrote `final_response` with `status=ok`, so a denied run read as a successful completion in the
+  audit log. The turn loop now tracks whether the last tool batch had a denial and records
+  `final_response` with `status=error` when the run ends with that denial — a denial followed by
+  a closing message is an error row; a denial followed by more tool calls is not.
+
 - **Prompt caching covers the conversation, not just the preamble.** `spec.model.cache: true` put a
   cache breakpoint on the system block and the last tool definition — a few thousand fixed tokens —
   and left the conversation uncached, so every file an agent had read and every tool result it had

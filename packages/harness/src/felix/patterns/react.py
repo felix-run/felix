@@ -799,6 +799,7 @@ class _ReactAgent:
         await self._append_produced(input.thread_id, [m for m in input.messages if m.role == "user"])
         final = ChatMessage(role="assistant", content="")
         fatal = False
+        any_denied = False
         last_stop: StopReason = "end_turn"
         opts = self._chat_options(input)
 
@@ -981,7 +982,7 @@ class _ReactAgent:
                             if batch.done():
                                 break
                             await asyncio.wait({batch}, timeout=SIDE_EVENT_POLL_SECONDS)
-                    tool_msgs, had_fatal, all_terminate = await batch
+                    tool_msgs, had_fatal, all_terminate, had_denied = await batch
                 except BaseException:
                     # The batch no longer inherits cancellation from this frame, so a
                     # client that hangs up mid-tool would otherwise leave it running.
@@ -1009,6 +1010,7 @@ class _ReactAgent:
                     produced.append(tool_msg)
 
                 await self._append_produced(input.thread_id, [assistant, *tool_msgs], usage=usage_block)
+                any_denied = had_denied
                 if had_fatal:
                     # A fatal tool error ends the run. Follow-ups are not drained: the
                     # run did not reach a state a follow-up could sensibly continue from.
@@ -1081,7 +1083,7 @@ class _ReactAgent:
 
         emit_agent_audit(
             "final_response",
-            status="error" if fatal else "ok",
+            status="error" if (fatal or any_denied) else "ok",
             manifest_id=self.manifest_id,
             payload={
                 "thread_id": input.thread_id,
