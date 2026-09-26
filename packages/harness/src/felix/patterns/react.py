@@ -193,6 +193,8 @@ class _ReactAgent:
     tenant_id: str = "default"
     memory_capture: Any | None = None
     tools_retrieval: Any | None = None
+    # `spec.skill_suggestion`, built: suggests one skill per turn as a transient hint.
+    skill_suggester: Any | None = None
     # `spec.decider`, built: a metered decision provider, or None when the manifest has none.
     decider: MeteredDecider | None = None
     procedural_memory: Any | None = None
@@ -629,12 +631,18 @@ class _ReactAgent:
         except Exception:
             logger.debug("memory capture failed", exc_info=True)
 
-    async def _inject_procedures(self, messages: list[ChatMessage], tenant_id: str) -> list[ChatMessage]:
+    async def _procedures(self, messages: list[ChatMessage], tenant_id: str) -> str | None:
+        """Procedures recalled for this request — sent as transient guidance, not as `system`.
+
+        This was appended as a system message, and the Anthropic wire folds every system
+        message into the one cached `system` block: a per-request block there changed the
+        cached prefix on every turn, so a manifest with procedural memory never read its
+        system prompt from cache. It is also model-extracted text, which the prelude's
+        docstring already keeps out of the instruction tier.
+        """
         spec = self.procedural_memory
         if spec is None or not getattr(spec, "enabled", False) or self.settings is None:
-            return messages
-        if any(m.role == "system" and (m.content or "").startswith("[known procedures]") for m in messages):
-            return messages
+            return None
         try:
             from felix.memory.procedural import query_from_user_messages, retrieve_procedures
 
@@ -647,10 +655,8 @@ class _ReactAgent:
             )
         except Exception:
             logger.debug("procedural retrieve failed", exc_info=True)
-            return messages
-        if block:
-            messages.append(ChatMessage(role="system", content=block))
-        return messages
+            return None
+        return block or None
 
     def _over_budget(self) -> bool:
         """True when a declared run budget is spent; trips the shared abort flag."""
@@ -669,6 +675,13 @@ class _ReactAgent:
             logger.info("run over budget: %s", verdict.reason)
             return True
         return False
+
+    async def _transient_guidance(self, messages: list[ChatMessage], tenant_id: str) -> list[ChatMessage]:
+        """Messages for this turn's model calls only — see `ChatMessage.transient`."""
+        notes = [await self._procedures(messages, tenant_id)]
+        if self.skill_suggester is not None:
+            notes.append(await self.skill_suggester.hint(messages))
+        return [ChatMessage(role="user", content=note, transient=True) for note in notes if note]
 
     def _prelude_messages(self) -> list[ChatMessage]:
         """Volatile per-run reference material, kept out of the cached system prefix.
@@ -740,7 +753,7 @@ class _ReactAgent:
             messages,
             context={"manifest_id": self.manifest_id, "thread_id": input.thread_id},
         )
-        return await self._inject_procedures(messages, tenant_id)
+        return messages
 
     async def invoke(self, input: InvokeInput) -> InvokeOutput:
         """Run a turn to completion and return the result.
@@ -793,6 +806,9 @@ class _ReactAgent:
                 yield Event(event="session_progress", data={"phase": "turn"})
 
         messages = await self._assemble_messages(input, model, tenant_id)
+        # Per-request guidance, re-attached at the tail of every model call this turn and never
+        # added to `messages` — which is what gets persisted and what the cache prefix is.
+        transient = await self._transient_guidance(messages, tenant_id)
 
         interrupted = _interrupted_tool_results(messages, self._tool_map)
         if interrupted:
@@ -876,7 +892,7 @@ class _ReactAgent:
                     try:
                         if emit_events:
                             async for item in self._stream_one_turn(
-                                model, messages, active_tools, input.thread_id, tenant_id, opts
+                                model, [*messages, *transient], active_tools, input.thread_id, tenant_id, opts
                             ):
                                 if isinstance(item, ModelChatResult):
                                     result = item
@@ -888,7 +904,7 @@ class _ReactAgent:
                         else:
                             # No display to feed, so ask for the turn directly rather
                             # than streaming deltas nobody will read.
-                            result = await model.chat(messages, active_tools, opts)
+                            result = await model.chat([*messages, *transient], active_tools, opts)
                     except ModelGatewayError as exc:
                         if attempt or emitted or not is_context_overflow(exc):
                             raise
@@ -915,7 +931,7 @@ class _ReactAgent:
                     break
 
                 if result is None:
-                    result = await model.chat(messages, active_tools, opts)
+                    result = await model.chat([*messages, *transient], active_tools, opts)
 
                 usage_block = record_model_usage(result, model, manifest_id=self.manifest_id) or None
                 assistant = result.message
@@ -1075,7 +1091,9 @@ class _ReactAgent:
                         yield Event(event="follow_up", data={"content": follow.text})
                     await self._append_produced(input.thread_id, [follow_chat])
                     messages.append(follow_chat)
-                    result = await model.chat(messages, await self._active_tools(messages), opts)
+                    result = await model.chat(
+                        [*messages, *transient], await self._active_tools(messages), opts
+                    )
                     record_model_usage(result, model, manifest_id=self.manifest_id)
                     assistant = result.message
                     messages.append(assistant)
@@ -1155,6 +1173,7 @@ def build_react_agent(ctx: PatternBuildContext) -> Agent:
         memory_capture=ctx.get("memory_capture"),
         tools_retrieval=ctx.get("tools_retrieval"),
         decider=ctx.get("decider"),
+        skill_suggester=ctx.get("skill_suggester"),
         procedural_memory=ctx.get("procedural_memory"),
         tool_execution=tool_exec,
         steering_mode=steer_mode,

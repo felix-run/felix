@@ -1422,6 +1422,11 @@ async def build_agent(
         # The reader for what `spec.artifacts` spills, bound before the governance block below.
         _bind_artifact_reader(resolved, m, deps, tenant_id)
 
+        # Bound once, before the skills and the governance pipeline: the skill suggester, the
+        # judges, the reply controls and the pattern share one metered decider.
+        decider = bind_decider(m.spec.decider, deps.settings)
+        skill_suggester = None
+
         # Wire Agent Skills (progressive disclosure + bound skill tools).
         from felix.skills import (
             SKILL_TOOL_NAMES,
@@ -1455,11 +1460,24 @@ async def build_agent(
                 for name, tool in skill_tools.items():
                     if name not in have:
                         resolved.append(tool)
+            if m.spec.skill_suggestion.enabled and decider is not None:
+                from felix.skills.suggest import SkillSuggester
+
+                skill_suggester = SkillSuggester(catalog.list_public(), decider, m.spec.skill_suggestion)
             catalog_block = skill_catalog_xml(catalog)
             if catalog_block:
                 system_prompt = (
                     f"{system_prompt}\n\n---\n\n{catalog_block}" if system_prompt else catalog_block
                 )
+
+        if m.spec.skill_suggestion.enabled and skill_suggester is None:
+            # Skills can come from the host rather than `spec.skills`, so this cannot be refused
+            # at validation — but an agent with none has nothing to suggest, and says so.
+            logger.warning("skill_suggestion is on but %s has no skills to suggest", m.metadata.name)
+            record_counter(
+                "felix_rule_targets_nothing",
+                {"manifest_id": m.metadata.name, "rule": "skill_suggestion", "kind": "skills"},
+            )
 
         # Recalled facts, rendered as a per-run prelude rather than folded into the
         # system prompt. Empty when memory is disabled or has nothing stored.
@@ -1505,9 +1523,6 @@ async def build_agent(
         _warn_policies_cannot_be_satisfied(m, deps.settings)
         _warn_max_turns_does_not_bound_this_loop(m)
         _warn_untrusted_tools_are_unscreened(m, [t.name for t in resolved if _is_untrusted_tool(t)])
-
-        # Bound once: judges, the reply controls and the pattern share one metered decider.
-        decider = bind_decider(m.spec.decider, deps.settings)
 
         # Governance pipeline (order matters — matches TS builder).
         resolved = apply_secret_masking(resolved, _collect_secrets(deps), m.metadata.name)
@@ -1591,6 +1606,7 @@ async def build_agent(
                 "memory_capture": m.spec.memory.capture,
                 "tools_retrieval": m.spec.tools_retrieval,
                 "decider": decider,
+                "skill_suggester": skill_suggester,
                 "procedural_memory": m.spec.procedural_memory,
             }
         )

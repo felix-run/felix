@@ -389,7 +389,13 @@ class AnthropicMessagesClient(HttpModelClient):
     ) -> dict[str, Any]:
         system = ""
         converted: list[dict[str, Any]] = []
+        # Held back and appended after the cache breakpoints are placed: see
+        # `ChatMessage.transient`. A transient message is user-role guidance, never folded into
+        # `system` — that block is cached, and a per-request line there misses every turn.
+        transient = [m for m in messages if m.transient]
         for m in messages:
+            if m.transient:
+                continue
             if m.role == "system":
                 system = (system + "\n" + m.content).strip() if system else m.content
                 continue
@@ -441,6 +447,8 @@ class AnthropicMessagesClient(HttpModelClient):
         # After the thinking pass, which is what decides whether a forced tool choice is legal.
         if output_schema:
             apply_anthropic_output_schema(body, output_schema)
+        for m in transient:
+            body["messages"].append({"role": "user", "content": m.content})
         return body
 
     async def _chat(

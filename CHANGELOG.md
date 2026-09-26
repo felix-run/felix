@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Procedural memory no longer defeats system-prompt caching.** Recalled procedures were appended
+  as a system message each turn, and the Anthropic wire folds every system message into the one
+  cached `system` block — so the block changed per request and a manifest with
+  `procedural_memory` never read its system prompt from cache. They are sent as transient guidance
+  now, which also moves model-extracted text out of the instruction tier.
+
 - **Model-backed judges are metered.** `llm_judge_score` — behind every judge with a `model`, and
   eval's `llm_judge` rubrics — called the model and never recorded the usage, so judge spend
   escaped `limits.max_cost_usd` and the usage table.
@@ -91,6 +97,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 ### Added
+
+- **Skill suggestion.** `spec.skill_suggestion` uses `spec.decider` to rank the skill catalog,
+  rerank a shortlist against each skill's body, and add a one-line hint naming the skill a request
+  needs — only when the request asks for a task and a skill fits. The model still decides whether
+  to activate it. The hint travels as a new kind of message, `ChatMessage.transient`: sent last on
+  every model call of the turn, after the prompt-cache breakpoint on the Anthropic wire and after
+  everything persistent on the OpenAI one, and never written to the session log, so a per-request
+  note no longer costs the cached conversation.
 
 - **Judges can be scored by a decision model.** A `guardrails.judges` rule with `decider: true`,
   `reflect.decider: true`, or an eval rubric's `judge_decider: <route>` asks `spec.decider` for the

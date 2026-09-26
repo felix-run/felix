@@ -473,6 +473,14 @@ as written, so a negative criterion like "must not leak credentials" needs no `a
 prefix; `reflect.decider: true` verifies drafts the same way, and an eval rubric names a decider
 with `judge_decider: <route>`. Each falls back to its model judge, then its heuristic.
 
+`skill_suggestion: {enabled: true}` suggests the skill a request needs: the decider ranks the
+catalog, reranks a shortlist of three against each skill's body, and — when the request asks for a
+task and a skill fits — adds a one-line hint naming it. The model still decides whether to
+`activate_skill`. The hint is a *transient* message: sent last on each model call of the turn,
+after the prompt-cache breakpoint, and never written to the session, so it costs the cached
+conversation nothing. It pays off on large catalogs; with a handful of skills the model chooses
+well on its own.
+
 With `tools_retrieval.decider`, one `Choice` over the tool catalogue per user turn picks the
 shortlist the model sees, in place of embedding similarity. When the decider errors, or the
 shortlist holds less than `min_confidence` of the probability mass, selection falls back to

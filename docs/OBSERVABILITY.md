@@ -75,6 +75,7 @@ not served and every token from that issuer would 401 while everything else stay
 | `felix_decisions` | `decider`, `purpose`, `outcome` | One per call to a decision model (`spec.decider`). `outcome` is `ok`, `error` (the call failed) or `invalid` (it answered, was billed, and the answer did not fit the question). Its tokens are in `felix_tokens` under `model=<decider id>`. |
 | `felix_router_choice` | `manifest_id`, `method` | How a `router` picked its sub-agent: `decider`, `llm` (the classifier model), or `unmatched` — the classifier named no sub-agent and the request went to the first one. `decider_unsure` and `decider_error` mean the decider was asked and the classifier decided. **Watch `unmatched`**: it is a routing decision nobody made. |
 | `felix_escalation_check` | `method` | `confidence_escalation.decider` judged a reply (`decider`), or could not and fell back to the length-and-markers heuristic (`error`). Escalations themselves are `felix_model_switch`. |
+| `felix_skill_suggestion` | `outcome` | `spec.skill_suggestion` for one turn: `suggested` (a hint was attached), `none` (the request asked for no task, or no skill fit), or `error` (the decider failed; no hint). |
 | `felix_tool_selection` | `method` | How `tools_retrieval.decider` chose a shortlist: `decider`, or a fallback to the default ranking — `unsure` (the shortlist held less than `min_confidence` of the mass) or `error`. A rising `unsure` share means `top_k` is too small for the catalogue. |
 
 ### Tools

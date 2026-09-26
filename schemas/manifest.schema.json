@@ -1815,6 +1815,40 @@
       "title": "SkillRef",
       "type": "object"
     },
+    "SkillSuggestionSpec": {
+      "additionalProperties": false,
+      "description": "Suggest the skill a request needs, using `spec.decider`, as a one-line hint.\n\nRanks the catalog, reranks a shortlist, and hints only when the request asks for a task\n(`min_gate`) and the best skill fits it (`min_fit`). The model still decides whether to\n`activate_skill`. Worth it with a large catalog; a handful of skills the model picks\nbetween well on its own.",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "shortlist": {
+          "default": 3,
+          "maximum": 10,
+          "minimum": 1,
+          "title": "Shortlist",
+          "type": "integer"
+        },
+        "min_gate": {
+          "default": 0.3,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Min Gate",
+          "type": "number"
+        },
+        "min_fit": {
+          "default": 0.3,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Min Fit",
+          "type": "number"
+        }
+      },
+      "title": "SkillSuggestionSpec",
+      "type": "object"
+    },
     "Spec": {
       "additionalProperties": false,
       "properties": {
@@ -1986,6 +2020,9 @@
         },
         "decider": {
           "$ref": "#/$defs/DeciderSpec"
+        },
+        "skill_suggestion": {
+          "$ref": "#/$defs/SkillSuggestionSpec"
         },
         "artifacts": {
           "$ref": "#/$defs/ArtifactsSpec"

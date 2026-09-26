@@ -124,7 +124,8 @@ def latest_request(messages: Sequence[Any], limit: int = 4_000) -> str | None:
     What every consumer states its decision about. Not an earlier turn as a stand-in: a
     decision about the wrong request is worse than the fallback, and gets cached as right.
     """
-    users = [m for m in messages if getattr(m, "role", "") == "user"]
+    # Transient messages are the harness's own per-request guidance, not what the user asked.
+    users = [m for m in messages if getattr(m, "role", "") == "user" and not getattr(m, "transient", False)]
     if not users:
         return None
     content = getattr(users[-1], "content", None)

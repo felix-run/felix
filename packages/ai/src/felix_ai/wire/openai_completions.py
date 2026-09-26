@@ -182,6 +182,8 @@ def _openai_usage(usage_raw: dict[str, Any]) -> TokenUsage:
 def _messages_to_openai(messages: list[ChatMessage]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for m in messages:
+        if m.transient:
+            continue
         content: Any = m.content
         normalised = inline_parts(m)
         images = [p for p in normalised if p.type != "text" and p.url]
@@ -217,6 +219,9 @@ def _messages_to_openai(messages: list[ChatMessage]) -> list[dict[str, Any]]:
                 for tc in m.tool_calls
             ]
         out.append(item)
+    # Last, as user turns: this API caches the longest shared prefix automatically, so a
+    # per-request message costs nothing only if nothing persistent comes after it.
+    out.extend({"role": "user", "content": m.content} for m in messages if m.transient)
     return out
 
 

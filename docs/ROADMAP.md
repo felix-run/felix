@@ -222,9 +222,9 @@ First, because everything else governs it.
       Land in order, one PR each:
       1. [x] The seam, plus `tools_retrieval.decider` (#314).
       2. [x] The router's `_choose_child`, and confidence escalation's `_low_confidence` (#315).
-      3. [x] Judges, reply judges, eval `llm_judge`, and the reflect verifier: a `Noul` per
+      3. [x] (#318) Judges, reply judges, eval `llm_judge`, and the reflect verifier: a `Noul` per
          criterion.
-      4. [ ] Skill suggestion: the two-stage rank-then-rerank, emitted as a prompt hint.
+      4. [x] Skill suggestion: the two-stage rank-then-rerank, emitted as a transient prompt hint.
       5. [ ] Injection screening as a `Noul` battery. It is *additive* to the regex and the
          LLM scorer, because Jev is not adversarially robust. Needs a security review.
 

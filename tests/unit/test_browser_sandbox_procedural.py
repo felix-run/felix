@@ -333,7 +333,10 @@ async def test_react_injects_procedures() -> None:
         model_id = "test"
 
         async def chat(self, messages: list[ChatMessage], tools: list, opts: Any = None) -> _Result:
-            assert any(m.role == "system" and "known procedures" in (m.content or "") for m in messages)
+            # Transient and last, not a system message: the Anthropic wire folds system messages
+            # into the cached system block, which a per-request block invalidated every turn.
+            assert messages[-1].transient and "known procedures" in messages[-1].content
+            assert not any(m.role == "system" and "known procedures" in (m.content or "") for m in messages)
             return _Result()
 
     agent = build_react_agent(
