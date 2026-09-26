@@ -921,7 +921,7 @@ implies the matching `*:read`.
 |-------|--------|
 | `manifests:read` / `manifests:write` | `/manifests` |
 | `audit:read` | `/audit` |
-| `artifacts:read` | `/artifacts` — read back a tool output too large to keep in the transcript. Its own scope rather than part of `audit:read`, because a spilled result is raw tool output and often the most sensitive data a run touches |
+| `artifacts:read` | `/artifacts` — read back a tool output too large to keep in the transcript. Its own scope rather than part of `audit:read`, because a spilled result is raw tool output and often the most sensitive data a run touches. The model's own way back, the `read_artifact` tool bound beside `spec.artifacts`, checks no scope and is held to something narrower instead: it reads only what its own conversation spilled (the thread, or the request when there is none), so a leaked id does not reach another caller's run through the model |
 | `approvals:read` / `approvals:write` | `/approvals`; `approvals:read` also gates the `approval_required` frames on a durable `POST /chat/stream` |
 | `jobs:read` / `jobs:write` | `/jobs` |
 | `plans:read` / `plans:write` | `/plans` |

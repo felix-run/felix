@@ -116,6 +116,37 @@ def _append_unique_tools(resolved: list[Tool], extra: list[Tool]) -> None:
             seen.add(t.name)
 
 
+def _bind_artifact_reader(resolved: list[Tool], m: Any, deps: BuildDeps, tenant_id: str) -> None:
+    """Bind `read_artifact` beside `spec.artifacts`, before the governance stack.
+
+    Before it, so a read is limited, screened and audited like the tool call that produced the
+    artifact. Only with a store: without one the spill is a no-op and there is nothing to read.
+    """
+    if not m.spec.artifacts.enabled or deps.object_store is None:
+        return
+    from felix.artifacts import READ_ARTIFACT_TOOL, make_read_artifact_tool
+
+    if any(t.name == READ_ARTIFACT_TOOL for t in resolved):
+        # Not refused: the manifest's tool may be deliberate. But the spill marker's reader is
+        # now that tool, and nothing else would say so.
+        logger.warning(
+            "manifest %s binds its own %r; spilled outputs cannot be read back by the model",
+            m.metadata.name,
+            READ_ARTIFACT_TOOL,
+        )
+    _append_unique_tools(
+        resolved,
+        [
+            make_read_artifact_tool(
+                m.spec.artifacts,
+                object_store=deps.object_store,
+                tenant_id=tenant_id,
+                manifest_id=m.metadata.name,
+            )
+        ],
+    )
+
+
 def apply_secret_masking(tools: list[Tool], secrets: list[str], manifest_id: str) -> list[Tool]:
     """Innermost: redact known secrets from tool output before anything else sees them."""
     if not secrets:
@@ -1387,6 +1418,9 @@ async def build_agent(
                 )
             except Exception:
                 logger.warning("memory tool binding failed", exc_info=True)
+
+        # The reader for what `spec.artifacts` spills, bound before the governance block below.
+        _bind_artifact_reader(resolved, m, deps, tenant_id)
 
         # Wire Agent Skills (progressive disclosure + bound skill tools).
         from felix.skills import (

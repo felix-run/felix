@@ -98,6 +98,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   only" and parsing it. The criterion is read as written — a negative one like "must not leak
   credentials" works without the `assert_absent:` prefix the heuristic needs. The model judge and
   the heuristic stay as the fallback.
+- **The model can read what `spec.artifacts` spilled.** The spill replaced any tool result over
+  `threshold_chars` with a 200-character preview, and nothing the model could call fetched the rest
+  — the only reader was the `GET /artifacts` route, for clients. Enabling it saved tokens by
+  discarding what the agent had asked for, which is why no bundled manifest did. A manifest with
+  artifacts enabled now also gets `read_artifact(artifact_id, offset, length)`, which pages through
+  a spilled result in windows of `default_window_chars` (capped at `max_window_chars`); both fields
+  had been read by nothing. The reader reads only what its own conversation spilled — the tenant
+  and manifest prefix is shared by every caller of a manifest, so an id alone would otherwise reach
+  another user's run — runs through the governance stack like any tool, and is never itself
+  spilled. The spill marker is unchanged, so the terminal's `/artifact` keeps working. `contributor`, `cowork`,
+  `triage`, `deep` and `support` — the bundled manifests that read files or fetch pages — now
+  enable artifacts.
 
 - **A router can pick its sub-agent with a decision model, and escalation can ask one whether a
   reply answers the request.** A `router` manifest that sets `spec.decider` sends each request to

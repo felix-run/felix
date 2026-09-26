@@ -65,6 +65,12 @@ spec:
     checkpointer: postgres
     store: pgvector
 
+  # A tool result over 8000 characters is stored rather than inlined; the model gets a preview
+  # and pages through the rest with `read_artifact`, so one large file or page is not re-sent
+  # on every later turn.
+  artifacts:
+    enabled: true
+
   auth:
     inbound:
       # Deliberately *not* anonymous, unlike `quick` and `support`. Anonymous access to this

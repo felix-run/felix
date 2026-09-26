@@ -277,6 +277,12 @@ spec:
     context_window_tokens: 128000
     compaction_enabled: true
 
+  # A tool result over 8000 characters is stored rather than inlined; the model gets a preview
+  # and pages through the rest with `read_artifact`, so one large file or page is not re-sent
+  # on every later turn.
+  artifacts:
+    enabled: true
+
   # A shell tool may not be reached anonymously outside development — validate_for_write
   # refuses it, for the reason cowork.yaml records: under auth_mode=none the approvals are
   # anonymous too. The builder stack runs FELIX_AUTH_MODE=api_key.

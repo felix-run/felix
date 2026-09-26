@@ -596,7 +596,8 @@ there is no upload endpoint yet, so an image arrives with the message that uses 
 
 Storage and execution:
 
-- Large tool outputs spill via `spec.artifacts`
+- Large tool outputs spill via `spec.artifacts`: the model gets a preview and pages through the
+  rest with `read_artifact`, sized by `default_window_chars` / `max_window_chars`
 - Durable facts via `spec.memory.capture`; how-tos via `spec.procedural_memory`
 - `spec.execution.mode: durable` enqueues a fiber (Temporal optional) and returns `202` with a
   `resume_token`; a step that keeps failing backs off and is `dead` after `FELIX_FIBER_MAX_ATTEMPTS`
