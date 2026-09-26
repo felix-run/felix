@@ -10,6 +10,7 @@ failure is silent in isolation and only shows up as unrelated tests failing toge
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import pytest
 
@@ -53,6 +54,74 @@ def _scrub_ambient_git_environment():
         # shares this process — losing GIT_DIR permanently would be a surprise the suite has
         # no business causing.
         os.environ.update(saved)
+
+
+def _repository_config() -> Path | None:
+    """This checkout's shared `.git/config`, found without running git.
+
+    Read off the filesystem because every git subprocess in `tests/` must go through
+    `tests/git_fixture.py`, and that helper runs against a *fixture* repo by design. In a
+    linked worktree `.git` is a file naming the worktree's git dir, whose `commondir` names
+    the repository's own — where `config` lives.
+    """
+    dot_git = Path(__file__).resolve().parents[1] / ".git"
+    if dot_git.is_dir():
+        return dot_git / "config"
+    if not dot_git.is_file():
+        return None
+    text = dot_git.read_text(encoding="utf-8").strip()
+    if not text.startswith("gitdir:"):
+        return None
+    git_dir = (dot_git.parent / text.removeprefix("gitdir:").strip()).resolve()
+    common = git_dir / "commondir"
+    if common.is_file():
+        git_dir = (git_dir / common.read_text(encoding="utf-8").strip()).resolve()
+    return git_dir / "config"
+
+
+def _identity(config: Path | None) -> tuple[str, ...]:
+    """The `[user]` lines of a git config, which is the part a fixture's `git config` writes."""
+    if config is None or not config.is_file():
+        return ()
+    lines, in_user = [], False
+    for raw in config.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if line.startswith("["):
+            in_user = line.lower().startswith("[user")
+        elif in_user and line:
+            lines.append(line)
+    return tuple(lines)
+
+
+_REPO_CONFIG = _repository_config()
+
+
+@pytest.fixture(autouse=True)
+def _real_repository_identity_is_untouched(request: pytest.FixtureRequest):
+    """Fail the test that writes a git identity into this repository.
+
+    Every fixture repo sets `user.name t` / `user.email t@example.com`. One of them once did so
+    against the real `.git/config` instead of its throwaway one, and from then on every commit
+    made in this checkout — thirty of them, across three weeks and a dozen merged PRs — was
+    authored `t <t@example.com>`. Nothing failed; the only symptom was a stranger's name on
+    the squash merges, and by the time anyone asked, the history that would have named the
+    test had been squashed away.
+
+    Only the `[user]` section is compared, and nothing is rewritten: other sessions share this
+    repository and legitimately write `branch.*` config mid-run, and a guard that restored the
+    whole file would clobber them.
+    """
+    before = _identity(_REPO_CONFIG)
+    yield
+    after = _identity(_REPO_CONFIG)
+    if after != before:
+        pytest.fail(
+            f"{request.node.nodeid} changed the git identity of this repository "
+            f"({_REPO_CONFIG}): {before} -> {after}. A fixture's `git config` reached the real "
+            "repo — route it through tests/git_fixture.py:git. Undo with "
+            "`git config --local --unset user.name; git config --local --unset user.email`.",
+            pytrace=False,
+        )
 
 
 @pytest.fixture(autouse=True)

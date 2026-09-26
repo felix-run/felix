@@ -24,6 +24,16 @@ echo "Felix harness (Python 3.14, uv workspace). Tests need the in-memory env:"
 echo "  ./scripts/test.sh [pytest args]   # sets FELIX_DATABASE_URL=memory://ci etc."
 echo "A bare 'uv run pytest' picks up .env and fails against a real Postgres (pytest-env-guard hook blocks it)."
 
+# A fixture identity in this repo's own config. Test fixtures set `user.name t` /
+# `user.email t@example.com`; one wrote them into the real `.git/config` once, and thirty
+# commits went out authored by `t` before anyone asked why. The test suite now fails the
+# test that does it; this catches one that got in some other way.
+local_email=$(git config --local user.email 2>/dev/null)
+case "$local_email" in
+  *@example.com|*@example.org|*@example.net)
+    echo "WARNING: this repo's .git/config sets user.email=$local_email (a test-fixture identity) — commits here are not authored as you. Fix: git config --local --unset user.name; git config --local --unset user.email" ;;
+esac
+
 [ -d .venv ] || echo "WARNING: .venv missing — run 'make install' (uv sync --dev) before lint/type/test."
 
 if [ -f .env ]; then
