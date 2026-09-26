@@ -239,18 +239,27 @@ First, because everything else governs it.
       through `resolve_tenant_manifest` with the parent's tenant, and fail the compile on a
       name that resolves nowhere.
 
-      Two decisions this surfaced, open:
-      - **Child inbound auth.** `enforce_inbound_auth` has never run on sub-agents — bundled
+      Two decisions this surfaced, both taken:
+      - [x] **Child inbound auth — inherited.** `enforce_inbound_auth` has never run on sub-agents — bundled
         `router` (`allow_anonymous: true`) already reaches `deep` (`allow_anonymous: false`).
         With tenant-authored children, an author can no longer rely on a child's
         `required_scopes` once it sits behind a public router. Enforce at compile (a child
         stricter than its parent fails — which breaks bundled `router` → `deep` as written), or
-        document that routing inherits the parent's auth.
-      - **Shallow compile pins.** `ensure_thread_pin` and `assert_pin_matches` hash the parent
+        document that routing inherits the parent's auth. Decided: inherited, documented in
+        `deploy/GOVERNANCE.md` under inbound constraints.
+      - [x] **Shallow compile pins — now deep.** `ensure_thread_pin` and `assert_pin_matches` hash the parent
         only. Children used to change only with a deploy; stored children change mid-thread,
         so a `pin_compile` thread picks up an edited child's tools and policies. Fold
         `(child, version, hash)` into the pin, or say in `deploy/GOVERNANCE.md` that pins are
-        shallow.
+        shallow. Done: a `sub_agents_hash` beside the parent's, checked on every turn and
+        durable resume; pins taken before it gain the digest on their next turn.
+      - [ ] **Children are resolved twice per turn.** The pin digest resolves them in
+        `ensure_thread_pin`, the compile again in `runtime._tenant_sub_agent_builder`, so a child
+        activated between the two (a 30s active-pointer expiry) compiles for one turn under a pin
+        that checked its predecessor. Closing it means handing the checked tree to the build —
+        `prepare_tenant_invoke` returning what it resolved, through its ~10 callers. A
+        request-scoped cache is the tempting shortcut and the wrong one: worker tasks run
+        fibers back to back, and a stale entry would compile the wrong child.
 
 ### B. Close the durable loop
 

@@ -382,7 +382,7 @@ async def _chat_turn(body: ChatRequest, request: Request) -> tuple[int, dict[str
     execution = getattr(getattr(resolved.manifest, "spec", None), "execution", None)
     if execution is not None and getattr(execution, "mode", "transient") == "durable":
         from felix.durability.runs import start_durable_chat
-        from felix.manifests.pin import pin_fields
+        from felix.manifests.pin import pin_fields_for
 
         payload = await start_durable_chat(
             settings,
@@ -392,7 +392,9 @@ async def _chat_turn(body: ChatRequest, request: Request) -> tuple[int, dict[str
             thread_id=thread,
             model_id=model_id,
             execution=execution,
-            pin=pin_fields(resolved.manifest, version=resolved.version),
+            # With the sub-agent digest: a durable run carrying stored authority is pinned on
+            # resume whatever the manifest says, so its children are part of what it runs.
+            pin=await pin_fields_for(settings, auth.tenant_id, resolved.manifest, version=resolved.version),
         )
         return 202, payload
 
@@ -553,7 +555,7 @@ async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
     execution = getattr(getattr(resolved.manifest, "spec", None), "execution", None)
     if execution is not None and getattr(execution, "mode", "transient") == "durable":
         from felix.durability.runs import start_durable_chat
-        from felix.manifests.pin import pin_fields
+        from felix.manifests.pin import pin_fields_for
 
         # Captured *before* the enqueue, not inside the stream: the fiber may be claimed
         # and start appending the moment the row lands, and a cursor read after that has
@@ -574,7 +576,9 @@ async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
             thread_id=thread,
             model_id=model_id,
             execution=execution,
-            pin=pin_fields(resolved.manifest, version=resolved.version),
+            # With the sub-agent digest: a durable run carrying stored authority is pinned on
+            # resume whatever the manifest says, so its children are part of what it runs.
+            pin=await pin_fields_for(settings, auth.tenant_id, resolved.manifest, version=resolved.version),
         )
         return sse_response(
             durable_run_gen(

@@ -298,7 +298,7 @@ async def _run_fiber_step(
         if manifest_id:
             try:
                 from felix.context import AuthContext, RequestContext, async_run_with_context
-                from felix.manifests.pin import assert_pin_matches
+                from felix.manifests.pin import assert_resume_pin
                 from felix.patterns.types import ChatMessage, InvokeInput
                 from felix.runtime import (
                     build_tenant_agent,
@@ -380,7 +380,9 @@ async def _run_fiber_step(
                         # break runs that work today.
                         if stored_auth:
                             pinned = {**pinned, "pin_compile": True}
-                        assert_pin_matches(pinned, resolved.manifest, version=resolved.version)
+                        await assert_resume_pin(
+                            settings, tenant_id, pinned, resolved.manifest, version=resolved.version
+                        )
                     await prepare_tenant_invoke(settings, resolved=resolved, auth=auth, thread_id=thread)
                     # /chat screened these before enqueuing; the compiled agent screens
                     # again on resume, under the manifest the run resumes with.

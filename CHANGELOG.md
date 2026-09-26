@@ -17,6 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   them as stored — they used to reset to `""` and no expiry, orphaning the plan from its
   manifest and exempting it from retention. `updated_at` advances on every write, even two in
   one millisecond.
+- **`pin_compile` covers a router's sub-agents.** The pin hashed the manifest a request named and
+  nothing it compiled, which was complete while sub-agents came from bundled YAML and stopped
+  being so when they began resolving from the tenant's store: an edited child's tools, policies
+  or approvals reached a pinned thread — or a durable run resuming with stored authority — on its
+  next turn. The pin now records a digest of every sub-agent, recursively, and a changed one is
+  drift (409 on a turn, a failed fiber on resume). A thread pinned before this gains the digest on
+  its next turn rather than failing, and a manifest without sub-agents pins exactly as before.
+
 - **The ruleless-rubric warning no longer says it passes "any answer at all".** A rubric with no
   rule scores as non-empty, which rejects a blank answer — `negative.json` relies on exactly that.
   The warning now says "passes any answer that is not blank".
@@ -87,6 +95,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `prompt_tokens` already includes them.
 
 ### Changed
+
+- **Documented: sub-agents inherit the caller's admission.** `spec.auth.inbound` is checked on
+  the manifest a request names, not on each sub-agent a router compiles, so a child's own
+  `required_scopes` apply when it is called by name and not when a router hands it a request.
+  That was already the behaviour — bundled `router` reaches `deep` this way — and is now the
+  stated one, in `deploy/GOVERNANCE.md`.
 
 - **Bundled manifests cache their prompts.** `quick`, `deep`, `router`, `hybrid-router`,
   `governed`, `support` and `cowork` now set `spec.model.cache: true`, matching `contributor` and

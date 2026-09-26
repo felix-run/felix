@@ -58,6 +58,62 @@ def manifest_content_hash(manifest: Manifest) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+async def sub_agents_hash(
+    settings: Any,
+    tenant_id: str,
+    manifest: Manifest,
+    *,
+    _path: tuple[str, ...] = (),
+    _seen: dict[str, list[Any]] | None = None,
+) -> str | None:
+    """A digest of every sub-agent this manifest compiles, as the tenant resolves them now.
+
+    `manifest_content_hash` covers the parent alone, which was a complete pin while children
+    came from bundled YAML and changed only with a deploy. Since children resolve through the
+    tenant's store (#317), an edited child — its tools, policies, approvals — reached a thread
+    pinned under `pin_compile` on its next turn without a word. This covers the tree: each
+    child's name and content hash, and its own children, the way `build_agent` walks them.
+
+    `None` for a manifest with no sub-agents, so its pin is exactly what it was. A child that
+    resolves nowhere, or a cycle, is recorded as such rather than raising: the compile refuses
+    both, and a pin check is not the place to report them.
+
+    Each child is resolved and hashed once per call, however many parents name it — the memo
+    `build_agent` keeps in `BuildDeps.compiled`. Without it a diamond (twenty children all
+    naming the same twenty) cost fan-out to the power of depth per turn while the compile
+    stayed linear, on a process other tenants share.
+    """
+    names = list(dict.fromkeys(manifest.spec.sub_agents))
+    if not names:
+        return None
+    from felix.manifests.builder import MAX_SUB_AGENT_DEPTH
+    from felix.runtime import resolve_tenant_manifest
+
+    path = (*_path, manifest.metadata.name)
+    seen: dict[str, list[Any]] = {} if _seen is None else _seen
+    parts: list[list[Any]] = []
+    for name in names:
+        if name in seen:
+            parts.append(seen[name])
+            continue
+        if name in path or len(path) > MAX_SUB_AGENT_DEPTH:
+            parts.append([name, "unresolvable"])
+            continue
+        try:
+            child = (await resolve_tenant_manifest(settings, tenant_id, name)).manifest
+        except LookupError, ValueError:
+            parts.append([name, None])
+            continue
+        seen[name] = [
+            name,
+            manifest_content_hash(child),
+            await sub_agents_hash(settings, tenant_id, child, _path=path, _seen=seen),
+        ]
+        parts.append(seen[name])
+    raw = json.dumps(parts, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
 def pin_fields(
     manifest: Manifest,
     *,
@@ -71,11 +127,21 @@ def pin_fields(
     }
 
 
+async def pin_fields_for(
+    settings: Any, tenant_id: str, manifest: Manifest, *, version: int | None = None
+) -> dict[str, Any]:
+    """`pin_fields` plus the sub-agent digest — what a pin records when it will be enforced."""
+    fields = pin_fields(manifest, version=version)
+    fields["sub_agents_hash"] = await sub_agents_hash(settings, tenant_id, manifest)
+    return fields
+
+
 def assert_pin_matches(
     pinned: dict[str, Any] | None,
     manifest: Manifest,
     *,
     version: int | None = None,
+    sub_agents: str | None = None,
 ) -> None:
     """Refuse continue/resume when ``pin_compile`` and the hash drifted."""
     if not pinned:
@@ -91,11 +157,40 @@ def assert_pin_matches(
             f"manifest hash drift for {manifest.metadata.name}: "
             f"pinned={expected[:12]}… current={actual[:12]}…"
         )
+    # Checked only when the pin recorded it: a pin taken before sub-agents were covered has no
+    # digest to compare, and treating that as drift would fail every such thread at once.
+    # `ensure_thread_pin` records it on that thread's next turn.
+    expected_children = pinned.get("sub_agents_hash")
+    if expected_children and expected_children != sub_agents:
+        raise ManifestDriftError(
+            f"sub-agent drift for {manifest.metadata.name}: a sub-agent it compiles was edited, "
+            "added or removed since this thread was pinned"
+        )
     pinned_version = pinned.get("manifest_version")
     if pinned_version is not None and version is not None and int(pinned_version) != int(version):
         raise ManifestDriftError(
             f"manifest version drift for {manifest.metadata.name}: pinned={pinned_version} current={version}"
         )
+
+
+async def assert_resume_pin(
+    settings: Any,
+    tenant_id: str,
+    pinned: dict[str, Any] | None,
+    manifest: Manifest,
+    *,
+    version: int | None = None,
+) -> None:
+    """`assert_pin_matches` for a durable run resuming, with its sub-agents re-resolved.
+
+    The children are resolved only when the pin recorded a digest — which every pin taken at
+    enqueue now does for a manifest with sub-agents — so a fiber enqueued before this carries
+    on as it would have, and a single-agent fiber pays nothing.
+    """
+    children = None
+    if pinned and pinned.get("sub_agents_hash"):
+        children = await sub_agents_hash(settings, tenant_id, manifest)
+    assert_pin_matches(pinned, manifest, version=version, sub_agents=children)
 
 
 async def ensure_thread_pin(
@@ -112,6 +207,9 @@ async def ensure_thread_pin(
     fields = pin_fields(manifest, version=version)
     if not thread_id:
         return fields
+    if fields["pin_compile"]:
+        # Resolving the children costs a store read each; only an enforced pin pays it.
+        fields = await pin_fields_for(settings, tenant_id, manifest, version=version)
 
     meta = await get_thread_meta(settings=settings, tenant_id=tenant_id, thread_id=thread_id)
     pinned = {
@@ -119,9 +217,10 @@ async def ensure_thread_pin(
         "manifest_version": meta.get("manifest_version"),
         "manifest_hash": meta.get("manifest_hash"),
         "pin_compile": meta.get("pin_compile"),
+        "sub_agents_hash": meta.get("sub_agents_hash"),
     }
     if pinned.get("manifest_hash"):
-        assert_pin_matches(pinned, manifest, version=version)
+        assert_pin_matches(pinned, manifest, version=version, sub_agents=fields.get("sub_agents_hash"))
 
     if fields["pin_compile"] or not pinned.get("manifest_hash"):
         # Always record hash on first touch; enforce only when pin_compile.
@@ -149,7 +248,10 @@ async def ensure_thread_pin(
 __all__ = [
     "ManifestDriftError",
     "assert_pin_matches",
+    "assert_resume_pin",
     "ensure_thread_pin",
     "manifest_content_hash",
     "pin_fields",
+    "pin_fields_for",
+    "sub_agents_hash",
 ]
