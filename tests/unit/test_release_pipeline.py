@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import re
+import subprocess
+import sys
 from pathlib import Path
 
+from felix import __version__
 from ruamel.yaml import YAML
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -101,3 +105,29 @@ def test_the_release_body_comes_from_the_changelog_section() -> None:
         "a literal heading match, not a regex built from the version"
     )
     assert "test -s notes.md" in notes["run"], "an empty changelog section must fail the release"
+
+
+def test_the_release_attaches_the_openapi_document() -> None:
+    """docs.felix.run downloads `openapi.json` from the release the API reports it runs."""
+    release = _load("release.yml")["jobs"]["release"]
+    spec = next(s for s in release["steps"] if s.get("name") == "OpenAPI document")
+    assert "scripts/export-openapi.py openapi.json" in spec["run"]
+    assert "uv sync --locked --no-dev" in spec["run"], "the lean install the image ships"
+    assert '= "$VERSION" || {' in spec["run"] and "exit 1" in spec["run"], (
+        "a spec whose version is not the tag's must fail the release"
+    )
+    publish = next(s for s in release["steps"] if "action-gh-release" in s.get("uses", ""))
+    assert "openapi.json" in publish["with"]["files"].split()
+    assert publish["with"]["fail_on_unmatched_files"] is True
+
+
+def test_export_openapi_writes_the_served_spec(tmp_path: Path) -> None:
+    """The release runs this script only on a tag, so this is what catches it rotting between releases."""
+    out = tmp_path / "openapi.json"
+    subprocess.run(
+        [sys.executable, str(ROOT / "scripts/export-openapi.py"), str(out)], check=True, cwd=tmp_path
+    )
+    spec = json.loads(out.read_text(encoding="utf-8"))
+    assert spec["openapi"].startswith("3.")
+    assert {"/chat", "/v1/chat/completions", "/manifests/{name}"} <= spec["paths"].keys()
+    assert spec["info"]["version"] == __version__
