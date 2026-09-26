@@ -443,6 +443,11 @@
           "minimum": 0,
           "title": "Min Response Chars",
           "type": "integer"
+        },
+        "decider": {
+          "default": false,
+          "title": "Decider",
+          "type": "boolean"
         }
       },
       "title": "ConfidenceEscalation",

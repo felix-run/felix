@@ -220,8 +220,8 @@ First, because everything else governs it.
       `typesafe`, `workers_ai` and `llm` backends. Each consumer opts in on its own, and keeps
       its current path as the fallback when the decider errors or is not confident enough.
       Land in order, one PR each:
-      1. [x] The seam, plus `tools_retrieval.decider`.
-      2. [ ] The router's `_choose_child`, and confidence escalation's `_low_confidence`.
+      1. [x] The seam, plus `tools_retrieval.decider` (#314).
+      2. [x] The router's `_choose_child`, and confidence escalation's `_low_confidence`.
       3. [ ] Judges, reply judges, eval `llm_judge`, and the reflect verifier: a `Noul` per
          criterion.
       4. [ ] Skill suggestion: the two-stage rank-then-rerank, emitted as a prompt hint.

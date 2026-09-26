@@ -107,6 +107,10 @@ class ConfidenceEscalation(_Strict):
         ]
     )
     min_response_chars: int = Field(default=40, ge=0)
+    #: Ask `spec.decider` whether the reply answers the request, instead of the length and
+    #: marker heuristic above — which stays as the fallback when the decider errors.
+    #: Escalates when that probability is below `spec.decider.min_confidence`.
+    decider: bool = False
 
 
 class ModelSpec(_Strict):
@@ -899,6 +903,11 @@ class Spec(_Strict):
             raise ValueError("tools_retrieval.decider needs spec.decider.id")
         if self.tools_retrieval.decider and not self.tools_retrieval.enabled:
             raise ValueError("tools_retrieval.decider needs tools_retrieval.enabled: true")
+        escalation = self.model.confidence_escalation
+        if escalation.decider and not self.decider.id:
+            raise ValueError("model.confidence_escalation.decider needs spec.decider.id")
+        if escalation.decider and not (escalation.enabled and escalation.escalate_to):
+            raise ValueError("model.confidence_escalation.decider needs enabled: true and escalate_to")
         return self
 
     @field_validator("output_schema")

@@ -14,12 +14,16 @@ import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field, replace
 from functools import partial
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+from felix_ai.decide import Choice
 
 # `felix.manifests.schema` is a leaf — it imports only `felix.security.ssrf` — so this is
 # safe at module scope even though `manifests/builder.py` imports `felix.patterns`.
+from felix.decisions import latest_request
 from felix.logging_setup import loggable
 from felix.manifests.schema import PlanExecuteSpec, ReflectSpec
+from felix.observability.metrics import record_counter
 from felix.patterns.model import (
     ModelChatOptions,
     ModelChatResult,
@@ -39,6 +43,9 @@ from felix.patterns.types import (
     InvokeOutput,
 )
 from felix.tools.types import Tool
+
+if TYPE_CHECKING:
+    from felix.decisions import MeteredDecider
 
 logger = logging.getLogger(__name__)
 
@@ -293,6 +300,8 @@ class _DelegatingAgent:
     # would have left reflect quietly running two passes forever.
     reflect_cfg: ReflectSpec | None = None
     plan_cfg: PlanExecuteSpec | None = None
+    # `spec.decider`, built, when the manifest opts the router into it (`router.decider`).
+    decider: MeteredDecider | None = None
 
     # --- the two public entry points, both draining the one loop -------------------
 
@@ -482,6 +491,10 @@ class _DelegatingAgent:
 
     async def _choose_child(self, input: InvokeInput) -> Agent:
         names = list(self.sub_agents.keys())
+        if self.decider is not None:
+            chosen = await self._decide_child(input, names)
+            if chosen is not None:
+                return self.sub_agents[chosen]
         model = _model_for(input, self.settings, self.model_spec)
         classify = [
             ChatMessage(role="system", content=self.system_prompt or "Route to the best agent."),
@@ -496,8 +509,53 @@ class _DelegatingAgent:
         ]
         result = await model.chat(classify, [])
         record_model_usage(result, model, manifest_id=self.manifest_id)
-        choice = result.message.content.strip().split()[0] if result.message.content else names[0]
-        return self.sub_agents.get(choice) or self.sub_agents[names[0]]
+        choice = result.message.content.strip().split()[0] if result.message.content else ""
+        if choice in self.sub_agents:
+            record_counter("felix_router_choice", {"manifest_id": self.manifest_id, "method": "llm"})
+            return self.sub_agents[choice]
+        # Still the first child — a router with nowhere else to send a request has to send it
+        # somewhere — but said, rather than indistinguishable from a deliberate choice.
+        logger.warning(
+            "router %s: classifier named no sub-agent (%s); sending to %s",
+            self.manifest_id,
+            loggable(choice, limit=64),
+            names[0],
+        )
+        record_counter("felix_router_choice", {"manifest_id": self.manifest_id, "method": "unmatched"})
+        return self.sub_agents[names[0]]
+
+    async def _decide_child(self, input: InvokeInput, names: list[str]) -> str | None:
+        """The decider's pick of sub-agent, or `None` to classify with the model as before.
+
+        The routes are described where the operator already describes them — the router's
+        system prompt — so that is the question's instructions and the names are its options.
+        A pick below `spec.decider.min_confidence` is not taken: a router that is unsure
+        between two agents is exactly the case the chat classifier is kept for.
+        """
+        assert self.decider is not None
+        request = latest_request(input.messages)
+        if request is None:
+            return None
+        instructions = f"{self.system_prompt}\n\nWhich agent should handle this request?".strip()
+        question = {"route": Choice(instructions=instructions, criteria={n: None for n in names})}
+        labels = {"manifest_id": self.manifest_id}
+        try:
+            result = await self.decider.decide({"request": request}, question, purpose="router")
+        except Exception as exc:
+            logger.warning(
+                "router %s: decider failed (%s); classifying with the model",
+                self.manifest_id,
+                type(exc).__name__,
+            )
+            record_counter("felix_router_choice", {**labels, "method": "decider_error"})
+            return None
+        answer = result.answers["route"]
+        confidence = getattr(answer, "confidence", None)
+        if confidence is not None and confidence < self.decider.min_confidence:
+            record_counter("felix_router_choice", {**labels, "method": "decider_unsure"})
+            return None
+        record_counter("felix_router_choice", {**labels, "method": "decider"})
+        return str(getattr(answer, "choice", ""))
 
     async def _run_router(
         self, input: InvokeInput, *, emit_events: bool

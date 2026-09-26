@@ -71,6 +71,8 @@ async def _build_router(ctx: PatternBuildContext) -> Agent:
         model_spec=ctx.get("model_spec"),
         settings=ctx.get("settings"),
         output_schema=ctx.get("output_schema"),
+        # A router's one decision is which child answers, so naming a decider is opting in.
+        decider=ctx.get("decider"),
     )
 
 

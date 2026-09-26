@@ -459,6 +459,12 @@ spec:
   tools_retrieval: {enabled: true, top_k: 12, decider: true}
 ```
 
+A `router` that names a decider uses it to pick the sub-agent — one `Choice` over the
+`sub_agents`, with the router's system prompt as the instructions — and classifies with its model
+only when the decider is unsure or unavailable. `model.confidence_escalation.decider: true` asks
+the decider whether a reply actually answers the request, instead of escalating on reply length and
+phrases like "unclear"; a probability below `min_confidence` escalates.
+
 With `tools_retrieval.decider`, one `Choice` over the tool catalogue per user turn picks the
 shortlist the model sees, in place of embedding similarity. When the decider errors, or the
 shortlist holds less than `min_confidence` of the probability mass, selection falls back to

@@ -41,6 +41,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A router whose classifier names no sub-agent now says so.** It still sends the request to the
+  first sub-agent, but logs a warning and counts `felix_router_choice{method="unmatched"}` instead
+  of making that indistinguishable from a deliberate choice.
+
 - **The workspace is a named volume, not the deployment's checkout.** Compose mounted
   `${FELIX_WORKSPACE_HOST:-./workspace}` at `/workspace`, so an agent's files landed inside the
   deployment's own git checkout unless the operator overrode it, and the published image — uid
@@ -67,6 +71,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 ### Added
+
+- **A router can pick its sub-agent with a decision model, and escalation can ask one whether a
+  reply answers the request.** A `router` manifest that sets `spec.decider` sends each request to
+  the sub-agent the decider chooses, asked as one `Choice` with the router's system prompt as its
+  instructions, and only calls its model to classify when the decider is unsure or unavailable.
+  `model.confidence_escalation.decider: true` replaces the length-and-phrases heuristic — which
+  escalated a correct four-character answer and kept a fluent non-answer — with the decider's
+  probability that the reply answers the request, escalating below `spec.decider.min_confidence`.
+  The heuristic remains the fallback.
 
 - **Decision models, starting with Jev, and tool selection that uses one.** Some model calls
   make a decision rather than write text, and until now each asked a chat model for prose and

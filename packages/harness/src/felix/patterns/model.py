@@ -629,7 +629,12 @@ def _spec_with_model(model_spec: Any, model_id: str) -> Any:
     return spec
 
 
-def build_model(settings: Settings | None, spec: Any) -> ModelClient:
+def build_model(settings: Settings | None, spec: Any, *, decider: Any = None) -> ModelClient:
+    """The client for `spec`, with its fallbacks and confidence escalation composed on.
+
+    `decider` is `spec.decider`, built; escalation consults it only when
+    `confidence_escalation.decider` asks, and every other caller passes nothing.
+    """
     settings = settings or get_settings()
     primary_id = getattr(spec, "id", None) or settings.default_model_id
     client = build_one_model(settings, spec, primary_id)
@@ -655,6 +660,7 @@ def build_model(settings: Settings | None, spec: Any) -> ModelClient:
             model_id=client.model_id,
             route=client.route,
             price_override=price_override,
+            decider=decider if getattr(esc, "decider", False) else None,
         )
     return client
 

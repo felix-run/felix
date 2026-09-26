@@ -16,7 +16,7 @@ import pytest
 from felix.flush import flush_all
 from felix.manifests.loader import parse_manifest
 from felix.usage import store as usage_store
-from felix_ai.decide import ChoiceAnswer
+from felix_ai.decide import ChoiceAnswer, NoulAnswer
 from felix_ai.providers.scripted import ScriptedTurn
 
 TOOLS = ["calculator", "list_dir", "read_file", "write_file", "edit_file", "search_files"]
@@ -127,3 +127,56 @@ async def test_an_unrouted_decider_fails_the_compile_rather_than_going_quiet(
             await _chat(app, "e2e-unrouted")
         assert app.spy.tools == []
     assert decider_script["calls"] == 0
+
+
+# --- the router and confidence escalation, through the stack ----------------------------------
+
+
+def _agent(name: str, **spec: Any) -> Any:
+    base: dict[str, Any] = {"pattern": "react", "auth": {"inbound": {"allow_anonymous": True}}}
+    base.update(spec)
+    return parse_manifest(
+        {"apiVersion": "felix/v1", "kind": "Agent", "metadata": {"name": name}, "spec": base}
+    )
+
+
+async def test_a_router_with_a_decider_sends_the_request_without_classifying_it(
+    boot: Any, decider_script: Any
+) -> None:
+    """One model call — the child's. A router classifying with the model would make two."""
+    decider_script["answer"] = ChoiceAnswer("e2e-bio", {"e2e-math": 0.05, "e2e-bio": 0.95}, confidence=0.95)
+    manifests = {
+        "e2e-math": _agent("e2e-math", system_prompt={"inline": "You do arithmetic."}),
+        "e2e-bio": _agent("e2e-bio", system_prompt={"inline": "You do biology."}),
+        "e2e-routed": _agent(
+            "e2e-routed",
+            pattern="router",
+            sub_agents=["e2e-math", "e2e-bio"],
+            decider={"id": "e2e-decider"},
+            system_prompt={"inline": "e2e-math: arithmetic. e2e-bio: biology."},
+        ),
+    }
+    async with boot([ScriptedTurn(content="DNA is a molecule.")], env=ENV, manifests=manifests) as app:
+        resp = await _chat(app, "e2e-routed")
+        assert resp.status_code == 200, resp.text
+        assert len(app.spy.prompts) == 1
+        assert "e2e-bio" in app.spy.prompts[0][0].content, "the child the decider chose answered"
+    assert decider_script["calls"] == 1
+
+
+async def test_escalation_keeps_a_short_answer_the_decider_says_is_complete(
+    boot: Any, decider_script: Any
+) -> None:
+    """`"Saved."` is under the 40-character heuristic floor, so without the decider this turn
+    would call the escalation model too. The wiring under test is react → `build_model`."""
+    decider_script["answer"] = NoulAnswer(0.9)
+    m = _agent(
+        "e2e-escalating",
+        decider={"id": "e2e-decider"},
+        model={"confidence_escalation": {"enabled": True, "escalate_to": "claude-opus", "decider": True}},
+    )
+    async with boot([ScriptedTurn(content="Saved.")], env=ENV, manifests={"e2e-escalating": m}) as app:
+        resp = await _chat(app, "e2e-escalating")
+        assert resp.status_code == 200, resp.text
+        assert len(app.spy.prompts) == 1, "no escalation call"
+    assert decider_script["calls"] == 1

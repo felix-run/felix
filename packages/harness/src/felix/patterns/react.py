@@ -277,7 +277,7 @@ class _ReactAgent:
             from felix.session.thinking import apply_thinking_to_spec
 
             spec = apply_thinking_to_spec(spec, spec.thinking_level)
-        return build_model(settings, spec)
+        return build_model(settings, spec, decider=self.decider)
 
     def _apply_handoff(
         self, messages: list[ChatMessage], *, previous: str | None, next_id: str | None
