@@ -89,6 +89,7 @@ async def test_artifact_spill() -> None:
         object_store=store,
         tenant_id="t",
         manifest_id="quick",
+        settings=Settings(),
     )[0]
     out = await wrapped.executor.execute({}, ToolInvocationCtx())
     text = out if isinstance(out, str) else out.content

@@ -1556,6 +1556,7 @@ async def build_agent(
 
         if m.spec.artifacts.enabled:
             from felix.artifacts import apply_artifact_spill
+            from felix.config import get_settings
 
             resolved = apply_artifact_spill(
                 resolved,
@@ -1563,6 +1564,9 @@ async def build_agent(
                 object_store=deps.object_store,
                 tenant_id=tenant_id,
                 manifest_id=m.metadata.name,
+                # Never None: the ledger lives here, and a spill without a row is bytes the
+                # retention sweep can never find.
+                settings=deps.settings if deps.settings is not None else get_settings(),
             )
 
         final_prompt = (

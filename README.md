@@ -211,7 +211,8 @@ zero cloud SDKs.
   (0 = keep), `FELIX_APPROVAL_RETENTION_DAYS` (0 = keep, and only *settled* approvals — a grant
   that can still authorize is never swept), `FELIX_ATTACHMENT_RETENTION_DAYS` (0 = keep; the one
   sweep that deletes *bytes* as well as rows, since `attachments/` is an object-store prefix
-  nothing else collects); a manifest's `governance.retention_days` shortens the audit TTL for its
+  nothing else collects), `FELIX_ARTIFACT_RETENTION_DAYS` (30; spilled tool outputs, bytes and
+  ledger row, the same way — on by default because spill is the harness's working copy); a manifest's `governance.retention_days` shortens the audit TTL for its
   own rows
 - Uploads: `FELIX_ATTACHMENTS_MAX_BYTES_PER_TENANT` (256 MiB, 0 = no ceiling) bounds what one
   tenant may store through `/files`, on top of the 600 KiB per-upload cap. Over the ceiling
