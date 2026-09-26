@@ -166,7 +166,24 @@ async def build_tenant_agent(
         workspace_root=workspace_root or getattr(settings, "workspace_root", None) or None,
         load_agents_md=load_agents_md or bool(getattr(settings, "load_agents_md", False)),
     )
+    deps.sub_agent_builder = _tenant_sub_agent_builder(settings, tenant_id, deps)
     return await build_agent(manifest, deps=deps, settings=settings)
+
+
+def _tenant_sub_agent_builder(settings: Settings, tenant_id: str, deps: BuildDeps) -> Any:
+    """Compile each `spec.sub_agents` name as this tenant would reach it by name.
+
+    Store, then object store, then bundled — the order a request resolves a manifest in. It
+    used to be bundled YAML only, so a router whose children were the tenant's own agents
+    compiled them as empty `You are <name>.` manifests and routed to those. A name that
+    resolves nowhere is a `LookupError`, which fails the compile rather than the conversation.
+    """
+
+    async def build(name: str) -> Agent:
+        resolved = await resolve_tenant_manifest(settings, tenant_id, name)
+        return await build_agent(resolved.manifest, deps=deps, settings=settings)
+
+    return build
 
 
 __all__ = ["build_tenant_agent", "prepare_tenant_invoke", "resolve_tenant_manifest"]

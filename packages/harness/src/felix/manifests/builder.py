@@ -63,6 +63,37 @@ class BuildDeps:
     tenant_id: str | None = None
     workspace_root: str | None = None
     load_agents_md: bool = False
+    # Manifests whose sub-agents are being compiled right now, outermost first. A router that
+    # names a router that names the first is a cycle, and without this it recursed until
+    # Python's stack gave out — now that tenants author routers, one row can do that.
+    compiling: list[str] = field(default_factory=list)
+    # Children already compiled in this build, by name. Without it a stored A → [B, C], both
+    # naming D, compiled D twice — and a tenant's A → 100 x B → 100 x C is 10^4 compiles, each
+    # with object-store reads and an MCP `list_tools` per server, for one chat.
+    compiled: dict[str, Agent] = field(default_factory=dict)
+
+
+# Routers of routers of routers, and no further. A bound on nesting, beside the memo above, is
+# what keeps the compile a request triggers proportional to what the tenant meant to write.
+MAX_SUB_AGENT_DEPTH = 4
+
+
+def _bundled_sub_agent(deps: BuildDeps) -> Callable[[str], Awaitable[Agent]]:
+    """Compile a sub-agent from bundled YAML — the resolver for callers with no tenant.
+
+    Unknown names raise. This used to be `build_agent(name)`, which turns a name it cannot
+    find into an empty manifest — so a missing child compiled to `You are <name>.` with no
+    tools, and the router sent requests to it without a word.
+    """
+
+    async def build(name: str) -> Agent:
+        try:
+            child = load_bundled(name)
+        except FileNotFoundError as exc:
+            raise LookupError(f"Unknown sub-agent manifest: {name}") from exc
+        return await build_agent(child, deps=deps)
+
+    return build
 
 
 # ---------------------------------------------------------------------------
@@ -1127,9 +1158,21 @@ async def build_agent(
             # the react loop requires a thread as well as a store. Give sub-agents a
             # thread and this starts mattering — resolve the child's checkpointer
             # here, and validate it, which `build_agent` also does not do today.
-            builder = deps.sub_agent_builder or (lambda name: build_agent(name, deps=deps))
-            for name in m.spec.sub_agents:
-                sub_agents[name] = await builder(name)
+            builder = deps.sub_agent_builder or _bundled_sub_agent(deps)
+            if m.metadata.name in deps.compiling:
+                chain = " -> ".join([*deps.compiling, m.metadata.name])
+                raise ValueError(f"sub_agents form a cycle: {chain}")
+            if len(deps.compiling) >= MAX_SUB_AGENT_DEPTH:
+                chain = " -> ".join([*deps.compiling, m.metadata.name])
+                raise ValueError(f"sub_agents nest deeper than {MAX_SUB_AGENT_DEPTH}: {chain}")
+            deps.compiling.append(m.metadata.name)
+            try:
+                for name in m.spec.sub_agents:
+                    if name not in deps.compiled:
+                        deps.compiled[name] = await builder(name)
+                    sub_agents[name] = deps.compiled[name]
+            finally:
+                deps.compiling.pop()
 
         resolved: list[Tool] = []
         if not m.spec.sub_agents:

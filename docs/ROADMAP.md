@@ -230,7 +230,7 @@ First, because everything else governs it.
 
       Not yet verified: the Workers AI response envelope, against a live call.
 
-- [ ] **Sub-agents are compiled from bundled YAML only.** Found in a real run of the router
+- [x] **Sub-agents are compiled from bundled YAML only.** Found in a real run of the router
       e2e test: `runtime.py:build_tenant_agent` never sets `BuildDeps.sub_agent_builder`, so
       `builder.py` compiles each `spec.sub_agents` name with `build_agent(name)` →
       `load_bundled(name)`, and a name missing from `manifests/` becomes an *empty* manifest
@@ -238,6 +238,19 @@ First, because everything else governs it.
       tenant's own agents — routes to blank agents without an error. Fix: resolve children
       through `resolve_tenant_manifest` with the parent's tenant, and fail the compile on a
       name that resolves nowhere.
+
+      Two decisions this surfaced, open:
+      - **Child inbound auth.** `enforce_inbound_auth` has never run on sub-agents — bundled
+        `router` (`allow_anonymous: true`) already reaches `deep` (`allow_anonymous: false`).
+        With tenant-authored children, an author can no longer rely on a child's
+        `required_scopes` once it sits behind a public router. Enforce at compile (a child
+        stricter than its parent fails — which breaks bundled `router` → `deep` as written), or
+        document that routing inherits the parent's auth.
+      - **Shallow compile pins.** `ensure_thread_pin` and `assert_pin_matches` hash the parent
+        only. Children used to change only with a deploy; stored children change mid-thread,
+        so a `pin_compile` thread picks up an edited child's tools and policies. Fold
+        `(child, version, hash)` into the pin, or say in `deploy/GOVERNANCE.md` that pins are
+        shallow.
 
 ### B. Close the durable loop
 

@@ -160,10 +160,9 @@ async def test_a_router_with_a_decider_sends_the_request_without_classifying_it(
         resp = await _chat(app, "e2e-routed")
         assert resp.status_code == 200, resp.text
         assert len(app.spy.prompts) == 1
-        # The child's own system prompt — which is its bundled default, because sub-agents are
-        # compiled by name from bundled YAML, not from the store the router came from.
         [system, *_] = app.spy.prompts[0]
-        assert system.content.startswith("You are e2e-bio."), "the child the decider chose answered"
+        assert "You do biology." in system.content, "the child the decider chose answered"
+        assert "arithmetic" not in system.content
     assert decider_script["calls"] == 1
 
 
