@@ -10,7 +10,7 @@ like any other model call.
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
@@ -118,6 +118,21 @@ class MeteredDecider:
         )
 
 
+def latest_request(messages: Sequence[Any], limit: int = 4_000) -> str | None:
+    """The newest user turn's text, or `None` when it carries none (an image alone).
+
+    What every consumer states its decision about. Not an earlier turn as a stand-in: a
+    decision about the wrong request is worse than the fallback, and gets cached as right.
+    """
+    users = [m for m in messages if getattr(m, "role", "") == "user"]
+    if not users:
+        return None
+    content = getattr(users[-1], "content", None)
+    if not isinstance(content, str) or not content.strip():
+        return None
+    return content[:limit]
+
+
 def build_decider(settings: Settings, logical_id: str, *, min_confidence: float = 0.5) -> MeteredDecider:
     """The metered decision provider for one `FELIX_DECISION_ROUTES` id.
 
@@ -147,6 +162,7 @@ def build_decider(settings: Settings, logical_id: str, *, min_confidence: float 
 __all__ = [
     "MeteredDecider",
     "build_decider",
+    "latest_request",
     "list_decision_providers",
     "parse_decision_routes",
     "register_builtin_deciders",

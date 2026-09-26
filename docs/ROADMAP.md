@@ -220,8 +220,8 @@ First, because everything else governs it.
       `typesafe`, `workers_ai` and `llm` backends. Each consumer opts in on its own, and keeps
       its current path as the fallback when the decider errors or is not confident enough.
       Land in order, one PR each:
-      1. [x] The seam, plus `tools_retrieval.decider`.
-      2. [ ] The router's `_choose_child`, and confidence escalation's `_low_confidence`.
+      1. [x] The seam, plus `tools_retrieval.decider` (#314).
+      2. [x] The router's `_choose_child`, and confidence escalation's `_low_confidence`.
       3. [ ] Judges, reply judges, eval `llm_judge`, and the reflect verifier: a `Noul` per
          criterion.
       4. [ ] Skill suggestion: the two-stage rank-then-rerank, emitted as a prompt hint.
@@ -229,6 +229,15 @@ First, because everything else governs it.
          LLM scorer, because Jev is not adversarially robust. Needs a security review.
 
       Not yet verified: the Workers AI response envelope, against a live call.
+
+- [ ] **Sub-agents are compiled from bundled YAML only.** Found in a real run of the router
+      e2e test: `runtime.py:build_tenant_agent` never sets `BuildDeps.sub_agent_builder`, so
+      `builder.py` compiles each `spec.sub_agents` name with `build_agent(name)` →
+      `load_bundled(name)`, and a name missing from `manifests/` becomes an *empty* manifest
+      (`You are <name>.`, no tools). A router whose children live in the manifest store — the
+      tenant's own agents — routes to blank agents without an error. Fix: resolve children
+      through `resolve_tenant_manifest` with the parent's tenant, and fail the compile on a
+      name that resolves nowhere.
 
 ### B. Close the durable loop
 

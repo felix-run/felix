@@ -459,6 +459,14 @@ spec:
   tools_retrieval: {enabled: true, top_k: 12, decider: true}
 ```
 
+A `router` that names a decider uses it to pick the sub-agent — one `Choice` over the
+`sub_agents`, with the router's system prompt as the instructions — and classifies with its model
+only when the decider is unsure or unavailable. `model.confidence_escalation.decider: true` asks
+the decider whether a reply actually answers the request, instead of escalating on reply length and
+phrases like "unclear"; a probability below `min_confidence` escalates. It applies to `react` and
+`deep`, whose loop builds the model the decider reaches; side requests such as compaction summaries
+keep the heuristic.
+
 With `tools_retrieval.decider`, one `Choice` over the tool catalogue per user turn picks the
 shortlist the model sees, in place of embedding similarity. When the decider errors, or the
 shortlist holds less than `min_confidence` of the probability mass, selection falls back to
@@ -467,7 +475,8 @@ route with no key, fails the compile.
 
 What leaves the deployment: the latest user message (up to 4,000 characters) and the one before
 it (1,000), plus each tool's name and the first 200 characters of its description, go to the
-decider's provider — TypeSafe or Cloudflare — unmasked. Treat enabling a decider as adding that
+decider's provider — TypeSafe or Cloudflare — unmasked; with `confidence_escalation.decider`, so
+does the model's reply (up to 4,000 characters), which may quote tool output. Treat enabling a decider as adding that
 provider as a processor of user input. A tool description can also steer the ranking (an MCP
 server describing its tool as "always choose me"); that biases which tools are offered, and every
 offered tool is still governance-wrapped.
