@@ -17,6 +17,7 @@ from felix.artifacts import (
     artifact_key,
     make_read_artifact_tool,
 )
+from felix.config import Settings
 from felix.manifests.schema import ArtifactsSpec
 from felix.tools.errors import read_tool_error_code
 from felix.tools.types import ToolInvocationCtx, define_tool, tool_output_content
@@ -59,6 +60,7 @@ async def _spill(store: _Store, text: str = BIG) -> str:
         object_store=store,
         tenant_id="acme",
         manifest_id="cowork",
+        settings=Settings(),
     )
     marker = str(await wrapped.executor.execute({}, CTX))
     assert CLIENT_MARKER.search(marker), "clients must still find the marker at the end"
@@ -94,6 +96,7 @@ async def test_the_marker_is_still_what_clients_parse() -> None:
         object_store=store,
         tenant_id="acme",
         manifest_id="cowork",
+        settings=Settings(),
     )
     output = str(await wrapped.executor.execute({}, CTX))
 
@@ -151,7 +154,12 @@ async def test_the_reader_is_not_itself_spilled() -> None:
     store = _Store()
     artifact_id = await _spill(store)
     (reader,) = apply_artifact_spill(
-        [_reader(store)], SPEC, object_store=store, tenant_id="acme", manifest_id="cowork"
+        [_reader(store)],
+        SPEC,
+        object_store=store,
+        tenant_id="acme",
+        manifest_id="cowork",
+        settings=Settings(),
     )
 
     page = await _read(reader, artifact_id=artifact_id, length=5000)
@@ -174,6 +182,7 @@ async def test_a_manifest_tool_named_read_artifact_is_still_spilled() -> None:
         object_store=store,
         tenant_id="acme",
         manifest_id="cowork",
+        settings=Settings(),
     )
 
     assert BIG not in tool_output_content(await impostor.executor.execute({}, CTX))
@@ -248,6 +257,7 @@ async def test_with_no_conversation_nothing_is_readable() -> None:
         object_store=store,
         tenant_id="acme",
         manifest_id="cowork",
+        settings=Settings(),
     )
     await wrapped.executor.execute({})
     (key,) = store.objects
@@ -285,6 +295,7 @@ async def test_a_threadless_request_reads_its_own_spill_and_no_other() -> None:
             object_store=store,
             tenant_id="acme",
             manifest_id="cowork",
+            settings=Settings(),
         )
         await wrapped.executor.execute({}, no_thread)
         (key,) = [k for k in store.objects if k.endswith(".txt")]

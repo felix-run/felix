@@ -328,6 +328,13 @@ class Settings(BaseSettings):
     # the model answer without an image nobody knew had expired. Set it deliberately.
     attachment_retention_days: int = Field(default=0, ge=0)
 
+    # How long a spilled tool output is kept. Unlike an upload, this defaults to a bound:
+    # a spill is a working copy the harness wrote for the task at hand, five bundled
+    # manifests spill by default, and without one `artifacts/` only ever grew. `0` keeps
+    # forever. Past it, `read_artifact`, `GET /artifacts` and the terminal's `/artifact`
+    # report the id as missing.
+    artifact_retention_days: int = Field(default=30, ge=0)
+
     # --- Document corpus ---
     # Per-tenant document ceiling. Without one, a single `documents:write` credential grows
     # the database without bound: `MAX_DOCUMENT_CHARS` caps one request and
