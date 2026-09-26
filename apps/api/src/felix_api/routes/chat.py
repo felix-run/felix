@@ -220,7 +220,12 @@ class LeaseReleaseRequest(BaseModel):
 class UiResponseRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
-    request_id: str = Field(min_length=1)
+    # Required: the prompt's waiter is scoped to its thread, which is what ties an answer to
+    # the tenant that was asked. The `ui_request` frame carries it.
+    thread_id: str = Field(min_length=1)
+    # A server-minted `token_urlsafe(12)` is 16 characters; the cap bounds the waiter key a
+    # caller can make the server hold, as `MAX_TOOL_CALL_ID` does for tool results.
+    request_id: str = Field(min_length=1, max_length=64)
     value: Any = None
     cancelled: bool = False
     note: str = ""
@@ -995,8 +1000,12 @@ async def chat_ui_response(body: UiResponseRequest, request: Request) -> dict[st
     """Resolve a pending select/confirm/input prompt from the web client."""
     from felix.ui import resolve_ui_response
 
-    _ = request
+    auth = _auth_from_request(request)
+    thread = effective_thread_id(auth.tenant_id, body.thread_id)
+    if thread is None:
+        raise HTTPException(status_code=400, detail="invalid_thread_id")
     return await resolve_ui_response(
+        thread,
         body.request_id,
         value=body.value,
         cancelled=body.cancelled,

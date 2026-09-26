@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **`POST /chat/ui` answers only a prompt on the caller's own thread.** It checked no tenant, no
+  thread and no ownership — the one route where every other one does — so the whole control was
+  the secrecy of a 96-bit request id. A prompt's waiter is now scoped to its thread, which
+  `effective_thread_id` namespaces to the caller's tenant, the shape `/chat/tool_result` already
+  had. **Breaking:** the body requires `thread_id` (the `ui_request` frame carries it) and a
+  request without one is `422`; `request_id` is capped at 64 characters. `FelixClient.resolve_ui`
+  takes `thread_id=`; felix-web's client sends it from the frame. Upgrade the harness and the web
+  client together — an old client's answers are refused rather than delivered.
+
 - **A conversation summary never re-enters the system tier.** `ab5ad59` moved the compaction
   summary — a model's rewrite of a transcript that includes raw tool output — out of the system
   tier on the turn it was made. Every path that *replays* it on later turns (the checkpoint
