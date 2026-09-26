@@ -167,6 +167,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`decider-support`, a bundled manifest to copy decider settings from.** The `support` agent with
+  every `spec.decider` consumer that fits it: tool selection, skill suggestion, decider escalation
+  from Haiku to Sonnet, and the injection battery on fetched pages and search results. It needs a
+  decision route — a TypeSafe key for `jev`, Workers AI for `jev-cf`, or `jev` remapped to the
+  `llm` provider to try it with no second vendor — and without one refuses to compile, naming
+  what is missing.
+
 - **Spilled tool outputs are collected after `FELIX_ARTIFACT_RETENTION_DAYS` (default 30).** Nothing
   ever deleted anything under `artifacts/`: the retention sweep collects rows, and the object
   store has no `list` to find objects with. That was an opt-in cost until #319 turned the spill on
