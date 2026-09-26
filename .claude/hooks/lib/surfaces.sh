@@ -53,6 +53,9 @@ surface_page() {
 # the reminder is free to be broad because it only advises, but a block that fires on a
 # test file or a Makefile tweak teaches people to wave it through.
 surface_blocks() {
+  # A subset of `surface_page` by construction, not by care: a blocking path with no page
+  # would stop a turn while the edit-time reminder stayed silent about where the docs go.
+  surface_page "$1" >/dev/null || return 1
   case "$1" in
     apps/api/src/felix_api/routes/_*) return 1 ;;
     apps/api/src/felix_api/routes/*.py) return 0 ;;
@@ -66,7 +69,9 @@ surface_blocks() {
   esac
 }
 
-# A change that counts as "documentation was considered".
+# A change that counts as "documentation was considered". `.env.example` is on purpose: a
+# new setting's documentation *is* its commented line there.
+SURFACE_DOCS_TEXT="README.md / CLAUDE.md / CHANGELOG.md / .env.example / docs/ / deploy/GOVERNANCE.md / deploy/*/README.md"
 surface_is_doc() {
   case "$1" in
     README.md|CLAUDE.md|CHANGELOG.md|.env.example|deploy/GOVERNANCE.md|deploy/*/README.md|docs/*) return 0 ;;
@@ -93,6 +98,16 @@ drift_snapshot() {
     fi
     printf '%s\t%s\n' "$path" "${hash:-unknown}"
   done
+}
+
+# The working tree a hook payload's session is in: its `cwd`, else the project root. One
+# spelling for both ends of the drift gate -- if session-start.sh and doc-drift-stop.sh
+# ever disagreed, their baseline file names would too, and the gate would quietly fall
+# back to measuring against HEAD.
+drift_tree() {
+  local cwd
+  cwd=$(printf '%s' "$1" | jq -r '.cwd // empty' 2>/dev/null)
+  git -C "${cwd:-${CLAUDE_PROJECT_DIR:-.}}" rev-parse --show-toplevel 2>/dev/null
 }
 
 # Where the snapshot for one session and one working tree lives. Keyed by the tree as well

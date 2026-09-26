@@ -76,8 +76,11 @@ def repo(tmp_path_factory: pytest.TempPathFactory) -> pathlib.Path:
     git(root, "add", "-A")
     git(root, "commit", "-qm", "seed")
     git(root, "worktree", "add", "-q", "-b", "feat/x", str(root / ".claude" / "worktrees" / "wt"))
-    wt = root / ".claude" / "worktrees" / "wt"
-    (wt / ".venv").mkdir()
+    (root / ".claude" / "worktrees" / "wt" / ".venv").mkdir()
+    # At the root too: without it, a hook that fell back to the project root for a file in no
+    # repository would still stop at `[ -d .venv ]`, and the test for that fallback could
+    # not fail.
+    (root / ".venv").mkdir()
     return root
 
 
@@ -93,7 +96,9 @@ def fake_uv(tmp_path: pathlib.Path) -> tuple[dict[str, str], pathlib.Path]:
     log = tmp_path / "uv.log"
     uv = bindir / "uv"
     uv.write_text(
-        f'#!/bin/bash\nprintf "%s\\t%s\\n" "$PWD" "$*" >> "{log}"\necho "invalid manifest"\nexit 1\n'
+        f'#!/bin/bash\nprintf "%s\\t%s\\n" "$PWD" "$*" >> "{log}"\n'
+        'if [ "${FAKE_UV_OK:-}" = 1 ]; then echo ok; exit 0; fi\n'
+        'echo "invalid manifest"\nexit 1\n'
     )
     uv.chmod(uv.stat().st_mode | stat.S_IEXEC)
     return {"PATH": f"{bindir}:{os.environ['PATH']}"}, log
@@ -168,6 +173,26 @@ def test_manifest_validate_checks_the_worktree_copy_without_dns(
 
 
 @needs_jq
+def test_manifest_validate_is_quiet_on_a_valid_manifest_and_on_other_yaml(
+    repo: pathlib.Path, fake_uv: tuple[dict[str, str], pathlib.Path]
+) -> None:
+    """The other direction: a hook that reported on every YAML edit would pass the test above."""
+    env, log = fake_uv
+    wt = repo / ".claude" / "worktrees" / "wt"
+    manifest = {"tool_input": {"file_path": str(wt / "manifests/quick.yaml")}}
+    assert (
+        _context(_hook("manifest-validate.sh", manifest, project=repo, env={**env, "FAKE_UV_OK": "1"})) == ""
+    )
+    assert log.exists(), "a valid manifest was not validated at all"
+
+    log.unlink()
+    (wt / "other.yaml").write_text("a: 1\n")
+    other = {"tool_input": {"file_path": str(wt / "other.yaml")}}
+    assert _context(_hook("manifest-validate.sh", other, project=repo, env=env)) == ""
+    assert not log.exists(), "a YAML file outside manifests/ was sent to the validator"
+
+
+@needs_jq
 def test_ruff_format_leaves_files_outside_any_repository_alone(
     repo: pathlib.Path, tmp_path: pathlib.Path, fake_uv: tuple[dict[str, str], pathlib.Path]
 ) -> None:
@@ -186,6 +211,36 @@ def test_ruff_format_leaves_files_outside_any_repository_alone(
     assert calls, "ruff-format stopped running on a repo file"
     assert all(pathlib.Path(c.split("\t")[0]).resolve() == wt.resolve() for c in calls)
     assert all("--no-sync" in c for c in calls), "a formatter must not trigger a resync"
+    assert any("ruff check" in c for c in calls), "a .py file was formatted but not linted"
+
+
+@needs_jq
+def test_ruff_format_formats_markdown_but_does_not_lint_it(
+    repo: pathlib.Path, fake_uv: tuple[dict[str, str], pathlib.Path]
+) -> None:
+    env, log = fake_uv
+    doc = repo / ".claude" / "worktrees" / "wt" / "notes.md"
+    doc.write_text("# notes\n")
+    _hook("ruff-format.sh", {"tool_input": {"file_path": str(doc)}}, project=repo, env=env)
+    calls = log.read_text().splitlines()
+    assert any("ruff format" in c for c in calls), "an in-repo .md file was not formatted"
+    assert not any("ruff check" in c for c in calls), "Markdown was linted as Python"
+
+
+@needs_jq
+def test_ruff_format_skips_a_repository_that_does_not_use_ruff(
+    tmp_path: pathlib.Path, fake_uv: tuple[dict[str, str], pathlib.Path]
+) -> None:
+    """A sibling checkout with its own conventions is not this repo's to reformat."""
+    env, log = fake_uv
+    other = tmp_path / "other"
+    other.mkdir()
+    git(other, "init", "-q", "-b", "main")
+    (other / ".venv").mkdir()
+    (other / "pyproject.toml").write_text("[project]\nname = 'x'\n")
+    (other / "m.py").write_text("x=1\n")
+    _hook("ruff-format.sh", {"tool_input": {"file_path": str(other / "m.py")}}, project=other, env=env)
+    assert not log.exists(), f"ruff ran in a repository without [tool.ruff]: {log.read_text()}"
 
 
 # --- protect-files: the spellings it missed -------------------------------------------------
@@ -263,6 +318,19 @@ def _drift_repo(tmp_path: pathlib.Path) -> pathlib.Path:
     return root
 
 
+def _start(root: pathlib.Path, sid: str, tmpdir: pathlib.Path) -> None:
+    """SessionStart with no docker on PATH: its `compose ps` is irrelevant here, and a daemon
+    still starting up would stall the test to its timeout."""
+    bindir = tmpdir / "bin"
+    bindir.mkdir(exist_ok=True)
+    for tool in ("bash", "cat", "jq", "git", "dirname", "sort", "shasum", "cut", "grep", "wc", "tr", "perl"):
+        found = shutil.which(tool)
+        if found and not (bindir / tool).exists():
+            (bindir / tool).symlink_to(found)
+    env = {"TMPDIR": str(tmpdir), "PATH": str(bindir)}
+    _hook("session-start.sh", {"session_id": sid, "cwd": str(root)}, project=root, env=env)
+
+
 def _stop(root: pathlib.Path, sid: str, tmpdir: pathlib.Path) -> str:
     proc = _hook(
         "doc-drift-stop.sh", {"session_id": sid, "cwd": str(root)}, project=root, env={"TMPDIR": str(tmpdir)}
@@ -277,10 +345,7 @@ def test_doc_drift_ignores_what_the_tree_carried_before_the_session(tmp_path: pa
     state = tmp_path / "state"
     state.mkdir()
     (root / "packages/harness/src/felix/config.py").write_text("someone else's edit\n")
-    # SessionStart takes the baseline.
-    _hook(
-        "session-start.sh", {"session_id": "s1", "cwd": str(root)}, project=root, env={"TMPDIR": str(state)}
-    )
+    _start(root, "s1", state)  # SessionStart takes the baseline
 
     assert _stop(root, "s1", state) == "", "blocked over an edit that predates the session"
 
@@ -291,13 +356,42 @@ def test_doc_drift_ignores_what_the_tree_carried_before_the_session(tmp_path: pa
 
 
 @needs_jq
+def test_doc_drift_counts_a_pre_existing_edit_the_session_changes_again(tmp_path: pathlib.Path) -> None:
+    """The baseline is path *and* content, so touching an already-dirty file is this session's."""
+    root = _drift_repo(tmp_path)
+    state = tmp_path / "state"
+    state.mkdir()
+    config = root / "packages/harness/src/felix/config.py"
+    config.write_text("someone else's edit\n")
+    _start(root, "s3", state)
+    config.write_text("someone else's edit\nand this session's\n")
+    assert "config.py" in _stop(root, "s3", state)
+    # Once per drift-set: the same set does not block the next turn again...
+    assert _stop(root, "s3", state) == ""
+    # ...but a different set does.
+    (root / "packages/harness/src/felix/manifests/builder.py").write_text("more\n")
+    assert "builder.py" in _stop(root, "s3", state)
+
+
+@needs_jq
+def test_a_second_session_start_keeps_the_first_baseline(tmp_path: pathlib.Path) -> None:
+    """SessionStart fires again on resume and compact. A fresh snapshot then would absorb the
+    session's own work into the baseline, and the gate would never fire on it."""
+    root = _drift_repo(tmp_path)
+    state = tmp_path / "state"
+    state.mkdir()
+    _start(root, "s4", state)
+    (root / "packages/harness/src/felix/manifests/builder.py").write_text("this session's\n")
+    _start(root, "s4", state)  # resume
+    assert "builder.py" in _stop(root, "s4", state)
+
+
+@needs_jq
 def test_doc_drift_is_satisfied_by_a_changelog_entry(tmp_path: pathlib.Path) -> None:
     root = _drift_repo(tmp_path)
     state = tmp_path / "state"
     state.mkdir()
-    _hook(
-        "session-start.sh", {"session_id": "s2", "cwd": str(root)}, project=root, env={"TMPDIR": str(state)}
-    )
+    _start(root, "s2", state)
     (root / "packages/harness/src/felix/config.py").write_text("changed\n")
     (root / "CHANGELOG.md").write_text("seed\n- entry\n")
     assert _stop(root, "s2", state) == ""
@@ -366,9 +460,13 @@ def test_the_validator_catches_a_stale_citation(tmp_path: pathlib.Path) -> None:
         "---\nname: s\ndescription: d\n---\n"
         "See `packages/real.py:present` and `packages/real.py:absent`, `packages/missing.py`,\n"
         "`packages/<name>.py` (a pattern), `make check`, `make nope`, and references/x.md.\n"
+        # The import-path spelling has no top-level prefix; the check skipped it at first.
+        "Also `felix_ai/gone.py` and `lib/real.sh`.\n"
     )
     (tmp_path / "packages").mkdir()
     (tmp_path / "packages" / "real.py").write_text("def present():\n    pass\n")
+    (claude / "hooks" / "lib").mkdir()
+    (claude / "hooks" / "lib" / "real.sh").write_text("true\n")
     (tmp_path / "Makefile").write_text("check:\n\ttrue\n")
 
     proc = subprocess.run(
@@ -383,7 +481,9 @@ def test_the_validator_catches_a_stale_citation(tmp_path: pathlib.Path) -> None:
     assert "'absent' is not defined" in found
     assert "`make nope`" in found
     assert "references/x.md" in found
+    assert "`felix_ai/gone.py`" in found
     # ...and nothing it should have accepted.
-    assert "present" not in found.replace("'absent' is not defined", "")
+    assert "`packages/real.py:present`" not in found
     assert "<name>" not in found
     assert "`make check`" not in found
+    assert "lib/real.sh" not in found

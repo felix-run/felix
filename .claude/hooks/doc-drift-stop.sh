@@ -17,9 +17,8 @@ command -v jq >/dev/null 2>&1 || exit 0
 # The tree this session is working in, which is not `CLAUDE_PROJECT_DIR` when the session
 # runs in a git worktree -- an everyday shape here. Reading the project root reported
 # *another* session's changes as this one's. `cwd` is on every hook payload, Stop included.
-workdir=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null)
-[ -n "$workdir" ] || workdir="${CLAUDE_PROJECT_DIR:-.}"
-top=$(git -C "$workdir" rev-parse --show-toplevel 2>/dev/null) || exit 0
+top=$(drift_tree "$input")
+[ -n "$top" ] || exit 0
 sid=$(printf '%s' "$input" | jq -r '.session_id // "nosession"')
 
 now=$(drift_snapshot "$top")
@@ -47,11 +46,11 @@ EOF_FILES
 [ "$docs" = 1 ] && exit 0
 
 hash=$(printf '%s' "$surfaces" | shasum | cut -c1-12)
-state="${TMPDIR:-/tmp}/felix-docdrift-$sid"
+state="$(drift_baseline_file "$sid" "$top").blocked"
 grep -qs "$hash" "$state" 2>/dev/null && exit 0
 echo "$hash" >> "$state"
 
 files=$(printf '%s' "$surfaces" | head -8 | tr '\n' ' ')
-jq -cn --arg r "Doc-drift check: this session changed documented surfaces ($files) but no README.md / CLAUDE.md / CHANGELOG.md / .env.example / docs/ / deploy/GOVERNANCE.md change came with it. Either (a) update the in-repo docs (user-visible behaviour also gets a CHANGELOG [Unreleased] entry), and use the docs-sync skill for the public MDX pages in the felix-web repo, or (b) state plainly why no documentation change is needed. Fires once per drift-set per session." \
+jq -cn --arg r "Doc-drift check: this session changed documented surfaces ($files) but no $SURFACE_DOCS_TEXT change came with it. Either (a) update the in-repo docs (user-visible behaviour also gets a CHANGELOG [Unreleased] entry), and use the docs-sync skill for the public MDX pages in the felix-web repo, or (b) state plainly why no documentation change is needed. Fires once per drift-set per session." \
   '{decision:"block", reason:$r}'
 exit 0

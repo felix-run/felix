@@ -217,7 +217,21 @@ SHORTHAND_ROOTS = (
     "packages/ai/src/felix_ai/",
     "packages/cli/src/felix_cli/",
     "apps/worker/src/felix_worker/",
+    # `felix/config.py`, `felix_ai/registry.py`: the import-path spelling.
+    "packages/harness/src/",
+    "packages/ai/src/",
+    "packages/cli/src/",
+    "apps/api/src/",
+    "apps/worker/src/",
+    # `hooks/lib/surfaces.sh`, `lib/command.sh`: relative to the toolkit.
+    ".claude/",
+    ".claude/hooks/",
 )
+# Beyond the prefixes above, any token with a directory and a source-file extension is a
+# path claim too. Matching only the prefixes skipped the import-path and toolkit-relative
+# spellings -- over a hundred citations, eight in a single skill -- so renaming one of
+# those modules left the prose stale behind a green gate.
+SOURCE_PATH = re.compile(r"^[\w.-]+(/[\w.-]+)+\.(py|sh|md|yaml|yml|json|toml)(:[^/]*)?$")
 TEMPLATED = re.compile(r"[<>*{}$…]|\.\.\.|000N|NNNN|\bX\b")
 CODE_SPAN = re.compile(r"```.*?```|`[^`\n]+`", re.S)
 
@@ -230,9 +244,14 @@ def cited_tokens(text: str) -> list[str]:
     return tokens
 
 
-def resolve_cited(path: str) -> Path | None:
-    """Where a cited path lives, trying the root and then the house shorthand roots."""
-    return next((ROOT / base / path for base in SHORTHAND_ROOTS if (ROOT / base / path).exists()), None)
+def resolve_cited(path: str, doc_dir: Path) -> Path | None:
+    """Where a cited path lives: the root, the house shorthand roots, or beside the doc."""
+    candidates = [ROOT / base / path for base in SHORTHAND_ROOTS] + [doc_dir / path]
+    # `references/x.md` named in prose beside the skill it belongs to ("the code-quality
+    # skill's `references/felix-hotspots.md`"): any skill's copy answers the claim.
+    if path.startswith("references/"):
+        candidates += sorted((CLAUDE / "skills").glob(f"*/{path}"))
+    return next((c for c in candidates if c.exists()), None)
 
 
 def defines(source: Path, symbol: str) -> bool:
@@ -242,16 +261,22 @@ def defines(source: Path, symbol: str) -> bool:
     return re.search(pattern, source.read_text(encoding="utf-8"), re.M) is not None
 
 
+def is_path_claim(path: str) -> bool:
+    if path.startswith(NOT_THIS_TREE) or TEMPLATED.search(path) or "://" in path:
+        return False
+    return path.startswith(PATH_PREFIXES) or SOURCE_PATH.match(path) is not None
+
+
 def check_cited_path(rel: Path, token: str) -> None:
     path = token.removeprefix("./")
-    if not path.startswith(PATH_PREFIXES) or path.startswith(NOT_THIS_TREE) or TEMPLATED.search(path):
+    if not is_path_claim(path):
         return
     # `file.py:symbol` / `file.py:123` cite a location in a file. The file is the claim, and
     # a named symbol is a second one: `main.py:create_app` survived a rename that moved
     # `create_app` to app.py.
     symbol_match = re.match(r"^(.*\.py):([A-Za-z_][\w.]*)", path)
     path = re.sub(r":[^/]*$", "", path).rstrip(".:")
-    found = resolve_cited(path)
+    found = resolve_cited(path, (ROOT / rel).parent)
     if found is None:
         fail(f"{rel}: cites `{path}`, which does not exist")
         return
@@ -279,6 +304,11 @@ def check_citations() -> None:
                     fail(f"{rel}: cites `make {target}`, which is not a Makefile target")
 
 
+def route_row(stem: str) -> str:
+    name = re.escape(stem)
+    return rf"routes/{name}\.py|routes/\{{[^}}]*\b{name}\b[^}}]*\}}\.py|`{name}\.py`"
+
+
 def check_route_docs_map() -> None:
     routes_dir = ROOT / "apps/api/src/felix_api/routes"
     surfaces = CLAUDE / "hooks/lib/surfaces.sh"
@@ -292,8 +322,10 @@ def check_route_docs_map() -> None:
             continue
         if f"routes/{module.name}" not in mapped:
             fail(f".claude/hooks/lib/surfaces.sh: route module {module.name} maps to no docs page")
-        route_rows = "\n".join(line for line in table.splitlines() if "routes/" in line)
-        if not module.name.startswith("_") and not re.search(rf"\b{re.escape(module.stem)}\b", route_rows):
+        # Anchored on the route row's own spelling -- `routes/<name>.py` or a member of a
+        # `routes/{a,b}.py` group -- so a stem that merely appears as a word in another row's
+        # description (`jobs`, `files`, `memory`) does not count as mapped.
+        if not module.name.startswith("_") and not re.search(route_row(module.stem), table):
             fail(f"{page_map.relative_to(ROOT)}: route module {module.name} is missing from the table")
 
 

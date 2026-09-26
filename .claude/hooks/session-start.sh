@@ -13,8 +13,7 @@ if command -v jq >/dev/null 2>&1; then
   # shellcheck source=lib/surfaces.sh
   . "$(dirname "${BASH_SOURCE[0]}")/lib/surfaces.sh"
   sid=$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)
-  cwd=$(printf '%s' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null)
-  top=$(git -C "${cwd:-$root}" rev-parse --show-toplevel 2>/dev/null)
+  top=$(drift_tree "$INPUT")
   if [ -n "$sid" ] && [ -n "$top" ]; then
     base=$(drift_baseline_file "$sid" "$top")
     [ -f "$base" ] || drift_snapshot "$top" > "$base" 2>/dev/null

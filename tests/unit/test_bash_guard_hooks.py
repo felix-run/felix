@@ -119,6 +119,12 @@ CASES: list[tuple[str, str, int]] = [
     ("git-guard", "git restore .", BLOCKED),
     ("git-guard", "git restore --staged --worktree .", BLOCKED),
     ("git-guard", "git stash clear", BLOCKED),
+    ("git-guard", "git checkout .", BLOCKED),
+    ("git-guard", "git checkout HEAD -- .", BLOCKED),
+    ("git-guard", "git restore -W .", BLOCKED),
+    ("git-guard", "git restore :/", BLOCKED),
+    ("git-guard", "git clean -d -f", BLOCKED),
+    ("git-guard", "git stash drop stash@{0}", ALLOWED),  # one named entry: deliberate
     ("git-guard", "git checkout main", ALLOWED),
     ("git-guard", "git checkout -- src/a.py", ALLOWED),
     ("git-guard", "git restore --staged .", ALLOWED),  # only unstages
