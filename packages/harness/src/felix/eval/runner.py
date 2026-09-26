@@ -174,7 +174,12 @@ def _wants_llm_judge(rubric: dict[str, Any], *, deterministic_judge: bool) -> bo
         return False
     if rubric.get("llm_judge") is False:
         return False
-    return bool(rubric.get("llm_judge") or rubric.get("judge_criteria") or rubric.get("judge_model"))
+    return bool(
+        rubric.get("llm_judge")
+        or rubric.get("judge_criteria")
+        or rubric.get("judge_model")
+        or rubric.get("judge_decider")
+    )
 
 
 async def _maybe_llm_judge(
@@ -191,6 +196,27 @@ async def _maybe_llm_judge(
     # Defaulting to an Ollama route meant the judge silently degraded to the heuristic
     # on any deployment without a local model — see MemoryCapture.model.
     model_id = str(rubric.get("judge_model") or "claude-haiku")
+    decider_id = str(rubric.get("judge_decider") or "")
+    if decider_id:
+        from felix.decisions import build_decider, meets_criterion
+
+        try:
+            decided = await meets_criterion(
+                build_decider(settings, decider_id), answer, criteria, request=user_input, purpose="eval"
+            )
+            return {
+                "pass": decided >= threshold,
+                "score": decided,
+                "rule": "decider_judge",
+                "reason": "",
+                "heuristic_pass": ok,
+                "heuristic_score": score,
+                "heuristic_rule": rule,
+            }
+        except Exception as exc:
+            logger.warning(
+                "eval decider judge %s failed (%s); asking the model", decider_id, type(exc).__name__
+            )
     try:
         from felix.eval.compare import llm_judge_score
         from felix.manifests.schema import ModelSpec

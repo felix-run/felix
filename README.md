@@ -467,6 +467,12 @@ phrases like "unclear"; a probability below `min_confidence` escalates. It appli
 `deep`, whose loop builds the model the decider reaches; side requests such as compaction summaries
 keep the heuristic.
 
+Judges ask the decider too. A `guardrails.judges` rule with `decider: true` — on tool output or on
+the final reply — is scored by the decider's probability that the text meets its `criteria`, read
+as written, so a negative criterion like "must not leak credentials" needs no `assert_absent:`
+prefix; `reflect.decider: true` verifies drafts the same way, and an eval rubric names a decider
+with `judge_decider: <route>`. Each falls back to its model judge, then its heuristic.
+
 With `tools_retrieval.decider`, one `Choice` over the tool catalogue per user turn picks the
 shortlist the model sees, in place of embedding similarity. When the decider errors, or the
 shortlist holds less than `min_confidence` of the probability mass, selection falls back to

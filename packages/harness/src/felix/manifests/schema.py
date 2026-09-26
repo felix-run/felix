@@ -582,6 +582,9 @@ class ReflectSpec(_Strict):
     threshold: float = Field(default=0.7, ge=0, le=1)
     max_iterations: int = Field(default=2, ge=1, le=5)
     criteria: str = ""
+    #: Verify with `spec.decider` instead of asking `verifier_model` for "a number only";
+    #: the model verifier and the heuristic remain the fallback.
+    decider: bool = False
 
 
 class AnomalySpec(_Strict):
@@ -731,6 +734,9 @@ class JudgeRule(_Strict):
     model: str = ""
     target_tools: list[str] = Field(default_factory=list)
     final_response: bool = False
+    #: Score with `spec.decider` — the probability the text meets `criteria` — ahead of
+    #: `model` and the heuristic, which remain the fallback when the decider errors.
+    decider: bool = False
 
 
 class Guardrails(_Strict):
@@ -909,6 +915,12 @@ class Spec(_Strict):
             raise ValueError("tools_retrieval.decider needs spec.decider.id")
         if self.tools_retrieval.decider and not self.tools_retrieval.enabled:
             raise ValueError("tools_retrieval.decider needs tools_retrieval.enabled: true")
+        if not self.decider.id:
+            wanting = [f"guardrails.judges[{j.name}].decider" for j in self.guardrails.judges if j.decider]
+            if self.reflect.decider:
+                wanting.append("reflect.decider")
+            if wanting:
+                raise ValueError(f"{', '.join(wanting)} needs spec.decider.id")
         escalation = self.model.confidence_escalation
         if escalation.decider and not self.decider.id:
             raise ValueError("model.confidence_escalation.decider needs spec.decider.id")

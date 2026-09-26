@@ -125,6 +125,7 @@ async def _build_reflect(ctx: PatternBuildContext) -> Agent:
         settings=ctx.get("settings"),
         reflect_cfg=reflect_cfg,
         output_schema=ctx.get("output_schema"),
+        decider=ctx.get("decider"),
     )
 
 

@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Model-backed judges are metered.** `llm_judge_score` — behind every judge with a `model`, and
+  eval's `llm_judge` rubrics — called the model and never recorded the usage, so judge spend
+  escaped `limits.max_cost_usd` and the usage table.
+
 - **A router's sub-agents are the tenant's own agents, not blank ones.** Sub-agents were compiled
   from bundled YAML only, and a name missing there became an empty manifest — `You are <name>.`
   with no tools — so a router whose children were stored manifests routed every request to a
@@ -80,6 +84,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 ### Added
+
+- **Judges can be scored by a decision model.** A `guardrails.judges` rule with `decider: true`,
+  `reflect.decider: true`, or an eval rubric's `judge_decider: <route>` asks `spec.decider` for the
+  probability that the text meets the criterion, instead of asking a chat model for "a number
+  only" and parsing it. The criterion is read as written — a negative one like "must not leak
+  credentials" works without the `assert_absent:` prefix the heuristic needs. The model judge and
+  the heuristic stay as the fallback.
 
 - **A router can pick its sub-agent with a decision model, and escalation can ask one whether a
   reply answers the request.** A `router` manifest that sets `spec.decider` sends each request to
