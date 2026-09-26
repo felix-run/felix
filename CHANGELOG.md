@@ -54,6 +54,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Bundled manifests cache their prompts.** `quick`, `deep`, `router`, `hybrid-router`,
+  `governed`, `support` and `cowork` now set `spec.model.cache: true`, matching `contributor` and
+  `triage`, so each turn reads the conversation before it from cache instead of re-billing it at
+  full input price. `oss-only` is left off: Ollama reuses prompt prefixes on its own and has no use
+  for `prompt_cache_key`. A deployment holding a stored copy of one of these manifests keeps that
+  copy's setting, because the store is read ahead of the bundled YAML.
+
 - **A router whose classifier names no sub-agent now says so.** It still sends the request to the
   first sub-agent, but logs a warning and counts `felix_router_choice{method="unmatched"}` instead
   of making that indistinguishable from a deliberate choice.
