@@ -96,7 +96,7 @@ spec:
     risk_tier: limited            # limited | high
     transparency_notice: true     # EU AI Act Art. 50 notice in prompt + agent card
     forbid_plaintext_secrets: true
-    pin_compile: true             # refuse continue/resume if manifest hash drifts
+    pin_compile: true             # refuse continue/resume if the manifest or a sub-agent drifts
     retention_days: 30
 ```
 
@@ -229,6 +229,22 @@ spec:
 `schemes` is enforced against the authenticated principal — `api_key`, or a JWT verifier
 scheme (`access`, `cognito`, `self`); `jwt` is an umbrella for all three. An empty list
 allows any scheme. Anonymous access is governed by `allow_anonymous`, not by this list.
+
+**Sub-agents inherit the caller's admission.** `spec.auth.inbound` is checked on the manifest
+a request names — the router — and not again on each sub-agent it compiles. A child's own
+`allow_anonymous`, `schemes` and `required_scopes` therefore apply when the child is called by
+name, and not when a router hands it a request: the bundled `router` (anonymous) reaches `deep`
+(which is not) this way on purpose. Put the admission you need on the router. What a child keeps
+is everything else it declares — its tools, policies, approvals, screening and limits are
+compiled into it and apply whichever way it was reached.
+
+**`pin_compile` covers sub-agents**, recursively: the pin records a digest of every child a
+router compiles, and an edited, added or removed one is drift — 409 on a turn, a failed fiber on
+resume. Two limits, stated so nobody assumes more. A thread pinned before sub-agents were covered
+adopts its children as they are on its next turn, so an edit made before that upgrade is
+accepted. And the pin check and the compile resolve children separately, so a child published in
+the instant between them runs for that one turn before the next turn refuses it — the parent has
+no such gap, since it is resolved once (tracked in `docs/ROADMAP.md`).
 
 `providers` is checked at **compile**, against the resolved route for the primary model
 and every entry in `model.fallbacks`, so a violation fails the build rather than
