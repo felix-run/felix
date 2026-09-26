@@ -24,6 +24,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A non-streaming `/chat` says which approvals its run asked for.** The `approval_required` frame
+  reaches only a stream, so `POST /chat` on a gated tool held the caller for the rule's whole TTL
+  and then answered with a denial, and nothing in the response said an approval had been
+  requested. The response now carries `approvals`: each is the frame the stream would have sent —
+  `approval_id`, `tool_name`, `rule_id`, `reason`, `expires_at` — plus how it ended, `approved`,
+  `denied` or `expired`. While the request is still blocked, `GET /approvals?thread_id=` finds it.
+
 - **A pinned thread runs the sub-agents its pin checked.** The pin check and the compile resolved
   a router's children separately, so a child activated between the two compiled for one turn under
   a pin that had verified its predecessor. The check now records what it resolved on the request's

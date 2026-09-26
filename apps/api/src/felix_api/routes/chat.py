@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import replace
 from typing import Any, Literal
 
@@ -443,7 +444,38 @@ async def _chat_turn(body: ChatRequest, request: Request) -> tuple[int, dict[str
         "thread_id": thread,
         "model": model_id,
         "leaf_id": get_leaf(thread) if thread else None,
+        "approvals": await _approvals_raised(settings, auth.tenant_id, req_ctx.extras),
     }
+
+
+async def _approvals_raised(settings: Any, tenant_id: str, extras: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every approval this run asked for, with how it ended.
+
+    A non-streaming caller has no `approval_required` frame to read, and used to wait out the
+    rule's TTL and receive a denial with nothing saying an approval had been requested. Each
+    entry is the frame the stream would have sent, plus `status` read back from the row once
+    the run is over: `approved`, `denied`, or `expired` — a pending row past its deadline, which
+    is what a timeout leaves, since the gate denies without writing a decision. While a request
+    is still blocked, `GET /approvals?thread_id=` is where to find the id to decide.
+    """
+    from felix.approvals.store import get_approval
+    from felix.side_events import requested_on
+
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    now = int(time.time() * 1000)
+    for raised in requested_on(extras, "approval_required"):
+        approval_id = str(raised.get("approval_id") or "")
+        if not approval_id or approval_id in seen:
+            continue
+        seen.add(approval_id)
+        row = await get_approval(settings, tenant_id, approval_id)
+        status = str((row or {}).get("status") or "unknown")
+        expires_at = (row or {}).get("expires_at")
+        if status == "pending" and expires_at is not None and int(expires_at) < now:
+            status = "expired"
+        out.append({**raised, "status": status})
+    return out
 
 
 def _safe_filename(thread_id: str) -> str:
