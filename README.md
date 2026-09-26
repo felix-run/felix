@@ -188,7 +188,7 @@ Client → Ingress (Caddy / Traefik / nginx / Cloudflare DNS+CDN)
 | `packages/ai` | Model layer: wire formats, catalog, turn types. Imports nothing from `felix` |
 | `packages/harness` | Manifests, patterns, tools, session, governance, auth, plugins |
 | `packages/cli` | `felix migrate \| eval \| mint-jwt \| bundle-manifests \| validate-manifest \| doctor \| version \| temporal-worker` |
-| `manifests/` | Bundled agents: `quick`, `deep`, `router`, `oss-only`, `hybrid-router`, `support`, `cowork`, `governed`, `contributor`, `triage` |
+| `manifests/` | Bundled agents: `quick`, `deep`, `router`, `oss-only`, `hybrid-router`, `support`, `decider-support`, `cowork`, `governed`, `contributor`, `triage` |
 
 ### Vendor independence
 
@@ -452,7 +452,9 @@ depends on a second vendor; it reports its pick with no confidence, because a ch
 self-assessed certainty is not calibrated. Every decision is metered like a model turn and counts
 against `limits.max_cost_usd`.
 
-A manifest names its decider once, under `spec.decider`, and each consumer opts in:
+A manifest names its decider once, under `spec.decider`, and each consumer opts in —
+`manifests/decider-support.yaml` switches on every one that fits a support agent, and is the one
+to copy from:
 
 ```yaml
 spec:
@@ -528,7 +530,7 @@ Two things to know before flipping an existing deployment:
 
 - **Stored manifests stop being served.** Every tenant collapses onto the image's file, so
   any per-tenant `spec.auth.inbound` tightening — `required_scopes` in particular — is
-  dropped. Eight of the nine bundled manifests are `allow_anonymous: true`.
+  dropped. Seven of the eleven bundled manifests are `allow_anonymous: true`.
 - **`pin_compile` threads will 409 once.** The resolved version becomes `null` and the
   content hash becomes the bundled YAML's, which is drift by design.
 
