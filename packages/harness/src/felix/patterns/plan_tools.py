@@ -11,6 +11,10 @@ from typing import Any
 
 from felix.tools.types import Tool, define_tool
 
+# A conflict means someone else wrote the plan between our read and write; a few
+# re-reads settle any realistic contention without looping on a hot row forever.
+_UPDATE_ATTEMPTS = 3
+
 
 def _plan_tools() -> list[Tool]:
     async def plan_create(args: dict[str, Any], _ctx: Any = None) -> str:
@@ -73,31 +77,37 @@ def _plan_tools() -> list[Tool]:
         step_id = str(args.get("step_id") or "")
         if not plan_id or not step_id:
             return "error: plan_id and step_id required"
+        # Conditional, and retried against what is actually stored: an operator may
+        # have replaced the plan through `PUT /plans/{id}` since it was read, and an
+        # unconditional write here would erase their edit to record a step status.
         row = await plans_store.get_plan(req.settings, req.auth.tenant_id, plan_id)
-        if row is None:
-            return f"error: plan not found: {plan_id}"
-        plan = dict(row["plan"] or {})
-        steps = list(plan.get("steps") or [])
-        found = False
-        for step in steps:
-            if str(step.get("id")) == step_id:
-                step["status"] = str(args.get("status") or "done")
-                if args.get("note"):
-                    step["note"] = str(args["note"])
-                found = True
-                break
-        if not found:
-            return f"error: step not found: {step_id}"
-        plan["steps"] = steps
-        updated = await plans_store.put_plan(
-            req.settings,
-            req.auth.tenant_id,
-            plan_id,
-            plan=plan,
-            manifest_id=row.get("manifest_id") or req.manifest_id or "",
-            expires_at=row.get("expires_at"),
-        )
-        return json.dumps({"id": updated["id"], "plan": updated["plan"]}, separators=(",", ":"))
+        for _ in range(_UPDATE_ATTEMPTS):
+            if row is None:
+                return f"error: plan not found: {plan_id}"
+            plan = dict(row["plan"] or {})
+            steps = [dict(step) for step in plan.get("steps") or []]
+            step = next((s for s in steps if str(s.get("id")) == step_id), None)
+            if step is None:
+                return f"error: step not found: {step_id}"
+            step["status"] = str(args.get("status") or "done")
+            if args.get("note"):
+                step["note"] = str(args["note"])
+            plan["steps"] = steps
+            try:
+                updated = await plans_store.put_plan(
+                    req.settings,
+                    req.auth.tenant_id,
+                    plan_id,
+                    plan=plan,
+                    # Backfills a plan stored without one; otherwise it is what is stored.
+                    manifest_id=row.get("manifest_id") or req.manifest_id or "",
+                    expected_updated_at=row["updated_at"],
+                )
+            except plans_store.PlanConflict as conflict:
+                row = conflict.current
+                continue
+            return json.dumps({"id": updated["id"], "plan": updated["plan"]}, separators=(",", ":"))
+        return f"error: plan {plan_id} kept changing while updating step {step_id}; try again"
 
     async def plan_get(args: dict[str, Any], _ctx: Any = None) -> str:
         import json

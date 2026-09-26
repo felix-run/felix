@@ -162,6 +162,36 @@ async def test_plans_crud_http(settings: Settings) -> None:
 
 
 @pytest.mark.asyncio
+async def test_plan_put_is_conditional_and_keeps_what_it_was_not_sent(settings: Settings) -> None:
+    from felix_api.app import create_app
+
+    app = create_app(settings=settings, plugins=[])
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        first = await client.put(
+            "/plans/p-cond", json={"plan": {"v": 1}, "manifest_id": "deep", "expires_at": 99}
+        )
+        assert first.status_code == 200
+        base = first.json()["updated_at"]
+
+        # Only the body: manifest and expiry stay as stored.
+        second = await client.put("/plans/p-cond", json={"plan": {"v": 2}, "expected_updated_at": base})
+        assert second.status_code == 200
+        assert (second.json()["manifest_id"], second.json()["expires_at"]) == ("deep", 99)
+
+        # Based on the first version, which is no longer current.
+        stale = await client.put("/plans/p-cond", json={"plan": {"v": "stale"}, "expected_updated_at": base})
+        assert stale.status_code == 409
+        detail = stale.json()["detail"]
+        assert detail["error"] == "plan_changed"
+        assert detail["current"]["plan"] == {"v": 2}
+
+        # An explicit null still clears the expiry.
+        cleared = await client.put("/plans/p-cond", json={"plan": {"v": 3}, "expires_at": None})
+        assert cleared.json()["expires_at"] is None
+
+
+@pytest.mark.asyncio
 async def test_agent_card_http(settings: Settings) -> None:
     from felix_api.app import create_app
 
