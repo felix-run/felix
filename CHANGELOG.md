@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A router's sub-agents are the tenant's own agents, not blank ones.** Sub-agents were compiled
+  from bundled YAML only, and a name missing there became an empty manifest — `You are <name>.`
+  with no tools — so a router whose children were stored manifests routed every request to a
+  blank agent without an error. Children now resolve as a request would (manifest store, object
+  store, bundled) under the parent's tenant. A child that resolves nowhere fails the compile, and
+  routers that name each other in a cycle are refused instead of recursing until the stack gave out.
+  Each child compiles once per request however many parents name it, and nesting deeper than four
+  routers is refused, so a stored tree cannot turn one chat into an unbounded compile.
+
 - **A run ending on a denied tool is recorded with `final_response` status reflecting the
   denial.** Until now, a run that ended because an approval timed out or a tool was denied still
   wrote `final_response` with `status=ok`, so a denied run read as a successful completion in the
