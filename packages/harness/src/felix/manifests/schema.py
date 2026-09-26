@@ -612,7 +612,26 @@ class ToolsRetrievalSpec(_Strict):
     decider: bool = False
 
 
-_ESCALATION_DECIDER_PATTERNS = frozenset({"react", "deep"})
+# Closed on purpose: these consumers reach the model through the react loop, and only
+# `react` and `deep` (whose inner agent is react) run it. Anywhere else a flag would
+# validate and then do nothing.
+_REACT_LOOP_PATTERNS = frozenset({"react", "deep"})
+
+
+class SkillSuggestionSpec(_Strict):
+    """Suggest the skill a request needs, using `spec.decider`, as a one-line hint.
+
+    Ranks the catalog, reranks a shortlist, and hints only when the request asks for a task
+    (`min_gate`) and the best skill fits it (`min_fit`). The model still decides whether to
+    `activate_skill`. Worth it with a large catalog; a handful of skills the model picks
+    between well on its own.
+    """
+
+    enabled: bool = False
+    #: Skills carried from the ranking into the rerank. Catalogs no larger skip the ranking.
+    shortlist: int = Field(default=3, ge=1, le=10)
+    min_gate: float = Field(default=0.3, ge=0.0, le=1.0)
+    min_fit: float = Field(default=0.3, ge=0.0, le=1.0)
 
 
 class DeciderSpec(_Strict):
@@ -864,6 +883,7 @@ class Spec(_Strict):
     execution: ExecutionSpec = Field(default_factory=ExecutionSpec)
     tools_retrieval: ToolsRetrievalSpec = Field(default_factory=ToolsRetrievalSpec)
     decider: DeciderSpec = Field(default_factory=DeciderSpec)
+    skill_suggestion: SkillSuggestionSpec = Field(default_factory=SkillSuggestionSpec)
     artifacts: ArtifactsSpec = Field(default_factory=ArtifactsSpec)
     reflect: ReflectSpec = Field(default_factory=ReflectSpec)
     plan_execute: PlanExecuteSpec = Field(default_factory=PlanExecuteSpec)
@@ -929,11 +949,19 @@ class Spec(_Strict):
         # Closed on purpose: the decider reaches escalation through the react loop's model,
         # and only `react` and `deep` (whose inner agent is react) run that loop. Anywhere
         # else the flag would validate and then silently judge by the heuristic.
-        if escalation.decider and self.pattern not in _ESCALATION_DECIDER_PATTERNS:
+        if escalation.decider and self.pattern not in _REACT_LOOP_PATTERNS:
             raise ValueError(
                 f"model.confidence_escalation.decider is honoured by patterns "
-                f"{sorted(_ESCALATION_DECIDER_PATTERNS)}, not {self.pattern!r}"
+                f"{sorted(_REACT_LOOP_PATTERNS)}, not {self.pattern!r}"
             )
+        if self.skill_suggestion.enabled:
+            if not self.decider.id:
+                raise ValueError("skill_suggestion needs spec.decider.id")
+            if self.pattern not in _REACT_LOOP_PATTERNS:
+                raise ValueError(
+                    f"skill_suggestion is honoured by patterns {sorted(_REACT_LOOP_PATTERNS)}, "
+                    f"not {self.pattern!r}"
+                )
         return self
 
     @field_validator("output_schema")
