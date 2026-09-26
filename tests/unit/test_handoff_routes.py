@@ -77,7 +77,9 @@ def test_handoff_system_message_threads_the_routes_it_is_given() -> None:
     note = handoff_system_message(
         messages, previous_model="claude-sonnet", next_model="gpt-4.1", routes=_ROUTES
     )
-    assert note is not None and "earlier turn" in note.content
+    # The routes decided this is a cross-provider switch. What the note may *contain* is
+    # `test_summary_trust_tier.py`'s subject: harness text, never the conversation.
+    assert note is not None and "claude-sonnet" in note.content and "gpt-4.1" in note.content
 
     # Same provider under two route names: no handoff, and the sniff cannot tell.
     routes = {**_ROUTES, "second-openai": {"provider": "openai", "model": "gpt-4o"}}

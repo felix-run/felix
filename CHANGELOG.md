@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **A conversation summary never re-enters the system tier.** `ab5ad59` moved the compaction
+  summary — a model's rewrite of a transcript that includes raw tool output — out of the system
+  tier on the turn it was made. Every path that *replays* it on later turns (the checkpoint
+  rebuild, the re-walk, and both paths of `SummarizingSessionStrategy`) still injected it as
+  `role="system"`, and the test pinning the fix read the module's source for one string, so it
+  passed throughout. Every path now goes through one constructor, user-role and labelled as
+  reference material, and fenced so a summary cannot forge its own boundary.
+  `SummarizingSessionStrategy` and the branch summariser now fence their input and carry the
+  untrusted-data notice, as compaction's summariser does. The cross-provider handoff note put the prior transcript, tool results
+  included, into a system message; it now carries harness text only, since the conversation
+  follows it in full.
+
+
 ### Fixed
 
 - **A plan write no longer erases a concurrent one, or fields it was not sent** (#320).

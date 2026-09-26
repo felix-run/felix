@@ -90,15 +90,21 @@ def handoff_system_message(
     next_model: str | None,
     routes: dict[str, Any] | None = None,
 ) -> ChatMessage | None:
-    """Build a system note to prepend when switching provider families."""
+    """Build a system note to prepend when switching provider families.
+
+    Harness text only. It used to carry `serialize_for_handoff(messages)` -- the prior
+    conversation, tool results included -- which put raw tool output in the system tier,
+    the tier `ab5ad59` exists to keep it out of. The transcript was also a second copy:
+    the conversation itself follows this note in full, so dropping it loses nothing the
+    model is not already given, and saves up to 24K characters on the turn it fires.
+    """
     if not needs_handoff(previous_model, next_model, routes=routes):
         return None
-    transcript = serialize_for_handoff(messages)
     return ChatMessage(
         role="system",
         content=(
             f"[model handoff] Switched from {previous_model} to {next_model}. "
-            f"Prior conversation (text-only):\n\n{transcript}"
+            "The conversation so far follows."
         ),
     )
 
