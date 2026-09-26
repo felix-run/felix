@@ -1,8 +1,24 @@
 #!/bin/bash
 # SessionStart: inject the few facts that make the difference between a working
 # first command and a confusing failure. Stdout is added to Claude's context.
+INPUT=$(cat)
 root="${CLAUDE_PROJECT_DIR:-.}"
 cd "$root" 2>/dev/null || exit 0
+
+# Baseline for doc-drift-stop.sh: what the tree already carried before this session did
+# anything, so the Stop gate asks about this session's changes and nobody else's. Taken
+# once per session and tree -- SessionStart fires again on resume and compact, and a
+# later snapshot would silently absorb the session's own work.
+if command -v jq >/dev/null 2>&1; then
+  # shellcheck source=lib/surfaces.sh
+  . "$(dirname "${BASH_SOURCE[0]}")/lib/surfaces.sh"
+  sid=$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)
+  top=$(drift_tree "$INPUT")
+  if [ -n "$sid" ] && [ -n "$top" ]; then
+    base=$(drift_baseline_file "$sid" "$top")
+    [ -f "$base" ] || drift_snapshot "$top" > "$base" 2>/dev/null
+  fi
+fi
 
 echo "Felix harness (Python 3.14, uv workspace). Tests need the in-memory env:"
 echo "  ./scripts/test.sh [pytest args]   # sets FELIX_DATABASE_URL=memory://ci etc."

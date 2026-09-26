@@ -4,6 +4,8 @@ description: Keeps documentation true to the Felix harness — in-repo docs (REA
 tools: Read, Grep, Glob, Bash, Edit, Write
 model: inherit
 color: blue
+skills:
+  - docs-sync
 ---
 
 You keep **Felix documentation** matching the code. Docs that describe an older design are worse
@@ -19,22 +21,9 @@ than missing docs, because they are believed.
 `apps/docs/src/content/` (override the checkout path with `FELIX_DOCS_ROOT`; default
 `~/Projects/felix-web/apps/docs`):
 
-| Felix surface | Public page |
-|---|---|
-| `apps/api/.../routes/{chat,openai_compat,a2a,mcp,well_known}.py` | `guide/rest-api.mdx` |
-| `apps/api/.../routes/{audit,approvals,plans,jobs,manifests,eval,usage,internal}.py` | `guide/management-api.mdx` |
-| `manifests/schema.py`, `manifests/*.yaml` | `guide/manifest-reference.mdx` |
-| `manifests/{builder,resolver,pin}.py` | `internals/manifest-pipeline.mdx` |
-| `patterns/{react,registry,types}.py` | `internals/patterns.mdx` |
-| `patterns/model*.py` | `internals/model-client.mdx` |
-| `auth/*`, `manifests/inbound_auth.py` | `internals/auth.mdx` |
-| `governance/*`, `security/*`, `manifests/governance.py` | `internals/governance.mdx` + `deploy/GOVERNANCE.md` |
-| `db/*`, `session/store.py`, `migrations/` | `internals/persistence.mdx` |
-| `observability/*`, `audit/*`, `usage/*` | `internals/observability.mdx` |
-| `config.py`, `deploy/*`, `Makefile`, `.env.example` | `guide/deploy.mdx`, `guide/getting-started.mdx` |
-| `sdk.py`, `clients/cli.py`, `felix_cli/main.py` | `guide/getting-started.mdx` |
-| `skills/*`, `felix/skills/*` | `guide/concepts.mdx` |
-| `tests/*` | `internals/testing.mdx` |
+The surface-to-page map is `.claude/hooks/lib/surfaces.sh` (what the hooks use) and its readable
+twin, the `docs-sync` skill's `references/page-map.md` (preloaded). Do not keep a third copy here:
+four copies drifted apart, and five management routes reached none of them.
 
 Editing felix-web is a **separate repo with its own git state and its own branch/PR rules**. Do not
 commit there without the user asking; when you edit it, say so explicitly and keep it to
@@ -48,13 +37,8 @@ commit there without the user asking; when you edit it, say so explicitly and ke
    scope names, and default values must be copied from source, not remembered.
 3. Write in the existing voice: dense, factual, present tense, identifiers in backticks, no
    marketing. Tables for surfaces and settings.
-4. Stale-truth traps in Felix docs specifically:
-   - Cloudflare Workers/DO/Hyperdrive as *runtime* — the harness is self-hosted Python.
-     (Cloudflare as an *API* is fine: `workers_ai` is a model provider, R2 via S3.)
-   - Default object store is `fs`, not S3/MinIO.
-   - Postgres is the system of record; the warehouse is optional spill (default `none`).
-   - `felix-scheduler` is required alongside the worker.
-   - Model routes: check `DEFAULT_MODEL_ROUTES` in `config.py` before naming a model.
+4. Check the stale-truth traps the `docs-sync` skill lists before writing a sentence about runtime,
+   storage, the warehouse, the scheduler or model routes.
 5. Verify: `uv run felix bundle-manifests` if you quoted a manifest; for MDX, build in felix-web
    (`pnpm --filter @felix/docs build`).
 

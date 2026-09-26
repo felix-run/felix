@@ -5,10 +5,11 @@ a grep for its name finds nothing.
 
 ## Entry points to start from
 
-`felix-api` (Granian/FastAPI, `apps/api/src/felix_api/main.py:create_app`), `felix-worker` and
-`felix-scheduler` (Taskiq, `apps/worker/src/felix_worker/tasks.py`), the `felix` CLI
-(`packages/cli/src/felix_cli/main.py`: `migrate | eval | mint-jwt | bundle-manifests |
-validate-manifest | doctor | version | temporal-worker`), and Alembic (`migrations/versions/`).
+`felix-api` (Granian/FastAPI: the factory string is `felix_api.main:create_application`, which
+calls `apps/api/src/felix_api/app.py:create_app`), `felix-worker` and `felix-scheduler` (Taskiq,
+`apps/worker/src/felix_worker/tasks.py`), the `felix` CLI (`packages/cli/src/felix_cli/main.py`;
+`uv run felix --help` lists the commands), and Alembic (`migrations/versions/`). Every
+`[project.scripts]` target and factory string is pinned by `tests/unit/test_entrypoint_wiring.py`.
 
 ## Channels that defeat grep here
 

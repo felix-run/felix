@@ -12,12 +12,13 @@ Granian (API), Taskiq (worker/scheduler), Postgres+pgvector, Valkey/Redis, plugg
 ## Commands
 
 ```bash
-make install            # uv sync --dev (lean core; what CI uses)
+make install            # uv sync --dev (lean core; CI lint/type jobs use --all-extras)
 make install-full       # uv sync --all-extras --dev (aws/gcp/mcp/browser/embeddings/…)
 make check              # ruff check + ty check + pytest w/ coverage floor + ruff format --check
 make test-cov           # the suite with coverage against the floor; `check` and CI both run this
-make check-ci           # check + manifest bundle/schema, toolkit, mock eval, pre-commit
-make conformance        # store contract vs Postgres (needs FELIX_CONFORMANCE_DATABASE_URL)
+make check-ci           # check + bundle, schema-check, toolkit, eval, SRI, pre-commit (each also a target)
+make e2e                # tests/e2e only: the real app over HTTP, scripted model
+make conformance        # store contract vs Postgres (needs FELIX_CONFORMANCE_DATABASE_URL; + _REDIS_URL as CI)
 make lint / fmt / type / test
 make dev                # API on :8080 with FELIX_AUTH_MODE=none, fs object store
 make cli                # httpx REPL client (clients/cli.py)
@@ -53,7 +54,7 @@ Structural gates (fast, no infrastructure):
 ./scripts/test.sh tests/unit/test_invariants.py        # repo invariants, enforced
 ./scripts/test.sh tests/unit/test_entrypoint_wiring.py # every console script, factory and broker path
 uv sync --locked --no-dev && uv run --no-sync python scripts/lean-import-check.py
-python3 scripts/validate-toolkit.py               # .claude/ hooks, settings, skills
+python3 scripts/validate-toolkit.py               # .claude/ hooks, settings, skills, and every path they cite
 uv run python scripts/gen-manifest-schema.py --check   # editor JSON Schema is current
 ```
 
@@ -238,7 +239,8 @@ cron labels). `felix-scheduler` must run alongside `felix-worker` or nothing fir
 - **Skills load on demand** for the deep procedures: `felix-dev-loop`, `manifest-authoring`,
   `governance-pipeline`, `api-surface`, `postgres-migrations`, `plugin-seam`, `security-review`,
   `docs-sync`, `deploy-runbook`, `python-conventions`, `branch-pr-workflow`, `code-quality`,
-  `dead-code-audit`, `test-quality`.
+  `dead-code-audit`, `test-quality`, `model-layer` (providers, routes, the catalog, and decision
+  models). Most subagents preload the skill they depend on.
 - **Subagents** for delegated work: `felix-engineer`, `felix-postgres`, `felix-devops`,
   `felix-code-reviewer`, `felix-security-reviewer`, `felix-manifest-architect`,
   `felix-test-engineer`, `felix-dx-maintainer`, `felix-docs-syncer`, `felix-quality-reviewer`,

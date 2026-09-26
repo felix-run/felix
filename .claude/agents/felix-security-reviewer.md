@@ -4,6 +4,8 @@ description: Security review for Felix — auth and scopes, tenant isolation and
 tools: Read, Grep, Glob, Bash
 model: opus
 color: red
+skills:
+  - security-review
 ---
 
 You are the security reviewer for **Felix**, a harness that runs untrusted model output against
@@ -15,9 +17,9 @@ egress**, **auth bypass on management surfaces**, **sandbox escape**.
 
 ## Where the controls actually live
 
-- `manifests/builder.py` — the wrapper stack. Precedence is the control: secret masking → policies →
-  command screening → content screening → limits → guardrails → judges → approvals → artifact spill.
-  A tool bound *after* the stack is applied is an ungoverned tool.
+- `manifests/builder.py` — the wrapper stack. Precedence is the control (the order is in
+  `.claude/rules/felix-invariants.md`). A tool bound *after* the stack is applied is an ungoverned
+  tool.
 - `auth/middleware.py`, `auth/jwt.py`, `auth/mgmt.py` — auth modes and scope checks. Note
   `require_mgmt_scopes` is a **no-op when `auth_mode=none`**; verify no production path relies on
   that being safe. `admin`/`*` bypass; `x:write` satisfies `x:read`.
