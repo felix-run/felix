@@ -1684,3 +1684,30 @@ def test_no_default_limit_exceeds_the_maximum_a_manifest_may_declare() -> None:
         if value > ABSOLUTE_LIMITS[name]
     }
     assert not too_high, f"default above the declarable maximum: {too_high}"
+
+
+def test_every_build_after_a_pin_check_compiles_the_children_it_checked() -> None:
+    """`build_tenant_agent(manifest=resolved.manifest, ...)` must also pass
+    `sub_agents=resolved.sub_agents`.
+
+    The pin check resolves a router's children and records them on `ResolvedManifest`; a build
+    that omits them resolves again, so a child activated in between compiles under a pin that
+    verified its predecessor. The parameter defaults to nothing, which is exactly why dropping
+    it is silent — the `/v1` streaming path was one line-wrapped call away from being missed.
+    """
+    sites = 0
+    offenders: list[str] = []
+    for root in SOURCE_ROOTS:
+        for path in _python_files(root):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if not (isinstance(node, ast.Call) and getattr(node.func, "id", "") == "build_tenant_agent"):
+                    continue
+                kw = {k.arg: ast.unparse(k.value) for k in node.keywords}
+                if kw.get("manifest") != "resolved.manifest":
+                    continue
+                sites += 1
+                if kw.get("sub_agents") != "resolved.sub_agents":
+                    offenders.append(f"{path.relative_to(ROOT)}:{node.lineno}")
+    assert sites >= 8, f"only {sites} build_tenant_agent(manifest=resolved.manifest) calls matched (10 today)"
+    assert offenders == [], f"these compile children the pin did not check: {offenders}"

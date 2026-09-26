@@ -240,11 +240,11 @@ compiled into it and apply whichever way it was reached.
 
 **`pin_compile` covers sub-agents**, recursively: the pin records a digest of every child a
 router compiles, and an edited, added or removed one is drift — 409 on a turn, a failed fiber on
-resume. Two limits, stated so nobody assumes more. A thread pinned before sub-agents were covered
-adopts its children as they are on its next turn, so an edit made before that upgrade is
-accepted. And the pin check and the compile resolve children separately, so a child published in
-the instant between them runs for that one turn before the next turn refuses it — the parent has
-no such gap, since it is resolved once (tracked in `docs/ROADMAP.md`).
+resume. The compile builds from the children the pin check resolved for that request, so the tree
+the pin verified is the tree that runs; a child published after the check waits for the next turn,
+which refuses it. One limit, stated so nobody assumes more: a thread pinned before sub-agents were
+covered adopts its children as they are on its next turn, so an edit made before that upgrade is
+accepted.
 
 `providers` is checked at **compile**, against the resolved route for the primary model
 and every entry in `model.fallbacks`, so a violation fails the build rather than

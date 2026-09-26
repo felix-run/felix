@@ -6,7 +6,7 @@ import hashlib
 import json
 import time
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
 from felix.manifests.loader import load_bundled, parse_stored_manifest
@@ -41,6 +41,11 @@ class ResolvedManifest:
     version: int | None = None
     variant: ManifestVariant | None = None
     cache_key: str = ""
+    # The sub-agents a pin check resolved for this request, by name; `None` for one it
+    # found nowhere. The compile builds from these rather than resolving again, so the tree
+    # the pin verified is the tree that runs. Per request: a `ResolvedManifest` is built per
+    # resolution and never cached — only the `Manifest` inside it is.
+    sub_agents: dict[str, Manifest | None] = field(default_factory=dict)
 
 
 @dataclass
