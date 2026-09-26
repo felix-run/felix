@@ -454,9 +454,11 @@ def apply_content_screening(
             unavailable = False
             if not flagged and (model_id or decider is not None):
                 from felix.config import get_settings
-                from felix.governance.inbound import screen_for_injection
+                from felix.governance.inbound import screen_tool_output
 
-                result = await screen_for_injection(get_settings(), content, model_id, decider)
+                # Every window of the output, not the first: a benign prefix longer than one
+                # screener window used to carry the payload past both the model and the decider.
+                result = await screen_tool_output(get_settings(), content, model_id, decider)
                 # Unavailable is not clean: this is the path that screens MCP, A2A,
                 # browser and sandbox output, so failing open here is the whole ballgame.
                 unavailable = result.unavailable

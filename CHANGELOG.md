@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Screened tool output is read in full.** The model screener — and now the decider — saw only
+  the first 4,000 characters of a tool result, so a benign prefix longer than that carried a
+  payload past both; only the markers read the whole text. Tool output is screened window by
+  window like a user turn, and output longer than eight windows is treated as unscreenable, so
+  `on_flag` quarantines or blocks it. Applies when `content_screening.model` or `.decider` is set.
+
 - **The model injection screener is metered.** `content_screening.model` runs on every user turn
   and every untrusted tool result, and its calls never reached `record_usage`, so screening spend
   escaped `limits.max_cost_usd` and the usage table.

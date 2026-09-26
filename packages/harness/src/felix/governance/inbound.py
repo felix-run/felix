@@ -392,6 +392,20 @@ async def _screen_chunks(
     return ScreenResult(score=0.0)
 
 
+async def screen_tool_output(
+    settings: Settings, text: str, model_id: str, decider: MeteredDecider | None = None
+) -> ScreenResult:
+    """`_screen_chunks` for tool output, with the same size ceiling a user turn has.
+
+    Output beyond `MAX_SCREEN_CHUNKS` windows is not screened window by window — each
+    window is a model call — and so is reported unavailable: `on_flag` then quarantines or
+    blocks it, where it used to be screened on its first window and admitted.
+    """
+    if len(text) > MAX_SCREEN_CHUNKS * SCREEN_CHARS:
+        return ScreenResult(available=False, reason="too_large_to_screen")
+    return await _screen_chunks(settings, text, model_id, decider)
+
+
 def _strings_in(value: Any) -> list[str]:
     """Every string in an argument tree — values *and* keys, since a free-form map's keys
     reach the tool too."""
@@ -631,4 +645,5 @@ __all__ = [
     "inbound_controls_enabled",
     "input_pii_enabled",
     "screen_tool_arguments",
+    "screen_tool_output",
 ]

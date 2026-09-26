@@ -645,7 +645,14 @@ tries to override the assistant's instructions, to jailbreak it, or to exfiltrat
 on the highest probability. It is **additive** — the markers still run first, `model` still runs
 beside it, either one flagging flags — because Jev is documented as not adversarially robust: it
 is a cheap extra net for paraphrased injections the markers miss, not a replacement for the model
-screener. The screened text, a 4,000-character window at a time, goes to the decider's provider.
+screener. The screened text, a 4,000-character window at a time, goes to the decider's provider —
+which `FELIX_DECISION_ROUTES` may point at a different vendor from the chat model. Tool output is
+secret-masked before it is screened; a user turn is not, as with the model screener.
+
+Screened tool output is read window by window across its whole length, like a user turn; output
+longer than eight windows (32,000 characters) is reported unavailable, so `on_flag` quarantines or
+blocks it rather than screening its first window and admitting the rest. This applies whenever
+`model` or `decider` is set.
 
 Two things to re-measure if you set `model` and previously narrowed `tools`:
 
