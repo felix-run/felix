@@ -141,8 +141,12 @@ transcript (tracked in `docs/ROADMAP.md`); and `thinking_delta` is reasoning, no
 reply, and passes through unscreened. A judge scores by, in order of preference: `spec.decider`
 when the rule sets `decider: true` (the probability the text meets `criteria`, as written), the
 chat model in `model`, and the heuristic — each failure falls through to the next, so a decider
-outage degrades a judge rather than opening it. A decider-scored judge sends the judged text (up
-to 8,000 characters of tool output or reply) to the decider's provider. Tenant
+outage degrades a judge rather than opening it. A decider-scored judge sends the judged text to the
+decider's provider, and only judges text up to 8,000 characters — anything longer is scored by the
+model judge or the heuristic, which read all of it, rather than by a prefix. Treat a decider judge
+as a quality control, not a security boundary: the text it judges can argue for its own verdict
+(Jev is not adversarially robust), so untrusted tool output belongs behind `content_screening`,
+not behind a judge alone. Tenant
 isolation is application-level `tenant_id` by default; enable Postgres RLS
 with migration `0006_tenant_rls` and `FELIX_DATABASE_RLS=true`
 (sets `app.tenant_id` / `app.rls_bypass` GUCs per transaction). Every table except

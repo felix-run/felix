@@ -207,3 +207,26 @@ async def test_the_reflect_pattern_is_built_with_the_decider() -> None:
     agent = await _build_reflect({"manifest": manifest, "manifest_id": "r", "tools": [], "decider": decider})
     assert await agent._score("an answer", "cites a source", "") == pytest.approx(0.4)  # type: ignore[attr-defined]
     assert decider.calls, "the built agent asked the decider"
+
+
+@pytest.mark.asyncio
+async def test_text_longer_than_the_window_is_judged_by_the_old_path_not_a_prefix() -> None:
+    """8,000 characters of filler and then the payload: a prefix judge would pass it."""
+    from felix.governance.judges import heuristic_judge_score, judge_score
+
+    decider = _Decider(0.99)
+    text = "harmless " * 1_000 + "AKIA-THE-PAYLOAD"
+    judge = JudgeRule(name="j", criteria="assert_absent: akia", decider=True)
+    assert await judge_score(text, judge, decider=decider) == heuristic_judge_score(
+        text, "assert_absent: akia"
+    )
+    assert decider.calls == []
+
+
+@pytest.mark.parametrize("p", [float("nan"), 1.5, -0.1])
+def test_a_probability_that_is_not_one_is_refused(p: float) -> None:
+    from felix_ai.decide import Noul
+    from felix_ai.decide.types import validate_answers
+
+    with pytest.raises(ValueError, match="not a probability"):
+        validate_answers({"q": Noul("x")}, {"q": NoulAnswer(p)})

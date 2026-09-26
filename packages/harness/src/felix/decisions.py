@@ -151,7 +151,12 @@ async def meets_criterion(
     """
     from felix_ai.decide import Noul
 
-    state: dict[str, str] = {"text": text[:_JUDGED_CHARS]}
+    if len(text) > _JUDGED_CHARS:
+        # Refused, not truncated. A judge that reads a prefix passes 8,000 characters of
+        # filler followed by the payload — a deny control narrowed to whatever an untrusted
+        # tool chooses to put first. The caller's model judge and heuristic read it all.
+        raise ValueError(f"text of {len(text)} characters exceeds the decider's {_JUDGED_CHARS}")
+    state: dict[str, str] = {"text": text}
     if request:
         state["request"] = request[: _JUDGED_CHARS // 2]
     question = {"meets": Noul(f"The text meets this criterion: {criteria}")}

@@ -16,6 +16,7 @@ questions with any chat model, and a plugin can register another backend.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
@@ -195,6 +196,9 @@ def validate_answers(questions: Mapping[str, Question], answers: Mapping[str, An
             raise ValueError(f"decision provider left {key!r} unanswered")
         if not isinstance(answer, _ANSWER_TYPE[type(q)]):
             raise ValueError(f"decision provider answered {key!r} with a {type(answer).__name__}")
+        if isinstance(answer, NoulAnswer) and not (math.isfinite(answer.p) and 0.0 <= answer.p <= 1.0):
+            # NaN compares False against every threshold, so a judge gating on `p < t` passes it.
+            raise ValueError(f"decision provider answered {key!r} with p={answer.p}, not a probability")
         if isinstance(answer, ChoiceAnswer) and isinstance(q, Choice) and answer.choice not in q.criteria:
             raise ValueError(f"decision provider chose {answer.choice!r} for {key!r}, which was not offered")
         if (
