@@ -238,6 +238,14 @@ name, and not when a router hands it a request: the bundled `router` (anonymous)
 is everything else it declares — its tools, policies, approvals, screening and limits are
 compiled into it and apply whichever way it was reached.
 
+**`pin_compile` covers sub-agents**, recursively: the pin records a digest of every child a
+router compiles, and an edited, added or removed one is drift — 409 on a turn, a failed fiber on
+resume. Two limits, stated so nobody assumes more. A thread pinned before sub-agents were covered
+adopts its children as they are on its next turn, so an edit made before that upgrade is
+accepted. And the pin check and the compile resolve children separately, so a child published in
+the instant between them runs for that one turn before the next turn refuses it — the parent has
+no such gap, since it is resolved once (tracked in `docs/ROADMAP.md`).
+
 `providers` is checked at **compile**, against the resolved route for the primary model
 and every entry in `model.fallbacks`, so a violation fails the build rather than
 surfacing at the first model call.

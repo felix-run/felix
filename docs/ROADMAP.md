@@ -253,6 +253,13 @@ First, because everything else governs it.
         `(child, version, hash)` into the pin, or say in `deploy/GOVERNANCE.md` that pins are
         shallow. Done: a `sub_agents_hash` beside the parent's, checked on every turn and
         durable resume; pins taken before it gain the digest on their next turn.
+      - [ ] **Children are resolved twice per turn.** The pin digest resolves them in
+        `ensure_thread_pin`, the compile again in `runtime._tenant_sub_agent_builder`, so a child
+        activated between the two (a 30s active-pointer expiry) compiles for one turn under a pin
+        that checked its predecessor. Closing it means handing the checked tree to the build —
+        `prepare_tenant_invoke` returning what it resolved, through its ~10 callers. A
+        request-scoped cache is the tempting shortcut and the wrong one: worker tasks run
+        fibers back to back, and a stale entry would compile the wrong child.
 
 ### B. Close the durable loop
 

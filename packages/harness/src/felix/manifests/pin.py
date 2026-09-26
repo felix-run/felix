@@ -59,7 +59,12 @@ def manifest_content_hash(manifest: Manifest) -> str:
 
 
 async def sub_agents_hash(
-    settings: Any, tenant_id: str, manifest: Manifest, *, _path: tuple[str, ...] = ()
+    settings: Any,
+    tenant_id: str,
+    manifest: Manifest,
+    *,
+    _path: tuple[str, ...] = (),
+    _seen: dict[str, list[Any]] | None = None,
 ) -> str | None:
     """A digest of every sub-agent this manifest compiles, as the tenant resolves them now.
 
@@ -72,6 +77,11 @@ async def sub_agents_hash(
     `None` for a manifest with no sub-agents, so its pin is exactly what it was. A child that
     resolves nowhere, or a cycle, is recorded as such rather than raising: the compile refuses
     both, and a pin check is not the place to report them.
+
+    Each child is resolved and hashed once per call, however many parents name it — the memo
+    `build_agent` keeps in `BuildDeps.compiled`. Without it a diamond (twenty children all
+    naming the same twenty) cost fan-out to the power of depth per turn while the compile
+    stayed linear, on a process other tenants share.
     """
     names = list(dict.fromkeys(manifest.spec.sub_agents))
     if not names:
@@ -80,8 +90,12 @@ async def sub_agents_hash(
     from felix.runtime import resolve_tenant_manifest
 
     path = (*_path, manifest.metadata.name)
+    seen: dict[str, list[Any]] = {} if _seen is None else _seen
     parts: list[list[Any]] = []
     for name in names:
+        if name in seen:
+            parts.append(seen[name])
+            continue
         if name in path or len(path) > MAX_SUB_AGENT_DEPTH:
             parts.append([name, "unresolvable"])
             continue
@@ -90,13 +104,12 @@ async def sub_agents_hash(
         except LookupError, ValueError:
             parts.append([name, None])
             continue
-        parts.append(
-            [
-                name,
-                manifest_content_hash(child),
-                await sub_agents_hash(settings, tenant_id, child, _path=path),
-            ]
-        )
+        seen[name] = [
+            name,
+            manifest_content_hash(child),
+            await sub_agents_hash(settings, tenant_id, child, _path=path, _seen=seen),
+        ]
+        parts.append(seen[name])
     raw = json.dumps(parts, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 

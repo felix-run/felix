@@ -119,3 +119,26 @@ async def test_a_resuming_durable_run_is_held_to_its_childrens_digest(store: dic
     with pytest.raises(ManifestDriftError, match="sub-agent"):
         await assert_resume_pin(None, "t", pinned, parent)
     await assert_resume_pin(None, "t", {**pinned, "sub_agents_hash": None}, parent)
+
+
+@pytest.mark.asyncio
+async def test_a_shared_child_is_resolved_once_however_many_parents_name_it(
+    store: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A diamond — every child naming the same grandchildren — cost fan-out to the power of
+    depth without the memo, on a process other tenants share."""
+    from felix import runtime
+
+    fan = [f"c{i}" for i in range(6)]
+    store.update({name: _agent(name, pattern="router", sub_agents=["g0", "g1"]) for name in fan})
+    store.update({g: _agent(g) for g in ("g0", "g1")})
+    real = runtime.resolve_tenant_manifest
+    calls: list[str] = []
+
+    async def counting(settings: Any, tenant_id: str, name: str, **kw: Any) -> Any:
+        calls.append(name)
+        return await real(settings, tenant_id, name, **kw)
+
+    monkeypatch.setattr(runtime, "resolve_tenant_manifest", counting)
+    await sub_agents_hash(None, "t", _agent("root", pattern="router", sub_agents=fan))
+    assert sorted(calls) == sorted([*fan, "g0", "g1"]), "each name resolved exactly once"
