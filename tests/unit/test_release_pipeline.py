@@ -113,7 +113,9 @@ def test_the_release_attaches_the_openapi_document() -> None:
     spec = next(s for s in release["steps"] if s.get("name") == "OpenAPI document")
     assert "scripts/export-openapi.py openapi.json" in spec["run"]
     assert "uv sync --locked --no-dev" in spec["run"], "the lean install the image ships"
-    assert '= "$VERSION"' in spec["run"], "a spec whose version is not the tag's must fail the release"
+    assert '= "$VERSION" || {' in spec["run"] and "exit 1" in spec["run"], (
+        "a spec whose version is not the tag's must fail the release"
+    )
     publish = next(s for s in release["steps"] if "action-gh-release" in s.get("uses", ""))
     assert "openapi.json" in publish["with"]["files"].split()
     assert publish["with"]["fail_on_unmatched_files"] is True
