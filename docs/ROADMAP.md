@@ -413,9 +413,13 @@ First, because everything else governs it.
       `expires_at`. Now: `fibers.attempts` (migration `0013`), backoff 1m→1h doubling, and
       `status: dead` at `FELIX_FIBER_MAX_ATTEMPTS` (5), with the error on the run view and every
       terminal-status set (`sdk.py`, the resume stream) agreeing under an invariant.
-- [ ] **Non-streaming `/chat` approval visibility.** `invoke()` never drains `side_events`, so a
+- [x] **Non-streaming `/chat` approval visibility.** `invoke()` never drains `side_events`, so a
       caller blocked on an approval hangs for the full TTL and then receives a deny, never
-      learning an approval was requested.
+      learning an approval was requested. Closed by recording every side event on the request
+      context as well as its stream queue: `POST /chat` now answers with `approvals`, each the
+      frame the stream would have sent plus `approved` / `denied` / `expired`. A blocked caller
+      still has no frame — it finds the id with `GET /approvals?thread_id=` — because a plain
+      HTTP response cannot say anything until it is over.
 - [ ] **`ctx.step(key, fn)` memoization** + an append-only `fiber_steps` table, so a crash
       mid-tool-loop resumes instead of replaying a whole `invoke`. Today the only mitigation is
       `_interrupted_tool_results` telling the *model* a call may already have taken effect — a
@@ -440,7 +444,7 @@ and fixed; the comment at `fibers.py:36-46` is the record.
       stays the logical route name, which is what an operator recognises.
 - [x] **`GET /usage/summary`** — by manifest / model / UTC day, with totals; both backends
       under conformance.
-- [ ] **Fill the missing bundled rates** — `gpt-4.1` has no entry and bills at the default, and
+- [~] **Fill the missing bundled rates** — ~~`gpt-4.1` has no entry and bills at the default~~ (priced in #301, with `-mini` and `-nano`); still open:
       no bundled entry sets a long-context tier. Correction to this entry as written: an
       unpriced model contributes `$0`, so `limits.max_cost_usd` fails **open** for it, not
       closed — `felix_model_unpriced` now says when that is happening.
