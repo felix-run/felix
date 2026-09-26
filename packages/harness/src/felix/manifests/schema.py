@@ -822,6 +822,10 @@ class ContentScreening(_Strict):
     model: str = ""
     tools: list[str] = Field(default_factory=list)
     on_flag: Literal["quarantine", "block"] = "quarantine"
+    #: Also ask `spec.decider` — a battery of injection, jailbreak and exfiltration checks in
+    #: one call. Additive: it runs beside the markers and `model`, either one flagging flags,
+    #: and either one unable to run leaves the text unscreened rather than cleared.
+    decider: bool = False
 
 
 class GovernanceSpec(_Strict):
@@ -954,6 +958,8 @@ class Spec(_Strict):
                 f"model.confidence_escalation.decider is honoured by patterns "
                 f"{sorted(_REACT_LOOP_PATTERNS)}, not {self.pattern!r}"
             )
+        if self.content_screening.decider and not (self.content_screening.enabled and self.decider.id):
+            raise ValueError("content_screening.decider needs content_screening.enabled and spec.decider.id")
         if self.skill_suggestion.enabled:
             if not self.decider.id:
                 raise ValueError("skill_suggestion needs spec.decider.id")

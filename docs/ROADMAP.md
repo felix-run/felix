@@ -212,7 +212,7 @@ First, because everything else governs it.
       scrubbed env, cwd pinned under the workspace root), not as a `ShellBackend` registry — one
       implementation does not earn a registry.
 
-- [~] **Decision models (Jev).** Plan: `~/.claude/plans/we-want-to-use-sprightly-sprout.md`.
+- [x] **Decision models (Jev).** Plan: `~/.claude/plans/we-want-to-use-sprightly-sprout.md`.
       Some calls decide rather than write, and each one asked a chat model for prose and
       parsed it. Examples: the router's "reply with only the agent name", which silently
       falls back to the first sub-agent; the judges' `{score}` JSON; the injection scorer's
@@ -224,8 +224,8 @@ First, because everything else governs it.
       2. [x] The router's `_choose_child`, and confidence escalation's `_low_confidence` (#315).
       3. [x] (#318) Judges, reply judges, eval `llm_judge`, and the reflect verifier: a `Noul` per
          criterion.
-      4. [x] Skill suggestion: the two-stage rank-then-rerank, emitted as a transient prompt hint.
-      5. [ ] Injection screening as a `Noul` battery. It is *additive* to the regex and the
+      4. [x] (#321) Skill suggestion: the two-stage rank-then-rerank, emitted as a transient prompt hint.
+      5. [x] Injection screening as a `Noul` battery. It is *additive* to the regex and the
          LLM scorer, because Jev is not adversarially robust. Needs a security review.
 
       Not yet verified: the Workers AI response envelope, against a live call.

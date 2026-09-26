@@ -415,7 +415,11 @@ def _is_untrusted_tool(tool: Tool) -> bool:
 
 
 def apply_content_screening(
-    tools: list[Tool], screening: ContentScreening | None, manifest_id: str
+    tools: list[Tool],
+    screening: ContentScreening | None,
+    manifest_id: str,
+    *,
+    decider: MeteredDecider | None = None,
 ) -> list[Tool]:
     if screening is None or not screening.enabled:
         return tools
@@ -448,11 +452,11 @@ def apply_content_screening(
             content = tool_output_content(out)
             flagged = any(rx.search(content) for rx in _INJECTION)
             unavailable = False
-            if not flagged and model_id:
+            if not flagged and (model_id or decider is not None):
                 from felix.config import get_settings
                 from felix.governance.inbound import screen_for_injection
 
-                result = await screen_for_injection(get_settings(), content, model_id)
+                result = await screen_for_injection(get_settings(), content, model_id, decider)
                 # Unavailable is not clean: this is the path that screens MCP, A2A,
                 # browser and sandbox output, so failing open here is the whole ballgame.
                 unavailable = result.unavailable
@@ -1531,7 +1535,12 @@ async def build_agent(
         if m.spec.command_screening.enabled:
             resolved = apply_command_screening(resolved, m.spec.command_screening, m.metadata.name)
         if m.spec.content_screening.enabled:
-            resolved = apply_content_screening(resolved, m.spec.content_screening, m.metadata.name)
+            resolved = apply_content_screening(
+                resolved,
+                m.spec.content_screening,
+                m.metadata.name,
+                decider=decider if m.spec.content_screening.decider else None,
+            )
         # Always installed. Previously gated on any_limit(), so a manifest that declared
         # no limits got no tool-call cap, no wall clock, no token or spend ceiling —
         # and the wrapper silently did nothing when there was no request context.
