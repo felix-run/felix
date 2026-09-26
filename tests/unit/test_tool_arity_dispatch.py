@@ -18,6 +18,7 @@ The rule is that arity is decided by introspection, once, before anything runs.
 from __future__ import annotations
 
 import pytest
+from felix.config import Settings
 from felix.tools.executor import wrap_executor
 from felix.tools.types import ToolInput, ToolInvocationCtx, ToolOutput, accepts_positional, define_tool
 
@@ -158,6 +159,7 @@ async def test_the_real_artifact_spill_wrapper_runs_its_inner_chain_once() -> No
         object_store=None,
         tenant_id="t",
         manifest_id="m",
+        settings=Settings(),
     )[0]
 
     with pytest.raises(TypeError):

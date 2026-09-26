@@ -114,7 +114,12 @@ manifest's value (`governed.yaml` says 30) applies to every tenant that serves t
 and a tenant's own stored version of that name replaces it for that tenant. Usage (the billing
 record, 365 days), fibers and A2A tasks (7 days, terminal rows only) and session threads (off:
 the event log is the chat record) have deployment-wide TTLs, `FELIX_*_RETENTION_DAYS`, `0`
-keeping forever. Session retention drops whole idle threads and their metadata; it does not
+keeping forever. Two sweeps delete object-store bytes as well as rows, each through a ledger
+because the store cannot be listed: uploads (`FELIX_ATTACHMENT_RETENTION_DAYS`, off by default,
+caller data) and spilled tool outputs (`FELIX_ARTIFACT_RETENTION_DAYS`, 30 by default, the
+harness's working copy). A manifest's `retention_days` does **not** shorten its spill: a
+manifest set to 7 days still keeps raw tool output for the deployment's artifact TTL, so set that
+no longer than the shortest manifest that needs it. Session retention drops whole idle threads and their metadata; it does not
 reach the facts memory capture extracted from them, which are governed by memory's own rules.
 
 Runtime also enforces `spec.auth.inbound`, routes inbound MCP through the
@@ -936,7 +941,7 @@ implies the matching `*:read`.
 |-------|--------|
 | `manifests:read` / `manifests:write` | `/manifests` |
 | `audit:read` | `/audit` |
-| `artifacts:read` | `/artifacts` — read back a tool output too large to keep in the transcript. Its own scope rather than part of `audit:read`, because a spilled result is raw tool output and often the most sensitive data a run touches. The model's own way back, the `read_artifact` tool bound beside `spec.artifacts`, checks no scope and is held to something narrower instead: it reads only what its own conversation spilled (the thread, or the request when there is none), so a leaked id does not reach another caller's run through the model |
+| `artifacts:read` | `/artifacts` — read back a tool output too large to keep in the transcript. Its own scope rather than part of `audit:read`, because a spilled result is raw tool output and often the most sensitive data a run touches. The model's own way back, the `read_artifact` tool bound beside `spec.artifacts`, checks no scope and is held to something narrower instead: it reads only what its own conversation spilled (the thread, or the request when there is none), so a leaked id does not reach another caller's run through the model. Spill is kept for `FELIX_ARTIFACT_RETENTION_DAYS` (30; `0` keeps forever) and then swept, objects and ledger row together — so evidence meant to outlive that belongs in the audit log, not in an artifact |
 | `approvals:read` / `approvals:write` | `/approvals`; `approvals:read` also gates the `approval_required` frames on a durable `POST /chat/stream` |
 | `jobs:read` / `jobs:write` | `/jobs` |
 | `plans:read` / `plans:write` | `/plans` |

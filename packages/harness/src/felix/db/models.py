@@ -406,9 +406,31 @@ class AttachmentRow(Base):
     created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
 
+class ArtifactRow(Base):
+    """One spilled tool output, recorded so retention can find it.
+
+    The artifact twin of `AttachmentRow`, for the same reason: the `ObjectStore` Protocol
+    has no `list`, so an object nothing records is an object nothing can ever collect. The
+    ordering rule is the same too -- row before bytes on write, bytes before row on delete --
+    so drift is always a row whose objects may be absent, which the sweep clears by age.
+
+    One row covers both objects a spill writes: `{id}.txt` and the `{id}.owner` record that
+    holds `read_artifact` to the conversation that spilled it.
+    """
+
+    __tablename__ = "artifacts"
+
+    tenant_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    manifest_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    artifact_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+
 __all__ = [
     "A2ATask",
     "Approval",
+    "ArtifactRow",
     "AttachmentRow",
     "AuditEvent",
     "Base",

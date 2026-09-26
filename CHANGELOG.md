@@ -126,6 +126,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Spilled tool outputs are collected after `FELIX_ARTIFACT_RETENTION_DAYS` (default 30).** Nothing
+  ever deleted anything under `artifacts/`: the retention sweep collects rows, and the object
+  store has no `list` to find objects with. That was an opt-in cost until #319 turned the spill on
+  in five bundled manifests. Each spill is now recorded in an `artifacts` ledger table (migration
+  `0018_artifact_ledger`, tenant RLS like every other tenant table), written before the bytes and
+  deleted after them, and the nightly sweep drops the text, its owner record and the row
+  together. Unlike uploads this defaults to a bound, because a spill is the harness's working
+  copy rather than caller data; set `0` to keep forever. Past the window, `read_artifact`,
+  `GET /artifacts` and the terminal's `/artifact` report the id as missing. Spills written
+  before the migration have no row and are not collected.
+
 - **`make e2e`, `make eval`, `make bundle`, `make schema-check` and `make toolkit`.** The parts of
   `make check-ci` are now runnable one at a time, and `check-ci` is built from them. `make
   conformance` also runs the cross-replica Valkey arm when `FELIX_CONFORMANCE_REDIS_URL` is set,

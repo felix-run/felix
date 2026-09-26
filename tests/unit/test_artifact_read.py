@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import pytest
 from felix.artifacts import apply_artifact_spill, artifact_key, read_artifact, valid_artifact_ref
+from felix.config import Settings
 from felix.manifests.schema import ArtifactsSpec
 from felix.tools.types import define_tool
 
@@ -52,6 +53,7 @@ async def test_a_spilled_output_reads_back_whole() -> None:
         object_store=store,
         tenant_id="acme",
         manifest_id="cowork",
+        settings=Settings(),
     )
     preview = await wrapped.executor.execute({})
 
