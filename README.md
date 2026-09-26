@@ -511,6 +511,11 @@ offered tool is still governance-wrapped.
 | `store` (default) | tenant Postgres version → bundled YAML | `PUT /manifests`, canary, rollback |
 | `bundled` | bundled YAML only | routes not mounted |
 
+An activation, a rollback or a canary change takes effect at once on the process that made it.
+Each API replica and worker caches a manifest's active version for 30 seconds, so the others
+follow within that window — a rollback is not instant fleet-wide, and a canary split briefly
+differs between replicas.
+
 `bundled` is for a single-tenant or self-hosted deployment with no use for runtime
 authoring. The write routes are never registered, so the verbs are absent from the app and
 from `/openapi.json` rather than present and refusing, and no manifest store is constructed

@@ -157,6 +157,7 @@ async def put_version(
                 "canary_version": None,
                 "canary_weight": 0,
             }
+        _invalidate(tenant_id, name)
         return _version_dict(row)
 
     factory = get_session_factory(settings=settings)
@@ -190,7 +191,23 @@ async def put_version(
         stmt = stmt.on_conflict_do_nothing(index_elements=["tenant_id", "name"])
         await db.execute(stmt)
         await db.commit()
+        _invalidate(tenant_id, name)
         return _version_dict(row)
+
+
+def _invalidate(tenant_id: str, name: str) -> None:
+    """Drop this process's cached active pointer once a write that moves it has committed.
+
+    `resolver.invalidate_active` existed with no caller, so an activation, a rollback or a
+    canary change reached requests only when the 30s pointer cache lapsed — a rollback
+    meant to stop a bad version kept serving it for up to half a minute on the replica that
+    took the rollback. This makes the change immediate *here*; other API replicas and the
+    worker still learn it on their own TTL (`resolver.ACTIVE_TTL_MS`), the bound the README
+    states under "Where manifests come from".
+    """
+    from felix.manifests.resolver import invalidate_active
+
+    invalidate_active(tenant_id, name)
 
 
 async def set_canary(
@@ -226,6 +243,7 @@ async def set_canary(
         active["canary_weight"] = canary_weight
         active["updated_at"] = ts
         active["updated_by"] = updated_by
+        _invalidate(tenant_id, name)
         return _active_dict(active)
 
     factory = get_session_factory(settings=settings)
@@ -238,6 +256,7 @@ async def set_canary(
         active.updated_at = ts
         active.updated_by = updated_by
         await db.commit()
+        _invalidate(tenant_id, name)
         return _active_dict(active)
 
 
@@ -264,6 +283,7 @@ async def activate_version(
         active["updated_by"] = updated_by
         active["canary_version"] = None
         active["canary_weight"] = 0
+        _invalidate(tenant_id, name)
         return _active_dict(active)
 
     factory = get_session_factory(settings=settings)
@@ -279,6 +299,7 @@ async def activate_version(
         active.canary_version = None
         active.canary_weight = 0
         await db.commit()
+        _invalidate(tenant_id, name)
         return _active_dict(active)
 
 
