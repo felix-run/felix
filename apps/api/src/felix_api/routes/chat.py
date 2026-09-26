@@ -411,6 +411,7 @@ async def _chat_turn(body: ChatRequest, request: Request) -> tuple[int, dict[str
             agent = await build_tenant_agent(
                 settings,
                 manifest=resolved.manifest,
+                sub_agents=resolved.sub_agents,
                 tools=tools,
                 tenant_id=auth.tenant_id,
             )
@@ -614,6 +615,7 @@ async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
                 agent = await build_tenant_agent(
                     settings,
                     manifest=resolved.manifest,
+                    sub_agents=resolved.sub_agents,
                     tools=tools,
                     tenant_id=auth.tenant_id,
                 )
@@ -1205,6 +1207,7 @@ async def chat_continue(body: ContinueRequest, request: Request) -> Any:
             agent = await build_tenant_agent(
                 settings,
                 manifest=resolved.manifest,
+                sub_agents=resolved.sub_agents,
                 tools=tools,
                 tenant_id=auth.tenant_id,
             )

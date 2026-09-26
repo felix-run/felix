@@ -24,6 +24,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A pinned thread runs the sub-agents its pin checked.** The pin check and the compile resolved
+  a router's children separately, so a child activated between the two compiled for one turn under
+  a pin that had verified its predecessor. The check now records what it resolved on the request's
+  `ResolvedManifest`, and every build after a check compiles from that — including a child the
+  check found nowhere, which stays refused for the turn.
+
 - **An activation, rollback or canary change is served at once.** The resolver caches each
   manifest's active version for 30 seconds, and the function that drops that entry had no caller,
   so the process that took a rollback kept serving the version it rolled back from for up to half

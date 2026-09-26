@@ -65,6 +65,7 @@ async def sub_agents_hash(
     *,
     _path: tuple[str, ...] = (),
     _seen: dict[str, list[Any]] | None = None,
+    resolved_out: dict[str, Manifest | None] | None = None,
 ) -> str | None:
     """A digest of every sub-agent this manifest compiles, as the tenant resolves them now.
 
@@ -103,11 +104,17 @@ async def sub_agents_hash(
             child = (await resolve_tenant_manifest(settings, tenant_id, name)).manifest
         except LookupError, ValueError:
             parts.append([name, None])
+            if resolved_out is not None:
+                resolved_out[name] = None
             continue
+        if resolved_out is not None:
+            resolved_out[name] = child
         seen[name] = [
             name,
             manifest_content_hash(child),
-            await sub_agents_hash(settings, tenant_id, child, _path=path, _seen=seen),
+            await sub_agents_hash(
+                settings, tenant_id, child, _path=path, _seen=seen, resolved_out=resolved_out
+            ),
         ]
         parts.append(seen[name])
     raw = json.dumps(parts, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
@@ -128,11 +135,18 @@ def pin_fields(
 
 
 async def pin_fields_for(
-    settings: Any, tenant_id: str, manifest: Manifest, *, version: int | None = None
+    settings: Any,
+    tenant_id: str,
+    manifest: Manifest,
+    *,
+    version: int | None = None,
+    resolved_out: dict[str, Manifest | None] | None = None,
 ) -> dict[str, Any]:
     """`pin_fields` plus the sub-agent digest — what a pin records when it will be enforced."""
     fields = pin_fields(manifest, version=version)
-    fields["sub_agents_hash"] = await sub_agents_hash(settings, tenant_id, manifest)
+    fields["sub_agents_hash"] = await sub_agents_hash(
+        settings, tenant_id, manifest, resolved_out=resolved_out
+    )
     return fields
 
 
@@ -180,6 +194,7 @@ async def assert_resume_pin(
     manifest: Manifest,
     *,
     version: int | None = None,
+    resolved_out: dict[str, Manifest | None] | None = None,
 ) -> None:
     """`assert_pin_matches` for a durable run resuming, with its sub-agents re-resolved.
 
@@ -189,7 +204,7 @@ async def assert_resume_pin(
     """
     children = None
     if pinned and pinned.get("sub_agents_hash"):
-        children = await sub_agents_hash(settings, tenant_id, manifest)
+        children = await sub_agents_hash(settings, tenant_id, manifest, resolved_out=resolved_out)
     assert_pin_matches(pinned, manifest, version=version, sub_agents=children)
 
 
@@ -200,6 +215,7 @@ async def ensure_thread_pin(
     thread_id: str | None,
     manifest: Manifest,
     version: int | None = None,
+    resolved_out: dict[str, Manifest | None] | None = None,
 ) -> dict[str, Any]:
     """Check drift against prior pin; store pin when ``pin_compile`` is enabled."""
     from felix.session.thread_state import get_thread_meta, update_thread_meta
@@ -209,7 +225,9 @@ async def ensure_thread_pin(
         return fields
     if fields["pin_compile"]:
         # Resolving the children costs a store read each; only an enforced pin pays it.
-        fields = await pin_fields_for(settings, tenant_id, manifest, version=version)
+        fields = await pin_fields_for(
+            settings, tenant_id, manifest, version=version, resolved_out=resolved_out
+        )
 
     meta = await get_thread_meta(settings=settings, tenant_id=tenant_id, thread_id=thread_id)
     pinned = {

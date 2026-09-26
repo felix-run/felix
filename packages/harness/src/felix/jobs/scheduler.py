@@ -87,6 +87,7 @@ async def _invoke_job_manifest(
         agent = await build_tenant_agent(
             settings,
             manifest=resolved.manifest,
+            sub_agents=resolved.sub_agents,
             tools=provider,
             tenant_id=tenant_id,
         )

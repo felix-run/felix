@@ -381,7 +381,12 @@ async def _run_fiber_step(
                         if stored_auth:
                             pinned = {**pinned, "pin_compile": True}
                         await assert_resume_pin(
-                            settings, tenant_id, pinned, resolved.manifest, version=resolved.version
+                            settings,
+                            tenant_id,
+                            pinned,
+                            resolved.manifest,
+                            version=resolved.version,
+                            resolved_out=resolved.sub_agents,
                         )
                     await prepare_tenant_invoke(settings, resolved=resolved, auth=auth, thread_id=thread)
                     # /chat screened these before enqueuing; the compiled agent screens
@@ -389,6 +394,7 @@ async def _run_fiber_step(
                     agent = await build_tenant_agent(
                         settings,
                         manifest=resolved.manifest,
+                        sub_agents=resolved.sub_agents,
                         tools=provider,
                         tenant_id=tenant_id,
                     )

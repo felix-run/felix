@@ -365,6 +365,7 @@ async def start_run(
                     agent = await build_tenant_agent(
                         settings,
                         manifest=resolved.manifest,
+                        sub_agents=resolved.sub_agents,
                         tools=tools,
                         tenant_id=tenant_id,
                     )

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from typing import Any
 
 from felix.config import Settings
@@ -10,6 +11,7 @@ from felix.manifests.builder import BuildDeps, build_agent
 from felix.manifests.inbound_auth import enforce_inbound_auth
 from felix.manifests.pin import ensure_thread_pin
 from felix.manifests.resolver import ResolvedManifest, resolve_manifest
+from felix.manifests.schema import Manifest
 from felix.manifests.store import PostgresManifestStore
 from felix.patterns.types import Agent
 from felix.session.store import build_checkpointer, validate_checkpointer_config
@@ -71,6 +73,8 @@ async def prepare_tenant_invoke(
         thread_id=thread_id,
         manifest=resolved.manifest,
         version=resolved.version,
+        # Filled with the sub-agents the pin check resolved, for the build to reuse.
+        resolved_out=resolved.sub_agents,
     )
 
 
@@ -111,7 +115,15 @@ async def build_tenant_agent(
     object_store: Any | None = None,
     workspace_root: str | None = None,
     load_agents_md: bool = False,
+    sub_agents: Mapping[str, Manifest | None] | None = None,
 ) -> Agent:
+    """Compile `manifest` for `tenant_id`.
+
+    `sub_agents` is `ResolvedManifest.sub_agents` — the children a pin check resolved for this
+    request. Every caller that ran `prepare_tenant_invoke` passes it, so a pinned thread runs
+    the sub-agents its pin verified rather than whatever resolves a moment later;
+    `tests/unit/test_invariants.py` holds the call sites to it.
+    """
     spec = getattr(manifest, "spec", None)
     checkpointer = str(getattr(getattr(spec, "memory", None), "checkpointer", "postgres") or "postgres")
     strategy_spec = getattr(spec, "session", None)
@@ -166,11 +178,13 @@ async def build_tenant_agent(
         workspace_root=workspace_root or getattr(settings, "workspace_root", None) or None,
         load_agents_md=load_agents_md or bool(getattr(settings, "load_agents_md", False)),
     )
-    deps.sub_agent_builder = _tenant_sub_agent_builder(settings, tenant_id, deps)
+    deps.sub_agent_builder = _tenant_sub_agent_builder(settings, tenant_id, deps, sub_agents or {})
     return await build_agent(manifest, deps=deps, settings=settings)
 
 
-def _tenant_sub_agent_builder(settings: Settings, tenant_id: str, deps: BuildDeps) -> Any:
+def _tenant_sub_agent_builder(
+    settings: Settings, tenant_id: str, deps: BuildDeps, checked: Mapping[str, Manifest | None]
+) -> Any:
     """Compile each `spec.sub_agents` name as this tenant would reach it by name.
 
     Store, then object store, then bundled — the order a request resolves a manifest in. It
@@ -180,6 +194,15 @@ def _tenant_sub_agent_builder(settings: Settings, tenant_id: str, deps: BuildDep
     """
 
     async def build(name: str) -> Agent:
+        if name in checked:
+            # The pin check resolved this name for this request. Compiling that, not a fresh
+            # resolution, is what makes the checked tree the running one: a child activated
+            # between the two used to compile for one turn under a pin that verified its
+            # predecessor. Found nowhere at check time stays found nowhere.
+            child = checked[name]
+            if child is None:
+                raise LookupError(f"Unknown sub-agent manifest: {name}")
+            return await build_agent(child, deps=deps, settings=settings)
         resolved = await resolve_tenant_manifest(settings, tenant_id, name)
         return await build_agent(resolved.manifest, deps=deps, settings=settings)
 
