@@ -7,17 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-
-- **`make e2e`, `make eval`, `make bundle`, `make schema-check` and `make toolkit`.** The parts of
-  `make check-ci` are now runnable one at a time, and `check-ci` is built from them. `make
-  conformance` also runs the cross-replica Valkey arm when `FELIX_CONFORMANCE_REDIS_URL` is set,
-  as CI does, and says so when it is not.
-- **The toolkit validator checks what the toolkit claims about the tree.** `scripts/validate-toolkit.py`
-  now fails on a repo path, `file.py:symbol` or `make` target cited in `.claude/` that no longer
-  exists, and on a route module mapped to no docs page. It runs in the unit suite as well as CI's
-  path-filtered `toolkit` job, so renaming a module a skill cites fails where it happens.
-
 ### Fixed
 
 - **Procedural memory no longer defeats system-prompt caching.** Recalled procedures were appended
@@ -115,6 +104,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 ### Added
+
+- **`make e2e`, `make eval`, `make bundle`, `make schema-check` and `make toolkit`.** The parts of
+  `make check-ci` are now runnable one at a time, and `check-ci` is built from them. `make
+  conformance` also runs the cross-replica Valkey arm when `FELIX_CONFORMANCE_REDIS_URL` is set,
+  as CI does, and says so when it is not.
+- **The toolkit validator checks what the toolkit claims about the tree.** `scripts/validate-toolkit.py`
+  now fails on a repo path, `file.py:symbol` or `make` target cited in `.claude/` that no longer
+  exists, and on a route module mapped to no docs page. It runs in the unit suite as well as CI's
+  path-filtered `toolkit` job, so renaming a module a skill cites fails where it happens.
 
 - **Skill suggestion.** `spec.skill_suggestion` uses `spec.decider` to rank the skill catalog,
   rerank a shortlist against each skill's body, and add a one-line hint naming the skill a request

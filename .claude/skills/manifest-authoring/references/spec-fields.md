@@ -57,7 +57,8 @@ happens per turn inside the ReAct loop.
 - `limits` — `max_tool_calls`, `max_wall_clock_seconds`, `max_peer_hops`, `max_input_tokens`,
   `max_output_tokens`, `max_cost_usd` (priced from the model catalog as tokens accumulate). All
   optional, enforced per run, and capped by `ABSOLUTE_LIMITS` in the schema. `precount` parses but
-  nothing reads it (checked 2026-09-25) — do not rely on it.
+  nothing reads it — it is in `KNOWN_INERT_FIELDS` (`tests/unit/test_inert_manifest_fields.py`),
+  a set that may only shrink. Do not rely on it.
 - `approvals[]` — pause the run until a decision arrives (`/approvals`); `allow_unattended: false`
   means a durable/unattended run cannot self-approve. `ttl_seconds` bounds the wait.
 - `content_screening` — screens **untrusted** tool output (MCP, A2A, browser, queues, sandboxes;
