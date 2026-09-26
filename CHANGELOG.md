@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A plan write no longer erases a concurrent one, or fields it was not sent** (#320).
+  `PUT /plans/{id}` takes an optional `expected_updated_at` and answers `409` with
+  `{error: "plan_changed", current}` when the plan has moved on; the agent's
+  `plan_update_step` writes the same way and re-applies its step change to what is stored, so
+  an operator's edit made mid-run survives it. Omitting `manifest_id` or `expires_at` now leaves
+  them as stored — they used to reset to `""` and no expiry, orphaning the plan from its
+  manifest and exempting it from retention. `updated_at` advances on every write, even two in
+  one millisecond.
 - **The ruleless-rubric warning no longer says it passes "any answer at all".** A rubric with no
   rule scores as non-empty, which rejects a blank answer — `negative.json` relies on exactly that.
   The warning now says "passes any answer that is not blank".
