@@ -12,6 +12,7 @@ reads from, so a separate `import felix.patterns.react` alongside it would be re
 
 from __future__ import annotations
 
+from felix.decisions import register_builtin_deciders
 from felix.patterns.delegating import _DelegatingAgent
 from felix.patterns.model import _spec_with_model, register_builtin_providers
 from felix.patterns.model_sinks import install_felix_ai_sinks
@@ -34,6 +35,7 @@ from felix.patterns.types import (
 
 install_felix_ai_sinks()
 register_builtin_providers()
+register_builtin_deciders()
 
 
 async def _build_deep(ctx: PatternBuildContext) -> Agent:

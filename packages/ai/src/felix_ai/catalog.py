@@ -245,6 +245,15 @@ _CATALOG: dict[str, ModelCatalogEntry] = {
         supports_thinking=True,
         quirks=ModelQuirks(sampling=False, max_completion_tokens=True),
     ),
+    # --- Decision models ---
+    # TypeSafe Jev answers typed questions and generates no text; output is not billed.
+    # One key covers `jev-latest`, `jev-1.13.0` and Workers AI's `typesafe/jev`.
+    "jev": ModelCatalogEntry(
+        context_window=32_000,
+        # No generated text to bound; the floor every entry shares, not a real limit.
+        max_output_tokens=1_024,
+        pricing=ModelPricing(input=0.042, output=0.0, cache_read=0.0, cache_write=0.0),
+    ),
     # --- Local ---
     # Unpriced, not free. Llama runs locally *and* is served for money by Workers AI,
     # Groq, Together and Fireworks — and `entry_for` matches by substring, so pricing this

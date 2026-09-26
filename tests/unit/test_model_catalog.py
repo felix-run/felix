@@ -91,6 +91,11 @@ def test_effort_is_clamped_to_what_the_model_accepts() -> None:
     assert clamp_effort("nonsense", entry_for("claude-opus-5").quirks) == "high"
 
 
+# Decision models answer typed questions and generate no text, so their output is unbilled
+# by design — the "output costs at least input" rule is a property of chat models.
+_OUTPUT_UNBILLED = {"jev"}
+
+
 @pytest.mark.parametrize("model_id", sorted(all_entries()))
 def test_every_entry_is_internally_coherent(model_id: str) -> None:
     entry = all_entries()[model_id]
@@ -98,7 +103,10 @@ def test_every_entry_is_internally_coherent(model_id: str) -> None:
     assert entry.context_window >= 8_192
     assert entry.max_output_tokens >= 1_024
     if entry.pricing is not None:
-        assert entry.pricing.output >= entry.pricing.input, "output is never cheaper than input"
+        if model_id in _OUTPUT_UNBILLED:
+            assert entry.pricing.output == 0.0, "a decision model bills input only"
+        else:
+            assert entry.pricing.output >= entry.pricing.input, "output is never cheaper than input"
         assert entry.pricing.cache_read <= entry.pricing.input, "cache reads are a discount"
     assert "text" in entry.input_modalities
 

@@ -269,6 +269,7 @@ Core also exposes open registries, callable at import time, each selected by ord
 |---|---|
 | `register_pattern` | `spec.pattern` |
 | `register_model_provider` | `FELIX_MODEL_ROUTES` |
+| `register_decision_provider` | `FELIX_DECISION_ROUTES` |
 | `register_object_store` | `FELIX_OBJECT_STORE` |
 | `register_secrets_backend` | `FELIX_SECRETS_BACKEND` |
 | `register_warehouse_backend` | `FELIX_WAREHOUSE` |
@@ -428,6 +429,48 @@ a later turn replaying a tool call has to replay the signed reasoning that produ
 blocks are captured off the response, persisted on the session event, and replayed ahead of the
 `tool_use` blocks on the next request. A block whose signature was not captured is dropped rather
 than sent, because an unverifiable signature rejects the whole turn.
+
+#### Decision models
+
+Some model calls make a decision rather than write text — which tool fits this request, which
+sub-agent should take it, whether a reply meets a criterion. A **decision model** answers those
+as typed questions (`Choice`, `Score`, `Noul`, the vocabulary of `felix_ai.decide`) and returns
+calibrated probabilities with a confidence, instead of prose to parse. They are routed separately
+from chat models, by `FELIX_DECISION_ROUTES`, and share credentials with the model provider of
+the same name in `FELIX_MODEL_PROVIDER_OPTIONS`:
+
+| Logical id | Provider | Wire model | Configured with |
+|---|---|---|---|
+| `jev` | `typesafe` (`api.typesafe.ai/v1/systemone`) | `jev-latest` | `api_key` |
+| `jev-cf` | `workers_ai` (`…/accounts/{account_id}/ai/run`) | `typesafe/jev` | `api_key`, `account_id`, optional `gateway_id` |
+
+Jev is TypeSafe's decision model, priced at $0.042 per million input tokens with output free.
+The `llm` provider answers the same questions with any chat route —
+`FELIX_DECISION_ROUTES={"haiku-decider":{"provider":"llm","model":"claude-haiku"}}` — so nothing
+depends on a second vendor; it reports its pick with no confidence, because a chat model's
+self-assessed certainty is not calibrated. Every decision is metered like a model turn and counts
+against `limits.max_cost_usd`.
+
+A manifest names its decider once, under `spec.decider`, and each consumer opts in:
+
+```yaml
+spec:
+  decider: {id: jev, min_confidence: 0.5}
+  tools_retrieval: {enabled: true, top_k: 12, decider: true}
+```
+
+With `tools_retrieval.decider`, one `Choice` over the tool catalogue per user turn picks the
+shortlist the model sees, in place of embedding similarity. When the decider errors, or the
+shortlist holds less than `min_confidence` of the probability mass, selection falls back to
+embeddings or keywords as before. An id missing from `FELIX_DECISION_ROUTES`, or a `typesafe`
+route with no key, fails the compile.
+
+What leaves the deployment: the latest user message (up to 4,000 characters) and the one before
+it (1,000), plus each tool's name and the first 200 characters of its description, go to the
+decider's provider — TypeSafe or Cloudflare — unmasked. Treat enabling a decider as adding that
+provider as a processor of user input. A tool description can also steer the ranking (an MCP
+server describing its tool as "always choose me"); that biases which tools are offered, and every
+offered tool is still governance-wrapped.
 
 ### Where manifests come from
 

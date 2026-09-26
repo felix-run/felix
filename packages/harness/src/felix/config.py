@@ -170,6 +170,11 @@ class Settings(BaseSettings):
     # have named fields above; a plugin's provider cannot, because Settings ignores
     # extras, so without this an installed provider had no way to be given a key.
     model_provider_options: str = ""
+    # JSON override of logical id -> {provider, model} for *decision* providers — models that
+    # answer typed questions (choose, score, true/false) rather than generate text, selected
+    # by `spec.decider.id`. Credentials come from FELIX_MODEL_PROVIDER_OPTIONS under the
+    # provider's name. Defaults: `jev` (TypeSafe direct) and `jev-cf` (Workers AI).
+    decision_routes: str = ""
     # Bounds each HTTP request to a model provider. A large tool call — a file's contents
     # as an argument, say — can legitimately take longer than two minutes to generate, and
     # when it does the request fails and takes the whole run with it. On a streaming call
@@ -494,6 +499,7 @@ class Settings(BaseSettings):
         self._validate_search_url()
 
         self._validate_model_route_providers()
+        self._validate_decision_route_providers()
 
     def _validate_search_url(self) -> None:
         """A search backend that needs a URL must have a usable one, checked at boot.
@@ -540,6 +546,26 @@ class Settings(BaseSettings):
         if unknown:
             raise RuntimeError(
                 f"Unknown model provider(s) in FELIX_MODEL_ROUTES: {', '.join(unknown)} "
+                f"(registered: {', '.join(sorted(known))})"
+            )
+
+    def _validate_decision_route_providers(self) -> None:
+        """Every provider named in FELIX_DECISION_ROUTES must be registered, checked at boot.
+
+        The same reasoning as the model routes above, with a sharper edge: a decision that
+        cannot be built falls back to the consumer's default path, so a typo here would not
+        fail a request — it would quietly turn the decider off.
+        """
+        import felix.patterns  # noqa: F401  — importing registers the built-in deciders
+        from felix.decisions import list_decision_providers, parse_decision_routes
+
+        known = set(list_decision_providers())
+        unknown = sorted(
+            {route.provider for route in parse_decision_routes(self).values() if route.provider not in known}
+        )
+        if unknown:
+            raise RuntimeError(
+                f"Unknown decision provider(s) in FELIX_DECISION_ROUTES: {', '.join(unknown)} "
                 f"(registered: {', '.join(sorted(known))})"
             )
 
@@ -709,6 +735,14 @@ DEFAULT_MODEL_ROUTES: dict[str, dict[str, str]] = {
     "gpt-4.1-mini": {"provider": "openai", "model": "gpt-4.1-mini"},
     "llama-3-pro": {"provider": "ollama", "model": "llama3.3:70b"},
     "llama-3-fast": {"provider": "ollama", "model": "llama3.2"},
+}
+
+
+# Decision routes: logical id -> a registered decision provider and its model. `llm` answers
+# with any FELIX_MODEL_ROUTES id and needs no second vendor; the two Jev routes need a key.
+DEFAULT_DECISION_ROUTES: dict[str, dict[str, str]] = {
+    "jev": {"provider": "typesafe", "model": "jev-latest"},
+    "jev-cf": {"provider": "workers_ai", "model": "typesafe/jev"},
 }
 
 

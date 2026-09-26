@@ -599,6 +599,24 @@ class ToolsRetrievalSpec(_Strict):
     enabled: bool = False
     top_k: int = Field(default=20, ge=1)
     model: str = "bge-base-en-v1.5"
+    #: Rank tools with `spec.decider` — one typed choice over the catalogue per user turn —
+    #: instead of embeddings. Falls back to `model` when the decider errors or when the
+    #: shortlist holds less than `spec.decider.min_confidence` of its probability mass.
+    decider: bool = False
+
+
+class DeciderSpec(_Strict):
+    """A decision model — one that answers typed questions (choose one, score, true/false)
+    with calibrated probabilities instead of generating text. Off unless `id` is set.
+
+    Consumers opt in one at a time (`tools_retrieval.decider`), and each keeps its existing
+    behaviour as the fallback, so turning a decider on never removes a path.
+    """
+
+    #: A `FELIX_DECISION_ROUTES` id: `jev` (TypeSafe), `jev-cf` (Workers AI), or your own.
+    id: str = ""
+    #: Below this, a consumer treats the decision as unsure and takes its fallback path.
+    min_confidence: float = Field(default=0.5, ge=0.0, le=1.0)
 
 
 # Five fields here validated and were read by nothing until #261 — `planner_model`,
@@ -829,6 +847,7 @@ class Spec(_Strict):
     observability: ObservabilitySpec = Field(default_factory=ObservabilitySpec)
     execution: ExecutionSpec = Field(default_factory=ExecutionSpec)
     tools_retrieval: ToolsRetrievalSpec = Field(default_factory=ToolsRetrievalSpec)
+    decider: DeciderSpec = Field(default_factory=DeciderSpec)
     artifacts: ArtifactsSpec = Field(default_factory=ArtifactsSpec)
     reflect: ReflectSpec = Field(default_factory=ReflectSpec)
     plan_execute: PlanExecuteSpec = Field(default_factory=PlanExecuteSpec)
@@ -871,6 +890,16 @@ class Spec(_Strict):
     extensions: dict[str, Any] = Field(default_factory=dict)
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    @model_validator(mode="after")
+    def _decider_consumers_need_a_decider(self) -> Spec:
+        # Checked here rather than at compile: a consumer switched on with nothing to ask
+        # is a control that looks present and does nothing.
+        if self.tools_retrieval.decider and not self.decider.id:
+            raise ValueError("tools_retrieval.decider needs spec.decider.id")
+        if self.tools_retrieval.decider and not self.tools_retrieval.enabled:
+            raise ValueError("tools_retrieval.decider needs tools_retrieval.enabled: true")
+        return self
 
     @field_validator("output_schema")
     @classmethod
@@ -919,6 +948,7 @@ __all__ = [
     "ClientToolRef",
     "CommandScreening",
     "ContentScreening",
+    "DeciderSpec",
     "ExecutionSpec",
     "GovernanceSpec",
     "Guardrails",

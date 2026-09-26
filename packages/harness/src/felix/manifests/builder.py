@@ -9,6 +9,7 @@ from typing import Any, Literal
 
 from felix.auth.context import AuthContext
 from felix.context import try_get_context
+from felix.decisions import MeteredDecider
 from felix.governance.content_screening import _INJECTION
 from felix.governance.judges import judge_score
 from felix.limits import EffectiveLimits, effective_limits
@@ -17,6 +18,7 @@ from felix.manifests.schema import (
     ApprovalRule,
     CommandScreening,
     ContentScreening,
+    DeciderSpec,
     Guardrails,
     Limits,
     Manifest,
@@ -1032,6 +1034,22 @@ def _warn_untrusted_tools_are_unscreened(m: Manifest, untrusted: list[str]) -> N
     record_counter("felix_untrusted_tools_unscreened", {"manifest_id": m.metadata.name})
 
 
+def bind_decider(spec: DeciderSpec, settings: Any) -> MeteredDecider | None:
+    """`spec.decider`, built once per compile, or None when the manifest names none.
+
+    An id missing from `FELIX_DECISION_ROUTES` fails the compile, the way an unknown
+    `spec.model.id` does. Consumers fall back when a *call* fails; a decider that could never
+    have been reached is a configuration mistake, and falling back from it silently would
+    leave a manifest believing it had a decider it has never used.
+    """
+    if not spec.id:
+        return None
+    from felix.config import get_settings
+    from felix.decisions import build_decider
+
+    return build_decider(settings or get_settings(), spec.id, min_confidence=spec.min_confidence)
+
+
 def _warn_policies_cannot_be_satisfied(m: Manifest, settings: Any) -> None:
     """Say so at compile when nothing in this configuration can hold a scope.
 
@@ -1480,6 +1498,7 @@ async def build_agent(
                 "tenant_id": tenant_id,
                 "memory_capture": m.spec.memory.capture,
                 "tools_retrieval": m.spec.tools_retrieval,
+                "decider": bind_decider(m.spec.decider, deps.settings),
                 "procedural_memory": m.spec.procedural_memory,
             }
         )
