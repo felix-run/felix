@@ -104,8 +104,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   discarding what the agent had asked for, which is why no bundled manifest did. A manifest with
   artifacts enabled now also gets `read_artifact(artifact_id, offset, length)`, which pages through
   a spilled result in windows of `default_window_chars` (capped at `max_window_chars`); both fields
-  had been read by nothing. The reader is scoped to the caller's tenant and manifest, runs through
-  the governance stack like any tool, and is never itself spilled. `contributor`, `cowork`,
+  had been read by nothing. The reader reads only what its own conversation spilled — the tenant
+  and manifest prefix is shared by every caller of a manifest, so an id alone would otherwise reach
+  another user's run — runs through the governance stack like any tool, and is never itself
+  spilled. The spill marker is unchanged, so the terminal's `/artifact` keeps working. `contributor`, `cowork`,
   `triage`, `deep` and `support` — the bundled manifests that read files or fetch pages — now
   enable artifacts.
 

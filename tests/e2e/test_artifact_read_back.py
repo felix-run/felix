@@ -8,6 +8,7 @@ preview and a marker, and every call it could make stopped there.
 
 from __future__ import annotations
 
+import re
 import types
 from typing import Any
 
@@ -85,9 +86,9 @@ async def test_the_model_reads_past_the_preview(boot: Any, workspace: dict[str, 
     after_read_file, after_read_artifact = (
         "\n".join(str(getattr(m, "content", "") or "") for m in prompt) for prompt in app.spy.prompts[1:3]
     )
-    # The preview is what the spill leaves: the marker and the call that reads on, not the file.
+    # The preview is what the spill leaves: a preview and the marker, not the file.
     assert f"[artifact:{ARTIFACT_ID}" in after_read_file
-    assert f'read_artifact(artifact_id="{ARTIFACT_ID}", offset=100)' in after_read_file
+    assert re.search(rf"\[artifact:{ARTIFACT_ID} key=\S+ chars=\d+ spilled_at=\d+\]", after_read_file)
     assert LAST_ROW not in after_read_file, "the spill kept the file out of the transcript"
     # The reader reached the stored object and returned the window the model asked for.
     assert f"[artifact-window:{ARTIFACT_ID} chars {TAIL_OFFSET}-" in after_read_artifact
@@ -130,4 +131,35 @@ async def test_a_policy_on_the_reader_is_enforced(boot: Any, workspace: dict[str
     after_read_artifact = "\n".join(str(getattr(m, "content", "") or "") for m in app.spy.prompts[2])
     assert "[policy denied] missing scopes for read_artifact" in after_read_artifact
     assert f"[artifact-window:{ARTIFACT_ID}" not in after_read_artifact
+    assert LAST_ROW not in after_read_artifact
+
+
+async def test_a_second_conversation_cannot_read_the_first_ones_spill(
+    boot: Any, workspace: dict[str, str]
+) -> None:
+    # The security review's case: every caller of a manifest shares its tenant/manifest prefix,
+    # so an id alone would reach another user's spilled output. Two requests, two
+    # conversations; the second knows the id (it is fixed here, as a leak would make it) and
+    # is refused.
+    script = [
+        ScriptedTurn(tool_calls=[ToolCall(id="c1", name="read_file", args={"path": "big.txt"})]),
+        ScriptedTurn(content="spilled"),
+        ScriptedTurn(
+            tool_calls=[
+                ToolCall(
+                    id="c2", name="read_artifact", args={"artifact_id": ARTIFACT_ID, "offset": TAIL_OFFSET}
+                )
+            ]
+        ),
+        ScriptedTurn(content="refused"),
+    ]
+    async with boot(
+        script, env=workspace, manifests={"e2e-two": _manifest("e2e-two", artifacts=True)}
+    ) as app:
+        first = await _chat(app, "e2e-two")
+        second = await _chat(app, "e2e-two")
+
+    assert first.status_code == 200 and second.status_code == 200
+    after_read_artifact = "\n".join(str(getattr(m, "content", "") or "") for m in app.spy.prompts[3])
+    assert f"no artifact '{ARTIFACT_ID}'" in after_read_artifact
     assert LAST_ROW not in after_read_artifact
