@@ -118,6 +118,11 @@ python scripts/bump-version.py 0.3.0          # sets every location, then `uv lo
 
    An empty changelog section fails the release rather than publishing a blank body.
 
+   The release also carries `openapi.json`, exported from the tag by `scripts/export-openapi.py`.
+   docs.felix.run renders the one for the version `api.felix.run/health` reports, because the API's
+   own `/docs` needs a credential — so the public reference changes when the docs site is next
+   deployed after a production upgrade, not when the tag is cut.
+
 9. **Update `docs/ROADMAP.md`** — mark the shipped items `[x]`, refresh the *Last reviewed* line,
    and fold the completed work into [`docs/HISTORY.md`](HISTORY.md) as a wave entry. The roadmap
    no longer carries a **Shipped** section; a wave entry that lists only wins is not worth
