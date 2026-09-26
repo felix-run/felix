@@ -339,7 +339,7 @@ async def test_the_model_screener_sees_every_argument_not_a_truncated_join(
 
     seen: list[str] = []
 
-    async def _screen(settings: Any, text: str, model_id: str) -> ScreenResult:
+    async def _screen(settings: Any, text: str, model_id: str, decider: Any = None) -> ScreenResult:
         seen.append(text)
         return ScreenResult(score=0.99 if "PAYLOAD" in text else 0.0)
 
@@ -360,7 +360,7 @@ async def test_an_unavailable_model_screener_refuses_under_block_and_stands_asid
 ) -> None:
     import felix.governance.inbound as inbound
 
-    async def _down(settings: Any, text: str, model_id: str) -> ScreenResult:
+    async def _down(settings: Any, text: str, model_id: str, decider: Any = None) -> ScreenResult:
         return ScreenResult(available=False, reason="no_key")
 
     monkeypatch.setattr(inbound, "screen_for_injection", _down)
@@ -540,7 +540,7 @@ async def test_the_model_screener_sees_the_whole_turn_not_its_first_window(
 
     seen: list[str] = []
 
-    async def _screen(settings: Any, text: str, model_id: str) -> ScreenResult:
+    async def _screen(settings: Any, text: str, model_id: str, decider: Any = None) -> ScreenResult:
         seen.append(text)
         return ScreenResult(score=0.99 if "PAYLOAD" in text else 0.0)
 
@@ -570,7 +570,7 @@ async def test_an_oversize_turn_is_not_screened_one_window_at_a_time(monkeypatch
 
     calls = 0
 
-    async def _screen(settings: Any, text: str, model_id: str) -> ScreenResult:
+    async def _screen(settings: Any, text: str, model_id: str, decider: Any = None) -> ScreenResult:
         nonlocal calls
         calls += 1
         return ScreenResult(score=0.0)

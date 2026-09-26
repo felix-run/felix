@@ -481,6 +481,12 @@ after the prompt-cache breakpoint, and never written to the session, so it costs
 conversation nothing. It pays off on large catalogs; with a handful of skills the model chooses
 well on its own.
 
+`content_screening.decider: true` adds the decider to injection screening: one call asks whether
+the text tries to override the assistant's instructions, jailbreak it, or exfiltrate data. It runs
+beside the markers and `content_screening.model` rather than instead of them — either flagging
+flags, either unavailable leaves the text unscreened — because a small classifier is not
+adversarially robust. See `deploy/GOVERNANCE.md`.
+
 With `tools_retrieval.decider`, one `Choice` over the tool catalogue per user turn picks the
 shortlist the model sees, in place of embedding similarity. When the decider errors, or the
 shortlist holds less than `min_confidence` of the probability mass, selection falls back to

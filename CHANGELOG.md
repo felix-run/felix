@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Screened tool output is read in full.** The model screener — and now the decider — saw only
+  the first 4,000 characters of a tool result, so a benign prefix longer than that carried a
+  payload past both; only the markers read the whole text. Tool output is screened window by
+  window like a user turn, and output longer than eight windows is treated as unscreenable, so
+  `on_flag` quarantines or blocks it. Applies when `content_screening.model` or `.decider` is set.
+
+- **The model injection screener is metered.** `content_screening.model` runs on every user turn
+  and every untrusted tool result, and its calls never reached `record_usage`, so screening spend
+  escaped `limits.max_cost_usd` and the usage table.
+
 - **Procedural memory no longer defeats system-prompt caching.** Recalled procedures were appended
   as a system message each turn, and the Anthropic wire folds every system message into the one
   cached `system` block — so the block changed per request and a manifest with
@@ -113,6 +123,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now fails on a repo path, `file.py:symbol` or `make` target cited in `.claude/` that no longer
   exists, and on a route module mapped to no docs page. It runs in the unit suite as well as CI's
   path-filtered `toolkit` job, so renaming a module a skill cites fails where it happens.
+- **Injection screening can ask a decision model.** `content_screening.decider: true` asks
+  `spec.decider` one call's worth of questions — does the text try to override the assistant's
+  instructions, jailbreak it, or exfiltrate data — on user turns, tool arguments, caller output
+  schemas and untrusted tool output. It is additive: the markers still run first,
+  `content_screening.model` still runs beside it, either one flagging flags, and either one unable
+  to run leaves the text unscreened rather than cleared.
 
 - **Skill suggestion.** `spec.skill_suggestion` uses `spec.decider` to rank the skill catalog,
   rerank a shortlist against each skill's body, and add a one-line hint naming the skill a request

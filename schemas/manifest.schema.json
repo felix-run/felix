@@ -541,6 +541,11 @@
           ],
           "title": "On Flag",
           "type": "string"
+        },
+        "decider": {
+          "default": false,
+          "title": "Decider",
+          "type": "boolean"
         }
       },
       "title": "ContentScreening",

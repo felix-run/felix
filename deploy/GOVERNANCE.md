@@ -419,6 +419,7 @@ Screening and PII degrade **loudly**, and "unavailable" is not treated as "clean
 | Control | Unavailable behaviour |
 |---------|----------------------|
 | `content_screening.model` (LLM screener) | Honours `on_flag`: `block` denies with 503 / `[screening unavailable]`; otherwise the turn or tool output is quarantined. Emits `felix_control_unavailable{control="content_screening"}`. |
+| `content_screening.decider` (decision model) | The same as the model screener, and independently of it: with both set, either one unable to run leaves the text unscreened rather than cleared, and a decider whose route no longer resolves is unavailable too. |
 | `guardrails.providers: [pii]` | Falls back to three regexes (email, US SSN, card-like digits) with a `WARNING` and `felix_control_degraded{control="pii"}`. A *transient* engine failure is retried rather than latched for the process lifetime. |
 
 The lean image ships neither Presidio nor a spaCy model, so `providers: [pii]` there is
@@ -638,6 +639,20 @@ enable screening leave `model` empty, and the marker path is a substring scan �
 model call per untrusted tool per turn where `model` *is* set. If that bites, the shape to add
 is a knob orthogonal to trust (which tools get the *expensive* screener, with marker screening
 unconditional), not a way to exempt an untrusted tool from screening altogether.
+
+`content_screening.decider` adds `spec.decider` beside `model`: one call asks whether the text
+tries to override the assistant's instructions, to jailbreak it, or to exfiltrate data, and flags
+on the highest probability. It is **additive** — the markers still run first, `model` still runs
+beside it, either one flagging flags — because Jev is documented as not adversarially robust: it
+is a cheap extra net for paraphrased injections the markers miss, not a replacement for the model
+screener. The screened text, a 4,000-character window at a time, goes to the decider's provider —
+which `FELIX_DECISION_ROUTES` may point at a different vendor from the chat model. Tool output is
+secret-masked before it is screened; a user turn is not, as with the model screener.
+
+Screened tool output is read window by window across its whole length, like a user turn; output
+longer than eight windows (32,000 characters) is reported unavailable, so `on_flag` quarantines or
+blocks it rather than screening its first window and admitting the rest. This applies whenever
+`model` or `decider` is set.
 
 Two things to re-measure if you set `model` and previously narrowed `tools`:
 
