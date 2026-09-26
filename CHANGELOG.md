@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The ruleless-rubric warning no longer says it passes "any answer at all".** A rubric with no
+  rule scores as non-empty, which rejects a blank answer — `negative.json` relies on exactly that.
+  The warning now says "passes any answer that is not blank".
 - **Screened tool output is read in full.** The model screener — and now the decider — saw only
   the first 4,000 characters of a tool result, so a benign prefix longer than that carried a
   payload past both; only the markers read the whole text. Tool output is screened window by
