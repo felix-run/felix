@@ -47,8 +47,9 @@ class ModelGatewayError(Exception):
 
 
 # Retried statuses: rate limiting and transient upstream failures. 4xx other than these
-# will not succeed on a retry, so retrying them just burns latency.
-_RETRY_STATUSES = frozenset({408, 409, 429, 500, 502, 503, 504})
+# will not succeed on a retry, so retrying them just burns latency. 529 is "overloaded" —
+# Anthropic and TypeSafe both send it, and both document it as retry-after-a-moment.
+_RETRY_STATUSES = frozenset({408, 409, 429, 500, 502, 503, 504, 529})
 MODEL_MAX_RETRIES = 2  # three attempts total
 _BASE_BACKOFF_S = 0.5
 _MAX_BACKOFF_S = 20.0

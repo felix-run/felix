@@ -68,6 +68,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Decision models, starting with Jev, and tool selection that uses one.** Some model calls
+  make a decision rather than write text, and until now each asked a chat model for prose and
+  parsed it. `felix_ai.decide` adds a separate seam for models that answer typed questions —
+  `Choice`, `Score`, `Noul` — with calibrated probabilities and a confidence. It is routed by
+  the new `FELIX_DECISION_ROUTES` and uses the credentials already in
+  `FELIX_MODEL_PROVIDER_OPTIONS`. Three providers are built in:
+  - `typesafe`: TypeSafe's Jev at `api.typesafe.ai`, route `jev`.
+  - `workers_ai`: Jev on Cloudflare Workers AI, route `jev-cf`.
+  - `llm`: any chat route, which reports its pick without a confidence.
+
+  Plugins add providers with `register_decision_provider`. A decision is metered like a model
+  turn and counts against `limits.max_cost_usd`. Jev is priced at $0.042 per million input
+  tokens, and its output is not billed.
+
+  The first consumer is `tools_retrieval.decider: true`, with `spec.decider: {id: jev}`. It
+  asks one `Choice` over the tool catalogue per user turn and offers the model only the most
+  probable `top_k` tools. When the decider errors, or the shortlist holds less than
+  `spec.decider.min_confidence` of the probability mass, selection falls back to the
+  embedding or keyword ranking. A decider id missing from `FELIX_DECISION_ROUTES` fails the
+  compile.
+
+- **HTTP 529 ("overloaded") is retried with backoff** on every model and decision call, like
+  429 and 503. Anthropic and TypeSafe both send it for a transient condition.
+
 - **The gpt-4.1 family now carries pricing in the model catalog.** Usage rows and cost caps for
   gpt-4.1, gpt-4.1-mini, and gpt-4.1-nano are now computed instead of silently zero. An unpriced
   model reports zero cost, so a cost cap never fires on it.

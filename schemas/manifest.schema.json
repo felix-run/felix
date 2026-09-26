@@ -541,6 +541,26 @@
       "title": "ContentScreening",
       "type": "object"
     },
+    "DeciderSpec": {
+      "additionalProperties": false,
+      "description": "A decision model \u2014 one that answers typed questions (choose one, score, true/false)\nwith calibrated probabilities instead of generating text. Off unless `id` is set.\n\nConsumers opt in one at a time (`tools_retrieval.decider`), and each keeps its existing\nbehaviour as the fallback, so turning a decider on never removes a path.",
+      "properties": {
+        "id": {
+          "default": "",
+          "title": "Id",
+          "type": "string"
+        },
+        "min_confidence": {
+          "default": 0.5,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Min Confidence",
+          "type": "number"
+        }
+      },
+      "title": "DeciderSpec",
+      "type": "object"
+    },
     "DocumentSearchToolRef": {
       "additionalProperties": false,
       "description": "Retrieve from the corpus an operator ingested, scoped to the calling tenant.\n\nThe mildest of the three retrieval refs, and for a structural reason rather than a policy\none: `HttpFetchToolRef` needs a `path_prefix` because the model names a destination, and\n`SearchToolRef` needs none because the operator does \u2014 this one reaches no network at all,\nonly rows already in this deployment's own store. What comes back is still untrusted, since\na document is text somebody else wrote.",
@@ -1949,6 +1969,9 @@
         "tools_retrieval": {
           "$ref": "#/$defs/ToolsRetrievalSpec"
         },
+        "decider": {
+          "$ref": "#/$defs/DeciderSpec"
+        },
         "artifacts": {
           "$ref": "#/$defs/ArtifactsSpec"
         },
@@ -2102,6 +2125,11 @@
           "default": "bge-base-en-v1.5",
           "title": "Model",
           "type": "string"
+        },
+        "decider": {
+          "default": false,
+          "title": "Decider",
+          "type": "boolean"
         }
       },
       "title": "ToolsRetrievalSpec",

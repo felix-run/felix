@@ -8,7 +8,7 @@ import uuid
 from collections.abc import AsyncIterator
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from felix.audit.emit import emit_agent_audit
 from felix.config import get_settings
@@ -49,6 +49,9 @@ from felix.steer import (
 )
 from felix.tools.retrieval import select_tools_from_ctx_async
 from felix.tools.types import Tool
+
+if TYPE_CHECKING:
+    from felix.decisions import MeteredDecider
 
 logger = logging.getLogger("felix.patterns.react")
 
@@ -190,6 +193,8 @@ class _ReactAgent:
     tenant_id: str = "default"
     memory_capture: Any | None = None
     tools_retrieval: Any | None = None
+    # `spec.decider`, built: a metered decision provider, or None when the manifest has none.
+    decider: MeteredDecider | None = None
     procedural_memory: Any | None = None
     tool_execution: str = "sequential"
     steering_mode: str = "all"
@@ -201,6 +206,9 @@ class _ReactAgent:
     output_schema: dict[str, Any] | None = None
     _tool_map: dict[str, Tool] = field(init=False, repr=False)
     _last_model_id: str | None = field(default=None, init=False, repr=False)
+    # Decider tool rankings for this agent, keyed by request and candidate set: selection
+    # runs several times per step and the request does not change between them.
+    _tool_rankings: dict[tuple[Any, ...], Any] = field(default_factory=dict, init=False, repr=False)
 
     def __post_init__(self) -> None:
         self._tool_map = {t.name: t for t in self.tools}
@@ -217,7 +225,13 @@ class _ReactAgent:
         once a retrieval model is configured, and that must not run on the event
         loop. With retrieval off — the default — it stays inline.
         """
-        return await select_tools_from_ctx_async(self.tools, messages, self.tools_retrieval)
+        return await select_tools_from_ctx_async(
+            self.tools,
+            messages,
+            self.tools_retrieval,
+            decider=self.decider,
+            cache=self._tool_rankings,
+        )
 
     def _chat_options(self, input: InvokeInput) -> ModelChatOptions | None:
         """The caller's per-request sampling, bounded by the manifest.
@@ -1140,6 +1154,7 @@ def build_react_agent(ctx: PatternBuildContext) -> Agent:
         tenant_id=str(ctx.get("tenant_id") or "default"),
         memory_capture=ctx.get("memory_capture"),
         tools_retrieval=ctx.get("tools_retrieval"),
+        decider=ctx.get("decider"),
         procedural_memory=ctx.get("procedural_memory"),
         tool_execution=tool_exec,
         steering_mode=steer_mode,

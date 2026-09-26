@@ -31,6 +31,7 @@ x-felix-env: &felix-env
   FELIX_DEFAULT_MANIFEST: ${FELIX_DEFAULT_MANIFEST:-quick}
   FELIX_DEFAULT_MODEL_ID: ${FELIX_DEFAULT_MODEL_ID:-claude-sonnet}
   FELIX_MODEL_ROUTES: ${FELIX_MODEL_ROUTES:-}
+  FELIX_DECISION_ROUTES: ${FELIX_DECISION_ROUTES:-}
   FELIX_OLLAMA_BASE_URL: ${FELIX_OLLAMA_BASE_URL:-http://host.docker.internal:11434}
   FELIX_WORKSPACE_ROOT: ${FELIX_WORKSPACE_ROOT:-/workspace}
   # Extra SKILL.md directory, searched alongside the image's bundled skills/.

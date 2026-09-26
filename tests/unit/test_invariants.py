@@ -1262,6 +1262,7 @@ def test_outbound_clients_go_through_the_egress_guard() -> None:
         "wire/openai_completions.py": "provider base_url is operator config; felix_ai cannot import felix",
         "wire/anthropic_messages.py": "provider base_url is operator config; felix_ai cannot import felix",
         "wire/transport.py": "provider base_url is operator config; felix_ai cannot import felix",
+        "decide/typesafe.py": "decision provider base_url is operator config; felix_ai cannot import felix",
     }
     seen_clients = 0
     offenders: list[str] = []

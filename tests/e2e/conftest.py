@@ -123,6 +123,12 @@ class ProviderSpy:
     #: with thinking off, and only the spec can tell.
     specs: list[Any] = field(default_factory=list)
 
+    #: The tool names each model call was offered, one list per call, in order.
+    #:
+    #: `spec.tools_retrieval` narrows what a step exposes, and the reply cannot show it: a
+    #: model that was offered every tool and one offered the right three answer alike.
+    tools: list[list[str]] = field(default_factory=list)
+
     def texts_seen(self) -> list[str]:
         """Every message content the model has been shown, flattened."""
         return [str(getattr(m, "content", "") or "") for call in self.prompts for m in call]
@@ -154,6 +160,8 @@ class ProviderSpy:
                 # Positional on every harness call site, keyword nowhere yet — read both, for
                 # the same reason `*args` is used at all.
                 self.options.append(args[2] if len(args) > 2 else kwargs.get("opts"))
+                offered = args[1] if len(args) > 1 else kwargs.get("tools") or []
+                self.tools.append([str(getattr(t, "name", t)) for t in offered])
                 return _inner(*args, **kwargs)
 
             setattr(client, name, wrapper)

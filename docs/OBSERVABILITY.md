@@ -72,6 +72,8 @@ not served and every token from that issuer would 401 while everything else stay
 | `felix_model_retry` | `provider`, `status` | An upstream call was retried. |
 | `felix_model_retry_skipped` | `provider`, `reason` | A retry was declined (`reason=quota`). |
 | `felix_model_timeout` | `provider` | `FELIX_MODEL_TIMEOUT_SECONDS` elapsed. |
+| `felix_decisions` | `decider`, `purpose`, `outcome` | One per call to a decision model (`spec.decider`). `outcome` is `ok`, `error` (the call failed) or `invalid` (it answered, was billed, and the answer did not fit the question). Its tokens are in `felix_tokens` under `model=<decider id>`. |
+| `felix_tool_selection` | `method` | How `tools_retrieval.decider` chose a shortlist: `decider`, or a fallback to the default ranking — `unsure` (the shortlist held less than `min_confidence` of the mass) or `error`. A rising `unsure` share means `top_k` is too small for the catalogue. |
 
 ### Tools
 

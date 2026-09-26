@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from felix.manifests.schema import ToolsRetrievalSpec
 from felix.patterns.types import ChatMessage
 from felix.tools.types import Tool
+
+if TYPE_CHECKING:
+    from felix.decisions import MeteredDecider
 
 _WORD = re.compile(r"[a-z0-9]+")
 
@@ -108,6 +111,7 @@ def _coerce_spec(spec: Any | None) -> ToolsRetrievalSpec | None:
         enabled=bool(getattr(spec, "enabled", False)),
         top_k=int(getattr(spec, "top_k", 20) or 20),
         model=str(getattr(spec, "model", "") or "bge-base-en-v1.5"),
+        decider=bool(getattr(spec, "decider", False)),
     )
 
 
@@ -138,10 +142,43 @@ def select_tools_from_ctx(
     return select_tools(tools, messages, spec)
 
 
+async def _select_with_decider(
+    tools: list[Tool],
+    messages: list[ChatMessage],
+    spec: ToolsRetrievalSpec,
+    decider: MeteredDecider,
+    cache: dict[tuple[Any, ...], Any] | None,
+) -> list[Tool] | None:
+    """The decider's shortlist, with this thread's used tools kept first as always."""
+    from felix.tools.decider_retrieval import rank_with_decider
+
+    used = used_tool_names(messages)
+    kept = [t for t in tools if t.name in used]
+    remaining = [t for t in tools if t.name not in used]
+    query_tokens = _tokens(query_from_messages(messages))
+    by_overlap = sorted(remaining, key=lambda t: score_tool(t, query_tokens), reverse=True)
+    ranking = await rank_with_decider(
+        tools,
+        frozenset(t.name for t in kept),
+        [t.name for t in by_overlap],
+        messages,
+        slots=spec.top_k - len(kept),
+        decider=decider,
+        cache=cache,
+    )
+    if ranking is None:
+        return None
+    by_name = {t.name: t for t in remaining}
+    return [*kept, *(by_name[name] for name in ranking)]
+
+
 async def select_tools_from_ctx_async(
     tools: list[Tool],
     messages: list[ChatMessage],
     spec: Any | None,
+    *,
+    decider: MeteredDecider | None = None,
+    cache: dict[tuple[Any, ...], Any] | None = None,
 ) -> list[Tool]:
     """:func:`select_tools_from_ctx`, off the event loop when it will embed.
 
@@ -151,7 +188,21 @@ async def select_tools_from_ctx_async(
     runs up to four times per loop step, so the cheap path deliberately does not pay
     for an executor hop; `tools_retrieval` is off by default and that is the path
     almost every deployment takes.
+
+    With `tools_retrieval.decider` and a `decider`, a decision model ranks first and the
+    path above is the fallback — see `felix.tools.decider_retrieval`.
     """
+    coerced = _coerce_spec(spec)
+    if (
+        decider is not None
+        and coerced is not None
+        and coerced.enabled
+        and coerced.decider
+        and len(tools) > coerced.top_k
+    ):
+        chosen = await _select_with_decider(tools, messages, coerced, decider, cache)
+        if chosen is not None:
+            return chosen
     if not will_embed(tools, spec):
         return select_tools_from_ctx(tools, messages, spec)
     return await asyncio.to_thread(select_tools_from_ctx, tools, messages, spec)

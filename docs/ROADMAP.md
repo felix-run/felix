@@ -212,6 +212,24 @@ First, because everything else governs it.
       scrubbed env, cwd pinned under the workspace root), not as a `ShellBackend` registry — one
       implementation does not earn a registry.
 
+- [~] **Decision models (Jev).** Plan: `~/.claude/plans/we-want-to-use-sprightly-sprout.md`.
+      Some calls decide rather than write, and each one asked a chat model for prose and
+      parsed it. Examples: the router's "reply with only the agent name", which silently
+      falls back to the first sub-agent; the judges' `{score}` JSON; the injection scorer's
+      "number only". The seam is `felix_ai.decide` plus `FELIX_DECISION_ROUTES`, with the
+      `typesafe`, `workers_ai` and `llm` backends. Each consumer opts in on its own, and keeps
+      its current path as the fallback when the decider errors or is not confident enough.
+      Land in order, one PR each:
+      1. [x] The seam, plus `tools_retrieval.decider`.
+      2. [ ] The router's `_choose_child`, and confidence escalation's `_low_confidence`.
+      3. [ ] Judges, reply judges, eval `llm_judge`, and the reflect verifier: a `Noul` per
+         criterion.
+      4. [ ] Skill suggestion: the two-stage rank-then-rerank, emitted as a prompt hint.
+      5. [ ] Injection screening as a `Noul` battery. It is *additive* to the regex and the
+         LLM scorer, because Jev is not adversarially robust. Needs a security review.
+
+      Not yet verified: the Workers AI response envelope, against a live call.
+
 ### B. Close the durable loop
 
 - [x] **Run a fiber to suspension inside one claim.** Closed. The entry undercounted it: the
