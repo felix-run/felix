@@ -1388,6 +1388,24 @@ async def build_agent(
             except Exception:
                 logger.warning("memory tool binding failed", exc_info=True)
 
+        # The reader for what `spec.artifacts` spills. Bound with the spill, and before the
+        # governance block, so a read is limited, screened and audited like the tool call
+        # that produced it. Without a store the spill is a no-op and there is nothing to read.
+        if m.spec.artifacts.enabled and deps.object_store is not None:
+            from felix.artifacts import make_read_artifact_tool
+
+            _append_unique_tools(
+                resolved,
+                [
+                    make_read_artifact_tool(
+                        m.spec.artifacts,
+                        object_store=deps.object_store,
+                        tenant_id=tenant_id,
+                        manifest_id=m.metadata.name,
+                    )
+                ],
+            )
+
         # Wire Agent Skills (progressive disclosure + bound skill tools).
         from felix.skills import (
             SKILL_TOOL_NAMES,

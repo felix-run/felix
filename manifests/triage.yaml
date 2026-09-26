@@ -155,6 +155,12 @@ spec:
     context_window_tokens: 128000
     compaction_enabled: true
 
+  # A tool result over 8000 characters is stored rather than inlined; the model gets a preview
+  # and pages through the rest with `read_artifact`, so one large file or page is not re-sent
+  # on every later turn.
+  artifacts:
+    enabled: true
+
   # Same posture as contributor.yaml: the builder stack runs FELIX_AUTH_MODE=api_key, which is
   # what keeps the approvals above from being anonymous.
   auth:

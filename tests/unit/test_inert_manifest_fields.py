@@ -237,8 +237,6 @@ async def test_anomaly_disabled_manifest_is_skipped(monkeypatch: pytest.MonkeyPa
 KNOWN_INERT_FIELDS = {
     "after_facts",  # MemoryConsolidate
     "consolidate",  # MemorySpec
-    "default_window_chars",  # ArtifactsSpec
-    "max_window_chars",  # ArtifactsSpec
     "min_rate",  # AnomalySpec
     "precount",  # Limits
 }

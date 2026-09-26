@@ -4,6 +4,11 @@ The spill has always worked; nothing ever read it. `object_store.get` appeared
 nowhere in the harness, so an oversized tool result was written to a store no
 route, CLI command or client method could reach — the model saw a preview and a
 marker naming an object that could not be fetched by anyone.
+
+The HTTP route fixed that for clients and left the model where it was: holding a
+200-character preview of a file it had asked to read, with no call that could fetch
+the rest. `read_artifact` is that call. Without it, turning the spill on saves tokens
+by discarding what the agent needed, which is why no bundled manifest enabled it.
 """
 
 from __future__ import annotations
@@ -15,11 +20,19 @@ import time
 import uuid
 from typing import Any
 
+from pydantic import BaseModel, ConfigDict, Field
+
 from felix.manifests.schema import ArtifactsSpec
+from felix.tools.errors import tool_error_output
 from felix.tools.executor import wrap_tool
-from felix.tools.types import Tool, ToolInvocationCtx, ToolOutput, tool_output_content
+from felix.tools.types import Tool, ToolInvocationCtx, ToolOutput, define_tool, tool_output_content
 
 logger = logging.getLogger("felix.artifacts")
+
+READ_ARTIFACT_TOOL = "read_artifact"
+# How the spill recognises the reader. By `source` rather than name, so a manifest's own
+# tool that happens to be called `read_artifact` is still spilled like any other.
+_READER_SOURCE = "artifacts"
 
 # A spilled id is a uuid4 hex. A manifest id is looser, so it is bounded here rather
 # than trusted: both land in an object key, and a segment that is not what it looks
@@ -105,6 +118,11 @@ def apply_artifact_spill(
     preview = spec.preview_chars
 
     def wrap_one(tool: Tool) -> Tool:
+        # The reader is exempt. Its window may be larger than the threshold, and a window
+        # that spilled would hand the model a new preview of the text it had just asked to
+        # see — a loop, not a read.
+        if tool.source == _READER_SOURCE:
+            return tool
         inner = tool.executor
 
         # `inner` by closure, like all eight wrappers in manifests/builder.py. It used to be
@@ -131,7 +149,8 @@ def apply_artifact_spill(
             head = content[:preview]
             return (
                 f"{head}\n\n…[artifact:{artifact_id} key={key} "
-                f"chars={len(content)} spilled_at={int(time.time())}]"
+                f"chars={len(content)} spilled_at={int(time.time())}] "
+                f'Call {READ_ARTIFACT_TOOL}(artifact_id="{artifact_id}", offset={len(head)}) to read on.'
             )
 
         return wrap_tool(tool, execute)
@@ -139,4 +158,70 @@ def apply_artifact_spill(
     return [wrap_one(t) for t in tools]
 
 
-__all__ = ["apply_artifact_spill", "artifact_key", "read_artifact", "valid_artifact_ref"]
+class ReadArtifactArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    artifact_id: str = Field(
+        description="The id from an `[artifact:<id> …]` marker in an earlier tool result."
+    )
+    offset: int = Field(default=0, ge=0, description="Character to start from.")
+    length: int | None = Field(
+        default=None,
+        ge=1,
+        description="How many characters to return. Omit for the default window; larger requests are capped.",
+    )
+
+
+def make_read_artifact_tool(
+    spec: ArtifactsSpec,
+    *,
+    object_store: Any,
+    tenant_id: str,
+    manifest_id: str,
+) -> Tool:
+    """The model's way back to a spilled output, one window at a time.
+
+    Tenant and manifest are fixed at build time, like the spill that wrote the object, so
+    the model names only the id. It cannot reach another tenant's artifact or another
+    manifest's by any spelling of it — the same guarantee the HTTP route gets from
+    credentials, here from never taking the other two segments as input at all.
+    """
+    default_window = spec.default_window_chars
+    max_window = spec.max_window_chars
+
+    async def handler(args: ReadArtifactArgs, _ctx: ToolInvocationCtx | None = None) -> ToolOutput:
+        content = await read_artifact(
+            object_store, tenant_id=tenant_id, manifest_id=manifest_id, artifact_id=args.artifact_id
+        )
+        if content is None:
+            return tool_error_output("invalid_arguments", f"no artifact {args.artifact_id!r}")
+        total = len(content)
+        start = min(args.offset, total)
+        end = min(start + min(args.length or default_window, max_window), total)
+        # Not `[artifact:` — that prefix is the spill marker, and a transcript scanned for
+        # spills should not also match every window read back from one.
+        header = f"[artifact-window:{args.artifact_id} chars {start}-{end} of {total}"
+        header += f"; continue at offset={end}]" if end < total else "; end]"
+        return f"{header}\n{content[start:end]}"
+
+    return define_tool(
+        name=READ_ARTIFACT_TOOL,
+        description=(
+            "Read part of a tool result that was too large to show inline. Such a result ends in "
+            "an `[artifact:<id> …]` marker; pass that id, and an offset to page through it."
+        ),
+        args=ReadArtifactArgs,
+        handler=handler,
+        source=_READER_SOURCE,
+        replay_safe=True,
+    )
+
+
+__all__ = [
+    "READ_ARTIFACT_TOOL",
+    "apply_artifact_spill",
+    "artifact_key",
+    "make_read_artifact_tool",
+    "read_artifact",
+    "valid_artifact_ref",
+]
