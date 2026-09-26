@@ -290,3 +290,46 @@ async def test_the_returned_manifest_is_a_copy_not_the_stored_one(store_settings
     second = await manifests.get_version(store_settings, TENANT, NAME, created["version"])
     assert second is not None
     assert second["manifest"]["spec"]["system_prompt"]["inline"] == "original", second
+
+
+# --- the resolver sees a pointer change at once ------------------------------------------------
+#
+# `resolver.invalidate_active` had no caller, so the process that took a rollback kept resolving
+# the version it rolled back from for up to `ACTIVE_TTL_MS`. Each test warms the pointer cache
+# first — a cold cache hides the bug — then moves the pointer the way the management routes do.
+# Run on both backends because the invalidation sits after each branch's own commit.
+
+
+async def _served(settings: Any, tenant: str) -> str:
+    from felix.runtime import resolve_tenant_manifest
+
+    resolved = await resolve_tenant_manifest(settings, tenant, NAME)
+    return str(resolved.manifest.spec.system_prompt.inline)
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_an_activation_or_rollback_is_served_on_the_next_resolution(store_settings: Any) -> None:
+    tenant = "conformance-activate"
+    await _put(store_settings, "v1", tenant=tenant)
+    assert await _served(store_settings, tenant) == "v1"
+
+    await _put(store_settings, "v2", tenant=tenant)
+    assert await _served(store_settings, tenant) == "v1", "stored is not active"
+    await manifests.activate_version(store_settings, tenant, NAME, version=2)
+    assert await _served(store_settings, tenant) == "v2"
+
+    await manifests.activate_version(store_settings, tenant, NAME, version=1)  # the rollback
+    assert await _served(store_settings, tenant) == "v1"
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_a_canary_change_is_served_on_the_next_resolution(store_settings: Any) -> None:
+    tenant = "conformance-canary"
+    await _put(store_settings, "v1", tenant=tenant)
+    await _put(store_settings, "v2", tenant=tenant)
+    assert await _served(store_settings, tenant) == "v1"
+
+    await manifests.set_canary(store_settings, tenant, NAME, canary_version=2, canary_weight=100)
+    assert await _served(store_settings, tenant) == "v2", "a full-weight canary serves the canary"

@@ -24,6 +24,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **An activation, rollback or canary change is served at once.** The resolver caches each
+  manifest's active version for 30 seconds, and the function that drops that entry had no caller,
+  so the process that took a rollback kept serving the version it rolled back from for up to half
+  a minute. The store now invalidates the entry after each write that moves the pointer. Other API
+  replicas and the worker still follow within the 30-second window, as the README now says.
+
 - **A plan write no longer erases a concurrent one, or fields it was not sent** (#320).
   `PUT /plans/{id}` takes an optional `expected_updated_at` and answers `409` with
   `{error: "plan_changed", current}` when the plan has moved on; the agent's

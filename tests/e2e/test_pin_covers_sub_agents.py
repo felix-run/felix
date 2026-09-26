@@ -55,12 +55,8 @@ async def test_a_pinned_thread_refuses_a_turn_after_its_child_was_edited(boot: A
         await put_version(
             app.settings, "default", "e2e-child", _agent("e2e-child", system_prompt={"inline": "v2"})
         )
-        # Published, not only stored: a new version is inactive until activated — and seen once
-        # the resolver's 30s active-pointer cache lapses, which this stands in for.
+        # Published, not only stored: a new version is inactive until activated.
         await activate_version(app.settings, "default", "e2e-child", version=2)
-        from felix.manifests.resolver import invalidate_active
-
-        invalidate_active("default", "e2e-child")
         resp = await _turn(app, "second")
         assert resp.status_code == 409, resp.text
 
