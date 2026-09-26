@@ -1460,7 +1460,7 @@ async def build_agent(
                 for name, tool in skill_tools.items():
                     if name not in have:
                         resolved.append(tool)
-            if m.spec.skill_suggestion.enabled and decider is not None:
+            if m.spec.skill_suggestion.enabled and decider is not None and catalog.list_public():
                 from felix.skills.suggest import SkillSuggester
 
                 skill_suggester = SkillSuggester(catalog.list_public(), decider, m.spec.skill_suggestion)

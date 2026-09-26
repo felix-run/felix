@@ -1,4 +1,4 @@
-"""`spec.skill_suggestion` through the stack: a hint on every call, and in no transcript.
+"""`spec.skill_suggestion` through the stack: a hint on each turn's first call, in no transcript.
 
 What makes the hint cheap is where it goes: last, on every model call of the turn, and never
 into the session log — so the next turn's prompt, rendered from that log, has the same prefix
@@ -75,7 +75,7 @@ async def _turn(app: Any, text: str) -> Any:
     )
 
 
-async def test_the_hint_rides_every_call_of_the_turn_and_no_transcript(boot: Any, decider: Any) -> None:
+async def test_the_hint_rides_the_first_call_of_each_turn_and_no_transcript(boot: Any, decider: Any) -> None:
     script = [
         ScriptedTurn(content="", tool_calls=[CALC], stop_reason="tool_use"),
         ScriptedTurn(content="4"),
@@ -86,10 +86,13 @@ async def test_the_hint_rides_every_call_of_the_turn_and_no_transcript(boot: Any
         assert (await _turn(app, "Thanks!")).status_code == 200
         first_step, second_step, next_turn = app.spy.prompts
 
-        for prompt in (first_step, second_step, next_turn):
+        for prompt in (first_step, next_turn):
             tail = prompt[-1]
-            assert tail.transient and "`calculator-help`" in tail.content, "last, on every call"
+            assert tail.transient and "`calculator-help`" in tail.content, "last, on a turn's first call"
             assert sum(m.transient for m in prompt) == 1, "one hint — this turn's, not an earlier one"
+        # Read once: the step after the tool call does not repeat "load the skill".
+        assert not any(m.transient for m in second_step)
+        assert second_step[-1].role == "tool"
 
         # The second turn renders turn one from the session log: no hint in it.
         history = [m.content for m in next_turn[:-1]]

@@ -102,7 +102,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rerank a shortlist against each skill's body, and add a one-line hint naming the skill a request
   needs — only when the request asks for a task and a skill fits. The model still decides whether
   to activate it. The hint travels as a new kind of message, `ChatMessage.transient`: sent last on
-  every model call of the turn, after the prompt-cache breakpoint on the Anthropic wire and after
+  the turn's first model call, after the prompt-cache breakpoint on the Anthropic wire and after
   everything persistent on the OpenAI one, and never written to the session log, so a per-request
   note no longer costs the cached conversation.
 

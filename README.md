@@ -476,7 +476,7 @@ with `judge_decider: <route>`. Each falls back to its model judge, then its heur
 `skill_suggestion: {enabled: true}` suggests the skill a request needs: the decider ranks the
 catalog, reranks a shortlist of three against each skill's body, and — when the request asks for a
 task and a skill fits — adds a one-line hint naming it. The model still decides whether to
-`activate_skill`. The hint is a *transient* message: sent last on each model call of the turn,
+`activate_skill`. The hint is a *transient* message: sent last on the turn's first model call,
 after the prompt-cache breakpoint, and never written to the session, so it costs the cached
 conversation nothing. It pays off on large catalogs; with a handful of skills the model chooses
 well on its own.

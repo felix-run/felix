@@ -92,7 +92,7 @@ class SkillSuggester:
         candidates = list(self.skills)
         if len(candidates) > self.spec.shortlist:
             candidates, gate = await self._rank(state)
-        if gate is not None and gate < self.spec.min_gate:
+        if (gate is not None and gate < self.spec.min_gate) or not candidates:
             return None
         fits = await self._rerank(state, [by_name[c.name] for c in candidates], ask_gate=gate is None)
         if fits is None:
@@ -119,7 +119,10 @@ class SkillSuggester:
             if key.startswith("rank_"):
                 probs.update({n: p for n, p in _probabilities(answer).items() if n != NO_SKILL})
         order = {s.name: i for i, s in enumerate(self.skills)}
-        ranked = sorted(self.skills, key=lambda s: (-probs.get(s.name, 0.0), order[s.name]))
+        # Only skills the ranking gave any weight: when every chunk picked "no skill", a
+        # shortlist by catalog order would pay for a rerank of whichever skills come first.
+        weighted = [s for s in self.skills if probs.get(s.name, 0.0) > 0.0]
+        ranked = sorted(weighted, key=lambda s: (-probs.get(s.name, 0.0), order[s.name]))
         return ranked[: self.spec.shortlist], float(result.answers["gate"].p)
 
     async def _rerank(

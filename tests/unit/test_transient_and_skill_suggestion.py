@@ -152,12 +152,18 @@ async def test_a_small_catalog_is_reranked_directly_and_the_best_fit_is_hinted()
 
 @pytest.mark.asyncio
 async def test_a_large_catalog_is_ranked_first_and_only_the_shortlist_reranked() -> None:
-    decider = _Decider(_fits("skill-7"))
+    spread = {"skill-7": 0.5, "skill-2": 0.2, "skill-4": 0.15, "skill-9": 0.1, "skill-0": 0.05}
+    fits = _fits("skill-7")
+
+    def answer(key: str, q: Any) -> Any:
+        return ChoiceAnswer("skill-7", spread, confidence=0.5) if key.startswith("rank_") else fits(key, q)
+
+    decider = _Decider(answer)
     hint = await _suggester(decider, n=10, shortlist=3).hint(ASK)
     assert hint is not None and "`skill-7`" in hint
     assert [purpose for *_, purpose in decider.calls] == ["skill_rank", "skill_rerank"]
     reranked = decider.calls[1][1]
-    assert len([k for k in reranked if k.startswith("fit_")]) == 3
+    assert len([k for k in reranked if k.startswith("fit_")]) == 3, "five weighted, three carried"
     assert "gate" not in reranked, "the gate was already asked in the ranking"
 
 
@@ -201,5 +207,23 @@ async def test_a_large_catalog_stops_at_the_ranking_when_the_request_is_not_a_ta
     """The gate is asked in the ranking when there is one, and a failed gate ends it there —
     no rerank call, no hint."""
     decider = _Decider(_fits("skill-7", gate=0.1))
+    assert await _suggester(decider, n=10, shortlist=3).hint(ASK) is None
+    assert [purpose for *_, purpose in decider.calls] == ["skill_rank"]
+
+
+@pytest.mark.asyncio
+async def test_a_ranking_that_picks_no_skill_ends_without_a_rerank() -> None:
+    """Every chunk chose "no skill": a shortlist by catalog order would pay for a rerank of
+    whichever skills came first, and a lenient fit could suggest one of them."""
+    from felix.skills.suggest import NO_SKILL
+
+    def answer(key: str, q: Any) -> Any:
+        if key == "gate":
+            return NoulAnswer(0.9)
+        if key.startswith("rank_"):
+            return ChoiceAnswer(NO_SKILL, {}, confidence=None)
+        return NoulAnswer(0.9)
+
+    decider = _Decider(answer)
     assert await _suggester(decider, n=10, shortlist=3).hint(ASK) is None
     assert [purpose for *_, purpose in decider.calls] == ["skill_rank"]

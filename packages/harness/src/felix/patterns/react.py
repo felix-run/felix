@@ -677,10 +677,18 @@ class _ReactAgent:
         return False
 
     async def _transient_guidance(self, messages: list[ChatMessage], tenant_id: str) -> list[ChatMessage]:
-        """Messages for this turn's model calls only — see `ChatMessage.transient`."""
-        notes = [await self._procedures(messages, tenant_id)]
-        if self.skill_suggester is not None:
-            notes.append(await self.skill_suggester.hint(messages))
+        """Messages for this run's first model call only — see `ChatMessage.transient`.
+
+        Procedures and the skill hint are independent lookups, gathered so the first token
+        waits for the slower of them rather than their sum.
+        """
+        import asyncio
+
+        async def _none() -> None:
+            return None
+
+        hint = self.skill_suggester.hint(messages) if self.skill_suggester is not None else _none()
+        notes = await asyncio.gather(self._procedures(messages, tenant_id), hint)
         return [ChatMessage(role="user", content=note, transient=True) for note in notes if note]
 
     def _prelude_messages(self) -> list[ChatMessage]:
@@ -806,8 +814,9 @@ class _ReactAgent:
                 yield Event(event="session_progress", data={"phase": "turn"})
 
         messages = await self._assemble_messages(input, model, tenant_id)
-        # Per-request guidance, re-attached at the tail of every model call this turn and never
-        # added to `messages` — which is what gets persisted and what the cache prefix is.
+        # Per-request guidance, attached at the tail of the run's first model call (and its
+        # overflow retry) and never added to `messages` — which is what gets persisted and what
+        # the cache prefix is.
         transient = await self._transient_guidance(messages, tenant_id)
 
         interrupted = _interrupted_tool_results(messages, self._tool_map)
@@ -934,6 +943,11 @@ class _ReactAgent:
                     result = await model.chat([*messages, *transient], active_tools, opts)
 
                 usage_block = record_model_usage(result, model, manifest_id=self.manifest_id) or None
+                # Guidance for the request, read once: repeating "load the skill" after the model
+                # has acted on it invites a second activation, and trailing user text after every
+                # tool result ends the assistant turn, which drops the reasoning chain when
+                # thinking is on. Cache is unaffected either way — it always sat past the breakpoint.
+                transient = []
                 assistant = result.message
                 if not assistant.content and chunks:
                     assistant = ChatMessage(
