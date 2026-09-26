@@ -99,6 +99,36 @@ CASES: list[tuple[str, str, int]] = [
     # ...but a real pipe still segments, so a bare run after one is still caught.
     (f"{PYTEST}-env-guard", f"echo hi | grep h && {PYTEST} -q", BLOCKED),
     ("git-guard", "git log --grep 'push --force|reset --hard'", ALLOWED),
+    # --- spellings the word-exact matcher missed ------------------------------------
+    # A short-option cluster is parsed letter by letter, so each of these is the flag the
+    # guard watches for; `hook_has_flag` compared whole words and let every one through.
+    ("git-guard", "git push -fu origin feat/x", BLOCKED),
+    ("git-guard", "git clean -fd", BLOCKED),
+    ("git-guard", "git clean -fX", BLOCKED),
+    ("git-guard", "git commit -nm wip", BLOCKED),
+    # A `+` refspec force-updates the ref with no flag anywhere.
+    ("git-guard", "git push origin +main", BLOCKED),
+    ("git-guard", "git push origin +HEAD:feat/x", BLOCKED),
+    # ...and the same letters where they mean something else.
+    ("git-guard", "git push -u origin feat/x", ALLOWED),
+    ("git-guard", "git push -n origin feat/x", ALLOWED),  # --dry-run on push
+    ("git-guard", "git commit -am wip", ALLOWED),
+    ("git-guard", "git clean -nd", ALLOWED),
+    # --- whole-tree discards, in a checkout other sessions share -----------------------
+    ("git-guard", "git checkout -- .", BLOCKED),
+    ("git-guard", "git restore .", BLOCKED),
+    ("git-guard", "git restore --staged --worktree .", BLOCKED),
+    ("git-guard", "git stash clear", BLOCKED),
+    ("git-guard", "git checkout main", ALLOWED),
+    ("git-guard", "git checkout -- src/a.py", ALLOWED),
+    ("git-guard", "git restore --staged .", ALLOWED),  # only unstages
+    ("git-guard", "git stash list", ALLOWED),
+    ("git-guard", "git commit -m 'git stash clear'", ALLOWED),
+    # --- a runner's own options before the command --------------------------------------
+    # The verb parser landed on `--with` and never saw the test runner.
+    (f"{PYTEST}-env-guard", f"uv run --with x {PYTEST} -q", BLOCKED),
+    (f"{PYTEST}-env-guard", f"uv run --extra temporal --no-sync {PYTEST}", BLOCKED),
+    (f"{PYTEST}-env-guard", f"uv run --with {PYTEST} python -c 1", ALLOWED),
 ]
 
 

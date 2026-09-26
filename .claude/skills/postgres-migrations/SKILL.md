@@ -12,10 +12,14 @@ auto-migrated — every model change needs a hand-written Alembic revision in th
 
 ## Existing revisions
 
+The list moves every few PRs, so read it rather than trusting a copy:
+
+```bash
+ls migrations/versions/ | sort | tail -3     # the head is the last one
 ```
-0001_baseline      0002_a2a_tasks     0003_session_tree
-0004_usage_events  0005_session_fts   0006_tenant_rls
-```
+
+`0001_baseline` is the schema at the start; `0006_tenant_rls.py` is the RLS pattern to copy and
+`0005_session_fts.py` the full-text search one.
 
 ## Add a revision
 
@@ -54,10 +58,38 @@ in-memory implementation used by the whole test suite. A new store or query path
 ./scripts/test.sh tests/unit/test_stores_memory.py tests/unit/test_protocols_memory.py
 ```
 
+## Prove the twin behaves like Postgres
+
+`tests/unit/test_invariants.py` checks that every Postgres-touching module *has* a `memory://`
+twin, not that the twin *behaves* like it, and CI's main suite only ever runs the twin. A unique
+constraint the twin does not enforce is invisible there: an eval store that overwrote in memory
+raised `UniqueViolation` on its second real write, and the scheduled sweep that re-writes it every
+tick reported success while scoring nothing.
+
+Run the feature once against a throwaway database, then encode the finding as a conformance arm:
+
+```bash
+docker exec felix-postgres-1 sh -c 'psql -U "$POSTGRES_USER" -d postgres -c "CREATE DATABASE scratch_x;"'
+docker port felix-postgres-1 5432          # host port; the password is $POSTGRES_PASSWORD in the container
+FELIX_DATABASE_URL=postgresql+psycopg://felix:<pw>@127.0.0.1:<port>/scratch_x \
+  FELIX_DATABASE_RLS=false uv run felix migrate head
+# ... exercise the store ...
+docker exec felix-postgres-1 sh -c 'psql -U "$POSTGRES_USER" -d postgres -c "DROP DATABASE scratch_x;"'
+```
+
+The contract goes in `tests/conformance/`, parametrized on the `store_settings` fixture so the
+same assertions run on both arms. Prove it by reverting the fix: the **postgres** arm fails while
+the memory arm passes.
+
+```bash
+FELIX_CONFORMANCE_DATABASE_URL=postgresql+psycopg://felix:<pw>@127.0.0.1:<port>/scratch_x make conformance
+```
+
 ## Checklist before reporting
 
 - [ ] Revision id + `down_revision` correct, `downgrade()` real and tested
 - [ ] Model, store, and in-memory twin all updated
+- [ ] A conformance arm for a new or changed store, run once against a real database
 - [ ] Tenant scoping (`tenant_id` column + RLS policy) for anything tenant-owned
 - [ ] Index for every new query shape
 - [ ] `internals/persistence.mdx` in the felix-web docs updated (docs-sync skill)

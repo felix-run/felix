@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`make e2e`, `make eval`, `make bundle`, `make schema-check` and `make toolkit`.** The parts of
+  `make check-ci` are now runnable one at a time, and `check-ci` is built from them. `make
+  conformance` also runs the cross-replica Valkey arm when `FELIX_CONFORMANCE_REDIS_URL` is set,
+  as CI does, and says so when it is not.
+- **The toolkit validator checks what the toolkit claims about the tree.** `scripts/validate-toolkit.py`
+  now fails on a repo path, `file.py:symbol` or `make` target cited in `.claude/` that no longer
+  exists, and on a route module mapped to no docs page. It runs in the unit suite as well as CI's
+  path-filtered `toolkit` job, so renaming a module a skill cites fails where it happens.
+
 ### Fixed
 
 - **Procedural memory no longer defeats system-prompt caching.** Recalled procedures were appended
@@ -14,6 +25,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cached `system` block — so the block changed per request and a manifest with
   `procedural_memory` never read its system prompt from cache. They are sent as transient guidance
   now, which also moves model-extracted text out of the instruction tier.
+- **Claude Code hooks work inside a git worktree.** `manifest-validate`, `doc-sync-reminder` and
+  `settings-sync-reminder` were silent for every edit made in a worktree, and `ruff-format` ran the
+  main checkout's ruff — and reformatted Markdown outside any repository. `protect-files` now
+  fails closed without `jq`, reads NotebookEdit targets, and covers every `.env*` spelling;
+  `git-guard` catches clustered flags (`-fu`, `-fd`, `commit -n`), `+ref` pushes, whole-tree
+  `checkout`/`restore`, and `stash clear`; the doc-drift gate asks only about the session's own
+  changes.
 
 - **Model-backed judges are metered.** `llm_judge_score` — behind every judge with a `model`, and
   eval's `llm_judge` rubrics — called the model and never recorded the usage, so judge spend

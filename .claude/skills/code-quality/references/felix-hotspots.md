@@ -54,21 +54,15 @@ the command before trusting them:**
 find packages apps -name '*.py' | xargs wc -l | sort -rn | head -12
 ```
 
-Current, largest first:
-
-| Lines | Module |
-|---|---|
-| 1,455 | `packages/harness/src/felix/manifests/builder.py` |
-| 1,329 | `apps/api/src/felix_api/routes/chat.py` |
-| 1,143 | `packages/harness/src/felix/patterns/react.py` |
-| 886 | `packages/harness/src/felix/memory/store.py` |
-| 873 | `packages/harness/src/felix/manifests/schema.py` |
-| 831 | `packages/harness/src/felix/patterns/delegating.py` |
-| 731 | `packages/cli/src/felix_cli/main.py` |
+Measured 2026-09-25, largest first — a snapshot for orientation, not a number to cite:
+`manifests/builder.py` (~1,580), `routes/chat.py` (~1,330), `patterns/react.py` (~1,170),
+`manifests/schema.py` (~1,000), `patterns/delegating.py`, `memory/store.py`,
+`durability/fibers.py`, `config.py` and `felix_cli/main.py` (each 740–910). `builder.py`, `react.py`,
+`schema.py` and `delegating.py` each grew by 30–160 lines over the snapshot before it.
 
 `builder.py` has a partial defense — the governance wrapper order is load-bearing and must
 stay one readable sequence — but that argument covers the `apply_*` chain, not the whole
-file. The other six have none.
+file. The others have none.
 
 ### Settled, and why the entry is kept
 
