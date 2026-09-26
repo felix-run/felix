@@ -9,9 +9,12 @@ reach into the compile pipeline for a private name.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from felix.manifests.schema import JudgeRule
+
+if TYPE_CHECKING:
+    from felix.decisions import MeteredDecider
 
 logger = logging.getLogger("felix.governance.judges")
 
@@ -93,9 +96,23 @@ def _looks_negated(criteria: str) -> bool:
     return any(m in criteria for m in _NEGATION_MARKERS)
 
 
-async def judge_score(content: str, judge: JudgeRule, *, settings: Any | None = None) -> float:
-    """Heuristic score, or LLM score when ``judge.model`` is set."""
+async def judge_score(
+    content: str,
+    judge: JudgeRule,
+    *,
+    settings: Any | None = None,
+    decider: MeteredDecider | None = None,
+) -> float:
+    """The decider's score when `judge.decider`, else the LLM's when `judge.model`, else the
+    heuristic — each one the fallback for the one before it."""
     criteria = judge.criteria
+    if judge.decider and decider is not None:
+        from felix.decisions import meets_criterion
+
+        try:
+            return await meets_criterion(decider, content, criteria, purpose="judge")
+        except Exception as exc:
+            logger.warning("judge %s: decider failed (%s); falling back", judge.name, type(exc).__name__)
     model_id = judge.model.strip()
     if not model_id or settings is None:
         return heuristic_judge_score(content, criteria)

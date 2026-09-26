@@ -300,8 +300,9 @@ class _DelegatingAgent:
     # would have left reflect quietly running two passes forever.
     reflect_cfg: ReflectSpec | None = None
     plan_cfg: PlanExecuteSpec | None = None
-    # `spec.decider`, built. Read by the router only: naming a decider on a router manifest is
-    # its opt-in (see `DeciderSpec`); the other composite patterns ignore it.
+    # `spec.decider`, built. The router reads it whenever it is set — naming a decider on a
+    # router manifest is its opt-in (see `DeciderSpec`); reflect reads it under
+    # `reflect.decider`; the other composite patterns ignore it.
     decider: MeteredDecider | None = None
 
     # --- the two public entry points, both draining the one loop -------------------
@@ -694,7 +695,9 @@ class _DelegatingAgent:
                     yield item
             if iteration == max_iter - 1:
                 break
-            score = await self._score(draft.final.content, criteria, verifier_id)
+            score = await self._score(
+                draft.final.content, criteria, verifier_id, request=latest_request(messages) or ""
+            )
             if score >= threshold:
                 break
             critique = (
@@ -715,7 +718,7 @@ class _DelegatingAgent:
         async for item in self._finish(draft, emit_events=emit_events):
             yield item
 
-    async def _score(self, answer: str, criteria: str, verifier_id: str) -> float:
+    async def _score(self, answer: str, criteria: str, verifier_id: str, *, request: str = "") -> float:
         """Score an answer 0..1 against the reflect criteria.
 
         `criteria` is passed through raw. The model prompt substitutes
@@ -735,6 +738,21 @@ class _DelegatingAgent:
             return 0.0
 
         from felix.governance.judges import heuristic_judge_score
+
+        cfg = self.reflect_cfg
+        if cfg is not None and cfg.decider and self.decider is not None:
+            from felix.decisions import meets_criterion
+
+            try:
+                return await meets_criterion(
+                    self.decider,
+                    answer,
+                    criteria or _DEFAULT_REFLECT_CRITERIA,
+                    request=request,
+                    purpose="reflect",
+                )
+            except Exception as exc:
+                logger.warning("reflect: decider failed (%s); asking the verifier model", type(exc).__name__)
 
         try:
             from felix.manifests.schema import ModelSpec

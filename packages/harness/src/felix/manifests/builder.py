@@ -620,7 +620,13 @@ def apply_guardrails(tools: list[Tool], guardrails: Guardrails | None, manifest_
     return _wrap_tools(tools, wrap_one)
 
 
-def apply_judges(tools: list[Tool], guardrails: Guardrails | None, manifest_id: str) -> list[Tool]:
+def apply_judges(
+    tools: list[Tool],
+    guardrails: Guardrails | None,
+    manifest_id: str,
+    *,
+    decider: MeteredDecider | None = None,
+) -> list[Tool]:
     """Apply tool-output judges (heuristic, or LLM when JudgeRule.model is set)."""
     _ = manifest_id
     judges = [j for j in (guardrails.judges if guardrails else []) if not j.final_response]
@@ -642,7 +648,7 @@ def apply_judges(tools: list[Tool], guardrails: Guardrails | None, manifest_id: 
 
             settings = get_settings()
             for j in applicable:
-                score = await judge_score(content, j, settings=settings)
+                score = await judge_score(content, j, settings=settings, decider=decider)
                 threshold = float(getattr(j, "threshold", 0.7) or 0.7)
                 if score < threshold:
                     return deny_output(
@@ -656,7 +662,13 @@ def apply_judges(tools: list[Tool], guardrails: Guardrails | None, manifest_id: 
     return _wrap_tools(tools, wrap_one)
 
 
-def apply_reply_controls(agent: Agent, guardrails: Guardrails | None, manifest_id: str) -> Agent:
+def apply_reply_controls(
+    agent: Agent,
+    guardrails: Guardrails | None,
+    manifest_id: str,
+    *,
+    decider: MeteredDecider | None = None,
+) -> Agent:
     """The reply-path controls: `final_response` judges and PII guardrails on the reply.
 
     Wraps the agent rather than its tools, because the reply is not a tool output. The
@@ -667,7 +679,7 @@ def apply_reply_controls(agent: Agent, guardrails: Guardrails | None, manifest_i
 
     if guardrails is None or not reply_controls_enabled(guardrails):
         return agent
-    return ReplyControlsAgent(agent, guardrails, manifest_id)  # type: ignore[return-value]
+    return ReplyControlsAgent(agent, guardrails, manifest_id, decider=decider)  # type: ignore[return-value]
 
 
 def _arg_present(args: ToolInput, name: str) -> bool:
@@ -1460,6 +1472,9 @@ async def build_agent(
         _warn_max_turns_does_not_bound_this_loop(m)
         _warn_untrusted_tools_are_unscreened(m, [t.name for t in resolved if _is_untrusted_tool(t)])
 
+        # Bound once: judges, the reply controls and the pattern share one metered decider.
+        decider = bind_decider(m.spec.decider, deps.settings)
+
         # Governance pipeline (order matters — matches TS builder).
         resolved = apply_secret_masking(resolved, _collect_secrets(deps), m.metadata.name)
         if m.spec.policies:
@@ -1475,7 +1490,7 @@ async def build_agent(
         if guardrails_enabled(m.spec.guardrails):
             resolved = apply_guardrails(resolved, m.spec.guardrails, m.metadata.name)
         if judges_enabled(m.spec.guardrails):
-            resolved = apply_judges(resolved, m.spec.guardrails, m.metadata.name)
+            resolved = apply_judges(resolved, m.spec.guardrails, m.metadata.name, decider=decider)
         if m.spec.approvals:
             resolved = apply_approvals(resolved, m.spec.approvals, m.metadata.name)
 
@@ -1541,7 +1556,7 @@ async def build_agent(
                 "tenant_id": tenant_id,
                 "memory_capture": m.spec.memory.capture,
                 "tools_retrieval": m.spec.tools_retrieval,
-                "decider": bind_decider(m.spec.decider, deps.settings),
+                "decider": decider,
                 "procedural_memory": m.spec.procedural_memory,
             }
         )
@@ -1551,7 +1566,7 @@ async def build_agent(
         # reply is screened last. Wrapping here rather than at each entrypoint is what
         # makes "every path a turn takes" true without a list of paths.
         return apply_inbound_controls(
-            apply_reply_controls(agent, m.spec.guardrails, m.metadata.name), m, settings
+            apply_reply_controls(agent, m.spec.guardrails, m.metadata.name, decider=decider), m, settings
         )
     finally:
         span.end()

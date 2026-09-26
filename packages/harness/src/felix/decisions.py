@@ -133,6 +133,37 @@ def latest_request(messages: Sequence[Any], limit: int = 4_000) -> str | None:
     return content[:limit]
 
 
+# Enough of an answer or a tool result to judge, without shipping a whole document to the
+# decider's vendor or past Jev's window.
+_JUDGED_CHARS = 8_000
+
+
+async def meets_criterion(
+    decider: MeteredDecider, text: str, criteria: str, *, request: str = "", purpose: str
+) -> float:
+    """The decider's probability that `text` satisfies `criteria`, 0..1.
+
+    The one question judges, the reflect verifier and eval rubrics all ask. A chat model was
+    asked for "a number only" or `{"score": ...}` and parsed; a negative criterion ("must not
+    leak credentials") needed a special case because bag-of-words scoring inverted it. A
+    `Noul` reads the criterion as stated. Raises on any failure — each caller has its own
+    fallback, and choosing it is the caller's decision.
+    """
+    from felix_ai.decide import Noul
+
+    if len(text) > _JUDGED_CHARS:
+        # Refused, not truncated. A judge that reads a prefix passes 8,000 characters of
+        # filler followed by the payload — a deny control narrowed to whatever an untrusted
+        # tool chooses to put first. The caller's model judge and heuristic read it all.
+        raise ValueError(f"text of {len(text)} characters exceeds the decider's {_JUDGED_CHARS}")
+    state: dict[str, str] = {"text": text}
+    if request:
+        state["request"] = request[: _JUDGED_CHARS // 2]
+    question = {"meets": Noul(f"The text meets this criterion: {criteria}")}
+    result = await decider.decide(state, question, purpose=purpose)
+    return float(result.answers["meets"].p)
+
+
 def build_decider(settings: Settings, logical_id: str, *, min_confidence: float = 0.5) -> MeteredDecider:
     """The metered decision provider for one `FELIX_DECISION_ROUTES` id.
 
@@ -164,6 +195,7 @@ __all__ = [
     "build_decider",
     "latest_request",
     "list_decision_providers",
+    "meets_criterion",
     "parse_decision_routes",
     "register_builtin_deciders",
     "register_decision_provider",

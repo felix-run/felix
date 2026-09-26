@@ -876,6 +876,11 @@
           "default": false,
           "title": "Final Response",
           "type": "boolean"
+        },
+        "decider": {
+          "default": false,
+          "title": "Decider",
+          "type": "boolean"
         }
       },
       "required": [
@@ -1554,6 +1559,11 @@
           "default": "",
           "title": "Criteria",
           "type": "string"
+        },
+        "decider": {
+          "default": false,
+          "title": "Decider",
+          "type": "boolean"
         }
       },
       "title": "ReflectSpec",

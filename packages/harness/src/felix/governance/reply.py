@@ -104,8 +104,11 @@ def _output_from_terminal(item: Any) -> InvokeOutput | None:
 class ReplyControlsAgent:
     """An `Agent` whose reply has been through the reply-path controls."""
 
-    def __init__(self, inner: Agent, guardrails: Guardrails, manifest_id: str) -> None:
+    def __init__(
+        self, inner: Agent, guardrails: Guardrails, manifest_id: str, *, decider: Any = None
+    ) -> None:
         self._inner = inner
+        self._decider = decider
         self._manifest_id = manifest_id
         self._pii = reply_pii_enabled(guardrails)
         self._block_pii = bool(guardrails.block_on_match)
@@ -142,7 +145,7 @@ class ReplyControlsAgent:
 
         settings = get_settings()
         for judge in self._judges:
-            score = await judge_score(text, judge, settings=settings)
+            score = await judge_score(text, judge, settings=settings, decider=self._decider)
             threshold = float(judge.threshold or 0.7)
             if score < threshold:
                 self._audit(
