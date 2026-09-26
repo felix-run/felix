@@ -237,7 +237,7 @@ async def test_an_eval_rubric_naming_no_rule_is_stored_with_a_warning(boot: Any)
     """Legal, and almost never intended — so it lands, and says so.
 
     A rubric naming none of `expect` / `equals` / `contains` / `min_chars` falls through to
-    the non-empty rule, which passes any answer at all. That is a real rule, so refusing it
+    the non-empty rule, which passes any answer that is not blank. That is a real rule, so refusing it
     would be wrong; saying nothing is how a gate that gates nothing gets written.
     """
     async with boot([], env=_keys(reader=["eval:read"])) as app:
