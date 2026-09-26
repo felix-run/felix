@@ -151,3 +151,21 @@ async def test_list_approvals_can_ask_for_every_status(server) -> None:
 
     assert "status" not in seen[0].url.params
     assert seen[0].url.params["limit"] == "10"
+
+
+@pytest.mark.asyncio
+async def test_resolve_ui_sends_the_thread_the_prompt_is_scoped_to(server) -> None:
+    seen = server({"ok": True})
+    client = FelixClient(base_url="http://felix")
+
+    await client.resolve_ui("req-1", thread_id="t1", value="yes")
+
+    (request,) = seen
+    assert request.url.path == "/chat/ui"
+    assert json.loads(request.content) == {
+        "thread_id": "t1",
+        "request_id": "req-1",
+        "value": "yes",
+        "cancelled": False,
+        "note": "",
+    }
