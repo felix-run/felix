@@ -548,7 +548,7 @@
     },
     "DeciderSpec": {
       "additionalProperties": false,
-      "description": "A decision model \u2014 one that answers typed questions (choose one, score, true/false)\nwith calibrated probabilities instead of generating text. Off unless `id` is set.\n\nConsumers opt in one at a time (`tools_retrieval.decider`), and each keeps its existing\nbehaviour as the fallback, so turning a decider on never removes a path.",
+      "description": "A decision model \u2014 one that answers typed questions (choose one, score, true/false)\nwith calibrated probabilities instead of generating text. Off unless `id` is set.\n\nConsumers opt in one at a time \u2014 `tools_retrieval.decider`,\n`model.confidence_escalation.decider` \u2014 and each keeps its existing behaviour as the\nfallback, so turning a decider on never removes a path. A `router` is the exception to\nthe explicit flag: its one decision is which sub-agent answers, so naming a decider on a\nrouter manifest is the opt-in; the model classifier remains its fallback.",
       "properties": {
         "id": {
           "default": "",

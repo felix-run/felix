@@ -300,7 +300,8 @@ class _DelegatingAgent:
     # would have left reflect quietly running two passes forever.
     reflect_cfg: ReflectSpec | None = None
     plan_cfg: PlanExecuteSpec | None = None
-    # `spec.decider`, built, when the manifest opts the router into it (`router.decider`).
+    # `spec.decider`, built. Read by the router only: naming a decider on a router manifest is
+    # its opt-in (see `DeciderSpec`); the other composite patterns ignore it.
     decider: MeteredDecider | None = None
 
     # --- the two public entry points, both draining the one loop -------------------
@@ -493,7 +494,9 @@ class _DelegatingAgent:
         names = list(self.sub_agents.keys())
         if self.decider is not None:
             chosen = await self._decide_child(input, names)
-            if chosen is not None:
+            # Membership is checked here too, not only by the decider's own validation: a
+            # pick that is not a child must fall back to the classifier, never KeyError the turn.
+            if chosen is not None and chosen in self.sub_agents:
                 return self.sub_agents[chosen]
         model = _model_for(input, self.settings, self.model_spec)
         classify = [

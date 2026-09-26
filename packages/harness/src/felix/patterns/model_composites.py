@@ -21,6 +21,7 @@ meters what it is handed.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator, Iterator, Sequence
 from dataclasses import dataclass, replace
 from typing import Any
@@ -39,6 +40,8 @@ from felix_ai.types import (
 from felix_ai.wire import ModelGatewayError
 
 from felix.observability.metrics import record_counter
+
+logger = logging.getLogger("felix.patterns.model_composites")
 
 
 @dataclass
@@ -245,13 +248,20 @@ class _EscalationClient:
             return True
         return any(m.lower() in lower for m in self.markers)
 
-    async def _needs_escalation(self, messages: list[ChatMessage], text: str) -> bool:
+    async def _needs_escalation(
+        self, messages: list[ChatMessage], text: str, *, isolated: bool = False
+    ) -> bool:
         """Whether the reply falls short — asked of the decider, or read off the heuristic.
 
         The heuristic escalates a correct 30-character answer and keeps a fluent wrong one;
         a decider is asked whether the reply actually answers the request. It escalates when
         that probability is below `spec.decider.min_confidence`, and any failure to ask falls
         back to the heuristic rather than to "never escalate".
+
+        `isolated` side requests — a compaction summary, a memory capture — keep the
+        heuristic. Their "request" is a transcript and their "reply" a summary, which is not
+        an answer and would read as a failed one: a paid decider call and an escalation to the
+        expensive model per compaction, and transcript text sent to the decider's vendor.
         """
         if self.decider is None:
             return self._low_confidence(text)
@@ -260,7 +270,7 @@ class _EscalationClient:
         from felix.decisions import latest_request
 
         request = latest_request(messages)
-        if request is None:
+        if request is None or isolated:
             return self._low_confidence(text)
         question = {
             "answers": Noul(
@@ -272,7 +282,8 @@ class _EscalationClient:
             result = await self.decider.decide(
                 {"request": request, "reply": text[:4_000]}, question, purpose="escalation"
             )
-        except Exception:
+        except Exception as exc:
+            logger.warning("escalation decider failed (%s); judging by the heuristic", type(exc).__name__)
             record_counter("felix_escalation_check", {"method": "error"})
             return self._low_confidence(text)
         record_counter("felix_escalation_check", {"method": "decider"})
@@ -285,7 +296,10 @@ class _EscalationClient:
         opts: ModelChatOptions | None = None,
     ) -> ModelChatResult:
         result = await self.primary.chat(messages, tools, opts)
-        if result.message.tool_calls or not await self._needs_escalation(messages, result.message.content):
+        isolated = bool(opts is not None and opts.isolate_cache)
+        if result.message.tool_calls or not await self._needs_escalation(
+            messages, result.message.content, isolated=isolated
+        ):
             return result
         record_counter(
             "felix_model_switch",

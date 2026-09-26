@@ -609,12 +609,18 @@ class ToolsRetrievalSpec(_Strict):
     decider: bool = False
 
 
+_ESCALATION_DECIDER_PATTERNS = frozenset({"react", "deep"})
+
+
 class DeciderSpec(_Strict):
     """A decision model — one that answers typed questions (choose one, score, true/false)
     with calibrated probabilities instead of generating text. Off unless `id` is set.
 
-    Consumers opt in one at a time (`tools_retrieval.decider`), and each keeps its existing
-    behaviour as the fallback, so turning a decider on never removes a path.
+    Consumers opt in one at a time — `tools_retrieval.decider`,
+    `model.confidence_escalation.decider` — and each keeps its existing behaviour as the
+    fallback, so turning a decider on never removes a path. A `router` is the exception to
+    the explicit flag: its one decision is which sub-agent answers, so naming a decider on a
+    router manifest is the opt-in; the model classifier remains its fallback.
     """
 
     #: A `FELIX_DECISION_ROUTES` id: `jev` (TypeSafe), `jev-cf` (Workers AI), or your own.
@@ -908,6 +914,14 @@ class Spec(_Strict):
             raise ValueError("model.confidence_escalation.decider needs spec.decider.id")
         if escalation.decider and not (escalation.enabled and escalation.escalate_to):
             raise ValueError("model.confidence_escalation.decider needs enabled: true and escalate_to")
+        # Closed on purpose: the decider reaches escalation through the react loop's model,
+        # and only `react` and `deep` (whose inner agent is react) run that loop. Anywhere
+        # else the flag would validate and then silently judge by the heuristic.
+        if escalation.decider and self.pattern not in _ESCALATION_DECIDER_PATTERNS:
+            raise ValueError(
+                f"model.confidence_escalation.decider is honoured by patterns "
+                f"{sorted(_ESCALATION_DECIDER_PATTERNS)}, not {self.pattern!r}"
+            )
         return self
 
     @field_validator("output_schema")

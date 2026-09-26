@@ -230,6 +230,15 @@ First, because everything else governs it.
 
       Not yet verified: the Workers AI response envelope, against a live call.
 
+- [ ] **Sub-agents are compiled from bundled YAML only.** Found in a real run of the router
+      e2e test: `runtime.py:build_tenant_agent` never sets `BuildDeps.sub_agent_builder`, so
+      `builder.py` compiles each `spec.sub_agents` name with `build_agent(name)` →
+      `load_bundled(name)`, and a name missing from `manifests/` becomes an *empty* manifest
+      (`You are <name>.`, no tools). A router whose children live in the manifest store — the
+      tenant's own agents — routes to blank agents without an error. Fix: resolve children
+      through `resolve_tenant_manifest` with the parent's tenant, and fail the compile on a
+      name that resolves nowhere.
+
 ### B. Close the durable loop
 
 - [x] **Run a fiber to suspension inside one claim.** Closed. The entry undercounted it: the

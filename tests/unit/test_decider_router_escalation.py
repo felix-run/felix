@@ -228,3 +228,75 @@ def test_escalation_by_decider_needs_a_decider_and_an_escalation() -> None:
     with pytest.raises(ValidationError, match="escalate_to"):
         Spec.model_validate({"model": {"confidence_escalation": {"decider": True}}, "decider": {"id": "jev"}})
     Spec.model_validate({"model": {"confidence_escalation": esc}, "decider": {"id": "jev"}})
+
+
+@pytest.mark.parametrize(
+    ("decider", "expected"),
+    [
+        # The `llm` backend names a pick with no confidence: taken, not treated as unsure.
+        (_Decider(ChoiceAnswer("b", {"b": 1.0}, confidence=None)), "b"),
+        # The manifest's threshold, not the default: 0.7 clears 0.5 and misses 0.8.
+        (_Decider(ChoiceAnswer("b", {"a": 0.3, "b": 0.7}, confidence=0.7), min_confidence=0.8), "a"),
+        # A pick that is not a child falls back to the classifier rather than KeyError-ing.
+        (_Decider(ChoiceAnswer("zebra", {"zebra": 1.0}, confidence=1.0)), "a"),
+    ],
+    ids=["no-confidence", "manifest-threshold", "not-a-child"],
+)
+@pytest.mark.asyncio
+async def test_when_the_routers_decider_is_taken(
+    decider: _Decider, expected: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from felix.patterns import delegating
+    from felix.patterns.types import InvokeInput
+
+    classifier = _Model("classifier", "a")
+    monkeypatch.setattr(delegating, "_model_for", lambda *a, **kw: classifier)
+    monkeypatch.setattr(delegating, "record_model_usage", lambda *a, **kw: {})
+    router = await _build_router_async(decider)
+    child = await router._choose_child(
+        InvokeInput(messages=[ChatMessage(role="user", content="what is DNA?")])
+    )
+    assert child.name == expected
+    assert classifier.calls == (0 if expected == "b" else 1)
+
+
+@pytest.mark.asyncio
+async def test_a_tool_step_does_not_ask_the_decider() -> None:
+    from felix_ai.types import ToolCall
+
+    class _Tooling(_Model):
+        async def chat(self, messages: Any, tools: Any, opts: Any = None) -> ModelChatResult:
+            self.calls += 1
+            call = ToolCall(id="c", name="calculator", args={})
+            return ModelChatResult(message=ChatMessage(role="assistant", content="", tool_calls=[call]))
+
+    decider = _Decider(NoulAnswer(0.0))
+    await _escalating(_Tooling("weak", ""), _Model("strong", "x"), decider).chat(ASK, [])
+    assert decider.calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_side_request_is_judged_by_the_heuristic_not_the_decider() -> None:
+    """A compaction summary is not an answer to its "request" (the transcript), so asking
+    would escalate every compaction to the expensive model and ship the transcript out."""
+    from felix_ai.types import ModelChatOptions
+
+    long_summary = "The user asked about arithmetic and was told the answer was four, twice."
+    decider = _Decider(NoulAnswer(0.0))
+    primary, target = _Model("weak", long_summary), _Model("strong", "x")
+    result = await _escalating(primary, target, decider).chat(ASK, [], ModelChatOptions(isolate_cache=True))
+    assert decider.calls == []
+    assert result.message.content == long_summary, "the heuristic keeps a long summary"
+
+
+def test_escalation_by_decider_is_refused_where_it_would_not_run() -> None:
+    from felix.manifests.schema import Spec
+
+    esc = {"enabled": True, "escalate_to": "claude-opus", "decider": True}
+    with pytest.raises(ValidationError, match="reflect"):
+        Spec.model_validate(
+            {"pattern": "reflect", "model": {"confidence_escalation": esc}, "decider": {"id": "jev"}}
+        )
+    Spec.model_validate(
+        {"pattern": "deep", "model": {"confidence_escalation": esc}, "decider": {"id": "jev"}}
+    )
