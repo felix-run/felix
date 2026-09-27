@@ -146,9 +146,11 @@ The store is handed to sub-agents too, since a router's child writes the caller'
 and reflect's critique quotes its draft redacted. The log is never less screened than the
 wire, and sometimes more: a preamble written before tool calls is redacted but not judged,
 so on a denial the reply withholds it and the log keeps it; and reflect's intermediate
-drafts are each judged in the log, one judge call per draft. What the reply controls do
-not cover, stated so nobody assumes them: `spec.memory.capture` extracts facts from the
-unscreened reply (tracked in `docs/ROADMAP.md`); reasoning is not the reply, so
+drafts are each judged in the log, one judge call per draft. `spec.memory.capture`
+extracts from the reply as the controls ship it — redacted, and not at all from a reply a
+judge denied — and a router's controls reach a child's capture as well as its log. What the
+reply controls do
+not cover, stated so nobody assumes them: reasoning is not the reply, so
 `thinking_delta` passes through and the signed reasoning a thread stores for replay is kept
 as written, since redacting it would break its signature; and compaction and branch
 summaries are model output over the whole thread, user turns and tool results included,

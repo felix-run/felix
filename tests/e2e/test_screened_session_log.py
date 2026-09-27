@@ -178,3 +178,113 @@ async def test_reflect_quotes_its_draft_redacted(boot: Any, verdict: Any) -> Non
         raw = (await app.client.get("/chat/sessions/reflected/export")).text
     assert "Prior answer" in raw, "the critique turn is in the log"
     assert EMAIL not in raw
+
+
+# --- memory capture ------------------------------------------------------------------------
+
+CAPTURE = {"enabled": True, "min_chars": 0}
+
+
+async def test_memory_is_captured_from_the_redacted_reply(boot: Any) -> None:
+    """Capture runs inside the reply controls, on the pattern's own output: extracting from it
+    stored a fact the controls redacted, and recall put it back into every later prompt."""
+    screened = _manifest("e2e-screened", guardrails=PII_GUARDRAILS, memory={"capture": CAPTURE})
+    async with boot(
+        [ScriptedTurn(content=PII), ScriptedTurn(content="[]")], manifests={"e2e-screened": screened}
+    ) as app:
+        resp = await app.client.post(
+            "/chat",
+            json={"manifest": "e2e-screened", "messages": [{"role": "user", "content": "hi"}]},
+        )
+        assert resp.status_code == 200, resp.text
+        prompts = app.spy.prompts
+    assert len(prompts) == 2, "the reply, then the extraction"
+    extraction = " ".join(str(m.content) for m in prompts[1])
+    assert "[REDACTED" in extraction and EMAIL not in extraction
+
+
+async def test_nothing_is_captured_from_a_denied_reply(boot: Any, verdict: Any) -> None:  # noqa: F811
+    from felix.manifests.loader import parse_manifest
+
+    base = _judged_manifest(final_response=True)
+    spec = {**base.spec.model_dump(exclude_defaults=True, mode="json"), "memory": {"capture": CAPTURE}}
+    m = parse_manifest(
+        {"apiVersion": "felix/v1", "kind": "Agent", "metadata": {"name": "e2e-judged"}, "spec": spec}
+    )
+    async with boot(
+        [ScriptedTurn(content="Let me tell you about cats."), ScriptedTurn(content="[]")],
+        env=DECIDER_ENV,
+        manifests={"e2e-judged": m},
+    ) as app:
+        resp = await app.client.post(
+            "/v1/chat/completions",
+            json={"model": "e2e-judged", "messages": [{"role": "user", "content": "What is 2+2?"}]},
+        )
+        assert resp.status_code == 200, resp.text
+        prompts = app.spy.prompts
+    assert len(prompts) == 1, "a denied reply is not an answer to learn from"
+
+
+async def test_a_routers_child_captures_through_the_routers_screen(boot: Any) -> None:
+    """The child's own manifest has no reply controls; the router's still govern its answer."""
+    from felix.manifests.loader import parse_manifest
+
+    def agent(name: str, **spec: Any) -> Any:
+        base = {"pattern": "react", "auth": {"inbound": {"allow_anonymous": True}}, **spec}
+        return parse_manifest(
+            {"apiVersion": "felix/v1", "kind": "Agent", "metadata": {"name": name}, "spec": base}
+        )
+
+    manifests = {
+        "e2e-plain": agent("e2e-plain", memory={"capture": CAPTURE}),
+        "e2e-router": agent(
+            "e2e-router", pattern="router", sub_agents=["e2e-plain"], guardrails=PII_GUARDRAILS
+        ),
+    }
+    script = [ScriptedTurn(content="e2e-plain"), ScriptedTurn(content=PII), ScriptedTurn(content="[]")]
+    async with boot(script, manifests=manifests) as app:
+        resp = await app.client.post(
+            "/chat", json={"manifest": "e2e-router", "messages": [{"role": "user", "content": "hi"}]}
+        )
+        assert resp.status_code == 200, resp.text
+        prompts = app.spy.prompts
+    assert len(prompts) == 3, "classify, answer, extract"
+    extraction = " ".join(str(m.content) for m in prompts[2])
+    assert "[REDACTED" in extraction and EMAIL not in extraction
+
+
+async def test_a_child_with_its_own_controls_still_owes_its_routers(boot: Any, verdict: Any) -> None:  # noqa: F811
+    """A child whose manifest has a judge of its own screens with that — and with the router's
+    PII redaction above it, which the child's screen chains to rather than replaces."""
+    from felix.manifests.loader import parse_manifest
+
+    verdict["p"] = 0.9  # the child's judge accepts
+
+    def agent(name: str, **spec: Any) -> Any:
+        base = {"pattern": "react", "auth": {"inbound": {"allow_anonymous": True}}, **spec}
+        return parse_manifest(
+            {"apiVersion": "felix/v1", "kind": "Agent", "metadata": {"name": name}, "spec": base}
+        )
+
+    judge = {"name": "fine", "criteria": "is fine", "threshold": 0.5, "decider": True, "final_response": True}
+    manifests = {
+        "e2e-judged-child": agent(
+            "e2e-judged-child",
+            decider={"id": "e2e-decider"},
+            guardrails={"judges": [judge]},
+            memory={"capture": CAPTURE},
+        ),
+        "e2e-router": agent(
+            "e2e-router", pattern="router", sub_agents=["e2e-judged-child"], guardrails=PII_GUARDRAILS
+        ),
+    }
+    script = [ScriptedTurn(content="e2e-judged-child"), ScriptedTurn(content=PII), ScriptedTurn(content="[]")]
+    async with boot(script, env=DECIDER_ENV, manifests=manifests) as app:
+        resp = await app.client.post(
+            "/chat", json={"manifest": "e2e-router", "messages": [{"role": "user", "content": "hi"}]}
+        )
+        assert resp.status_code == 200, resp.text
+        prompts = app.spy.prompts
+    assert verdict["judged"], "the child's own judge ran"
+    extraction = " ".join(str(m.content) for m in prompts[-1])
+    assert "[REDACTED" in extraction and EMAIL not in extraction
