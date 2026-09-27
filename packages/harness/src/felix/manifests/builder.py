@@ -12,6 +12,7 @@ from felix.context import try_get_context
 from felix.decisions import MeteredDecider
 from felix.governance.content_screening import _INJECTION
 from felix.governance.judges import judge_score
+from felix.governance.reply import ReplyScreen, screen_session_store
 from felix.limits import EffectiveLimits, effective_limits
 from felix.manifests.loader import load_bundled, parse_manifest
 from felix.manifests.schema import (
@@ -705,18 +706,33 @@ def apply_reply_controls(
     manifest_id: str,
     *,
     decider: MeteredDecider | None = None,
+    screen: ReplyScreen | None = None,
 ) -> Agent:
     """The reply-path controls: `final_response` judges and PII guardrails on the reply.
 
     Wraps the agent rather than its tools, because the reply is not a tool output. The
     mechanics live in `felix.governance.reply`; this is the slot in the compile that
-    applies them, last, after the pattern has been built.
+    applies them, last, after the pattern has been built. `screen` is the one the
+    pattern's session store was given, so the log and the reply share each verdict.
     """
     from felix.governance.reply import ReplyControlsAgent, reply_controls_enabled
 
     if guardrails is None or not reply_controls_enabled(guardrails):
         return agent
-    return ReplyControlsAgent(agent, guardrails, manifest_id, decider=decider)  # type: ignore[return-value]
+    return ReplyControlsAgent(  # type: ignore[return-value]
+        agent, guardrails, manifest_id, decider=decider, screen=screen
+    )
+
+
+def reply_screen_for(
+    guardrails: Guardrails | None, manifest_id: str, *, decider: MeteredDecider | None = None
+) -> ReplyScreen | None:
+    """The reply screen a compile shares between its session writes and its reply."""
+    from felix.governance.reply import reply_controls_enabled
+
+    if guardrails is None or not reply_controls_enabled(guardrails):
+        return None
+    return ReplyScreen(guardrails, manifest_id, decider=decider)
 
 
 def _arg_present(args: ToolInput, name: str) -> bool:
@@ -1198,15 +1214,24 @@ async def build_agent(
         system_prompt = await _resolve_system_prompt(m, deps)
         tool_ids = list(m.spec.tools)
 
+        # Bound once, before the sub-agents: the skill suggester, the judges, the reply
+        # controls and the pattern share one metered decider, and the reply screen it feeds
+        # wraps the session store every agent in this tree writes through.
+        decider = bind_decider(m.spec.decider, deps.settings)
+        # The pattern writes the session log as the run goes, before the reply wrapper sees
+        # the output, so the log is screened at the write with the verdicts the reply gets.
+        reply_screen = reply_screen_for(m.spec.guardrails, m.metadata.name, decider=decider)
+        session_store = screen_session_store(deps.session_store, reply_screen)
+
         sub_agents: dict[str, Agent] = {}
         if m.spec.sub_agents:
-            # A sub-agent inherits `deps.session_store`, so its own
-            # `spec.memory.checkpointer` is not consulted. That is currently
-            # unreachable rather than merely tolerated: `patterns/delegating.py`
-            # invokes every child with `thread_id=None`, and each session guard in
-            # the react loop requires a thread as well as a store. Give sub-agents a
-            # thread and this starts mattering — resolve the child's checkpointer
-            # here, and validate it, which `build_agent` also does not do today.
+            # A sub-agent inherits this compile's session store, so its own
+            # `spec.memory.checkpointer` is not consulted. Most composites invoke a child
+            # with `thread_id=None`, and each session guard in the react loop needs a thread
+            # as well as a store — but the router forwards the caller's turn, thread and
+            # all, so its child writes the caller's log. That is why children compile
+            # against the *screened* store: a router's reply controls would otherwise redact
+            # the wire while an unguarded child logged the raw reply.
             builder = deps.sub_agent_builder or _bundled_sub_agent(deps)
             if m.metadata.name in deps.compiling:
                 chain = " -> ".join([*deps.compiling, m.metadata.name])
@@ -1215,12 +1240,14 @@ async def build_agent(
                 chain = " -> ".join([*deps.compiling, m.metadata.name])
                 raise ValueError(f"sub_agents nest deeper than {MAX_SUB_AGENT_DEPTH}: {chain}")
             deps.compiling.append(m.metadata.name)
+            outer_store, deps.session_store = deps.session_store, session_store
             try:
                 for name in m.spec.sub_agents:
                     if name not in deps.compiled:
                         deps.compiled[name] = await builder(name)
                     sub_agents[name] = deps.compiled[name]
             finally:
+                deps.session_store = outer_store
                 deps.compiling.pop()
 
         resolved: list[Tool] = []
@@ -1428,9 +1455,6 @@ async def build_agent(
         # The reader for what `spec.artifacts` spills, bound before the governance block below.
         _bind_artifact_reader(resolved, m, deps, tenant_id)
 
-        # Bound once, before the skills and the governance pipeline: the skill suggester, the
-        # judges, the reply controls and the pattern share one metered decider.
-        decider = bind_decider(m.spec.decider, deps.settings)
         skill_suggester = None
 
         # Wire Agent Skills (progressive disclosure + bound skill tools).
@@ -1611,7 +1635,10 @@ async def build_agent(
                 "output_schema": m.spec.output_schema,
                 "max_turns": m.spec.max_turns,
                 "aggregator_prompt": m.spec.aggregator_prompt,
-                "session_store": deps.session_store,
+                "session_store": session_store,
+                # For a pattern that writes model output into the log under another role:
+                # reflect quotes its draft back as a user turn.
+                "reply_screen": reply_screen,
                 "session_strategy": deps.session_strategy,
                 "session_spec": m.spec.session,
                 "execution": m.spec.execution,
@@ -1631,7 +1658,11 @@ async def build_agent(
         # reply is screened last. Wrapping here rather than at each entrypoint is what
         # makes "every path a turn takes" true without a list of paths.
         return apply_inbound_controls(
-            apply_reply_controls(agent, m.spec.guardrails, m.metadata.name, decider=decider), m, settings
+            apply_reply_controls(
+                agent, m.spec.guardrails, m.metadata.name, decider=decider, screen=reply_screen
+            ),
+            m,
+            settings,
         )
     finally:
         span.end()

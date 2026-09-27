@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **The session log keeps the screened reply.** With reply controls on (`guardrails.providers:
+  [pii]` targeting `output`/`final_response`, or `final_response` judges), the thread's log
+  held the reply as the model wrote it. The react loop appends each message before the reply
+  wrapper sees the output, so `/chat/sessions/{id}/export`, `/chat/history`, a stream
+  reattach and a durable run's live tail all carried the unscreened text. Assistant messages
+  are now redacted, and a reply judged, at the write, with the same verdicts the client gets:
+  a redacted reply is stored redacted, and a denied one as its denial. That covers a router's
+  child, which writes the caller's thread, and reflect's critique, which quotes its draft.
+  Threads written before this change keep what they hold.
+
 - **`POST /chat/ui` answers only a prompt on the caller's own thread.** It checked no tenant, no
   thread and no ownership — the one route where every other one does — so the whole control was
   the secrecy of a 96-bit request id. A prompt's waiter is now scoped to its thread, which
