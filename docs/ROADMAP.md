@@ -370,12 +370,13 @@ First, because everything else governs it.
       changes the `ui` name shape that PR's upgrade note promises is unchanged, so it wants its
       own commit and its own note. Decided and done: `ui:{thread}:{request_id}`, `thread_id`
       required on `POST /chat/ui`, with the breaking-change note in the CHANGELOG.
-- [ ] **`waiters._local` never shrinks on the signal-first path.** `waiters.py:127-131`: a
-      `signal` with no waiter registers a *completed* future and only `wait` pops it. While Redis
-      is in fallback, an authenticated caller POSTing `/chat/tool_result` with random
-      `tool_call_id`s grows the dict without bound. Pre-existing and not made worse by #250 (the
-      name space was already caller-chosen); capping `tool_call_id` there bounds each entry's
-      size but not the count.
+- [x] **`waiters._local` never shrinks on the signal-first path.** A `signal` with no waiter
+      registered a *completed* future and only `wait` popped it, so while Redis was in fallback
+      an authenticated caller POSTing `/chat/tool_result` with random `tool_call_id`s grew the
+      dict without bound. Closed by #290, which left this entry open: signal-first entries are
+      capped at `waiters.MAX_LOCAL_SIGNAL_FIRST` (1000), oldest evicted — the same at-most-once
+      contract the fallback already had. `tests/unit/test_waiters.py` goes red without the
+      eviction.
 - [x] **`tool_call_id` was provider input spliced into a `:`-delimited waiter key.** Closed, and
       the entry understated it: the collision needs no hostile `tool_call_id` at all, because
       *`thread_id` already contains colons* -- `{tenant}:{suffix}`, and `{tenant}:fiber:{id}` for a
