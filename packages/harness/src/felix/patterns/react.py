@@ -198,6 +198,9 @@ class _ReactAgent:
     # `spec.decider`, built: a metered decision provider, or None when the manifest has none.
     decider: MeteredDecider | None = None
     procedural_memory: Any | None = None
+    # The compile's `ReplyScreen` chain, when reply controls are on: memory capture extracts
+    # from the reply as the controls ship it, not as the model wrote it.
+    reply_screen: Any | None = None
     tool_execution: str = "sequential"
     steering_mode: str = "all"
     follow_up_mode: str = "all"
@@ -616,6 +619,14 @@ class _ReactAgent:
         if self.settings is None:
             return
         user_text = " ".join(m.content for m in input.messages if m.role == "user")
+        assistant_text: str | None = final.content or ""
+        if self.reply_screen is not None and assistant_text:
+            # Capture runs inside the reply controls, on the reply they have not screened yet.
+            # A fact stored from text the controls redacted would come back in every later
+            # prompt that recalls it; a denied reply is not an answer to learn from.
+            assistant_text = await self.reply_screen.settle(assistant_text)
+            if assistant_text is None:
+                return
         try:
             from felix.memory.capture import capture_from_turn
 
@@ -624,7 +635,7 @@ class _ReactAgent:
                 input.tenant_id or self.tenant_id,
                 manifest_id=self.manifest_id,
                 user_text=user_text,
-                assistant_text=final.content or "",
+                assistant_text=assistant_text,
                 capture=capture,
                 model=self._capture_model(model),
                 origin_seq=await self._turn_seq(input.thread_id),
@@ -1191,6 +1202,7 @@ def build_react_agent(ctx: PatternBuildContext) -> Agent:
         decider=ctx.get("decider"),
         skill_suggester=ctx.get("skill_suggester"),
         procedural_memory=ctx.get("procedural_memory"),
+        reply_screen=ctx.get("reply_screen"),
         tool_execution=tool_exec,
         steering_mode=steer_mode,
         follow_up_mode=follow_mode,

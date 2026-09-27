@@ -530,11 +530,13 @@ Small, and blocking for the adopter goal: anyone evaluating Felix on its governa
       thread; reflect quotes its draft through the screen. Remaining: a preamble before tool
       calls is redacted but not judged, so on a denial it stays in the log; stored reasoning
       and compaction summaries are kept as written (`deploy/GOVERNANCE.md`).
-- [ ] **Memory capture reads the unscreened reply.** `ReactAgent._maybe_capture_memory` hands
+- [x] **Memory capture reads the unscreened reply.** `ReactAgent._maybe_capture_memory` handed
       `capture_from_turn` the pattern's own `final`, from inside the wrapper, so a manifest
-      with PII guardrails and `memory.capture` can store a fact extracted from the text the
-      reply controls redacted. Found while fixing the session log; it is the same shape of gap
-      on a different write path.
+      with PII guardrails and `memory.capture` could store a fact extracted from the text the
+      reply controls redacted. Now it extracts from `ReplyScreen.settle` — redacted, and
+      skipped when a judge denied the reply. Screens chain (`ReplyScreen.parent`) down the
+      sub-agent tree, so a router's controls reach a child's capture even when the child has
+      controls of its own.
 - [x] **Final-response judges do nothing on the streaming path.** Fixed with the reply-path
       wrapper: reply text is held until the run ends and released judged, or replaced by the
       denial; structural frames still stream as they happen.

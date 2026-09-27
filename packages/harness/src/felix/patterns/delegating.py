@@ -706,7 +706,7 @@ class _DelegatingAgent:
                 break
             prior = draft.final.content
             if self.reply_screen is not None:
-                prior = self.reply_screen.redact(prior)
+                prior = self.reply_screen.redact_all(prior)
             critique = (
                 f"Previous answer scored {score:.2f} (need ≥{threshold}). "
                 f"Improve against: {criteria or _DEFAULT_REFLECT_CRITERIA}\n\n"

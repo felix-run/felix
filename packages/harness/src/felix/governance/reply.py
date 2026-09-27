@@ -117,8 +117,19 @@ class ReplyScreen:
     and the same answer in the log as on the wire. One per compile, so one per request.
     """
 
-    def __init__(self, guardrails: Guardrails, manifest_id: str, *, decider: Any = None) -> None:
+    def __init__(
+        self,
+        guardrails: Guardrails,
+        manifest_id: str,
+        *,
+        decider: Any = None,
+        parent: ReplyScreen | None = None,
+    ) -> None:
         self.manifest_id = manifest_id
+        # The screen of the compile this one is a sub-agent of. Its session writes already
+        # pass through the parent's store; text leaving by any other door — a quoted draft,
+        # a captured memory — owes the parent's controls as well as this one's.
+        self.parent = parent
         self.decider = decider
         self.pii = reply_pii_enabled(guardrails)
         self.block_pii = bool(guardrails.block_on_match)
@@ -173,6 +184,19 @@ class ReplyScreen:
                 )
                 return f"{JUDGE_DENIED_PREFIX} {judge.name}: score={score:.2f} < {threshold}"
         return None
+
+    def redact_all(self, text: str) -> str:
+        """`text` redacted by this screen and every enclosing one."""
+        text = self.redact(text)
+        return self.parent.redact_all(text) if self.parent is not None else text
+
+    async def settle(self, text: str) -> str | None:
+        """A reply as this screen and every enclosing one would ship it, or `None` when a
+        judge denied it — a denial is not the reply, so nothing downstream should keep it."""
+        text = self.redact(text)
+        if await self.judge(text) is not None:
+            return None
+        return await self.parent.settle(text) if self.parent is not None else text
 
     async def screen_event(self, event: AppendableEvent) -> AppendableEvent:
         """A session event as the log should keep it.

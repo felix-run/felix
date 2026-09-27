@@ -72,6 +72,9 @@ class BuildDeps:
     # naming D, compiled D twice — and a tenant's A → 100 x B → 100 x C is 10^4 compiles, each
     # with object-store reads and an MCP `list_tools` per server, for one chat.
     compiled: dict[str, Agent] = field(default_factory=dict)
+    # The reply screen of the compile whose sub-agents are being built, so a child's own
+    # screen chains to it (`ReplyScreen.parent`). Set and restored around the child compile.
+    reply_screen: Any | None = None
 
 
 # Routers of routers of routers, and no further. A bound on nesting, beside the memo above, is
@@ -725,14 +728,18 @@ def apply_reply_controls(
 
 
 def reply_screen_for(
-    guardrails: Guardrails | None, manifest_id: str, *, decider: MeteredDecider | None = None
+    guardrails: Guardrails | None,
+    manifest_id: str,
+    *,
+    decider: MeteredDecider | None = None,
+    parent: ReplyScreen | None = None,
 ) -> ReplyScreen | None:
     """The reply screen a compile shares between its session writes and its reply."""
     from felix.governance.reply import reply_controls_enabled
 
     if guardrails is None or not reply_controls_enabled(guardrails):
         return None
-    return ReplyScreen(guardrails, manifest_id, decider=decider)
+    return ReplyScreen(guardrails, manifest_id, decider=decider, parent=parent)
 
 
 def _arg_present(args: ToolInput, name: str) -> bool:
@@ -1220,8 +1227,14 @@ async def build_agent(
         decider = bind_decider(m.spec.decider, deps.settings)
         # The pattern writes the session log as the run goes, before the reply wrapper sees
         # the output, so the log is screened at the write with the verdicts the reply gets.
-        reply_screen = reply_screen_for(m.spec.guardrails, m.metadata.name, decider=decider)
+        reply_screen = reply_screen_for(
+            m.spec.guardrails, m.metadata.name, decider=decider, parent=deps.reply_screen
+        )
         session_store = screen_session_store(deps.session_store, reply_screen)
+        # What a pattern screens text leaving by other doors with (memory capture, reflect's
+        # quoted draft): this compile's controls and every enclosing compile's. A child with
+        # none of its own still owes its router's.
+        screen_chain = reply_screen or deps.reply_screen
 
         sub_agents: dict[str, Agent] = {}
         if m.spec.sub_agents:
@@ -1241,6 +1254,7 @@ async def build_agent(
                 raise ValueError(f"sub_agents nest deeper than {MAX_SUB_AGENT_DEPTH}: {chain}")
             deps.compiling.append(m.metadata.name)
             outer_store, deps.session_store = deps.session_store, session_store
+            outer_screen, deps.reply_screen = deps.reply_screen, screen_chain
             try:
                 for name in m.spec.sub_agents:
                     if name not in deps.compiled:
@@ -1248,6 +1262,7 @@ async def build_agent(
                     sub_agents[name] = deps.compiled[name]
             finally:
                 deps.session_store = outer_store
+                deps.reply_screen = outer_screen
                 deps.compiling.pop()
 
         resolved: list[Tool] = []
@@ -1636,9 +1651,9 @@ async def build_agent(
                 "max_turns": m.spec.max_turns,
                 "aggregator_prompt": m.spec.aggregator_prompt,
                 "session_store": session_store,
-                # For a pattern that writes model output into the log under another role:
-                # reflect quotes its draft back as a user turn.
-                "reply_screen": reply_screen,
+                # For model output leaving by a door other than the reply and the log:
+                # reflect's quoted draft, and the reply memory capture extracts from.
+                "reply_screen": screen_chain,
                 "session_strategy": deps.session_strategy,
                 "session_spec": m.spec.session,
                 "execution": m.spec.execution,

@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Memory capture extracts from the screened reply.** With reply controls and
+  `spec.memory.capture` on, facts were extracted from the reply as the model wrote it, so a
+  fact built from text the PII guardrails redacted was stored and came back in every later
+  prompt that recalled it. Capture now reads the reply as the controls ship it, and captures
+  nothing from a reply a judge denied. A router's controls reach its child's capture too.
+  Facts stored before this change are left as they are.
+
 - **The session log keeps the screened reply.** With reply controls on (`guardrails.providers:
   [pii]` targeting `output`/`final_response`, or `final_response` judges), the thread's log
   held the reply as the model wrote it. The react loop appends each message before the reply
