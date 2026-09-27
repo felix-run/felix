@@ -519,12 +519,22 @@ Small, and blocking for the adopter goal: anyone evaluating Felix on its governa
       on `_DelegatingAgent`'s `self.inner or self._base_agent(...)` fallback, which is dead
       from core because `_build_plan_execute` always passes `inner` — the field stayed inert
       *and* the textual ratchet started reporting it as fixed.
-- [ ] **The session log keeps the unscreened reply.** The reply controls above govern the
-      reply as it leaves the run; the react loop appends the assistant message to the session
-      log before the wrapper sees it, so a resume stream or a thread export replays the raw
-      text. Either append the screened reply (the wrapper would need the store) or record a
-      redaction event the replay path applies. Named in `deploy/GOVERNANCE.md` as an exception
-      until it lands.
+- [x] **The session log keeps the unscreened reply.** Fixed at the write rather than by
+      either prescription. A redaction event would have left the raw PII stored and every
+      reader owing the replay logic; handing the wrapper the store would have come after the
+      live tail had already published the raw turn. Instead the compile hands the pattern a
+      `ScreenedSessionStore` whenever reply controls are on. It redacts every assistant
+      message and judges each reply before it is appended, through one `ReplyScreen` shared
+      with the reply wrapper, so the log and the client get the same verdict and a judge runs
+      once. Children compile against the same store, because the router forwards the caller's
+      thread; reflect quotes its draft through the screen. Remaining: a preamble before tool
+      calls is redacted but not judged, so on a denial it stays in the log; stored reasoning
+      and compaction summaries are kept as written (`deploy/GOVERNANCE.md`).
+- [ ] **Memory capture reads the unscreened reply.** `ReactAgent._maybe_capture_memory` hands
+      `capture_from_turn` the pattern's own `final`, from inside the wrapper, so a manifest
+      with PII guardrails and `memory.capture` can store a fact extracted from the text the
+      reply controls redacted. Found while fixing the session log; it is the same shape of gap
+      on a different write path.
 - [x] **Final-response judges do nothing on the streaming path.** Fixed with the reply-path
       wrapper: reply text is held until the run ends and released judged, or replaced by the
       denial; structural frames still stream as they happen.

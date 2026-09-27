@@ -414,7 +414,9 @@ class _ReactAgent:
             session = self.session_store.open(thread_id)
             await annotate_and_append(session, events)
         except Exception:
-            logger.debug("session append failed", exc_info=True)
+            # A lost write is a hole in the transcript, and with reply controls on it is
+            # also where a screening failure lands: not something to hide at debug.
+            logger.warning("session append failed", exc_info=True)
 
     async def _stream_one_turn(
         self,

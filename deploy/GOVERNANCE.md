@@ -138,12 +138,21 @@ alone. The reply-path controls (`output`/`final_response` PII, and `judges` with
 `final_response: true`) wrap the agent rather than its tools, and apply on the streaming
 path as well as `invoke`: reply text is held until the run ends and released screened,
 while tool and approval frames stream as they happen. A denial or redaction emits a
-`guardrails_reply` or `judge_deny` audit event. Two things the reply controls do not
-cover, stated so nobody assumes them: the session log holds the reply as the model
-produced it, so `GET /chat/stream/{thread_id}` replays and `GET /chat/threads` exports
-carry the unscreened text — the controls govern the reply as it leaves the run, not the
-transcript (tracked in `docs/ROADMAP.md`); and `thinking_delta` is reasoning, not the
-reply, and passes through unscreened. A judge scores by, in order of preference: `spec.decider`
+`guardrails_reply` or `judge_deny` audit event. The session log is screened at the
+write with the same verdicts: every assistant message is redacted before it is appended,
+and every one without tool calls is judged, so a denied reply is stored as its denial —
+replays, exports, `/chat/history` and a durable run's live tail carry what the client got.
+The store is handed to sub-agents too, since a router's child writes the caller's thread,
+and reflect's critique quotes its draft redacted. The log is never less screened than the
+wire, and sometimes more: a preamble written before tool calls is redacted but not judged,
+so on a denial the reply withholds it and the log keeps it; and reflect's intermediate
+drafts are each judged in the log, one judge call per draft. What the reply controls do
+not cover, stated so nobody assumes them: `spec.memory.capture` extracts facts from the
+unscreened reply (tracked in `docs/ROADMAP.md`); reasoning is not the reply, so
+`thinking_delta` passes through and the signed reasoning a thread stores for replay is kept
+as written, since redacting it would break its signature; and compaction and branch
+summaries are model output over the whole thread, user turns and tool results included,
+and are stored as written. A judge scores by, in order of preference: `spec.decider`
 when the rule sets `decider: true` (the probability the text meets `criteria`, as written), the
 chat model in `model`, and the heuristic — each failure falls through to the next, so a decider
 outage degrades a judge rather than opening it. A decider-scored judge sends the judged text to the
