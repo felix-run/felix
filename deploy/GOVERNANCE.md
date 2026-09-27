@@ -523,6 +523,24 @@ Closing the call out is also what makes the thread resumable at all: the provide
 transcript containing a tool call with no answer, so before this an interrupted run could
 not be continued.
 
+A durable run whose worker died mid-invoke is re-claimed at the same step, and it resumes
+from the thread's session log rather than starting the turn again. Before calling the model
+the step records the log's head (`invoke_began` in the fiber's state); a re-claim looks
+for the run's own user turn among what was appended since. Not there — the crash came
+before it was logged — and the turn runs as new. There, with a reply that has no tool calls
+last, and the turn had finished and only the fiber's save was lost: that reply is the run's
+answer and no model is called. Otherwise the run continues from the log with no new user
+turn: the model sees its own tool calls and results — completed calls are not re-issued —
+and a call in flight is closed out as above. Temporal retries resume the same way.
+
+The turn is re-sent, as before, wherever the log cannot say where the run stands: no log
+(`memory.checkpointer: none`); a composite pattern (`router`, `reflect`, `parallel`, …),
+which reads the request from the incoming turn to route or to score; `session.strategy:
+semantic:N`, which ranks history by the incoming text; a request that input redaction
+changed before it was logged; or a log that could not be read. On a thread the caller also
+writes to directly, a reply to a request sent between the crash and the re-claim can be
+taken as the run's own.
+
 A durable step that raises *outside* the invoke's own handler — its save cannot land, the
 lease write fails, a store is down — is not retried forever. The fiber sleeps for a delay
 that doubles per consecutive failure (1m, 2m, 4m, 8m at the default; capped at an hour from

@@ -424,10 +424,21 @@ First, because everything else governs it.
       frame the stream would have sent plus `approved` / `denied` / `expired`. A blocked caller
       still has no frame — it finds the id with `GET /approvals?thread_id=` — because a plain
       HTTP response cannot say anything until it is over.
-- [ ] **`ctx.step(key, fn)` memoization** + an append-only `fiber_steps` table, so a crash
-      mid-tool-loop resumes instead of replaying a whole `invoke`. Today the only mitigation is
-      `_interrupted_tool_results` telling the *model* a call may already have taken effect — a
-      prompt-level stand-in for a durability primitive.
+- [x] **A crash mid-tool-loop resumes instead of replaying the whole `invoke`.** Closed
+      without the `ctx.step` / `fiber_steps` table this entry prescribed. The session log
+      already journals every model turn and tool result as it happens, and a replay was bad
+      because it *ignored* that: it re-sent the user turn onto a thread that held the run's
+      progress, so the model answered the request twice and could repeat calls that had
+      taken effect. Now the step records the log head (`invoke_began`, written under the
+      claim's version so the lease loop's lost-write check is unchanged) and a re-claim
+      continues from the log, or takes a reply already logged without calling the model.
+      `_interrupted_tool_results` still closes the one call that was in flight, which is the
+      only part no journal can settle. The run's own user turn is what marks its part of the
+      log — events the loop writes ahead of it are not the turn. Still re-sent: `checkpointer:
+      none`, composite patterns (they route or score from the incoming turn), `semantic:N`,
+      input-redacted requests. Open edge: on a caller-owned thread, a reply to a request sent
+      between crash and re-claim reads as the run's; closing it means recording the logged
+      turn's `event_id` in the marker after the append.
 
 Not a gap, checked this cycle: the lease is renewed in flight (`fibers.py:443`, renewal loop at
 `:473`), so `FIBER_LEASE_MS` bounds "how long after a worker dies is its fiber stranded", not
