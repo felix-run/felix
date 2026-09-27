@@ -35,6 +35,9 @@ EXPECTED_SCHEDULES = {
     "anomaly_scan": "*/30 * * * *",
     "continuous_eval": "*/10 * * * *",
     "fiber_scheduler": "* * * * *",
+    # Every minute, like the fiber sweep it follows: a finished run should be announced within
+    # about a minute, and a slower cadence would be the latency a caller polls to avoid.
+    "webhook_delivery": "* * * * *",
 }
 
 TENANT = "cron-tenant"
@@ -110,7 +113,7 @@ def test_the_set_of_scheduled_tasks_does_not_change_silently() -> None:
     """
     declared = _declared_schedules()
 
-    assert len(declared) == 8, declared
+    assert len(declared) == 9, declared
     for name in EXPECTED_SCHEDULES:
         assert callable(getattr(worker_tasks, name, None)), f"{name} is not exported"
 

@@ -109,12 +109,17 @@ async def start_durable_chat(
         if isinstance(token_exp, (int, float)):
             expires_at = min(expires_at, int(token_exp) * 1000)
             state["expires_at"] = expires_at
+    from felix.durability.webhooks import endpoints_for_run
+
     fiber = await create_fiber(
         settings,
         tenant_id,
         kind="durable_chat",
         status="pending",
         state=state,
+        # Validated against the registry for this tenant before anything is written, so a
+        # manifest naming an endpoint it may not use is refused at enqueue, not after the run.
+        webhooks=endpoints_for_run(settings, tenant_id, list(execution.webhooks)),
     )
     if getattr(settings, "durability", "fibers") == "temporal":
         try:
@@ -158,6 +163,15 @@ async def get_durable_run(settings: Settings, tenant_id: str, resume_token: str)
     row = await get_fiber(settings, tenant_id, resume_token)
     if row is None:
         return None
+    return run_view(row)
+
+
+def run_view(row: dict[str, Any]) -> dict[str, Any]:
+    """What a caller is told about a durable run — the poll and the completion webhook both.
+
+    One function so the two cannot drift: a webhook that said less than the poll would send a
+    receiver back to poll anyway, and one that said more would be a second, unreviewed view.
+    """
     state = dict(row.get("state_json") or {})
     last = dict((state.get("stash") or {}).get("last") or {})
     return {
@@ -170,7 +184,16 @@ async def get_durable_run(settings: Settings, tenant_id: str, resume_token: str)
         "error": last.get("error")
         or (f"step failed {int(row.get('attempts') or 0)} times" if row.get("status") == "dead" else ""),
         "manifest_id": last.get("manifest_id") or "",
+        **_webhook_view(row),
     }
 
 
-__all__ = ["get_durable_run", "start_durable_chat"]
+def _webhook_view(row: dict[str, Any]) -> dict[str, Any]:
+    """Each endpoint's delivery status, when the run named any: `pending`, `delivered`, `dead`."""
+    endpoints = dict((row.get("webhook_state") or {}).get("endpoints") or {})
+    if not endpoints:
+        return {}
+    return {"webhooks": {name: str((ep or {}).get("status") or "pending") for name, ep in endpoints.items()}}
+
+
+__all__ = ["get_durable_run", "run_view", "start_durable_chat"]

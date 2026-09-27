@@ -279,8 +279,23 @@ class Fiber(Base):
     version: Mapped[int] = mapped_column(BigInteger, server_default=text("0"), default=0)
     # Consecutive failed steps. Reset by a step that completes; at the ceiling the fiber is `dead`.
     attempts: Mapped[int] = mapped_column(Integer, server_default=text("0"), default=0)
+    # Completion webhooks (`spec.execution.webhooks`): null when the run names none, else
+    # `pending` → `delivered` | `dead`. `webhook_due_at` is the sweep's next try and its claim;
+    # `webhook_state` is per endpoint, kept out of the versioned `state_json`. Migration 0019.
+    webhook_status: Mapped[str | None] = mapped_column(Text, nullable=True)
+    webhook_due_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    webhook_state: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, server_default=text("'{}'::jsonb"), default=dict
+    )
 
-    __table_args__ = (Index("idx_fibers_due", "status", "wake_at", "lease_until"),)
+    __table_args__ = (
+        Index("idx_fibers_due", "status", "wake_at", "lease_until"),
+        Index(
+            "idx_fibers_webhook_due",
+            "webhook_due_at",
+            postgresql_where=text("webhook_status = 'pending'"),
+        ),
+    )
 
 
 class UsageEvent(Base):

@@ -183,6 +183,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Signed completion webhooks for durable runs.** `spec.execution.webhooks` names endpoint ids
+  from `FELIX_WEBHOOK_ENDPOINTS` (operator-registered, each scoped to tenants or `"*"` — a manifest never
+  carries a URL), and the worker POSTs the run's outcome when it ends, signed per Standard
+  Webhooks, through the egress guard, with backoff and a dead letter on the run row
+  (`FELIX_WEBHOOK_MAX_ATTEMPTS`, `FELIX_WEBHOOK_TIMEOUT_SECONDS`). `GET /chat/runs/{token}` reports
+  each endpoint's delivery state. Migration `0019` adds the columns; run `felix migrate head`.
+
 - **Each release carries its OpenAPI document.** The GitHub release for a tag now includes
   `openapi.json`, built from that tag by `scripts/export-openapi.py`. The API's `/docs` sits behind
   the credential, so this is the copy a public reference can render: docs.felix.run shows the one

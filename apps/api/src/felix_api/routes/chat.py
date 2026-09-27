@@ -80,6 +80,11 @@ def _http_from_invoke_prep(exc: Exception) -> HTTPException | None:
         # `PUT /manifests` refuses new ones, but existing rows only fail here, and
         # unmapped that is a 500 with a traceback on every request for the manifest.
         return HTTPException(status_code=422, detail=client_safe_message(exc, authored_for_clients=True))
+    from felix.durability.webhooks import WebhookEndpointError
+
+    if isinstance(exc, WebhookEndpointError):
+        # The manifest names an endpoint this deployment has not registered for the tenant.
+        return HTTPException(status_code=422, detail=client_safe_message(exc, authored_for_clients=True))
     if isinstance(exc, ManifestParseError):
         # Same shape one step earlier: a row stored before a schema tightening no longer
         # validates. `PUT /manifests` refuses new ones with a 400; without this the existing
@@ -390,18 +395,26 @@ async def _chat_turn(body: ChatRequest, request: Request) -> tuple[int, dict[str
         from felix.durability.runs import start_durable_chat
         from felix.manifests.pin import pin_fields_for
 
-        payload = await start_durable_chat(
-            settings,
-            auth.tenant_id,
-            manifest_id=body.manifest,
-            messages=messages,
-            thread_id=thread,
-            model_id=model_id,
-            execution=execution,
-            # With the sub-agent digest: a durable run carrying stored authority is pinned on
-            # resume whatever the manifest says, so its children are part of what it runs.
-            pin=await pin_fields_for(settings, auth.tenant_id, resolved.manifest, version=resolved.version),
-        )
+        try:
+            payload = await start_durable_chat(
+                settings,
+                auth.tenant_id,
+                manifest_id=body.manifest,
+                messages=messages,
+                thread_id=thread,
+                model_id=model_id,
+                execution=execution,
+                # With the sub-agent digest: a durable run carrying stored authority is pinned on
+                # resume whatever the manifest says, so its children are part of what it runs.
+                pin=await pin_fields_for(
+                    settings, auth.tenant_id, resolved.manifest, version=resolved.version
+                ),
+            )
+        except Exception as exc:
+            http = _http_from_invoke_prep(exc)
+            if http is not None:
+                raise http from exc
+            raise
         return 202, payload
 
     req_ctx = RequestContext(
@@ -606,18 +619,26 @@ async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
         # point is unknown, and `durable_tail` declines to tail rather than replaying the
         # thread's entire history as this run's progress.
         from_seq = await stream_cursor(settings, auth.tenant_id, thread) if thread else 0
-        accepted = await start_durable_chat(
-            settings,
-            auth.tenant_id,
-            manifest_id=body.manifest,
-            messages=messages,
-            thread_id=thread,
-            model_id=model_id,
-            execution=execution,
-            # With the sub-agent digest: a durable run carrying stored authority is pinned on
-            # resume whatever the manifest says, so its children are part of what it runs.
-            pin=await pin_fields_for(settings, auth.tenant_id, resolved.manifest, version=resolved.version),
-        )
+        try:
+            accepted = await start_durable_chat(
+                settings,
+                auth.tenant_id,
+                manifest_id=body.manifest,
+                messages=messages,
+                thread_id=thread,
+                model_id=model_id,
+                execution=execution,
+                # With the sub-agent digest: a durable run carrying stored authority is pinned on
+                # resume whatever the manifest says, so its children are part of what it runs.
+                pin=await pin_fields_for(
+                    settings, auth.tenant_id, resolved.manifest, version=resolved.version
+                ),
+            )
+        except Exception as exc:
+            http = _http_from_invoke_prep(exc)
+            if http is not None:
+                raise http from exc
+            raise
         return sse_response(
             durable_run_gen(
                 settings=settings,

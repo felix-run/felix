@@ -313,6 +313,7 @@ async def hydrate_secrets(settings: object) -> list[str]:
                 break
 
     found.extend(await _hydrate_provider_options(settings, provider))
+    found.extend(await _hydrate_webhook_secrets(settings, provider))
 
     extra = getattr(settings, "secret_names", "") or ""
     for name in (n.strip() for n in extra.split(",") if n.strip()):
@@ -346,7 +347,54 @@ def collected_secret_values(settings: object | None = None) -> list[str]:
         for val in _provider_option_secrets(settings):
             if val not in out:
                 out.append(val)
+        for val in _webhook_endpoint_secrets(settings):
+            if val not in out:
+                out.append(val)
     return out
+
+
+async def _hydrate_webhook_secrets(settings: object, provider: SecretsProvider) -> list[str]:
+    """Every webhook signing secret, literal or resolved, for the process-global mask list.
+
+    Audit rows, session events and fiber state redact through that list alone, and a ref
+    resolved only at delivery would be masked in the worker after its first send and never in
+    an API replica.
+    """
+    try:
+        from felix.durability.webhooks import parse_webhook_endpoints
+
+        endpoints = parse_webhook_endpoints(settings)
+    except Exception:
+        return []
+    found: list[str] = []
+    for name, ep in endpoints.items():
+        try:
+            val = await resolve_secret_value(provider, ep.secret)
+        except Exception:
+            logger.debug("webhook_secret_lookup_failed endpoint=%s", loggable(name, limit=120), exc_info=True)
+            continue
+        if val and len(val) >= 8:
+            found.append(val)
+    return found
+
+
+def _webhook_endpoint_secrets(settings: object) -> list[str]:
+    """Literal signing secrets in `FELIX_WEBHOOK_ENDPOINTS`, for redaction.
+
+    A `secret:NAME` ref is a reference, not the credential — it is registered when resolved at
+    delivery. A literal is the credential itself and sits in this process's environment, so it
+    is masked out of tool output the way a provider key is. Malformed JSON contributes nothing;
+    boot validation is what refuses it.
+    """
+    try:
+        from felix.durability.webhooks import parse_webhook_endpoints
+
+        endpoints = parse_webhook_endpoints(settings)
+    except Exception:
+        return []
+    return [
+        ep.secret for ep in endpoints.values() if secret_ref_name(ep.secret) is None and len(ep.secret) >= 8
+    ]
 
 
 def _leaf_strings(value: object, *, _depth: int = 0) -> list[str]:
