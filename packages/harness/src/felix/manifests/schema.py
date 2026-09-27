@@ -693,6 +693,27 @@ class ExecutionSpec(_Strict):
     # "parallel" runs local tools concurrently (falls back to sequential for
     # client/approval tools or when any tool forces sequential).
     tools: Literal["parallel", "sequential"] = "sequential"
+    #: Operator-registered endpoint ids (`FELIX_WEBHOOK_ENDPOINTS`) announced when a durable run
+    #: finishes — never URLs. Unknown ids are refused when the run is enqueued.
+    webhooks: list[str] = Field(default_factory=list, max_length=8)
+
+    @field_validator("webhooks")
+    @classmethod
+    def _webhook_ids(cls, v: list[str]) -> list[str]:
+        bad = [name for name in v if not _WEBHOOK_ID_RE.match(name)]
+        if bad:
+            raise ValueError(f"webhook ids must match {_WEBHOOK_ID_RE.pattern}: {bad}")
+        return v
+
+    @model_validator(mode="after")
+    def _webhooks_need_durable(self) -> ExecutionSpec:
+        # A transient run answers its own request; there is no later moment to announce.
+        if self.webhooks and self.mode != "durable":
+            raise ValueError("execution.webhooks needs execution.mode: durable")
+        return self
+
+
+_WEBHOOK_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 
 class Policy(_Strict):

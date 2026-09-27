@@ -1263,6 +1263,7 @@ def test_outbound_clients_go_through_the_egress_guard() -> None:
         "wire/anthropic_messages.py": "provider base_url is operator config; felix_ai cannot import felix",
         "wire/transport.py": "provider base_url is operator config; felix_ai cannot import felix",
         "decide/typesafe.py": "decision provider base_url is operator config; felix_ai cannot import felix",
+        "durability/webhooks.py": "only for an endpoint the operator marked `private: true`; others use the guard",
     }
     seen_clients = 0
     offenders: list[str] = []

@@ -379,6 +379,34 @@ Browser tools additionally register a Playwright request interceptor, so redirec
 and subresources are re-checked — `page.goto()` follows both, and the URL is
 model-supplied. Every other outbound client sets `follow_redirects=False`.
 
+### Completion webhooks
+
+A durable run with `spec.execution.webhooks` has its outcome POSTed by the worker when it reaches
+a terminal status. The request carries run output, so the endpoint list is the operator's, not the
+manifest author's:
+
+- **Ids, never URLs.** `FELIX_WEBHOOK_ENDPOINTS` maps an id to `{url, secret, tenants, private?}`
+  and a manifest names ids. A tenant-supplied URL on a path carrying run output would be an
+  exfiltration channel an SSRF check does not address — the destination is public and allowed.
+- **Tenant allowlist.** `tenants` is required: a list of tenant ids, or `"*"` written out for an
+  endpoint every tenant may name. An open endpoint lets any tenant's run arrive signed with its
+  secret, so a receiver behind `"*"` must check the payload's `tenant_id`. Unregistered
+  and not-yours both answer `unknown webhook endpoint: <id>` (`422` at enqueue), so the message is
+  not a registry oracle. An endpoint removed or narrowed after a run started goes `dead` for it.
+- **Signed.** Standard Webhooks: `webhook-id` (`<run id>:<endpoint id>`, stable across retries
+  for dedupe), `webhook-timestamp`, and `webhook-signature: v1,<base64 HMAC-SHA256>` over
+  `id.timestamp.body`. A `whsec_` secret is base64-decoded; any other value is used as bytes.
+  A malformed `whsec_` value fails the boot. `secret` accepts a secrets-backend ref; every
+  endpoint secret, literal or resolved, is registered for masking at boot in each process.
+- **Egress.** Delivery goes through the SSRF guard unless the endpoint says `private: true`, the
+  operator's explicit opt-out for an internal receiver. `https` is required outside development
+  with `FELIX_ALLOW_INSECURE`. Redirects are not followed: a `3xx` is a failed attempt.
+- **Retry and dead letter.** Non-2xx or a transport error backs off (1m doubling to 1h) and is
+  `dead` at `FELIX_WEBHOOK_MAX_ATTEMPTS` (8), recorded on the fiber row itself; each attempt is
+  bounded end to end by `FELIX_WEBHOOK_TIMEOUT_SECONDS` (10), the response body is never read,
+  and every attempt is counted in `felix_webhook_delivery`. A sweep stops starting deliveries
+  after half the 120 s claim, so a slow receiver delays the rest rather than doubling them.
+
 ## Shell tools
 
 `spec.shell_tools` execs an argv on the host the API runs on, in the `FELIX_WORKSPACE_ROOT`

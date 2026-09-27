@@ -645,6 +645,14 @@
           ],
           "title": "Tools",
           "type": "string"
+        },
+        "webhooks": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 8,
+          "title": "Webhooks",
+          "type": "array"
         }
       },
       "title": "ExecutionSpec",

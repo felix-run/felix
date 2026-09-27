@@ -402,12 +402,15 @@ First, because everything else governs it.
       because `GET /approvals` is tenant-wide and every pending approval in the tenant on one run's
       stream would leak other conversations' tool names and arguments. The poll remains the channel
       of record: a stream that was never open sees nothing.
-- [ ] **Signed completion webhooks**, delivered from the **worker** — the fiber reaches terminal
+- [x] **Signed completion webhooks**, delivered from the **worker** — the fiber reaches terminal
       state under its cron and the API replica that accepted the request may be gone. Dead letter
       is `status='dead'` on the same durable row, not a second store. `spec.webhooks` selects
       operator-registered endpoint ids and **never carries URLs**: a manifest author holds a
       tenant scope, and a tenant-supplied URL on a path carrying run output is an exfiltration
-      channel SSRF checks do not address.
+      channel SSRF checks do not address. Shipped as `spec.execution.webhooks` (durable
+      only) over `FELIX_WEBHOOK_ENDPOINTS`; delivery state is three columns on `fibers`
+      (migration `0019`), claimed `FOR UPDATE SKIP LOCKED` by a `webhook_delivery` cron, so the
+      Temporal path is covered by the same sweep. Egress guard unless `private: true`.
 - [x] **Bound the retry.** Correction to the entry as written: an `invoke` that raises is
       terminal in one tick (`status: failed`); it was the failures *outside* that handler — a
       save, a lease write, a store down — that were released and re-claimed once a minute until

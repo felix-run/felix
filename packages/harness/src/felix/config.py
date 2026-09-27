@@ -196,6 +196,16 @@ class Settings(BaseSettings):
     # Consecutive step failures (outside the invoke's own handler) before a fiber is
     # marked `dead` instead of retried. Retries back off 1m, 2m, 4m … up to an hour.
     fiber_max_attempts: int = Field(default=5, ge=1)
+    # Completion webhooks: endpoints a durable run may be announced to, registered here by the
+    # operator and named by id in `spec.execution.webhooks` — a manifest never carries a URL,
+    # since a tenant-chosen URL on a path carrying run output is an exfiltration channel.
+    # JSON: {"id": {"url": "https://...", "secret": "secret:NAME", "tenants": [...], "private":
+    # false}}. `secret` signs every delivery; `tenants` (required) lists who may name it, or
+    # "*" for every tenant; `private: true` lets the URL resolve to a private address.
+    webhook_endpoints: str = ""
+    # Delivery tries per endpoint before it is marked `dead`; backoff 1m, 2m, 4m … up to 1h.
+    webhook_max_attempts: int = Field(default=8, ge=1)
+    webhook_timeout_seconds: float = Field(default=10.0, gt=0)
 
     # --- retention (worker `retention_sweep`, nightly) ---
     # Days a row is kept; 0 keeps forever. Every table the harness appends to has one of
@@ -507,6 +517,7 @@ class Settings(BaseSettings):
 
         self._validate_model_route_providers()
         self._validate_decision_route_providers()
+        self._validate_webhook_endpoints()
 
     def _validate_search_url(self) -> None:
         """A search backend that needs a URL must have a usable one, checked at boot.
@@ -575,6 +586,15 @@ class Settings(BaseSettings):
                 f"Unknown decision provider(s) in FELIX_DECISION_ROUTES: {', '.join(unknown)} "
                 f"(registered: {', '.join(sorted(known))})"
             )
+
+    def _validate_webhook_endpoints(self) -> None:
+        """A malformed `FELIX_WEBHOOK_ENDPOINTS` fails the boot, not the first run it would announce."""
+        from felix.durability.webhooks import parse_webhook_endpoints
+
+        try:
+            parse_webhook_endpoints(self)
+        except ValueError as exc:
+            raise RuntimeError(f"FELIX_WEBHOOK_ENDPOINTS: {exc}") from exc
 
     def application_name(self) -> str:
         """What this process calls itself to Postgres."""

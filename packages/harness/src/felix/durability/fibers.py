@@ -111,6 +111,9 @@ def _fiber_dict(row: Fiber | dict[str, Any]) -> dict[str, Any]:
         "version": row.version,
         "attempts": int(row.attempts or 0),
         "state_json": row.state_json,
+        "webhook_status": row.webhook_status,
+        "webhook_due_at": row.webhook_due_at,
+        "webhook_state": dict(row.webhook_state or {}),
         "wake_at": row.wake_at,
         "created_at": row.created_at,
         "updated_at": row.updated_at,
@@ -125,7 +128,10 @@ async def create_fiber(
     state: dict[str, Any] | None = None,
     wake_at: int | None = None,
     status: str = "pending",
+    webhooks: list[str] | None = None,
 ) -> dict[str, Any]:
+    """Create a fiber. `webhooks` are endpoint ids announced when it reaches a terminal status
+    (see `felix.durability.webhooks`); already validated by the caller."""
     from felix.secrets import redact_json
 
     fiber_id = uuid.uuid4().hex
@@ -148,6 +154,11 @@ async def create_fiber(
         # backend uses this dict directly, and every one of its writes was discarded.
         "version": 0,
         "attempts": 0,
+        "webhook_status": "pending" if webhooks else None,
+        "webhook_due_at": None,
+        "webhook_state": {
+            "endpoints": {name: {"status": "pending", "attempts": 0} for name in webhooks or []}
+        },
     }
     if _use_memory(settings):
         _memory_fibers[(tenant_id, fiber_id)] = row
