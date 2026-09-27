@@ -298,12 +298,49 @@ async def test_answering_a_pending_ui_prompt_resolves_the_waiter(boot: Any) -> N
                 break
         assert request_id, "the prompt was never announced on the side channel"
 
-        resolved = await app.client.post("/chat/ui", json={"request_id": request_id, "value": "yes"})
+        resolved = await app.client.post(
+            "/chat/ui", json={"thread_id": "e2e-ui", "request_id": request_id, "value": "yes"}
+        )
         assert resolved.status_code == 200, resolved.text
 
         answer = await asyncio.wait_for(pending, timeout=5)
         assert answer.cancelled is False, answer
         assert answer.value == "yes", answer
+
+
+async def test_a_ui_answer_on_another_thread_does_not_release_the_prompt(boot: Any) -> None:
+    """The prompt's waiter is scoped to its thread — and a thread a caller can name is scoped
+    to its tenant — so knowing the request id is no longer enough to answer it."""
+    import asyncio
+
+    from felix.side_events import drain
+    from felix.ui import request_confirm
+
+    thread = "default:e2e-ui-owner"
+    async with boot([]) as app:
+        pending = asyncio.create_task(request_confirm(thread, "proceed?", timeout=1))
+        request_id = None
+        for _ in range(50):
+            await asyncio.sleep(0.01)
+            for event in await drain(thread):
+                if event.get("event") == "ui_request":
+                    request_id = event["data"]["request_id"]
+            if request_id:
+                break
+        assert request_id
+
+        resp = await app.client.post(
+            "/chat/ui", json={"thread_id": "e2e-ui-other", "request_id": request_id, "value": "yes"}
+        )
+        assert resp.status_code == 200, resp.text
+        answer = await asyncio.wait_for(pending, timeout=5)
+        assert answer.cancelled is True and answer.note == "timeout", answer
+
+
+async def test_a_ui_answer_without_a_thread_is_refused(boot: Any) -> None:
+    async with boot([]) as app:
+        resp = await app.client.post("/chat/ui", json={"request_id": "r1", "value": "yes"})
+        assert resp.status_code == 422, resp.text
 
 
 async def test_answering_a_ui_prompt_nobody_asked_reports_ok_anyway(boot: Any) -> None:
@@ -314,9 +351,15 @@ async def test_answering_a_ui_prompt_nobody_asked_reports_ok_anyway(boot: Any) -
     that anything was listening. A caller cannot use it to tell a live prompt from a stale one.
     """
     async with boot([]) as app:
-        resp = await app.client.post("/chat/ui", json={"request_id": "no-such-prompt", "value": "yes"})
+        resp = await app.client.post(
+            "/chat/ui", json={"thread_id": "e2e-ui", "request_id": "no-such-prompt", "value": "yes"}
+        )
         assert resp.status_code == 200, resp.text
-        assert resp.json() == {"ok": True, "request_id": "no-such-prompt"}, resp.json()
+        assert resp.json() == {
+            "ok": True,
+            "thread_id": "default:e2e-ui",
+            "request_id": "no-such-prompt",
+        }, resp.json()
 
 
 # --- compaction ----------------------------------------------------------------------------

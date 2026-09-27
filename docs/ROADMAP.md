@@ -360,7 +360,7 @@ First, because everything else governs it.
       row. Nothing was broken end to end — claim exclusion rests on `lease_until` plus
       `FOR UPDATE SKIP LOCKED` — but the second line of defence those predicates are written
       to be was absent.
-- [ ] **The `ui` waiter is a bearer capability with no tenant in it.** `ui:{request_id}` carries
+- [x] **The `ui` waiter is a bearer capability with no tenant in it.** `ui:{request_id}` carries
       no tenant (`ui/prompts.py`), and `POST /chat/ui` does `_ = request` — no tenant, no thread,
       no ownership check (`routes/chat.py:952-963`). The whole control is the secrecy of a 96-bit
       `token_urlsafe`, which is adequate in practice (it is emitted only on that thread's side-event
@@ -368,7 +368,8 @@ First, because everything else governs it.
       checks ownership and this does not. The fix is `waiter_name("ui", thread_id, request_id)`
       plus a `thread_belongs_to_tenant` check — deliberately *not* folded into #250, because it
       changes the `ui` name shape that PR's upgrade note promises is unchanged, so it wants its
-      own commit and its own note. Decide before the next release.
+      own commit and its own note. Decided and done: `ui:{thread}:{request_id}`, `thread_id`
+      required on `POST /chat/ui`, with the breaking-change note in the CHANGELOG.
 - [ ] **`waiters._local` never shrinks on the signal-first path.** `waiters.py:127-131`: a
       `signal` with no waiter registers a *completed* future and only `wait` pops it. While Redis
       is in fallback, an authenticated caller POSTing `/chat/tool_result` with random
