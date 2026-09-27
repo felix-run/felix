@@ -50,6 +50,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A durable run re-claimed after a crash resumes from its session log.** A worker killed
+  mid-invoke left the fiber at the same step, and the next claim re-sent the user turn onto a
+  thread that already held the run's model turns and tool results: the model answered the
+  request twice and could repeat tool calls that had already taken effect. The step now
+  records where its turn begins in the log and a re-claim continues from there — or, when the
+  reply was already logged, takes it without calling the model. Temporal retries too. It applies
+  to `react` and `deep` manifests; composites (which route or score from the incoming turn),
+  `semantic:N` sessions and `memory.checkpointer: none` keep re-sending, as before.
+
 - **A non-streaming `/chat` says which approvals its run asked for.** The `approval_required` frame
   reaches only a stream, so `POST /chat` on a gated tool held the caller for the rule's whole TTL
   and then answered with a denial, and nothing in the response said an approval had been

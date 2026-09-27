@@ -131,3 +131,29 @@ async def test_webhook_delivery_state_round_trips_and_is_claimed_once(fiber_sett
     assert done["webhook_state"]["endpoints"]["ops"]["status"] == "delivered"
     still = await fibers.get_fiber(fiber_settings, TENANT, str(running["id"]))
     assert still is not None and still["webhook_status"] == "pending"
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_a_mid_step_checkpoint_lands_under_the_claims_version_and_only_there(
+    fiber_settings: Any,
+) -> None:
+    """The invoke's resume marker is written before the model is called. It must persist
+    without advancing `version` — the step's closing save is what does that, and what the
+    lease loop checks — and must be refused once another writer has moved the row on."""
+    created = await fibers.create_fiber(fiber_settings, TENANT, state={"steps": [{"op": "complete"}]})
+    row = await fibers.get_fiber(fiber_settings, TENANT, str(created["id"]))
+    assert row is not None
+    version = int(row["version"] or 0)
+
+    row["state_json"] = {**row["state_json"], "invoke_began": {"cursor": 0, "seq": 3}}
+    assert await fibers._checkpoint_state(fiber_settings, row) is True
+    stored = await fibers.get_fiber(fiber_settings, TENANT, str(created["id"]))
+    assert stored is not None
+    assert stored["state_json"]["invoke_began"] == {"cursor": 0, "seq": 3}
+    assert int(stored["version"] or 0) == version, "a checkpoint does not advance the row"
+
+    stale = {**row, "version": version - 1, "state_json": {"invoke_began": {"cursor": 0, "seq": 9}}}
+    assert await fibers._checkpoint_state(fiber_settings, stale) is False
+    stored = await fibers.get_fiber(fiber_settings, TENANT, str(created["id"]))
+    assert stored is not None and stored["state_json"]["invoke_began"]["seq"] == 3

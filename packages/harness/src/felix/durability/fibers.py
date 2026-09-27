@@ -243,6 +243,132 @@ async def _save_fiber(settings: Settings, row: dict[str, Any], *, hold_claim: bo
     row["version"] = expected + 1
 
 
+async def _checkpoint_state(settings: Settings, row: dict[str, Any]) -> bool:
+    """Persist `state_json` mid-step, under the version the claim read, without bumping it.
+
+    For a note the step must leave *before* doing work it cannot take back — the invoke's
+    resume marker. Leaving `version` alone keeps the step's closing `_save_fiber` the one
+    write that advances the row, which is what `_step_with_lease` checks to tell a landed
+    step from a discarded one. `False` means the row is no longer this claim's to write.
+    """
+    from felix.secrets import redact_json
+
+    safe = redact_json(row.get("state_json") or {})
+    state = safe if isinstance(safe, dict) else {}
+    expected = int(row.get("version") or 0)
+    if _use_memory(settings):
+        stored = _memory_fibers.get((row["tenant_id"], row["id"]))
+        if stored is None or int(stored.get("version") or 0) != expected:
+            return False
+        stored["state_json"] = state
+        return True
+
+    from sqlalchemy import update
+
+    from felix.db.session import rls_bypass
+
+    with rls_bypass():
+        factory = get_session_factory(settings=settings)
+        async with factory() as db:
+            result = await db.execute(
+                update(Fiber)
+                .where(Fiber.tenant_id == row["tenant_id"], Fiber.id == row["id"], Fiber.version == expected)
+                .values(state_json=state)
+            )
+            await db.commit()
+            return bool(getattr(result, "rowcount", 0))
+
+
+# Patterns that rebuild the turn from the thread's log, and so can be continued from it with
+# no incoming messages. A composite reads the request from `input.messages` to route or to
+# score, and resuming it with none would route to its first child or judge an empty request.
+_RESUMABLE_PATTERNS = frozenset({"react", "deep"})
+
+
+def _resumable(manifest: Any) -> bool:
+    spec = getattr(manifest, "spec", None)
+    if str(getattr(spec, "pattern", "react") or "react") not in _RESUMABLE_PATTERNS:
+        return False
+    # `semantic:N` ranks history by the incoming text; with none, the run's own request and
+    # tool results can rank out of the prompt it resumes with.
+    strategy = str(getattr(getattr(spec, "session", None), "strategy", "") or "")
+    return not strategy.startswith("semantic")
+
+
+async def _invoke_resume_point(
+    settings: Settings,
+    row: dict[str, Any],
+    state: dict[str, Any],
+    cursor: int,
+    manifest: Any,
+    thread: str,
+    request: str,
+) -> tuple[str, dict[str, Any] | None]:
+    """Where this `invoke` starts: `fresh`, `resume`, `done` (with the final message), or `lost`.
+
+    The thread's session log already journals the run as it goes — each model turn and each
+    tool result is appended when it happens. So a step re-run after a crash does not need a
+    journal of its own; it needs to know which part of the log is its own. Before the first
+    attempt the step records the log's head as `invoke_began`, and a later attempt at the same
+    cursor looks for *this request's* user turn among what was appended since:
+
+    * not there — the crash came before the turn was logged (the loop writes a model change,
+      a compaction, closed-out calls ahead of it): run it as new.
+    * there, and a reply with no tool calls is last — the turn finished and only the fiber's
+      save was lost: take that reply, and call nothing.
+    * there, and anything else last — the run was mid-loop: continue from the log with no new
+      user turn, so the model sees its own tool results rather than the request again, and a
+      call in flight is closed by `_interrupted_tool_results` as before.
+
+    Re-sending the turn — the old behaviour — remains the answer whenever the log cannot say:
+    no log (`checkpointer: none`), a pattern or strategy that needs the request in hand, a
+    request stored in a form it was not sent in (input redaction), or a log that could not be
+    read. Re-sending made the model answer a duplicated request and could repeat tool calls
+    whose side effects had already happened; it is the fallback, not the path.
+    """
+    if not _resumable(manifest):
+        return "fresh", None
+    try:
+        from felix.session.store import build_checkpointer
+        from felix.session.types import GetEventsOpts
+
+        memory = getattr(getattr(manifest, "spec", None), "memory", None)
+        checkpointer = str(getattr(memory, "checkpointer", "postgres") or "postgres")
+        store = build_checkpointer(checkpointer, settings, tenant_id=row["tenant_id"])
+        if store is None:
+            return "fresh", None
+        session = store.open(thread)
+        marker = state.get("invoke_began")
+        if not isinstance(marker, dict):
+            # Temporal retries an activity with the row it was first handed, which predates
+            # the marker; the stored row is the one that has it.
+            stored = await get_fiber(settings, row["tenant_id"], str(row["id"]))
+            marker = ((stored or {}).get("state_json") or {}).get("invoke_began")
+        if isinstance(marker, dict) and marker.get("cursor") == cursor:
+            events = await session.get_events(GetEventsOpts(from_seq=int(marker.get("seq") or 0)))
+            mine = next(
+                (i for i, e in enumerate(events) if e.role == "user" and (e.content or "") == request),
+                None,
+            )
+            if mine is None:
+                return "fresh", None
+            since = events[mine + 1 :]
+            if since and since[-1].role == "assistant" and not since[-1].tool_calls:
+                return "done", {"role": "assistant", "content": since[-1].content or ""}
+            return "resume", None
+        state["invoke_began"] = {"cursor": cursor, "seq": int((await session.head()).get("seq") or 0)}
+        row["state_json"] = state
+    except Exception:
+        # The journal is an optimisation over re-sending; failing to read it must not fail
+        # the run, which would make a transient store error terminal.
+        logger.warning("fiber resume point unavailable id=%s; re-sending", row.get("id"), exc_info=True)
+        state.pop("invoke_began", None)
+        return "fresh", None
+    if not await _checkpoint_state(settings, row):
+        return "lost", None
+    return "fresh", None
+
+
 async def _run_fiber_step(
     settings: Settings, row: dict[str, Any], *, hold_claim: bool = False
 ) -> dict[str, Any]:
@@ -400,25 +526,43 @@ async def _run_fiber_step(
                             resolved_out=resolved.sub_agents,
                         )
                     await prepare_tenant_invoke(settings, resolved=resolved, auth=auth, thread_id=thread)
-                    # /chat screened these before enqueuing; the compiled agent screens
-                    # again on resume, under the manifest the run resumes with.
-                    agent = await build_tenant_agent(
-                        settings,
-                        manifest=resolved.manifest,
-                        sub_agents=resolved.sub_agents,
-                        tools=provider,
-                        tenant_id=tenant_id,
+                    request = next((m.content or "" for m in reversed(messages) if m.role == "user"), "")
+                    point, logged = await _invoke_resume_point(
+                        settings, row, state, cursor, resolved.manifest, thread, request
                     )
-                    result = await agent.invoke(
-                        InvokeInput(
-                            messages=messages,
-                            thread_id=thread,
-                            model_id=str(model_id) if model_id else None,
+                    if point == "lost":
+                        # Another worker holds this row now; `_step_with_lease` sees the
+                        # unchanged version and yields the claim without an invoke.
+                        logger.warning("fiber claim lost before invoke id=%s", row["id"])
+                        return row
+                    if point != "fresh":
+                        logger.info("fiber invoke %s from its session log id=%s", point, row["id"])
+                    if logged is not None:
+                        final = logged
+                    else:
+                        # /chat screened these before enqueuing; the compiled agent screens
+                        # again on resume, under the manifest the run resumes with.
+                        agent = await build_tenant_agent(
+                            settings,
+                            manifest=resolved.manifest,
+                            sub_agents=resolved.sub_agents,
+                            tools=provider,
                             tenant_id=tenant_id,
                         )
-                    )
-                answer = result.final.content if result.final else ""
-                final = result.final.model_dump() if result.final else {"role": "assistant", "content": ""}
+                        result = await agent.invoke(
+                            InvokeInput(
+                                messages=[] if point == "resume" else messages,
+                                thread_id=thread,
+                                model_id=str(model_id) if model_id else None,
+                                tenant_id=tenant_id,
+                            )
+                        )
+                        final = (
+                            result.final.model_dump()
+                            if result.final
+                            else {"role": "assistant", "content": ""}
+                        )
+                answer = str(final.get("content") or "")
                 state.pop("screener_retries", None)  # the budget is per step, not per fiber
             except Exception as exc:
                 from felix.governance.inbound import InboundScreeningError
@@ -448,6 +592,7 @@ async def _run_fiber_step(
             "manifest_id": manifest_id,
         }
         state["stash"] = stash
+        state.pop("invoke_began", None)  # this cursor's; the next invoke records its own
         state["cursor"] = cursor + 1
         row["state_json"] = state
         row["status"] = "failed" if error else "running"
