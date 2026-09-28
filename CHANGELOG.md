@@ -240,6 +240,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`content_screening.model_tools`: choose which tools pay for the screener.** A glob list of
+  the screened tools that get the paid scoring — the `model` screener and the `decider` battery,
+  a call per window each. Empty, the default, is every screened tool, as before. The marker scan
+  still runs on every screened tool, so a tool left out is screened by markers alone, never
+  unscreened: a cost lever, not an exemption. Refused without `model` or `decider: true`.
+
 - **Eval runs report what they cost and whether their judge ran.** Each score row carries
   `duration_ms`, `tokens_input`, `tokens_output` and `cost_usd` for the candidate's turn, and
   every run (`GET /eval/runs/{id}`, `felix eval`'s output) has a `stats` block: wall time, summed

@@ -430,6 +430,7 @@ def apply_content_screening(
     on_flag = screening.on_flag
     named = list(screening.tools)
     model_id = screening.model.strip()
+    scored_only = list(screening.model_tools)
 
     def wrap_one(tool: Tool) -> Tool:
         # Additive: what `tools` names, *plus* every untrusted tool, always.
@@ -448,6 +449,8 @@ def apply_content_screening(
         if not (matches_any(named, tool.name) or _is_untrusted_tool(tool)):
             return tool
         inner = tool.executor
+        # The paid scoring, by `model_tools`; the markers below run regardless.
+        paid = not scored_only or matches_any(scored_only, tool.name)
 
         async def execute(args: ToolInput, ctx: ToolInvocationCtx | None = None) -> ToolOutput:
             out = await inner.execute(args, ctx)
@@ -456,7 +459,7 @@ def apply_content_screening(
             content = tool_output_content(out)
             flagged = any(rx.search(content) for rx in _INJECTION)
             unavailable = False
-            if not flagged and (model_id or decider is not None):
+            if not flagged and paid and (model_id or decider is not None):
                 from felix.config import get_settings
                 from felix.governance.inbound import screen_tool_output
 
@@ -1054,6 +1057,9 @@ def _warn_unmatched_tool_patterns(m: Manifest, bound: list[str]) -> None:
             targets.append(("judge", judge.name, list(judge.target_tools)))
     if m.spec.content_screening and m.spec.content_screening.enabled:
         targets.append(("content_screening", "content_screening", list(m.spec.content_screening.tools)))
+        paid = list(m.spec.content_screening.model_tools)
+        if paid:
+            targets.append(("content_screening", "content_screening.model_tools", paid))
     if m.spec.command_screening and m.spec.command_screening.enabled:
         targets.append(
             ("command_screening", "command_screening", list(m.spec.command_screening.target_tools))
