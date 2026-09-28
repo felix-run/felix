@@ -478,11 +478,15 @@ and fixed; the comment at `fibers.py:36-46` is the record.
       fix was a read, not a design. Not landed, and still the auditor's second question:
       `GET /audit/export` over a time range; `audit.py`'s docstring already promises an export
       that does not exist.
-- [ ] **Surface eval instrumentation** — `EvalRun.started_at/finished_at` and `ItemScore`'s
-      `duration_ms` / token counts / `tool_call_count` are all stored and rendered nowhere. And
-      make the judge's fail-open path visible: any exception silently degrades an LLM judge to a
-      substring check with `reason: "llm_fallback:<exc>"`, so a misconfigured judge model does not
-      fail your eval, it quietly weakens it.
+- [x] **Surface eval instrumentation.** Correction to the entry as written: there was no
+      `ItemScore` and no per-item duration or token count stored anywhere — only `tool_calls` /
+      `tool_errors` on the score row. Each item now records `duration_ms`, `tokens_input`,
+      `tokens_output` and `cost_usd` for the candidate's own turn (read off the item's
+      `LimitState`, which metering already fills; the judge's cost is the eval's, not the
+      agent's), and every run dict carries `stats` summed from its rows plus `wall_ms` — derived
+      on read, so no migration. The judge's fail-open path is visible: `judge_fallback` /
+      `judge_error` on the row, `stats.judge_fallbacks` on the run, a warning from
+      `felix eval`, and `--strict-judge` to fail on it.
 - [x] **Skills routes.** Landed: `GET /skills/{manifest}` lists what a manifest can reach and
       what is active, `GET /skills/{manifest}/{skill}` returns the body `activate_skill` would
       hand the model, and `GET /skills/{manifest}/activations/recent` says which skill activated

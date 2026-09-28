@@ -119,6 +119,11 @@ def eval_cmd(
         "--llm-judge",
         help="Score with an LLM judge (ignored with --mock).",
     ),
+    strict_judge: bool = typer.Option(
+        False,
+        "--strict-judge",
+        help="Exit 1 when an LLM judge could not run and an item was scored by the heuristic.",
+    ),
 ) -> None:
     """Run an offline eval against a dataset."""
     import asyncio
@@ -177,8 +182,17 @@ def eval_cmd(
         # so a field that is not serializable degrades instead of failing the run at the last
         # step, after the work is done.
         typer.echo(json.dumps(result, default=str))
+        fallbacks = int((result.get("stats") or {}).get("judge_fallbacks") or 0)
+        if fallbacks:
+            # stderr, like every other line that is not the result. A judge that could not run
+            # scored with the heuristic: the run passed a weaker test than it asked for.
+            typer.echo(
+                f"warning: {fallbacks} item(s) were scored by the heuristic because the LLM judge "
+                "could not run; see judge_error on each score",
+                err=True,
+            )
         fails = int(result.get("fail_count") or 0)
-        if fails:
+        if fails or (strict_judge and fallbacks):
             raise SystemExit(1)
 
     asyncio.run(_run())

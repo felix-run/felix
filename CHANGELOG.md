@@ -225,6 +225,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Eval runs report what they cost and whether their judge ran.** Each score row carries
+  `duration_ms`, `tokens_input`, `tokens_output` and `cost_usd` for the candidate's turn, and
+  every run (`GET /eval/runs/{id}`, `felix eval`'s output) has a `stats` block: wall time, summed
+  item time, the slowest item, tokens, cost, tool calls and errors, and `judge_fallbacks`. An LLM
+  judge that could not run used to score the item with the heuristic in silence; the row now
+  says `judge_fallback: true` with `judge_error`, `felix eval` warns on stderr, and
+  `felix eval --strict-judge` exits 1 on it.
+
 - **Run a job now.** `POST /jobs/{name}/run` (`jobs:write`) runs a scheduled job immediately and
   answers with the finished run, so a new job can be tried before it is left to cron. It runs
   exactly as a scheduled firing does — as `cron`, on the job's thread, its prompt screened —
