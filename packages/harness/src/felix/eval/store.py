@@ -67,7 +67,39 @@ def _item_dict(row: EvalDatasetItem | dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def run_stats(
+    scores: list[dict[str, Any]], *, started_at: int | None, finished_at: int | None
+) -> dict[str, Any]:
+    """What a run cost and how its scoring went, summed from its score rows.
+
+    Derived on read rather than stored, so every run that carries the per-item fields reports
+    them and nothing needs a migration. `judge_fallbacks` is the one to read first: an LLM judge
+    that could not run was scored by the heuristic instead, which weakens the run without
+    failing it.
+    """
+    rows = [s for s in scores if isinstance(s, dict)]
+    return {
+        "wall_ms": (finished_at - started_at) if started_at and finished_at else None,
+        "items_ms": sum(int(s.get("duration_ms") or 0) for s in rows),
+        "slowest_ms": max((int(s.get("duration_ms") or 0) for s in rows), default=0),
+        "tokens_input": sum(int(s.get("tokens_input") or 0) for s in rows),
+        "tokens_output": sum(int(s.get("tokens_output") or 0) for s in rows),
+        "cost_usd": round(sum(float(s.get("cost_usd") or 0.0) for s in rows), 6),
+        "tool_calls": sum(int(s.get("tool_calls") or 0) for s in rows),
+        "tool_errors": sum(int(s.get("tool_errors") or 0) for s in rows),
+        "judge_fallbacks": sum(1 for s in rows if s.get("judge_fallback")),
+    }
+
+
 def _run_dict(row: EvalRun | dict[str, Any]) -> dict[str, Any]:
+    out = _run_fields(row)
+    out["stats"] = run_stats(
+        out["scores"] or [], started_at=out["started_at"], finished_at=out["finished_at"]
+    )
+    return out
+
+
+def _run_fields(row: EvalRun | dict[str, Any]) -> dict[str, Any]:
     if isinstance(row, dict):
         return {
             "id": row["id"],

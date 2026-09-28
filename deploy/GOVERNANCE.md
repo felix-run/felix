@@ -38,7 +38,10 @@ rejects Bearer/long-token auth and non-ref MCP `env` values.
 PII: `spec.guardrails.providers: [pii]` uses **Presidio** when
 `felix-harness[pii]` is installed, otherwise a regex fallback. Eval LLM judges
 are opt-in via rubric `llm_judge` / `judge_criteria` or `felix eval --llm-judge`
-(CI stays on `--mock`).
+(CI stays on `--mock`). A judge that cannot run scores the item with the heuristic instead —
+a weaker test that still reports a result — so the score row carries `judge_fallback: true`
+and `judge_error`, the run's `stats.judge_fallbacks` counts them, `felix eval` warns on
+stderr, and `felix eval --strict-judge` exits 1 rather than pass on the weaker test.
 
 ### AWS
 
