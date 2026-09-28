@@ -8,6 +8,7 @@ authors = [{ name = "Blake Bauman", email = "blake.bauman@gmail.com" }]
 requires-python = ">=3.14"
 dependencies = [
     "felix-ai",
+    "felix-client",
     "felix-harness",
     "felix-cli",
     "felix-api",
@@ -63,6 +64,7 @@ members = ["packages/*", "apps/*"]
 
 [tool.uv.sources]
 felix-ai = { workspace = true }
+felix-client = { workspace = true }
 felix-harness = { workspace = true }
 felix-cli = { workspace = true }
 felix-api = { workspace = true }

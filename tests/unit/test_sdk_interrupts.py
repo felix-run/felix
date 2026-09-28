@@ -16,7 +16,7 @@ from typing import Any
 
 import httpx
 import pytest
-from felix.sdk import FelixClient
+from felix_client import FelixClient
 
 
 def _bind(transport: httpx.MockTransport) -> type[httpx.AsyncClient]:

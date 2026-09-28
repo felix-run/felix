@@ -8,6 +8,8 @@ license = "Apache-2.0"
 # Cloud SDKs, embeddings, browser, OTel, etc. are optional extras.
 dependencies = [
     "felix-ai",
+    # Only for the `felix.sdk` compatibility import; the client depends on nothing here.
+    "felix-client",
     "fastapi[standard]>=0.141.1",
     "pydantic>=2.13.5",
     "pydantic-settings>=2.15.0",

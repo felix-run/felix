@@ -809,12 +809,16 @@ rather than from re-reading a file. The wave itself is written up in [HISTORY.md
       `felix-run/web` mirrors `StreamEvent` by hand and its union has an open arm, so an added or
       renamed frame silently does nothing on both sides. Fold in **snapshot-authoritative
       streaming** if it happens.
-- [ ] **Publish the SDK, or say it is not one.** `felix/sdk.py` is 570 lines covering ~27 of ~72
-      operations, all in `/chat` + `/approvals`, returning `dict[str, Any]` throughout — no
-      response models, no event-name enums, no typed exceptions, no pagination helpers — and it
-      lives inside the harness, so importing it drags the whole server dependency tree. The
-      durable-run polling and lease handling in it are genuinely good. The README never mentions
-      it, so a Python adopter finds it by reading source.
+- [x] **Publish the SDK, or say it is not one.** Decided: a light package, marked experimental.
+      `felix/sdk.py` moved to `packages/client` (`felix-client`, module `felix_client`), httpx
+      and nothing else, same API; `felix.sdk` re-exports it. The README says what it covers,
+      that it is experimental, how to install it from the repository, and that the OpenAPI
+      document on each release is the contract. Typed models, enums and full route coverage
+      were deliberately not taken on — that is a compatibility promise, not a move.
+      Found doing it: **the `felix_ai` → `felix` import boundary was enforced nowhere.** CLAUDE.md
+      said `test_invariants.py` held it; an `import felix.config` planted in `felix_ai` left all
+      2,996 unit tests and ruff green. `test_the_model_layer_and_the_client_import_nothing_of_felix`
+      now walks every import node, lazy ones included, for both packages.
 
 ### Control plane
 
