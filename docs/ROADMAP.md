@@ -1030,14 +1030,18 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       than files to write; plans and eval are covered by the seam bullet above. Fix each with
       the arm that proves it rather than in one sweep.
 
-- [ ] **The audit and usage reads do not set the tenant GUC, so RLS empties them.** Both open
-      their read session through `get_session_factory(...)` without `rls_tenant(tenant_id)`,
-      unlike `_write_batch`, which does. With `FELIX_DATABASE_RLS=1` on a role that cannot
-      bypass, `_rls_after_begin` resolves no tenant, sets neither setting, logs its warning,
-      and the policy filters every row — `/audit` and `/usage` return empty pages to an
-      operator whose history is there. Pre-existing, and explicitly *not* covered by the new
-      conformance arm: it connects as the database owner with `database_rls` unset, so that
-      suite must not be read as evidence about this.
+- [x] **The audit and usage reads do not set the tenant GUC, so RLS empties them.** Wrong as
+      written, and the real defect was the other half. Probed against a migrated database as a
+      `NOSUPERUSER NOBYPASSRLS` role with `FELIX_DATABASE_RLS=true`: `/audit`, `/usage` and
+      `/usage/summary` all return their rows, because `AuthMiddleware` wraps every request in
+      a `RequestContext` and `_resolve_rls_tenant` falls back to its tenant; the worker's
+      anomaly and continuous-eval sweeps bind theirs with `rls_tenant`. What failed was the
+      **usage write**: `usage/store.py:_write_batch` bound no tenant, so the worker's
+      `flush_usage` failed `WITH CHECK` on every tick, requeued, and failed again — the meter
+      never reached Postgres on an RLS deployment and the buffer's ceiling dropped the oldest.
+      It now binds per tenant, as the audit writer beside it always did, and
+      `tests/conformance/test_rls_enforcement.py` flushes two tenants through the enforcing role.
+      Every other worker task body was run against the same role and raised nothing.
 
 - [ ] **One unwritable audit event blocks every later one.** `flush_pending` requeues a batch
       whose write failed, so the compliance record survives a transient outage — and so a

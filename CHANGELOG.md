@@ -50,6 +50,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Usage is recorded under `FELIX_DATABASE_RLS`.** The worker's usage flush bound no tenant, so on
+  a deployment whose database role enforces row-level security every flush failed the policy,
+  was requeued and failed again: no usage row was ever written, `/usage` and cost reporting saw
+  nothing, and the in-process buffer eventually dropped the oldest events. Each flush now
+  writes per tenant under that tenant, as the audit flush already did. Usage lost before this
+  change is not recoverable.
+
 - **A durable run re-claimed after a crash resumes from its session log.** A worker killed
   mid-invoke left the fiber at the same step, and the next claim re-sent the user turn onto a
   thread that already held the run's model turns and tool results: the model answered the

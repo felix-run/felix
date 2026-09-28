@@ -141,27 +141,43 @@ async def _write_batch(settings: Settings, batch: list[dict[str, Any]]) -> None:
         _memory_events.extend(batch)
         return
 
+    from collections import defaultdict
+
+    from felix.db.session import apply_tenant_rls, rls_tenant
+
+    # One transaction per tenant, under that tenant: the worker's flush has no request
+    # context, so nothing else names the tenant, and under `FELIX_DATABASE_RLS` an insert with
+    # no `app.tenant_id` fails the policy's WITH CHECK. The batch was requeued and failed again
+    # on every flush — usage never reached Postgres, and the buffer's ceiling dropped the
+    # oldest. The audit writer beside this one already did it this way.
+    by_tenant: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for event in batch:
+        by_tenant[str(event.get("tenant_id") or "default")].append(event)
+
     factory = get_session_factory(settings=settings)
-    async with factory() as db:
-        for event in batch:
-            db.add(
-                UsageEvent(
-                    tenant_id=event["tenant_id"],
-                    id=event["id"],
-                    ts=event["ts"],
-                    manifest_id=event.get("manifest_id", ""),
-                    model_id=event.get("model_id", ""),
-                    kind=event.get("kind", "tokens"),
-                    tokens_input=int(event.get("tokens_input") or 0),
-                    tokens_output=int(event.get("tokens_output") or 0),
-                    cache_creation=int(event.get("cache_creation") or 0),
-                    cache_read=int(event.get("cache_read") or 0),
-                    wire_model_id=event.get("wire_model_id", ""),
-                    cost_usd=float(event.get("cost_usd") or 0.0),
-                    meta_json=event.get("meta_json") or {},
-                )
-            )
-        await db.commit()
+    for tenant_id, events in by_tenant.items():
+        with rls_tenant(tenant_id):
+            async with factory() as db:
+                await apply_tenant_rls(db, settings, tenant_id)
+                for event in events:
+                    db.add(
+                        UsageEvent(
+                            tenant_id=event["tenant_id"],
+                            id=event["id"],
+                            ts=event["ts"],
+                            manifest_id=event.get("manifest_id", ""),
+                            model_id=event.get("model_id", ""),
+                            kind=event.get("kind", "tokens"),
+                            tokens_input=int(event.get("tokens_input") or 0),
+                            tokens_output=int(event.get("tokens_output") or 0),
+                            cache_creation=int(event.get("cache_creation") or 0),
+                            cache_read=int(event.get("cache_read") or 0),
+                            wire_model_id=event.get("wire_model_id", ""),
+                            cost_usd=float(event.get("cost_usd") or 0.0),
+                            meta_json=event.get("meta_json") or {},
+                        )
+                    )
+                await db.commit()
 
 
 SUMMARY_DEFAULT_WINDOW_MS = 30 * 24 * 60 * 60 * 1000
