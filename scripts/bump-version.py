@@ -28,6 +28,7 @@ SEMVER = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$")
 LOCATIONS: tuple[tuple[str, str, str], ...] = (
     ("pyproject.toml", "version", r'^version = "([^"]+)"$'),
     ("packages/ai/pyproject.toml", "version", r'^version = "([^"]+)"$'),
+    ("packages/client/pyproject.toml", "version", r'^version = "([^"]+)"$'),
     ("packages/harness/pyproject.toml", "version", r'^version = "([^"]+)"$'),
     ("packages/cli/pyproject.toml", "version", r'^version = "([^"]+)"$'),
     ("apps/api/pyproject.toml", "version", r'^version = "([^"]+)"$'),

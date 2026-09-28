@@ -121,6 +121,9 @@ same pair locally. Neither fixture means anything without the other.
   Felix model-agnostic rather than merely claiming to be. Anything the harness injects
   arrives as a Protocol (`ToolSchema`, `ModelConfig`) or a sink (`felix_ai.observability`,
   `felix_ai.context`, installed by `patterns/model_sinks.py`).
+- `packages/client` (`felix_client`) — the experimental Python client (`FelixClient`), httpx
+  and nothing else. **It may not import any `felix*` package**, enforced beside the `felix_ai`
+  rule, so installing the client never installs the server. `felix.sdk` is a re-export of it.
 - `packages/harness` (`felix`) — all the logic: manifests, patterns, tools, session,
   governance, auth, memory, eval, durability, storage, plugins.
 - `packages/cli` (`felix`) — `migrate | eval | mint-jwt | bundle-manifests | validate-manifest | doctor | version | temporal-worker`.
