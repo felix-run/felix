@@ -333,3 +333,23 @@ async def test_a_canary_change_is_served_on_the_next_resolution(store_settings: 
 
     await manifests.set_canary(store_settings, tenant, NAME, canary_version=2, canary_weight=100)
     assert await _served(store_settings, tenant) == "v2", "a full-weight canary serves the canary"
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_versions_list_newest_first_and_page_by_version(store_settings: Any) -> None:
+    """A listing is metadata only, ordered by version on both backends, and `before` pages."""
+    for prompt in ("one", "two", "three"):
+        await manifests.put_version(store_settings, TENANT, NAME, _manifest(prompt), comment=prompt)
+
+    rows = await manifests.list_versions(store_settings, TENANT, NAME)
+    assert [(r["version"], r["comment"]) for r in rows] == [(3, "three"), (2, "two"), (1, "one")]
+    assert all("manifest" not in r for r in rows), "a listing carries no bodies"
+
+    page = await manifests.list_versions(store_settings, TENANT, NAME, limit=2)
+    assert [r["version"] for r in page] == [3, 2]
+    rest = await manifests.list_versions(store_settings, TENANT, NAME, limit=2, before=2)
+    assert [r["version"] for r in rest] == [1]
+    assert await manifests.list_versions(store_settings, "someone-else", NAME) == []
+    pointer = await manifests.active_row(store_settings, TENANT, NAME)
+    assert pointer is not None and pointer["version"] == 1, "the first write is the active one"

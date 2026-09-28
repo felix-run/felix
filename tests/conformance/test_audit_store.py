@@ -408,3 +408,51 @@ async def test_a_payload_postgres_would_refuse_is_stored_anyway(store_settings: 
     payload = events[0]["payload_json"]
     assert payload["user_input"] == "beforeafter", payload
     assert payload["nested"] == [{"k": "v"}], payload
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_a_retried_flush_does_not_duplicate_or_block(store_settings: Any) -> None:
+    """A flush commits one transaction per tenant, so one that fails on a later tenant has
+    already written the earlier ones — and its requeued retry re-inserts them. That insert must
+    be a no-op, not a primary-key violation retried forever."""
+    audit.record_event(store_settings, TENANT, "tool_call", ts=10, principal_subj="alice")
+    [event] = audit.pending_buffer().snapshot()
+    assert await audit.flush_pending(store_settings) == 1
+
+    audit.pending_buffer().append(dict(event))  # the same event, as a retry re-sends it
+    assert await audit.flush_pending(store_settings) == 1
+    assert len(audit.pending_buffer()) == 0 and audit.pending_buffer().quarantined == 0
+
+    events, _ = await audit.query(store_settings, TENANT)
+    assert [e["principal_subj"] for e in events] == ["alice"], "stored once"
+
+
+@pytest.mark.parametrize("store_settings", ["postgres"], indirect=True)
+@pytest.mark.asyncio
+async def test_an_event_postgres_refuses_is_quarantined_and_the_rest_land(store_settings: Any) -> None:
+    """One unwritable event used to block every later one: the batch was requeued whole, and
+    retried whole, until the buffer's ceiling dropped the oldest. Postgres only — the twin
+    stores anything, which is the reason this contract exists.
+
+    The poison is pushed into the buffer directly: `record_event` strips `\\x00` at source, and
+    the drain has to hold for a row refused for any reason, not only that one.
+    """
+    buffer = audit.pending_buffer()
+    audit.record_event(store_settings, TENANT, "tool_call", ts=10, principal_subj="before")
+    buffer.append(
+        {
+            "tenant_id": TENANT,
+            "id": "poison-event",
+            "ts": 11,
+            "event_type": "tool_call",
+            "payload_json": {"user_input": "a\x00b"},
+        }
+    )
+    audit.record_event(store_settings, TENANT, "tool_call", ts=12, principal_subj="after")
+
+    assert await audit.flush_pending(store_settings) == 2
+    assert len(buffer) == 0, "nothing requeued"
+    assert buffer.quarantined == 1
+    events, _ = await audit.query(store_settings, TENANT)
+    assert sorted(e["principal_subj"] for e in events) == ["after", "before"]

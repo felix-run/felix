@@ -693,6 +693,27 @@ class ExecutionSpec(_Strict):
     # "parallel" runs local tools concurrently (falls back to sequential for
     # client/approval tools or when any tool forces sequential).
     tools: Literal["parallel", "sequential"] = "sequential"
+    #: Operator-registered endpoint ids (`FELIX_WEBHOOK_ENDPOINTS`) announced when a durable run
+    #: finishes — never URLs. Unknown ids are refused when the run is enqueued.
+    webhooks: list[str] = Field(default_factory=list, max_length=8)
+
+    @field_validator("webhooks")
+    @classmethod
+    def _webhook_ids(cls, v: list[str]) -> list[str]:
+        bad = [name for name in v if not _WEBHOOK_ID_RE.match(name)]
+        if bad:
+            raise ValueError(f"webhook ids must match {_WEBHOOK_ID_RE.pattern}: {bad}")
+        return v
+
+    @model_validator(mode="after")
+    def _webhooks_need_durable(self) -> ExecutionSpec:
+        # A transient run answers its own request; there is no later moment to announce.
+        if self.webhooks and self.mode != "durable":
+            raise ValueError("execution.webhooks needs execution.mode: durable")
+        return self
+
+
+_WEBHOOK_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 
 class Policy(_Strict):
@@ -788,9 +809,10 @@ class ApprovalRule(_Strict):
     # null, and non-empty if `str`, `list`, `dict`, `tuple` or `set`. `0` and `False`
     # count as supplied; see `builder.py:_arg_present` for why that is load-bearing.
     #
-    # Not validated against the gated tool's schema, so a misspelled name yields a rule
-    # that never fires and still passes `validate-manifest` and the attestation checks.
-    # Empty means the rule gates every call, which is the original behaviour.
+    # Checked against the gated tools' schemas (`manifests/approval_args.py`): refused at write
+    # for tools whose schemas ship with the harness, warned at compile for the rest, because a
+    # misspelled name is a rule that never fires. Not here — a parse-time check would reject
+    # stored manifests on read. Empty means the rule gates every call.
     #
     # Exists because a tool can be harmless in one shape and a privileged operation in
     # another: `remember` is ordinary capture until it carries a `topic_key`, at which
@@ -826,6 +848,18 @@ class ContentScreening(_Strict):
     #: one call. Additive: it runs beside the markers and `model`, either one flagging flags,
     #: and either one unable to run leaves the text unscreened rather than cleared.
     decider: bool = False
+    #: Which screened tools get the *paid* scoring — `model` and `decider` — by glob. Empty, the
+    #: default, is every screened tool. The marker scan runs on every screened tool whatever
+    #: this says: it is a cost lever, never a way to take an untrusted tool out of screening.
+    #: A manifest binding twenty MCP tools pays twenty screener calls a turn without it, since
+    #: `tools` became additive and stopped being the way to name fewer.
+    model_tools: list[str] = Field(default_factory=list, max_length=MAX_REFS)
+
+    @model_validator(mode="after")
+    def _model_tools_need_a_scorer(self) -> ContentScreening:
+        if self.model_tools and not (self.model.strip() or self.decider):
+            raise ValueError("content_screening.model_tools needs content_screening.model or decider: true")
+        return self
 
 
 class GovernanceSpec(_Strict):

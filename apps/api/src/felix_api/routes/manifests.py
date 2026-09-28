@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from felix.auth.mgmt import (
     SCOPE_MANIFESTS_READ,
     SCOPE_MANIFESTS_WRITE,
@@ -72,6 +72,41 @@ async def list_manifests(request: Request) -> dict[str, Any]:
         for row in await manifest_store.list_active(settings, tenant_id_from_request(request))
     ]
     return {"items": rows, "manifests": rows}
+
+
+@router.get("/{name}/versions")
+async def list_manifest_versions(
+    name: str,
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=200),
+    before: int | None = Query(default=None, ge=1),
+) -> dict[str, Any]:
+    """The stored versions of a manifest, newest first — what a rollback can go back to.
+
+    Metadata only (`version`, `created_at`, `created_by`, `comment`); fetch a body with
+    `GET /manifests/{name}?version=N`. Each item says whether it is the `active` version or
+    the `canary`. Page with `before=<the last version you saw>`; `next_before` is that value,
+    or null on the last page. Under `FELIX_BUNDLED_ONLY` there are no stored versions.
+    """
+    from felix.manifests import store as manifest_store
+
+    require_mgmt_scopes(request, SCOPE_MANIFESTS_READ)
+    settings = request.app.state.settings
+    if settings.bundled_only:
+        return {"items": [], "next_before": None}
+    tenant = tenant_id_from_request(request)
+    rows = await manifest_store.list_versions(settings, tenant, name, limit=limit, before=before)
+    pointer = await manifest_store.active_row(settings, tenant, name) or {}
+    items = [
+        {
+            **row,
+            "active": row["version"] == pointer.get("version"),
+            "canary": row["version"] == pointer.get("canary_version"),
+        }
+        for row in rows
+    ]
+    last = items[-1]["version"] if len(items) == limit and items[-1]["version"] > 1 else None
+    return {"items": items, "next_before": last}
 
 
 @router.get("/{name}")

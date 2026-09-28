@@ -78,3 +78,82 @@ async def test_attempts_persist_when_the_save_itself_fails(
     row = await fibers.get_fiber(settings, TENANT, fiber_id)
     assert row is not None
     assert (row["status"], row["attempts"]) == ("dead", 2)
+
+
+# --- completion webhooks: delivery state on the run's own row ---------------------------
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_webhook_delivery_state_round_trips_and_is_claimed_once(fiber_settings: Any) -> None:
+    """Migration 0019's columns, the terminal-only claim, and the delivery write — on both arms.
+
+    The claim pushes `webhook_due_at` forward, so a second sweep in the same window finds nothing:
+    that is what keeps two workers from announcing one run twice.
+    """
+    import json
+
+    from felix.durability import webhooks
+
+    from tests.unit.test_completion_webhooks import SECRET, receiver
+
+    finished = await fibers.create_fiber(
+        fiber_settings, TENANT, state={"steps": [{"op": "complete"}], "cursor": 0}, webhooks=["ops"]
+    )
+    running = await fibers.create_fiber(
+        fiber_settings,
+        TENANT,
+        state={"steps": [{"op": "sleep", "ms": 3_600_000}], "cursor": 0},
+        webhooks=["ops"],
+    )
+    stored = await fibers.get_fiber(fiber_settings, TENANT, str(finished["id"]))
+    assert stored is not None and stored["webhook_status"] == "pending"
+    assert stored["webhook_state"]["endpoints"]["ops"]["status"] == "pending"
+
+    await fibers.resume_due_fibers(fiber_settings)  # `finished` completes, `running` sleeps
+    async with receiver([200]) as (url, seen):
+        settings = fiber_settings.model_copy(
+            update={"webhook_endpoints": json.dumps({"ops": {"url": url, "secret": SECRET, "tenants": "*"}})}
+        )
+        claimed = await webhooks._claim_due(settings, fibers.now_ms())
+        assert [row["id"] for row in claimed] == [finished["id"]], "only the finished run"
+        assert await webhooks._claim_due(settings, fibers.now_ms()) == [], "claimed once"
+
+        registry = webhooks.parse_webhook_endpoints(settings)
+        from felix.secrets import build_secrets
+
+        await webhooks._deliver_row(settings, claimed[0], registry, build_secrets(settings))
+    assert len(seen) == 1
+
+    done = await fibers.get_fiber(fiber_settings, TENANT, str(finished["id"]))
+    assert done is not None
+    assert (done["status"], done["webhook_status"]) == ("completed", "delivered")
+    assert done["webhook_state"]["endpoints"]["ops"]["status"] == "delivered"
+    still = await fibers.get_fiber(fiber_settings, TENANT, str(running["id"]))
+    assert still is not None and still["webhook_status"] == "pending"
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_a_mid_step_checkpoint_lands_under_the_claims_version_and_only_there(
+    fiber_settings: Any,
+) -> None:
+    """The invoke's resume marker is written before the model is called. It must persist
+    without advancing `version` — the step's closing save is what does that, and what the
+    lease loop checks — and must be refused once another writer has moved the row on."""
+    created = await fibers.create_fiber(fiber_settings, TENANT, state={"steps": [{"op": "complete"}]})
+    row = await fibers.get_fiber(fiber_settings, TENANT, str(created["id"]))
+    assert row is not None
+    version = int(row["version"] or 0)
+
+    row["state_json"] = {**row["state_json"], "invoke_began": {"cursor": 0, "seq": 3}}
+    assert await fibers._checkpoint_state(fiber_settings, row) is True
+    stored = await fibers.get_fiber(fiber_settings, TENANT, str(created["id"]))
+    assert stored is not None
+    assert stored["state_json"]["invoke_began"] == {"cursor": 0, "seq": 3}
+    assert int(stored["version"] or 0) == version, "a checkpoint does not advance the row"
+
+    stale = {**row, "version": version - 1, "state_json": {"invoke_began": {"cursor": 0, "seq": 9}}}
+    assert await fibers._checkpoint_state(fiber_settings, stale) is False
+    stored = await fibers.get_fiber(fiber_settings, TENANT, str(created["id"]))
+    assert stored is not None and stored["state_json"]["invoke_began"]["seq"] == 3

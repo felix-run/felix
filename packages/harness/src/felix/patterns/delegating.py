@@ -304,6 +304,10 @@ class _DelegatingAgent:
     # router manifest is its opt-in (see `DeciderSpec`); reflect reads it under
     # `reflect.decider`; the other composite patterns ignore it.
     decider: MeteredDecider | None = None
+    # The compile's `ReplyScreen`, when reply controls are on. Reflect quotes each draft back
+    # as a user turn, which the session log keeps and the assistant-only screen does not
+    # reach, so the quote is redacted here.
+    reply_screen: Any = None
 
     # --- the two public entry points, both draining the one loop -------------------
 
@@ -700,10 +704,13 @@ class _DelegatingAgent:
             )
             if score >= threshold:
                 break
+            prior = draft.final.content
+            if self.reply_screen is not None:
+                prior = self.reply_screen.redact_all(prior)
             critique = (
                 f"Previous answer scored {score:.2f} (need ≥{threshold}). "
                 f"Improve against: {criteria or _DEFAULT_REFLECT_CRITERIA}\n\n"
-                f"Prior answer:\n{draft.final.content}"
+                f"Prior answer:\n{prior}"
             )
             # Reflect re-runs the *same* conversation, so unlike a sub-agent step it keeps
             # the caller's thread_id.

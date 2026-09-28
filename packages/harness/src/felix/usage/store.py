@@ -123,45 +123,65 @@ async def query(
 
 async def flush_pending(settings: Settings) -> int:
     """Drain buffered usage events to Postgres (or memory)."""
-    batch = _pending.take()
-    if not batch:
-        return 0
-
-    try:
-        await _write_batch(settings, batch)
-    except Exception:
-        # Usage drives billing — a failed commit must not silently lose the meter.
-        _pending.requeue(batch)
-        raise
-    return len(batch)
+    # Usage drives billing — a failed commit must not silently lose the meter. The buffer puts
+    # back what the database could not take, and sets aside only what it refuses as data.
+    return await _pending.drain(lambda batch: _write_batch(settings, batch))
 
 
 async def _write_batch(settings: Settings, batch: list[dict[str, Any]]) -> None:
     if _use_memory(settings):
-        _memory_events.extend(batch)
+        # Idempotent, like the insert below: a flush retried after a partial commit.
+        stored = {(e["tenant_id"], e["id"]) for e in _memory_events}
+        _memory_events.extend(e for e in batch if (e["tenant_id"], e["id"]) not in stored)
         return
 
+    from collections import defaultdict
+
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    from felix.db.session import apply_tenant_rls, rls_tenant
+
+    # One transaction per tenant, under that tenant: the worker's flush has no request
+    # context, so nothing else names the tenant, and under `FELIX_DATABASE_RLS` an insert with
+    # no `app.tenant_id` fails the policy's WITH CHECK. The batch was requeued and failed again
+    # on every flush — usage never reached Postgres, and the buffer's ceiling dropped the
+    # oldest. The audit writer beside this one already did it this way.
+    by_tenant: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for event in batch:
+        by_tenant[str(event.get("tenant_id") or "default")].append(event)
+
     factory = get_session_factory(settings=settings)
-    async with factory() as db:
-        for event in batch:
-            db.add(
-                UsageEvent(
-                    tenant_id=event["tenant_id"],
-                    id=event["id"],
-                    ts=event["ts"],
-                    manifest_id=event.get("manifest_id", ""),
-                    model_id=event.get("model_id", ""),
-                    kind=event.get("kind", "tokens"),
-                    tokens_input=int(event.get("tokens_input") or 0),
-                    tokens_output=int(event.get("tokens_output") or 0),
-                    cache_creation=int(event.get("cache_creation") or 0),
-                    cache_read=int(event.get("cache_read") or 0),
-                    wire_model_id=event.get("wire_model_id", ""),
-                    cost_usd=float(event.get("cost_usd") or 0.0),
-                    meta_json=event.get("meta_json") or {},
+    for tenant_id, events in by_tenant.items():
+        with rls_tenant(tenant_id):
+            async with factory() as db:
+                await apply_tenant_rls(db, settings, tenant_id)
+                # ON CONFLICT DO NOTHING: a flush that fails on a later tenant has already
+                # committed the earlier ones, and its retry must not collide on the key forever.
+                await db.execute(
+                    pg_insert(UsageEvent)
+                    .values(
+                        [
+                            {
+                                "tenant_id": event["tenant_id"],
+                                "id": event["id"],
+                                "ts": event["ts"],
+                                "manifest_id": event.get("manifest_id", ""),
+                                "model_id": event.get("model_id", ""),
+                                "kind": event.get("kind", "tokens"),
+                                "tokens_input": int(event.get("tokens_input") or 0),
+                                "tokens_output": int(event.get("tokens_output") or 0),
+                                "cache_creation": int(event.get("cache_creation") or 0),
+                                "cache_read": int(event.get("cache_read") or 0),
+                                "wire_model_id": event.get("wire_model_id", ""),
+                                "cost_usd": float(event.get("cost_usd") or 0.0),
+                                "meta_json": event.get("meta_json") or {},
+                            }
+                            for event in events
+                        ]
+                    )
+                    .on_conflict_do_nothing(index_elements=["tenant_id", "id"])
                 )
-            )
-        await db.commit()
+                await db.commit()
 
 
 SUMMARY_DEFAULT_WINDOW_MS = 30 * 24 * 60 * 60 * 1000

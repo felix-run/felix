@@ -30,6 +30,7 @@ SCHEDULED_TASKS = {
     "anomaly_scan",
     "continuous_eval",
     "fiber_scheduler",
+    "webhook_delivery",
 }
 
 

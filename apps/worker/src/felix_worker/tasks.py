@@ -228,3 +228,12 @@ async def fiber_scheduler() -> None:
     from felix.durability.fibers import resume_due_fibers
 
     await resume_due_fibers(_settings)
+
+
+@broker.task(schedule=[{"cron": "* * * * *"}])
+@_instrumented("webhook_delivery")
+async def webhook_delivery() -> None:
+    """Announce finished durable runs to their `spec.execution.webhooks` endpoints."""
+    from felix.durability.webhooks import deliver_due_webhooks
+
+    await deliver_due_webhooks(_settings)

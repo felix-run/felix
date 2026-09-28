@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Memory capture extracts from the screened reply.** With reply controls and
+  `spec.memory.capture` on, facts were extracted from the reply as the model wrote it, so a
+  fact built from text the PII guardrails redacted was stored and came back in every later
+  prompt that recalled it. Capture now reads the reply as the controls ship it, and captures
+  nothing from a reply a judge denied. A router's controls reach its child's capture too.
+  Facts stored before this change are left as they are.
+
+- **The session log keeps the screened reply.** With reply controls on (`guardrails.providers:
+  [pii]` targeting `output`/`final_response`, or `final_response` judges), the thread's log
+  held the reply as the model wrote it. The react loop appends each message before the reply
+  wrapper sees the output, so `/chat/sessions/{id}/export`, `/chat/history`, a stream
+  reattach and a durable run's live tail all carried the unscreened text. Assistant messages
+  are now redacted, and a reply judged, at the write, with the same verdicts the client gets:
+  a redacted reply is stored redacted, and a denied one as its denial. That covers a router's
+  child, which writes the caller's thread, and reflect's critique, which quotes its draft.
+  Threads written before this change keep what they hold.
+
+- **`POST /chat/ui` answers only a prompt on the caller's own thread.** It checked no tenant, no
+  thread and no ownership — the one route where every other one does — so the whole control was
+  the secrecy of a 96-bit request id. A prompt's waiter is now scoped to its thread, which
+  `effective_thread_id` namespaces to the caller's tenant, the shape `/chat/tool_result` already
+  had. **Breaking:** the body requires `thread_id` (the `ui_request` frame carries it) and a
+  request without one is `422`; `request_id` is capped at 64 characters. `FelixClient.resolve_ui`
+  takes `thread_id=`; felix-web's client sends it from the frame. Upgrade the harness and the web
+  client together — an old client's answers are refused rather than delivered.
+
 - **A conversation summary never re-enters the system tier.** `ab5ad59` moved the compaction
   summary — a model's rewrite of a transcript that includes raw tool output — out of the system
   tier on the turn it was made. Every path that *replays* it on later turns (the checkpoint
@@ -23,6 +49,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 ### Fixed
+
+- **A steer sent to an idle thread reaches the next run.** `POST /chat/steer` with `kind: steer`
+  on a thread with no run in progress answered 200 and was counted on the snapshot, then dropped
+  before reaching the model or the transcript. It is now held and delivered at the start of the
+  thread's next run, after that run's own turn, and the "cancel remaining tools" flag it raised
+  is cleared there so it no longer cancels that run's tool calls. A steer or follow-up arriving
+  after a run's last drain is kept for the next run as well, rather than released with the run.
+
+- **One unwritable audit or usage event no longer blocks every later one.** A failed flush was
+  requeued whole, so a row Postgres would never accept was retried forever and everything behind
+  it waited until the buffer's ceiling started dropping the oldest. A failed batch is now written
+  an event at a time: rows the database refuses as data are quarantined — dropped, counted as
+  `felix_buffer_quarantined` (alerted as `FelixBufferQuarantined`) and logged by event id — and
+  the rest land; an unavailable database still requeues everything, after a single extra try.
+  Audit and usage inserts are also idempotent now, so a retry after a partial commit no longer
+  collides on the primary key.
+
+- **Usage is recorded under `FELIX_DATABASE_RLS`.** The worker's usage flush bound no tenant, so on
+  a deployment whose database role enforces row-level security every flush failed the policy,
+  was requeued and failed again: no usage row was ever written, `/usage` and cost reporting saw
+  nothing, and the in-process buffer eventually dropped the oldest events. Each flush now
+  writes per tenant under that tenant, as the audit flush already did. Usage lost before this
+  change is not recoverable.
+
+- **A durable run re-claimed after a crash resumes from its session log.** A worker killed
+  mid-invoke left the fiber at the same step, and the next claim re-sent the user turn onto a
+  thread that already held the run's model turns and tool results: the model answered the
+  request twice and could repeat tool calls that had already taken effect. The step now
+  records where its turn begins in the log and a re-claim continues from there — or, when the
+  reply was already logged, takes it without calling the model. Temporal retries too. It applies
+  to `react` and `deep` manifests; composites (which route or score from the incoming turn),
+  `semantic:N` sessions and `memory.checkpointer: none` keep re-sending, as before.
 
 - **A non-streaming `/chat` says which approvals its run asked for.** The `approval_required` frame
   reaches only a stream, so `POST /chat` on a gated tool held the caller for the rule's whole TTL
@@ -130,6 +188,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **An approval rule whose `when_args` names nothing is refused or reported.** `when_args` gates
+  only the calls carrying those arguments, so a misspelled name (`when_args: [topickey]` on
+  `remember`) was a rule that never fired and still validated. `PUT /manifests` and
+  `felix validate-manifest` now refuse one naming a built-in, plugin or memory tool literally
+  when the name is none of its arguments; for MCP tools and globs the compile logs a warning and
+  counts `felix_approval_when_args_unknown` instead, since those schemas can change under a
+  stored manifest. Stored manifests still load.
+
 - **Documented: sub-agents inherit the caller's admission.** `spec.auth.inbound` is checked on
   the manifest a request names, not on each sub-agent a router compiles, so a child's own
   `required_scopes` apply when it is called by name and not when a router hands it a request.
@@ -173,6 +239,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 ### Added
+
+- **`content_screening.model_tools`: choose which tools pay for the screener.** A glob list of
+  the screened tools that get the paid scoring — the `model` screener and the `decider` battery,
+  a call per window each. Empty, the default, is every screened tool, as before. The marker scan
+  still runs on every screened tool, so a tool left out is screened by markers alone, never
+  unscreened: a cost lever, not an exemption. Refused without `model` or `decider: true`.
+- **A failed `tool_call` audit row says which class of failure it was.** `payload.error_code`
+  is the call's `ToolErrorCode` — `invalid_arguments`, `transport_unavailable`,
+  `provider_error`, `timeout`, `user_aborted`, `rate_limited`, `permission_denied` or
+  `internal` — on rows with `status: error`. The runner already computed it to set the status
+  and dropped it, so the audit log could say a call failed and never why. The error *message*
+  is not recorded: it is the tool's own text and can quote file contents or credentials, and
+  an audit row outlives its thread.
+
+- **Eval runs report what they cost and whether their judge ran.** Each score row carries
+  `duration_ms`, `tokens_input`, `tokens_output` and `cost_usd` for the candidate's turn, and
+  every run (`GET /eval/runs/{id}`, `felix eval`'s output) has a `stats` block: wall time, summed
+  item time, the slowest item, tokens, cost, tool calls and errors, and `judge_fallbacks`. An LLM
+  judge that could not run used to score the item with the heuristic in silence; the row now
+  says `judge_fallback: true` with `judge_error`, `felix eval` warns on stderr, and
+  `felix eval --strict-judge` exits 1 on it.
+
+- **Run a job now.** `POST /jobs/{name}/run` (`jobs:write`) runs a scheduled job immediately and
+  answers with the finished run, so a new job can be tried before it is left to cron. It runs
+  exactly as a scheduled firing does — as `cron`, on the job's thread, its prompt screened —
+  and the run records `trigger: manual` and the caller as `requested_by`. The schedule is not
+  moved, and a disabled job runs when asked.
+- **List a manifest's versions.** `GET /manifests/{name}/versions` (`manifests:read`) returns the
+  stored versions newest first, without their bodies, each marked `active` or `canary`, paged
+  with `before`. Rollback no longer requires knowing the version number already.
+
+- **Signed completion webhooks for durable runs.** `spec.execution.webhooks` names endpoint ids
+  from `FELIX_WEBHOOK_ENDPOINTS` (operator-registered, each scoped to tenants or `"*"` — a manifest never
+  carries a URL), and the worker POSTs the run's outcome when it ends, signed per Standard
+  Webhooks, through the egress guard, with backoff and a dead letter on the run row
+  (`FELIX_WEBHOOK_MAX_ATTEMPTS`, `FELIX_WEBHOOK_TIMEOUT_SECONDS`). `GET /chat/runs/{token}` reports
+  each endpoint's delivery state. Migration `0019` adds the columns; run `felix migrate head`.
 
 - **Each release carries its OpenAPI document.** The GitHub release for a tag now includes
   `openapi.json`, built from that tag by `scripts/export-openapi.py`. The API's `/docs` sits behind

@@ -317,7 +317,7 @@ recorded in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 A dropped stream is recoverable: structural SSE frames carry an `id:` cursor (token-level frames do not, which per the SSE spec leaves the client's `lastEventId` on the last one it saw), and `GET /chat/stream/{thread_id}` replays what was missed (or opens with a `snapshot` frame) and then tails the thread. The run itself is still torn down on disconnect, so what you get back is the thread, not the abandoned turn.
 
-Management surfaces: `/audit`, `/approvals`, `/plans`, `/jobs`, `/manifests`, `/eval`, `/usage`, `/memory`. `/memory` lists, searches (the same hybrid ranking the agent sees), time-travels (`/memory/as-of/{turn_seq}`), writes and forgets long-term memories — an agent that remembers across sessions otherwise accumulates a store nobody can inspect.
+Management surfaces: `/audit`, `/approvals`, `/plans`, `/jobs`, `/manifests`, `/eval`, `/usage`, `/memory`. `POST /jobs/{name}/run` runs a job now instead of waiting for cron; `GET /manifests/{name}/versions` lists what a rollback can go back to. `/memory` lists, searches (the same hybrid ranking the agent sees), time-travels (`/memory/as-of/{turn_seq}`), writes and forgets long-term memories — an agent that remembers across sessions otherwise accumulates a store nobody can inspect.
 
 Python client: `from felix.sdk import FelixClient` — `prompt`, `stream`, `steer`, `follow_up`,
 `fork`, `rewind`, `set_model`.
@@ -623,6 +623,12 @@ Storage and execution:
 - Durable facts via `spec.memory.capture`; how-tos via `spec.procedural_memory`
 - `spec.execution.mode: durable` enqueues a fiber (Temporal optional) and returns `202` with a
   `resume_token`; a step that keeps failing backs off and is `dead` after `FELIX_FIBER_MAX_ATTEMPTS`
+- `spec.execution.webhooks: [ops]` announces a durable run's end to operator-registered endpoints
+  (`FELIX_WEBHOOK_ENDPOINTS`, a JSON map of id → `{url, secret, tenants, private?}`): the worker
+  POSTs `run.completed|failed|expired|dead` with the run view, signed per Standard Webhooks
+  (`webhook-id`, `webhook-timestamp`, `webhook-signature: v1,…`), retries with backoff up to
+  `FELIX_WEBHOOK_MAX_ATTEMPTS` (8), and reports each endpoint's state on `GET /chat/runs/{token}`.
+  A manifest names ids, never URLs; an id not registered for the caller's tenant is `422`
 - `POST /chat/stream` on a durable manifest streams the run instead: `run_accepted` → `run_status`
   → `final`, interleaved with `session_event` frames tailed from the thread's session log, so tool
   calls and assistant turns arrive as they land, across replicas, with a resumable `id:` cursor.

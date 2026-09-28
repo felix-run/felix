@@ -557,6 +557,7 @@ class FelixClient:
         self,
         request_id: str,
         *,
+        thread_id: str,
         value: Any = None,
         cancelled: bool = False,
         note: str = "",
@@ -566,6 +567,9 @@ class FelixClient:
                 f"{self.base_url.rstrip('/')}/chat/ui",
                 headers=self._headers(),
                 json={
+                    # The prompt's waiter is scoped to its thread; the `ui_request` frame
+                    # carries the thread id to send back.
+                    "thread_id": thread_id,
                     "request_id": request_id,
                     "value": value,
                     "cancelled": cancelled,

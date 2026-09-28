@@ -24,11 +24,17 @@ class UiResponse:
     note: str = ""
 
 
-def _waiter_name(request_id: str) -> str:
-    # One server-minted `secrets.token_urlsafe` part, so nothing here can be ambiguous --
-    # but routed through the shared join anyway, so the next part added to this name is
-    # escaped by construction rather than by whoever remembers.
-    return waiter_name("ui", request_id)
+def _waiter_name(thread_id: str | None, request_id: str) -> str:
+    """The waiter a prompt blocks on: scoped to its thread, and so to its tenant.
+
+    It used to be `ui:{request_id}` alone, which made the whole control the secrecy of a
+    96-bit token: `POST /chat/ui` checked no tenant, no thread and no ownership, the one
+    surface where every other route does. The thread a caller can name is namespaced to its
+    own tenant by `effective_thread_id`, so putting the thread in the name means a prompt can
+    only be answered from inside its own tenant's thread — the shape `client_bridge` already
+    has for tool results. Routed through `waiter_name`, which escapes each part.
+    """
+    return waiter_name("ui", thread_id or "", request_id)
 
 
 async def request_ui(
@@ -54,7 +60,7 @@ async def request_ui(
     }
     await emit_side_event(thread_id, "ui_request", payload)
     limit = DEFAULT_TIMEOUT_SECONDS if timeout is None else float(timeout)
-    raw = await waiter_wait(_waiter_name(request_id), timeout=limit)
+    raw = await waiter_wait(_waiter_name(thread_id, request_id), timeout=limit)
     if raw is None:
         return UiResponse(request_id=request_id, kind=kind, cancelled=True, note="timeout")
     if raw.get("cancelled"):
@@ -105,17 +111,20 @@ async def request_input(
 
 
 async def resolve_ui_response(
+    thread_id: str,
     request_id: str,
     *,
     value: Any = None,
     cancelled: bool = False,
     note: str = "",
 ) -> dict[str, Any]:
+    """Answer the prompt `request_id` on `thread_id`, which the caller must already have
+    namespaced to its own tenant."""
     await waiter_signal(
-        _waiter_name(request_id),
+        _waiter_name(thread_id, request_id),
         {"value": value, "cancelled": cancelled, "note": note},
     )
-    return {"ok": True, "request_id": request_id}
+    return {"ok": True, "thread_id": thread_id, "request_id": request_id}
 
 
 __all__ = [

@@ -546,6 +546,14 @@
           "default": false,
           "title": "Decider",
           "type": "boolean"
+        },
+        "model_tools": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 64,
+          "title": "Model Tools",
+          "type": "array"
         }
       },
       "title": "ContentScreening",
@@ -645,6 +653,14 @@
           ],
           "title": "Tools",
           "type": "string"
+        },
+        "webhooks": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 8,
+          "title": "Webhooks",
+          "type": "array"
         }
       },
       "title": "ExecutionSpec",

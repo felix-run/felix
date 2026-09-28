@@ -198,6 +198,9 @@ class _ReactAgent:
     # `spec.decider`, built: a metered decision provider, or None when the manifest has none.
     decider: MeteredDecider | None = None
     procedural_memory: Any | None = None
+    # The compile's `ReplyScreen` chain, when reply controls are on: memory capture extracts
+    # from the reply as the controls ship it, not as the model wrote it.
+    reply_screen: Any | None = None
     tool_execution: str = "sequential"
     steering_mode: str = "all"
     follow_up_mode: str = "all"
@@ -414,7 +417,9 @@ class _ReactAgent:
             session = self.session_store.open(thread_id)
             await annotate_and_append(session, events)
         except Exception:
-            logger.debug("session append failed", exc_info=True)
+            # A lost write is a hole in the transcript, and with reply controls on it is
+            # also where a screening failure lands: not something to hide at debug.
+            logger.warning("session append failed", exc_info=True)
 
     async def _stream_one_turn(
         self,
@@ -614,6 +619,14 @@ class _ReactAgent:
         if self.settings is None:
             return
         user_text = " ".join(m.content for m in input.messages if m.role == "user")
+        assistant_text: str | None = final.content or ""
+        if self.reply_screen is not None and assistant_text:
+            # Capture runs inside the reply controls, on the reply they have not screened yet.
+            # A fact stored from text the controls redacted would come back in every later
+            # prompt that recalls it; a denied reply is not an answer to learn from.
+            assistant_text = await self.reply_screen.settle(assistant_text)
+            if assistant_text is None:
+                return
         try:
             from felix.memory.capture import capture_from_turn
 
@@ -622,7 +635,7 @@ class _ReactAgent:
                 input.tenant_id or self.tenant_id,
                 manifest_id=self.manifest_id,
                 user_text=user_text,
-                assistant_text=final.content or "",
+                assistant_text=assistant_text,
                 capture=capture,
                 model=self._capture_model(model),
                 origin_seq=await self._turn_seq(input.thread_id),
@@ -836,6 +849,23 @@ class _ReactAgent:
 
         produced: list[ChatMessage] = list(input.messages)
         await self._append_produced(input.thread_id, [m for m in input.messages if m.role == "user"])
+        if input.thread_id:
+            # A steer sent while the thread was idle is held for the next run and delivered
+            # here, after that run's own turn. The loop below only drains steers between tool
+            # rounds, so a run that called no tool never read one, and the queue was released
+            # with it still inside — accepted, counted on the snapshot, and gone. All of them,
+            # whatever `steering_mode` says: they have waited for a run, not for a tool round.
+            for steermsg in await drain_steer(tenant_id, input.thread_id, mode="all"):
+                steer_chat = ChatMessage(role="user", content=steermsg.text)
+                messages.append(steer_chat)
+                produced.append(steer_chat)
+                if emit_events:
+                    yield Event(event="steer", data={"content": steermsg.text})
+                await self._append_produced(input.thread_id, [steer_chat])
+            # A steer also raises "cancel the remaining tools", meant for a round in flight. One
+            # held since the thread was idle has nothing to cancel — left set, it would cancel
+            # this run's first tool round instead.
+            await clear_cancel_flag(tenant_id, input.thread_id)
         final = ChatMessage(role="assistant", content="")
         fatal = False
         any_denied = False
@@ -1189,6 +1219,7 @@ def build_react_agent(ctx: PatternBuildContext) -> Agent:
         decider=ctx.get("decider"),
         skill_suggester=ctx.get("skill_suggester"),
         procedural_memory=ctx.get("procedural_memory"),
+        reply_screen=ctx.get("reply_screen"),
         tool_execution=tool_exec,
         steering_mode=steer_mode,
         follow_up_mode=follow_mode,

@@ -56,6 +56,15 @@ groups:
           summary: "{{ $labels.buffer }} rows were dropped in the last 10 minutes"
           description: "The buffer flushes every FELIX_AUDIT_FLUSH_SECONDS; the store is down or too slow to keep up."
 
+      # Also loss, and a different cause: rows Postgres refused as data, set aside so they stop
+      # blocking every event behind them. The log line names each event id.
+      - alert: FelixBufferQuarantined
+        expr: increase(felix_buffer_quarantined_total[10m]) > 0
+        labels: {severity: critical}
+        annotations:
+          summary: "{{ $labels.buffer }} rows were refused by the database and quarantined"
+          description: "Postgres rejected these rows as data (SQLSTATE class 22/23); the rest of the batch was written. The worker log names the event ids."
+
       # Money: a turn that was not metered counts against no budget. `model` stays on the
       # alert's labels but out of the summary: `spec.model.id` is tenant-authored text and a
       # summary is what Alertmanager forwards to chat and pagers.

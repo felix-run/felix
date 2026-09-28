@@ -234,25 +234,20 @@ async def list_events(
 
 async def flush_pending(settings: Settings) -> int:
     """Drain buffered audit events to Postgres, then optional warehouse spill."""
-    batch = _pending.take()
-    if not batch:
-        return 0
-
-    try:
-        await _write_batch(settings, batch)
-    except Exception:
-        # Never drop the compliance record because a commit failed — put it back and
-        # let the next flush retry.
-        _pending.requeue(batch)
-        raise
-    return len(batch)
+    # Never drop the compliance record because a commit failed: the buffer puts back what the
+    # database could not take, and sets aside only what it refuses as data.
+    return await _pending.drain(lambda batch: _write_batch(settings, batch))
 
 
 async def _write_batch(settings: Settings, batch: list[dict[str, Any]]) -> None:
     if _use_memory(settings):
-        _memory_events.extend(batch)
+        # Idempotent, like the insert below: a flush retried after a partial commit.
+        stored = {(e["tenant_id"], e["id"]) for e in _memory_events}
+        _memory_events.extend(e for e in batch if (e["tenant_id"], e["id"]) not in stored)
     else:
         from collections import defaultdict
+
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
 
         from felix.db.session import apply_tenant_rls, rls_tenant
 
@@ -265,19 +260,28 @@ async def _write_batch(settings: Settings, batch: list[dict[str, Any]]) -> None:
             with rls_tenant(tenant_id):
                 async with factory() as db:
                     await apply_tenant_rls(db, settings, tenant_id)
-                    for event in events:
-                        db.add(
-                            AuditEvent(
-                                tenant_id=event["tenant_id"],
-                                id=event["id"],
-                                ts=event["ts"],
-                                event_type=event["event_type"],
-                                manifest_id=event.get("manifest_id", ""),
-                                principal_subj=event.get("principal_subj", ""),
-                                status=event.get("status", ""),
-                                payload_json=event.get("payload_json") or {},
-                            )
+                    # ON CONFLICT DO NOTHING: one transaction per tenant, so a flush that fails
+                    # on a later tenant has already committed the earlier ones, and its retry
+                    # would otherwise collide on the primary key — forever.
+                    await db.execute(
+                        pg_insert(AuditEvent)
+                        .values(
+                            [
+                                {
+                                    "tenant_id": event["tenant_id"],
+                                    "id": event["id"],
+                                    "ts": event["ts"],
+                                    "event_type": event["event_type"],
+                                    "manifest_id": event.get("manifest_id", ""),
+                                    "principal_subj": event.get("principal_subj", ""),
+                                    "status": event.get("status", ""),
+                                    "payload_json": event.get("payload_json") or {},
+                                }
+                                for event in events
+                            ]
                         )
+                        .on_conflict_do_nothing(index_elements=["tenant_id", "id"])
+                    )
                     await db.commit()
 
     if getattr(settings, "warehouse", "none") not in {"none", "", None}:
