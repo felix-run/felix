@@ -212,3 +212,29 @@ async def test_the_bypass_does_not_outlive_its_block(rls_settings: Any) -> None:
     with rls_tenant(TENANT):
         assert await _count(rls_settings, TENANT) == 1
         assert await _count(rls_settings, OTHER) == 0
+
+
+# --- the worker's flushes --------------------------------------------------------------------
+
+
+async def test_the_usage_flush_lands_every_tenants_rows_under_the_policy(rls_settings: Any) -> None:
+    """The worker's `flush_usage` has no request context, so the store must bind each row's
+    tenant itself. It bound none: every flush failed the policy's `WITH CHECK`, was requeued,
+    and failed again — the meter never reached Postgres on an RLS deployment, and the buffer's
+    ceiling started dropping the oldest usage."""
+    from felix.usage import store as usage_store
+
+    usage_store.pending_buffer().reset_for_tests()
+    try:
+        for tenant in (TENANT, OTHER):
+            usage_store.record_tokens(
+                rls_settings, tenant_id=tenant, manifest_id="m", model_id="m", tokens_input=3, tokens_output=2
+            )
+        assert await usage_store.flush_pending(rls_settings) == 2
+        assert usage_store.pending_count() == 0, "nothing requeued"
+        for tenant in (TENANT, OTHER):
+            with rls_tenant(tenant):
+                rows, _ = await usage_store.query(rls_settings, tenant, limit=10)
+            assert [r["tenant_id"] for r in rows] == [tenant], (tenant, rows)
+    finally:
+        usage_store.pending_buffer().reset_for_tests()
