@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] — 2026-09-28
+
+A hotfix on 0.4.0, branched from its tag, carrying one fix. Everything else merged to `main` since
+0.4.0 is in the next minor release.
+
+### Fixed
+
+- **A timed-out approval is closed, not left pending.** When nobody answered, the gate denied
+  the call and wrote nothing back, so the row read `pending` for the life of the deployment:
+  `GET /approvals?status=pending` offered a decision already made (one production row was
+  twenty-nine hours past its deadline), and a byte-identical re-ask joined that row, carrying its
+  expired `expires_at` while the gate waited a fresh ttl on it. The row now becomes `denied`
+  with `decision_note: "timeout"` and `decided_by: "felix"`, and a lapsed pending row is closed
+  rather than reused. Rows left pending by earlier versions are closed the next time an
+  identical call asks; others stay until decided or swept.
+
 ## [0.4.0] — 2026-09-24
 
 ### Added
@@ -2798,3 +2814,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.1.0]: https://github.com/felix-run/felix/releases/tag/v0.1.0
 [0.3.0]: https://github.com/felix-run/felix/releases/tag/v0.3.0
 [0.4.0]: https://github.com/felix-run/felix/releases/tag/v0.4.0
+[0.4.1]: https://github.com/felix-run/felix/releases/tag/v0.4.1

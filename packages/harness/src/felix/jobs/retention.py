@@ -12,9 +12,9 @@ capture extracted from a thread.)
 
 `approvals` used to be listed in that parenthesis as "bounded by its run". It is not: there
 is no foreign key, no cascade, and nothing anywhere issues a delete against it, so every
-gate firing left a row that outlived the run by the life of the deployment. Worse, nothing
-moves a *timed-out* row off `pending` — `wait_for_decision` returns a denial and the caller
-writes nothing back — so the set a thread-scoped query walks grows monotonically and forever.
+gate firing left a row that outlived the run by the life of the deployment. (A *timed-out*
+row used to stay `pending` as well, because the caller wrote nothing back; the gate now closes
+it as `denied`/`timeout`, which also makes it sweepable here like any other settled row.)
 
 * `audit_events` — older than the audit TTL. A manifest's `governance.retention_days`
   shortens that for its own rows (never lengthens: the operator's setting is the ceiling),
