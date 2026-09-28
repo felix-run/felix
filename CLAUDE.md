@@ -16,7 +16,8 @@ make install            # uv sync --dev (lean core; CI lint/type jobs use --all-
 make install-full       # uv sync --all-extras --dev (aws/gcp/mcp/browser/embeddings/…)
 make check              # ruff check + ty check + pytest w/ coverage floor + ruff format --check
 make test-cov           # the suite with coverage against the floor; `check` and CI both run this
-make check-ci           # check + bundle, schema-check, toolkit, eval, SRI, pre-commit (each also a target)
+make check-ci           # check + bundle, schema-check, contract-check, toolkit, eval, SRI, pre-commit (each also a target)
+make contract           # regenerate the wire contract: schemas/openapi.json + schemas/sse-events.json
 make e2e                # tests/e2e only: the real app over HTTP, scripted model
 make conformance        # store contract vs Postgres (needs FELIX_CONFORMANCE_DATABASE_URL; + _REDIS_URL as CI)
 make lint / fmt / type / test
@@ -56,7 +57,15 @@ Structural gates (fast, no infrastructure):
 uv sync --locked --no-dev && uv run --no-sync python scripts/lean-import-check.py
 python3 scripts/validate-toolkit.py               # .claude/ hooks, settings, skills, and every path they cite
 uv run python scripts/gen-manifest-schema.py --check   # editor JSON Schema is current
+uv run python scripts/gen-wire-contract.py --check     # OpenAPI + SSE event snapshots are current
 ```
+
+The wire contract — `schemas/openapi.json` and `schemas/sse-events.json` — is checked in so a
+change to the HTTP surface or the stream's frame names arrives as a reviewed diff;
+`tests/unit/test_wire_contract.py` fails when either is stale. The event names are scanned from
+the source: a frame whose name is not a string literal must be a listed pass-through in
+`scripts/gen-wire-contract.py`, or the scan fails. After touching a route, a response model or a
+frame, run `make contract` and read the diff.
 
 `tests/unit/test_invariants.py` turns the rules below into failures: `.env.example` covers every
 `Settings` field, no optional dependency is imported at module scope, every Postgres-touching module

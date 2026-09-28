@@ -805,10 +805,14 @@ rather than from re-reading a file. The wave itself is written up in [HISTORY.md
       `FELIX_` setting. Related: `request_ui` / `request_confirm` / `request_select` have **zero
       callers in core**, so no tool exposes them and an agent cannot currently ask the user a
       structured question — a capability-surface item hiding in a documentation one.
-- [ ] **Wire-contract snapshot** — snapshot `/openapi.json` and the SSE event-name set.
-      `felix-run/web` mirrors `StreamEvent` by hand and its union has an open arm, so an added or
-      renamed frame silently does nothing on both sides. Fold in **snapshot-authoritative
-      streaming** if it happens.
+- [x] **Wire-contract snapshot** — `schemas/openapi.json` and `schemas/sse-events.json`, written
+      by `scripts/gen-wire-contract.py` (`make contract`), held by `tests/unit/test_wire_contract.py`.
+      The event names are scanned off the source — `Event(event=...)`, `{"event", "data"}` frames,
+      `side_events.emit` — and a non-literal name must be a listed pass-through or the scan fails,
+      so a new producer cannot slip past the snapshot. The OpenAPI snapshot drops `info.version`,
+      which the per-release export keeps. Left for felix-run/web: generate its `StreamEvent`
+      union from `sse-events.json` and close the open arm. **Snapshot-authoritative streaming**
+      was not folded in.
 - [x] **Publish the SDK, or say it is not one.** Decided: a light package, marked experimental.
       `felix/sdk.py` moved to `packages/client` (`felix-client`, module `felix_client`), httpx
       and nothing else, same API; `felix.sdk` re-exports it. The README says what it covers,
