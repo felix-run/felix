@@ -122,6 +122,52 @@ async def get_version(settings: Settings, tenant_id: str, name: str, version: in
         return _version_dict(row) if row else None
 
 
+def _version_meta(row: dict[str, Any]) -> dict[str, Any]:
+    """A version without its manifest: what a listing needs, at a listing's size."""
+    return {k: v for k, v in row.items() if k != "manifest"}
+
+
+async def list_versions(
+    settings: Settings, tenant_id: str, name: str, *, limit: int = 50, before: int | None = None
+) -> list[dict[str, Any]]:
+    """The stored versions of `name`, newest first, without their manifests.
+
+    `before` pages: versions strictly lower than it. Versions are dense per name and never
+    rewritten, so the number is its own stable cursor.
+    """
+    if _use_memory(settings):
+        rows = sorted(
+            (
+                row
+                for (t, n, v), row in _memory_manifests.items()
+                if t == tenant_id and n == name and (before is None or v < before)
+            ),
+            key=lambda r: r["version"],
+            reverse=True,
+        )
+        return [_version_meta(_version_dict(r)) for r in rows[:limit]]
+
+    factory = get_session_factory(settings=settings)
+    async with factory() as db:
+        stmt = select(ManifestRow).where(ManifestRow.tenant_id == tenant_id, ManifestRow.name == name)
+        if before is not None:
+            stmt = stmt.where(ManifestRow.version < before)
+        stmt = stmt.order_by(ManifestRow.version.desc()).limit(limit)
+        return [_version_meta(_version_dict(r)) for r in (await db.scalars(stmt)).all()]
+
+
+async def active_row(settings: Settings, tenant_id: str, name: str) -> dict[str, Any] | None:
+    """The configured pointer for `name` — active version and any canary — or None."""
+    if _use_memory(settings):
+        row = _memory_active.get((tenant_id, name))
+        return _active_dict(row) if row else None
+
+    factory = get_session_factory(settings=settings)
+    async with factory() as db:
+        row = await db.get(ManifestActive, (tenant_id, name))
+        return _active_dict(row) if row else None
+
+
 async def put_version(
     settings: Settings,
     tenant_id: str,

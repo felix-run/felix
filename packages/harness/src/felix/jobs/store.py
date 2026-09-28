@@ -188,6 +188,11 @@ async def put_job(
         return _job_dict(row)
 
 
+# `touch_run(next_run_at=KEEP_SCHEDULE)`: record a run without moving the schedule. A manual run
+# must not, and passing the value it read would put back a stale one if cron moved it meanwhile.
+KEEP_SCHEDULE: Any = object()
+
+
 async def touch_run(
     settings: Settings,
     tenant_id: str,
@@ -198,12 +203,14 @@ async def touch_run(
     last_status: str = "ok",
     last_error: str = "",
 ) -> None:
+    keep = next_run_at is KEEP_SCHEDULE
     if _use_memory(settings):
         row = _memory_jobs.get((tenant_id, name))
         if row is None:
             return
         row["last_run_at"] = last_run_at
-        row["next_run_at"] = next_run_at
+        if not keep:
+            row["next_run_at"] = next_run_at
         row["last_status"] = last_status
         row["last_error"] = last_error
         return
@@ -214,7 +221,8 @@ async def touch_run(
         if row is None:
             return
         row.last_run_at = last_run_at
-        row.next_run_at = next_run_at
+        if not keep:
+            row.next_run_at = next_run_at
         row.last_status = last_status
         row.last_error = last_error
         await db.commit()
