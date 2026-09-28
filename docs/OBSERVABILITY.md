@@ -122,6 +122,7 @@ worth having at all — each one means a control did not do what the manifest im
 | `felix_worker_task` | `task`, `status` | One per periodic sweep. A `task` whose rate drops to zero has stopped firing — which otherwise looks identical to one that runs and finds nothing. |
 | `felix_worker_task_seconds` | `task` | Sweep duration. |
 | `felix_buffer_dropped` | `buffer` | **Watch this.** Audit or usage rows were dropped because a buffer hit `DEFAULT_MAX_PENDING`. Silent data loss otherwise. |
+| `felix_buffer_quarantined` | `buffer` | **Watch this.** Audit or usage rows Postgres refused as data (SQLSTATE 22/23) were set aside so the rest of the batch could land; the log line names each event id. Before this, one such row blocked every later one. |
 
 ### Alerting rules
 
@@ -129,7 +130,7 @@ worth having at all — each one means a control did not do what the manifest im
 observability overlay mounts it into Prometheus (`rule_files` in
 `deploy/docker/config/prometheus.yml`) and the Helm chart embeds it in a `PrometheusRule`
 when `prometheusRule.enabled` is set. It alerts on the rows above marked **watch this**
-(`felix_buffer_dropped`, `felix_model_unmetered`, `felix_model_unpriced`,
+(`felix_buffer_dropped`, `felix_buffer_quarantined`, `felix_model_unmetered`, `felix_model_unpriced`,
 `felix_control_unavailable`), on a worker task that stops firing or keeps failing
 (`felix_worker_task`), on an unscrapable API or worker, on repeated provider timeouts, and
 on Postgres connections nearing `max_connections` (from postgres-exporter).

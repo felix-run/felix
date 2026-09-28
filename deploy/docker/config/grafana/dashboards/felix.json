@@ -675,6 +675,15 @@
           "expr": "sum by (buffer) (increase(felix_buffer_dropped_total[1h]))",
           "legendFormat": "{{buffer}}",
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "felix-prometheus"
+          },
+          "expr": "sum by (buffer) (increase(felix_buffer_quarantined_total[1h]))",
+          "legendFormat": "{{buffer}} quarantined",
+          "refId": "B"
         }
       ],
       "fieldConfig": {

@@ -1046,18 +1046,19 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       `tests/conformance/test_rls_enforcement.py` flushes two tenants through the enforcing role.
       Every other worker task body was run against the same role and raised nothing.
 
-- [ ] **One unwritable audit event blocks every later one.** `flush_pending` requeues a batch
-      whose write failed, so the compliance record survives a transient outage — and so a
-      *permanently* unwritable event is retried forever, with every subsequent event stuck
-      behind it until the 10k ceiling starts dropping the oldest. Two concrete triggers, both
-      invisible to the in-memory twin, which stores anything. The `\u0000` trigger is fixed at
-      source — `record_event` strips it, because it was reachable by any authenticated client
-      in one request — but the shape remains for a `payload_json` Postgres refuses for another
-      reason, and for a caller-supplied `id` colliding on the `(tenant_id, id)` primary key
-      (reachable only from tests today: nothing in `packages` or `apps` supplies an id). `tests/conformance/test_audit_store.py`
-      now pins that a failed flush keeps its batch; what is missing is telling a transient
-      failure from a poisonous one — quarantine the offending event, count it the way
-      `DurableBuffer` counts drops, and let the rest through.
+- [x] **One unwritable audit event blocks every later one.** `flush_pending` requeued a failed
+      batch whole, so an event Postgres would never accept was retried forever with every later
+      event behind it. Closed by `DurableBuffer.drain`, shared by the audit and usage flushes: a
+      failed batch is written again an event at a time, an event refused as data (`DataError`,
+      `IntegrityError`) is quarantined — dropped, counted as `felix_buffer_quarantined`, alerted
+      on, logged by id — and the first failure of any other kind stops the pass and requeues the
+      rest, so an outage costs one extra round trip, not one per event. Found on the way: both
+      writers commit per tenant, so a flush failing on a later tenant had already committed the
+      earlier ones and its retry collided on the primary key — a poison event the flush made
+      itself. Both inserts are now `ON CONFLICT DO NOTHING`, and the twins dedupe the same way.
+      The trade: a *different* event reusing an id is now skipped rather than quarantined.
+      Nothing in `packages` or `apps` supplies an id — `record_event` mints a uuid — so a
+      collision can only be a retry; revisit if an id ever becomes caller-supplied.
 
 - [ ] **The keyset cursor's tie-break is collation-dependent.** `felix/cursors.py` pairs the
       timestamp with the row id, and `id` is text — so Postgres orders it by the database

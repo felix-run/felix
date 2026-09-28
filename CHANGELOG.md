@@ -50,6 +50,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **One unwritable audit or usage event no longer blocks every later one.** A failed flush was
+  requeued whole, so a row Postgres would never accept was retried forever and everything behind
+  it waited until the buffer's ceiling started dropping the oldest. A failed batch is now written
+  an event at a time: rows the database refuses as data are quarantined — dropped, counted as
+  `felix_buffer_quarantined` (alerted as `FelixBufferQuarantined`) and logged by event id — and
+  the rest land; an unavailable database still requeues everything, after a single extra try.
+  Audit and usage inserts are also idempotent now, so a retry after a partial commit no longer
+  collides on the primary key.
+
 - **Usage is recorded under `FELIX_DATABASE_RLS`.** The worker's usage flush bound no tenant, so on
   a deployment whose database role enforces row-level security every flush failed the policy,
   was requeued and failed again: no usage row was ever written, `/usage` and cost reporting saw
