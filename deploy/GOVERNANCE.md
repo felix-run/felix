@@ -717,9 +717,14 @@ screening off for untrusted output is the thing screening exists to prevent, so 
 was removed rather than renamed. On cost: neither `content_screening.model` nor `on_flag` is a per-tool lever, so this removes
 the only one there was. It is free in the default configuration — both bundled manifests that
 enable screening leave `model` empty, and the marker path is a substring scan — and it costs a
-model call per untrusted tool per turn where `model` *is* set. If that bites, the shape to add
-is a knob orthogonal to trust (which tools get the *expensive* screener, with marker screening
-unconditional), not a way to exempt an untrusted tool from screening altogether.
+model call per untrusted tool per turn where `model` *is* set.
+
+That knob is `content_screening.model_tools`: a glob list of which screened tools get the paid
+scoring — `model` and `decider`, a call per window each. Empty, the default, is every screened
+tool. It is orthogonal to trust, not a way out of it: every screened tool still runs the marker
+scan whatever `model_tools` says, so an untrusted tool it leaves out is screened by markers
+alone, never unscreened. It needs `model` or `decider: true` to mean anything and is refused
+without one; a pattern that matches no bound tool is counted as `felix_rule_targets_nothing`.
 
 `content_screening.decider` adds `spec.decider` beside `model`: one call asks whether the text
 tries to override the assistant's instructions, to jailbreak it, or to exfiltrate data, and flags

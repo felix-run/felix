@@ -740,12 +740,11 @@ rather than from re-reading a file. The wave itself is written up in [HISTORY.md
       redacts an embedded credential — `manifests:read` could read one before. The `client-shell` approval rule and the `thread_id`/`tool_call_id`
       requirement are what stand between an anonymous caller and command execution on a
       developer's machine. Untouched by the audit; wants a conscious yes or no.
-- [ ] **A per-tool screener cost lever.** `content_screening.tools` became additive in #146, so
-      the only per-tool cost control is gone. Free in the default configuration (no `model`
-      set), and a manifest binding twenty MCP tools that named three now pays twenty screener
-      calls per turn where it does. If that shows up: add `model_tools:` — *which tools get the
-      expensive screener*, marker screening unconditional — never a way to exempt an untrusted
-      tool from screening.
+- [x] **A per-tool screener cost lever.** `content_screening.model_tools`, as prescribed: a glob
+      list of which screened tools get the paid scoring (`model` and `decider`); empty is every
+      screened tool; the marker scan stays unconditional, so leaving an untrusted tool out
+      screens it by markers alone rather than not at all. Refused without `model` or
+      `decider: true`, and unmatched patterns count as `felix_rule_targets_nothing`.
 - [ ] **Should `felix validate-manifest` hard-fail on a pattern matching no declared
       integration?** Compile-time tolerance exists for the dynamic tool set (a failed MCP
       discovery binds nothing). At author time the builtins plus declared refs are statically

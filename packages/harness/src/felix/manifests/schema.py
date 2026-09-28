@@ -848,6 +848,18 @@ class ContentScreening(_Strict):
     #: one call. Additive: it runs beside the markers and `model`, either one flagging flags,
     #: and either one unable to run leaves the text unscreened rather than cleared.
     decider: bool = False
+    #: Which screened tools get the *paid* scoring — `model` and `decider` — by glob. Empty, the
+    #: default, is every screened tool. The marker scan runs on every screened tool whatever
+    #: this says: it is a cost lever, never a way to take an untrusted tool out of screening.
+    #: A manifest binding twenty MCP tools pays twenty screener calls a turn without it, since
+    #: `tools` became additive and stopped being the way to name fewer.
+    model_tools: list[str] = Field(default_factory=list, max_length=MAX_REFS)
+
+    @model_validator(mode="after")
+    def _model_tools_need_a_scorer(self) -> ContentScreening:
+        if self.model_tools and not (self.model.strip() or self.decider):
+            raise ValueError("content_screening.model_tools needs content_screening.model or decider: true")
+        return self
 
 
 class GovernanceSpec(_Strict):
