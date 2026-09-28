@@ -849,6 +849,23 @@ class _ReactAgent:
 
         produced: list[ChatMessage] = list(input.messages)
         await self._append_produced(input.thread_id, [m for m in input.messages if m.role == "user"])
+        if input.thread_id:
+            # A steer sent while the thread was idle is held for the next run and delivered
+            # here, after that run's own turn. The loop below only drains steers between tool
+            # rounds, so a run that called no tool never read one, and the queue was released
+            # with it still inside — accepted, counted on the snapshot, and gone. All of them,
+            # whatever `steering_mode` says: they have waited for a run, not for a tool round.
+            for steermsg in await drain_steer(tenant_id, input.thread_id, mode="all"):
+                steer_chat = ChatMessage(role="user", content=steermsg.text)
+                messages.append(steer_chat)
+                produced.append(steer_chat)
+                if emit_events:
+                    yield Event(event="steer", data={"content": steermsg.text})
+                await self._append_produced(input.thread_id, [steer_chat])
+            # A steer also raises "cancel the remaining tools", meant for a round in flight. One
+            # held since the thread was idle has nothing to cancel — left set, it would cancel
+            # this run's first tool round instead.
+            await clear_cancel_flag(tenant_id, input.thread_id)
         final = ChatMessage(role="assistant", content="")
         fatal = False
         any_denied = False
