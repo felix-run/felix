@@ -50,6 +50,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Concurrent publishes of one manifest all land.** `PUT /manifests/{name}` read the highest
+  version and inserted the next, so two publishes of the same name at once picked the same
+  number and the second failed with a 500. Publishes of one name are now serialized for the
+  length of the write, and each gets the next version; other manifests are unaffected.
+
 - **A steer sent to an idle thread reaches the next run.** `POST /chat/steer` with `kind: steer`
   on a thread with no run in progress answered 200 and was counted on the snapshot, then dropped
   before reaching the model or the transcript. It is now held and delivered at the start of the

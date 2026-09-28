@@ -353,3 +353,19 @@ async def test_versions_list_newest_first_and_page_by_version(store_settings: An
     assert await manifests.list_versions(store_settings, "someone-else", NAME) == []
     pointer = await manifests.active_row(store_settings, TENANT, NAME)
     assert pointer is not None and pointer["version"] == 1, "the first write is the active one"
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_concurrent_publishes_of_one_name_all_land_in_order(store_settings: Any) -> None:
+    """`put_version` reads the highest version and inserts the next. Concurrent publishes of one
+    name used to read the same max, and every insert after the first failed on the primary key —
+    a 500 for a double-publish. Only Postgres can race; the twin has no await between the two."""
+    import asyncio
+
+    results = await asyncio.gather(
+        *(manifests.put_version(store_settings, TENANT, NAME, _manifest(f"p{i}")) for i in range(6))
+    )
+    assert sorted(r["version"] for r in results) == [1, 2, 3, 4, 5, 6]
+    rows = await manifests.list_versions(store_settings, TENANT, NAME)
+    assert [r["version"] for r in rows] == [6, 5, 4, 3, 2, 1]

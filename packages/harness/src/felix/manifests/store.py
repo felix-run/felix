@@ -6,7 +6,7 @@ import time
 from copy import deepcopy
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.dialects.postgresql import insert
 
 from felix.config import Settings
@@ -208,6 +208,15 @@ async def put_version(
 
     factory = get_session_factory(settings=settings)
     async with factory() as db:
+        # Serialize publishes of one name for the rest of this transaction. Reading the max and
+        # inserting max+1 is a read-modify-write: two concurrent publishes read the same max, and
+        # the second insert failed on the primary key — a 500 for a double-click. Keyed on the
+        # tenant and name, so other manifests never wait; released at commit, so it is safe
+        # behind a transaction-mode pooler. Not swallowed: an error here aborts the transaction.
+        await db.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
+            {"k": f"felix:manifest:{tenant_id}:{name}"},
+        )
         max_version = await db.scalar(
             select(func.coalesce(func.max(ManifestRow.version), 0)).where(
                 ManifestRow.tenant_id == tenant_id,
