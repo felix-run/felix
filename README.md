@@ -319,8 +319,15 @@ A dropped stream is recoverable: structural SSE frames carry an `id:` cursor (to
 
 Management surfaces: `/audit`, `/approvals`, `/plans`, `/jobs`, `/manifests`, `/eval`, `/usage`, `/memory`. `POST /jobs/{name}/run` runs a job now instead of waiting for cron; `GET /manifests/{name}/versions` lists what a rollback can go back to. `/memory` lists, searches (the same hybrid ranking the agent sees), time-travels (`/memory/as-of/{turn_seq}`), writes and forgets long-term memories — an agent that remembers across sessions otherwise accumulates a store nobody can inspect.
 
-Python client: `from felix.sdk import FelixClient` — `prompt`, `stream`, `steer`, `follow_up`,
-`fork`, `rewind`, `set_model`.
+Python client (**experimental**): the `felix-client` package — `from felix_client import
+FelixClient` — covering chat (`prompt`, `stream`, `steer`, `follow_up`, `fork`, `rewind`,
+`set_model`), durable runs with their polling, and approvals. It depends on httpx and nothing in
+Felix, so installing it does not install the server; its surface may change between releases
+without a deprecation period. Not yet on PyPI — install it from the repository:
+`pip install "felix-client @ git+https://github.com/felix-run/felix#subdirectory=packages/client"`.
+For everything else, and as the contract, use the HTTP API: each release attaches its
+`openapi.json`, from which a client in any language can be generated. `from felix.sdk import
+FelixClient` still works inside the harness.
 
 ### Models
 

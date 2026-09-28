@@ -8,6 +8,7 @@ members = [
     "felix-ai",
     "felix-api",
     "felix-cli",
+    "felix-client",
     "felix-harness",
     "felix-worker",
 ]
@@ -950,6 +951,7 @@ dependencies = [
     { name = "felix-ai" },
     { name = "felix-api" },
     { name = "felix-cli" },
+    { name = "felix-client" },
     { name = "felix-harness" },
     { name = "felix-worker" },
 ]
@@ -1023,6 +1025,7 @@ requires-dist = [
     { name = "felix-ai", editable = "packages/ai" },
     { name = "felix-api", editable = "apps/api" },
     { name = "felix-cli", editable = "packages/cli" },
+    { name = "felix-client", editable = "packages/client" },
     { name = "felix-harness", editable = "packages/harness" },
     { name = "felix-harness", extras = ["a2a"], marker = "extra == 'a2a'", editable = "packages/harness" },
     { name = "felix-harness", extras = ["aws"], marker = "extra == 'aws'", editable = "packages/harness" },
@@ -1102,6 +1105,17 @@ requires-dist = [
 ]
 
 [[package]]
+name = "felix-client"
+version = "0.4.0"
+source = { editable = "packages/client" }
+dependencies = [
+    { name = "httpx" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "httpx", specifier = ">=0.28.1" }]
+
+[[package]]
 name = "felix-harness"
 version = "0.4.0"
 source = { editable = "packages/harness" }
@@ -1111,6 +1125,7 @@ dependencies = [
     { name = "cryptography" },
     { name = "fastapi", extra = ["standard"] },
     { name = "felix-ai" },
+    { name = "felix-client" },
     { name = "httpx" },
     { name = "joserfc" },
     { name = "openai" },
@@ -1196,6 +1211,7 @@ requires-dist = [
     { name = "duckdb", marker = "extra == 'warehouse'", specifier = ">=1.4" },
     { name = "fastapi", extras = ["standard"], specifier = ">=0.141.1" },
     { name = "felix-ai", editable = "packages/ai" },
+    { name = "felix-client", editable = "packages/client" },
     { name = "google-cloud-secret-manager", marker = "extra == 'gcp'", specifier = ">=2.26" },
     { name = "google-cloud-storage", marker = "extra == 'gcp'", specifier = ">=3.9" },
     { name = "granian", marker = "extra == 'granian'", specifier = ">=2.8.1" },

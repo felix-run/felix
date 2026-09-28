@@ -200,7 +200,7 @@ async def test_build_agent_with_skills() -> None:
 
 
 def test_felix_client_import() -> None:
-    from felix.sdk import FelixClient
+    from felix_client import FelixClient
 
     c = FelixClient(base_url="http://localhost:8080")
     c.set_model("claude-haiku-4")

@@ -240,6 +240,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`felix-client`: the Python client as its own package (experimental).** `FelixClient` moved out
+  of the harness into `packages/client`, which depends on httpx and nothing in Felix — importing
+  it used to pull in FastAPI, SQLAlchemy, psycopg and the rest of the server. `from felix_client
+  import FelixClient`; `from felix.sdk import FelixClient` still works. It covers chat, durable
+  runs and approvals, and may change between releases; the OpenAPI document attached to each
+  release is the full contract. Not on PyPI yet: install from the repository with
+  `subdirectory=packages/client`.
+
 - **`content_screening.model_tools`: choose which tools pay for the screener.** A glob list of
   the screened tools that get the paid scoring — the `model` screener and the `decider` battery,
   a call per window each. Empty, the default, is every screened tool, as before. The marker scan
