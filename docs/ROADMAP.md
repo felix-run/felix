@@ -670,10 +670,15 @@ comment explaining exactly that. It is conditional, not inert.
       lands. `retired_by` versus `source`, why resurrection is gated on who retired rather than
       who wrote, and which of the manifest, the store and the approval wrapper is authoritative.
       Enforced in `tests/conformance/test_memory_trust_matrix.py`; the prose does not exist.
-- [ ] **Warn when `when_args` names nothing** — `ApprovalRule.when_args` is not validated against
-      the gated tool's schema, so `when_args: [topickey]` yields a rule that never fires and still
-      passes `validate-manifest` and both framework checks. `RememberArgs` is a pydantic model with
-      `extra="forbid"`, so the check is cheap. Decide whether it warns or refuses.
+- [x] **Warn when `when_args` names nothing** — decided: both, by what is knowable.
+      `manifests/approval_args.py` refuses at write (`validate_for_write`, so `PUT /manifests`
+      and `felix validate-manifest`) a rule naming built-in, plugin or memory tools literally
+      when a `when_args` name is none of their arguments; it warns at compile, once per process,
+      with `felix_approval_when_args_unknown`, for every resolved tool — MCP included, since
+      those schemas can change under a stored manifest and refusing would be an outage. A name
+      is flagged only when no reached tool takes it, so `github__*` with `when_args: [force]`
+      is fine; a tool whose schema lists no properties is never grounds. Not a parse-time check,
+      which would reject stored manifests on read.
 - [ ] **Split-turn compaction** — when one turn alone exceeds `keep_recent_tokens` the cut lands
       mid-turn and one summary covers both sides. Two summaries with different prompts and budgets
       is the fix. Narrow: only bites on very long single turns.

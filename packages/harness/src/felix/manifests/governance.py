@@ -176,6 +176,15 @@ def validate_for_write(manifest: Manifest, settings: Any | None = None) -> None:
     from felix.tools.sandboxes import SandboxImageNotAllowed, assert_sandbox_images_allowed
 
     assert_stdio_allowed(manifest, settings)
+    if any(rule.when_args for rule in manifest.spec.approvals):
+        from felix.config import get_settings
+        from felix.manifests.approval_args import offline_tools, when_args_problems
+
+        # A `when_args` name the gated tool does not take is a rule that never fires. Refused
+        # for tools whose schemas ship with the harness; the rest are warned about at compile.
+        problems = when_args_problems(manifest.spec.approvals, offline_tools(settings or get_settings()))
+        if problems:
+            raise GovernanceError("; ".join(problems))
     # `memory.checkpointer` is an open string resolved against a registry, so pydantic no
     # longer catches a typo — and stored, it would raise inside every build.
     spec = manifest.spec

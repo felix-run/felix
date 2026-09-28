@@ -780,6 +780,11 @@ def _arg_present(args: ToolInput, name: str) -> bool:
 def apply_approvals(tools: list[Tool], rules: list[ApprovalRule], manifest_id: str) -> list[Tool]:
     if not any(r.tools for r in rules):
         return tools
+    from felix.manifests.approval_args import warn_unknown_when_args
+
+    # A `when_args` name no gated tool takes is a rule that never fires. Warned, not refused:
+    # an MCP tool's schema can change under a stored manifest, and that must not be an outage.
+    warn_unknown_when_args(rules, tools, manifest_id)
 
     def wrap_one(tool: Tool) -> Tool:
         # Approvals is the only control in the stack that selects *one* rule — policies and
