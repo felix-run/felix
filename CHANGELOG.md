@@ -245,6 +245,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a call per window each. Empty, the default, is every screened tool, as before. The marker scan
   still runs on every screened tool, so a tool left out is screened by markers alone, never
   unscreened: a cost lever, not an exemption. Refused without `model` or `decider: true`.
+- **A failed `tool_call` audit row says which class of failure it was.** `payload.error_code`
+  is the call's `ToolErrorCode` — `invalid_arguments`, `transport_unavailable`,
+  `provider_error`, `timeout`, `user_aborted`, `rate_limited`, `permission_denied` or
+  `internal` — on rows with `status: error`. The runner already computed it to set the status
+  and dropped it, so the audit log could say a call failed and never why. The error *message*
+  is not recorded: it is the tool's own text and can quote file contents or credentials, and
+  an audit row outlives its thread.
 
 - **Eval runs report what they cost and whether their judge ran.** Each score row carries
   `duration_ms`, `tokens_input`, `tokens_output` and `cost_usd` for the candidate's turn, and

@@ -236,6 +236,10 @@ Real, documented rather than hidden:
   marker every wrapper already stamps. `GET /audit?event_type=policy_deny` plus that key answers
   "every call blocked by approvals this week"; before it, the layer existed only in the tool
   message. A `tool_call` row never carries the key.
+- **Failed `tool_call` rows carry `payload.error_code`.** The call's `ToolErrorCode`
+  (`timeout`, `permission_denied`, `rate_limited`, …) on every row with `status: error`, and
+  absent otherwise. It is the class only: the message is the tool's text, which can quote file
+  contents or credentials, so it stays in the thread's transcript and out of the audit log.
 - **`GET /audit/metrics` reports `avg_latency_ms: 0`.** It reads `payload.latency_ms` /
   `payload.duration_ms`, which the `tool_call` audit payload does not write. Use
   `felix_tool_call_seconds` instead.
