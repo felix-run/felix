@@ -875,13 +875,17 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       hand-off (no dataset item calls a tool) and its `use_llm_judge` inversion.
       `POST /eval/runs/compare` still has no caller at all. `patterns/delegating.py` still has no named test, and needs a per-client
       sub-queue in the fixture before it can have one — the last piece of this item.
-- [ ] **Decide what a steer queued on an idle thread should do.** Today it is accepted with
-      200, counted on the snapshot, then dropped before reaching the model or the transcript —
-      `kind: follow_up` is the path that works. Found by asserting on what reached the model
-      rather than on the reply. Options: refuse it, promote it to a follow-up, or hold it until
-      a run starts. Pinned as-is by
-      `tests/e2e/test_chat_run_control.py::test_a_steer_queued_while_idle_is_dropped_without_reaching_anyone`,
-      which should fail and be rewritten when this is decided.
+- [x] **Decide what a steer queued on an idle thread should do.** Decided: **hold it for the
+      next run**. It was accepted with 200, counted on the snapshot, then dropped — the loop
+      drained steers only between tool rounds, so a turn that called no tool never read one,
+      and `release_run_queue` discarded the in-process queue with it inside (on Redis it
+      survived instead, and landed at some later run's tool round). Now the run drains held
+      steers at its start, after its own turn, and clears the stale "cancel remaining tools"
+      flag the steer raised, which would otherwise have cancelled that run's second tool call;
+      `release_run_queue` keeps a queue that still holds undelivered messages, which also
+      covers a steer arriving after a run's last drain. Refusing needed a cross-replica "is a
+      run active" read and still lost the race at run end; promoting to a follow-up would have
+      stopped the steer shaping the answer it was aimed at.
 
 - [~] **Postgres arms for the ten stores that have none.** Approvals, session search and the
       fiber *claim* path are done (`tests/conformance/test_approvals_store.py`,

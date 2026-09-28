@@ -242,9 +242,18 @@ async def clear_cancel_flag(tenant_id: str, thread_id: str) -> None:
 
 
 async def release_run_queue(tenant_id: str, thread_id: str) -> None:
-    # Same reasoning as `ensure_run_queue`: a single dict operation, no `await` in the
-    # middle of it, so there is nothing for a lock to serialise.
-    _queues.pop(_key(tenant_id, thread_id), None)
+    """Drop a finished run's in-process queue — unless it still holds undelivered messages.
+
+    A steer or follow-up that arrived after the run's last drain waits for the next run, which
+    picks it up from here; discarding the queue with it inside was how a message was accepted
+    and then lost. Redis lists outlive the run on their own; this is the fallback's equivalent.
+    """
+    # Same reasoning as `ensure_run_queue`: no `await` between the check and the pop, so there
+    # is nothing for a lock to serialise.
+    k = _key(tenant_id, thread_id)
+    q = _queues.get(k)
+    if q is not None and q.steer.empty() and q.follow_up.empty():
+        _queues.pop(k, None)
 
 
 __all__ = [

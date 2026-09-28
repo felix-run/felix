@@ -50,6 +50,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A steer sent to an idle thread reaches the next run.** `POST /chat/steer` with `kind: steer`
+  on a thread with no run in progress answered 200 and was counted on the snapshot, then dropped
+  before reaching the model or the transcript. It is now held and delivered at the start of the
+  thread's next run, after that run's own turn, and the "cancel remaining tools" flag it raised
+  is cleared there so it no longer cancels that run's tool calls. A steer or follow-up arriving
+  after a run's last drain is kept for the next run as well, rather than released with the run.
+
 - **One unwritable audit or usage event no longer blocks every later one.** A failed flush was
   requeued whole, so a row Postgres would never accept was retried forever and everything behind
   it waited until the buffer's ceiling started dropping the oldest. A failed batch is now written
