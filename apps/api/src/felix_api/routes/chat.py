@@ -472,11 +472,13 @@ async def _approvals_raised(settings: Any, tenant_id: str, extras: dict[str, Any
     A non-streaming caller has no `approval_required` frame to read, and used to wait out the
     rule's TTL and receive a denial with nothing saying an approval had been requested. Each
     entry is the frame the stream would have sent, plus `status` read back from the row once
-    the run is over: `approved`, `denied`, or `expired` — a pending row past its deadline, which
-    is what a timeout leaves, since the gate denies without writing a decision. While a request
-    is still blocked, `GET /approvals?thread_id=` is where to find the id to decide.
+    the run is over: `approved`, `denied`, or `expired` — nobody answered in time. The gate now
+    closes that row as `denied` with the note `timeout`, and `expired` is kept for it rather than
+    folding it into `denied`, because nobody chose it; a pending row past its deadline (one left
+    by a harness that predates the write-back) still reads the same way. While a request is
+    still blocked, `GET /approvals?thread_id=` is where to find the id to decide.
     """
-    from felix.approvals.store import get_approval
+    from felix.approvals.store import TIMEOUT_NOTE, get_approval
     from felix.side_events import requested_on
 
     out: list[dict[str, Any]] = []
@@ -490,7 +492,8 @@ async def _approvals_raised(settings: Any, tenant_id: str, extras: dict[str, Any
         row = await get_approval(settings, tenant_id, approval_id)
         status = str((row or {}).get("status") or "unknown")
         expires_at = (row or {}).get("expires_at")
-        if status == "pending" and expires_at is not None and int(expires_at) < now:
+        timed_out = status == "denied" and (row or {}).get("decision_note") == TIMEOUT_NOTE
+        if timed_out or (status == "pending" and expires_at is not None and int(expires_at) < now):
             status = "expired"
         out.append({**raised, "status": status})
     return out
