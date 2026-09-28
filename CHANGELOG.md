@@ -216,6 +216,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Run a job now.** `POST /jobs/{name}/run` (`jobs:write`) runs a scheduled job immediately and
+  answers with the finished run, so a new job can be tried before it is left to cron. It runs
+  exactly as a scheduled firing does — as `cron`, on the job's thread, its prompt screened —
+  and the run records `trigger: manual` and the caller as `requested_by`. The schedule is not
+  moved, and a disabled job runs when asked.
+- **List a manifest's versions.** `GET /manifests/{name}/versions` (`manifests:read`) returns the
+  stored versions newest first, without their bodies, each marked `active` or `canary`, paged
+  with `before`. Rollback no longer requires knowing the version number already.
+
 - **Signed completion webhooks for durable runs.** `spec.execution.webhooks` names endpoint ids
   from `FELIX_WEBHOOK_ENDPOINTS` (operator-registered, each scoped to tenants or `"*"` — a manifest never
   carries a URL), and the worker POSTs the run's outcome when it ends, signed per Standard

@@ -826,9 +826,12 @@ rather than from re-reading a file. The wave itself is written up in [HISTORY.md
       `FELIX_AUTH_API_KEYS` JSON and restarting. Manifest CRUD, canary and rollback are real and
       API-driven; onboarding tenant #2 is a config edit and a process restart. Decide whether that
       is the product (single-operator self-host) or a gap, and write the answer down either way.
-- [ ] **Manifest version listing** — `GET /manifests/{name}?version=N` fetches one; nothing
-      enumerates what exists, so rollback requires knowing the number already.
-- [ ] **Run a job now** — `jobs.py` is CRUD plus run history; you can only wait for cron.
+- [x] **Manifest version listing** — `GET /manifests/{name}/versions`: newest first, metadata
+      only, each marked `active` / `canary`, paged by `before=<version>` (`next_before`).
+- [x] **Run a job now** — `POST /jobs/{name}/run` (`jobs:write`), synchronous, returning the
+      run. It goes through `scheduler.fire_job`, the path cron now uses too, so it runs as
+      `cron` on the job's thread with its prompt screened; the run records `trigger: manual`
+      and `requested_by`, and the schedule is left alone (`store.KEEP_SCHEDULE`).
 
 ### Testing strategy
 

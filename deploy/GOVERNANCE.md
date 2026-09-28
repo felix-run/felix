@@ -1012,11 +1012,11 @@ implies the matching `*:read`.
 
 | Scope | Routes |
 |-------|--------|
-| `manifests:read` / `manifests:write` | `/manifests` |
+| `manifests:read` / `manifests:write` | `/manifests`; `GET /manifests/{name}/versions` lists stored versions (metadata only) under `manifests:read` |
 | `audit:read` | `/audit` |
 | `artifacts:read` | `/artifacts` — read back a tool output too large to keep in the transcript. Its own scope rather than part of `audit:read`, because a spilled result is raw tool output and often the most sensitive data a run touches. The model's own way back, the `read_artifact` tool bound beside `spec.artifacts`, checks no scope and is held to something narrower instead: it reads only what its own conversation spilled (the thread, or the request when there is none), so a leaked id does not reach another caller's run through the model. Spill is kept for `FELIX_ARTIFACT_RETENTION_DAYS` (30; `0` keeps forever) and then swept, objects and ledger row together — so evidence meant to outlive that belongs in the audit log, not in an artifact |
 | `approvals:read` / `approvals:write` | `/approvals`; `approvals:read` also gates the `approval_required` frames on a durable `POST /chat/stream` |
-| `jobs:read` / `jobs:write` | `/jobs` |
+| `jobs:read` / `jobs:write` | `/jobs`. `POST /jobs/{name}/run` runs a job now and needs `jobs:write`: whoever may rewrite a job's prompt may already make it run. The job runs as itself — principal `cron`, no scopes — not as the caller, whose subject is recorded on the run as `requested_by` |
 | `plans:read` / `plans:write` | `/plans` |
 | `eval:read` / `eval:write` | `/eval` |
 | `usage:read` | `/usage` |
