@@ -90,6 +90,12 @@ class ChatMessage:
     attachments: list[ImageAttachment] | None = None
     content_blocks: list[ContentBlock] | None = None
     thinking: list[dict[str, Any]] | None = None
+    # For this request only: sent after the conversation's cache breakpoint and never part of
+    # the prefix a later request reuses. Guidance the harness computes per request — a skill
+    # hint — goes here, because a message that is in one request and gone from the next
+    # otherwise invalidates the cached conversation from the point it stood. A wire that
+    # cannot place it after the breakpoint appends it last, which is the same thing.
+    transient: bool = False
 
     @classmethod
     def model_validate(cls, data: Any) -> ChatMessage:

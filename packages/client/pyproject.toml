@@ -1,0 +1,25 @@
+[project]
+name = "felix-client"
+version = "0.4.1"
+description = "Experimental Python client for a Felix harness over HTTP. Depends on httpx and nothing in Felix."
+requires-python = ">=3.14"
+license = "Apache-2.0"
+# Deliberately minimal, like felix-ai: installing a client must not install the server. It may not
+# import any `felix*` package — `tests/unit/test_invariants.py` enforces that — and it covers part
+# of the API (chat, runs, approvals); the OpenAPI document attached to each release is the full
+# contract.
+dependencies = [
+    "httpx>=0.28.1",
+]
+
+[project.urls]
+Homepage = "https://github.com/felix-run/felix"
+Repository = "https://github.com/felix-run/felix"
+Issues = "https://github.com/felix-run/felix/issues"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/felix_client"]

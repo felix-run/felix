@@ -12,6 +12,7 @@ reads from, so a separate `import felix.patterns.react` alongside it would be re
 
 from __future__ import annotations
 
+from felix.decisions import register_builtin_deciders
 from felix.patterns.delegating import _DelegatingAgent
 from felix.patterns.model import _spec_with_model, register_builtin_providers
 from felix.patterns.model_sinks import install_felix_ai_sinks
@@ -34,6 +35,7 @@ from felix.patterns.types import (
 
 install_felix_ai_sinks()
 register_builtin_providers()
+register_builtin_deciders()
 
 
 async def _build_deep(ctx: PatternBuildContext) -> Agent:
@@ -69,6 +71,8 @@ async def _build_router(ctx: PatternBuildContext) -> Agent:
         model_spec=ctx.get("model_spec"),
         settings=ctx.get("settings"),
         output_schema=ctx.get("output_schema"),
+        # A router's one decision is which child answers, so naming a decider is opting in.
+        decider=ctx.get("decider"),
     )
 
 
@@ -121,6 +125,8 @@ async def _build_reflect(ctx: PatternBuildContext) -> Agent:
         settings=ctx.get("settings"),
         reflect_cfg=reflect_cfg,
         output_schema=ctx.get("output_schema"),
+        decider=ctx.get("decider"),
+        reply_screen=ctx.get("reply_screen"),
     )
 
 

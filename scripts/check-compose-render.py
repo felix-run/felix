@@ -7,7 +7,9 @@ for "does it parse". Two things are only visible after Compose has merged the fi
 * the gcp overlay must leave no `build:` on any Felix service, so a host can never compile
   its own artifact — `!reset` applied through a YAML merge key does *not* do this, and the
   file still parses and the unit tests still pass;
-* every Felix process must wait on the `migrate` one-shot completing.
+* every Felix process must wait on the `migrate` one-shot completing;
+* no Felix service bind-mounts a host directory at `/workspace` unless the operator asked for
+  one with `FELIX_WORKSPACE_HOST` — the old default bind-mounted the deployment's own checkout.
 
 Usage: docker compose -f … config --format json | scripts/check-compose-render.py [--published]
 """
@@ -15,6 +17,7 @@ Usage: docker compose -f … config --format json | scripts/check-compose-render
 from __future__ import annotations
 
 import json
+import os
 import sys
 
 FELIX_IMAGE_PREFIXES = ("felix:", "ghcr.io/felix-run/felix:")
@@ -31,6 +34,17 @@ def main(argv: list[str]) -> int:
     for name, svc in felix.items():
         if published and svc.get("build"):
             problems.append(f"{name}: still has a build section, so `up` would compile on the host")
+        if not os.environ.get("FELIX_WORKSPACE_HOST"):
+            for mount in svc.get("volumes") or []:
+                if (
+                    isinstance(mount, dict)
+                    and mount.get("target") == "/workspace"
+                    and mount.get("type") != "volume"
+                ):
+                    problems.append(
+                        f"{name}: /workspace is a {mount.get('type')} mount of {mount.get('source')!r}; "
+                        "the default must be the named volume, not a host directory"
+                    )
         if name == "migrate":
             continue
         cond = (svc.get("depends_on") or {}).get("migrate", {}).get("condition")

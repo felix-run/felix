@@ -162,7 +162,7 @@ async def llm_judge_score(
         f'Reply with ONLY a JSON object: {{"score": 0.0, "reason": "..."}}'
     )
     try:
-        from felix.patterns.model import ModelChatOptions
+        from felix.patterns.model import ModelChatOptions, record_model_usage
         from felix.patterns.types import ChatMessage
 
         result = await model.chat(
@@ -170,6 +170,9 @@ async def llm_judge_score(
             [],
             ModelChatOptions(isolate_cache=True),
         )
+        # Billed whether or not the reply parses. This call reached no meter at all, so every
+        # model-backed judge — tool, reply and eval — was spend outside `limits.max_cost_usd`.
+        record_model_usage(result, model, meta={"kind": "judge"})
         text = (result.message.content or "").strip()
         start = text.find("{")
         end = text.rfind("}")

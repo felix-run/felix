@@ -13,8 +13,9 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from felix.context import try_get_context
+from felix.tools.errors import ToolErrorCode, tool_error_output
 from felix.tools.provider import InMemoryToolProvider
-from felix.tools.types import define_tool
+from felix.tools.types import ToolOutput, ToolOutputDict, define_tool
 
 _MAX_READ_BYTES = 512_000
 _MAX_WRITE_BYTES = 512_000
@@ -117,16 +118,49 @@ def workspace_root() -> Path:
     return path
 
 
-async def _list_dir(args: PathArgs) -> str:
+def _refuse(message: str) -> ToolOutputDict:
+    """A call the model can fix by asking differently: bad path, missing file, ambiguous edit."""
+    return tool_error_output(ToolErrorCode.INVALID_ARGUMENTS, message)
+
+
+def _path_refused(exc: ValueError) -> ToolOutputDict:
+    """A path that could not be resolved — the model's fault, unless no workspace exists at all.
+
+    `workspace_root()` raises for an unconfigured or missing root and `resolve_under_root` for a
+    path that escapes it. Only the second is something the model can correct, so the first is
+    reported as the transport being unavailable rather than as a bad argument.
+    """
+    if "workspace_root" in str(exc):
+        return tool_error_output(ToolErrorCode.TRANSPORT_UNAVAILABLE, str(exc))
+    return _refuse(str(exc))
+
+
+def _os_failed(exc: OSError) -> ToolOutputDict:
+    """The filesystem refused. The one case the model cannot fix, and the one that was invisible.
+
+    These used to be returned as plain `error: …` text, which carries no error marker, so the tool
+    runner audited a write that failed with `Errno 13` as `tool_call` / `ok`, the metrics counted it
+    as a success, and the eval trajectory — which reads the text against
+    `FAILURE_CONTENT_PREFIXES` — did not count it at all. `tool_error_output` sets the marker the
+    runner reads and the `[tool error/…]` prefix the trajectory reads, so all three agree.
+    """
+    code = ToolErrorCode.PERMISSION_DENIED if isinstance(exc, PermissionError) else ToolErrorCode.INTERNAL
+    # Led by the exception's name, never by `str(exc)`. An `OSError` renders as `[Errno 13] …`,
+    # and `tool_error_output` skips its prefix for text that already starts with `[` — so passing
+    # the bare message produced a marked output whose *text* the trajectory still did not count.
+    return tool_error_output(code, f"{type(exc).__name__}: {exc}")
+
+
+async def _list_dir(args: PathArgs) -> ToolOutput:
     try:
         root = workspace_root()
         target = resolve_under_root(root, args.path)
     except ValueError as exc:
-        return f"error: {exc}"
+        return _path_refused(exc)
     if not target.exists():
-        return f"error: not found: {args.path}"
+        return _refuse(f"not found: {args.path}")
     if not target.is_dir():
-        return f"error: not a directory: {args.path}"
+        return _refuse(f"not a directory: {args.path}")
     entries: list[dict[str, Any]] = []
     for child in sorted(target.iterdir(), key=lambda p: p.name.lower()):
         if len(entries) >= _MAX_LIST_ENTRIES:
@@ -141,18 +175,18 @@ async def _list_dir(args: PathArgs) -> str:
     return json.dumps({"path": str(target.relative_to(root)), "entries": entries})
 
 
-async def _read_file(args: ReadFileArgs) -> str:
+async def _read_file(args: ReadFileArgs) -> ToolOutput:
     try:
         root = workspace_root()
         target = resolve_under_root(root, args.path)
     except ValueError as exc:
-        return f"error: {exc}"
+        return _path_refused(exc)
     if not target.exists() or not target.is_file():
-        return f"error: not a file: {args.path}"
+        return _refuse(f"not a file: {args.path}")
     try:
         data = target.read_bytes()
     except OSError as exc:
-        return f"error: {exc}"
+        return _os_failed(exc)
     chunk = data[args.offset : args.offset + args.limit]
     try:
         text = chunk.decode("utf-8")
@@ -191,15 +225,15 @@ def _write_lock(target: Path) -> asyncio.Lock:
     return _write_locks.setdefault(str(target), asyncio.Lock())
 
 
-async def _write_file(args: WriteFileArgs) -> str:
+async def _write_file(args: WriteFileArgs) -> ToolOutput:
     try:
         root = workspace_root()
         target = resolve_under_root(root, args.path)
     except ValueError as exc:
-        return f"error: {exc}"
+        return _path_refused(exc)
     payload = args.content.encode("utf-8")
     if len(payload) > _MAX_WRITE_BYTES:
-        return f"error: content exceeds {_MAX_WRITE_BYTES} bytes"
+        return _refuse(f"content exceeds {_MAX_WRITE_BYTES} bytes")
     try:
         async with _write_lock(target):
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -209,7 +243,7 @@ async def _write_file(args: WriteFileArgs) -> str:
             else:
                 target.write_bytes(payload)
     except OSError as exc:
-        return f"error: {exc}"
+        return _os_failed(exc)
     return json.dumps(
         {
             "path": str(target.relative_to(root)),
@@ -238,7 +272,7 @@ def _replace_file(target: Path, payload: bytes) -> None:
         raise
 
 
-async def _edit_file(args: EditFileArgs) -> str:
+async def _edit_file(args: EditFileArgs) -> ToolOutput:
     """Replace an exact string in a file, leaving every other byte where it was.
 
     Bytes in and bytes out, like `_read_file`: `read_text` would open in universal-newline
@@ -255,28 +289,28 @@ async def _edit_file(args: EditFileArgs) -> str:
         root = workspace_root()
         target = resolve_under_root(root, args.path)
     except ValueError as exc:
-        return f"error: {exc}"
+        return _path_refused(exc)
     if not target.is_file():
-        return f"error: not a file: {args.path}"
+        return _refuse(f"not a file: {args.path}")
     if len(args.new_string.encode("utf-8")) > _MAX_WRITE_BYTES:
-        return f"error: new_string exceeds {_MAX_WRITE_BYTES} bytes"
+        return _refuse(f"new_string exceeds {_MAX_WRITE_BYTES} bytes")
     try:
         async with _write_lock(target):
             size = target.stat().st_size
             if size > _MAX_EDIT_FILE_BYTES:
-                return f"error: {args.path} exceeds {_MAX_EDIT_FILE_BYTES} bytes"
+                return _refuse(f"{args.path} exceeds {_MAX_EDIT_FILE_BYTES} bytes")
             try:
                 text = target.read_bytes().decode("utf-8")
             except UnicodeDecodeError:
-                return f"error: not UTF-8 text: {args.path}"
+                return _refuse(f"not UTF-8 text: {args.path}")
             found = text.count(args.old_string)
             if found == 0:
-                return f"error: old_string not found in {args.path}"
+                return _refuse(f"old_string not found in {args.path}")
             if args.old_string == args.new_string:
-                return f"error: old_string and new_string are identical in {args.path}"
+                return _refuse(f"old_string and new_string are identical in {args.path}")
             if found > 1 and not args.replace_all:
-                return (
-                    f"error: old_string appears {found} times in {args.path} — extend it with "
+                return _refuse(
+                    f"old_string appears {found} times in {args.path} — extend it with "
                     "surrounding lines until it is unique, or pass replace_all"
                 )
             # Both caps above bound an *input*, and `replace_all` multiplies them: the size of
@@ -285,8 +319,8 @@ async def _edit_file(args: EditFileArgs) -> str:
             grew = len(args.new_string.encode("utf-8")) - len(args.old_string.encode("utf-8"))
             projected = size + found * grew
             if projected > _MAX_EDIT_FILE_BYTES:
-                return (
-                    f"error: the edit would make {args.path} {projected} bytes, over the "
+                return _refuse(
+                    f"the edit would make {args.path} {projected} bytes, over the "
                     f"{_MAX_EDIT_FILE_BYTES} limit"
                 )
             # `found` is 1 unless replace_all said otherwise, so this replaces exactly the
@@ -294,7 +328,7 @@ async def _edit_file(args: EditFileArgs) -> str:
             payload = text.replace(args.old_string, args.new_string).encode("utf-8")
             _replace_file(target, payload)
     except OSError as exc:
-        return f"error: {exc}"
+        return _os_failed(exc)
     return json.dumps(
         {
             "path": str(target.relative_to(root)),
@@ -389,25 +423,25 @@ def _scan_files(
     return hits
 
 
-async def _search_files(args: SearchFilesArgs) -> str:
+async def _search_files(args: SearchFilesArgs) -> ToolOutput:
     try:
         root = workspace_root()
         target = resolve_under_root(root, args.path)
     except ValueError as exc:
-        return f"error: {exc}"
+        return _path_refused(exc)
     if not target.exists():
-        return f"error: not found: {args.path}"
+        return _refuse(f"not found: {args.path}")
     files = [target] if target.is_file() else [p for p in target.rglob("*") if p.is_file()]
 
     pattern: re.Pattern[str] | None = None
     if args.regex:
         refused = _reject_catastrophic(args.query)
         if refused:
-            return f"error: {refused}"
+            return _refuse(f"{refused}")
         try:
             pattern = re.compile(args.query)
         except re.error as exc:
-            return f"error: invalid regex: {exc}"
+            return _refuse(f"invalid regex: {exc}")
 
     def _scan() -> list[dict[str, Any]]:
         return _scan_files(files, args, pattern, root)
@@ -419,9 +453,10 @@ async def _search_files(args: SearchFilesArgs) -> str:
         hits = await asyncio.wait_for(asyncio.to_thread(_scan), _SEARCH_BUDGET_S)
         return json.dumps({"query": args.query, "hits": hits})
     except TimeoutError:
-        return (
-            f"error: search exceeded {_SEARCH_BUDGET_S:.0f}s — narrow the pattern "
-            "(a nested-quantifier regex can be exponential)"
+        return tool_error_output(
+            ToolErrorCode.TIMEOUT,
+            f"search exceeded {_SEARCH_BUDGET_S:.0f}s — narrow the pattern "
+            "(a nested-quantifier regex can be exponential)",
         )
 
 

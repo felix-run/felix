@@ -87,6 +87,7 @@ async def _invoke_job_manifest(
         agent = await build_tenant_agent(
             settings,
             manifest=resolved.manifest,
+            sub_agents=resolved.sub_agents,
             tools=provider,
             tenant_id=tenant_id,
         )
@@ -95,6 +96,76 @@ async def _invoke_job_manifest(
         "status": "ok",
         "answer": result.final.content if result.final else "",
     }
+
+
+async def fire_job(
+    settings: Settings,
+    tenant_id: str,
+    job: dict[str, Any],
+    *,
+    started_at: int,
+    trigger: str = "schedule",
+    requested_by: str = "",
+) -> dict[str, Any]:
+    """Run one job now and record it. Returns the run row.
+
+    The one path a job runs by, whether cron found it due or someone asked for it: the same
+    identity (`cron`, with no scopes — a manual run does not borrow the caller's), the same
+    thread, the same screening of its prompt, the same run record. A manual run records its
+    `trigger` and who asked, and leaves the schedule where it was.
+    """
+    manual = trigger != "schedule"
+    try:
+        result: dict[str, Any] = {"status": "ok"}
+        if job.get("manifest_id"):
+            try:
+                result = await _invoke_job_manifest(settings, tenant_id=tenant_id, job=job)
+            except Exception as exc:
+                logger.exception("job_invoke_failed name=%s", job.get("name"))
+                result = {"status": "error", "error": str(exc)}
+        result["trigger"] = trigger
+        if requested_by:
+            result["requested_by"] = requested_by
+
+        status = "ok" if result.get("status") == "ok" else "error"
+        run = await jobs_store.record_run(
+            settings,
+            tenant_id,
+            job["name"],
+            status=status,
+            started_at=started_at,
+            finished_at=now_ms(),
+            error=str(result.get("error") or ""),
+            result=result,
+        )
+        # Do not write `enabled=True` back from a stale read — that silently
+        # re-enabled a job an operator had just disabled.
+        await jobs_store.touch_run(
+            settings,
+            tenant_id,
+            job["name"],
+            last_run_at=started_at,
+            next_run_at=(
+                jobs_store.KEEP_SCHEDULE
+                if manual
+                else next_run_at_ms(str(job.get("schedule") or ""), started_at)
+            ),
+            last_status=status,
+            last_error=str(result.get("error") or ""),
+        )
+        return run
+    except Exception:
+        logger.exception("job_failed name=%s", job.get("name"))
+        return await jobs_store.record_run(
+            settings,
+            tenant_id,
+            job["name"],
+            status="error",
+            started_at=started_at,
+            finished_at=now_ms(),
+            error="execution failed",
+            result={"trigger": trigger},
+        )
 
 
 async def run_due_jobs(settings: Settings, *, tenant_id: str = "default") -> int:
@@ -124,49 +195,8 @@ async def run_due_jobs(settings: Settings, *, tenant_id: str = "default") -> int
             logger.warning("job_claim_failed name=%s", job.get("name"), exc_info=True)
             continue
 
-        try:
-            result: dict[str, Any] = {"status": "ok"}
-            if job.get("manifest_id"):
-                try:
-                    result = await _invoke_job_manifest(settings, tenant_id=tenant_id, job=job)
-                except Exception as exc:
-                    logger.exception("job_invoke_failed name=%s", job.get("name"))
-                    result = {"status": "error", "error": str(exc)}
-
-            status = "ok" if result.get("status") == "ok" else "error"
-            await jobs_store.record_run(
-                settings,
-                tenant_id,
-                job["name"],
-                status=status,
-                started_at=ts,
-                finished_at=now_ms(),
-                error=str(result.get("error") or ""),
-                result=result,
-            )
-            # Do not write `enabled=True` back from a stale read — that silently
-            # re-enabled a job an operator had just disabled.
-            await jobs_store.touch_run(
-                settings,
-                tenant_id,
-                job["name"],
-                last_run_at=ts,
-                next_run_at=next_run_at_ms(str(job.get("schedule") or ""), ts),
-                last_status=status,
-                last_error=str(result.get("error") or ""),
-            )
-            fired += 1
-        except Exception:
-            logger.exception("job_failed name=%s", job.get("name"))
-            await jobs_store.record_run(
-                settings,
-                tenant_id,
-                job["name"],
-                status="error",
-                started_at=ts,
-                finished_at=now_ms(),
-                error="execution failed",
-            )
+        await fire_job(settings, tenant_id, job, started_at=ts)
+        fired += 1
     return fired
 
 
@@ -194,4 +224,4 @@ async def run_due_jobs_all_tenants(settings: Settings) -> int:
     return total
 
 
-__all__ = ["next_run_at_ms", "run_due_jobs", "run_due_jobs_all_tenants"]
+__all__ = ["fire_job", "next_run_at_ms", "run_due_jobs", "run_due_jobs_all_tenants"]

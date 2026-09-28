@@ -126,3 +126,77 @@ def test_deny_source_reads_every_shape_a_deny_can_take() -> None:
     assert deny_source(None) is None  # type: ignore[arg-type]
     # A dict that merely *says* source without the private marker is not a wrapper deny.
     assert deny_source({"content": "x", "metadata": {"source": "policy"}}) is None
+
+
+@pytest.mark.asyncio
+async def test_run_batch_reports_had_denied_for_a_denied_call() -> None:
+    """The fourth return value from run_batch is true when a call was denied."""
+    ctx = RequestContext(
+        settings=get_settings(),
+        auth=AuthContext(principal_sub="p", tenant_id="t", scopes=frozenset()),
+        manifest_id="m",
+        thread_id="th",
+    )
+    async with async_run_with_context(ctx):
+        _, _, _, had_denied = await ToolRunner(
+            tool_map={"t": _policy_gated_tool()}, manifest_id="m"
+        ).run_batch([ToolCall(id="1", name="t", args={})], thread_id="th", tenant_id="t")
+    assert had_denied is True
+
+
+@pytest.mark.asyncio
+async def test_run_batch_reports_had_denied_false_for_a_permitted_call() -> None:
+    """The fourth return value from run_batch is false when a call succeeded."""
+    ctx = RequestContext(
+        settings=get_settings(),
+        auth=AuthContext(principal_sub="p", tenant_id="t", scopes=frozenset({"tools:t"})),
+        manifest_id="m",
+        thread_id="th",
+    )
+    async with async_run_with_context(ctx):
+        _, _, _, had_denied = await ToolRunner(
+            tool_map={"t": _policy_gated_tool()}, manifest_id="m"
+        ).run_batch([ToolCall(id="1", name="t", args={})], thread_id="th", tenant_id="t")
+    assert had_denied is False
+
+
+@pytest.mark.asyncio
+async def test_run_batch_reports_had_denied_in_parallel_mode() -> None:
+    """The parallel dispatch branch also tracks denials correctly."""
+    # Two calls force parallel mode; one denied, one permitted
+    gated = _policy_gated_tool()
+    ungated = Tool(name="u", description="d", args_schema=None, executor=_Echo())
+
+    ctx = RequestContext(
+        settings=get_settings(),
+        auth=AuthContext(principal_sub="p", tenant_id="t", scopes=frozenset({"tools:t"})),
+        manifest_id="m",
+        thread_id="th",
+    )
+    async with async_run_with_context(ctx):
+        # Both calls permitted: had_denied should be false
+        _, _, _, had_denied = await ToolRunner(
+            tool_map={"t": gated, "u": ungated}, manifest_id="m"
+        ).run_batch(
+            [ToolCall(id="1", name="t", args={}), ToolCall(id="2", name="u", args={})],
+            thread_id="th",
+            tenant_id="t",
+        )
+    assert had_denied is False
+
+    # Now run with no scopes, so gated is denied
+    ctx_no_scope = RequestContext(
+        settings=get_settings(),
+        auth=AuthContext(principal_sub="p", tenant_id="t", scopes=frozenset()),
+        manifest_id="m",
+        thread_id="th",
+    )
+    async with async_run_with_context(ctx_no_scope):
+        _, _, _, had_denied = await ToolRunner(
+            tool_map={"t": gated, "u": ungated}, manifest_id="m"
+        ).run_batch(
+            [ToolCall(id="1", name="t", args={}), ToolCall(id="2", name="u", args={})],
+            thread_id="th",
+            tenant_id="t",
+        )
+    assert had_denied is True, "one denied call in a parallel batch sets had_denied"

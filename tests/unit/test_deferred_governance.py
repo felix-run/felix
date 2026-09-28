@@ -61,9 +61,16 @@ def test_wants_llm_judge_flags() -> None:
 
 @pytest.mark.asyncio
 async def test_llm_judge_score_parses_json() -> None:
+    from felix_ai.types import ChatMessage, ModelChatResult, TokenUsage
+
     model = MagicMock()
+    # A real result, not a MagicMock: the judge now meters its call, and a mock's `usage` is
+    # not a token count.
     model.chat = AsyncMock(
-        return_value=MagicMock(message=MagicMock(content='{"score": 0.9, "reason": "ok"}'))
+        return_value=ModelChatResult(
+            message=ChatMessage(role="assistant", content='{"score": 0.9, "reason": "ok"}'),
+            usage=TokenUsage(input=5, output=5),
+        )
     )
     judged = await llm_judge_score(
         model,

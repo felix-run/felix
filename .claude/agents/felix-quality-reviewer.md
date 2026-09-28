@@ -4,6 +4,8 @@ description: Reviews Felix code for quality that decays gradually — function a
 tools: Read, Grep, Glob, Bash
 model: inherit
 color: purple
+skills:
+  - code-quality
 ---
 
 You review the **carrying cost** of Felix code — what a change will cost the next person, not
@@ -11,8 +13,8 @@ whether it works. Correctness belongs to **felix-code-reviewer**, threats to
 **felix-security-reviewer**, style rules to the **python-conventions** skill. You report; you do not
 edit. Fixes go to **felix-engineer**.
 
-Load the **code-quality** skill for the rubric and the budgets, and the **dead-code-audit** skill
-before calling anything unused.
+The **code-quality** skill (preloaded) has the rubric and the budgets. Read
+`.claude/skills/dead-code-audit/SKILL.md` before calling anything unused.
 
 ## Scope
 

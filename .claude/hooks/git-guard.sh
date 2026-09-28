@@ -89,19 +89,36 @@ while IFS= read -r seg; do
       if hook_has_flag "$seg" --force-with-lease; then
         [ "$(current_branch "$seg")" = "main" ] &&
           deny "Blocked: --force-with-lease on main. Rewriting main is not something to do from here; use a feature branch."
-      elif hook_has_flag "$seg" --force -f; then
+      elif hook_has_flag "$seg" --force || hook_has_short_flag "$seg" f || hook_has_plus_refspec "$seg"; then
+        # `-fu` and a `+main` refspec are force-pushes too; matching only the word `-f`
+        # let both through.
         deny "Blocked: force-push. If a branch really needs rewriting, ask the user first and use --force-with-lease on a feature branch, never on main."
       fi ;;
     reset)
       hook_has_flag "$seg" --hard &&
         deny "Blocked: destructive working-tree reset. Confirm with the user, then run it yourself if they agree." ;;
     clean)
-      # -fdx in any spelling or order, including the split forms.
-      if hook_has_flag "$seg" -fdx -fxd -dfx -dxf -xfd -xdf ||
-         { hook_has_flag "$seg" -f --force && hook_has_flag "$seg" -d -x; }; then
+      # -f with -d or -x, in any spelling, order or clustering (`-fd` was missed).
+      if { hook_has_flag "$seg" --force || hook_has_short_flag "$seg" f; } &&
+         hook_has_short_flag "$seg" dxX; then
         deny "Blocked: destructive working-tree clean. Confirm with the user, then run it yourself if they agree."
       fi ;;
-    commit) committing=1; commit_seg=$seg ;;
+    commit)
+      committing=1; commit_seg=$seg
+      # `-n` is --no-verify for commit (and only for commit: on push it is --dry-run).
+      hook_has_short_flag "$seg" n &&
+        deny "Blocked: -n is --no-verify, which skips the pre-commit hooks CI re-runs. Fix the findings instead." ;;
+    checkout|restore)
+      # A whole-tree pathspec discards every uncommitted edit, including another session's
+      # in a shared checkout. `restore --staged` alone only unstages, so it is fine.
+      if hook_has_arg "$seg" . :/ &&
+         ! { [ "$sub" = restore ] && hook_has_flag "$seg" --staged -S && ! hook_has_flag "$seg" --worktree -W; }; then
+        deny "Blocked: git $sub of the whole tree discards every uncommitted change, not only this session's. Name the files, or confirm with the user and let them run it."
+      fi ;;
+    stash)
+      # The stash stack is shared by the main checkout and every worktree.
+      hook_has_arg "$seg" clear &&
+        deny "Blocked: git stash clear drops every stash, including other sessions' and other worktrees' -- the stack is shared. Drop your own entry by SHA instead." ;;
   esac
 
   hook_has_flag "$seg" --no-verify &&

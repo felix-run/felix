@@ -72,6 +72,12 @@ not served and every token from that issuer would 401 while everything else stay
 | `felix_model_retry` | `provider`, `status` | An upstream call was retried. |
 | `felix_model_retry_skipped` | `provider`, `reason` | A retry was declined (`reason=quota`). |
 | `felix_model_timeout` | `provider` | `FELIX_MODEL_TIMEOUT_SECONDS` elapsed. |
+| `felix_webhook_delivery` | `endpoint`, `outcome` | One completion-webhook attempt for a finished durable run: `delivered` (a 2xx), `retry` (it failed and will be tried again), or `dead` (out of tries, or the endpoint is no longer registered for the run's tenant). **Watch `dead`**: that run's result reached nobody who was waiting on the webhook. |
+| `felix_decisions` | `decider`, `purpose`, `outcome` | One per call to a decision model (`spec.decider`). `outcome` is `ok`, `error` (the call failed) or `invalid` (it answered, was billed, and the answer did not fit the question). Its tokens are in `felix_tokens` under `model=<decider id>`. |
+| `felix_router_choice` | `manifest_id`, `method` | How a `router` picked its sub-agent: `decider`, `llm` (the classifier model), or `unmatched` — the classifier named no sub-agent and the request went to the first one. `decider_unsure` and `decider_error` mean the decider was asked and the classifier decided. **Watch `unmatched`**: it is a routing decision nobody made. |
+| `felix_escalation_check` | `method` | `confidence_escalation.decider` judged a reply (`decider`), or could not and fell back to the length-and-markers heuristic (`error`). Escalations themselves are `felix_model_switch`. |
+| `felix_skill_suggestion` | `outcome` | `spec.skill_suggestion` for one turn: `suggested` (a hint was attached), `none` (the request asked for no task, or no skill fit), or `error` (the decider failed; no hint). |
+| `felix_tool_selection` | `method` | How `tools_retrieval.decider` chose a shortlist: `decider`, or a fallback to the default ranking — `unsure` (the shortlist held less than `min_confidence` of the mass) or `error`. A rising `unsure` share means `top_k` is too small for the catalogue. |
 
 ### Tools
 
@@ -98,6 +104,7 @@ worth having at all — each one means a control did not do what the manifest im
 | `felix_secret_masking` | `manifest_id`, `tool` | A secret was masked out of tool output. |
 | `felix_approval_required` | `manifest_id`, `tool`, `rule` | A call paused for human approval. |
 | `felix_control_unavailable` | `control` | **Watch this.** A control could not run at all. |
+| `felix_approval_when_args_unknown` | `manifest_id` | An approval rule's `when_args` names an argument no tool it reaches takes, so the rule never fires. Once per process per rule; the log line names the rule, the tools and the arguments they do take. |
 | `felix_control_degraded` | `control`, `manifest_id`, `reason` | A control ran in a reduced mode (e.g. PII without Presidio). |
 | `felix_egress_blocked` | `reason` | An outbound request was refused by SSRF/egress policy. |
 | `felix_browser_egress_blocked` | `reason` | The same, from the browser tool. |
@@ -116,6 +123,7 @@ worth having at all — each one means a control did not do what the manifest im
 | `felix_worker_task` | `task`, `status` | One per periodic sweep. A `task` whose rate drops to zero has stopped firing — which otherwise looks identical to one that runs and finds nothing. |
 | `felix_worker_task_seconds` | `task` | Sweep duration. |
 | `felix_buffer_dropped` | `buffer` | **Watch this.** Audit or usage rows were dropped because a buffer hit `DEFAULT_MAX_PENDING`. Silent data loss otherwise. |
+| `felix_buffer_quarantined` | `buffer` | **Watch this.** Audit or usage rows Postgres refused as data (SQLSTATE 22/23) were set aside so the rest of the batch could land; the log line names each event id. Before this, one such row blocked every later one. |
 
 ### Alerting rules
 
@@ -123,7 +131,7 @@ worth having at all — each one means a control did not do what the manifest im
 observability overlay mounts it into Prometheus (`rule_files` in
 `deploy/docker/config/prometheus.yml`) and the Helm chart embeds it in a `PrometheusRule`
 when `prometheusRule.enabled` is set. It alerts on the rows above marked **watch this**
-(`felix_buffer_dropped`, `felix_model_unmetered`, `felix_model_unpriced`,
+(`felix_buffer_dropped`, `felix_buffer_quarantined`, `felix_model_unmetered`, `felix_model_unpriced`,
 `felix_control_unavailable`), on a worker task that stops firing or keeps failing
 (`felix_worker_task`), on an unscrapable API or worker, on repeated provider timeouts, and
 on Postgres connections nearing `max_connections` (from postgres-exporter).
@@ -228,8 +236,17 @@ Real, documented rather than hidden:
   marker every wrapper already stamps. `GET /audit?event_type=policy_deny` plus that key answers
   "every call blocked by approvals this week"; before it, the layer existed only in the tool
   message. A `tool_call` row never carries the key.
+- **Failed `tool_call` rows carry `payload.error_code`.** The call's `ToolErrorCode`
+  (`timeout`, `permission_denied`, `rate_limited`, …) on every row with `status: error`, and
+  absent otherwise. It is the class only: the message is the tool's text, which can quote file
+  contents or credentials, so it stays in the thread's transcript and out of the audit log.
 - **`GET /audit/metrics` reports `avg_latency_ms: 0`.** It reads `payload.latency_ms` /
   `payload.duration_ms`, which the `tool_call` audit payload does not write. Use
   `felix_tool_call_seconds` instead.
+- **`final_response` rows with `status=error` include runs ending on a denied tool.** A run that
+  ends because an approval timed out or a tool was denied records `final_response` with
+  `status=error`, distinguishing it from a successful completion. This applies when the last tool
+  batch had a denial — a denial followed by a closing message is an error row; a denial followed
+  by more tool calls is not.
 - **No sampling below the trace root.** `FELIX_OTEL_SAMPLE_RATIO` is head-based and
   parent-respecting: a sampled request keeps all of its child spans.

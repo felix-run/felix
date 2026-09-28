@@ -233,6 +233,21 @@ jobs:
           pattern: sbom-*
           merge-multiple: true
           path: sboms
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          # A release asset is built from the lockfile alone, never from a restored cache.
+          enable-cache: false
+      - name: OpenAPI document
+        run: |
+          set -euo pipefail
+          # docs.felix.run renders the spec attached to the version api.felix.run reports,
+          # since the API's own /docs needs a credential. Lean install, as the image ships.
+          uv python install 3.14
+          uv sync --locked --no-dev
+          uv run --no-sync python scripts/export-openapi.py openapi.json
+          test "$(jq -r .info.version openapi.json)" = "$VERSION" || {
+            echo "::error::openapi.json says $(jq -r .info.version openapi.json), the tag says $VERSION"; exit 1; }
       - name: Release notes from the changelog
         run: |
           set -euo pipefail
@@ -252,5 +267,7 @@ jobs:
         with:
           name: ${{ github.ref_name }}
           body_path: notes.md
-          files: sboms/*.spdx.json
+          files: |
+            sboms/*.spdx.json
+            openapi.json
           fail_on_unmatched_files: true

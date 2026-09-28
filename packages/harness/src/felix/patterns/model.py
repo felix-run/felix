@@ -84,16 +84,26 @@ def _parse_routes_cached(raw: str) -> dict[str, ModelRoute]:
     validation, the request allowlist), so a single agent compile re-ran `json.loads` and
     rebuilt the dict several times over.
     """
-    routes = {
-        k: ModelRoute(provider=v["provider"], model=v["model"]) for k, v in DEFAULT_MODEL_ROUTES.items()
-    }
+    return parse_route_overlay(raw, DEFAULT_MODEL_ROUTES, "FELIX_MODEL_ROUTES")
+
+
+def parse_route_overlay(
+    raw: str, defaults: dict[str, dict[str, str]], setting_name: str
+) -> dict[str, ModelRoute]:
+    """`defaults` with a JSON `{id: {provider, model}}` override laid over them.
+
+    Shared by `FELIX_MODEL_ROUTES` and `FELIX_DECISION_ROUTES`, so a change to how a route
+    table is read is made once. Malformed JSON degrades to the defaults with a warning; a
+    provider nobody registered is caught at boot by `Settings.validate_runtime`.
+    """
+    routes = {k: ModelRoute(provider=v["provider"], model=v["model"]) for k, v in defaults.items()}
     if raw.strip():
         try:
             override = json.loads(raw)
             for k, v in override.items():
                 routes[k] = ModelRoute(provider=v["provider"], model=v["model"])
         except Exception:
-            logger.warning("invalid FELIX_MODEL_ROUTES; using defaults")
+            logger.warning("invalid %s; using defaults", setting_name)
     return routes
 
 
@@ -619,7 +629,12 @@ def _spec_with_model(model_spec: Any, model_id: str) -> Any:
     return spec
 
 
-def build_model(settings: Settings | None, spec: Any) -> ModelClient:
+def build_model(settings: Settings | None, spec: Any, *, decider: Any = None) -> ModelClient:
+    """The client for `spec`, with its fallbacks and confidence escalation composed on.
+
+    `decider` is `spec.decider`, built; escalation consults it only when
+    `confidence_escalation.decider` asks, and every other caller passes nothing.
+    """
     settings = settings or get_settings()
     primary_id = getattr(spec, "id", None) or settings.default_model_id
     client = build_one_model(settings, spec, primary_id)
@@ -645,6 +660,7 @@ def build_model(settings: Settings | None, spec: Any) -> ModelClient:
             model_id=client.model_id,
             route=client.route,
             price_override=price_override,
+            decider=decider if getattr(esc, "decider", False) else None,
         )
     return client
 
@@ -674,6 +690,7 @@ __all__ = [
     "build_one_model",
     "parse_model_routes",
     "parse_provider_options",
+    "parse_route_overlay",
     "post_with_retry",
     "price_override_for",
     "provider_factory",

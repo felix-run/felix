@@ -109,6 +109,53 @@ WORDS
   return 1
 }
 
+# True when a short-option cluster in the segment carries one of the given letters.
+#
+# `hook_has_flag` compares whole words, so it sees `-f` and `-f -d` and misses `-fu`,
+# `-fd` and `-nm`: git parses a cluster letter by letter, and every destructive flag these
+# guards watch for has a one-letter spelling that bundles. Only single-dash words made of
+# letters count, so `--force-with-lease`, a negative number and a quoted message do not.
+hook_has_short_flag() {
+  local seg=$1 letters=$2 word
+  while IFS= read -r word; do
+    case "$word" in
+      --*|-) continue ;;
+      -*[!A-Za-z]*) continue ;;
+      -*) case "${word#-}" in *["$letters"]*) return 0 ;; esac ;;
+    esac
+  done <<WORDS
+$(hook_words "$seg")
+WORDS
+  return 1
+}
+
+# True when a word in the segment is exactly one of the given arguments -- `.` as a
+# pathspec, `clear` as a stash action.
+hook_has_arg() {
+  local seg=$1 word arg
+  shift
+  while IFS= read -r word; do
+    for arg in "$@"; do
+      [ "$word" = "$arg" ] && return 0
+    done
+  done <<WORDS
+$(hook_words "$seg")
+WORDS
+  return 1
+}
+
+# True when a push refspec starts with `+`, which force-updates that ref as surely as
+# `--force` does, with no flag anywhere in sight.
+hook_has_plus_refspec() {
+  local word
+  while IFS= read -r word; do
+    case "$word" in +?*) return 0 ;; esac
+  done <<WORDS
+$(hook_words "$1")
+WORDS
+  return 1
+}
+
 # The subcommand of a segment, given the verb `hook_segment_verb` already resolved.
 # `git -C /path -c k=v push` is a push; `git commit -m "... push ..."` is not; and
 # `env git push` is one too, which is why the scan starts at the verb rather than at
@@ -134,7 +181,16 @@ hook_segment_verb() {
                        $i == "env" || $i == "command" || $i == "exec" ||
                        $i == "sudo" || $i == "time" || $i == "nohup")) i++
     # One layer of runner: `uv run X`, `poetry run X`, `npx X`, `python -m X`.
-    if (($i == "uv" || $i == "poetry" || $i == "pdm" || $i == "hatch") && $(i+1) == "run") i += 2
+    if (($i == "uv" || $i == "poetry" || $i == "pdm" || $i == "hatch") && $(i+1) == "run") {
+      i += 2
+      # The runner'"'"'s own options come before the command. Landing on the first of them
+      # read `uv run --with x pytest` as the verb `--with`, so the pytest guard let it
+      # through. Options that take a value skip it too.
+      while (i <= NF && $i ~ /^-/) {
+        if ($i ~ /^--(with|with-requirements|with-editable|extra|group|only-group|no-group|package|project|directory|python|env-file|index|index-url|default-index|isolated-with)$/ || $i ~ /^-[pP]$/) i += 2
+        else i++
+      }
+    }
     else if ($i == "npx" || $i == "pnpm" || $i == "bunx") i += 1
     else if ($i ~ /^python[0-9.]*$/ && $(i+1) == "-m") i += 2
     if (i <= NF) { sub(/^.*\//, "", $i); print $i }

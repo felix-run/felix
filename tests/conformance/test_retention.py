@@ -15,7 +15,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from felix import attachments
+from felix import artifacts, attachments
 from felix.a2a import tasks as a2a_store
 from felix.approvals import store as approvals_store
 from felix.audit import store as audit_store
@@ -40,7 +40,15 @@ class Clock:
     ms: int
 
     def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        for module in (retention, fiber_store, a2a_store, memory_store, approvals_store, attachments):
+        for module in (
+            retention,
+            fiber_store,
+            a2a_store,
+            memory_store,
+            approvals_store,
+            attachments,
+            artifacts,
+        ):
             monkeypatch.setattr(module, "now_ms", lambda: self.ms)
         # `persist_leaf` stamps `thread_state.updated_at` from the wall clock.
         monkeypatch.setattr(thread_state, "time", SimpleNamespace(time=lambda: self.ms / 1000))
@@ -57,6 +65,9 @@ def _retention(settings: Any, **days: int) -> Any:
             # the approval rule is only exercised where it is the subject.
             "approval_retention_days": days.get("approval", 0),
             "attachment_retention_days": days.get("attachment", 0),
+            # Defaults to 30 in `Settings`; pinned to 0 here for the same reason as the two
+            # above, so only the test about it sees it sweep.
+            "artifact_retention_days": days.get("artifact", 0),
         }
     )
 
@@ -203,6 +214,8 @@ async def test_sweep_removes_only_rows_older_than_each_ttl(
         # ledger row, so it is swept by its own step. `FELIX_ATTACHMENT_RETENTION_DAYS`
         # defaults to 0 and keeps everything.
         "attachments": 0,
+        # Its own step for the same reason as uploads: objects plus a ledger row.
+        "artifacts": 0,
     }
     assert await _audit_ids(settings) == {new_audit}, f"{old_audit=} should be gone"
     assert await _usage_ids(settings) == {new_usage}, f"{old_usage=} should be gone"
@@ -634,3 +647,108 @@ async def test_an_expired_upload_is_collected_bytes_and_row_together(
 
     await delete_attachment(store, tenant_id=TENANT, file_id=new_upload.file_id, settings=settings)
     assert await tenant_attachment_bytes(settings, TENANT) == 0
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_an_expired_spill_is_collected_objects_and_row_together(
+    retention_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A spill is two objects and a ledger row; the sweep must take all three, and only old ones.
+
+    Driven through the real spill rather than by writing keys by hand, so the ledger row the
+    sweep reads is the one production writes. The Postgres arm covers what `memory://`
+    cannot: the new table's RLS policy, the cross-tenant read under `rls_bypass`, and the
+    `merge` upsert.
+    """
+    from felix.artifacts import apply_artifact_spill, expired_artifacts
+    from felix.manifests.schema import ArtifactsSpec
+    from felix.storage import get_object_store
+    from felix.tools.types import ToolInvocationCtx, define_tool
+
+    settings = _retention(retention_settings, artifact=1)
+    clock = Clock(ms=10 * DAY)
+    clock.install(monkeypatch)
+    store = get_object_store(settings)
+
+    async def handler(args: dict, ctx: object = None) -> str:
+        return "x" * 500
+
+    def spiller(tenant: str) -> Any:
+        (tool,) = apply_artifact_spill(
+            [define_tool(name="dump", description="d", handler=handler)],
+            ArtifactsSpec(enabled=True, threshold_chars=100),
+            object_store=store,
+            tenant_id=tenant,
+            manifest_id="m",
+            settings=settings,
+        )
+        return tool
+
+    seen: set[str] = set()
+
+    async def spill(tenant: str) -> str:
+        await spiller(tenant).executor.execute({}, ToolInvocationCtx(thread_id="t"))
+        (row,) = [
+            r for r in await expired_artifacts(settings, older_than_ms=clock.ms + 1) if r[2] not in seen
+        ]
+        assert row[0] == tenant
+        seen.add(row[2])
+        return row[2]
+
+    # Two tenants, because the sweep reads across them under `rls_bypass` and then deletes
+    # under each row's own tenant. A delete issued under the wrong tenant GUC is not an
+    # error on Postgres -- RLS just matches nothing -- so only a second tenant can show it.
+    other = f"{TENANT}-other"
+    old = {TENANT: await spill(TENANT), other: await spill(other)}
+    clock.ms += 2 * DAY
+    new = {TENANT: await spill(TENANT), other: await spill(other)}
+
+    counts = await retention.run_retention_sweep(settings)
+
+    assert counts["artifacts"] == 2
+    for tenant in (TENANT, other):
+        for suffix in (".txt", ".owner"):
+            gone = await store.get(f"artifacts/{tenant}/m/{old[tenant]}{suffix}")
+            kept = await store.get(f"artifacts/{tenant}/m/{new[tenant]}{suffix}")
+            assert gone is None, f"{tenant}: old {suffix} survived"
+            assert kept is not None, f"{tenant}: new {suffix} was swept"
+    remaining = {r[2] for r in await expired_artifacts(settings, older_than_ms=clock.ms + 1)}
+    assert remaining == set(new.values()), "an old row outlived its objects, or a new one went"
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_zero_artifact_days_keeps_every_spill(
+    retention_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`0` keeps forever, checked with a real spill rather than an empty ledger."""
+    from felix.artifacts import apply_artifact_spill, expired_artifacts
+    from felix.manifests.schema import ArtifactsSpec
+    from felix.storage import get_object_store
+    from felix.tools.types import ToolInvocationCtx, define_tool
+
+    settings = _retention(retention_settings, artifact=0)
+    clock = Clock(ms=10 * DAY)
+    clock.install(monkeypatch)
+    store = get_object_store(settings)
+
+    async def handler(args: dict, ctx: object = None) -> str:
+        return "x" * 500
+
+    (tool,) = apply_artifact_spill(
+        [define_tool(name="dump", description="d", handler=handler)],
+        ArtifactsSpec(enabled=True, threshold_chars=100),
+        object_store=store,
+        tenant_id=TENANT,
+        manifest_id="m",
+        settings=settings,
+    )
+    await tool.executor.execute({}, ToolInvocationCtx(thread_id="t"))
+    ((_, _, artifact_id),) = await expired_artifacts(settings, older_than_ms=clock.ms + 1)
+    clock.ms += 400 * DAY
+
+    counts = await retention.run_retention_sweep(settings)
+
+    assert counts["artifacts"] == 0
+    assert await store.get(f"artifacts/{TENANT}/m/{artifact_id}.txt") is not None

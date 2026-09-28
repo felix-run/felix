@@ -123,21 +123,15 @@ async def test_a_follow_up_is_delivered_to_the_model(boot: Any) -> None:
         assert any("prefer metric units" in text for text in app.spy.texts_seen()), app.spy.texts_seen()
 
 
-async def test_a_steer_queued_while_idle_is_dropped_without_reaching_anyone(boot: Any) -> None:
-    """Pins a wart rather than a guarantee, so that changing it is a deliberate act.
+async def test_a_steer_queued_while_idle_reaches_the_next_run(boot: Any) -> None:
+    """A steer sent to an idle thread is held for the next run and delivered at its start.
 
-    `POST /chat/steer` with the default `kind: steer` on an idle thread answers 200 with
-    `{"queued": "steer"}`, and the snapshot then reports one queued item. The next turn clears
-    the count — and the text reaches neither the model nor the transcript. From the client's
-    side that is indistinguishable from delivery: it was accepted, it was counted, and then it
-    was gone.
-
-    A steer is meant to interrupt tools in a run that is already going, so having nothing to
-    interrupt is arguably the caller's mistake — but nothing tells them, and `follow_up` is the
-    kind that would have worked. If this is ever made to error, redirect, or hold the message
-    until a run starts, this test should fail and be rewritten.
+    It used to be accepted with 200, counted on the snapshot, and then dropped: the loop drains
+    steers only between tool rounds, so a turn that called no tool never read one, and the run's
+    queue was released with it still inside. From the client's side that was indistinguishable
+    from delivery. Asserted on what reached the model and the transcript, not on the reply.
     """
-    thread = "e2e-steer-dropped"
+    thread = "e2e-steer-held"
     async with boot([_answer(), _answer("understood")]) as app:
         await _seed(app, thread)
         queued = await app.client.post(
@@ -148,17 +142,39 @@ async def test_a_steer_queued_while_idle_is_dropped_without_reaching_anyone(boot
         assert (await _snapshot(app, thread))["queuedSteerCount"] == 1
 
         await _seed(app, thread, "carry on")
+        prompt = app.spy.prompts[-1]
+        log = (await app.client.get(f"/chat/sessions/{thread}/export")).text
 
-        assert (await _snapshot(app, thread))["queuedSteerCount"] == 0
-        # Prove the instrument is live before asserting an absence through it: a
-        # `texts_seen()` that silently stopped recording would satisfy the next line.
-        assert any("carry on" in t for t in app.spy.texts_seen()), app.spy.texts_seen()
-        assert not any("prefer metric units" in t for t in app.spy.texts_seen()), app.spy.texts_seen()
-        transcript = (await _snapshot(app, thread))["transcript"]
-        assert not any("prefer metric units" in str(e.get("content") or "") for e in transcript)
+    users = [str(m.content) for m in prompt if m.role == "user"]
+    assert users[-2:] == ["carry on", "prefer metric units"], "after the run's own turn"
+    assert log.index("carry on") < log.index("prefer metric units"), "and in the transcript, in order"
 
 
-# --- abort and continue --------------------------------------------------------------------
+async def test_a_held_steer_does_not_cancel_the_next_runs_tools(boot: Any) -> None:
+    """A steer also raises "cancel the remaining tools", which is meant for a round in flight.
+    Held since the thread was idle it has nothing to cancel, and left set it would have
+    cancelled the next run's first tool round instead."""
+    from felix_ai.types import ToolCall
+
+    thread = "e2e-steer-no-cancel"
+    # Two calls in one round: the flag cancels the calls *after* the first, so one call alone
+    # could never show it.
+    calls = [
+        ToolCall(id="call-1", name="calculator", args={"expression": "2+2"}),
+        ToolCall(id="call-2", name="calculator", args={"expression": "3+3"}),
+    ]
+    script = [
+        _answer(),
+        ScriptedTurn(content="", tool_calls=calls, stop_reason="tool_use"),
+        _answer("It is 4."),
+    ]
+    async with boot(script) as app:
+        await _seed(app, thread)
+        await app.client.post("/chat/steer", json={"thread_id": thread, "text": "be brief", "kind": "steer"})
+        await _seed(app, thread, "what is 2+2?")
+        after_tool = app.spy.prompts[-1]
+
+    assert [str(m.content) for m in after_tool if m.role == "tool"] == ["4", "6"], "both tools ran"
 
 
 async def test_abort_marks_the_thread_aborted(boot: Any) -> None:
@@ -298,12 +314,49 @@ async def test_answering_a_pending_ui_prompt_resolves_the_waiter(boot: Any) -> N
                 break
         assert request_id, "the prompt was never announced on the side channel"
 
-        resolved = await app.client.post("/chat/ui", json={"request_id": request_id, "value": "yes"})
+        resolved = await app.client.post(
+            "/chat/ui", json={"thread_id": "e2e-ui", "request_id": request_id, "value": "yes"}
+        )
         assert resolved.status_code == 200, resolved.text
 
         answer = await asyncio.wait_for(pending, timeout=5)
         assert answer.cancelled is False, answer
         assert answer.value == "yes", answer
+
+
+async def test_a_ui_answer_on_another_thread_does_not_release_the_prompt(boot: Any) -> None:
+    """The prompt's waiter is scoped to its thread — and a thread a caller can name is scoped
+    to its tenant — so knowing the request id is no longer enough to answer it."""
+    import asyncio
+
+    from felix.side_events import drain
+    from felix.ui import request_confirm
+
+    thread = "default:e2e-ui-owner"
+    async with boot([]) as app:
+        pending = asyncio.create_task(request_confirm(thread, "proceed?", timeout=1))
+        request_id = None
+        for _ in range(50):
+            await asyncio.sleep(0.01)
+            for event in await drain(thread):
+                if event.get("event") == "ui_request":
+                    request_id = event["data"]["request_id"]
+            if request_id:
+                break
+        assert request_id
+
+        resp = await app.client.post(
+            "/chat/ui", json={"thread_id": "e2e-ui-other", "request_id": request_id, "value": "yes"}
+        )
+        assert resp.status_code == 200, resp.text
+        answer = await asyncio.wait_for(pending, timeout=5)
+        assert answer.cancelled is True and answer.note == "timeout", answer
+
+
+async def test_a_ui_answer_without_a_thread_is_refused(boot: Any) -> None:
+    async with boot([]) as app:
+        resp = await app.client.post("/chat/ui", json={"request_id": "r1", "value": "yes"})
+        assert resp.status_code == 422, resp.text
 
 
 async def test_answering_a_ui_prompt_nobody_asked_reports_ok_anyway(boot: Any) -> None:
@@ -314,9 +367,15 @@ async def test_answering_a_ui_prompt_nobody_asked_reports_ok_anyway(boot: Any) -
     that anything was listening. A caller cannot use it to tell a live prompt from a stale one.
     """
     async with boot([]) as app:
-        resp = await app.client.post("/chat/ui", json={"request_id": "no-such-prompt", "value": "yes"})
+        resp = await app.client.post(
+            "/chat/ui", json={"thread_id": "e2e-ui", "request_id": "no-such-prompt", "value": "yes"}
+        )
         assert resp.status_code == 200, resp.text
-        assert resp.json() == {"ok": True, "request_id": "no-such-prompt"}, resp.json()
+        assert resp.json() == {
+            "ok": True,
+            "thread_id": "default:e2e-ui",
+            "request_id": "no-such-prompt",
+        }, resp.json()
 
 
 # --- compaction ----------------------------------------------------------------------------

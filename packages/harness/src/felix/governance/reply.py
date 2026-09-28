@@ -12,6 +12,13 @@ reply is released screened — a control that lets every token through and then 
 has controlled nothing — while structural frames (tool calls, approvals, run phases)
 stream as they happen. Every assistant message in the output is screened, not only the
 final one: a model that emits a preamble before its tool calls has already said it.
+
+The session log is screened too, at the write: `ScreenedSessionStore` is the store the
+compile hands the pattern, so an assistant message is redacted — and a reply is judged —
+before it is appended, not after. The pattern writes the log as the run goes, before this
+wrapper sees the output, so screening only what leaves the run left the raw reply in every
+replay, export and live tail of the thread. Both sides call one `ReplyScreen`, which
+remembers each verdict: the log and the client get the same text, and a judge runs once.
 """
 
 from __future__ import annotations
@@ -23,6 +30,7 @@ from typing import Any
 
 from felix.manifests.schema import Guardrails, JudgeRule
 from felix.patterns.types import Agent, ChatMessage, Event, InvokeInput, InvokeOutput, copy_agent_surface
+from felix.session.types import AppendableEvent, Session, SessionStore
 
 logger = logging.getLogger("felix.governance.reply")
 
@@ -101,48 +109,72 @@ def _output_from_terminal(item: Any) -> InvokeOutput | None:
     return None
 
 
-class ReplyControlsAgent:
-    """An `Agent` whose reply has been through the reply-path controls."""
+class ReplyScreen:
+    """The reply controls for one compiled agent, each verdict remembered by its text.
 
-    def __init__(self, inner: Agent, guardrails: Guardrails, manifest_id: str) -> None:
-        self._inner = inner
-        self._manifest_id = manifest_id
-        self._pii = reply_pii_enabled(guardrails)
-        self._block_pii = bool(guardrails.block_on_match)
-        self._judges = final_response_judges(guardrails)
-        copy_agent_surface(self, inner, manifest_id=manifest_id)
+    Shared by `ReplyControlsAgent` and `ScreenedSessionStore`, so a given text is redacted
+    and judged once however many places it is written to — one audit event, one judge call,
+    and the same answer in the log as on the wire. One per compile, so one per request.
+    """
 
-    # --- screening ---------------------------------------------------------------------
+    def __init__(
+        self,
+        guardrails: Guardrails,
+        manifest_id: str,
+        *,
+        decider: Any = None,
+        parent: ReplyScreen | None = None,
+    ) -> None:
+        self.manifest_id = manifest_id
+        # The screen of the compile this one is a sub-agent of. Its session writes already
+        # pass through the parent's store; text leaving by any other door — a quoted draft,
+        # a captured memory — owes the parent's controls as well as this one's.
+        self.parent = parent
+        self.decider = decider
+        self.pii = reply_pii_enabled(guardrails)
+        self.block_pii = bool(guardrails.block_on_match)
+        self.judges = final_response_judges(guardrails)
+        self._redacted: dict[str, str] = {}
+        self._denials: dict[str, str | None] = {}
 
     def _audit(self, event_type: str, status: str, payload: dict[str, Any]) -> None:
         from felix.audit.emit import emit_agent_audit
 
-        emit_agent_audit(event_type, status=status, payload=payload, manifest_id=self._manifest_id)
+        emit_agent_audit(event_type, status=status, payload=payload, manifest_id=self.manifest_id)
 
-    def _screen_pii(self, text: str) -> str:
+    def redact(self, text: str) -> str:
         """The text with PII redacted, or the block notice when the manifest blocks."""
-        if not self._pii or not text:
+        if not self.pii or not text:
             return text
+        if text not in self._redacted:
+            self._redacted[text] = self._redact(text)
+        return self._redacted[text]
+
+    def _redact(self, text: str) -> str:
         from felix.governance.pii import redact_pii
 
         result = redact_pii(text)
         if not result.matched:
             return text
-        self._audit(
-            "guardrails_reply", "blocked" if self._block_pii else "redacted", {"engine": result.engine}
-        )
-        return PII_BLOCKED_REPLY if self._block_pii else result.text
+        status = "blocked" if self.block_pii else "redacted"
+        self._audit("guardrails_reply", status, {"engine": result.engine})
+        return PII_BLOCKED_REPLY if self.block_pii else result.text
+
+    async def judge(self, text: str) -> str | None:
+        """A denial notice when a final-response judge scores the reply under threshold."""
+        if not self.judges:
+            return None
+        if text not in self._denials:
+            self._denials[text] = await self._judge(text)
+        return self._denials[text]
 
     async def _judge(self, text: str) -> str | None:
-        """A denial notice when a final-response judge scores the reply under threshold."""
-        if not self._judges:
-            return None
         from felix.config import get_settings
         from felix.governance.judges import judge_score
 
         settings = get_settings()
-        for judge in self._judges:
-            score = await judge_score(text, judge, settings=settings)
+        for judge in self.judges:
+            score = await judge_score(text, judge, settings=settings, decider=self.decider)
             threshold = float(judge.threshold or 0.7)
             if score < threshold:
                 self._audit(
@@ -152,6 +184,107 @@ class ReplyControlsAgent:
                 )
                 return f"{JUDGE_DENIED_PREFIX} {judge.name}: score={score:.2f} < {threshold}"
         return None
+
+    def redact_all(self, text: str) -> str:
+        """`text` redacted by this screen and every enclosing one."""
+        text = self.redact(text)
+        return self.parent.redact_all(text) if self.parent is not None else text
+
+    async def settle(self, text: str) -> str | None:
+        """A reply as this screen and every enclosing one would ship it, or `None` when a
+        judge denied it — a denial is not the reply, so nothing downstream should keep it."""
+        text = self.redact(text)
+        if await self.judge(text) is not None:
+            return None
+        return await self.parent.settle(text) if self.parent is not None else text
+
+    async def screen_event(self, event: AppendableEvent) -> AppendableEvent:
+        """A session event as the log should keep it.
+
+        Every assistant message is redacted. One without tool calls is a reply — the loop
+        writes the final answer that way — and is judged as well, so a denied reply is
+        stored as its denial. A preamble written before tool calls is redacted but not
+        judged, the same as on the wire; on a denial the wire withholds it and the log
+        keeps it, since it was written before the verdict existed.
+        """
+        if event.role != "assistant" or not event.content:
+            return event
+        content = self.redact(event.content)
+        if not event.tool_calls:
+            denial = await self.judge(content)
+            if denial is not None:
+                content = denial
+        if content == event.content:
+            return event
+        return replace(event, content=content)
+
+
+class _ScreenedSession:
+    """A `Session` whose writes pass through a `ReplyScreen`; reads are the inner session's."""
+
+    def __init__(self, inner: Session, screen: ReplyScreen) -> None:
+        self._inner = inner
+        self._screen = screen
+
+    @property
+    def id(self) -> str:
+        return self._inner.id
+
+    async def append(self, event: AppendableEvent) -> int | None:
+        return await self._inner.append(await self._screen.screen_event(event))
+
+    async def append_batch(self, events: list[AppendableEvent]) -> list[int]:
+        return await self._inner.append_batch([await self._screen.screen_event(e) for e in events])
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+class ScreenedSessionStore:
+    """The session store the compile hands a pattern when reply controls are on."""
+
+    def __init__(self, inner: SessionStore, screen: ReplyScreen) -> None:
+        self._inner = inner
+        self._screen = screen
+
+    def open(self, thread_id: str) -> Session:
+        return _ScreenedSession(self._inner.open(thread_id), self._screen)  # type: ignore[return-value]
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+def screen_session_store(store: Any, screen: ReplyScreen | None) -> Any:
+    """`store` with its writes screened, or `store` itself when there is nothing to screen."""
+    if store is None or screen is None:
+        return store
+    return ScreenedSessionStore(store, screen)
+
+
+class ReplyControlsAgent:
+    """An `Agent` whose reply has been through the reply-path controls."""
+
+    def __init__(
+        self,
+        inner: Agent,
+        guardrails: Guardrails,
+        manifest_id: str,
+        *,
+        decider: Any = None,
+        screen: ReplyScreen | None = None,
+    ) -> None:
+        self._inner = inner
+        self._screen = screen or ReplyScreen(guardrails, manifest_id, decider=decider)
+        self._block_pii = self._screen.block_pii
+        copy_agent_surface(self, inner, manifest_id=manifest_id)
+
+    # --- screening ---------------------------------------------------------------------
+
+    def _screen_pii(self, text: str) -> str:
+        return self._screen.redact(text)
+
+    async def _judge(self, text: str) -> str | None:
+        return await self._screen.judge(text)
 
     async def screen(self, out: InvokeOutput) -> tuple[InvokeOutput, bool]:
         """(screened output, whether anything changed).
@@ -275,8 +408,11 @@ __all__ = [
     "PII_BLOCKED_REPLY",
     "REPLY_TEXT_EVENTS",
     "ReplyControlsAgent",
+    "ReplyScreen",
+    "ScreenedSessionStore",
     "carries_reply_text",
     "final_response_judges",
     "reply_controls_enabled",
     "reply_pii_enabled",
+    "screen_session_store",
 ]

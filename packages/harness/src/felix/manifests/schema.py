@@ -13,13 +13,22 @@ API_VERSION = "felix/v1"
 MANIFEST_KIND = "Agent"
 MANIFEST_NAME_RE = re.compile(r"^[a-zA-Z0-9._-]+$")
 
+# The ceiling a manifest may *declare*. Every `Limits` field is bounded by its entry here,
+# so an author cannot write themselves a larger budget than the operator allows.
+#
+# This is not the value an unset field gets: see DEFAULT_LIMITS below. The two were one
+# constant, which made the cap unraisable — `max_input_tokens` was 1,000,000 as both the
+# default and the maximum, and a react run carrying a 38 KiB prompt reaches that in about
+# 26 turns, so no manifest could declare a budget for a longer agentic run. The number a
+# careful operator picks for "if you say nothing" is not the number they would refuse
+# outright, and conflating them meant raising one raised the other.
 ABSOLUTE_LIMITS = {
     "max_tool_calls": 500,
     "max_wall_clock_seconds": 3600,
     "max_peer_hops": 5,
     "recursion_limit": 50,
     "max_turns": 100,
-    "max_input_tokens": 1_000_000,
+    "max_input_tokens": 20_000_000,
     "max_output_tokens": 100_000,
     "max_cost_usd": 1_000.0,
     # A durable run's resume token, and therefore the lifetime of the caller scopes the fiber
@@ -27,6 +36,12 @@ ABSOLUTE_LIMITS = {
     # authority dies with the run" a promise the manifest author could set to ten years.
     "resume_token_ttl_seconds": 86_400,
 }
+
+# What an unset field is worth. `effective_limits` fills from here, so a manifest that
+# declares nothing keeps the conservative posture it has always had; only a manifest that
+# asks for more, and stays under ABSOLUTE_LIMITS, gets more. Every key here must exist in
+# ABSOLUTE_LIMITS and must not exceed it — `tests/unit/test_invariants.py` enforces both.
+DEFAULT_LIMITS = {**ABSOLUTE_LIMITS, "max_input_tokens": 1_000_000}
 
 
 # Without a bound a tenant-supplied manifest can pin a connection open for as long as it
@@ -92,6 +107,10 @@ class ConfidenceEscalation(_Strict):
         ]
     )
     min_response_chars: int = Field(default=40, ge=0)
+    #: Ask `spec.decider` whether the reply answers the request, instead of the length and
+    #: marker heuristic above — which stays as the fallback when the decider errors.
+    #: Escalates when that probability is below `spec.decider.min_confidence`.
+    decider: bool = False
 
 
 class ModelSpec(_Strict):
@@ -563,6 +582,9 @@ class ReflectSpec(_Strict):
     threshold: float = Field(default=0.7, ge=0, le=1)
     max_iterations: int = Field(default=2, ge=1, le=5)
     criteria: str = ""
+    #: Verify with `spec.decider` instead of asking `verifier_model` for "a number only";
+    #: the model verifier and the heuristic remain the fallback.
+    decider: bool = False
 
 
 class AnomalySpec(_Strict):
@@ -584,6 +606,49 @@ class ToolsRetrievalSpec(_Strict):
     enabled: bool = False
     top_k: int = Field(default=20, ge=1)
     model: str = "bge-base-en-v1.5"
+    #: Rank tools with `spec.decider` — one typed choice over the catalogue per user turn —
+    #: instead of embeddings. Falls back to `model` when the decider errors or when the
+    #: shortlist holds less than `spec.decider.min_confidence` of its probability mass.
+    decider: bool = False
+
+
+# Closed on purpose: these consumers reach the model through the react loop, and only
+# `react` and `deep` (whose inner agent is react) run it. Anywhere else a flag would
+# validate and then do nothing.
+_REACT_LOOP_PATTERNS = frozenset({"react", "deep"})
+
+
+class SkillSuggestionSpec(_Strict):
+    """Suggest the skill a request needs, using `spec.decider`, as a one-line hint.
+
+    Ranks the catalog, reranks a shortlist, and hints only when the request asks for a task
+    (`min_gate`) and the best skill fits it (`min_fit`). The model still decides whether to
+    `activate_skill`. Worth it with a large catalog; a handful of skills the model picks
+    between well on its own.
+    """
+
+    enabled: bool = False
+    #: Skills carried from the ranking into the rerank. Catalogs no larger skip the ranking.
+    shortlist: int = Field(default=3, ge=1, le=10)
+    min_gate: float = Field(default=0.3, ge=0.0, le=1.0)
+    min_fit: float = Field(default=0.3, ge=0.0, le=1.0)
+
+
+class DeciderSpec(_Strict):
+    """A decision model — one that answers typed questions (choose one, score, true/false)
+    with calibrated probabilities instead of generating text. Off unless `id` is set.
+
+    Consumers opt in one at a time — `tools_retrieval.decider`,
+    `model.confidence_escalation.decider` — and each keeps its existing behaviour as the
+    fallback, so turning a decider on never removes a path. A `router` is the exception to
+    the explicit flag: its one decision is which sub-agent answers, so naming a decider on a
+    router manifest is the opt-in; the model classifier remains its fallback.
+    """
+
+    #: A `FELIX_DECISION_ROUTES` id: `jev` (TypeSafe), `jev-cf` (Workers AI), or your own.
+    id: str = ""
+    #: Below this, a consumer treats the decision as unsure and takes its fallback path.
+    min_confidence: float = Field(default=0.5, ge=0.0, le=1.0)
 
 
 # Five fields here validated and were read by nothing until #261 — `planner_model`,
@@ -628,6 +693,27 @@ class ExecutionSpec(_Strict):
     # "parallel" runs local tools concurrently (falls back to sequential for
     # client/approval tools or when any tool forces sequential).
     tools: Literal["parallel", "sequential"] = "sequential"
+    #: Operator-registered endpoint ids (`FELIX_WEBHOOK_ENDPOINTS`) announced when a durable run
+    #: finishes — never URLs. Unknown ids are refused when the run is enqueued.
+    webhooks: list[str] = Field(default_factory=list, max_length=8)
+
+    @field_validator("webhooks")
+    @classmethod
+    def _webhook_ids(cls, v: list[str]) -> list[str]:
+        bad = [name for name in v if not _WEBHOOK_ID_RE.match(name)]
+        if bad:
+            raise ValueError(f"webhook ids must match {_WEBHOOK_ID_RE.pattern}: {bad}")
+        return v
+
+    @model_validator(mode="after")
+    def _webhooks_need_durable(self) -> ExecutionSpec:
+        # A transient run answers its own request; there is no later moment to announce.
+        if self.webhooks and self.mode != "durable":
+            raise ValueError("execution.webhooks needs execution.mode: durable")
+        return self
+
+
+_WEBHOOK_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 
 class Policy(_Strict):
@@ -688,6 +774,9 @@ class JudgeRule(_Strict):
     model: str = ""
     target_tools: list[str] = Field(default_factory=list)
     final_response: bool = False
+    #: Score with `spec.decider` — the probability the text meets `criteria` — ahead of
+    #: `model` and the heuristic, which remain the fallback when the decider errors.
+    decider: bool = False
 
 
 class Guardrails(_Strict):
@@ -720,9 +809,10 @@ class ApprovalRule(_Strict):
     # null, and non-empty if `str`, `list`, `dict`, `tuple` or `set`. `0` and `False`
     # count as supplied; see `builder.py:_arg_present` for why that is load-bearing.
     #
-    # Not validated against the gated tool's schema, so a misspelled name yields a rule
-    # that never fires and still passes `validate-manifest` and the attestation checks.
-    # Empty means the rule gates every call, which is the original behaviour.
+    # Checked against the gated tools' schemas (`manifests/approval_args.py`): refused at write
+    # for tools whose schemas ship with the harness, warned at compile for the rest, because a
+    # misspelled name is a rule that never fires. Not here — a parse-time check would reject
+    # stored manifests on read. Empty means the rule gates every call.
     #
     # Exists because a tool can be harmless in one shape and a privileged operation in
     # another: `remember` is ordinary capture until it carries a `topic_key`, at which
@@ -754,6 +844,22 @@ class ContentScreening(_Strict):
     model: str = ""
     tools: list[str] = Field(default_factory=list)
     on_flag: Literal["quarantine", "block"] = "quarantine"
+    #: Also ask `spec.decider` — a battery of injection, jailbreak and exfiltration checks in
+    #: one call. Additive: it runs beside the markers and `model`, either one flagging flags,
+    #: and either one unable to run leaves the text unscreened rather than cleared.
+    decider: bool = False
+    #: Which screened tools get the *paid* scoring — `model` and `decider` — by glob. Empty, the
+    #: default, is every screened tool. The marker scan runs on every screened tool whatever
+    #: this says: it is a cost lever, never a way to take an untrusted tool out of screening.
+    #: A manifest binding twenty MCP tools pays twenty screener calls a turn without it, since
+    #: `tools` became additive and stopped being the way to name fewer.
+    model_tools: list[str] = Field(default_factory=list, max_length=MAX_REFS)
+
+    @model_validator(mode="after")
+    def _model_tools_need_a_scorer(self) -> ContentScreening:
+        if self.model_tools and not (self.model.strip() or self.decider):
+            raise ValueError("content_screening.model_tools needs content_screening.model or decider: true")
+        return self
 
 
 class GovernanceSpec(_Strict):
@@ -814,6 +920,8 @@ class Spec(_Strict):
     observability: ObservabilitySpec = Field(default_factory=ObservabilitySpec)
     execution: ExecutionSpec = Field(default_factory=ExecutionSpec)
     tools_retrieval: ToolsRetrievalSpec = Field(default_factory=ToolsRetrievalSpec)
+    decider: DeciderSpec = Field(default_factory=DeciderSpec)
+    skill_suggestion: SkillSuggestionSpec = Field(default_factory=SkillSuggestionSpec)
     artifacts: ArtifactsSpec = Field(default_factory=ArtifactsSpec)
     reflect: ReflectSpec = Field(default_factory=ReflectSpec)
     plan_execute: PlanExecuteSpec = Field(default_factory=PlanExecuteSpec)
@@ -856,6 +964,45 @@ class Spec(_Strict):
     extensions: dict[str, Any] = Field(default_factory=dict)
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    @model_validator(mode="after")
+    def _decider_consumers_need_a_decider(self) -> Spec:
+        # Checked here rather than at compile: a consumer switched on with nothing to ask
+        # is a control that looks present and does nothing.
+        if self.tools_retrieval.decider and not self.decider.id:
+            raise ValueError("tools_retrieval.decider needs spec.decider.id")
+        if self.tools_retrieval.decider and not self.tools_retrieval.enabled:
+            raise ValueError("tools_retrieval.decider needs tools_retrieval.enabled: true")
+        if not self.decider.id:
+            wanting = [f"guardrails.judges[{j.name}].decider" for j in self.guardrails.judges if j.decider]
+            if self.reflect.decider:
+                wanting.append("reflect.decider")
+            if wanting:
+                raise ValueError(f"{', '.join(wanting)} needs spec.decider.id")
+        escalation = self.model.confidence_escalation
+        if escalation.decider and not self.decider.id:
+            raise ValueError("model.confidence_escalation.decider needs spec.decider.id")
+        if escalation.decider and not (escalation.enabled and escalation.escalate_to):
+            raise ValueError("model.confidence_escalation.decider needs enabled: true and escalate_to")
+        # Closed on purpose: the decider reaches escalation through the react loop's model,
+        # and only `react` and `deep` (whose inner agent is react) run that loop. Anywhere
+        # else the flag would validate and then silently judge by the heuristic.
+        if escalation.decider and self.pattern not in _REACT_LOOP_PATTERNS:
+            raise ValueError(
+                f"model.confidence_escalation.decider is honoured by patterns "
+                f"{sorted(_REACT_LOOP_PATTERNS)}, not {self.pattern!r}"
+            )
+        if self.content_screening.decider and not (self.content_screening.enabled and self.decider.id):
+            raise ValueError("content_screening.decider needs content_screening.enabled and spec.decider.id")
+        if self.skill_suggestion.enabled:
+            if not self.decider.id:
+                raise ValueError("skill_suggestion needs spec.decider.id")
+            if self.pattern not in _REACT_LOOP_PATTERNS:
+                raise ValueError(
+                    f"skill_suggestion is honoured by patterns {sorted(_REACT_LOOP_PATTERNS)}, "
+                    f"not {self.pattern!r}"
+                )
+        return self
 
     @field_validator("output_schema")
     @classmethod
@@ -904,6 +1051,7 @@ __all__ = [
     "ClientToolRef",
     "CommandScreening",
     "ContentScreening",
+    "DeciderSpec",
     "ExecutionSpec",
     "GovernanceSpec",
     "Guardrails",

@@ -1,11 +1,19 @@
 #!/bin/bash
-# PreToolUse(Edit|Write|MultiEdit): refuse edits to files that must not be
+# PreToolUse(Edit|Write|MultiEdit|NotebookEdit): refuse edits to files that must not be
 # machine-edited — secrets, lockfiles, generated/runtime dirs, applied migrations.
 INPUT=$(cat)
 
+# Fail closed. Without jq the path below reads as empty and every edit was allowed, which
+# for the one hook guarding .env is the wrong direction to fail in.
+if ! command -v jq >/dev/null 2>&1; then
+  echo "Blocked: protect-files needs jq to read the edit target and cannot check it without. Install jq (brew install jq)." >&2
+  exit 2
+fi
+
 # shellcheck source=lib/command.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib/command.sh"
-FILE_PATH=$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // empty')
+# NotebookEdit names its target `notebook_path`; reading only `file_path` let it through.
+FILE_PATH=$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // .tool_input.notebook_path // empty')
 [ -z "$FILE_PATH" ] && exit 0
 FILE_PATH="${FILE_PATH//\\//}"
 # Relative to the repository that owns the file, not to `CLAUDE_PROJECT_DIR`. Under a git
@@ -16,7 +24,10 @@ FILE_PATH="${FILE_PATH//\\//}"
 rel=$(hook_repo_rel "$FILE_PATH")
 
 case "$rel" in
-  .env|.env.local|.env.production|secrets/*|*/secrets/*)
+  .env.example|*/.env.example) ;;
+  # Any .env variant, at any depth -- a list of three spellings let `.env.staging` and
+  # `apps/x/.env` through.
+  .env|.env.*|*/.env|*/.env.*|secrets/*|*/secrets/*)
     echo "Blocked: $rel holds real credentials. Edit .env.example instead and tell the user which value to set locally." >&2
     exit 2 ;;
   uv.lock)

@@ -395,6 +395,9 @@ async def retention_settings(request: pytest.FixtureRequest) -> AsyncIterator[An
     from felix.usage import store as usage_store
 
     def clear() -> None:
+        from felix import artifacts
+
+        artifacts.clear_memory_ledger()
         audit_store.pending_buffer().reset_for_tests()
         audit_store._memory_events.clear()
         usage_store.pending_buffer().reset_for_tests()

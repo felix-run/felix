@@ -170,6 +170,11 @@ class Settings(BaseSettings):
     # have named fields above; a plugin's provider cannot, because Settings ignores
     # extras, so without this an installed provider had no way to be given a key.
     model_provider_options: str = ""
+    # JSON override of logical id -> {provider, model} for *decision* providers — models that
+    # answer typed questions (choose, score, true/false) rather than generate text, selected
+    # by `spec.decider.id`. Credentials come from FELIX_MODEL_PROVIDER_OPTIONS under the
+    # provider's name. Defaults: `jev` (TypeSafe direct) and `jev-cf` (Workers AI).
+    decision_routes: str = ""
     # Bounds each HTTP request to a model provider. A large tool call — a file's contents
     # as an argument, say — can legitimately take longer than two minutes to generate, and
     # when it does the request fails and takes the whole run with it. On a streaming call
@@ -191,6 +196,16 @@ class Settings(BaseSettings):
     # Consecutive step failures (outside the invoke's own handler) before a fiber is
     # marked `dead` instead of retried. Retries back off 1m, 2m, 4m … up to an hour.
     fiber_max_attempts: int = Field(default=5, ge=1)
+    # Completion webhooks: endpoints a durable run may be announced to, registered here by the
+    # operator and named by id in `spec.execution.webhooks` — a manifest never carries a URL,
+    # since a tenant-chosen URL on a path carrying run output is an exfiltration channel.
+    # JSON: {"id": {"url": "https://...", "secret": "secret:NAME", "tenants": [...], "private":
+    # false}}. `secret` signs every delivery; `tenants` (required) lists who may name it, or
+    # "*" for every tenant; `private: true` lets the URL resolve to a private address.
+    webhook_endpoints: str = ""
+    # Delivery tries per endpoint before it is marked `dead`; backoff 1m, 2m, 4m … up to 1h.
+    webhook_max_attempts: int = Field(default=8, ge=1)
+    webhook_timeout_seconds: float = Field(default=10.0, gt=0)
 
     # --- retention (worker `retention_sweep`, nightly) ---
     # Days a row is kept; 0 keeps forever. Every table the harness appends to has one of
@@ -322,6 +337,13 @@ class Settings(BaseSettings):
     # and silently deleting one out from under a thread that still references it would make
     # the model answer without an image nobody knew had expired. Set it deliberately.
     attachment_retention_days: int = Field(default=0, ge=0)
+
+    # How long a spilled tool output is kept. Unlike an upload, this defaults to a bound:
+    # a spill is a working copy the harness wrote for the task at hand, five bundled
+    # manifests spill by default, and without one `artifacts/` only ever grew. `0` keeps
+    # forever. Past it, `read_artifact`, `GET /artifacts` and the terminal's `/artifact`
+    # report the id as missing.
+    artifact_retention_days: int = Field(default=30, ge=0)
 
     # --- Document corpus ---
     # Per-tenant document ceiling. Without one, a single `documents:write` credential grows
@@ -494,6 +516,8 @@ class Settings(BaseSettings):
         self._validate_search_url()
 
         self._validate_model_route_providers()
+        self._validate_decision_route_providers()
+        self._validate_webhook_endpoints()
 
     def _validate_search_url(self) -> None:
         """A search backend that needs a URL must have a usable one, checked at boot.
@@ -542,6 +566,35 @@ class Settings(BaseSettings):
                 f"Unknown model provider(s) in FELIX_MODEL_ROUTES: {', '.join(unknown)} "
                 f"(registered: {', '.join(sorted(known))})"
             )
+
+    def _validate_decision_route_providers(self) -> None:
+        """Every provider named in FELIX_DECISION_ROUTES must be registered, checked at boot.
+
+        The same reasoning as the model routes above, with a sharper edge: a decision that
+        cannot be built falls back to the consumer's default path, so a typo here would not
+        fail a request — it would quietly turn the decider off.
+        """
+        import felix.patterns  # noqa: F401  — importing registers the built-in deciders
+        from felix.decisions import list_decision_providers, parse_decision_routes
+
+        known = set(list_decision_providers())
+        unknown = sorted(
+            {route.provider for route in parse_decision_routes(self).values() if route.provider not in known}
+        )
+        if unknown:
+            raise RuntimeError(
+                f"Unknown decision provider(s) in FELIX_DECISION_ROUTES: {', '.join(unknown)} "
+                f"(registered: {', '.join(sorted(known))})"
+            )
+
+    def _validate_webhook_endpoints(self) -> None:
+        """A malformed `FELIX_WEBHOOK_ENDPOINTS` fails the boot, not the first run it would announce."""
+        from felix.durability.webhooks import parse_webhook_endpoints
+
+        try:
+            parse_webhook_endpoints(self)
+        except ValueError as exc:
+            raise RuntimeError(f"FELIX_WEBHOOK_ENDPOINTS: {exc}") from exc
 
     def application_name(self) -> str:
         """What this process calls itself to Postgres."""
@@ -709,6 +762,14 @@ DEFAULT_MODEL_ROUTES: dict[str, dict[str, str]] = {
     "gpt-4.1-mini": {"provider": "openai", "model": "gpt-4.1-mini"},
     "llama-3-pro": {"provider": "ollama", "model": "llama3.3:70b"},
     "llama-3-fast": {"provider": "ollama", "model": "llama3.2"},
+}
+
+
+# Decision routes: logical id -> a registered decision provider and its model. `llm` answers
+# with any FELIX_MODEL_ROUTES id and needs no second vendor; the two Jev routes need a key.
+DEFAULT_DECISION_ROUTES: dict[str, dict[str, str]] = {
+    "jev": {"provider": "typesafe", "model": "jev-latest"},
+    "jev-cf": {"provider": "workers_ai", "model": "typesafe/jev"},
 }
 
 

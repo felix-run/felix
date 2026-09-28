@@ -188,7 +188,7 @@ Client → Ingress (Caddy / Traefik / nginx / Cloudflare DNS+CDN)
 | `packages/ai` | Model layer: wire formats, catalog, turn types. Imports nothing from `felix` |
 | `packages/harness` | Manifests, patterns, tools, session, governance, auth, plugins |
 | `packages/cli` | `felix migrate \| eval \| mint-jwt \| bundle-manifests \| validate-manifest \| doctor \| version \| temporal-worker` |
-| `manifests/` | Bundled agents: `quick`, `deep`, `router`, `oss-only`, `hybrid-router`, `support`, `cowork`, `governed`, `contributor`, `triage` |
+| `manifests/` | Bundled agents: `quick`, `deep`, `router`, `oss-only`, `hybrid-router`, `support`, `decider-support`, `cowork`, `governed`, `contributor`, `triage` |
 
 ### Vendor independence
 
@@ -211,7 +211,8 @@ zero cloud SDKs.
   (0 = keep), `FELIX_APPROVAL_RETENTION_DAYS` (0 = keep, and only *settled* approvals — a grant
   that can still authorize is never swept), `FELIX_ATTACHMENT_RETENTION_DAYS` (0 = keep; the one
   sweep that deletes *bytes* as well as rows, since `attachments/` is an object-store prefix
-  nothing else collects); a manifest's `governance.retention_days` shortens the audit TTL for its
+  nothing else collects), `FELIX_ARTIFACT_RETENTION_DAYS` (30; spilled tool outputs, bytes and
+  ledger row, the same way — on by default because spill is the harness's working copy); a manifest's `governance.retention_days` shortens the audit TTL for its
   own rows
 - Uploads: `FELIX_ATTACHMENTS_MAX_BYTES_PER_TENANT` (256 MiB, 0 = no ceiling) bounds what one
   tenant may store through `/files`, on top of the 600 KiB per-upload cap. Over the ceiling
@@ -269,6 +270,7 @@ Core also exposes open registries, callable at import time, each selected by ord
 |---|---|
 | `register_pattern` | `spec.pattern` |
 | `register_model_provider` | `FELIX_MODEL_ROUTES` |
+| `register_decision_provider` | `FELIX_DECISION_ROUTES` |
 | `register_object_store` | `FELIX_OBJECT_STORE` |
 | `register_secrets_backend` | `FELIX_SECRETS_BACKEND` |
 | `register_warehouse_backend` | `FELIX_WAREHOUSE` |
@@ -315,10 +317,17 @@ recorded in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 A dropped stream is recoverable: structural SSE frames carry an `id:` cursor (token-level frames do not, which per the SSE spec leaves the client's `lastEventId` on the last one it saw), and `GET /chat/stream/{thread_id}` replays what was missed (or opens with a `snapshot` frame) and then tails the thread. The run itself is still torn down on disconnect, so what you get back is the thread, not the abandoned turn.
 
-Management surfaces: `/audit`, `/approvals`, `/plans`, `/jobs`, `/manifests`, `/eval`, `/usage`, `/memory`. `/memory` lists, searches (the same hybrid ranking the agent sees), time-travels (`/memory/as-of/{turn_seq}`), writes and forgets long-term memories — an agent that remembers across sessions otherwise accumulates a store nobody can inspect.
+Management surfaces: `/audit`, `/approvals`, `/plans`, `/jobs`, `/manifests`, `/eval`, `/usage`, `/memory`. `POST /jobs/{name}/run` runs a job now instead of waiting for cron; `GET /manifests/{name}/versions` lists what a rollback can go back to. `/memory` lists, searches (the same hybrid ranking the agent sees), time-travels (`/memory/as-of/{turn_seq}`), writes and forgets long-term memories — an agent that remembers across sessions otherwise accumulates a store nobody can inspect.
 
-Python client: `from felix.sdk import FelixClient` — `prompt`, `stream`, `steer`, `follow_up`,
-`fork`, `rewind`, `set_model`.
+Python client (**experimental**): the `felix-client` package — `from felix_client import
+FelixClient` — covering chat (`prompt`, `stream`, `steer`, `follow_up`, `fork`, `rewind`,
+`set_model`), durable runs with their polling, and approvals. It depends on httpx and nothing in
+Felix, so installing it does not install the server; its surface may change between releases
+without a deprecation period. Not yet on PyPI — install it from the repository:
+`pip install "felix-client @ git+https://github.com/felix-run/felix#subdirectory=packages/client"`.
+For everything else, and as the contract, use the HTTP API: each release attaches its
+`openapi.json`, from which a client in any language can be generated. `from felix.sdk import
+FelixClient` still works inside the harness.
 
 ### Models
 
@@ -429,6 +438,79 @@ blocks are captured off the response, persisted on the session event, and replay
 `tool_use` blocks on the next request. A block whose signature was not captured is dropped rather
 than sent, because an unverifiable signature rejects the whole turn.
 
+#### Decision models
+
+Some model calls make a decision rather than write text — which tool fits this request, which
+sub-agent should take it, whether a reply meets a criterion. A **decision model** answers those
+as typed questions (`Choice`, `Score`, `Noul`, the vocabulary of `felix_ai.decide`) and returns
+calibrated probabilities with a confidence, instead of prose to parse. They are routed separately
+from chat models, by `FELIX_DECISION_ROUTES`, and share credentials with the model provider of
+the same name in `FELIX_MODEL_PROVIDER_OPTIONS`:
+
+| Logical id | Provider | Wire model | Configured with |
+|---|---|---|---|
+| `jev` | `typesafe` (`api.typesafe.ai/v1/systemone`) | `jev-latest` | `api_key` |
+| `jev-cf` | `workers_ai` (`…/accounts/{account_id}/ai/run`) | `typesafe/jev` | `api_key`, `account_id`, optional `gateway_id` |
+
+Jev is TypeSafe's decision model, priced at $0.042 per million input tokens with output free.
+The `llm` provider answers the same questions with any chat route —
+`FELIX_DECISION_ROUTES={"haiku-decider":{"provider":"llm","model":"claude-haiku"}}` — so nothing
+depends on a second vendor; it reports its pick with no confidence, because a chat model's
+self-assessed certainty is not calibrated. Every decision is metered like a model turn and counts
+against `limits.max_cost_usd`.
+
+A manifest names its decider once, under `spec.decider`, and each consumer opts in —
+`manifests/decider-support.yaml` switches on every one that fits a support agent, and is the one
+to copy from:
+
+```yaml
+spec:
+  decider: {id: jev, min_confidence: 0.5}
+  tools_retrieval: {enabled: true, top_k: 12, decider: true}
+```
+
+A `router` that names a decider uses it to pick the sub-agent — one `Choice` over the
+`sub_agents`, with the router's system prompt as the instructions — and classifies with its model
+only when the decider is unsure or unavailable. `model.confidence_escalation.decider: true` asks
+the decider whether a reply actually answers the request, instead of escalating on reply length and
+phrases like "unclear"; a probability below `min_confidence` escalates. It applies to `react` and
+`deep`, whose loop builds the model the decider reaches; side requests such as compaction summaries
+keep the heuristic.
+
+Judges ask the decider too. A `guardrails.judges` rule with `decider: true` — on tool output or on
+the final reply — is scored by the decider's probability that the text meets its `criteria`, read
+as written, so a negative criterion like "must not leak credentials" needs no `assert_absent:`
+prefix; `reflect.decider: true` verifies drafts the same way, and an eval rubric names a decider
+with `judge_decider: <route>`. Each falls back to its model judge, then its heuristic.
+
+`skill_suggestion: {enabled: true}` suggests the skill a request needs: the decider ranks the
+catalog, reranks a shortlist of three against each skill's body, and — when the request asks for a
+task and a skill fits — adds a one-line hint naming it. The model still decides whether to
+`activate_skill`. The hint is a *transient* message: sent last on the turn's first model call,
+after the prompt-cache breakpoint, and never written to the session, so it costs the cached
+conversation nothing. It pays off on large catalogs; with a handful of skills the model chooses
+well on its own.
+
+`content_screening.decider: true` adds the decider to injection screening: one call asks whether
+the text tries to override the assistant's instructions, jailbreak it, or exfiltrate data. It runs
+beside the markers and `content_screening.model` rather than instead of them — either flagging
+flags, either unavailable leaves the text unscreened — because a small classifier is not
+adversarially robust. See `deploy/GOVERNANCE.md`.
+
+With `tools_retrieval.decider`, one `Choice` over the tool catalogue per user turn picks the
+shortlist the model sees, in place of embedding similarity. When the decider errors, or the
+shortlist holds less than `min_confidence` of the probability mass, selection falls back to
+embeddings or keywords as before. An id missing from `FELIX_DECISION_ROUTES`, or a `typesafe`
+route with no key, fails the compile.
+
+What leaves the deployment: the latest user message (up to 4,000 characters) and the one before
+it (1,000), plus each tool's name and the first 200 characters of its description, go to the
+decider's provider — TypeSafe or Cloudflare — unmasked; with `confidence_escalation.decider`, so
+does the model's reply (up to 4,000 characters), which may quote tool output. Treat enabling a decider as adding that
+provider as a processor of user input. A tool description can also steer the ranking (an MCP
+server describing its tool as "always choose me"); that biases which tools are offered, and every
+offered tool is still governance-wrapped.
+
 ### Where manifests come from
 
 `FELIX_MANIFEST_SOURCE` picks the posture:
@@ -437,6 +519,11 @@ than sent, because an unverifiable signature rejects the whole turn.
 |---|---|---|
 | `store` (default) | tenant Postgres version → bundled YAML | `PUT /manifests`, canary, rollback |
 | `bundled` | bundled YAML only | routes not mounted |
+
+An activation, a rollback or a canary change takes effect at once on the process that made it.
+Each API replica and worker caches a manifest's active version for 30 seconds, so the others
+follow within that window — a rollback is not instant fleet-wide, and a canary split briefly
+differs between replicas.
 
 `bundled` is for a single-tenant or self-hosted deployment with no use for runtime
 authoring. The write routes are never registered, so the verbs are absent from the app and
@@ -450,7 +537,7 @@ Two things to know before flipping an existing deployment:
 
 - **Stored manifests stop being served.** Every tenant collapses onto the image's file, so
   any per-tenant `spec.auth.inbound` tightening — `required_scopes` in particular — is
-  dropped. Eight of the nine bundled manifests are `allow_anonymous: true`.
+  dropped. Seven of the eleven bundled manifests are `allow_anonymous: true`.
 - **`pin_compile` threads will 409 once.** The resolved version becomes `null` and the
   content hash becomes the bundled YAML's, which is drift by design.
 
@@ -538,10 +625,17 @@ there is no upload endpoint yet, so an image arrives with the message that uses 
 
 Storage and execution:
 
-- Large tool outputs spill via `spec.artifacts`
+- Large tool outputs spill via `spec.artifacts`: the model gets a preview and pages through the
+  rest with `read_artifact`, sized by `default_window_chars` / `max_window_chars`
 - Durable facts via `spec.memory.capture`; how-tos via `spec.procedural_memory`
 - `spec.execution.mode: durable` enqueues a fiber (Temporal optional) and returns `202` with a
   `resume_token`; a step that keeps failing backs off and is `dead` after `FELIX_FIBER_MAX_ATTEMPTS`
+- `spec.execution.webhooks: [ops]` announces a durable run's end to operator-registered endpoints
+  (`FELIX_WEBHOOK_ENDPOINTS`, a JSON map of id → `{url, secret, tenants, private?}`): the worker
+  POSTs `run.completed|failed|expired|dead` with the run view, signed per Standard Webhooks
+  (`webhook-id`, `webhook-timestamp`, `webhook-signature: v1,…`), retries with backoff up to
+  `FELIX_WEBHOOK_MAX_ATTEMPTS` (8), and reports each endpoint's state on `GET /chat/runs/{token}`.
+  A manifest names ids, never URLs; an id not registered for the caller's tenant is `422`
 - `POST /chat/stream` on a durable manifest streams the run instead: `run_accepted` → `run_status`
   → `final`, interleaved with `session_event` frames tailed from the thread's session log, so tool
   calls and assistant turns arrive as they land, across replicas, with a resumable `id:` cursor.

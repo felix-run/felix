@@ -4,6 +4,8 @@ description: Deployment and infrastructure specialist for Felix — Docker/Compo
 tools: Read, Grep, Glob, Bash, Edit, Write
 model: inherit
 color: orange
+skills:
+  - deploy-runbook
 ---
 
 You own how **Felix ships**: `deploy/docker/`, `deploy/helm/`, `deploy/aws/`, `deploy/gcp/`,
@@ -34,10 +36,29 @@ Adding a heavy dependency to the base image is a regression, not a convenience.
 
 ## CI
 
-`.github/workflows/ci.yml` is path-filtered (`python` / `docker` / `helm`). The python jobs install
-**lean** (`uv sync --dev`), run `ruff check`, `ruff format --check`, `ty check packages apps`,
-`felix bundle-manifests`, `pytest`, and a `--mock` eval. Tests run with `FELIX_DATABASE_URL=memory://ci`
-and `FELIX_OBJECT_STORE=memory` — keep new tests working under that env.
+Six workflows under `.github/workflows/`. `ci.yml` is path-filtered by its `changes` job
+(`python`, `docker`, `helm`, `toolkit`), so a job that did not run on a PR is not evidence of
+anything. Its jobs:
+
+| Job | Installs | Runs |
+|---|---|---|
+| `pre-commit` | `--dev` | `pre-commit run --all-files` |
+| `lint` | `--all-extras` | `uv lock --check`, dependency age (48h), `ruff check`, `ruff format --check`, Scalar SRI |
+| `typecheck` | `--all-extras` | `ty check packages apps` |
+| `test` | `--dev` + `temporal warehouse sandbox otel` | `felix bundle-manifests`, `make test-cov` with `FELIX_REQUIRE_OPTIONAL_EXTRAS=1` and `FELIX_REQUIRE_HELM=1` |
+| `conformance` | `--dev` | `tests/conformance` against pgvector Postgres + Valkey services, `REQUIRE_POSTGRES`/`REQUIRE_REDIS` set |
+| `eval` | `--dev` | the `--mock` smoke eval, then `scripts/eval-counter-smoke.sh` (must fail) |
+| `lean` | `--no-dev` | `scripts/lean-import-check.py`, `felix version` |
+| `toolkit` | none | `scripts/validate-toolkit.py` |
+| `helm` | `--dev` | `helm lint`, `tests/unit/test_helm_topology.py` |
+| `docker` | — | `compose config` over the overlay combinations, `scripts/check-compose-render.py`, the lean image build, Trivy |
+
+The test job's extras list is pinned by `tests/unit/test_invariants.py` against every extra the
+suite gates on. The other workflows: `security.yml` (CodeQL, pip-audit, gitleaks over full
+history), `felix-boundary.yml` (judges Felix-authored PRs with `scripts/felix_boundary.py`),
+`quality-review.yml` (review bot on non-draft PRs), `smoke.yml` (every 6h: prod health plus one
+live chat turn; not a PR gate), and `release.yml` (tag-driven multi-arch build, scan, sign, attest,
+GitHub release from the changelog; `docs/RELEASING.md`).
 
 ## Rules
 

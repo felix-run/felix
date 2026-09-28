@@ -82,12 +82,16 @@ def trip(state: LimitState, reason: str) -> None:
 
 @dataclass(frozen=True)
 class EffectiveLimits:
-    """A manifest's limits with every unset field filled from ABSOLUTE_LIMITS.
+    """A manifest's limits with every unset field filled from DEFAULT_LIMITS.
 
     ``ABSOLUTE_LIMITS`` is documented as the maximum a manifest may declare, but nothing
     applied it when a manifest declared nothing — so the default posture was no cap at
-    all on tool calls, wall clock, tokens, or spend. Filling the gaps makes the
-    documented absolute the effective ceiling for every run.
+    all on tool calls, wall clock, tokens, or spend. Filling the gaps makes a declared
+    default the effective ceiling for every run.
+
+    The fill comes from ``DEFAULT_LIMITS``, not from the maximum. They were the same
+    constant, so the only way to let one manifest declare a larger budget was to raise
+    the floor under every manifest that declares nothing.
     """
 
     # Not optional: `effective_limits` fills every field from ABSOLUTE_LIMITS, so an
@@ -101,16 +105,16 @@ class EffectiveLimits:
 
 
 def effective_limits(limits: Limits | None) -> EffectiveLimits:
-    """A manifest's declared limits, with ABSOLUTE_LIMITS filling every unset field."""
-    from felix.manifests.schema import ABSOLUTE_LIMITS
+    """A manifest's declared limits, with DEFAULT_LIMITS filling every unset field."""
+    from felix.manifests.schema import DEFAULT_LIMITS
 
     # Indexed, not `.get()`: a missing key would silently become `None`, which means
     # "no cap at all" — the exact posture this function exists to prevent.
     def cap_int(declared: int | None, name: str) -> int:
-        return declared if declared is not None else int(ABSOLUTE_LIMITS[name])
+        return declared if declared is not None else int(DEFAULT_LIMITS[name])
 
     def cap_float(declared: float | None, name: str) -> float:
-        return declared if declared is not None else float(ABSOLUTE_LIMITS[name])
+        return declared if declared is not None else float(DEFAULT_LIMITS[name])
 
     return EffectiveLimits(
         max_tool_calls=cap_int(limits.max_tool_calls if limits else None, "max_tool_calls"),

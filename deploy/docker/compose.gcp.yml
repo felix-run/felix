@@ -61,7 +61,7 @@ services:
       - "127.0.0.1:8080:8080"
     volumes:
       - felix-data:/data
-      - ${FELIX_WORKSPACE_HOST:-./workspace}:/workspace
+      - ${FELIX_WORKSPACE_HOST:-felix-workspace}:/workspace
     environment:
       <<: *gcp-secrets
       FELIX_WORKSPACE_ROOT: /workspace
@@ -71,7 +71,7 @@ services:
     build: !reset null
     volumes:
       - felix-data:/data
-      - ${FELIX_WORKSPACE_HOST:-./workspace}:/workspace
+      - ${FELIX_WORKSPACE_HOST:-felix-workspace}:/workspace
     environment:
       <<: *gcp-secrets
       FELIX_WORKSPACE_ROOT: /workspace

@@ -1,0 +1,105 @@
+# yaml-language-server: $schema=../schemas/manifest.schema.json
+#
+# `support`, with a decision model making its small decisions. Every consumer of `spec.decider`
+# that fits a support agent is switched on here, so this is the manifest to copy from.
+#
+# Needs a decision route. `jev` is TypeSafe's Jev and wants a key:
+#   FELIX_MODEL_PROVIDER_OPTIONS={"typesafe": {"api_key": "..."}}
+# or Jev on Workers AI — set `decider.id: jev-cf` and give `workers_ai` an api_key and
+# account_id. To try it with no second vendor, point the `jev` route at a chat model instead:
+#   FELIX_DECISION_ROUTES={"jev": {"provider": "llm", "model": "claude-haiku"}}
+# Without any of these the compile refuses, naming what is missing, rather than running an
+# agent that silently decides nothing.
+apiVersion: felix/v1
+kind: Agent
+metadata:
+  name: decider-support
+  version: 1.0.0
+  description: >-
+    Felix support agent that hands its small decisions — which tools to offer, which skill
+    fits, whether a reply answers, whether a fetched page is hostile — to a decision model.
+  tags: [support, decider, example]
+
+spec:
+  pattern: react
+
+  decider:
+    id: jev
+    # Below this a consumer treats the decision as unsure and falls back to what it did
+    # without a decider — keyword tool ranking, the escalation heuristic.
+    min_confidence: 0.5
+
+  model:
+    # A small model for the turn, and a larger one only when the decider says the reply
+    # does not actually answer the request. The decider replaces the length-and-"unclear"
+    # heuristic, which escalated correct short answers and kept fluent non-answers.
+    id: claude-haiku
+    temperature: 0
+    cache: true
+    confidence_escalation:
+      enabled: true
+      escalate_to: claude-sonnet
+      decider: true
+
+  system_prompt:
+    inline: |
+      You are Felix in support mode — a patient, helpful AI assistant
+      specializing in troubleshooting and step-by-step guidance.
+      Break down complex problems into manageable steps. Use your tools to verify
+      answers, and quote the documentation you relied on.
+      Always refer to yourself as Felix, never as Claude or any other name.
+
+  tools:
+    - calculator
+    - list_skills
+    - activate_skill
+    - deactivate_skill
+
+  http_tools:
+    - name: fetch_docs
+      description: >-
+        Read a page from the Felix documentation site. Use this before answering a
+        how-to or troubleshooting question, and quote what the page actually says.
+      path_prefix: https://docs.felix.run/
+      max_bytes: 60000
+      timeout_ms: 10000
+
+  document_tools:
+    - name: search_docs
+      description: >-
+        Search the documentation this deployment has ingested. Prefer this when you do not
+        already know which page answers the question.
+      max_results: 4
+
+  # One decision per user turn picks the few tools the model is offered. With seven tools
+  # this is a demonstration; it earns its keep on an MCP catalogue of dozens.
+  tools_retrieval:
+    enabled: true
+    top_k: 4
+    decider: true
+
+  # Ranks the skill catalogue and, when a skill fits a task, adds a one-line hint naming it.
+  # The hint rides after the prompt-cache breakpoint and never enters the session log.
+  skill_suggestion:
+    enabled: true
+
+  # Markers first, then the decider's injection battery on fetched pages and search results.
+  # Additive: the decider is not adversarially robust, so it adds a net and removes nothing.
+  content_screening:
+    enabled: true
+    on_flag: quarantine
+    decider: true
+
+  memory:
+    checkpointer: postgres
+    store: pgvector
+
+  artifacts:
+    enabled: true
+
+  auth:
+    inbound:
+      allow_anonymous: true
+
+  observability:
+    trace: true

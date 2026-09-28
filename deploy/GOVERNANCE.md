@@ -38,7 +38,10 @@ rejects Bearer/long-token auth and non-ref MCP `env` values.
 PII: `spec.guardrails.providers: [pii]` uses **Presidio** when
 `felix-harness[pii]` is installed, otherwise a regex fallback. Eval LLM judges
 are opt-in via rubric `llm_judge` / `judge_criteria` or `felix eval --llm-judge`
-(CI stays on `--mock`).
+(CI stays on `--mock`). A judge that cannot run scores the item with the heuristic instead —
+a weaker test that still reports a result — so the score row carries `judge_fallback: true`
+and `judge_error`, the run's `stats.judge_fallbacks` counts them, `felix eval` warns on
+stderr, and `felix eval --strict-judge` exits 1 rather than pass on the weaker test.
 
 ### AWS
 
@@ -96,7 +99,7 @@ spec:
     risk_tier: limited            # limited | high
     transparency_notice: true     # EU AI Act Art. 50 notice in prompt + agent card
     forbid_plaintext_secrets: true
-    pin_compile: true             # refuse continue/resume if manifest hash drifts
+    pin_compile: true             # refuse continue/resume if the manifest or a sub-agent drifts
     retention_days: 30
 ```
 
@@ -114,7 +117,12 @@ manifest's value (`governed.yaml` says 30) applies to every tenant that serves t
 and a tenant's own stored version of that name replaces it for that tenant. Usage (the billing
 record, 365 days), fibers and A2A tasks (7 days, terminal rows only) and session threads (off:
 the event log is the chat record) have deployment-wide TTLs, `FELIX_*_RETENTION_DAYS`, `0`
-keeping forever. Session retention drops whole idle threads and their metadata; it does not
+keeping forever. Two sweeps delete object-store bytes as well as rows, each through a ledger
+because the store cannot be listed: uploads (`FELIX_ATTACHMENT_RETENTION_DAYS`, off by default,
+caller data) and spilled tool outputs (`FELIX_ARTIFACT_RETENTION_DAYS`, 30 by default, the
+harness's working copy). A manifest's `retention_days` does **not** shorten its spill: a
+manifest set to 7 days still keeps raw tool output for the deployment's artifact TTL, so set that
+no longer than the shortest manifest that needs it. Session retention drops whole idle threads and their metadata; it does not
 reach the facts memory capture extracted from them, which are governed by memory's own rules.
 
 Runtime also enforces `spec.auth.inbound`, routes inbound MCP through the
@@ -133,12 +141,31 @@ alone. The reply-path controls (`output`/`final_response` PII, and `judges` with
 `final_response: true`) wrap the agent rather than its tools, and apply on the streaming
 path as well as `invoke`: reply text is held until the run ends and released screened,
 while tool and approval frames stream as they happen. A denial or redaction emits a
-`guardrails_reply` or `judge_deny` audit event. Two things the reply controls do not
-cover, stated so nobody assumes them: the session log holds the reply as the model
-produced it, so `GET /chat/stream/{thread_id}` replays and `GET /chat/threads` exports
-carry the unscreened text — the controls govern the reply as it leaves the run, not the
-transcript (tracked in `docs/ROADMAP.md`); and `thinking_delta` is reasoning, not the
-reply, and passes through unscreened. Tenant
+`guardrails_reply` or `judge_deny` audit event. The session log is screened at the
+write with the same verdicts: every assistant message is redacted before it is appended,
+and every one without tool calls is judged, so a denied reply is stored as its denial —
+replays, exports, `/chat/history` and a durable run's live tail carry what the client got.
+The store is handed to sub-agents too, since a router's child writes the caller's thread,
+and reflect's critique quotes its draft redacted. The log is never less screened than the
+wire, and sometimes more: a preamble written before tool calls is redacted but not judged,
+so on a denial the reply withholds it and the log keeps it; and reflect's intermediate
+drafts are each judged in the log, one judge call per draft. `spec.memory.capture`
+extracts from the reply as the controls ship it — redacted, and not at all from a reply a
+judge denied — and a router's controls reach a child's capture as well as its log. What the
+reply controls do
+not cover, stated so nobody assumes them: reasoning is not the reply, so
+`thinking_delta` passes through and the signed reasoning a thread stores for replay is kept
+as written, since redacting it would break its signature; and compaction and branch
+summaries are model output over the whole thread, user turns and tool results included,
+and are stored as written. A judge scores by, in order of preference: `spec.decider`
+when the rule sets `decider: true` (the probability the text meets `criteria`, as written), the
+chat model in `model`, and the heuristic — each failure falls through to the next, so a decider
+outage degrades a judge rather than opening it. A decider-scored judge sends the judged text to the
+decider's provider, and only judges text up to 8,000 characters — anything longer is scored by the
+model judge or the heuristic, which read all of it, rather than by a prefix. Treat a decider judge
+as a quality control, not a security boundary: the text it judges can argue for its own verdict
+(Jev is not adversarially robust), so untrusted tool output belongs behind `content_screening`,
+not behind a judge alone. Tenant
 isolation is application-level `tenant_id` by default; enable Postgres RLS
 with migration `0006_tenant_rls` and `FELIX_DATABASE_RLS=true`
 (sets `app.tenant_id` / `app.rls_bypass` GUCs per transaction). Every table except
@@ -216,6 +243,22 @@ spec:
 `schemes` is enforced against the authenticated principal — `api_key`, or a JWT verifier
 scheme (`access`, `cognito`, `self`); `jwt` is an umbrella for all three. An empty list
 allows any scheme. Anonymous access is governed by `allow_anonymous`, not by this list.
+
+**Sub-agents inherit the caller's admission.** `spec.auth.inbound` is checked on the manifest
+a request names — the router — and not again on each sub-agent it compiles. A child's own
+`allow_anonymous`, `schemes` and `required_scopes` therefore apply when the child is called by
+name, and not when a router hands it a request: the bundled `router` (anonymous) reaches `deep`
+(which is not) this way on purpose. Put the admission you need on the router. What a child keeps
+is everything else it declares — its tools, policies, approvals, screening and limits are
+compiled into it and apply whichever way it was reached.
+
+**`pin_compile` covers sub-agents**, recursively: the pin records a digest of every child a
+router compiles, and an edited, added or removed one is drift — 409 on a turn, a failed fiber on
+resume. The compile builds from the children the pin check resolved for that request, so the tree
+the pin verified is the tree that runs; a child published after the check waits for the next turn,
+which refuses it. One limit, stated so nobody assumes more: a thread pinned before sub-agents were
+covered adopts its children as they are on its next turn, so an edit made before that upgrade is
+accepted.
 
 `providers` is checked at **compile**, against the resolved route for the primary model
 and every entry in `model.fallbacks`, so a violation fails the build rather than
@@ -350,6 +393,34 @@ Browser tools additionally register a Playwright request interceptor, so redirec
 and subresources are re-checked — `page.goto()` follows both, and the URL is
 model-supplied. Every other outbound client sets `follow_redirects=False`.
 
+### Completion webhooks
+
+A durable run with `spec.execution.webhooks` has its outcome POSTed by the worker when it reaches
+a terminal status. The request carries run output, so the endpoint list is the operator's, not the
+manifest author's:
+
+- **Ids, never URLs.** `FELIX_WEBHOOK_ENDPOINTS` maps an id to `{url, secret, tenants, private?}`
+  and a manifest names ids. A tenant-supplied URL on a path carrying run output would be an
+  exfiltration channel an SSRF check does not address — the destination is public and allowed.
+- **Tenant allowlist.** `tenants` is required: a list of tenant ids, or `"*"` written out for an
+  endpoint every tenant may name. An open endpoint lets any tenant's run arrive signed with its
+  secret, so a receiver behind `"*"` must check the payload's `tenant_id`. Unregistered
+  and not-yours both answer `unknown webhook endpoint: <id>` (`422` at enqueue), so the message is
+  not a registry oracle. An endpoint removed or narrowed after a run started goes `dead` for it.
+- **Signed.** Standard Webhooks: `webhook-id` (`<run id>:<endpoint id>`, stable across retries
+  for dedupe), `webhook-timestamp`, and `webhook-signature: v1,<base64 HMAC-SHA256>` over
+  `id.timestamp.body`. A `whsec_` secret is base64-decoded; any other value is used as bytes.
+  A malformed `whsec_` value fails the boot. `secret` accepts a secrets-backend ref; every
+  endpoint secret, literal or resolved, is registered for masking at boot in each process.
+- **Egress.** Delivery goes through the SSRF guard unless the endpoint says `private: true`, the
+  operator's explicit opt-out for an internal receiver. `https` is required outside development
+  with `FELIX_ALLOW_INSECURE`. Redirects are not followed: a `3xx` is a failed attempt.
+- **Retry and dead letter.** Non-2xx or a transport error backs off (1m doubling to 1h) and is
+  `dead` at `FELIX_WEBHOOK_MAX_ATTEMPTS` (8), recorded on the fiber row itself; each attempt is
+  bounded end to end by `FELIX_WEBHOOK_TIMEOUT_SECONDS` (10), the response body is never read,
+  and every attempt is counted in `felix_webhook_delivery`. A sweep stops starting deliveries
+  after half the 120 s claim, so a slow receiver delays the rest rather than doubling them.
+
 ## Shell tools
 
 `spec.shell_tools` execs an argv on the host the API runs on, in the `FELIX_WORKSPACE_ROOT`
@@ -411,6 +482,7 @@ Screening and PII degrade **loudly**, and "unavailable" is not treated as "clean
 | Control | Unavailable behaviour |
 |---------|----------------------|
 | `content_screening.model` (LLM screener) | Honours `on_flag`: `block` denies with 503 / `[screening unavailable]`; otherwise the turn or tool output is quarantined. Emits `felix_control_unavailable{control="content_screening"}`. |
+| `content_screening.decider` (decision model) | The same as the model screener, and independently of it: with both set, either one unable to run leaves the text unscreened rather than cleared, and a decider whose route no longer resolves is unavailable too. |
 | `guardrails.providers: [pii]` | Falls back to three regexes (email, US SSN, card-like digits) with a `WARNING` and `felix_control_degraded{control="pii"}`. A *transient* engine failure is retried rather than latched for the process lifetime. |
 
 The lean image ships neither Presidio nor a spaCy model, so `providers: [pii]` there is
@@ -454,6 +526,24 @@ Closing the call out is also what makes the thread resumable at all: the provide
 transcript containing a tool call with no answer, so before this an interrupted run could
 not be continued.
 
+A durable run whose worker died mid-invoke is re-claimed at the same step, and it resumes
+from the thread's session log rather than starting the turn again. Before calling the model
+the step records the log's head (`invoke_began` in the fiber's state); a re-claim looks
+for the run's own user turn among what was appended since. Not there — the crash came
+before it was logged — and the turn runs as new. There, with a reply that has no tool calls
+last, and the turn had finished and only the fiber's save was lost: that reply is the run's
+answer and no model is called. Otherwise the run continues from the log with no new user
+turn: the model sees its own tool calls and results — completed calls are not re-issued —
+and a call in flight is closed out as above. Temporal retries resume the same way.
+
+The turn is re-sent, as before, wherever the log cannot say where the run stands: no log
+(`memory.checkpointer: none`); a composite pattern (`router`, `reflect`, `parallel`, …),
+which reads the request from the incoming turn to route or to score; `session.strategy:
+semantic:N`, which ranks history by the incoming text; a request that input redaction
+changed before it was logged; or a log that could not be read. On a thread the caller also
+writes to directly, a reply to a request sent between the crash and the re-claim can be
+taken as the run's own.
+
 A durable step that raises *outside* the invoke's own handler — its save cannot land, the
 lease write fails, a store is down — is not retried forever. The fiber sleeps for a delay
 that doubles per consecutive failure (1m, 2m, 4m, 8m at the default; capped at an hour from
@@ -490,6 +580,12 @@ per-turn ceiling (`spec.model.max_tokens`, or `limits.max_output_tokens` when th
 never raises it — the output budget is checked at the top of a turn, so a caller-sized turn
 would otherwise run a full turn past the declared bound before it tripped.
 
+`spec.model.cache: true` sets three breakpoints on the Anthropic wire: the system block, the
+last tool definition, and the newest message. The third is the one that matters for a long run —
+without it the transcript is re-billed at full input price every turn, and the transcript is where
+an agentic run's tokens are. Cache reads are counted in full against `max_input_tokens`, because
+they are tokens the provider processed; their lower price is `max_cost_usd`'s business.
+
 Side requests are metered but deliberately uncached. Compaction, memory capture, inbound
 screening and branch summarisation each issue a model call in the middle of a turn, and
 each carries a different prefix from the conversation around it — so they opt out of the
@@ -512,9 +608,23 @@ the highest matching threshold replaces the base rates entirely. No bundled entr
 tiers: the thresholds and rates move, and a stale number here both mis-charges the tenant
 and lets the budget cap admit more spend than it should.
 
-**Undeclared fields fall back to `ABSOLUTE_LIMITS`**, so a manifest that declares no
+**Undeclared fields fall back to `DEFAULT_LIMITS`**, so a manifest that declares no
 limits is still bounded (500 tool calls, 3600s, 1M input tokens, 100k output tokens,
-$1000). Declared values may only tighten those; the schema rejects anything larger.
+$1000). **`ABSOLUTE_LIMITS` is the separate, higher ceiling a manifest may declare up
+to**, and the schema rejects anything above it.
+
+The two were one constant, which made the default unraisable: `max_input_tokens` was
+1,000,000 as both the fallback and the maximum, and since the counter sums the tokens
+each turn actually processed — a react run re-sends its prefix every turn — an agent
+carrying a 38 KiB prompt reaches it in about 26 turns. There was no way to declare a
+budget for a longer run without raising the floor under every manifest that declares
+nothing. A manifest may now declare up to 20M input tokens; unset still means 1M.
+
+Cache reads count in full, and that is deliberate: they are tokens the provider
+processed. On the Anthropic wire `input` excludes them and `cache_read` reports them
+separately; on the OpenAI wire `prompt_tokens` already includes them and `cache_read` is
+zero. Summing all three is what makes the same budget mean the same thing on both. The
+*price* difference is `max_cost_usd`'s job, which prices a cache read at its own rate.
 
 A tool invoked with no request context is **denied** rather than run unbudgeted.
 
@@ -607,9 +717,28 @@ screening off for untrusted output is the thing screening exists to prevent, so 
 was removed rather than renamed. On cost: neither `content_screening.model` nor `on_flag` is a per-tool lever, so this removes
 the only one there was. It is free in the default configuration — both bundled manifests that
 enable screening leave `model` empty, and the marker path is a substring scan — and it costs a
-model call per untrusted tool per turn where `model` *is* set. If that bites, the shape to add
-is a knob orthogonal to trust (which tools get the *expensive* screener, with marker screening
-unconditional), not a way to exempt an untrusted tool from screening altogether.
+model call per untrusted tool per turn where `model` *is* set.
+
+That knob is `content_screening.model_tools`: a glob list of which screened tools get the paid
+scoring — `model` and `decider`, a call per window each. Empty, the default, is every screened
+tool. It is orthogonal to trust, not a way out of it: every screened tool still runs the marker
+scan whatever `model_tools` says, so an untrusted tool it leaves out is screened by markers
+alone, never unscreened. It needs `model` or `decider: true` to mean anything and is refused
+without one; a pattern that matches no bound tool is counted as `felix_rule_targets_nothing`.
+
+`content_screening.decider` adds `spec.decider` beside `model`: one call asks whether the text
+tries to override the assistant's instructions, to jailbreak it, or to exfiltrate data, and flags
+on the highest probability. It is **additive** — the markers still run first, `model` still runs
+beside it, either one flagging flags — because Jev is documented as not adversarially robust: it
+is a cheap extra net for paraphrased injections the markers miss, not a replacement for the model
+screener. The screened text, a 4,000-character window at a time, goes to the decider's provider —
+which `FELIX_DECISION_ROUTES` may point at a different vendor from the chat model. Tool output is
+secret-masked before it is screened; a user turn is not, as with the model screener.
+
+Screened tool output is read window by window across its whole length, like a user turn; output
+longer than eight windows (32,000 characters) is reported unavailable, so `on_flag` quarantines or
+blocks it rather than screening its first window and admitting the rest. This applies whenever
+`model` or `decider` is set.
 
 Two things to re-measure if you set `model` and previously narrowed `tools`:
 
@@ -652,6 +781,7 @@ gated before, and never displaces a stricter literal rule.
 | `one_shot` | The grant is marked consumed on use; a replay of the same call needs a new approval. |
 | `bind_principal` | Only the principal who was approved may use the grant. Without it, any principal in the tenant can reuse it. |
 | `allow_unattended` | EU AI Act high-risk manifests must set this to `false`. |
+| `when_args` | Gate only the calls that carry these arguments (non-empty); empty gates every call. Each name must be an argument some tool the rule reaches takes, or the rule never fires. For tools whose schemas ship with the harness — built-ins, plugin tools, the memory tools — a rule naming them literally is **refused** at `PUT /manifests` and by `felix validate-manifest` when a name is not one of their arguments. For everything else (MCP tools, globs) it is a compile-time warning and `felix_approval_when_args_unknown`, not a refusal: an MCP schema can change under a stored manifest, and that must not become an outage. A glob such as `github__*` with `when_args: [force]` is flagged only if *no* tool it reaches takes `force`. |
 
 `spec.policies` and `spec.approvals` are capped at 64 rules each: matching is O(rules × tools)
 and a manifest is compiled per request.
@@ -891,11 +1021,11 @@ implies the matching `*:read`.
 
 | Scope | Routes |
 |-------|--------|
-| `manifests:read` / `manifests:write` | `/manifests` |
+| `manifests:read` / `manifests:write` | `/manifests`; `GET /manifests/{name}/versions` lists stored versions (metadata only) under `manifests:read` |
 | `audit:read` | `/audit` |
-| `artifacts:read` | `/artifacts` — read back a tool output too large to keep in the transcript. Its own scope rather than part of `audit:read`, because a spilled result is raw tool output and often the most sensitive data a run touches |
+| `artifacts:read` | `/artifacts` — read back a tool output too large to keep in the transcript. Its own scope rather than part of `audit:read`, because a spilled result is raw tool output and often the most sensitive data a run touches. The model's own way back, the `read_artifact` tool bound beside `spec.artifacts`, checks no scope and is held to something narrower instead: it reads only what its own conversation spilled (the thread, or the request when there is none), so a leaked id does not reach another caller's run through the model. Spill is kept for `FELIX_ARTIFACT_RETENTION_DAYS` (30; `0` keeps forever) and then swept, objects and ledger row together — so evidence meant to outlive that belongs in the audit log, not in an artifact |
 | `approvals:read` / `approvals:write` | `/approvals`; `approvals:read` also gates the `approval_required` frames on a durable `POST /chat/stream` |
-| `jobs:read` / `jobs:write` | `/jobs` |
+| `jobs:read` / `jobs:write` | `/jobs`. `POST /jobs/{name}/run` runs a job now and needs `jobs:write`: whoever may rewrite a job's prompt may already make it run. The job runs as itself — principal `cron`, no scopes — not as the caller, whose subject is recorded on the run as `requested_by` |
 | `plans:read` / `plans:write` | `/plans` |
 | `eval:read` / `eval:write` | `/eval` |
 | `usage:read` | `/usage` |

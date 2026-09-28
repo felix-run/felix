@@ -7,10 +7,389 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Memory capture extracts from the screened reply.** With reply controls and
+  `spec.memory.capture` on, facts were extracted from the reply as the model wrote it, so a
+  fact built from text the PII guardrails redacted was stored and came back in every later
+  prompt that recalled it. Capture now reads the reply as the controls ship it, and captures
+  nothing from a reply a judge denied. A router's controls reach its child's capture too.
+  Facts stored before this change are left as they are.
+
+- **The session log keeps the screened reply.** With reply controls on (`guardrails.providers:
+  [pii]` targeting `output`/`final_response`, or `final_response` judges), the thread's log
+  held the reply as the model wrote it. The react loop appends each message before the reply
+  wrapper sees the output, so `/chat/sessions/{id}/export`, `/chat/history`, a stream
+  reattach and a durable run's live tail all carried the unscreened text. Assistant messages
+  are now redacted, and a reply judged, at the write, with the same verdicts the client gets:
+  a redacted reply is stored redacted, and a denied one as its denial. That covers a router's
+  child, which writes the caller's thread, and reflect's critique, which quotes its draft.
+  Threads written before this change keep what they hold.
+
+- **`POST /chat/ui` answers only a prompt on the caller's own thread.** It checked no tenant, no
+  thread and no ownership — the one route where every other one does — so the whole control was
+  the secrecy of a 96-bit request id. A prompt's waiter is now scoped to its thread, which
+  `effective_thread_id` namespaces to the caller's tenant, the shape `/chat/tool_result` already
+  had. **Breaking:** the body requires `thread_id` (the `ui_request` frame carries it) and a
+  request without one is `422`; `request_id` is capped at 64 characters. `FelixClient.resolve_ui`
+  takes `thread_id=`; felix-web's client sends it from the frame. Upgrade the harness and the web
+  client together — an old client's answers are refused rather than delivered.
+
+- **A conversation summary never re-enters the system tier.** `ab5ad59` moved the compaction
+  summary — a model's rewrite of a transcript that includes raw tool output — out of the system
+  tier on the turn it was made. Every path that *replays* it on later turns (the checkpoint
+  rebuild, the re-walk, and both paths of `SummarizingSessionStrategy`) still injected it as
+  `role="system"`, and the test pinning the fix read the module's source for one string, so it
+  passed throughout. Every path now goes through one constructor, user-role and labelled as
+  reference material, and fenced so a summary cannot forge its own boundary.
+  `SummarizingSessionStrategy` and the branch summariser now fence their input and carry the
+  untrusted-data notice, as compaction's summariser does. The cross-provider handoff note put the prior transcript, tool results
+  included, into a system message; it now carries harness text only, since the conversation
+  follows it in full.
+
+
+### Fixed
+
+- **A steer sent to an idle thread reaches the next run.** `POST /chat/steer` with `kind: steer`
+  on a thread with no run in progress answered 200 and was counted on the snapshot, then dropped
+  before reaching the model or the transcript. It is now held and delivered at the start of the
+  thread's next run, after that run's own turn, and the "cancel remaining tools" flag it raised
+  is cleared there so it no longer cancels that run's tool calls. A steer or follow-up arriving
+  after a run's last drain is kept for the next run as well, rather than released with the run.
+
+- **One unwritable audit or usage event no longer blocks every later one.** A failed flush was
+  requeued whole, so a row Postgres would never accept was retried forever and everything behind
+  it waited until the buffer's ceiling started dropping the oldest. A failed batch is now written
+  an event at a time: rows the database refuses as data are quarantined — dropped, counted as
+  `felix_buffer_quarantined` (alerted as `FelixBufferQuarantined`) and logged by event id — and
+  the rest land; an unavailable database still requeues everything, after a single extra try.
+  Audit and usage inserts are also idempotent now, so a retry after a partial commit no longer
+  collides on the primary key.
+
+- **Usage is recorded under `FELIX_DATABASE_RLS`.** The worker's usage flush bound no tenant, so on
+  a deployment whose database role enforces row-level security every flush failed the policy,
+  was requeued and failed again: no usage row was ever written, `/usage` and cost reporting saw
+  nothing, and the in-process buffer eventually dropped the oldest events. Each flush now
+  writes per tenant under that tenant, as the audit flush already did. Usage lost before this
+  change is not recoverable.
+
+- **A durable run re-claimed after a crash resumes from its session log.** A worker killed
+  mid-invoke left the fiber at the same step, and the next claim re-sent the user turn onto a
+  thread that already held the run's model turns and tool results: the model answered the
+  request twice and could repeat tool calls that had already taken effect. The step now
+  records where its turn begins in the log and a re-claim continues from there — or, when the
+  reply was already logged, takes it without calling the model. Temporal retries too. It applies
+  to `react` and `deep` manifests; composites (which route or score from the incoming turn),
+  `semantic:N` sessions and `memory.checkpointer: none` keep re-sending, as before.
+
+- **A non-streaming `/chat` says which approvals its run asked for.** The `approval_required` frame
+  reaches only a stream, so `POST /chat` on a gated tool held the caller for the rule's whole TTL
+  and then answered with a denial, and nothing in the response said an approval had been
+  requested. The response now carries `approvals`: each is the frame the stream would have sent —
+  `approval_id`, `tool_name`, `rule_id`, `reason`, `expires_at` — plus how it ended, `approved`,
+  `denied` or `expired`. While the request is still blocked, `GET /approvals?thread_id=` finds it.
+
+- **A pinned thread runs the sub-agents its pin checked.** The pin check and the compile resolved
+  a router's children separately, so a child activated between the two compiled for one turn under
+  a pin that had verified its predecessor. The check now records what it resolved on the request's
+  `ResolvedManifest`, and every build after a check compiles from that — including a child the
+  check found nowhere, which stays refused for the turn.
+
+- **An activation, rollback or canary change is served at once.** The resolver caches each
+  manifest's active version for 30 seconds, and the function that drops that entry had no caller,
+  so the process that took a rollback kept serving the version it rolled back from for up to half
+  a minute. The store now invalidates the entry after each write that moves the pointer. Other API
+  replicas and the worker still follow within the 30-second window, as the README now says.
+
+- **A plan write no longer erases a concurrent one, or fields it was not sent** (#320).
+  `PUT /plans/{id}` takes an optional `expected_updated_at` and answers `409` with
+  `{error: "plan_changed", current}` when the plan has moved on; the agent's
+  `plan_update_step` writes the same way and re-applies its step change to what is stored, so
+  an operator's edit made mid-run survives it. Omitting `manifest_id` or `expires_at` now leaves
+  them as stored — they used to reset to `""` and no expiry, orphaning the plan from its
+  manifest and exempting it from retention. `updated_at` advances on every write, even two in
+  one millisecond.
+- **`pin_compile` covers a router's sub-agents.** The pin hashed the manifest a request named and
+  nothing it compiled, which was complete while sub-agents came from bundled YAML and stopped
+  being so when they began resolving from the tenant's store: an edited child's tools, policies
+  or approvals reached a pinned thread — or a durable run resuming with stored authority — on its
+  next turn. The pin now records a digest of every sub-agent, recursively, and a changed one is
+  drift (409 on a turn, a failed fiber on resume). A thread pinned before this gains the digest on
+  its next turn rather than failing, and a manifest without sub-agents pins exactly as before.
+
+- **The ruleless-rubric warning no longer says it passes "any answer at all".** A rubric with no
+  rule scores as non-empty, which rejects a blank answer — `negative.json` relies on exactly that.
+  The warning now says "passes any answer that is not blank".
+- **Screened tool output is read in full.** The model screener — and now the decider — saw only
+  the first 4,000 characters of a tool result, so a benign prefix longer than that carried a
+  payload past both; only the markers read the whole text. Tool output is screened window by
+  window like a user turn, and output longer than eight windows is treated as unscreenable, so
+  `on_flag` quarantines or blocks it. Applies when `content_screening.model` or `.decider` is set.
+
+- **The model injection screener is metered.** `content_screening.model` runs on every user turn
+  and every untrusted tool result, and its calls never reached `record_usage`, so screening spend
+  escaped `limits.max_cost_usd` and the usage table.
+
+- **Procedural memory no longer defeats system-prompt caching.** Recalled procedures were appended
+  as a system message each turn, and the Anthropic wire folds every system message into the one
+  cached `system` block — so the block changed per request and a manifest with
+  `procedural_memory` never read its system prompt from cache. They are sent as transient guidance
+  now, which also moves model-extracted text out of the instruction tier.
+- **Claude Code hooks work inside a git worktree.** `manifest-validate`, `doc-sync-reminder` and
+  `settings-sync-reminder` were silent for every edit made in a worktree, and `ruff-format` ran the
+  main checkout's ruff — and reformatted Markdown outside any repository. `protect-files` now
+  fails closed without `jq`, reads NotebookEdit targets, and covers every `.env*` spelling;
+  `git-guard` catches clustered flags (`-fu`, `-fd`, `commit -n`), `+ref` pushes, whole-tree
+  `checkout`/`restore`, and `stash clear`; the doc-drift gate asks only about the session's own
+  changes.
+
+- **Model-backed judges are metered.** `llm_judge_score` — behind every judge with a `model`, and
+  eval's `llm_judge` rubrics — called the model and never recorded the usage, so judge spend
+  escaped `limits.max_cost_usd` and the usage table.
+
+- **A router's sub-agents are the tenant's own agents, not blank ones.** Sub-agents were compiled
+  from bundled YAML only, and a name missing there became an empty manifest — `You are <name>.`
+  with no tools — so a router whose children were stored manifests routed every request to a
+  blank agent without an error. Children now resolve as a request would (manifest store, object
+  store, bundled) under the parent's tenant. A child that resolves nowhere fails the compile, and
+  routers that name each other in a cycle are refused instead of recursing until the stack gave out.
+  Each child compiles once per request however many parents name it, and nesting deeper than four
+  routers is refused, so a stored tree cannot turn one chat into an unbounded compile.
+
+- **A run ending on a denied tool is recorded with `final_response` status reflecting the
+  denial.** Until now, a run that ended because an approval timed out or a tool was denied still
+  wrote `final_response` with `status=ok`, so a denied run read as a successful completion in the
+  audit log. The turn loop now tracks whether the last tool batch had a denial and records
+  `final_response` with `status=error` when the run ends with that denial — a denial followed by
+  a closing message is an error row; a denial followed by more tool calls is not.
+
+- **Prompt caching covers the conversation, not just the preamble.** `spec.model.cache: true` put a
+  cache breakpoint on the system block and the last tool definition — a few thousand fixed tokens —
+  and left the conversation uncached, so every file an agent had read and every tool result it had
+  received was re-billed at full input price on every subsequent turn. For an agentic run that is
+  nearly the entire bill: one 212-call run metered 16.25M uncached input tokens against 2.7M read
+  from cache, a 14% hit rate, and $48.76 of its $51.07 was that uncached input. The newest message
+  now carries a breakpoint too, so each turn reads the turns before it at a tenth of base input and
+  pays the write premium only on the delta. Blocks that may not carry a marker are skipped —
+  notably `thinking`, which a run with extended thinking replays verbatim — and an isolated request
+  still caches nothing.
+
+- **A manifest can declare a token budget for a long agentic run.** `ABSOLUTE_LIMITS` was both
+  the value an unset field fell back to and the maximum a manifest could declare, so raising the
+  cap for one agent meant raising the floor under every agent that declares nothing — and
+  `max_input_tokens` was 1,000,000 for both. The counter sums the tokens each turn actually
+  processed, and a react run re-sends its prefix every turn, so an agent with a 38 KiB prompt hit
+  the ceiling in about 26 turns and stopped mid-work with `policy_deny control=limits`. The two
+  are separate now: `DEFAULT_LIMITS` fills an unset field and is unchanged, `ABSOLUTE_LIMITS`
+  bounds what may be declared and allows 20M input tokens. Cache reads still count in full —
+  they are tokens the provider processed, and summing them is what makes the budget mean the same
+  thing on the Anthropic wire, where `input` excludes them, and the OpenAI wire, where
+  `prompt_tokens` already includes them.
+
+### Changed
+
+- **An approval rule whose `when_args` names nothing is refused or reported.** `when_args` gates
+  only the calls carrying those arguments, so a misspelled name (`when_args: [topickey]` on
+  `remember`) was a rule that never fired and still validated. `PUT /manifests` and
+  `felix validate-manifest` now refuse one naming a built-in, plugin or memory tool literally
+  when the name is none of its arguments; for MCP tools and globs the compile logs a warning and
+  counts `felix_approval_when_args_unknown` instead, since those schemas can change under a
+  stored manifest. Stored manifests still load.
+
+- **Documented: sub-agents inherit the caller's admission.** `spec.auth.inbound` is checked on
+  the manifest a request names, not on each sub-agent a router compiles, so a child's own
+  `required_scopes` apply when it is called by name and not when a router hands it a request.
+  That was already the behaviour — bundled `router` reaches `deep` this way — and is now the
+  stated one, in `deploy/GOVERNANCE.md`.
+
+- **Bundled manifests cache their prompts.** `quick`, `deep`, `router`, `hybrid-router`,
+  `governed`, `support` and `cowork` now set `spec.model.cache: true`, matching `contributor` and
+  `triage`, so each turn reads the conversation before it from cache instead of re-billing it at
+  full input price. `oss-only` is left off: Ollama reuses prompt prefixes on its own and has no use
+  for `prompt_cache_key`. A deployment holding a stored copy of one of these manifests keeps that
+  copy's setting, because the store is read ahead of the bundled YAML.
+
+- **A router whose classifier names no sub-agent now says so.** It still sends the request to the
+  first sub-agent, but logs a warning and counts `felix_router_choice{method="unmatched"}` instead
+  of making that indistinguishable from a deliberate choice.
+
+- **The workspace is a named volume, not the deployment's checkout.** Compose mounted
+  `${FELIX_WORKSPACE_HOST:-./workspace}` at `/workspace`, so an agent's files landed inside the
+  deployment's own git checkout unless the operator overrode it, and the published image — uid
+  `10001` — could not write a directory the host owned (`Errno 13` on the reference deployment).
+  The default is now the named `felix-workspace` volume; the image creates `/workspace` owned by
+  its runtime user so a new volume is seeded writable; `FELIX_WORKSPACE_HOST` still overrides it;
+  and `scripts/check-compose-render.py` fails a render that bind-mounts a host directory there
+  without that override. **A deployment relying on the old default starts with an empty
+  workspace** — `UPGRADING.md` says how to keep or copy the old directory. Phase 0 of
+  `docs/WORKSPACE.md`.
+### Fixed
+
+- **A workspace tool that fails is audited as failing.** `list_dir`, `read_file`, `write_file`,
+  `edit_file` and `search_files` returned every failure as plain `error: …` text, which carries
+  no error marker, so the tool runner wrote the audit row as `tool_call` / `ok`, the metrics
+  counted a success, and the eval trajectory did not count a failure. On the reference
+  deployment an approved `write_file` failed with `Errno 13` twice and both rows said `ok`. Every
+  failure now goes through `tool_error_output`: `permission_denied` for a filesystem refusal,
+  `invalid_arguments` for a bad path, missing file or ambiguous edit, `transport_unavailable`
+  when no workspace is configured, `timeout` for a search past its budget, `internal`
+  otherwise. The text the model reads keeps its wording, now under a `[tool error/<code>]`
+  prefix. An `OSError` is rendered as `PermissionError: [Errno 13] …`, because
+  `tool_error_output` skips its prefix for text that already starts with `[`.
+
+
+### Added
+
+- **`felix-client`: the Python client as its own package (experimental).** `FelixClient` moved out
+  of the harness into `packages/client`, which depends on httpx and nothing in Felix — importing
+  it used to pull in FastAPI, SQLAlchemy, psycopg and the rest of the server. `from felix_client
+  import FelixClient`; `from felix.sdk import FelixClient` still works. It covers chat, durable
+  runs and approvals, and may change between releases; the OpenAPI document attached to each
+  release is the full contract. Not on PyPI yet: install from the repository with
+  `subdirectory=packages/client`.
+
+- **`content_screening.model_tools`: choose which tools pay for the screener.** A glob list of
+  the screened tools that get the paid scoring — the `model` screener and the `decider` battery,
+  a call per window each. Empty, the default, is every screened tool, as before. The marker scan
+  still runs on every screened tool, so a tool left out is screened by markers alone, never
+  unscreened: a cost lever, not an exemption. Refused without `model` or `decider: true`.
+- **A failed `tool_call` audit row says which class of failure it was.** `payload.error_code`
+  is the call's `ToolErrorCode` — `invalid_arguments`, `transport_unavailable`,
+  `provider_error`, `timeout`, `user_aborted`, `rate_limited`, `permission_denied` or
+  `internal` — on rows with `status: error`. The runner already computed it to set the status
+  and dropped it, so the audit log could say a call failed and never why. The error *message*
+  is not recorded: it is the tool's own text and can quote file contents or credentials, and
+  an audit row outlives its thread.
+
+- **Eval runs report what they cost and whether their judge ran.** Each score row carries
+  `duration_ms`, `tokens_input`, `tokens_output` and `cost_usd` for the candidate's turn, and
+  every run (`GET /eval/runs/{id}`, `felix eval`'s output) has a `stats` block: wall time, summed
+  item time, the slowest item, tokens, cost, tool calls and errors, and `judge_fallbacks`. An LLM
+  judge that could not run used to score the item with the heuristic in silence; the row now
+  says `judge_fallback: true` with `judge_error`, `felix eval` warns on stderr, and
+  `felix eval --strict-judge` exits 1 on it.
+
+- **Run a job now.** `POST /jobs/{name}/run` (`jobs:write`) runs a scheduled job immediately and
+  answers with the finished run, so a new job can be tried before it is left to cron. It runs
+  exactly as a scheduled firing does — as `cron`, on the job's thread, its prompt screened —
+  and the run records `trigger: manual` and the caller as `requested_by`. The schedule is not
+  moved, and a disabled job runs when asked.
+- **List a manifest's versions.** `GET /manifests/{name}/versions` (`manifests:read`) returns the
+  stored versions newest first, without their bodies, each marked `active` or `canary`, paged
+  with `before`. Rollback no longer requires knowing the version number already.
+
+- **Signed completion webhooks for durable runs.** `spec.execution.webhooks` names endpoint ids
+  from `FELIX_WEBHOOK_ENDPOINTS` (operator-registered, each scoped to tenants or `"*"` — a manifest never
+  carries a URL), and the worker POSTs the run's outcome when it ends, signed per Standard
+  Webhooks, through the egress guard, with backoff and a dead letter on the run row
+  (`FELIX_WEBHOOK_MAX_ATTEMPTS`, `FELIX_WEBHOOK_TIMEOUT_SECONDS`). `GET /chat/runs/{token}` reports
+  each endpoint's delivery state. Migration `0019` adds the columns; run `felix migrate head`.
+
+- **Each release carries its OpenAPI document.** The GitHub release for a tag now includes
+  `openapi.json`, built from that tag by `scripts/export-openapi.py`. The API's `/docs` sits behind
+  the credential, so this is the copy a public reference can render: docs.felix.run shows the one
+  for the version production reports.
+- **`decider-support`, a bundled manifest to copy decider settings from.** The `support` agent with
+  every `spec.decider` consumer that fits it: tool selection, skill suggestion, decider escalation
+  from Haiku to Sonnet, and the injection battery on fetched pages and search results. It needs a
+  decision route — a TypeSafe key for `jev`, Workers AI for `jev-cf`, or `jev` remapped to the
+  `llm` provider to try it with no second vendor — and without one refuses to compile, naming
+  what is missing.
+
+- **Spilled tool outputs are collected after `FELIX_ARTIFACT_RETENTION_DAYS` (default 30).** Nothing
+  ever deleted anything under `artifacts/`: the retention sweep collects rows, and the object
+  store has no `list` to find objects with. That was an opt-in cost until #319 turned the spill on
+  in five bundled manifests. Each spill is now recorded in an `artifacts` ledger table (migration
+  `0018_artifact_ledger`, tenant RLS like every other tenant table), written before the bytes and
+  deleted after them, and the nightly sweep drops the text, its owner record and the row
+  together. Unlike uploads this defaults to a bound, because a spill is the harness's working
+  copy rather than caller data; set `0` to keep forever. Past the window, `read_artifact`,
+  `GET /artifacts` and the terminal's `/artifact` report the id as missing. Spills written
+  before the migration have no row and are not collected.
+
+- **`make e2e`, `make eval`, `make bundle`, `make schema-check` and `make toolkit`.** The parts of
+  `make check-ci` are now runnable one at a time, and `check-ci` is built from them. `make
+  conformance` also runs the cross-replica Valkey arm when `FELIX_CONFORMANCE_REDIS_URL` is set,
+  as CI does, and says so when it is not.
+- **The toolkit validator checks what the toolkit claims about the tree.** `scripts/validate-toolkit.py`
+  now fails on a repo path, `file.py:symbol` or `make` target cited in `.claude/` that no longer
+  exists, and on a route module mapped to no docs page. It runs in the unit suite as well as CI's
+  path-filtered `toolkit` job, so renaming a module a skill cites fails where it happens.
+- **Injection screening can ask a decision model.** `content_screening.decider: true` asks
+  `spec.decider` one call's worth of questions — does the text try to override the assistant's
+  instructions, jailbreak it, or exfiltrate data — on user turns, tool arguments, caller output
+  schemas and untrusted tool output. It is additive: the markers still run first,
+  `content_screening.model` still runs beside it, either one flagging flags, and either one unable
+  to run leaves the text unscreened rather than cleared.
+
+- **Skill suggestion.** `spec.skill_suggestion` uses `spec.decider` to rank the skill catalog,
+  rerank a shortlist against each skill's body, and add a one-line hint naming the skill a request
+  needs — only when the request asks for a task and a skill fits. The model still decides whether
+  to activate it. The hint travels as a new kind of message, `ChatMessage.transient`: sent last on
+  the turn's first model call, after the prompt-cache breakpoint on the Anthropic wire and after
+  everything persistent on the OpenAI one, and never written to the session log, so a per-request
+  note no longer costs the cached conversation.
+
+- **Judges can be scored by a decision model.** A `guardrails.judges` rule with `decider: true`,
+  `reflect.decider: true`, or an eval rubric's `judge_decider: <route>` asks `spec.decider` for the
+  probability that the text meets the criterion, instead of asking a chat model for "a number
+  only" and parsing it. The criterion is read as written — a negative one like "must not leak
+  credentials" works without the `assert_absent:` prefix the heuristic needs. The model judge and
+  the heuristic stay as the fallback.
+- **The model can read what `spec.artifacts` spilled.** The spill replaced any tool result over
+  `threshold_chars` with a 200-character preview, and nothing the model could call fetched the rest
+  — the only reader was the `GET /artifacts` route, for clients. Enabling it saved tokens by
+  discarding what the agent had asked for, which is why no bundled manifest did. A manifest with
+  artifacts enabled now also gets `read_artifact(artifact_id, offset, length)`, which pages through
+  a spilled result in windows of `default_window_chars` (capped at `max_window_chars`); both fields
+  had been read by nothing. The reader reads only what its own conversation spilled — the tenant
+  and manifest prefix is shared by every caller of a manifest, so an id alone would otherwise reach
+  another user's run — runs through the governance stack like any tool, and is never itself
+  spilled. The spill marker is unchanged, so the terminal's `/artifact` keeps working. `contributor`, `cowork`,
+  `triage`, `deep` and `support` — the bundled manifests that read files or fetch pages — now
+  enable artifacts.
+
+- **A router can pick its sub-agent with a decision model, and escalation can ask one whether a
+  reply answers the request.** A `router` manifest that sets `spec.decider` sends each request to
+  the sub-agent the decider chooses, asked as one `Choice` with the router's system prompt as its
+  instructions, and only calls its model to classify when the decider is unsure or unavailable.
+  `model.confidence_escalation.decider: true` replaces the length-and-phrases heuristic — which
+  escalated a correct four-character answer and kept a fluent non-answer — with the decider's
+  probability that the reply answers the request, escalating below `spec.decider.min_confidence`.
+  The heuristic remains the fallback.
+
+- **Decision models, starting with Jev, and tool selection that uses one.** Some model calls
+  make a decision rather than write text, and until now each asked a chat model for prose and
+  parsed it. `felix_ai.decide` adds a separate seam for models that answer typed questions —
+  `Choice`, `Score`, `Noul` — with calibrated probabilities and a confidence. It is routed by
+  the new `FELIX_DECISION_ROUTES` and uses the credentials already in
+  `FELIX_MODEL_PROVIDER_OPTIONS`. Three providers are built in:
+  - `typesafe`: TypeSafe's Jev at `api.typesafe.ai`, route `jev`.
+  - `workers_ai`: Jev on Cloudflare Workers AI, route `jev-cf`.
+  - `llm`: any chat route, which reports its pick without a confidence.
+
+  Plugins add providers with `register_decision_provider`. A decision is metered like a model
+  turn and counts against `limits.max_cost_usd`. Jev is priced at $0.042 per million input
+  tokens, and its output is not billed.
+
+  The first consumer is `tools_retrieval.decider: true`, with `spec.decider: {id: jev}`. It
+  asks one `Choice` over the tool catalogue per user turn and offers the model only the most
+  probable `top_k` tools. When the decider errors, or the shortlist holds less than
+  `spec.decider.min_confidence` of the probability mass, selection falls back to the
+  embedding or keyword ranking. A decider id missing from `FELIX_DECISION_ROUTES` fails the
+  compile.
+
+- **HTTP 529 ("overloaded") is retried with backoff** on every model and decision call, like
+  429 and 503. Anthropic and TypeSafe both send it for a transient condition.
+
+- **The gpt-4.1 family now carries pricing in the model catalog.** Usage rows and cost caps for
+  gpt-4.1, gpt-4.1-mini, and gpt-4.1-nano are now computed instead of silently zero. An unpriced
+  model reports zero cost, so a cost cap never fires on it.
+
 ## [0.4.1] — 2026-09-28
 
-A hotfix on 0.4.0, branched from its tag, carrying one fix. Everything else merged to `main` since
-0.4.0 is in the next minor release.
+A hotfix on 0.4.0, branched from its tag, carrying one fix. Everything else under
+`[Unreleased]` is in the next minor release.
 
 ### Fixed
 
@@ -19,9 +398,10 @@ A hotfix on 0.4.0, branched from its tag, carrying one fix. Everything else merg
   `GET /approvals?status=pending` offered a decision already made (one production row was
   twenty-nine hours past its deadline), and a byte-identical re-ask joined that row, carrying its
   expired `expires_at` while the gate waited a fresh ttl on it. The row now becomes `denied`
-  with `decision_note: "timeout"` and `decided_by: "felix"`, and a lapsed pending row is closed
-  rather than reused. Rows left pending by earlier versions are closed the next time an
-  identical call asks; others stay until decided or swept.
+  with `decision_note: "timeout"` and `decided_by: "felix"`, and `create_pending` closes a
+  lapsed pending row rather than reusing it. `POST /chat` still reports such an approval as
+  `expired`. Rows left pending by earlier versions are closed the next time an identical call
+  asks; others stay until decided or swept.
 
 ## [0.4.0] — 2026-09-24
 

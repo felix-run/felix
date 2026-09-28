@@ -170,7 +170,11 @@ async def _stream_completion(
     try:
         async with async_run_with_context(req_ctx):
             agent = await build_tenant_agent(
-                settings, manifest=resolved.manifest, tools=tools, tenant_id=req_ctx.auth.tenant_id
+                settings,
+                manifest=resolved.manifest,
+                sub_agents=resolved.sub_agents,
+                tools=tools,
+                tenant_id=req_ctx.auth.tenant_id,
             )
             async for event in with_heartbeat(agent.stream_events(invoke_input)):
                 if event is HEARTBEAT:
@@ -340,6 +344,7 @@ async def chat_completions(body: ChatCompletionsRequest, request: Request) -> An
             agent = await build_tenant_agent(
                 settings,
                 manifest=resolved.manifest,
+                sub_agents=resolved.sub_agents,
                 tools=tools,
                 tenant_id=auth.tenant_id,
             )

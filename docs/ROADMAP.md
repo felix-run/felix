@@ -212,6 +212,55 @@ First, because everything else governs it.
       scrubbed env, cwd pinned under the workspace root), not as a `ShellBackend` registry — one
       implementation does not earn a registry.
 
+- [x] **Decision models (Jev).** Plan: `~/.claude/plans/we-want-to-use-sprightly-sprout.md`.
+      Some calls decide rather than write, and each one asked a chat model for prose and
+      parsed it. Examples: the router's "reply with only the agent name", which silently
+      falls back to the first sub-agent; the judges' `{score}` JSON; the injection scorer's
+      "number only". The seam is `felix_ai.decide` plus `FELIX_DECISION_ROUTES`, with the
+      `typesafe`, `workers_ai` and `llm` backends. Each consumer opts in on its own, and keeps
+      its current path as the fallback when the decider errors or is not confident enough.
+      Land in order, one PR each:
+      1. [x] The seam, plus `tools_retrieval.decider` (#314).
+      2. [x] The router's `_choose_child`, and confidence escalation's `_low_confidence` (#315).
+      3. [x] (#318) Judges, reply judges, eval `llm_judge`, and the reflect verifier: a `Noul` per
+         criterion.
+      4. [x] (#321) Skill suggestion: the two-stage rank-then-rerank, emitted as a transient prompt hint.
+      5. [x] Injection screening as a `Noul` battery. It is *additive* to the regex and the
+         LLM scorer, because Jev is not adversarially robust. Needs a security review.
+
+      Not yet verified: the Workers AI response envelope, against a live call.
+
+- [x] **Sub-agents are compiled from bundled YAML only.** Found in a real run of the router
+      e2e test: `runtime.py:build_tenant_agent` never sets `BuildDeps.sub_agent_builder`, so
+      `builder.py` compiles each `spec.sub_agents` name with `build_agent(name)` →
+      `load_bundled(name)`, and a name missing from `manifests/` becomes an *empty* manifest
+      (`You are <name>.`, no tools). A router whose children live in the manifest store — the
+      tenant's own agents — routes to blank agents without an error. Fix: resolve children
+      through `resolve_tenant_manifest` with the parent's tenant, and fail the compile on a
+      name that resolves nowhere.
+
+      Two decisions this surfaced, both taken:
+      - [x] **Child inbound auth — inherited.** `enforce_inbound_auth` has never run on sub-agents — bundled
+        `router` (`allow_anonymous: true`) already reaches `deep` (`allow_anonymous: false`).
+        With tenant-authored children, an author can no longer rely on a child's
+        `required_scopes` once it sits behind a public router. Enforce at compile (a child
+        stricter than its parent fails — which breaks bundled `router` → `deep` as written), or
+        document that routing inherits the parent's auth. Decided: inherited, documented in
+        `deploy/GOVERNANCE.md` under inbound constraints.
+      - [x] **Shallow compile pins — now deep.** `ensure_thread_pin` and `assert_pin_matches` hash the parent
+        only. Children used to change only with a deploy; stored children change mid-thread,
+        so a `pin_compile` thread picks up an edited child's tools and policies. Fold
+        `(child, version, hash)` into the pin, or say in `deploy/GOVERNANCE.md` that pins are
+        shallow. Done: a `sub_agents_hash` beside the parent's, checked on every turn and
+        durable resume; pins taken before it gain the digest on their next turn.
+      - [x] **Children are resolved twice per turn.** The pin digest resolves them in
+        `ensure_thread_pin`, the compile again in `runtime._tenant_sub_agent_builder`, so a child
+        activated between the two (a 30s active-pointer expiry) compiles for one turn under a pin
+        that checked its predecessor. Closing it means handing the checked tree to the build —
+        `prepare_tenant_invoke` returning what it resolved, through its ~10 callers. A
+        request-scoped cache is the tempting shortcut and the wrong one: worker tasks run
+        fibers back to back, and a stale entry would compile the wrong child.
+
 ### B. Close the durable loop
 
 - [x] **Run a fiber to suspension inside one claim.** Closed. The entry undercounted it: the
@@ -311,7 +360,7 @@ First, because everything else governs it.
       row. Nothing was broken end to end — claim exclusion rests on `lease_until` plus
       `FOR UPDATE SKIP LOCKED` — but the second line of defence those predicates are written
       to be was absent.
-- [ ] **The `ui` waiter is a bearer capability with no tenant in it.** `ui:{request_id}` carries
+- [x] **The `ui` waiter is a bearer capability with no tenant in it.** `ui:{request_id}` carries
       no tenant (`ui/prompts.py`), and `POST /chat/ui` does `_ = request` — no tenant, no thread,
       no ownership check (`routes/chat.py:952-963`). The whole control is the secrecy of a 96-bit
       `token_urlsafe`, which is adequate in practice (it is emitted only on that thread's side-event
@@ -319,13 +368,15 @@ First, because everything else governs it.
       checks ownership and this does not. The fix is `waiter_name("ui", thread_id, request_id)`
       plus a `thread_belongs_to_tenant` check — deliberately *not* folded into #250, because it
       changes the `ui` name shape that PR's upgrade note promises is unchanged, so it wants its
-      own commit and its own note. Decide before the next release.
-- [ ] **`waiters._local` never shrinks on the signal-first path.** `waiters.py:127-131`: a
-      `signal` with no waiter registers a *completed* future and only `wait` pops it. While Redis
-      is in fallback, an authenticated caller POSTing `/chat/tool_result` with random
-      `tool_call_id`s grows the dict without bound. Pre-existing and not made worse by #250 (the
-      name space was already caller-chosen); capping `tool_call_id` there bounds each entry's
-      size but not the count.
+      own commit and its own note. Decided and done: `ui:{thread}:{request_id}`, `thread_id`
+      required on `POST /chat/ui`, with the breaking-change note in the CHANGELOG.
+- [x] **`waiters._local` never shrinks on the signal-first path.** A `signal` with no waiter
+      registered a *completed* future and only `wait` popped it, so while Redis was in fallback
+      an authenticated caller POSTing `/chat/tool_result` with random `tool_call_id`s grew the
+      dict without bound. Closed by #290, which left this entry open: signal-first entries are
+      capped at `waiters.MAX_LOCAL_SIGNAL_FIRST` (1000), oldest evicted — the same at-most-once
+      contract the fallback already had. `tests/unit/test_waiters.py` goes red without the
+      eviction.
 - [x] **`tool_call_id` was provider input spliced into a `:`-delimited waiter key.** Closed, and
       the entry understated it: the collision needs no hostile `tool_call_id` at all, because
       *`thread_id` already contains colons* -- `{tenant}:{suffix}`, and `{tenant}:fiber:{id}` for a
@@ -352,25 +403,43 @@ First, because everything else governs it.
       because `GET /approvals` is tenant-wide and every pending approval in the tenant on one run's
       stream would leak other conversations' tool names and arguments. The poll remains the channel
       of record: a stream that was never open sees nothing.
-- [ ] **Signed completion webhooks**, delivered from the **worker** — the fiber reaches terminal
+- [x] **Signed completion webhooks**, delivered from the **worker** — the fiber reaches terminal
       state under its cron and the API replica that accepted the request may be gone. Dead letter
       is `status='dead'` on the same durable row, not a second store. `spec.webhooks` selects
       operator-registered endpoint ids and **never carries URLs**: a manifest author holds a
       tenant scope, and a tenant-supplied URL on a path carrying run output is an exfiltration
-      channel SSRF checks do not address.
+      channel SSRF checks do not address. Shipped as `spec.execution.webhooks` (durable
+      only) over `FELIX_WEBHOOK_ENDPOINTS`; delivery state is three columns on `fibers`
+      (migration `0019`), claimed `FOR UPDATE SKIP LOCKED` by a `webhook_delivery` cron, so the
+      Temporal path is covered by the same sweep. Egress guard unless `private: true`.
 - [x] **Bound the retry.** Correction to the entry as written: an `invoke` that raises is
       terminal in one tick (`status: failed`); it was the failures *outside* that handler — a
       save, a lease write, a store down — that were released and re-claimed once a minute until
       `expires_at`. Now: `fibers.attempts` (migration `0013`), backoff 1m→1h doubling, and
       `status: dead` at `FELIX_FIBER_MAX_ATTEMPTS` (5), with the error on the run view and every
       terminal-status set (`sdk.py`, the resume stream) agreeing under an invariant.
-- [ ] **Non-streaming `/chat` approval visibility.** `invoke()` never drains `side_events`, so a
+- [x] **Non-streaming `/chat` approval visibility.** `invoke()` never drains `side_events`, so a
       caller blocked on an approval hangs for the full TTL and then receives a deny, never
-      learning an approval was requested.
-- [ ] **`ctx.step(key, fn)` memoization** + an append-only `fiber_steps` table, so a crash
-      mid-tool-loop resumes instead of replaying a whole `invoke`. Today the only mitigation is
-      `_interrupted_tool_results` telling the *model* a call may already have taken effect — a
-      prompt-level stand-in for a durability primitive.
+      learning an approval was requested. Closed by recording every side event on the request
+      context as well as its stream queue: `POST /chat` now answers with `approvals`, each the
+      frame the stream would have sent plus `approved` / `denied` / `expired`. A blocked caller
+      still has no frame — it finds the id with `GET /approvals?thread_id=` — because a plain
+      HTTP response cannot say anything until it is over.
+- [x] **A crash mid-tool-loop resumes instead of replaying the whole `invoke`.** Closed
+      without the `ctx.step` / `fiber_steps` table this entry prescribed. The session log
+      already journals every model turn and tool result as it happens, and a replay was bad
+      because it *ignored* that: it re-sent the user turn onto a thread that held the run's
+      progress, so the model answered the request twice and could repeat calls that had
+      taken effect. Now the step records the log head (`invoke_began`, written under the
+      claim's version so the lease loop's lost-write check is unchanged) and a re-claim
+      continues from the log, or takes a reply already logged without calling the model.
+      `_interrupted_tool_results` still closes the one call that was in flight, which is the
+      only part no journal can settle. The run's own user turn is what marks its part of the
+      log — events the loop writes ahead of it are not the turn. Still re-sent: `checkpointer:
+      none`, composite patterns (they route or score from the incoming turn), `semantic:N`,
+      input-redacted requests. Open edge: on a caller-owned thread, a reply to a request sent
+      between crash and re-claim reads as the run's; closing it means recording the logged
+      turn's `event_id` in the marker after the append.
 
 Not a gap, checked this cycle: the lease is renewed in flight (`fibers.py:443`, renewal loop at
 `:473`), so `FIBER_LEASE_MS` bounds "how long after a worker dies is its fiber stranded", not
@@ -391,7 +460,7 @@ and fixed; the comment at `fibers.py:36-46` is the record.
       stays the logical route name, which is what an operator recognises.
 - [x] **`GET /usage/summary`** — by manifest / model / UTC day, with totals; both backends
       under conformance.
-- [ ] **Fill the missing bundled rates** — `gpt-4.1` has no entry and bills at the default, and
+- [~] **Fill the missing bundled rates** — ~~`gpt-4.1` has no entry and bills at the default~~ (priced in #301, with `-mini` and `-nano`); still open:
       no bundled entry sets a long-context tier. Correction to this entry as written: an
       unpriced model contributes `$0`, so `limits.max_cost_usd` fails **open** for it, not
       closed — `felix_model_unpriced` now says when that is happening.
@@ -409,11 +478,15 @@ and fixed; the comment at `fibers.py:36-46` is the record.
       fix was a read, not a design. Not landed, and still the auditor's second question:
       `GET /audit/export` over a time range; `audit.py`'s docstring already promises an export
       that does not exist.
-- [ ] **Surface eval instrumentation** — `EvalRun.started_at/finished_at` and `ItemScore`'s
-      `duration_ms` / token counts / `tool_call_count` are all stored and rendered nowhere. And
-      make the judge's fail-open path visible: any exception silently degrades an LLM judge to a
-      substring check with `reason: "llm_fallback:<exc>"`, so a misconfigured judge model does not
-      fail your eval, it quietly weakens it.
+- [x] **Surface eval instrumentation.** Correction to the entry as written: there was no
+      `ItemScore` and no per-item duration or token count stored anywhere — only `tool_calls` /
+      `tool_errors` on the score row. Each item now records `duration_ms`, `tokens_input`,
+      `tokens_output` and `cost_usd` for the candidate's own turn (read off the item's
+      `LimitState`, which metering already fills; the judge's cost is the eval's, not the
+      agent's), and every run dict carries `stats` summed from its rows plus `wall_ms` — derived
+      on read, so no migration. The judge's fail-open path is visible: `judge_fallback` /
+      `judge_error` on the row, `stats.judge_fallbacks` on the run, a warning from
+      `felix eval`, and `--strict-judge` to fail on it.
 - [x] **Skills routes.** Landed: `GET /skills/{manifest}` lists what a manifest can reach and
       what is active, `GET /skills/{manifest}/{skill}` returns the body `activate_skill` would
       hand the model, and `GET /skills/{manifest}/activations/recent` says which skill activated
@@ -462,12 +535,24 @@ Small, and blocking for the adopter goal: anyone evaluating Felix on its governa
       on `_DelegatingAgent`'s `self.inner or self._base_agent(...)` fallback, which is dead
       from core because `_build_plan_execute` always passes `inner` — the field stayed inert
       *and* the textual ratchet started reporting it as fixed.
-- [ ] **The session log keeps the unscreened reply.** The reply controls above govern the
-      reply as it leaves the run; the react loop appends the assistant message to the session
-      log before the wrapper sees it, so a resume stream or a thread export replays the raw
-      text. Either append the screened reply (the wrapper would need the store) or record a
-      redaction event the replay path applies. Named in `deploy/GOVERNANCE.md` as an exception
-      until it lands.
+- [x] **The session log keeps the unscreened reply.** Fixed at the write rather than by
+      either prescription. A redaction event would have left the raw PII stored and every
+      reader owing the replay logic; handing the wrapper the store would have come after the
+      live tail had already published the raw turn. Instead the compile hands the pattern a
+      `ScreenedSessionStore` whenever reply controls are on. It redacts every assistant
+      message and judges each reply before it is appended, through one `ReplyScreen` shared
+      with the reply wrapper, so the log and the client get the same verdict and a judge runs
+      once. Children compile against the same store, because the router forwards the caller's
+      thread; reflect quotes its draft through the screen. Remaining: a preamble before tool
+      calls is redacted but not judged, so on a denial it stays in the log; stored reasoning
+      and compaction summaries are kept as written (`deploy/GOVERNANCE.md`).
+- [x] **Memory capture reads the unscreened reply.** `ReactAgent._maybe_capture_memory` handed
+      `capture_from_turn` the pattern's own `final`, from inside the wrapper, so a manifest
+      with PII guardrails and `memory.capture` could store a fact extracted from the text the
+      reply controls redacted. Now it extracts from `ReplyScreen.settle` — redacted, and
+      skipped when a judge denied the reply. Screens chain (`ReplyScreen.parent`) down the
+      sub-agent tree, so a router's controls reach a child's capture even when the child has
+      controls of its own.
 - [x] **Final-response judges do nothing on the streaming path.** Fixed with the reply-path
       wrapper: reply text is held until the run ends and released judged, or replaced by the
       denial; structural frames still stream as they happen.
@@ -585,10 +670,15 @@ comment explaining exactly that. It is conditional, not inert.
       lands. `retired_by` versus `source`, why resurrection is gated on who retired rather than
       who wrote, and which of the manifest, the store and the approval wrapper is authoritative.
       Enforced in `tests/conformance/test_memory_trust_matrix.py`; the prose does not exist.
-- [ ] **Warn when `when_args` names nothing** — `ApprovalRule.when_args` is not validated against
-      the gated tool's schema, so `when_args: [topickey]` yields a rule that never fires and still
-      passes `validate-manifest` and both framework checks. `RememberArgs` is a pydantic model with
-      `extra="forbid"`, so the check is cheap. Decide whether it warns or refuses.
+- [x] **Warn when `when_args` names nothing** — decided: both, by what is knowable.
+      `manifests/approval_args.py` refuses at write (`validate_for_write`, so `PUT /manifests`
+      and `felix validate-manifest`) a rule naming built-in, plugin or memory tools literally
+      when a `when_args` name is none of their arguments; it warns at compile, once per process,
+      with `felix_approval_when_args_unknown`, for every resolved tool — MCP included, since
+      those schemas can change under a stored manifest and refusing would be an outage. A name
+      is flagged only when no reached tool takes it, so `github__*` with `when_args: [force]`
+      is fine; a tool whose schema lists no properties is never grounds. Not a parse-time check,
+      which would reject stored manifests on read.
 - [ ] **Split-turn compaction** — when one turn alone exceeds `keep_recent_tokens` the cut lands
       mid-turn and one summary covers both sides. Two summaries with different prompts and budgets
       is the fix. Narrow: only bites on very long single turns.
@@ -607,7 +697,9 @@ comment explaining exactly that. It is conditional, not inert.
       Kubernetes side. The scrape credential is a zero-scope API key, because `/metrics` is
       authenticated on purpose.
 - [ ] **Sandbox ladder extras** — capability-bridge / gVisor as documented extras, not the default
-      lean image.
+      lean image. The workspace tools need this more than the snippet rung does: see
+      [WORKSPACE.md](WORKSPACE.md), which puts workspaces in a hosted sandbox service in production and keeps gVisor for the
+      `broker` fallback.
 - [ ] **OAuth / dynamic provider keys** — secrets backends cover static keys; refresh /
       `getApiKey(provider)` only if a real customer path needs it.
 - [ ] **`append_batch` read-modify-write** — fold the read into the insert
@@ -648,12 +740,11 @@ rather than from re-reading a file. The wave itself is written up in [HISTORY.md
       redacts an embedded credential — `manifests:read` could read one before. The `client-shell` approval rule and the `thread_id`/`tool_call_id`
       requirement are what stand between an anonymous caller and command execution on a
       developer's machine. Untouched by the audit; wants a conscious yes or no.
-- [ ] **A per-tool screener cost lever.** `content_screening.tools` became additive in #146, so
-      the only per-tool cost control is gone. Free in the default configuration (no `model`
-      set), and a manifest binding twenty MCP tools that named three now pays twenty screener
-      calls per turn where it does. If that shows up: add `model_tools:` — *which tools get the
-      expensive screener*, marker screening unconditional — never a way to exempt an untrusted
-      tool from screening.
+- [x] **A per-tool screener cost lever.** `content_screening.model_tools`, as prescribed: a glob
+      list of which screened tools get the paid scoring (`model` and `decider`); empty is every
+      screened tool; the marker scan stays unconditional, so leaving an untrusted tool out
+      screens it by markers alone rather than not at all. Refused without `model` or
+      `decider: true`, and unmatched patterns count as `felix_rule_targets_nothing`.
 - [ ] **Should `felix validate-manifest` hard-fail on a pattern matching no declared
       integration?** Compile-time tolerance exists for the dynamic tool set (a failed MCP
       discovery binds nothing). At author time the builtins plus declared refs are statically
@@ -718,12 +809,16 @@ rather than from re-reading a file. The wave itself is written up in [HISTORY.md
       `felix-run/web` mirrors `StreamEvent` by hand and its union has an open arm, so an added or
       renamed frame silently does nothing on both sides. Fold in **snapshot-authoritative
       streaming** if it happens.
-- [ ] **Publish the SDK, or say it is not one.** `felix/sdk.py` is 570 lines covering ~27 of ~72
-      operations, all in `/chat` + `/approvals`, returning `dict[str, Any]` throughout — no
-      response models, no event-name enums, no typed exceptions, no pagination helpers — and it
-      lives inside the harness, so importing it drags the whole server dependency tree. The
-      durable-run polling and lease handling in it are genuinely good. The README never mentions
-      it, so a Python adopter finds it by reading source.
+- [x] **Publish the SDK, or say it is not one.** Decided: a light package, marked experimental.
+      `felix/sdk.py` moved to `packages/client` (`felix-client`, module `felix_client`), httpx
+      and nothing else, same API; `felix.sdk` re-exports it. The README says what it covers,
+      that it is experimental, how to install it from the repository, and that the OpenAPI
+      document on each release is the contract. Typed models, enums and full route coverage
+      were deliberately not taken on — that is a compatibility promise, not a move.
+      Found doing it: **the `felix_ai` → `felix` import boundary was enforced nowhere.** CLAUDE.md
+      said `test_invariants.py` held it; an `import felix.config` planted in `felix_ai` left all
+      2,996 unit tests and ruff green. `test_the_model_layer_and_the_client_import_nothing_of_felix`
+      now walks every import node, lazy ones included, for both packages.
 
 ### Control plane
 
@@ -743,9 +838,12 @@ rather than from re-reading a file. The wave itself is written up in [HISTORY.md
       `FELIX_AUTH_API_KEYS` JSON and restarting. Manifest CRUD, canary and rollback are real and
       API-driven; onboarding tenant #2 is a config edit and a process restart. Decide whether that
       is the product (single-operator self-host) or a gap, and write the answer down either way.
-- [ ] **Manifest version listing** — `GET /manifests/{name}?version=N` fetches one; nothing
-      enumerates what exists, so rollback requires knowing the number already.
-- [ ] **Run a job now** — `jobs.py` is CRUD plus run history; you can only wait for cron.
+- [x] **Manifest version listing** — `GET /manifests/{name}/versions`: newest first, metadata
+      only, each marked `active` / `canary`, paged by `before=<version>` (`next_before`).
+- [x] **Run a job now** — `POST /jobs/{name}/run` (`jobs:write`), synchronous, returning the
+      run. It goes through `scheduler.fire_job`, the path cron now uses too, so it runs as
+      `cron` on the job's thread with its prompt screened; the run records `trigger: manual`
+      and `requested_by`, and the schedule is left alone (`store.KEEP_SCHEDULE`).
 
 ### Testing strategy
 
@@ -785,13 +883,17 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       hand-off (no dataset item calls a tool) and its `use_llm_judge` inversion.
       `POST /eval/runs/compare` still has no caller at all. `patterns/delegating.py` still has no named test, and needs a per-client
       sub-queue in the fixture before it can have one — the last piece of this item.
-- [ ] **Decide what a steer queued on an idle thread should do.** Today it is accepted with
-      200, counted on the snapshot, then dropped before reaching the model or the transcript —
-      `kind: follow_up` is the path that works. Found by asserting on what reached the model
-      rather than on the reply. Options: refuse it, promote it to a follow-up, or hold it until
-      a run starts. Pinned as-is by
-      `tests/e2e/test_chat_run_control.py::test_a_steer_queued_while_idle_is_dropped_without_reaching_anyone`,
-      which should fail and be rewritten when this is decided.
+- [x] **Decide what a steer queued on an idle thread should do.** Decided: **hold it for the
+      next run**. It was accepted with 200, counted on the snapshot, then dropped — the loop
+      drained steers only between tool rounds, so a turn that called no tool never read one,
+      and `release_run_queue` discarded the in-process queue with it inside (on Redis it
+      survived instead, and landed at some later run's tool round). Now the run drains held
+      steers at its start, after its own turn, and clears the stale "cancel remaining tools"
+      flag the steer raised, which would otherwise have cancelled that run's second tool call;
+      `release_run_queue` keeps a queue that still holds undelivered messages, which also
+      covers a steer arriving after a run's last drain. Refusing needed a cross-replica "is a
+      run active" read and still lost the race at run end; promoting to a follow-up would have
+      stopped the steer shaping the answer it was aimed at.
 
 - [~] **Postgres arms for the ten stores that have none.** Approvals, session search and the
       fiber *claim* path are done (`tests/conformance/test_approvals_store.py`,
@@ -947,27 +1049,32 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       than files to write; plans and eval are covered by the seam bullet above. Fix each with
       the arm that proves it rather than in one sweep.
 
-- [ ] **The audit and usage reads do not set the tenant GUC, so RLS empties them.** Both open
-      their read session through `get_session_factory(...)` without `rls_tenant(tenant_id)`,
-      unlike `_write_batch`, which does. With `FELIX_DATABASE_RLS=1` on a role that cannot
-      bypass, `_rls_after_begin` resolves no tenant, sets neither setting, logs its warning,
-      and the policy filters every row — `/audit` and `/usage` return empty pages to an
-      operator whose history is there. Pre-existing, and explicitly *not* covered by the new
-      conformance arm: it connects as the database owner with `database_rls` unset, so that
-      suite must not be read as evidence about this.
+- [x] **The audit and usage reads do not set the tenant GUC, so RLS empties them.** Wrong as
+      written, and the real defect was the other half. Probed against a migrated database as a
+      `NOSUPERUSER NOBYPASSRLS` role with `FELIX_DATABASE_RLS=true`: `/audit`, `/usage` and
+      `/usage/summary` all return their rows, because `AuthMiddleware` wraps every request in
+      a `RequestContext` and `_resolve_rls_tenant` falls back to its tenant; the worker's
+      anomaly and continuous-eval sweeps bind theirs with `rls_tenant`. What failed was the
+      **usage write**: `usage/store.py:_write_batch` bound no tenant, so the worker's
+      `flush_usage` failed `WITH CHECK` on every tick, requeued, and failed again — the meter
+      never reached Postgres on an RLS deployment and the buffer's ceiling dropped the oldest.
+      It now binds per tenant, as the audit writer beside it always did, and
+      `tests/conformance/test_rls_enforcement.py` flushes two tenants through the enforcing role.
+      Every other worker task body was run against the same role and raised nothing.
 
-- [ ] **One unwritable audit event blocks every later one.** `flush_pending` requeues a batch
-      whose write failed, so the compliance record survives a transient outage — and so a
-      *permanently* unwritable event is retried forever, with every subsequent event stuck
-      behind it until the 10k ceiling starts dropping the oldest. Two concrete triggers, both
-      invisible to the in-memory twin, which stores anything. The `\u0000` trigger is fixed at
-      source — `record_event` strips it, because it was reachable by any authenticated client
-      in one request — but the shape remains for a `payload_json` Postgres refuses for another
-      reason, and for a caller-supplied `id` colliding on the `(tenant_id, id)` primary key
-      (reachable only from tests today: nothing in `packages` or `apps` supplies an id). `tests/conformance/test_audit_store.py`
-      now pins that a failed flush keeps its batch; what is missing is telling a transient
-      failure from a poisonous one — quarantine the offending event, count it the way
-      `DurableBuffer` counts drops, and let the rest through.
+- [x] **One unwritable audit event blocks every later one.** `flush_pending` requeued a failed
+      batch whole, so an event Postgres would never accept was retried forever with every later
+      event behind it. Closed by `DurableBuffer.drain`, shared by the audit and usage flushes: a
+      failed batch is written again an event at a time, an event refused as data (`DataError`,
+      `IntegrityError`) is quarantined — dropped, counted as `felix_buffer_quarantined`, alerted
+      on, logged by id — and the first failure of any other kind stops the pass and requeues the
+      rest, so an outage costs one extra round trip, not one per event. Found on the way: both
+      writers commit per tenant, so a flush failing on a later tenant had already committed the
+      earlier ones and its retry collided on the primary key — a poison event the flush made
+      itself. Both inserts are now `ON CONFLICT DO NOTHING`, and the twins dedupe the same way.
+      The trade: a *different* event reusing an id is now skipped rather than quarantined.
+      Nothing in `packages` or `apps` supplies an id — `record_event` mints a uuid — so a
+      collision can only be a retry; revisit if an id ever becomes caller-supplied.
 
 - [ ] **The keyset cursor's tie-break is collation-dependent.** `felix/cursors.py` pairs the
       timestamp with the row id, and `id` is text — so Postgres orders it by the database

@@ -111,6 +111,17 @@ class PluginRegistry:
 
         register_model_provider(name, factory)
 
+    def register_decision_provider(self, name: str, factory: Callable[..., Any]) -> None:
+        """Register a decision provider, selected by `provider` in `FELIX_DECISION_ROUTES`.
+
+        Forwarded to `felix_ai.decide`'s registry, like `register_model_provider` above. The
+        factory takes `(model_id, wire_model, options, settings)`, where `options` is the
+        provider's entry in `FELIX_MODEL_PROVIDER_OPTIONS`.
+        """
+        from felix.decisions import register_decision_provider
+
+        register_decision_provider(name, factory)
+
     def register_startup_hook(self, hook: Callable[..., Awaitable[Any]]) -> None:
         self._startup_hooks.append(hook)
 

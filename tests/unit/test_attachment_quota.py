@@ -332,12 +332,12 @@ async def test_the_sweep_drains_more_than_one_batch() -> None:
     for row in att_mod._ledger_rows.values():
         row["created_at"] = 0
 
-    original = ret_mod.ATTACHMENT_SWEEP_BATCH
-    ret_mod.ATTACHMENT_SWEEP_BATCH = 2
+    original = ret_mod.OBJECT_SWEEP_BATCH
+    ret_mod.OBJECT_SWEEP_BATCH = 2
     try:
         counts = await retention.run_retention_sweep(settings)
     finally:
-        ret_mod.ATTACHMENT_SWEEP_BATCH = original
+        ret_mod.OBJECT_SWEEP_BATCH = original
 
     assert counts["attachments"] == 5, "the sweep stopped after one batch"
     assert await tenant_attachment_bytes(settings, "acme") == 0

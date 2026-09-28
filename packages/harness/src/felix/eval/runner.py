@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -174,7 +175,12 @@ def _wants_llm_judge(rubric: dict[str, Any], *, deterministic_judge: bool) -> bo
         return False
     if rubric.get("llm_judge") is False:
         return False
-    return bool(rubric.get("llm_judge") or rubric.get("judge_criteria") or rubric.get("judge_model"))
+    return bool(
+        rubric.get("llm_judge")
+        or rubric.get("judge_criteria")
+        or rubric.get("judge_model")
+        or rubric.get("judge_decider")
+    )
 
 
 async def _maybe_llm_judge(
@@ -191,6 +197,27 @@ async def _maybe_llm_judge(
     # Defaulting to an Ollama route meant the judge silently degraded to the heuristic
     # on any deployment without a local model — see MemoryCapture.model.
     model_id = str(rubric.get("judge_model") or "claude-haiku")
+    decider_id = str(rubric.get("judge_decider") or "")
+    if decider_id:
+        from felix.decisions import build_decider, meets_criterion
+
+        try:
+            decided = await meets_criterion(
+                build_decider(settings, decider_id), answer, criteria, request=user_input, purpose="eval"
+            )
+            return {
+                "pass": decided >= threshold,
+                "score": decided,
+                "rule": "decider_judge",
+                "reason": "",
+                "heuristic_pass": ok,
+                "heuristic_score": score,
+                "heuristic_rule": rule,
+            }
+        except Exception as exc:
+            logger.warning(
+                "eval decider judge %s failed (%s); asking the model", decider_id, type(exc).__name__
+            )
     try:
         from felix.eval.compare import llm_judge_score
         from felix.manifests.schema import ModelSpec
@@ -214,12 +241,19 @@ async def _maybe_llm_judge(
             "heuristic_rule": rule,
         }
     except Exception as exc:
-        logger.debug("llm_judge unavailable: %s", exc, exc_info=True)
+        # Scored by the heuristic instead, which is a weaker eval that still reports a result —
+        # so the item says so (`judge_fallback`) and the run counts it (`stats.judge_fallbacks`),
+        # rather than leaving a misconfigured judge model to be found in a debug log.
+        logger.warning(
+            "eval llm judge %s unavailable (%s); scoring with the heuristic", model_id, type(exc).__name__
+        )
         return {
             "pass": ok,
             "score": score,
             "rule": rule,
             "reason": f"llm_fallback:{exc}",
+            "judge_fallback": True,
+            "judge_error": type(exc).__name__,
         }
 
 
@@ -327,6 +361,7 @@ async def start_run(
             rubric = dict(raw_rubric)
             if use_llm_judge and "llm_judge" not in rubric:
                 rubric = {**rubric, "llm_judge": True}
+            started = time.monotonic()
             if mock:
                 answer = _mock_answer(rubric)
                 trajectory = _mock_trajectory(rubric)
@@ -339,12 +374,21 @@ async def start_run(
                     agent = await build_tenant_agent(
                         settings,
                         manifest=resolved.manifest,
+                        sub_agents=resolved.sub_agents,
                         tools=tools,
                         tenant_id=tenant_id,
                     )
                     result = await agent.invoke(InvokeInput(messages=messages, thread_id=req_ctx.thread_id))
                 answer = result.final.content if result.final else ""
                 trajectory = trajectory_of(list(result.messages))
+            # The candidate's turn only: the judge below is the eval's cost, not the agent's.
+            # Tokens and cost are what the turn metered onto this item's own context.
+            spent = {
+                "duration_ms": int((time.monotonic() - started) * 1000),
+                "tokens_input": req_ctx.limit_state.tokens_input,
+                "tokens_output": req_ctx.limit_state.tokens_output,
+                "cost_usd": round(req_ctx.limit_state.cost_usd, 6),
+            }
             heuristic = _score_answer(answer, rubric, trajectory)
             if _wants_llm_judge(rubric, deterministic_judge=deterministic_judge) and not mock:
                 judged = await _maybe_llm_judge(
@@ -364,6 +408,9 @@ async def start_run(
                     "mock": mock,
                     "reason": judged.get("reason"),
                 }
+                if judged.get("judge_fallback"):
+                    score_row["judge_fallback"] = True
+                    score_row["judge_error"] = judged.get("judge_error")
             else:
                 ok, score, rule = heuristic
                 score_row = {
@@ -374,6 +421,7 @@ async def start_run(
                     "answer": answer[:500],
                     "mock": mock,
                 }
+            score_row.update(spent)
             score_row["tool_calls"] = len(trajectory.tool_names)
             score_row["tool_errors"] = trajectory.errors
             if ok:

@@ -106,12 +106,11 @@ class SummarizingSessionStrategy:
         pinned = [e for e in raw if is_pinned(e)]
         compactable = [e for e in raw if not is_pinned(e)]
 
+        from felix.session.compaction import summary_message
+
         summary_msg: ChatMessage | None = None
         if latest_summary and latest_summary.content:
-            summary_msg = ChatMessage(
-                role="system",
-                content=f"[conversation summary]\n{latest_summary.content}",
-            )
+            summary_msg = summary_message(latest_summary.content)
 
         if len(compactable) <= self.keep:
             merged = sorted([*pinned, *compactable], key=lambda e: e.seq)
@@ -143,6 +142,8 @@ class SummarizingSessionStrategy:
 
         if model is not None:
             try:
+                from felix.session.compaction import _UNTRUSTED_NOTICE, fence_untrusted
+
                 text = "\n".join(f"{e.role}: {e.content}" for e in older if e.content)
                 result = await model.chat(
                     [
@@ -151,9 +152,11 @@ class SummarizingSessionStrategy:
                             content=(
                                 "Summarize this conversation briefly (3-5 sentences). "
                                 "Preserve goals, decisions, constraints, and pending work."
+                                + _UNTRUSTED_NOTICE
                             ),
                         ),
-                        ChatMessage(role="user", content=text),
+                        # Fenced as compaction's is: the transcript carries tool output.
+                        ChatMessage(role="user", content=fence_untrusted(text)),
                     ],
                     [],
                 )
@@ -173,10 +176,7 @@ class SummarizingSessionStrategy:
                         },
                     )
                 )
-                summary_msg = ChatMessage(
-                    role="system",
-                    content=f"[conversation summary]\n{summary_text}",
-                )
+                summary_msg = summary_message(summary_text)
             except Exception:
                 logger.debug("summarization failed; falling back to windowed", exc_info=True)
                 note = ChatMessage(

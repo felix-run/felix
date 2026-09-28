@@ -406,5 +406,14 @@ def test_multimodal_chat_message_parse() -> None:
 async def test_ui_resolve_smoke() -> None:
     from felix.ui import resolve_ui_response
 
-    out = await resolve_ui_response("noop-id", value="ok")
+    out = await resolve_ui_response("acme:t1", "noop-id", value="ok")
     assert out["ok"] is True
+
+
+def test_a_ui_waiter_names_its_tenant_scoped_thread() -> None:
+    """Two tenants' threads with the same suffix are different waiters, so a request id
+    leaked from one cannot answer the other's prompt."""
+    from felix.ui.prompts import _waiter_name
+
+    assert _waiter_name("acme:t1", "r") != _waiter_name("globex:t1", "r")
+    assert "acme" in _waiter_name("acme:t1", "r")

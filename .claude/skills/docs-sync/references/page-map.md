@@ -1,17 +1,22 @@
 # Surface → documentation page map
 
+The hooks read `.claude/hooks/lib/surfaces.sh`; this table is its readable twin. Change both
+together — `scripts/validate-toolkit.py` fails when a route module is missing from either.
+
 `$DOCS` = `${FELIX_DOCS_ROOT:-~/Projects/felix-web/apps/docs}/src/content`
 
 ## Public site (felix-web repo)
 
 | Felix surface | Page |
 |---|---|
-| `apps/api/.../routes/chat.py`, `openai_compat.py`, `a2a.py`, `mcp.py`, `well_known.py` | `$DOCS/guide/rest-api.mdx` |
+| `apps/api/.../routes/chat.py`, `openai_compat.py`, `a2a.py`, `mcp.py`, `well_known.py` (and the `_sse.py` / `_streaming.py` helpers) | `$DOCS/guide/rest-api.mdx` |
 | `apps/api/.../routes/{audit,approvals,plans,jobs,manifests,eval,usage,internal}.py` | `$DOCS/guide/management-api.mdx` |
+| `apps/api/.../routes/{artifacts,documents,files,memory,skills}.py` | `$DOCS/guide/management-api.mdx` |
 | `packages/harness/src/felix/manifests/schema.py`, `manifests/*.yaml` | `$DOCS/guide/manifest-reference.mdx` |
 | `manifests/{builder,resolver,pin}.py` | `$DOCS/internals/manifest-pipeline.mdx` |
 | `patterns/{react,registry,types}.py` | `$DOCS/internals/patterns.mdx` |
-| `patterns/model*.py` (client, registry, composites) | `$DOCS/internals/model-client.mdx` |
+| `patterns/model*.py` (client, registry, composites), `decisions.py`, `packages/ai/**` | `$DOCS/internals/model-client.mdx` |
+| `plugins.py`, `apps/api/.../composition.py` | `$DOCS/internals/plugins.mdx` |
 | `auth/*`, `manifests/inbound_auth.py` | `$DOCS/internals/auth.mdx` |
 | `governance/*`, `security/*`, `manifests/governance.py` | `$DOCS/internals/governance.mdx` |
 | `db/*`, `session/store.py`, `migrations/versions/*` | `$DOCS/internals/persistence.mdx` |

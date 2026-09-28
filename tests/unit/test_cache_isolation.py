@@ -159,3 +159,87 @@ async def test_an_isolated_request_reaches_the_wire_uncached(monkeypatch: Any) -
         ModelChatOptions(isolate_cache=True),
     )
     assert "cache_control" not in json.dumps(_FakeClient.sent)
+
+
+# --- the conversation, which is where the money is ------------------------------
+
+
+def _conversation_body() -> dict[str, Any]:
+    return {
+        "system": "you are felix",
+        "max_tokens": 1024,
+        "tools": [{"name": "read_file"}],
+        "messages": [
+            {"role": "user", "content": "fix the bug"},
+            {
+                "role": "assistant",
+                "content": [{"type": "tool_use", "id": "t1", "name": "read_file", "input": {}}],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "...50 KiB..."}],
+            },
+        ],
+    }
+
+
+def test_the_newest_message_carries_a_breakpoint_so_the_turns_before_it_are_read() -> None:
+    """Without this the whole transcript is re-billed at full input price every turn: a
+    212-call run metered 16.25M uncached input tokens against 2.7M cache reads, and 95% of
+    its cost was that uncached input."""
+    body = _conversation_body()
+    apply_anthropic_thinking_cache(body, _Spec(), "claude-sonnet-4-5")
+
+    tail = body["messages"][-1]["content"][-1]
+    assert tail["cache_control"] == {"type": "ephemeral"}
+    assert tail["tool_use_id"] == "t1", "the block is marked, not replaced"
+    assert "cache_control" not in json.dumps(body["messages"][:-1]), "one breakpoint, at the end"
+
+
+def test_a_string_message_becomes_a_text_block_to_carry_the_marker() -> None:
+    body: dict[str, Any] = {
+        "system": "s",
+        "max_tokens": 1024,
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+    apply_anthropic_thinking_cache(body, _Spec(), "claude-sonnet-4-5")
+
+    assert body["messages"][-1]["content"] == [
+        {"type": "text", "text": "hi", "cache_control": {"type": "ephemeral"}}
+    ]
+
+
+def test_an_isolated_request_caches_no_part_of_the_conversation() -> None:
+    body = _conversation_body()
+    apply_anthropic_thinking_cache(body, _Spec(), "claude-sonnet-4-5", isolate_cache=True)
+
+    assert "cache_control" not in json.dumps(body)
+
+
+def test_a_thinking_block_is_left_alone() -> None:
+    """Signed reasoning is replayed verbatim and may not carry a breakpoint; marking it
+    would fail the request rather than save anything."""
+    body: dict[str, Any] = {
+        "system": "s",
+        "max_tokens": 1024,
+        "messages": [
+            {"role": "assistant", "content": [{"type": "thinking", "thinking": "...", "signature": "x"}]}
+        ],
+    }
+    apply_anthropic_thinking_cache(body, _Spec(), "claude-sonnet-4-5")
+
+    assert "cache_control" not in json.dumps(body["messages"])
+
+
+def test_never_more_breakpoints_than_anthropic_allows() -> None:
+    body = _conversation_body()
+    apply_anthropic_thinking_cache(body, _Spec(), "claude-sonnet-4-5")
+
+    assert json.dumps(body).count('"cache_control"') <= 4, "system, tools, conversation — and the cap is four"
+
+
+def test_an_empty_conversation_is_left_alone() -> None:
+    for messages in ([], [{"role": "user", "content": ""}], [{"role": "user", "content": []}]):
+        body: dict[str, Any] = {"system": "s", "max_tokens": 1024, "messages": messages}
+        apply_anthropic_thinking_cache(body, _Spec(), "claude-sonnet-4-5")
+        assert "cache_control" not in json.dumps(body["messages"])

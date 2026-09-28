@@ -16,6 +16,7 @@ spec:
   model:
     id: claude-haiku
     temperature: 0
+    cache: true
 
   system_prompt:
     inline: |

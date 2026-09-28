@@ -279,8 +279,23 @@ class Fiber(Base):
     version: Mapped[int] = mapped_column(BigInteger, server_default=text("0"), default=0)
     # Consecutive failed steps. Reset by a step that completes; at the ceiling the fiber is `dead`.
     attempts: Mapped[int] = mapped_column(Integer, server_default=text("0"), default=0)
+    # Completion webhooks (`spec.execution.webhooks`): null when the run names none, else
+    # `pending` → `delivered` | `dead`. `webhook_due_at` is the sweep's next try and its claim;
+    # `webhook_state` is per endpoint, kept out of the versioned `state_json`. Migration 0019.
+    webhook_status: Mapped[str | None] = mapped_column(Text, nullable=True)
+    webhook_due_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    webhook_state: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, server_default=text("'{}'::jsonb"), default=dict
+    )
 
-    __table_args__ = (Index("idx_fibers_due", "status", "wake_at", "lease_until"),)
+    __table_args__ = (
+        Index("idx_fibers_due", "status", "wake_at", "lease_until"),
+        Index(
+            "idx_fibers_webhook_due",
+            "webhook_due_at",
+            postgresql_where=text("webhook_status = 'pending'"),
+        ),
+    )
 
 
 class UsageEvent(Base):
@@ -406,9 +421,31 @@ class AttachmentRow(Base):
     created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
 
+class ArtifactRow(Base):
+    """One spilled tool output, recorded so retention can find it.
+
+    The artifact twin of `AttachmentRow`, for the same reason: the `ObjectStore` Protocol
+    has no `list`, so an object nothing records is an object nothing can ever collect. The
+    ordering rule is the same too -- row before bytes on write, bytes before row on delete --
+    so drift is always a row whose objects may be absent, which the sweep clears by age.
+
+    One row covers both objects a spill writes: `{id}.txt` and the `{id}.owner` record that
+    holds `read_artifact` to the conversation that spilled it.
+    """
+
+    __tablename__ = "artifacts"
+
+    tenant_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    manifest_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    artifact_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+
 __all__ = [
     "A2ATask",
     "Approval",
+    "ArtifactRow",
     "AttachmentRow",
     "AuditEvent",
     "Base",

@@ -33,6 +33,8 @@ pinning — that is a security bug, not a shortcut.
 | `a2a.py` | `/a2a` JSON-RPC; `well_known.py` serves `/.well-known/agent-card.json` |
 | `mcp.py` | `/mcp` server surface |
 | `audit.py`, `approvals.py`, `plans.py`, `jobs.py`, `manifests.py`, `eval.py`, `usage.py` | management APIs |
+| `artifacts.py`, `files.py`, `documents.py`, `memory.py`, `skills.py` | tenant data APIs, mounted at `/artifacts`, `/files`, `/documents`, `/memory`, `/skills`; each gates on its own `<name>:read` / `<name>:write` scope (`auth/mgmt.py`) |
+| `_sse.py`, `_streaming.py` | no routes: the SSE envelope and the session-log tail both stream loops share — never spell a frame by hand elsewhere |
 | `internal.py` | `POST /internal/*` — requires `FELIX_CONSUMER_SHARED_SECRET` |
 
 ## Rules

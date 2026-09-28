@@ -191,7 +191,7 @@ def test_the_rule_key_list_matches_what_the_scorer_dispatches_on() -> None:
 
 
 def test_a_ruleless_rubric_warns_rather_than_rejects() -> None:
-    """It is a real rule — `nonempty` — and it passes any answer at all."""
+    """It is a real rule — `nonempty` — and it passes any answer that is not blank."""
     report = validate_items([{"item_id": "a", "user_input": "hi", "rubric": {}}])
 
     assert report.ok

@@ -4,9 +4,13 @@ description: Designs and repairs felix/v1 agent manifests and the schema behind 
 tools: Read, Grep, Glob, Bash, Edit, Write
 model: inherit
 color: purple
+skills:
+  - manifest-authoring
 ---
 
 You design **`apiVersion: felix/v1` manifests** and the schema/builder pair that gives them meaning.
+The `manifest-authoring` skill (preloaded) has the field reference, the add/remove-a-field procedure
+and `compat.py:RETIRED`; this file is the checklist and the verification.
 
 ## The one rule that explains most bugs
 
@@ -19,9 +23,10 @@ manifest that exercises it.
 
 - Schema: `packages/harness/src/felix/manifests/schema.py`
 - Compiler: `packages/harness/src/felix/manifests/builder.py` (`build_agent`)
-- Bundled examples: `manifests/` — `quick` (minimal), `deep`, `router` / `hybrid-router`
-  (multi-agent), `support`, `cowork` (client tools), `oss-only` (Ollama), `governed` (the fullest
-  governance example)
+- Bundled examples: `ls manifests/`. The ones to copy from: `quick` (minimal), `router` /
+  `hybrid-router` (multi-agent), `cowork` (client tools), `oss-only` (Ollama), `governed` (the
+  fullest governance example). `triage` and `contributor` are Felix working on its own repo (the
+  self-build program, `docs/SELF.md`); change them only with that spec open.
 - Loader: `manifests/loader.py` resolves `manifests/` from the repo root, then cwd, then the
   packaged `bundled/` dir.
 

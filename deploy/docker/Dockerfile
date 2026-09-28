@@ -120,10 +120,17 @@ RUN set -eux; \
 # are the only definition of every agent's prompt, tools, egress targets and inbound auth.
 # Owning them would mean any arbitrary-write primitive in the process rewrites the agents it
 # is running, which makes "changing an agent means shipping an image" a convention rather
-# than a property. Only /data is writable.
-RUN mkdir -p /data \
+# than a property. Only /data and /workspace are writable.
+#
+# /workspace is created here, owned by the runtime user, so that the named `felix-workspace`
+# volume compose mounts on it is seeded with that ownership: Docker initialises a new, empty
+# named volume from the image's directory at the mount point, ownership included, and with no
+# such directory the mount point comes up owned by root and every workspace write fails with
+# `Errno 13` — which is what a bind-mounted host directory already did on the reference
+# deployment. The builder image does the same for its own workspace volume.
+RUN mkdir -p /data /workspace \
     && useradd --uid 10001 --create-home --shell /usr/sbin/nologin felix \
-    && chown -R felix:felix /data
+    && chown -R felix:felix /data /workspace
 
 USER felix
 EXPOSE 8080

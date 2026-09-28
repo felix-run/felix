@@ -42,10 +42,9 @@ async def _fire_twice(monkeypatch: pytest.MonkeyPatch, payload: dict[str, Any]) 
     rec = _Recorder()
 
     async def _resolve(_s: Any, _t: Any, name: str, **k: Any) -> Any:
-        class _R:
-            manifest = None
+        from types import SimpleNamespace
 
-        return _R()
+        return SimpleNamespace(manifest=None, sub_agents={})
 
     async def _build(settings: Settings, **k: Any) -> Any:
         return rec

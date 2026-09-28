@@ -122,6 +122,52 @@ async def get_version(settings: Settings, tenant_id: str, name: str, version: in
         return _version_dict(row) if row else None
 
 
+def _version_meta(row: dict[str, Any]) -> dict[str, Any]:
+    """A version without its manifest: what a listing needs, at a listing's size."""
+    return {k: v for k, v in row.items() if k != "manifest"}
+
+
+async def list_versions(
+    settings: Settings, tenant_id: str, name: str, *, limit: int = 50, before: int | None = None
+) -> list[dict[str, Any]]:
+    """The stored versions of `name`, newest first, without their manifests.
+
+    `before` pages: versions strictly lower than it. Versions are dense per name and never
+    rewritten, so the number is its own stable cursor.
+    """
+    if _use_memory(settings):
+        rows = sorted(
+            (
+                row
+                for (t, n, v), row in _memory_manifests.items()
+                if t == tenant_id and n == name and (before is None or v < before)
+            ),
+            key=lambda r: r["version"],
+            reverse=True,
+        )
+        return [_version_meta(_version_dict(r)) for r in rows[:limit]]
+
+    factory = get_session_factory(settings=settings)
+    async with factory() as db:
+        stmt = select(ManifestRow).where(ManifestRow.tenant_id == tenant_id, ManifestRow.name == name)
+        if before is not None:
+            stmt = stmt.where(ManifestRow.version < before)
+        stmt = stmt.order_by(ManifestRow.version.desc()).limit(limit)
+        return [_version_meta(_version_dict(r)) for r in (await db.scalars(stmt)).all()]
+
+
+async def active_row(settings: Settings, tenant_id: str, name: str) -> dict[str, Any] | None:
+    """The configured pointer for `name` — active version and any canary — or None."""
+    if _use_memory(settings):
+        row = _memory_active.get((tenant_id, name))
+        return _active_dict(row) if row else None
+
+    factory = get_session_factory(settings=settings)
+    async with factory() as db:
+        row = await db.get(ManifestActive, (tenant_id, name))
+        return _active_dict(row) if row else None
+
+
 async def put_version(
     settings: Settings,
     tenant_id: str,
@@ -157,6 +203,7 @@ async def put_version(
                 "canary_version": None,
                 "canary_weight": 0,
             }
+        _invalidate(tenant_id, name)
         return _version_dict(row)
 
     factory = get_session_factory(settings=settings)
@@ -190,7 +237,23 @@ async def put_version(
         stmt = stmt.on_conflict_do_nothing(index_elements=["tenant_id", "name"])
         await db.execute(stmt)
         await db.commit()
+        _invalidate(tenant_id, name)
         return _version_dict(row)
+
+
+def _invalidate(tenant_id: str, name: str) -> None:
+    """Drop this process's cached active pointer once a write that moves it has committed.
+
+    `resolver.invalidate_active` existed with no caller, so an activation, a rollback or a
+    canary change reached requests only when the 30s pointer cache lapsed — a rollback
+    meant to stop a bad version kept serving it for up to half a minute on the replica that
+    took the rollback. This makes the change immediate *here*; other API replicas and the
+    worker still learn it on their own TTL (`resolver.ACTIVE_TTL_MS`), the bound the README
+    states under "Where manifests come from".
+    """
+    from felix.manifests.resolver import invalidate_active
+
+    invalidate_active(tenant_id, name)
 
 
 async def set_canary(
@@ -226,6 +289,7 @@ async def set_canary(
         active["canary_weight"] = canary_weight
         active["updated_at"] = ts
         active["updated_by"] = updated_by
+        _invalidate(tenant_id, name)
         return _active_dict(active)
 
     factory = get_session_factory(settings=settings)
@@ -238,6 +302,7 @@ async def set_canary(
         active.updated_at = ts
         active.updated_by = updated_by
         await db.commit()
+        _invalidate(tenant_id, name)
         return _active_dict(active)
 
 
@@ -264,6 +329,7 @@ async def activate_version(
         active["updated_by"] = updated_by
         active["canary_version"] = None
         active["canary_weight"] = 0
+        _invalidate(tenant_id, name)
         return _active_dict(active)
 
     factory = get_session_factory(settings=settings)
@@ -279,6 +345,7 @@ async def activate_version(
         active.canary_version = None
         active.canary_weight = 0
         await db.commit()
+        _invalidate(tenant_id, name)
         return _active_dict(active)
 
 

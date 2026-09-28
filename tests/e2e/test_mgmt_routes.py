@@ -237,7 +237,7 @@ async def test_an_eval_rubric_naming_no_rule_is_stored_with_a_warning(boot: Any)
     """Legal, and almost never intended — so it lands, and says so.
 
     A rubric naming none of `expect` / `equals` / `contains` / `min_chars` falls through to
-    the non-empty rule, which passes any answer at all. That is a real rule, so refusing it
+    the non-empty rule, which passes any answer that is not blank. That is a real rule, so refusing it
     would be wrong; saying nothing is how a gate that gates nothing gets written.
     """
     async with boot([], env=_keys(reader=["eval:read"])) as app:
@@ -669,3 +669,86 @@ async def test_audit_metrics_needs_a_read_scope(boot: Any) -> None:
     async with boot([], env=_keys(reader=["jobs:read"], writer=["audit:read"])) as app:
         assert (await app.client.get("/audit/metrics", headers=_as(READER))).status_code == 403
         assert (await app.client.get("/audit/metrics", headers=_as(WRITER))).status_code == 200
+
+
+# --- running a job now ---------------------------------------------------------------------
+
+
+async def test_a_job_runs_now_as_itself_and_leaves_its_schedule(boot: Any) -> None:
+    """`POST /jobs/{name}/run` fires the job through the scheduler's own path and returns the
+    run. The schedule is untouched, and the run says who asked — while the job still runs as
+    `cron`, not as the caller."""
+    async with boot([_answer("ran now")], env=_keys(reader=["jobs:read"], writer=["jobs:write"])) as app:
+        await app.client.put(
+            "/jobs/nightly",
+            json={
+                "schedule": "0 3 * * *",
+                "manifest_id": "quick",
+                "enabled": False,
+                "payload": {"prompt": "go"},
+            },
+            headers=_as(ADMIN),
+        )
+        before = (await app.client.get("/jobs/nightly", headers=_as(ADMIN))).json()
+
+        refused = await app.client.post("/jobs/nightly/run", headers=_as(READER))
+        assert refused.status_code == 403, "running a job is a write"
+        run = await app.client.post("/jobs/nightly/run", headers=_as(WRITER))
+        assert run.status_code == 200, run.text
+        after = (await app.client.get("/jobs/nightly", headers=_as(ADMIN))).json()
+        history = (await app.client.get("/jobs/nightly/runs", headers=_as(ADMIN))).json()["items"]
+        missing = await app.client.post("/jobs/ghost/run", headers=_as(WRITER))
+
+    body = run.json()
+    assert body["status"] == "ok"
+    assert body["result"]["answer"] == "ran now", "a disabled job still runs when asked"
+    assert (body["result"]["trigger"], body["result"]["requested_by"]) == ("manual", "writer")
+    assert after["next_run_at"] == before["next_run_at"], "the schedule is left where it was"
+    assert after["last_status"] == "ok"
+    assert [r["run_id"] for r in history] == [body["run_id"]]
+    assert missing.status_code == 404
+
+
+# --- manifest versions ---------------------------------------------------------------------
+
+
+async def test_a_manifests_versions_list_newest_first_with_the_pointer_marked(boot: Any) -> None:
+    def manifest(prompt: str) -> dict[str, Any]:
+        return {
+            "manifest": {
+                "apiVersion": "felix/v1",
+                "kind": "Agent",
+                "metadata": {"name": "e2e-versioned"},
+                "spec": {"system_prompt": {"inline": prompt}},
+            }
+        }
+
+    async with boot([], env=_keys(reader=["manifests:read"])) as app:
+        for prompt in ("one", "two", "three"):
+            put = await app.client.put("/manifests/e2e-versioned", json=manifest(prompt), headers=_as(ADMIN))
+            assert put.status_code == 200, put.text
+        await app.client.post(
+            "/manifests/e2e-versioned/canary",
+            json={"canary_version": 3, "canary_weight": 10},
+            headers=_as(ADMIN),
+        )
+
+        first = await app.client.get("/manifests/e2e-versioned/versions?limit=2", headers=_as(READER))
+        assert first.status_code == 200, first.text
+        page = first.json()
+        rest = (
+            await app.client.get(
+                f"/manifests/e2e-versioned/versions?limit=2&before={page['next_before']}", headers=_as(READER)
+            )
+        ).json()
+        denied = await app.client.get("/manifests/e2e-versioned/versions", headers=_as(WRITER))
+
+    assert [(i["version"], i["active"], i["canary"]) for i in page["items"]] == [
+        (3, False, True),
+        (2, False, False),
+    ]
+    assert page["next_before"] == 2
+    assert [(i["version"], i["active"]) for i in rest["items"]] == [(1, True)]
+    assert rest["next_before"] is None
+    assert all("manifest" not in i for i in page["items"] + rest["items"])
+    assert denied.status_code == 403

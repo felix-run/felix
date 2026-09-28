@@ -17,6 +17,7 @@ spec:
 
   model:
     temperature: 0
+    cache: true
 
   system_prompt:
     inline: |

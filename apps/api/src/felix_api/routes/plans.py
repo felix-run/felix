@@ -20,8 +20,15 @@ class PlanUpsert(BaseModel):
     model_config = {"extra": "forbid"}
 
     plan: dict[str, Any]
+    # Omitted means "leave as stored" (a new plan gets "" / no expiry). Sending a
+    # value, including `expires_at: null`, sets it.
     manifest_id: str = ""
     expires_at: int | None = None
+    # The `updated_at` this edit was based on. When set, the write succeeds only if
+    # the plan is still exactly that version, and answers 409 with the current row
+    # otherwise — the agent updates step status while a run is live, and without
+    # this an operator's save and the agent's update erase each other silently.
+    expected_updated_at: int | None = None
 
 
 @router.get("")
@@ -55,14 +62,22 @@ async def upsert_plan(plan_id: str, body: PlanUpsert, request: Request) -> Any:
     from felix.plans import store as plans_store
 
     require_mgmt_scopes(request, SCOPE_PLANS_WRITE)
-    return await plans_store.put_plan(
-        request.app.state.settings,
-        tenant_id_from_request(request),
-        plan_id,
-        plan=body.plan,
-        manifest_id=body.manifest_id,
-        expires_at=body.expires_at,
-    )
+    sent = body.model_fields_set
+    try:
+        return await plans_store.put_plan(
+            request.app.state.settings,
+            tenant_id_from_request(request),
+            plan_id,
+            plan=body.plan,
+            manifest_id=body.manifest_id if "manifest_id" in sent else plans_store.KEEP,
+            expires_at=body.expires_at if "expires_at" in sent else plans_store.KEEP,
+            expected_updated_at=body.expected_updated_at,
+        )
+    except plans_store.PlanConflict as conflict:
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "plan_changed", "current": conflict.current},
+        ) from conflict
 
 
 @router.delete("/{plan_id}")

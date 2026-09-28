@@ -183,7 +183,7 @@ def validate_items(items: Any) -> ValidationReport:
             else f"names no rule ({', '.join(RUBRIC_RULE_KEYS)}) and no judge"
         )
         warnings.append(
-            f"{label} rubric {detail}; it will score as non-empty, which passes any answer at all"
+            f"{label} rubric {detail}; it will score as non-empty, which passes any answer that is not blank"
         )
 
     return ValidationReport(errors, warnings)

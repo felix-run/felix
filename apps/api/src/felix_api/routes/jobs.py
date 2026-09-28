@@ -1,4 +1,4 @@
-"""Scheduled jobs CRUD."""
+"""Scheduled jobs: CRUD, run history, and running one now."""
 
 from __future__ import annotations
 
@@ -71,6 +71,30 @@ async def delete_job(name: str, request: Request) -> dict[str, str]:
     if not ok:
         raise HTTPException(status_code=404, detail="not_found")
     return {"status": "deleted"}
+
+
+@router.post("/{name}/run")
+async def run_job_now(name: str, request: Request) -> Any:
+    """Run a job now, without waiting for its schedule, and return the run.
+
+    Synchronous: the response is the finished run, so a new job can be tried before it is
+    left to cron. It runs exactly as a scheduled firing does — as `cron`, on the job's thread,
+    its prompt screened — and only the run record says otherwise (`trigger: manual`, and who
+    asked). The schedule is left alone, and a disabled job runs: asking is explicit.
+    `jobs:write`, because whoever may rewrite the prompt may already make it run.
+    """
+    from felix.jobs import store as jobs_store
+    from felix.jobs.scheduler import fire_job, now_ms
+
+    require_mgmt_scopes(request, SCOPE_JOBS_WRITE)
+    settings = request.app.state.settings
+    tenant = tenant_id_from_request(request)
+    job = await jobs_store.get_job(settings, tenant, name)
+    if job is None:
+        raise HTTPException(status_code=404, detail="not_found")
+    auth = getattr(request.state, "auth", None)
+    who = str(getattr(getattr(auth, "principal", None), "subject", "") or "")
+    return await fire_job(settings, tenant, job, started_at=now_ms(), trigger="manual", requested_by=who)
 
 
 @router.get("/{name}/runs")

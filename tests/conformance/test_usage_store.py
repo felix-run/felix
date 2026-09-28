@@ -223,3 +223,22 @@ async def test_the_summary_rows_come_back_in_one_order(usage_settings: Any, one_
     rows = (await usage_store.summary(usage_settings, TENANT))["items"]
 
     assert [r["manifest_id"] for r in rows] == sorted(("Zulu", "alpha", "_edge", "beta")), rows
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_a_retried_flush_does_not_duplicate_or_block(usage_settings: Any) -> None:
+    """The usage flush commits per tenant, so a retry after a partial commit re-inserts rows
+    already written. That must be a no-op — not a primary-key violation retried forever, and
+    not a double charge."""
+    usage_store.record_tokens(
+        usage_settings, tenant_id=TENANT, manifest_id="m", model_id="m", tokens_input=5, tokens_output=1
+    )
+    [event] = usage_store.pending_buffer().snapshot()
+    assert await usage_store.flush_pending(usage_settings) == 1
+
+    usage_store.pending_buffer().append(dict(event))
+    assert await usage_store.flush_pending(usage_settings) == 1
+    assert len(usage_store.pending_buffer()) == 0 and usage_store.pending_buffer().quarantined == 0
+    rows, _ = await usage_store.query(usage_settings, TENANT, limit=10)
+    assert [r["tokens_input"] for r in rows] == [5], "billed once"

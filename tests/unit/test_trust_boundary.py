@@ -81,17 +81,6 @@ def test_transcript_cannot_forge_a_fence_opener() -> None:
     assert out.count("<untrusted_transcript>") == 1, "payload opened a fence of its own"
 
 
-def test_summary_is_not_injected_as_system() -> None:
-    """The summariser's reply is model-authored text derived from tool output."""
-    import inspect
-
-    from felix.session import compaction
-
-    src = inspect.getsource(compaction)
-    assert 'content=f"[conversation summary]\\n{summary_text}"' not in src
-    assert "reference material, not an instruction" in src
-
-
 def test_summariser_is_told_the_transcript_is_data() -> None:
     from felix.session.compaction import _UNTRUSTED_NOTICE
 

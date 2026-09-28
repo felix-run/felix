@@ -8,7 +8,7 @@ import uuid
 from collections.abc import AsyncIterator
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from felix.audit.emit import emit_agent_audit
 from felix.config import get_settings
@@ -49,6 +49,9 @@ from felix.steer import (
 )
 from felix.tools.retrieval import select_tools_from_ctx_async
 from felix.tools.types import Tool
+
+if TYPE_CHECKING:
+    from felix.decisions import MeteredDecider
 
 logger = logging.getLogger("felix.patterns.react")
 
@@ -190,7 +193,14 @@ class _ReactAgent:
     tenant_id: str = "default"
     memory_capture: Any | None = None
     tools_retrieval: Any | None = None
+    # `spec.skill_suggestion`, built: suggests one skill per turn as a transient hint.
+    skill_suggester: Any | None = None
+    # `spec.decider`, built: a metered decision provider, or None when the manifest has none.
+    decider: MeteredDecider | None = None
     procedural_memory: Any | None = None
+    # The compile's `ReplyScreen` chain, when reply controls are on: memory capture extracts
+    # from the reply as the controls ship it, not as the model wrote it.
+    reply_screen: Any | None = None
     tool_execution: str = "sequential"
     steering_mode: str = "all"
     follow_up_mode: str = "all"
@@ -201,6 +211,9 @@ class _ReactAgent:
     output_schema: dict[str, Any] | None = None
     _tool_map: dict[str, Tool] = field(init=False, repr=False)
     _last_model_id: str | None = field(default=None, init=False, repr=False)
+    # Decider tool rankings for this agent, keyed by request and candidate set: selection
+    # runs several times per step and the request does not change between them.
+    _tool_rankings: dict[tuple[Any, ...], Any] = field(default_factory=dict, init=False, repr=False)
 
     def __post_init__(self) -> None:
         self._tool_map = {t.name: t for t in self.tools}
@@ -217,7 +230,13 @@ class _ReactAgent:
         once a retrieval model is configured, and that must not run on the event
         loop. With retrieval off — the default — it stays inline.
         """
-        return await select_tools_from_ctx_async(self.tools, messages, self.tools_retrieval)
+        return await select_tools_from_ctx_async(
+            self.tools,
+            messages,
+            self.tools_retrieval,
+            decider=self.decider,
+            cache=self._tool_rankings,
+        )
 
     def _chat_options(self, input: InvokeInput) -> ModelChatOptions | None:
         """The caller's per-request sampling, bounded by the manifest.
@@ -263,7 +282,7 @@ class _ReactAgent:
             from felix.session.thinking import apply_thinking_to_spec
 
             spec = apply_thinking_to_spec(spec, spec.thinking_level)
-        return build_model(settings, spec)
+        return build_model(settings, spec, decider=self.decider)
 
     def _apply_handoff(
         self, messages: list[ChatMessage], *, previous: str | None, next_id: str | None
@@ -398,7 +417,9 @@ class _ReactAgent:
             session = self.session_store.open(thread_id)
             await annotate_and_append(session, events)
         except Exception:
-            logger.debug("session append failed", exc_info=True)
+            # A lost write is a hole in the transcript, and with reply controls on it is
+            # also where a screening failure lands: not something to hide at debug.
+            logger.warning("session append failed", exc_info=True)
 
     async def _stream_one_turn(
         self,
@@ -598,6 +619,14 @@ class _ReactAgent:
         if self.settings is None:
             return
         user_text = " ".join(m.content for m in input.messages if m.role == "user")
+        assistant_text: str | None = final.content or ""
+        if self.reply_screen is not None and assistant_text:
+            # Capture runs inside the reply controls, on the reply they have not screened yet.
+            # A fact stored from text the controls redacted would come back in every later
+            # prompt that recalls it; a denied reply is not an answer to learn from.
+            assistant_text = await self.reply_screen.settle(assistant_text)
+            if assistant_text is None:
+                return
         try:
             from felix.memory.capture import capture_from_turn
 
@@ -606,7 +635,7 @@ class _ReactAgent:
                 input.tenant_id or self.tenant_id,
                 manifest_id=self.manifest_id,
                 user_text=user_text,
-                assistant_text=final.content or "",
+                assistant_text=assistant_text,
                 capture=capture,
                 model=self._capture_model(model),
                 origin_seq=await self._turn_seq(input.thread_id),
@@ -615,12 +644,18 @@ class _ReactAgent:
         except Exception:
             logger.debug("memory capture failed", exc_info=True)
 
-    async def _inject_procedures(self, messages: list[ChatMessage], tenant_id: str) -> list[ChatMessage]:
+    async def _procedures(self, messages: list[ChatMessage], tenant_id: str) -> str | None:
+        """Procedures recalled for this request — sent as transient guidance, not as `system`.
+
+        This was appended as a system message, and the Anthropic wire folds every system
+        message into the one cached `system` block: a per-request block there changed the
+        cached prefix on every turn, so a manifest with procedural memory never read its
+        system prompt from cache. It is also model-extracted text, which the prelude's
+        docstring already keeps out of the instruction tier.
+        """
         spec = self.procedural_memory
         if spec is None or not getattr(spec, "enabled", False) or self.settings is None:
-            return messages
-        if any(m.role == "system" and (m.content or "").startswith("[known procedures]") for m in messages):
-            return messages
+            return None
         try:
             from felix.memory.procedural import query_from_user_messages, retrieve_procedures
 
@@ -633,10 +668,8 @@ class _ReactAgent:
             )
         except Exception:
             logger.debug("procedural retrieve failed", exc_info=True)
-            return messages
-        if block:
-            messages.append(ChatMessage(role="system", content=block))
-        return messages
+            return None
+        return block or None
 
     def _over_budget(self) -> bool:
         """True when a declared run budget is spent; trips the shared abort flag."""
@@ -655,6 +688,21 @@ class _ReactAgent:
             logger.info("run over budget: %s", verdict.reason)
             return True
         return False
+
+    async def _transient_guidance(self, messages: list[ChatMessage], tenant_id: str) -> list[ChatMessage]:
+        """Messages for this run's first model call only — see `ChatMessage.transient`.
+
+        Procedures and the skill hint are independent lookups, gathered so the first token
+        waits for the slower of them rather than their sum.
+        """
+        import asyncio
+
+        async def _none() -> None:
+            return None
+
+        hint = self.skill_suggester.hint(messages) if self.skill_suggester is not None else _none()
+        notes = await asyncio.gather(self._procedures(messages, tenant_id), hint)
+        return [ChatMessage(role="user", content=note, transient=True) for note in notes if note]
 
     def _prelude_messages(self) -> list[ChatMessage]:
         """Volatile per-run reference material, kept out of the cached system prefix.
@@ -726,7 +774,7 @@ class _ReactAgent:
             messages,
             context={"manifest_id": self.manifest_id, "thread_id": input.thread_id},
         )
-        return await self._inject_procedures(messages, tenant_id)
+        return messages
 
     async def invoke(self, input: InvokeInput) -> InvokeOutput:
         """Run a turn to completion and return the result.
@@ -779,6 +827,10 @@ class _ReactAgent:
                 yield Event(event="session_progress", data={"phase": "turn"})
 
         messages = await self._assemble_messages(input, model, tenant_id)
+        # Per-request guidance, attached at the tail of the run's first model call (and its
+        # overflow retry) and never added to `messages` — which is what gets persisted and what
+        # the cache prefix is.
+        transient = await self._transient_guidance(messages, tenant_id)
 
         interrupted = _interrupted_tool_results(messages, self._tool_map)
         if interrupted:
@@ -797,8 +849,26 @@ class _ReactAgent:
 
         produced: list[ChatMessage] = list(input.messages)
         await self._append_produced(input.thread_id, [m for m in input.messages if m.role == "user"])
+        if input.thread_id:
+            # A steer sent while the thread was idle is held for the next run and delivered
+            # here, after that run's own turn. The loop below only drains steers between tool
+            # rounds, so a run that called no tool never read one, and the queue was released
+            # with it still inside — accepted, counted on the snapshot, and gone. All of them,
+            # whatever `steering_mode` says: they have waited for a run, not for a tool round.
+            for steermsg in await drain_steer(tenant_id, input.thread_id, mode="all"):
+                steer_chat = ChatMessage(role="user", content=steermsg.text)
+                messages.append(steer_chat)
+                produced.append(steer_chat)
+                if emit_events:
+                    yield Event(event="steer", data={"content": steermsg.text})
+                await self._append_produced(input.thread_id, [steer_chat])
+            # A steer also raises "cancel the remaining tools", meant for a round in flight. One
+            # held since the thread was idle has nothing to cancel — left set, it would cancel
+            # this run's first tool round instead.
+            await clear_cancel_flag(tenant_id, input.thread_id)
         final = ChatMessage(role="assistant", content="")
         fatal = False
+        any_denied = False
         last_stop: StopReason = "end_turn"
         opts = self._chat_options(input)
 
@@ -861,7 +931,7 @@ class _ReactAgent:
                     try:
                         if emit_events:
                             async for item in self._stream_one_turn(
-                                model, messages, active_tools, input.thread_id, tenant_id, opts
+                                model, [*messages, *transient], active_tools, input.thread_id, tenant_id, opts
                             ):
                                 if isinstance(item, ModelChatResult):
                                     result = item
@@ -873,7 +943,7 @@ class _ReactAgent:
                         else:
                             # No display to feed, so ask for the turn directly rather
                             # than streaming deltas nobody will read.
-                            result = await model.chat(messages, active_tools, opts)
+                            result = await model.chat([*messages, *transient], active_tools, opts)
                     except ModelGatewayError as exc:
                         if attempt or emitted or not is_context_overflow(exc):
                             raise
@@ -900,9 +970,14 @@ class _ReactAgent:
                     break
 
                 if result is None:
-                    result = await model.chat(messages, active_tools, opts)
+                    result = await model.chat([*messages, *transient], active_tools, opts)
 
                 usage_block = record_model_usage(result, model, manifest_id=self.manifest_id) or None
+                # Guidance for the request, read once: repeating "load the skill" after the model
+                # has acted on it invites a second activation, and trailing user text after every
+                # tool result ends the assistant turn, which drops the reasoning chain when
+                # thinking is on. Cache is unaffected either way — it always sat past the breakpoint.
+                transient = []
                 assistant = result.message
                 if not assistant.content and chunks:
                     assistant = ChatMessage(
@@ -981,7 +1056,7 @@ class _ReactAgent:
                             if batch.done():
                                 break
                             await asyncio.wait({batch}, timeout=SIDE_EVENT_POLL_SECONDS)
-                    tool_msgs, had_fatal, all_terminate = await batch
+                    tool_msgs, had_fatal, all_terminate, had_denied = await batch
                 except BaseException:
                     # The batch no longer inherits cancellation from this frame, so a
                     # client that hangs up mid-tool would otherwise leave it running.
@@ -1009,6 +1084,7 @@ class _ReactAgent:
                     produced.append(tool_msg)
 
                 await self._append_produced(input.thread_id, [assistant, *tool_msgs], usage=usage_block)
+                any_denied = had_denied
                 if had_fatal:
                     # A fatal tool error ends the run. Follow-ups are not drained: the
                     # run did not reach a state a follow-up could sensibly continue from.
@@ -1059,7 +1135,9 @@ class _ReactAgent:
                         yield Event(event="follow_up", data={"content": follow.text})
                     await self._append_produced(input.thread_id, [follow_chat])
                     messages.append(follow_chat)
-                    result = await model.chat(messages, await self._active_tools(messages), opts)
+                    result = await model.chat(
+                        [*messages, *transient], await self._active_tools(messages), opts
+                    )
                     record_model_usage(result, model, manifest_id=self.manifest_id)
                     assistant = result.message
                     messages.append(assistant)
@@ -1081,7 +1159,7 @@ class _ReactAgent:
 
         emit_agent_audit(
             "final_response",
-            status="error" if fatal else "ok",
+            status="error" if (fatal or any_denied) else "ok",
             manifest_id=self.manifest_id,
             payload={
                 "thread_id": input.thread_id,
@@ -1138,7 +1216,10 @@ def build_react_agent(ctx: PatternBuildContext) -> Agent:
         tenant_id=str(ctx.get("tenant_id") or "default"),
         memory_capture=ctx.get("memory_capture"),
         tools_retrieval=ctx.get("tools_retrieval"),
+        decider=ctx.get("decider"),
+        skill_suggester=ctx.get("skill_suggester"),
         procedural_memory=ctx.get("procedural_memory"),
+        reply_screen=ctx.get("reply_screen"),
         tool_execution=tool_exec,
         steering_mode=steer_mode,
         follow_up_mode=follow_mode,

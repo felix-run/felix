@@ -26,24 +26,28 @@ Commit or push **only when the user asks**.
    the parent to merge and branch the follow-up from fresh `main`. Say so and stop rather than
    stacking — a stacked PR shows a misleading diff and forces a merge order on the reviewer.
 
-4. **Verify before committing** — the same gates CI runs:
+4. **Verify before committing.** `make check` in the edit loop; `make check-ci` before a PR. The
+   `felix-dev-loop` skill lists what each covers and which CI jobs neither can reproduce.
 
-   ```bash
-   uv run ruff check . && uv run ruff format --check .
-   uv run ty check packages apps
-   ./scripts/test.sh
-   uv run felix bundle-manifests            # when manifests/ or the schema changed
-   ```
+   `pre-commit install` (after `make install`) runs on commit: ruff lint and format, trailing
+   whitespace, end-of-file, `check-yaml`, `check-added-large-files` (1000 KB) and merge-conflict
+   markers. CI runs the same hooks with `--all-files`. Never pass `--no-verify` or `-n` — a
+   `PreToolUse` hook blocks both.
 
-   `pre-commit install` (after `make install`) runs the ruff hooks on commit. Never pass
-   `--no-verify` — a `PreToolUse` hook blocks it, and CI re-runs the same checks.
+   `security.yml` runs gitleaks over the **whole history**, so a realistic fake key committed in a
+   test fixture fails every later PR until it is rewritten out. Use tiny obvious placeholders
+   (`sk-test`, `x`), and run `gitleaks detect` before pushing a branch that adds credentials-shaped
+   strings.
 
 5. **Commit messages**: imperative subject describing the change ("Wire Presidio PII, opt-in LLM
    judges, and Postgres RLS."), body explains *why*, and the Claude co-author trailer:
 
    ```
-   Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+   Co-Authored-By: Claude <model name> <noreply@anthropic.com>
    ```
+
+   Use the model name the session's attribution instruction gives; do not copy one from an
+   older commit.
 
 6. **Run the quality reviewers.** When the PR changes Python under `apps/`, `packages/`, or
    `tests/`, delegate to **felix-quality-reviewer** on `git diff origin/main...HEAD`, and to
@@ -74,9 +78,17 @@ Commit or push **only when the user asks**.
    ```
 
    The body follows `.github/PULL_REQUEST_TEMPLATE.md`: why (not only what), how you tested
-   (`make check`, Compose smoke, the exact commands), and any `.env.example` / README updates.
+   (`make check-ci`, Compose smoke, the exact commands), and any `.env.example` / README updates.
 
-7. **Merging is the human gate.** Do not merge unless the user explicitly says to.
+   A PR authored by Felix itself (the self-build program, `docs/SELF.md`) is also judged by
+   `felix-boundary.yml` running `scripts/felix_boundary.py`: its body must name the ticket it
+   implements, and it may not touch the protected paths that script lists.
+
+8. **One live PR at a time.** Several independent PRs that mention each other read as a stack to a
+   reviewer. Open the first; keep the rest as drafts and mark each ready once the one before it
+   merges.
+
+9. **Merging is the human gate.** Do not merge unless the user explicitly says to.
 
 ## Companion updates that belong in the same PR
 
@@ -89,3 +101,4 @@ Commit or push **only when the user asks**.
   once merge without a conflict; if git ever does ask, keep both entries — a hand-resolved
   conflict there once dropped six.
 - Documented surface → the public MDX pages (docs-sync skill)
+- A new or changed store → a `tests/conformance/` arm (postgres-migrations skill)

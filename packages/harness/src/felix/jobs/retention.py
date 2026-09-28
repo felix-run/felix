@@ -129,6 +129,9 @@ class Cutoffs:
     #: Stored uploads older than this go, bytes and all. `None` keeps every one, which is
     #: the default: an attachment is caller data and a thread may still reference it.
     attachment: int | None
+    #: Spilled tool outputs older than this go, objects and ledger row. On by default
+    #: (`FELIX_ARTIFACT_RETENTION_DAYS=30`): a spill is the harness's working copy.
+    artifact: int | None
     memory: int
 
     @classmethod
@@ -144,6 +147,7 @@ class Cutoffs:
             session=days(settings.session_retention_days),
             approval=days(settings.approval_retention_days),
             attachment=days(settings.attachment_retention_days),
+            artifact=days(settings.artifact_retention_days),
             memory=now - MEMORY_SUPERSEDED_GRACE_MS,
         )
 
@@ -207,15 +211,17 @@ async def run_retention_sweep(settings: Settings) -> dict[str, int]:
     # and dropping the row alone would orphan the bytes for good -- nothing else lists that
     # prefix. Its own step also means one implementation rather than one per backend.
     counts["attachments"] = await _sweep_attachments(settings, cutoffs.attachment)
+    counts["artifacts"] = await _sweep_artifacts(settings, cutoffs.artifact)
     logger.info("retention_sweep %s", counts)
     return counts
 
 
-#: How many expired uploads one `expired_attachments` call returns, and how many such
-#: calls one sweep makes. The product is the nightly ceiling: 50k objects, which is a
-#: bound on how long one run may take rather than on how much may ever be collected.
-ATTACHMENT_SWEEP_BATCH = 1000
-ATTACHMENT_SWEEP_MAX_BATCHES = 50
+#: How many expired rows one ledger read returns, and how many such reads one sweep makes,
+#: for each object-store ledger (uploads and spilled artifacts alike -- tuning one tunes
+#: both). The product is the nightly ceiling per ledger: 50k objects, a bound on how long
+#: one run may take rather than on how much may ever be collected.
+OBJECT_SWEEP_BATCH = 1000
+OBJECT_SWEEP_MAX_BATCHES = 50
 
 
 async def _sweep_attachments(settings: Settings, cutoff: int | None) -> int:
@@ -244,17 +250,58 @@ async def _sweep_attachments(settings: Settings, cutoff: int | None) -> int:
     # and the count it returns looks like an ordinary number, so nothing says so. The outer
     # bound is what keeps one sweep from running until morning on a very large backlog; a
     # batch that comes back short means there is nothing left older than the cutoff.
-    for _ in range(ATTACHMENT_SWEEP_MAX_BATCHES):
-        expired = await expired_attachments(settings, older_than_ms=cutoff, limit=ATTACHMENT_SWEEP_BATCH)
+    for _ in range(OBJECT_SWEEP_MAX_BATCHES):
+        expired = await expired_attachments(settings, older_than_ms=cutoff, limit=OBJECT_SWEEP_BATCH)
         for tenant_id, file_id in expired:
             if await delete_attachment(store, tenant_id=tenant_id, file_id=file_id, settings=settings):
                 deleted += 1
-        if len(expired) < ATTACHMENT_SWEEP_BATCH:
+        if len(expired) < OBJECT_SWEEP_BATCH:
             return deleted
     logger.warning(
         "attachment sweep stopped at its batch bound with work left; %d collected this run",
         deleted,
     )
+    return deleted
+
+
+async def _sweep_artifacts(settings: Settings, cutoff: int | None) -> int:
+    """Delete spilled tool outputs older than the cutoff: both objects, then the row.
+
+    The same drain as `_sweep_attachments` and the same bounds, for the same reasons, plus a
+    stop when a full batch collects nothing (below); uploads lack it for now. Spills
+    predating the ledger (migration `0018`) have no row and are not collected — finding them
+    would need the `list` the `ObjectStore` Protocol does not have.
+    """
+    if cutoff is None:
+        return 0
+    from felix.artifacts import delete_artifact, expired_artifacts
+    from felix.storage import get_object_store
+
+    store = get_object_store(settings)
+    deleted = 0
+    for _ in range(OBJECT_SWEEP_MAX_BATCHES):
+        expired = await expired_artifacts(settings, older_than_ms=cutoff, limit=OBJECT_SWEEP_BATCH)
+        collected = 0
+        for tenant_id, manifest_id, artifact_id in expired:
+            if await delete_artifact(
+                store,
+                tenant_id=tenant_id,
+                manifest_id=manifest_id,
+                artifact_id=artifact_id,
+                settings=settings,
+            ):
+                collected += 1
+        deleted += collected
+        if len(expired) < OBJECT_SWEEP_BATCH:
+            return deleted
+        if not collected:
+            # A full batch and nothing collected: every row in it failed to delete and kept
+            # its row, so the next read returns the same rows first. Without this the sweep
+            # re-reads that batch until its bound -- 50 rounds of the same failures, the
+            # usual cause being a store that refuses deletes. Tomorrow's run retries.
+            logger.warning("artifact sweep made no progress on a full batch; stopping until the next run")
+            return deleted
+    logger.warning("artifact sweep stopped at its batch bound with work left; %d collected this run", deleted)
     return deleted
 
 

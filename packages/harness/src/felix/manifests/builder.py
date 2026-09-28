@@ -9,14 +9,17 @@ from typing import Any, Literal
 
 from felix.auth.context import AuthContext
 from felix.context import try_get_context
+from felix.decisions import MeteredDecider
 from felix.governance.content_screening import _INJECTION
 from felix.governance.judges import judge_score
+from felix.governance.reply import ReplyScreen, screen_session_store
 from felix.limits import EffectiveLimits, effective_limits
 from felix.manifests.loader import load_bundled, parse_manifest
 from felix.manifests.schema import (
     ApprovalRule,
     CommandScreening,
     ContentScreening,
+    DeciderSpec,
     Guardrails,
     Limits,
     Manifest,
@@ -61,6 +64,40 @@ class BuildDeps:
     tenant_id: str | None = None
     workspace_root: str | None = None
     load_agents_md: bool = False
+    # Manifests whose sub-agents are being compiled right now, outermost first. A router that
+    # names a router that names the first is a cycle, and without this it recursed until
+    # Python's stack gave out — now that tenants author routers, one row can do that.
+    compiling: list[str] = field(default_factory=list)
+    # Children already compiled in this build, by name. Without it a stored A → [B, C], both
+    # naming D, compiled D twice — and a tenant's A → 100 x B → 100 x C is 10^4 compiles, each
+    # with object-store reads and an MCP `list_tools` per server, for one chat.
+    compiled: dict[str, Agent] = field(default_factory=dict)
+    # The reply screen of the compile whose sub-agents are being built, so a child's own
+    # screen chains to it (`ReplyScreen.parent`). Set and restored around the child compile.
+    reply_screen: Any | None = None
+
+
+# Routers of routers of routers, and no further. A bound on nesting, beside the memo above, is
+# what keeps the compile a request triggers proportional to what the tenant meant to write.
+MAX_SUB_AGENT_DEPTH = 4
+
+
+def _bundled_sub_agent(deps: BuildDeps) -> Callable[[str], Awaitable[Agent]]:
+    """Compile a sub-agent from bundled YAML — the resolver for callers with no tenant.
+
+    Unknown names raise. This used to be `build_agent(name)`, which turns a name it cannot
+    find into an empty manifest — so a missing child compiled to `You are <name>.` with no
+    tools, and the router sent requests to it without a word.
+    """
+
+    async def build(name: str) -> Agent:
+        try:
+            child = load_bundled(name)
+        except FileNotFoundError as exc:
+            raise LookupError(f"Unknown sub-agent manifest: {name}") from exc
+        return await build_agent(child, deps=deps)
+
+    return build
 
 
 # ---------------------------------------------------------------------------
@@ -81,6 +118,37 @@ def _append_unique_tools(resolved: list[Tool], extra: list[Tool]) -> None:
         if t.name not in seen:
             resolved.append(t)
             seen.add(t.name)
+
+
+def _bind_artifact_reader(resolved: list[Tool], m: Any, deps: BuildDeps, tenant_id: str) -> None:
+    """Bind `read_artifact` beside `spec.artifacts`, before the governance stack.
+
+    Before it, so a read is limited, screened and audited like the tool call that produced the
+    artifact. Only with a store: without one the spill is a no-op and there is nothing to read.
+    """
+    if not m.spec.artifacts.enabled or deps.object_store is None:
+        return
+    from felix.artifacts import READ_ARTIFACT_TOOL, make_read_artifact_tool
+
+    if any(t.name == READ_ARTIFACT_TOOL for t in resolved):
+        # Not refused: the manifest's tool may be deliberate. But the spill marker's reader is
+        # now that tool, and nothing else would say so.
+        logger.warning(
+            "manifest %s binds its own %r; spilled outputs cannot be read back by the model",
+            m.metadata.name,
+            READ_ARTIFACT_TOOL,
+        )
+    _append_unique_tools(
+        resolved,
+        [
+            make_read_artifact_tool(
+                m.spec.artifacts,
+                object_store=deps.object_store,
+                tenant_id=tenant_id,
+                manifest_id=m.metadata.name,
+            )
+        ],
+    )
 
 
 def apply_secret_masking(tools: list[Tool], secrets: list[str], manifest_id: str) -> list[Tool]:
@@ -351,13 +419,18 @@ def _is_untrusted_tool(tool: Tool) -> bool:
 
 
 def apply_content_screening(
-    tools: list[Tool], screening: ContentScreening | None, manifest_id: str
+    tools: list[Tool],
+    screening: ContentScreening | None,
+    manifest_id: str,
+    *,
+    decider: MeteredDecider | None = None,
 ) -> list[Tool]:
     if screening is None or not screening.enabled:
         return tools
     on_flag = screening.on_flag
     named = list(screening.tools)
     model_id = screening.model.strip()
+    scored_only = list(screening.model_tools)
 
     def wrap_one(tool: Tool) -> Tool:
         # Additive: what `tools` names, *plus* every untrusted tool, always.
@@ -376,6 +449,8 @@ def apply_content_screening(
         if not (matches_any(named, tool.name) or _is_untrusted_tool(tool)):
             return tool
         inner = tool.executor
+        # The paid scoring, by `model_tools`; the markers below run regardless.
+        paid = not scored_only or matches_any(scored_only, tool.name)
 
         async def execute(args: ToolInput, ctx: ToolInvocationCtx | None = None) -> ToolOutput:
             out = await inner.execute(args, ctx)
@@ -384,11 +459,13 @@ def apply_content_screening(
             content = tool_output_content(out)
             flagged = any(rx.search(content) for rx in _INJECTION)
             unavailable = False
-            if not flagged and model_id:
+            if not flagged and paid and (model_id or decider is not None):
                 from felix.config import get_settings
-                from felix.governance.inbound import screen_for_injection
+                from felix.governance.inbound import screen_tool_output
 
-                result = await screen_for_injection(get_settings(), content, model_id)
+                # Every window of the output, not the first: a benign prefix longer than one
+                # screener window used to carry the payload past both the model and the decider.
+                result = await screen_tool_output(get_settings(), content, model_id, decider)
                 # Unavailable is not clean: this is the path that screens MCP, A2A,
                 # browser and sandbox output, so failing open here is the whole ballgame.
                 unavailable = result.unavailable
@@ -604,7 +681,13 @@ def apply_guardrails(tools: list[Tool], guardrails: Guardrails | None, manifest_
     return _wrap_tools(tools, wrap_one)
 
 
-def apply_judges(tools: list[Tool], guardrails: Guardrails | None, manifest_id: str) -> list[Tool]:
+def apply_judges(
+    tools: list[Tool],
+    guardrails: Guardrails | None,
+    manifest_id: str,
+    *,
+    decider: MeteredDecider | None = None,
+) -> list[Tool]:
     """Apply tool-output judges (heuristic, or LLM when JudgeRule.model is set)."""
     _ = manifest_id
     judges = [j for j in (guardrails.judges if guardrails else []) if not j.final_response]
@@ -626,7 +709,7 @@ def apply_judges(tools: list[Tool], guardrails: Guardrails | None, manifest_id: 
 
             settings = get_settings()
             for j in applicable:
-                score = await judge_score(content, j, settings=settings)
+                score = await judge_score(content, j, settings=settings, decider=decider)
                 threshold = float(getattr(j, "threshold", 0.7) or 0.7)
                 if score < threshold:
                     return deny_output(
@@ -640,18 +723,43 @@ def apply_judges(tools: list[Tool], guardrails: Guardrails | None, manifest_id: 
     return _wrap_tools(tools, wrap_one)
 
 
-def apply_reply_controls(agent: Agent, guardrails: Guardrails | None, manifest_id: str) -> Agent:
+def apply_reply_controls(
+    agent: Agent,
+    guardrails: Guardrails | None,
+    manifest_id: str,
+    *,
+    decider: MeteredDecider | None = None,
+    screen: ReplyScreen | None = None,
+) -> Agent:
     """The reply-path controls: `final_response` judges and PII guardrails on the reply.
 
     Wraps the agent rather than its tools, because the reply is not a tool output. The
     mechanics live in `felix.governance.reply`; this is the slot in the compile that
-    applies them, last, after the pattern has been built.
+    applies them, last, after the pattern has been built. `screen` is the one the
+    pattern's session store was given, so the log and the reply share each verdict.
     """
     from felix.governance.reply import ReplyControlsAgent, reply_controls_enabled
 
     if guardrails is None or not reply_controls_enabled(guardrails):
         return agent
-    return ReplyControlsAgent(agent, guardrails, manifest_id)  # type: ignore[return-value]
+    return ReplyControlsAgent(  # type: ignore[return-value]
+        agent, guardrails, manifest_id, decider=decider, screen=screen
+    )
+
+
+def reply_screen_for(
+    guardrails: Guardrails | None,
+    manifest_id: str,
+    *,
+    decider: MeteredDecider | None = None,
+    parent: ReplyScreen | None = None,
+) -> ReplyScreen | None:
+    """The reply screen a compile shares between its session writes and its reply."""
+    from felix.governance.reply import reply_controls_enabled
+
+    if guardrails is None or not reply_controls_enabled(guardrails):
+        return None
+    return ReplyScreen(guardrails, manifest_id, decider=decider, parent=parent)
 
 
 def _arg_present(args: ToolInput, name: str) -> bool:
@@ -692,6 +800,11 @@ def _arg_present(args: ToolInput, name: str) -> bool:
 def apply_approvals(tools: list[Tool], rules: list[ApprovalRule], manifest_id: str) -> list[Tool]:
     if not any(r.tools for r in rules):
         return tools
+    from felix.manifests.approval_args import warn_unknown_when_args
+
+    # A `when_args` name no gated tool takes is a rule that never fires. Warned, not refused:
+    # an MCP tool's schema can change under a stored manifest, and that must not be an outage.
+    warn_unknown_when_args(rules, tools, manifest_id)
 
     def wrap_one(tool: Tool) -> Tool:
         # Approvals is the only control in the stack that selects *one* rule — policies and
@@ -962,6 +1075,9 @@ def _warn_unmatched_tool_patterns(m: Manifest, bound: list[str]) -> None:
             targets.append(("judge", judge.name, list(judge.target_tools)))
     if m.spec.content_screening and m.spec.content_screening.enabled:
         targets.append(("content_screening", "content_screening", list(m.spec.content_screening.tools)))
+        paid = list(m.spec.content_screening.model_tools)
+        if paid:
+            targets.append(("content_screening", "content_screening.model_tools", paid))
     if m.spec.command_screening and m.spec.command_screening.enabled:
         targets.append(
             ("command_screening", "command_screening", list(m.spec.command_screening.target_tools))
@@ -1050,6 +1166,22 @@ def _warn_untrusted_tools_are_unscreened(m: Manifest, untrusted: list[str]) -> N
     record_counter("felix_untrusted_tools_unscreened", {"manifest_id": m.metadata.name})
 
 
+def bind_decider(spec: DeciderSpec, settings: Any) -> MeteredDecider | None:
+    """`spec.decider`, built once per compile, or None when the manifest names none.
+
+    An id missing from `FELIX_DECISION_ROUTES` fails the compile, the way an unknown
+    `spec.model.id` does. Consumers fall back when a *call* fails; a decider that could never
+    have been reached is a configuration mistake, and falling back from it silently would
+    leave a manifest believing it had a decider it has never used.
+    """
+    if not spec.id:
+        return None
+    from felix.config import get_settings
+    from felix.decisions import build_decider
+
+    return build_decider(settings or get_settings(), spec.id, min_confidence=spec.min_confidence)
+
+
 def _warn_policies_cannot_be_satisfied(m: Manifest, settings: Any) -> None:
     """Say so at compile when nothing in this configuration can hold a scope.
 
@@ -1118,18 +1250,49 @@ async def build_agent(
         system_prompt = await _resolve_system_prompt(m, deps)
         tool_ids = list(m.spec.tools)
 
+        # Bound once, before the sub-agents: the skill suggester, the judges, the reply
+        # controls and the pattern share one metered decider, and the reply screen it feeds
+        # wraps the session store every agent in this tree writes through.
+        decider = bind_decider(m.spec.decider, deps.settings)
+        # The pattern writes the session log as the run goes, before the reply wrapper sees
+        # the output, so the log is screened at the write with the verdicts the reply gets.
+        reply_screen = reply_screen_for(
+            m.spec.guardrails, m.metadata.name, decider=decider, parent=deps.reply_screen
+        )
+        session_store = screen_session_store(deps.session_store, reply_screen)
+        # What a pattern screens text leaving by other doors with (memory capture, reflect's
+        # quoted draft): this compile's controls and every enclosing compile's. A child with
+        # none of its own still owes its router's.
+        screen_chain = reply_screen or deps.reply_screen
+
         sub_agents: dict[str, Agent] = {}
         if m.spec.sub_agents:
-            # A sub-agent inherits `deps.session_store`, so its own
-            # `spec.memory.checkpointer` is not consulted. That is currently
-            # unreachable rather than merely tolerated: `patterns/delegating.py`
-            # invokes every child with `thread_id=None`, and each session guard in
-            # the react loop requires a thread as well as a store. Give sub-agents a
-            # thread and this starts mattering — resolve the child's checkpointer
-            # here, and validate it, which `build_agent` also does not do today.
-            builder = deps.sub_agent_builder or (lambda name: build_agent(name, deps=deps))
-            for name in m.spec.sub_agents:
-                sub_agents[name] = await builder(name)
+            # A sub-agent inherits this compile's session store, so its own
+            # `spec.memory.checkpointer` is not consulted. Most composites invoke a child
+            # with `thread_id=None`, and each session guard in the react loop needs a thread
+            # as well as a store — but the router forwards the caller's turn, thread and
+            # all, so its child writes the caller's log. That is why children compile
+            # against the *screened* store: a router's reply controls would otherwise redact
+            # the wire while an unguarded child logged the raw reply.
+            builder = deps.sub_agent_builder or _bundled_sub_agent(deps)
+            if m.metadata.name in deps.compiling:
+                chain = " -> ".join([*deps.compiling, m.metadata.name])
+                raise ValueError(f"sub_agents form a cycle: {chain}")
+            if len(deps.compiling) >= MAX_SUB_AGENT_DEPTH:
+                chain = " -> ".join([*deps.compiling, m.metadata.name])
+                raise ValueError(f"sub_agents nest deeper than {MAX_SUB_AGENT_DEPTH}: {chain}")
+            deps.compiling.append(m.metadata.name)
+            outer_store, deps.session_store = deps.session_store, session_store
+            outer_screen, deps.reply_screen = deps.reply_screen, screen_chain
+            try:
+                for name in m.spec.sub_agents:
+                    if name not in deps.compiled:
+                        deps.compiled[name] = await builder(name)
+                    sub_agents[name] = deps.compiled[name]
+            finally:
+                deps.session_store = outer_store
+                deps.reply_screen = outer_screen
+                deps.compiling.pop()
 
         resolved: list[Tool] = []
         if not m.spec.sub_agents:
@@ -1333,6 +1496,11 @@ async def build_agent(
             except Exception:
                 logger.warning("memory tool binding failed", exc_info=True)
 
+        # The reader for what `spec.artifacts` spills, bound before the governance block below.
+        _bind_artifact_reader(resolved, m, deps, tenant_id)
+
+        skill_suggester = None
+
         # Wire Agent Skills (progressive disclosure + bound skill tools).
         from felix.skills import (
             SKILL_TOOL_NAMES,
@@ -1366,11 +1534,24 @@ async def build_agent(
                 for name, tool in skill_tools.items():
                     if name not in have:
                         resolved.append(tool)
+            if m.spec.skill_suggestion.enabled and decider is not None and catalog.list_public():
+                from felix.skills.suggest import SkillSuggester
+
+                skill_suggester = SkillSuggester(catalog.list_public(), decider, m.spec.skill_suggestion)
             catalog_block = skill_catalog_xml(catalog)
             if catalog_block:
                 system_prompt = (
                     f"{system_prompt}\n\n---\n\n{catalog_block}" if system_prompt else catalog_block
                 )
+
+        if m.spec.skill_suggestion.enabled and skill_suggester is None:
+            # Skills can come from the host rather than `spec.skills`, so this cannot be refused
+            # at validation — but an agent with none has nothing to suggest, and says so.
+            logger.warning("skill_suggestion is on but %s has no skills to suggest", m.metadata.name)
+            record_counter(
+                "felix_rule_targets_nothing",
+                {"manifest_id": m.metadata.name, "rule": "skill_suggestion", "kind": "skills"},
+            )
 
         # Recalled facts, rendered as a per-run prelude rather than folded into the
         # system prompt. Empty when memory is disabled or has nothing stored.
@@ -1424,7 +1605,12 @@ async def build_agent(
         if m.spec.command_screening.enabled:
             resolved = apply_command_screening(resolved, m.spec.command_screening, m.metadata.name)
         if m.spec.content_screening.enabled:
-            resolved = apply_content_screening(resolved, m.spec.content_screening, m.metadata.name)
+            resolved = apply_content_screening(
+                resolved,
+                m.spec.content_screening,
+                m.metadata.name,
+                decider=decider if m.spec.content_screening.decider else None,
+            )
         # Always installed. Previously gated on any_limit(), so a manifest that declared
         # no limits got no tool-call cap, no wall clock, no token or spend ceiling —
         # and the wrapper silently did nothing when there was no request context.
@@ -1432,12 +1618,13 @@ async def build_agent(
         if guardrails_enabled(m.spec.guardrails):
             resolved = apply_guardrails(resolved, m.spec.guardrails, m.metadata.name)
         if judges_enabled(m.spec.guardrails):
-            resolved = apply_judges(resolved, m.spec.guardrails, m.metadata.name)
+            resolved = apply_judges(resolved, m.spec.guardrails, m.metadata.name, decider=decider)
         if m.spec.approvals:
             resolved = apply_approvals(resolved, m.spec.approvals, m.metadata.name)
 
         if m.spec.artifacts.enabled:
             from felix.artifacts import apply_artifact_spill
+            from felix.config import get_settings
 
             resolved = apply_artifact_spill(
                 resolved,
@@ -1445,6 +1632,9 @@ async def build_agent(
                 object_store=deps.object_store,
                 tenant_id=tenant_id,
                 manifest_id=m.metadata.name,
+                # Never None: the ledger lives here, and a spill without a row is bytes the
+                # retention sweep can never find.
+                settings=deps.settings if deps.settings is not None else get_settings(),
             )
 
         final_prompt = (
@@ -1489,7 +1679,10 @@ async def build_agent(
                 "output_schema": m.spec.output_schema,
                 "max_turns": m.spec.max_turns,
                 "aggregator_prompt": m.spec.aggregator_prompt,
-                "session_store": deps.session_store,
+                "session_store": session_store,
+                # For model output leaving by a door other than the reply and the log:
+                # reflect's quoted draft, and the reply memory capture extracts from.
+                "reply_screen": screen_chain,
                 "session_strategy": deps.session_strategy,
                 "session_spec": m.spec.session,
                 "execution": m.spec.execution,
@@ -1498,6 +1691,8 @@ async def build_agent(
                 "tenant_id": tenant_id,
                 "memory_capture": m.spec.memory.capture,
                 "tools_retrieval": m.spec.tools_retrieval,
+                "decider": decider,
+                "skill_suggester": skill_suggester,
                 "procedural_memory": m.spec.procedural_memory,
             }
         )
@@ -1507,7 +1702,11 @@ async def build_agent(
         # reply is screened last. Wrapping here rather than at each entrypoint is what
         # makes "every path a turn takes" true without a list of paths.
         return apply_inbound_controls(
-            apply_reply_controls(agent, m.spec.guardrails, m.metadata.name), m, settings
+            apply_reply_controls(
+                agent, m.spec.guardrails, m.metadata.name, decider=decider, screen=reply_screen
+            ),
+            m,
+            settings,
         )
     finally:
         span.end()

@@ -143,7 +143,9 @@ def test_the_manifest_is_resolved_inside_the_tenant_context() -> None:
                 func = call.func
                 inside.add(func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", ""))
 
-    for required in ("resolve_tenant_manifest", "prepare_tenant_invoke", "assert_pin_matches"):
+    # `assert_resume_pin` re-resolves the pinned run's sub-agents too, so it queries the store
+    # and has the same reason to sit inside the tenant context.
+    for required in ("resolve_tenant_manifest", "prepare_tenant_invoke", "assert_resume_pin"):
         assert required in inside, (
             f"{required} runs outside async_run_with_context, so it queries with no "
             "app.tenant_id and RLS returns nothing"

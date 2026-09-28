@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import replace
 from typing import Any, Literal
 
@@ -78,6 +79,11 @@ def _http_from_invoke_prep(exc: Exception) -> HTTPException | None:
         # value that is now rejected — `agentcore`, `sqlite`, `do` were all inert.
         # `PUT /manifests` refuses new ones, but existing rows only fail here, and
         # unmapped that is a 500 with a traceback on every request for the manifest.
+        return HTTPException(status_code=422, detail=client_safe_message(exc, authored_for_clients=True))
+    from felix.durability.webhooks import WebhookEndpointError
+
+    if isinstance(exc, WebhookEndpointError):
+        # The manifest names an endpoint this deployment has not registered for the tenant.
         return HTTPException(status_code=422, detail=client_safe_message(exc, authored_for_clients=True))
     if isinstance(exc, ManifestParseError):
         # Same shape one step earlier: a row stored before a schema tightening no longer
@@ -219,7 +225,12 @@ class LeaseReleaseRequest(BaseModel):
 class UiResponseRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
-    request_id: str = Field(min_length=1)
+    # Required: the prompt's waiter is scoped to its thread, which is what ties an answer to
+    # the tenant that was asked. The `ui_request` frame carries it.
+    thread_id: str = Field(min_length=1)
+    # A server-minted `token_urlsafe(12)` is 16 characters; the cap bounds the waiter key a
+    # caller can make the server hold, as `MAX_TOOL_CALL_ID` does for tool results.
+    request_id: str = Field(min_length=1, max_length=64)
     value: Any = None
     cancelled: bool = False
     note: str = ""
@@ -382,18 +393,28 @@ async def _chat_turn(body: ChatRequest, request: Request) -> tuple[int, dict[str
     execution = getattr(getattr(resolved.manifest, "spec", None), "execution", None)
     if execution is not None and getattr(execution, "mode", "transient") == "durable":
         from felix.durability.runs import start_durable_chat
-        from felix.manifests.pin import pin_fields
+        from felix.manifests.pin import pin_fields_for
 
-        payload = await start_durable_chat(
-            settings,
-            auth.tenant_id,
-            manifest_id=body.manifest,
-            messages=messages,
-            thread_id=thread,
-            model_id=model_id,
-            execution=execution,
-            pin=pin_fields(resolved.manifest, version=resolved.version),
-        )
+        try:
+            payload = await start_durable_chat(
+                settings,
+                auth.tenant_id,
+                manifest_id=body.manifest,
+                messages=messages,
+                thread_id=thread,
+                model_id=model_id,
+                execution=execution,
+                # With the sub-agent digest: a durable run carrying stored authority is pinned on
+                # resume whatever the manifest says, so its children are part of what it runs.
+                pin=await pin_fields_for(
+                    settings, auth.tenant_id, resolved.manifest, version=resolved.version
+                ),
+            )
+        except Exception as exc:
+            http = _http_from_invoke_prep(exc)
+            if http is not None:
+                raise http from exc
+            raise
         return 202, payload
 
     req_ctx = RequestContext(
@@ -409,6 +430,7 @@ async def _chat_turn(body: ChatRequest, request: Request) -> tuple[int, dict[str
             agent = await build_tenant_agent(
                 settings,
                 manifest=resolved.manifest,
+                sub_agents=resolved.sub_agents,
                 tools=tools,
                 tenant_id=auth.tenant_id,
             )
@@ -440,7 +462,41 @@ async def _chat_turn(body: ChatRequest, request: Request) -> tuple[int, dict[str
         "thread_id": thread,
         "model": model_id,
         "leaf_id": get_leaf(thread) if thread else None,
+        "approvals": await _approvals_raised(settings, auth.tenant_id, req_ctx.extras),
     }
+
+
+async def _approvals_raised(settings: Any, tenant_id: str, extras: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every approval this run asked for, with how it ended.
+
+    A non-streaming caller has no `approval_required` frame to read, and used to wait out the
+    rule's TTL and receive a denial with nothing saying an approval had been requested. Each
+    entry is the frame the stream would have sent, plus `status` read back from the row once
+    the run is over: `approved`, `denied`, or `expired` — nobody answered in time. The gate now
+    closes that row as `denied` with the note `timeout`, and `expired` is kept for it rather than
+    folding it into `denied`, because nobody chose it; a pending row past its deadline (one left
+    by a harness that predates the write-back) still reads the same way. While a request is
+    still blocked, `GET /approvals?thread_id=` is where to find the id to decide.
+    """
+    from felix.approvals.store import TIMEOUT_NOTE, get_approval
+    from felix.side_events import requested_on
+
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    now = int(time.time() * 1000)
+    for raised in requested_on(extras, "approval_required"):
+        approval_id = str(raised.get("approval_id") or "")
+        if not approval_id or approval_id in seen:
+            continue
+        seen.add(approval_id)
+        row = await get_approval(settings, tenant_id, approval_id)
+        status = str((row or {}).get("status") or "unknown")
+        expires_at = (row or {}).get("expires_at")
+        timed_out = status == "denied" and (row or {}).get("decision_note") == TIMEOUT_NOTE
+        if timed_out or (status == "pending" and expires_at is not None and int(expires_at) < now):
+            status = "expired"
+        out.append({**raised, "status": status})
+    return out
 
 
 def _safe_filename(thread_id: str) -> str:
@@ -553,7 +609,7 @@ async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
     execution = getattr(getattr(resolved.manifest, "spec", None), "execution", None)
     if execution is not None and getattr(execution, "mode", "transient") == "durable":
         from felix.durability.runs import start_durable_chat
-        from felix.manifests.pin import pin_fields
+        from felix.manifests.pin import pin_fields_for
 
         # Captured *before* the enqueue, not inside the stream: the fiber may be claimed
         # and start appending the moment the row lands, and a cursor read after that has
@@ -566,16 +622,26 @@ async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
         # point is unknown, and `durable_tail` declines to tail rather than replaying the
         # thread's entire history as this run's progress.
         from_seq = await stream_cursor(settings, auth.tenant_id, thread) if thread else 0
-        accepted = await start_durable_chat(
-            settings,
-            auth.tenant_id,
-            manifest_id=body.manifest,
-            messages=messages,
-            thread_id=thread,
-            model_id=model_id,
-            execution=execution,
-            pin=pin_fields(resolved.manifest, version=resolved.version),
-        )
+        try:
+            accepted = await start_durable_chat(
+                settings,
+                auth.tenant_id,
+                manifest_id=body.manifest,
+                messages=messages,
+                thread_id=thread,
+                model_id=model_id,
+                execution=execution,
+                # With the sub-agent digest: a durable run carrying stored authority is pinned on
+                # resume whatever the manifest says, so its children are part of what it runs.
+                pin=await pin_fields_for(
+                    settings, auth.tenant_id, resolved.manifest, version=resolved.version
+                ),
+            )
+        except Exception as exc:
+            http = _http_from_invoke_prep(exc)
+            if http is not None:
+                raise http from exc
+            raise
         return sse_response(
             durable_run_gen(
                 settings=settings,
@@ -610,6 +676,7 @@ async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
                 agent = await build_tenant_agent(
                     settings,
                     manifest=resolved.manifest,
+                    sub_agents=resolved.sub_agents,
                     tools=tools,
                     tenant_id=auth.tenant_id,
                 )
@@ -957,8 +1024,12 @@ async def chat_ui_response(body: UiResponseRequest, request: Request) -> dict[st
     """Resolve a pending select/confirm/input prompt from the web client."""
     from felix.ui import resolve_ui_response
 
-    _ = request
+    auth = _auth_from_request(request)
+    thread = effective_thread_id(auth.tenant_id, body.thread_id)
+    if thread is None:
+        raise HTTPException(status_code=400, detail="invalid_thread_id")
     return await resolve_ui_response(
+        thread,
         body.request_id,
         value=body.value,
         cancelled=body.cancelled,
@@ -1201,6 +1272,7 @@ async def chat_continue(body: ContinueRequest, request: Request) -> Any:
             agent = await build_tenant_agent(
                 settings,
                 manifest=resolved.manifest,
+                sub_agents=resolved.sub_agents,
                 tools=tools,
                 tenant_id=auth.tenant_id,
             )
