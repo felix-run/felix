@@ -242,6 +242,14 @@ class ToolRunner:
                 # which control refused existed only in the tool message. The source has been
                 # on the deny output all along — this is the first place that reads it.
                 payload["control"] = deny_source(result)
+            elif err is not None:
+                # Which class of failure, and nothing more. The code was computed here and
+                # dropped, so an audit reader could see that a call failed and never why —
+                # felix-web's Ledger drew a red row whose detail could only say "open the
+                # thread". The message is deliberately not recorded: it is the tool's own
+                # text, which can quote file contents, paths or credentials, and an audit row
+                # outlives the thread it came from. The code is a closed enum.
+                payload["error_code"] = err.value
             emit_agent_audit(
                 "tool_call" if status != "denied" else "policy_deny",
                 status=status,
