@@ -499,6 +499,22 @@ def apply_content_screening(
     return _wrap_tools(tools, wrap_one)
 
 
+async def _close_if_timed_out(req: Any, approval_id: str, note: str) -> None:
+    """Write a timeout back to the row, so `/approvals` stops offering a decided call.
+
+    Best effort: the denial has already been returned to the caller, and a store error
+    here must not turn a refused tool call into a failed run.
+    """
+    if note != "timeout" or not approval_id:
+        return
+    try:
+        from felix.approvals import store as approvals_store
+
+        await approvals_store.close_timed_out(req.settings, req.auth.tenant_id, approval_id)
+    except Exception:
+        logger.debug("approvals store close_timed_out failed", exc_info=True)
+
+
 async def _await_approval(
     *,
     manifest_id: str,
@@ -577,6 +593,7 @@ async def _await_approval(
         timeout=float(ttl_seconds) if ttl_seconds else None,
     )
     if decision.decision != "approved":
+        await _close_if_timed_out(req, approval_id, decision.note)
         return False, args, decision.note or "denied"
     if decision.edited_args:
         args = dict(decision.edited_args)
@@ -943,6 +960,7 @@ def apply_approvals(tools: list[Tool], rules: list[ApprovalRule], manifest_id: s
                     timeout=float(rule.ttl_seconds) if rule.ttl_seconds else None,
                 )
                 if decision.decision != "approved":
+                    await _close_if_timed_out(req, approval_id, decision.note)
                     note = decision.note or "denied"
                     return deny_output(
                         f"[approval {note}] tool={tool.name} rule={rule.id}",

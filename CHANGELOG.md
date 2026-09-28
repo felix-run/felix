@@ -50,6 +50,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A timed-out approval is closed, not left pending.** When nobody answered, the gate denied
+  the call and wrote nothing back, so the row read `pending` for the life of the deployment:
+  `GET /approvals?status=pending` offered a decision already made (one production row was
+  twenty-nine hours past its deadline), and a byte-identical re-ask joined that row, carrying its
+  expired `expires_at` while the gate waited a fresh ttl on it. The row now becomes `denied`
+  with `decision_note: "timeout"` and `decided_by: "felix"`, and `create_pending` closes a
+  lapsed pending row rather than reusing it. `POST /chat` still reports such an approval as
+  `expired`. Rows left pending by earlier versions are closed the next time an identical call
+  asks; others stay until decided or swept.
+
 - **A steer sent to an idle thread reaches the next run.** `POST /chat/steer` with `kind: steer`
   on a thread with no run in progress answered 200 and was counted on the snapshot, then dropped
   before reaching the model or the transcript. It is now held and delivered at the start of the
