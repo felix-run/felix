@@ -50,6 +50,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Concurrent publishes of one manifest all land.** `PUT /manifests/{name}` read the highest
+  version and inserted the next, so two publishes of the same name at once picked the same
+  number and the second failed with a 500. Publishes of one name are now serialized for the
+  length of the write, and each gets the next version; other manifests are unaffected.
+
 - **A timed-out approval is closed, not left pending.** When nobody answered, the gate denied
   the call and wrote nothing back, so the row read `pending` for the life of the deployment:
   `GET /approvals?status=pending` offered a decision already made (one production row was

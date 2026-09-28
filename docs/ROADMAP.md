@@ -919,12 +919,14 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       which swallows a per-tenant exception, had scored nothing since its first ever tick while
       reporting a normal result.
 
-- [ ] **`put_version` has a read-modify-write race on Postgres only.** It computes
-      `SELECT coalesce(max(version),0)` then inserts, with no lock and no retry, so four
-      concurrent publishes of one manifest name leave one winner and three `UniqueViolation`s —
-      a 500 for a concurrent double-publish. The twin cannot race at all, since nothing awaits
-      between its max and its write, so the contract cannot state a shared behaviour until one
-      is chosen. Measured against a live database while verifying the manifest contract.
+- [x] **`put_version` has a read-modify-write race on Postgres only.** It computed
+      `SELECT coalesce(max(version),0)` then inserted, with no lock and no retry, so concurrent
+      publishes of one name left one winner and `UniqueViolation`s — a 500 for a double-publish.
+      The behaviour chosen: every publish lands, in order. A transaction-scoped advisory lock on
+      `felix:manifest:{tenant}:{name}` serializes publishes of one name (the session store's
+      append lock, same shape); other names never wait, and it releases at commit, so a
+      transaction-mode pooler is fine. `test_concurrent_publishes_of_one_name_all_land_in_order`
+      fires six at once on both arms and goes red on Postgres without the lock.
 
 - [x] **An enforcing-RLS arm for the conformance suite.** Done
       (`tests/conformance/test_rls_enforcement.py`): a `NOSUPERUSER NOBYPASSRLS` role with
@@ -950,7 +952,8 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       migrations drift) **and stepwise per-revision up/down**; today it only goes base to head
       in one hop.
 
-- [ ] **`create_fiber` cannot insert under an enforcing RLS role.** It is the one write in
+- [x] **`create_fiber` cannot insert under an enforcing RLS role.** Stale: both `create_fiber`
+      and `get_fiber` open `tenant_session(settings, tenant_id)` since #201. As written: it was the one write in
       `durability/fibers.py` that neither wraps `rls_bypass()` nor binds the tenant GUC, so with
       `FELIX_DATABASE_RLS=true` and a non-superuser it fails with "new row violates row-level
       security policy". `get_fiber` has the same gap. Invisible to the conformance suite because
