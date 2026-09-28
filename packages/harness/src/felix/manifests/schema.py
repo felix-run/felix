@@ -809,9 +809,10 @@ class ApprovalRule(_Strict):
     # null, and non-empty if `str`, `list`, `dict`, `tuple` or `set`. `0` and `False`
     # count as supplied; see `builder.py:_arg_present` for why that is load-bearing.
     #
-    # Not validated against the gated tool's schema, so a misspelled name yields a rule
-    # that never fires and still passes `validate-manifest` and the attestation checks.
-    # Empty means the rule gates every call, which is the original behaviour.
+    # Checked against the gated tools' schemas (`manifests/approval_args.py`): refused at write
+    # for tools whose schemas ship with the harness, warned at compile for the rest, because a
+    # misspelled name is a rule that never fires. Not here — a parse-time check would reject
+    # stored manifests on read. Empty means the rule gates every call.
     #
     # Exists because a tool can be harmless in one shape and a privileged operation in
     # another: `remember` is ordinary capture until it carries a `topic_key`, at which

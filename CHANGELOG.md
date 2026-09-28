@@ -188,6 +188,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **An approval rule whose `when_args` names nothing is refused or reported.** `when_args` gates
+  only the calls carrying those arguments, so a misspelled name (`when_args: [topickey]` on
+  `remember`) was a rule that never fired and still validated. `PUT /manifests` and
+  `felix validate-manifest` now refuse one naming a built-in, plugin or memory tool literally
+  when the name is none of its arguments; for MCP tools and globs the compile logs a warning and
+  counts `felix_approval_when_args_unknown` instead, since those schemas can change under a
+  stored manifest. Stored manifests still load.
+
 - **Documented: sub-agents inherit the caller's admission.** `spec.auth.inbound` is checked on
   the manifest a request names, not on each sub-agent a router compiles, so a child's own
   `required_scopes` apply when it is called by name and not when a router hands it a request.
