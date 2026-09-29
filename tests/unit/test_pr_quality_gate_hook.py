@@ -331,6 +331,9 @@ def _context(command: str, *, project: Path, cwd: Path) -> str:
         # The governance wrapper order lives here and `.claude/rules/` calls it load-bearing;
         # the unanchored pattern matched none of this path.
         "packages/harness/src/felix/manifests/builder.py",
+        # A resumed run's authority is rebuilt here — the gate said no security review was
+        # needed on #149, the change that carried the caller's scopes into durable state.
+        "packages/harness/src/felix/durability/fibers.py",
     ],
 )
 def test_a_control_path_change_also_asks_for_the_security_reviewer(tmp_path: Path, changed: str) -> None:
