@@ -66,6 +66,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Approvals, plans and memory consolidation order the same on Postgres and in memory.**
+  `GET /approvals` and the plan listing ordered on a timestamp alone and then cut to `limit`, so
+  rows written in the same millisecond paged differently on each backend; memory consolidation
+  kept whichever of two tied duplicates it scanned first, which differed too. Each now ends its
+  ordering on the id, compared byte for byte on both backends.
+
 - **A durable run starts within a second, not at the next minute.** Submitting one wrote a
   `pending` fiber that only the `* * * * *` `fiber_scheduler` cron picked up, so every durable
   run waited 0–60s (30s on average) before its first model call. Each worker now polls for due

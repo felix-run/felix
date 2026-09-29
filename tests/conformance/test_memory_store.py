@@ -681,3 +681,50 @@ async def test_as_of_truncates_by_the_same_total_order(memory_settings: Any, one
     assert [r["id"] for r in page] == expected, page
     degenerate = ({r["id"] for r in written[:3]}, {r["id"] for r in written[-3:]})
     assert set(expected) not in degenerate, "the corpus stopped discriminating"
+
+
+async def _make_duplicates(settings: Any, rows: list[dict[str, Any]], *, content: str, ts: int) -> None:
+    """Force rows into byte-identical duplicates with one `created_at` — the pre-hash-id rows
+    `consolidate_pools` exists for, which `put_memory` can no longer write."""
+    if memory_store._use_memory(settings):
+        for row in rows:
+            stored = memory_store._memory_rows[(TENANT, row["id"])]
+            stored.update(content=content, created_at=ts)
+        return
+    from felix.db.models import MemoryVector
+    from felix.db.session import get_session_factory, rls_bypass
+    from sqlalchemy import update
+
+    # One row at a time, in the given order: an UPDATE rewrites each row, and one statement
+    # would rewrite them in index order — lowest id first — which is the order the tiebreak
+    # produces anyway, so a missing tiebreak would pass unnoticed.
+    with rls_bypass():
+        async with get_session_factory(settings=settings)() as db:
+            for row in rows:
+                await db.execute(
+                    update(MemoryVector)
+                    .where(MemoryVector.tenant_id == TENANT, MemoryVector.id == row["id"])
+                    .values(content=content, created_at=ts)
+                )
+                await db.commit()
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_consolidation_keeps_the_same_duplicate_on_both_arms(memory_settings: Any) -> None:
+    """The first duplicate scanned survives, so a tie on `created_at` decided the survivor —
+    differently on each arm. It breaks on tenant, then id, in byte order, now."""
+    # Written highest id first, so the id the tiebreak keeps is the *last* inserted: without it,
+    # both arms keep the first-inserted row, and a lucky content hash would pass the test.
+    contents = sorted(
+        (f"distinct fact number {i}" for i in range(3)),
+        key=lambda c: memory_store.memory_id(MANIFEST, c),
+        reverse=True,
+    )
+    rows = [await _put(memory_settings, c) for c in contents]
+    assert rows[-1]["id"] == min(r["id"] for r in rows)
+    await _make_duplicates(memory_settings, rows, content="the same fact", ts=1_800_000_000_000)
+
+    assert await memory_store.consolidate_pools(memory_settings) == 2
+    active = await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST)
+    assert [r["id"] for r in active] == [min(r["id"] for r in rows)]
