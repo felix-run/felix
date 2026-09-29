@@ -792,6 +792,31 @@ The warning reports what **compiled**, not what was declared: every outbound bin
 own failure, so an unreachable MCP server binds zero tools and produces no warning. In staging,
 CI and `felix validate-manifest` that means a manifest declaring five MCP servers can be silent.
 
+## Memory: who may retire what
+
+Every memory row records its writer, and writers have two ranks: the **operator** (the
+`/memory` management API, `memory:write`) and the **agent** (auto-capture, and the `remember` /
+`remember_procedure` tools). The store — not the manifest, not a governance wrapper — decides
+what a write may take out of recall, so the rule holds for every path including capture, which
+passes through no wrapper at all:
+
+- **Retiring by `topic_key` is the operator's.** An operator write retires other active rows
+  under the same key. An agent write under a key already held is stored **alongside**: the
+  key is chosen from the transcript, by the extractor or by whoever steers `remember`, and
+  letting it retire meant one injected turn could delete every fact the agent kept on a topic.
+- **The prelude shows the current value per topic** — the most trusted, then the latest turn —
+  so the model reads one belief each turn while both rows stay active, recallable, and visible
+  on `GET /memory`, where the operator settles the contradiction by writing the value or
+  forgetting the stale row.
+- **An agent never retires or rewrites an operator's row**, by topic or by restating its text.
+- **Forgetting stamps who forgot it**, and a row comes back only for a writer of at least that
+  rank: an operator's correction is not undone by the agent restating the sentence it removed.
+  Resurrection is gated on who *retired* the row, not who wrote it.
+
+`governed.yaml` still puts an approval in front of `remember` calls that carry a `topic_key`
+(`when_args: [topic_key]`). With the store refusing agent retirements that gate no longer
+prevents a deletion; it keeps a human seeing a key-changing write, which is what it is for now.
+
 ## Approval semantics
 
 **Precedence.** Approvals is the only control that selects *one* rule — policies and judges

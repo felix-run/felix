@@ -15,6 +15,8 @@ from felix.memory import store as memory_store
 from felix.memory.store import ACTIVE, FORGOTTEN, SUPERSEDED
 
 TENANT = "t-mem"
+# Only an operator retires a memory by its topic_key; an agent write is stored alongside.
+OPERATOR = {"source": "management_api"}
 MANIFEST = "m"
 
 
@@ -53,7 +55,7 @@ async def test_content_hash_is_scoped_by_manifest() -> None:
 @pytest.mark.asyncio
 async def test_topic_key_supersedes_the_previous_value() -> None:
     old = await _put("Timezone is UTC.", topic_key="user.timezone", origin_seq=4)
-    new = await _put("Timezone is CET.", topic_key="user.timezone", origin_seq=7)
+    new = await _put("Timezone is CET.", topic_key="user.timezone", origin_seq=7, metadata=OPERATOR)
 
     rows = await memory_store.get_many(_settings(), TENANT, [old["id"], new["id"]])
     assert rows[old["id"]]["status"] == SUPERSEDED
@@ -68,7 +70,7 @@ async def test_topic_key_supersedes_the_previous_value() -> None:
 async def test_supersession_closes_the_interval_at_the_new_turn() -> None:
     """Not the old row's ordinal — the interval ends when the replacement arrived."""
     old = await _put("Timezone is UTC.", topic_key="user.timezone", origin_seq=4)
-    await _put("Timezone is CET.", topic_key="user.timezone", origin_seq=7)
+    await _put("Timezone is CET.", topic_key="user.timezone", origin_seq=7, metadata=OPERATOR)
     rows = await memory_store.get_many(_settings(), TENANT, [old["id"]])
     assert rows[old["id"]]["superseded_seq"] == 7
 
@@ -77,7 +79,7 @@ async def test_supersession_closes_the_interval_at_the_new_turn() -> None:
 async def test_as_of_shows_what_was_believed_then() -> None:
     """The point of turn-versioning: a superseded fact is still visible in its own era."""
     await _put("Timezone is UTC.", topic_key="user.timezone", origin_seq=4)
-    await _put("Timezone is CET.", topic_key="user.timezone", origin_seq=7)
+    await _put("Timezone is CET.", topic_key="user.timezone", origin_seq=7, metadata=OPERATOR)
 
     at5 = await memory_store.as_of(_settings(), TENANT, 5, manifest_id=MANIFEST)
     at9 = await memory_store.as_of(_settings(), TENANT, 9, manifest_id=MANIFEST)

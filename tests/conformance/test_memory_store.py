@@ -22,6 +22,8 @@ parametrized = pytest.mark.parametrize("memory_settings", BACKENDS, indirect=Tru
 
 TENANT = "conformance"
 MANIFEST = "m"
+# Only an operator retires a memory by its topic_key; an agent write is stored alongside.
+OPERATOR = {"source": "management_api"}
 
 
 @pytest.fixture
@@ -58,7 +60,9 @@ async def test_same_content_collapses_to_one_row(memory_settings: Any) -> None:
 @pytest.mark.asyncio
 async def test_topic_key_supersedes_the_previous_value(memory_settings: Any) -> None:
     old = await _put(memory_settings, "Timezone is UTC.", topic_key="user.timezone", origin_seq=4)
-    new = await _put(memory_settings, "Timezone is CET.", topic_key="user.timezone", origin_seq=7)
+    new = await _put(
+        memory_settings, "Timezone is CET.", topic_key="user.timezone", origin_seq=7, metadata=OPERATOR
+    )
 
     rows = await memory_store.get_many(memory_settings, TENANT, [old["id"], new["id"]])
     assert rows[old["id"]]["status"] == SUPERSEDED
@@ -88,7 +92,9 @@ async def test_supersession_is_scoped_to_one_manifest(memory_settings: Any) -> N
 @pytest.mark.asyncio
 async def test_as_of_reconstructs_the_earlier_belief(memory_settings: Any) -> None:
     await _put(memory_settings, "Timezone is UTC.", topic_key="user.timezone", origin_seq=4)
-    await _put(memory_settings, "Timezone is CET.", topic_key="user.timezone", origin_seq=7)
+    await _put(
+        memory_settings, "Timezone is CET.", topic_key="user.timezone", origin_seq=7, metadata=OPERATOR
+    )
 
     at5 = await memory_store.as_of(memory_settings, TENANT, 5, manifest_id=MANIFEST)
     at9 = await memory_store.as_of(memory_settings, TENANT, 9, manifest_id=MANIFEST)
@@ -259,7 +265,9 @@ async def test_superseded_and_forgotten_are_not_recalled(memory_settings: Any) -
     from felix.memory.recall import recall
 
     await _put(memory_settings, "Timezone is UTC.", topic_key="user.timezone", origin_seq=1)
-    await _put(memory_settings, "Timezone is CET.", topic_key="user.timezone", origin_seq=2)
+    await _put(
+        memory_settings, "Timezone is CET.", topic_key="user.timezone", origin_seq=2, metadata=OPERATOR
+    )
     gone = await _put(memory_settings, "Timezone trivia nobody wants.")
     await memory_store.forget(memory_settings, TENANT, gone["id"])
 
@@ -344,22 +352,29 @@ async def test_a_curated_writer_still_supersedes_an_automatic_row(memory_setting
 
 @parametrized
 @pytest.mark.asyncio
-async def test_equal_rank_still_supersedes(memory_settings: Any) -> None:
-    """Two captures on one topic is the ordinary case and the newer value must win."""
-    await _put(
-        memory_settings,
-        "The user's timezone is UTC.",
-        topic_key="user.timezone",
-        metadata={"source": "assistant"},
-    )
-    await _put(
-        memory_settings,
-        "The user's timezone is CET.",
-        topic_key="user.timezone",
-        metadata={"source": "assistant"},
-    )
+async def test_an_agent_write_on_a_topic_is_stored_alongside_not_retiring(memory_settings: Any) -> None:
+    """Only an operator retires by topic_key. The key is chosen from the transcript — by the
+    extractor, through no governance wrapper, or by whoever steers `remember` — so an agent
+    write that retired what held the key let one injected turn delete the agent's facts on it.
+    Both values stay active; the prelude the model reads each turn shows the newer one."""
+    from felix.memory.capture import active_facts_prompt
+
+    for turn, content in enumerate(("The user's timezone is UTC.", "The user's timezone is CET."), start=1):
+        await _put(
+            memory_settings,
+            content,
+            topic_key="user.timezone",
+            origin_seq=turn,
+            metadata={"source": "assistant"},
+        )
+
     active = await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST)
-    assert [r["content"] for r in active] == ["The user's timezone is CET."]
+    assert sorted(r["content"] for r in active) == [
+        "The user's timezone is CET.",
+        "The user's timezone is UTC.",
+    ]
+    prelude = await active_facts_prompt(memory_settings, TENANT, manifest_id=MANIFEST)
+    assert "CET" in prelude and "UTC" not in prelude, "the current value, once"
 
 
 @parametrized

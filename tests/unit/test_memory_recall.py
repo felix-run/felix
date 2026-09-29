@@ -82,7 +82,10 @@ async def test_topic_key_channel_finds_a_dotted_identifier() -> None:
 @pytest.mark.asyncio
 async def test_superseded_memories_are_not_recalled() -> None:
     await _put("Timezone is UTC.", topic_key="user.timezone", origin_seq=1)
-    await _put("Timezone is CET.", topic_key="user.timezone", origin_seq=2)
+    # An operator's write: only that rank retires a row by its topic_key.
+    await _put(
+        "Timezone is CET.", topic_key="user.timezone", origin_seq=2, metadata={"source": "management_api"}
+    )
 
     hits = await recall(_settings(), TENANT, "timezone", manifest_id=MANIFEST)
     assert [h.content for h in hits] == ["Timezone is CET."]

@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Only an operator retires a memory by its `topic_key`.** Any agent write — post-turn capture,
+  which runs through no governance wrapper, or the `remember` tool, which a prompt injection can
+  call with a key it chose — used to retire every active agent-written fact sharing its key, so
+  one injected turn could delete what the agent knew about a topic. Agent writes on a held key
+  are now stored alongside; the facts prelude shows one current value per topic (most trusted,
+  then latest turn), and the operator settles contradictions on `/memory`. **Behaviour change:**
+  a topic can hold several active values until an operator retires the stale ones, and the
+  `remember` tool's description no longer says a new value supersedes the old.
+
 - **Recalled memory is screened.** `recall` and `list_memories` were trusted local tools, so with
   content screening on they were screened only where a manifest named them. Memory capture runs
   over turns that carried untrusted tool output, so a payload screening quarantined on its way in

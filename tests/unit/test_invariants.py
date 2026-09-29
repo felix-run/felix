@@ -504,8 +504,13 @@ def test_every_memory_store_function_is_classified() -> None:
 
     # Routes that can take a memory out of recall, and the predicate that guards each.
     RETIREMENT = {
-        "_put_in_memory": "guarded: _may_displace / _may_reactivate, then _preserve",
-        "_put_in_postgres": "guarded: _refused_in_sql on every preserved column",
+        "_put_in_memory": (
+            "guarded: the topic sweep by _may_retire_by_topic (operator rank only), the "
+            "same-id upsert by _may_displace / _may_reactivate, then _preserve"
+        ),
+        "_put_in_postgres": (
+            "guarded: the topic sweep by _may_retire_by_topic, then _refused_in_sql on every preserved column"
+        ),
         "forget": "guarded: _rank(source) vs _trust(row), _retirer_rank stamp only rises",
         "supersede": "guarded: _rank(source) vs max(_trust, _retirer_rank), stamps retirer",
         "put_memory": (
@@ -537,6 +542,7 @@ def test_every_memory_store_function_is_classified() -> None:
         "_preserve",
         "_may_reactivate",
         "_may_displace",
+        "_may_retire_by_topic",
         "_refused_in_sql",
         "_write_embedding",
         "_configured_dim",

@@ -667,12 +667,17 @@ comment explaining exactly that. It is conditional, not inert.
       README example uses — has no long-term memory at all. Extraction quality is whatever one
       prompt returns; a live run stored an assistant's apology as a durable fact.
       `consolidation.py` is 14 lines against `extraction.py`'s 340, so the store only grows.
-- [ ] **Who may retire a memory by naming its `topic_key`** — `put_memory` supersedes any active
+- [x] **Who may retire a memory by naming its `topic_key`** — decided: the operator only.
+      `memory/store.py:_may_retire_by_topic` requires rank above `_DEFAULT_TRUST` for the
+      topic sweep on both arms; agent writes are stored alongside, and the facts prelude shows
+      one current value per topic (trust, then turn). The `remember` tool no longer tells the
+      model a new value supersedes the old. As written: — `put_memory` supersedes any active
       row sharing a `topic_key`, and `capture_from_turn` reaches the same supersession post-turn
       through no governance wrapper at all. The durable fix is store-level: require rank above
       `_DEFAULT_TRUST` for a cross-row sweep, so rank-1 writers store alongside rather than
       retire. A real ergonomic change, which is why it is a decision and not a patch.
-- [ ] **`deploy/GOVERNANCE.md`: which layer owns retirement** — follows whichever way the above
+- [x] **`deploy/GOVERNANCE.md`: which layer owns retirement** — the store; the new "Memory: who
+      may retire what" section says so. As written: — follows whichever way the above
       lands. `retired_by` versus `source`, why resurrection is gated on who retired rather than
       who wrote, and which of the manifest, the store and the approval wrapper is authoritative.
       Enforced in `tests/conformance/test_memory_trust_matrix.py`; the prose does not exist.
