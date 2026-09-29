@@ -5,7 +5,8 @@ concrete enough to pick up in a single session.
 
 **Repos:** `felix-run/felix` (harness) · `felix-run/web` (chat-ui + docs)
 **Live:** [api.felix.run](https://api.felix.run) · [chat.felix.run](https://chat.felix.run) · [docs.felix.run](https://docs.felix.run)
-**Last reviewed:** 2026-09-02 (product-depth audit: what the harness lets an agent actually *do*)
+**Last reviewed:** 2026-09-29 (every open item checked against `main` after 0.5.0; the 2026-09-02
+product-depth audit before it)
 
 Completed waves and what they taught now live in [HISTORY.md](HISTORY.md).
 
@@ -603,29 +604,33 @@ comment explaining exactly that. It is conditional, not inert.
 
 - [ ] **Tamper-evident audit chain** — `seq` + `prev_hash` + keyed HMAC per row, per tenant,
       with `verify_chain` reporting the first break. Allocate the chain at write time inside the
-      insert transaction under a per-tenant advisory lock (`session/store.py:93` is the
-      precedent), so a `DurableBuffer` drop does not read as tampering. Hash a `payload_sha256`
+      insert transaction under a per-tenant advisory lock (`_lock_thread` in `session/store.py` is
+      the precedent), so a `DurableBuffer` drop does not read as tampering. Hash a `payload_sha256`
       column rather than the payload bytes — `jsonb` does not preserve key order. Retention needs
       a pruning anchor or it breaks the chain it prunes. Pairs with **audit export** in C.
 - [ ] **Framework mapping earns its name, or loses it.** `validate_governance` is 55 lines of
-      compile-time flag assertions with no mapping to a control id (no CC6.1, no Article 14) and
-      no artifact — nothing produces "here is your evidence for control X". `_has_boundary_control`
-      is satisfied by `any_limit(...)`, and `EffectiveLimits` backfills every limit from
-      `ABSOLUTE_LIMITS`, so that check is close to unfalsifiable. Either produce a signed compile
-      receipt (`manifests/pin.py` already stores a content hash per thread and is the closest
-      thing to evidence in the system), or rename the field so `frameworks: [soc2]` stops
+      compile-time flag assertions with no mapping to a control id (no CC6.1, no Article 14) and no
+      artifact — nothing produces "here is your evidence for control X". `_has_boundary_control` is
+      satisfied by `any_limit(manifest.spec.limits)` — the *declared* limits, not the backfilled
+      `EffectiveLimits` (corrected 2026-09-29: this said the backfill made it unfalsifiable) — so
+      any single declared limit passes it, which is weak rather than empty. Either produce a signed
+      compile receipt (`manifests/pin.py` already stores a content hash per thread and is the
+      closest thing to evidence in the system), or rename the field so `frameworks: [soc2]` stops
       inviting a reading it cannot support. The schema disclaimer is right and is in the file
       nobody reads.
 - [ ] **Temporal: decide.** (`make up-temporal` now runs it end to end, and the backend's
       writes actually persist — see CHANGELOG — so the decision can be made against something
       that works. Still no TLS/API-key on `Client.connect`, so Temporal Cloud is unreachable.)
-      Original note: The arm is a 152-line driver loop using none of Temporal's durability
-      primitives — no signals, no queries, no child workflows, no `continue_as_new`, no activity
-      retry policy. State still lives in the Postgres `Fiber` row, so an operator choosing it for
-      Temporal's guarantees gets Felix's. Four of its six tests assert only that the classes can
-      be constructed, and there is no integration test against a dev server. It does fix the
-      one-op-per-tick problem — which item B1 fixes for everyone. Either invest properly or
-      document it as a compatibility shim.
+      Original note: The arm is a ~165-line driver loop (`temporal.py` + `_temporal_workflow.py`)
+      using none of Temporal's durability primitives — no signals, no queries, no child workflows,
+      no `continue_as_new`, no activity retry policy. State still lives in the Postgres `Fiber`
+      row, so an operator choosing it for Temporal's guarantees gets Felix's. Four of its six tests
+      assert only that the classes can be constructed, and there is no integration test against a
+      dev server. It does fix the one-op-per-tick problem — which running a fiber to suspension
+      inside one claim (§B, #262) now fixes for every backend. Either invest properly or document
+      it as a compatibility shim.
+      (2026-09-29: no Temporal code change since #183; the fibers path meanwhile gained #262,
+      #336, #339 and a per-worker poll loop in #363 that starts a run within a second.)
 - [ ] **Live-model eval (optional CI)** — the gate is now a pair of mock fixtures: `smoke.json`
       passes by construction and `negative.json` must fail, checked by
       `scripts/eval-counter-smoke.sh` in both CI and `make check-ci`. That proves the scorer can
@@ -662,7 +667,7 @@ comment explaining exactly that. It is conditional, not inert.
       entry sets one. Needs current rates per deployment via a manifest price override. Folded
       into C where it touches `max_cost_usd`.
 - [ ] **Memory defaults** — `FELIX_MEMORY_EMBEDDER=none` by default, so the vector channel never
-      runs out of the box and nothing exercises it outside tests. Of nine bundled manifests only
+      runs out of the box and nothing exercises it outside tests. Of eleven bundled manifests only
       `cowork` and `governed` enable capture and recall tools, so `quick` — the manifest every
       README example uses — has no long-term memory at all. Extraction quality is whatever one
       prompt returns; a live run stored an assistant's apology as a durable fact.
@@ -747,9 +752,12 @@ rather than from re-reading a file. The wave itself is written up in [HISTORY.md
 - [ ] **Keep growing the fiber scheduler, or make Temporal the documented multi-step path.**
       Temporal already wraps the same `advance_fiber`; what fibers duplicates is the scheduling
       envelope, and that is where this audit's durability bugs were — a lease that equalled the
-      approval timeout (#150), resolution outside the tenant context (#150). **B6** above
-      proposes step memoization and an append-only `fiber_steps` table, which is an activity
-      model by another name. **Decide before starting that item.**
+      approval timeout (#150), resolution outside the tenant context (#150). The §B item this
+      pointed at (step memoization, an append-only `fiber_steps` table — an activity model by
+      another name) closed in #339 *without* the table, so nothing is blocked on this any more;
+      since 2026-09-02 fibers gained run-to-suspension (#262), completion webhooks (#336),
+      crash-resume from the session log (#339) and a 1s per-worker poll (#363), and Temporal
+      nothing. **Still a decision**, now weighted by that.
 - [x] **`cowork.yaml` sets `auth.inbound.allow_anonymous: true` on a manifest that binds a
       local shell.** Now `false`, with the reason in the manifest. Checked at the same time:
       `validate_runtime` already confines `auth_mode=none` to loopback, so the reachable case
@@ -805,6 +813,9 @@ rather than from re-reading a file. The wave itself is written up in [HISTORY.md
 - [ ] **felix-web docs lag #148–#150.** `internals/governance.mdx` covers screening and glob
       targeting; the durable-run authority model, the lease semantics and the RLS ordering are
       only in `deploy/GOVERNANCE.md`.
+      (2026-09-29: web now covers durable-run authority (`internals/governance.mdx`), the claim
+      lease (`guide/deploy.mdx`) and RLS basics (`guide/concepts.mdx`); still only in
+      `deploy/GOVERNANCE.md`: #150's lease-versus-approval-timeout semantics and RLS ordering.)
 - [ ] **`durability` stays a closed `Literal`.** Fibers-vs-Temporal is not a factory swap, so a
       registry there is a feature, not a refactor. Recorded so it is not "opened" by mistake.
 
@@ -824,11 +835,18 @@ rather than from re-reading a file. The wave itself is written up in [HISTORY.md
       layer, so a browser on another origin cannot call Felix directly. Deliberate, written down
       nowhere; the requirement survives only inside felix-web's `worker/index.ts`. A self-hoster
       pointing a browser app at `:8080` hits an opaque wall.
+      (2026-09-29: still undocumented harness-side; the middleware stack is now request-id →
+      security-headers → body-limit → rate-limit → auth, and the only statement is an aside in web
+      `guide/terminal.mdx`.)
 - [ ] **`POST /chat/ui` sub-protocol unspecified** — the route exists and the harness can block on
       a waiter for `DEFAULT_TIMEOUT_SECONDS = 300`. Document the frames and move the timeout to a
       `FELIX_` setting. Related: `request_ui` / `request_confirm` / `request_select` have **zero
       callers in core**, so no tool exposes them and an agent cannot currently ask the user a
       structured question — a capability-surface item hiding in a documentation one.
+      (2026-09-29: the frames are specified in web `guide/rest-api.mdx` → UI prompts, so
+      "unspecified" is too strong; still open: the 300s timeout is a constant with no `FELIX_`
+      setting, and `request_ui`/`request_confirm`/`request_select` have no callers, so no tool
+      exposes them.)
 - [x] **Wire-contract snapshot** — `schemas/openapi.json` and `schemas/sse-events.json`, written
       by `scripts/gen-wire-contract.py` (`make contract`), held by `tests/unit/test_wire_contract.py`.
       The event names are scanned off the source — `Event(event=...)`, `{"event", "data"}` frames,
@@ -960,14 +978,15 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       (`tests/conformance/test_rls_enforcement.py`): a `NOSUPERUSER NOBYPASSRLS` role with
       `database_rls=True`, which is the configuration no other arm can reach — and the only
       one where a lost `rls_bypass()` is visible at all, since every other arm connects as the
-      schema owner, where a bypass is a no-op. It guards one of the twelve bypasses in the
+      schema owner, where a bypass is a no-op. It guards one of the seventeen bypasses in the
       tree; the item below is the rest of them.
 
 - [ ] **Parametrise the cross-tenant sweep arm over every `rls_bypass()`.**
       `test_a_cross_tenant_sweep_still_sees_every_tenant` covers `list_tenants_with_events`
-      and nothing else. There are twelve bypasses — `memory/store.py`, `durability/fibers.py`
-      (five), `audit/store.py` (two), `manifests/store.py`, `jobs/store.py` and
-      `jobs/retention.py` (two) — and each can lose its bypass with the whole suite green,
+      and nothing else. There are seventeen bypasses (counted 2026-09-29) — `memory/store.py`,
+      `durability/fibers.py` (six), `durability/webhooks.py` (two), `audit/store.py` (two),
+      `manifests/store.py`, `jobs/store.py`, `jobs/retention.py` (two), `attachments.py` and
+      `artifacts.py` — and each can lose its bypass with the whole suite green,
       because only this arm builds a role the policy applies to. The failure mode is not a
       cross-tenant read: the schedulers re-bind per tenant afterwards, so it degrades to a
       sweep that reads an empty tenant list and reports success. That is the shape an operator
@@ -1215,34 +1234,47 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       without one.
 - [ ] **Postgres 18** — `pgvector/pgvector:0.8.6-pg18-trixie` exists. Own branch with a rollback
       plan: compatibility pass over the revisions, FTS index, RLS, and a dump/restore path.
-- [ ] **`.cursor/plans/` decision** — tracked but ungitignored. Keep as versioned planning notes
-      or ignore; either is fine, drifting is not.
+- [x] **`.cursor/plans/` decision** — ignored and untracked (`40a0375`, `784213a`, 2026-08-22);
+      this line predated its own review.
 
 ### Product (`felix-run/web`)
 
 - [ ] **Rails before toast.** The last several PRs were all one toast component; `PRODUCT.md` says
       failure looks like "the rails are wallpaper". Cost view and eval instrumentation (C) are the
       two panels that make the right rail answer its own brief.
+      (2026-09-29: the rail was redesigned so spend is read on the Ledger (`/harness`), which shows
+      cost as a floor; still open: #345's per-eval-item cost and judge-fallback are not rendered by
+      `eval-sheet.tsx`.)
 - [ ] **Session-control UX gaps** — export JSONL from the UI, clearer lease-contention copy,
       reconnect-to-snapshot after a hard refresh, empty/search states.
-- [ ] **Labels name the thing, not the wire key** — `agent-sheet.tsx` prints `max_tokens`,
-      `checkpointer`, `full_replay` verbatim.
+      (2026-09-29: done — export JSONL (web #66), reconnect-to-snapshot after refresh (web #156,
+      the thread in the URL), empty and search states; still open: lease contention falls back to a
+      shared lease silently, with no copy saying another tab holds it.)
+- [x] **Labels name the thing, not the wire key** — `agent-sheet.tsx` says "Reply limit",
+      "Conversation state" and "every turn replayed" (felix-run/web#139); raw values stay mono.
 - [ ] **Prune leftover TS-harness skills/copy** in the docs sync sources. The getting-started
       rewrite landed (that item is done, and this file claimed otherwise until 2026-09-02); the
-      residual TS-era prose elsewhere did not go with it.
+      residual TS-era prose elsewhere did not go with it. (2026-09-29: a search of both repos'
+      docs, skills and READMEs for TS-harness wording found none. Name the files, or close this.)
 
 ### Deploy
 
-- [ ] **Cowork completion smoke on GCE** — local durable poll reaches `completed`; prod smoke
-      still only asserts a cowork `202` accept. Extend `.github/workflows/smoke.yml` with a
-      **soft** completion poll (`continue-on-error: true`, ~3 min). Cheaper once **B1** removes the
-      two-tick floor.
+- [x] **Cowork completion smoke on GCE** — the smoke's durable step polls
+      `GET /chat/runs/{token}` to `completed` and asserts the reply (#375). A hard check rather than
+      the soft one proposed: the worker now picks a fiber up within a second (#363) and runs it to
+      suspension, so a completion takes seconds (3s on the first run). The old `noop smoke` prompt
+      also left a pending `write_file` approval in production after every run; the prompt now asks
+      for no tools.
 - [ ] **Governed demo path (decide)** — either enable on GCE (RBAC scopes for chat keys) **or**
       keep the demo anonymous and document that choice in `deploy/GOVERNANCE.md`.
 - [ ] **GKE dogfood** — Helm + ESO → one known-good install note under `deploy/gcp/`.
 - [ ] **AWS smoke checklist** — mirror the GCP path (Secrets Manager / S3) in `deploy/aws/`.
 - [ ] **Postgres RLS dogfood** — migration `0006` + `FELIX_DATABASE_RLS=true` on a non-prod
       branch; verify retention bypass + mixed-tenant audit flush.
+      (2026-09-29: CI now enforces RLS in conformance (`test_rls_enforcement.py`, #204), which
+      found and fixed a real usage-flush bug (#341); the dogfood itself — a non-prod deployment
+      with `FELIX_DATABASE_RLS=true` — has not happened, and no test covers a mixed-tenant *audit*
+      flush through `audit/store.py`.)
 - [!] **Rotate Anthropic API key** — only when you say go. Then Secret Manager
       `felix-anthropic-api-key` + recreate API/worker.
 
