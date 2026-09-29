@@ -73,6 +73,12 @@ has a `memory://` path, the governance wrapper order is unchanged, `schemas/mani
 still matches the pydantic models, and the CI test job installs every extra the tests gate on.
 Change a rule deliberately and you update the test with it.
 
+`tests/unit/test_ordering_rule.py` holds every ordered-then-truncated listing — SQL `order_by`
+with `.limit`, and Python sorts that are then sliced, in any module — to ending on a primary-key
+component, so the store's two arms cannot disagree about which tied row falls on a page. A
+harmless tie goes in `EXEMPT` with its reason; the real ones left are `KNOWN_OPEN`, which only
+shrinks.
+
 `tests/unit/test_entrypoint_wiring.py` covers the references production depends on that no import
 statement mentions: every `[project.scripts]` target, the `module:attr` string Granian is handed, the
 Taskiq broker/scheduler/module paths, and the `felix-*` binary each Compose, Dockerfile and Helm

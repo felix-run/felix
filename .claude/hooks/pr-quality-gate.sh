@@ -104,7 +104,7 @@ tests_note="felix-test-quality-reviewer is not needed — no tests changed."
 # it, adding the token does. Prefixes rather than whole words, so `screen` reaches `screening.py`
 # and `polic` reaches both `policy.py` and `policies.py`.
 security_changed=$(printf '%s\n' "$changed" | grep -E \
-  '(^|[/_])(auth|security|governance|screen|secret|ssrf|egress|sandbox|polic|approval|browser|stdio|transport|rls|tenant|internal|builder)' || true)
+  '(^|[/_])(auth|security|governance|screen|secret|ssrf|egress|sandbox|polic|approval|browser|stdio|transport|rls|tenant|internal|builder|durability)' || true)
 security_note="felix-security-reviewer is not needed — nothing changed on a control path."
 if [ -n "$security_changed" ]; then
   m=$(printf '%s\n' "$security_changed" | wc -l | tr -d ' ')

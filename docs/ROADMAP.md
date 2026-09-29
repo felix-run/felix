@@ -787,7 +787,8 @@ rather than from re-reading a file. The wave itself is written up in [HISTORY.md
 - [x] **`scheme` replay on resume.** The sentence is in `deploy/GOVERNANCE.md`. A resumed fiber presents the recorded scheme without
       holding a credential, so `auth.inbound.schemes` can only ever agree with the enqueue-side
       check. Defence in depth lost, not a hole; worth a sentence in GOVERNANCE.md.
-- [ ] **`pr-quality-gate.sh` does not treat `durability/` as a control path.** It reported
+- [x] **`pr-quality-gate.sh` does not treat `durability/` as a control path.** Added, with a
+      case in `tests/unit/test_pr_quality_gate_hook.py`. It reported
       "felix-security-reviewer is not needed" on #149, the most security-relevant change of the
       session — a resumed run's authority comes from there. Add `durability` to the token list.
 - [ ] **felix-web docs lag #148–#150.** `internals/governance.mdx` covers screening and glob
@@ -976,7 +977,15 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       that connects as a superuser with RLS off. Found while verifying the fiber claim contract
       against a live database; fixed in a separate change.
 
-- [ ] **Promote the ordering rule to a scanner.** It has now been fixed six times — the audit
+- [x] **Promote the ordering rule to a scanner.** Done: `tests/unit/test_ordering_rule.py` scans
+      every module for an SQL `order_by` in a `.limit` chain and a Python sort whose result is
+      sliced — assigned, sorted in place, or iterated in a sliced comprehension — and requires
+      the last key to be a primary-key component (or, in a Python key, a PK column's name,
+      `r["id"]` included). Sites keyed `file:function`; ties that are harmless are `EXEMPT`
+      with a reason, and the three real ones are `KNOWN_OPEN`, a ratchet that fails when a fixed
+      site stays listed. Floors per kind (14 SQL, 20 Python matched) and the three files named
+      below must be reached — the first run of the mutations showed one shared floor let SQL
+      matching break unnoticed. As written: it has now been fixed six times — the audit
       and usage cursors, `list_runs`, `list_jobs`'s collation, `list_active` twice — and two
       more shapes are still open below. The repo's own rule is that a lesson learned this often
       earns a structural gate rather than another round of review. The shape: over *any* module
@@ -1056,7 +1065,9 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       is fixed with the jobs work because it already had a contract to assert it in.
 
       `memory/store.py`'s `list_active` (both sorts) and `as_of` are done, and so is
-      `memory/recall.py` — see the item above. Remaining, ranked by what a wrong answer costs,
+      `memory/recall.py` — see the item above. The remaining sites are `KNOWN_OPEN` in
+      `tests/unit/test_ordering_rule.py` now, which fails when one is fixed and left listed.
+      Remaining, ranked by what a wrong answer costs,
       and by function rather than line so the list stops rotting on every edit:
       `approvals/store.py`'s `list_approvals` (`created_at`,
       limited); `plans/store.py`'s `list_plans` (`updated_at`, limited); `eval/store.py`'s
