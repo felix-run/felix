@@ -77,8 +77,13 @@ async def stdio_rpc(
     *,
     wait_s: float = DEFAULT_MCP_TIMEOUT_S,
     settings: Any | None = None,
+    handshake: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Spawn ``ref.command``, handshake, call ``method``, then terminate."""
+    """Spawn ``ref.command``, handshake, call ``method``, then terminate.
+
+    ``handshake``, when given, receives the ``initialize`` result — the server's
+    ``instructions`` ride on it.
+    """
     if not ref.command:
         raise RuntimeError("stdio MCP ref has no command")
     # Defense in depth: the manifest was already checked on write and at compile, but
@@ -113,7 +118,9 @@ async def stdio_rpc(
                 },
             },
         )
-        await _read_message(proc, wait_s=wait_s)
+        init = await _read_message(proc, wait_s=wait_s)
+        if handshake is not None and isinstance(init.get("result"), dict):
+            handshake.update(init["result"])
         await _write_message(
             proc,
             {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
@@ -148,10 +155,10 @@ async def stdio_rpc(
 
 
 async def list_stdio_tools(
-    ref: McpServerRef, *, wait_s: float = DEFAULT_MCP_TIMEOUT_S
+    ref: McpServerRef, *, wait_s: float = DEFAULT_MCP_TIMEOUT_S, handshake: dict[str, Any] | None = None
 ) -> list[dict[str, Any]]:
     try:
-        result = await stdio_rpc(ref, "tools/list", {}, wait_s=wait_s)
+        result = await stdio_rpc(ref, "tools/list", {}, wait_s=wait_s, handshake=handshake)
     except Exception:
         logger.warning("MCP stdio tools/list failed for %s", ref.name, exc_info=True)
         return []

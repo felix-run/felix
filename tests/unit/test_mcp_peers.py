@@ -184,7 +184,7 @@ async def test_mcp_timeout_is_per_server_over_stdio(monkeypatch: pytest.MonkeyPa
 
     seen: list[float] = []
 
-    async def _fake_stdio_rpc(ref, method, params=None, *, wait_s=30.0, settings=None):
+    async def _fake_stdio_rpc(ref, method, params=None, *, wait_s=30.0, settings=None, handshake=None):
         seen.append(wait_s)
         if method == "tools/list":
             return {"tools": [{"name": "echo", "description": "e", "inputSchema": {}}]}

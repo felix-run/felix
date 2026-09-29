@@ -737,6 +737,14 @@ the only one there was. It is free in the default configuration — both bundled
 enable screening leave `model` empty, and the marker path is a substring scan — and it costs a
 model call per untrusted tool per turn where `model` *is* set.
 
+An MCP server's own `instructions` — the text it returns from `initialize` about how its tools are
+meant to be used — are **not** read unless the manifest sets `use_instructions: true` on that
+server. Tool descriptions already reach the model as tool schemas; instructions would reach the
+*system prompt*, which is the server writing to your agent with the operator's voice. When opted
+in they become one line of the system prompt's tool guidance, collapsed to one line, capped at
+1,000 characters, and dropped whole (`felix_mcp_instructions{outcome="flagged"}`) when the
+injection markers match. Opt in only for servers you would let edit the prompt.
+
 That knob is `content_screening.model_tools`: a glob list of which screened tools get the paid
 scoring — `model` and `decider`, a call per window each. Empty, the default, is every screened
 tool. It is orthogonal to trust, not a way out of it: every screened tool still runs the marker
