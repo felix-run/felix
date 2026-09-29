@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Recalled memory is screened.** `recall` and `list_memories` were trusted local tools, so with
+  content screening on they were screened only where a manifest named them. Memory capture runs
+  over turns that carried untrusted tool output, so a payload screening quarantined on its way in
+  could be captured as a "fact" and handed back unscreened. Memory tools now count as untrusted:
+  every manifest with screening enabled scans their output (the marker scan is free; paid scoring
+  follows `content_screening.model_tools`). `governed.yaml` screens recall with no edit.
+  `deploy/GOVERNANCE.md` also states the Temporal trust assumptions: workflow history holds each
+  run's recorded authority, and whoever can start a workflow on `felix-fibers` chooses it.
+
 - **Credentials no longer appear in a `repr`.** `Settings` printed provider API keys, connection
   URLs with their passwords, the S3 keys and the signing secrets in clear, and every request's
   context carries `Settings`; the model client printed its API key and extra headers. Nothing
