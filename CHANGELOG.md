@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`deploy/gcp/roll.sh` survives its first real roll.** Three bugs, all found rolling 0.5.0:
+  `gh` opened a pager and waited at `(END)` for a key; `gcloud compute ssh` and the other tools
+  read the terminal and swallowed answers typed ahead of a prompt; and the checkout ran as the
+  directory's owner, which fails part-way on the root-owned files earlier `sudo git` rolls leave,
+  half-switching the tree. Only the prompts read the terminal now, git runs as root with a
+  `safe.directory` override, and each step that changes the host stops with what it left behind
+  and how to restore it.
+
 ### Added
 
 - **`deploy/gcp/roll.sh`: upgrade a GCE + Compose deployment in one command.** It runs the

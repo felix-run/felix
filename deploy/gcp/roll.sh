@@ -16,6 +16,11 @@
 #   FELIX_VM, FELIX_ZONE, FELIX_REPO_DIR, FELIX_BACKUP_DIR, FELIX_HEALTH_URL, FELIX_IMAGE
 set -euo pipefail
 
+# Only `confirm` reads the terminal. `gh` pages its output when stdout is a tty and waited at
+# `(END)` for a keypress; `gcloud compute ssh` and the other tools read stdin and swallowed
+# answers typed ahead of a prompt. Both happened on the first real roll (0.5.0).
+export GH_PAGER=cat PAGER=cat
+
 VM="${FELIX_VM:-felix-api}"
 ZONE="${FELIX_ZONE:-us-central1-a}"
 REPO_DIR="${FELIX_REPO_DIR:-/opt/felix}"
@@ -39,7 +44,7 @@ confirm() {
   read -r -p "   $1 [y/N] " reply </dev/tty
   [[ "$reply" =~ ^[Yy]$ ]] || die "not confirmed — nothing further was changed"
 }
-remote() { gcloud compute ssh "$VM" --zone "$ZONE" --quiet --command "$1"; }
+remote() { gcloud compute ssh "$VM" --zone "$ZONE" --quiet --command "$1" </dev/null; }
 psql_q() {
   # One query against the deployment's own database, tab-separated, no headers.
   remote "sudo docker exec \$(sudo docker ps --format '{{.Names}}' | grep -m1 postgres) psql -U felix -d felix -tA -F\$'\\t' -c \"$1\""
@@ -50,24 +55,29 @@ psql_q() {
 bold "Target: $TAG on $VM ($ZONE)"
 
 bold "Release and image"
-gh release view "$TAG" --repo felix-run/felix --json publishedAt -q '"   release published \(.publishedAt)"' \
+gh release view "$TAG" --repo felix-run/felix --json publishedAt -q '"   release published \(.publishedAt)"' </dev/null \
   || die "no GitHub release $TAG"
-docker manifest inspect "$IMAGE:$VERSION-gcp" >/dev/null 2>&1 \
+docker manifest inspect "$IMAGE:$VERSION-gcp" </dev/null >/dev/null 2>&1 \
   || die "image $IMAGE:$VERSION-gcp is not published"
 note "image $IMAGE:$VERSION-gcp exists"
 
 bold "Deployment state"
-OWNER="$(remote "stat -c %U '$REPO_DIR'")"
-STATE="$(remote "cd '$REPO_DIR' && sudo -u '$OWNER' git describe --tags --always && sudo -u '$OWNER' git status --porcelain | wc -l && sudo grep -E '^FELIX_IMAGE_TAG=' .env || true")"
+# As root, not as the checkout's owner: earlier rolls ran `sudo git`, so files in the tree are
+# root's and a checkout as the owner fails part-way with "unable to unlink old ...: Permission
+# denied", leaving the tree half-switched (0.5.0's first roll). `safe.directory` is what lets
+# root operate on a checkout it does not own without git refusing it as dubious.
+GIT="sudo git -c safe.directory='$REPO_DIR'"
+STATE="$(remote "cd '$REPO_DIR' && $GIT describe --tags --always && $GIT status --porcelain | wc -l && sudo grep -E '^FELIX_IMAGE_TAG=' .env || true")"
 CURRENT_CHECKOUT="$(sed -n 1p <<<"$STATE")"
 DIRTY="$(sed -n 2p <<<"$STATE" | tr -d ' ')"
 CURRENT_PIN="$(sed -n 3p <<<"$STATE")"
-note "checkout: $CURRENT_CHECKOUT (owner $OWNER), uncommitted files: $DIRTY"
+note "checkout: $CURRENT_CHECKOUT, uncommitted files: $DIRTY"
 note "pin: ${CURRENT_PIN:-<none>}"
-[ "$DIRTY" = "0" ] || die "$REPO_DIR has uncommitted changes; a checkout would carry or refuse them"
+[ "$DIRTY" = "0" ] || die "$REPO_DIR has $DIRTY changed files. If a previous roll's checkout failed part-way, they are its
+      debris and \`$GIT checkout --force $CURRENT_CHECKOUT\` on the VM restores the tree; otherwise commit or remove them"
 [ "$CURRENT_CHECKOUT" != "$TAG" ] || note "already on $TAG"
-remote "sudo docker ps --format '   {{.Names}}\t{{.Image}}\t{{.Status}}'"
-note "health: $(curl -sS -m 10 "$HEALTH_URL" || echo unreachable)"
+remote "sudo docker ps --format '{{.Names}}\t{{.Image}}\t{{.Status}}'" | sed 's/^/   /'
+note "health: $(curl -sS -m 10 "$HEALTH_URL" </dev/null || echo unreachable)"
 
 bold "Schema"
 note "alembic: $(psql_q 'table alembic_version')"
@@ -99,7 +109,8 @@ bold "Backup"
 [ -z "$FIBERS" ] || confirm "Durable runs are in flight (above). Continue anyway?"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 DUMP="$BACKUP_DIR/felix-pre-$VERSION-$STAMP.dump"
-remote "sudo mkdir -p '$BACKUP_DIR' && sudo sh -c \"docker exec \$(sudo docker ps --format '{{.Names}}' | grep -m1 postgres) pg_dump -U felix -d felix -Fc > '$DUMP'\""
+remote "sudo mkdir -p '$BACKUP_DIR' && sudo sh -c \"docker exec \$(sudo docker ps --format '{{.Names}}' | grep -m1 postgres) pg_dump -U felix -d felix -Fc > '$DUMP'\"" \
+  || die "backup failed; nothing else has changed (a partial $DUMP may exist and can be deleted)"
 # A dump that pg_restore can list is a dump that finished; a truncated one fails here.
 TOC="$(remote "sudo sh -c \"docker exec -i \$(sudo docker ps --format '{{.Names}}' | grep -m1 postgres) pg_restore --list < '$DUMP' | grep -c 'TABLE DATA'\"")"
 SIZE="$(remote "sudo du -h '$DUMP' | cut -f1")"
@@ -119,23 +130,28 @@ COMPOSE="cd '$REPO_DIR' && sudo docker compose$FLAGS --project-directory ."
 
 confirm "Move $REPO_DIR to $TAG and pin FELIX_IMAGE_TAG=$VERSION? (.env is backed up first)"
 remote "cd '$REPO_DIR' && sudo cp .env '.env.bak-pre-$VERSION-$STAMP' \
-  && sudo -u '$OWNER' git fetch --tags --quiet && sudo -u '$OWNER' git checkout --quiet '$TAG' \
+  && $GIT fetch --tags --quiet && $GIT checkout --quiet '$TAG' \
   && if sudo grep -q '^FELIX_IMAGE_TAG=' .env; then sudo sed -i 's/^FELIX_IMAGE_TAG=.*/FELIX_IMAGE_TAG=$VERSION/' .env; \
      else echo 'FELIX_IMAGE_TAG=$VERSION' | sudo tee -a .env >/dev/null; fi \
-  && echo \"   checkout \$(sudo -u '$OWNER' git describe --tags) ; \$(sudo grep '^FELIX_IMAGE_TAG=' .env)\""
+  && echo \"   checkout \$($GIT describe --tags) ; \$(sudo grep '^FELIX_IMAGE_TAG=' .env)\"" \
+  || die "checkout or pin failed. Nothing was restarted. The tree may be half-switched: on the VM,
+      \`cd $REPO_DIR && $GIT checkout --force $CURRENT_CHECKOUT\` restores it, and
+      $REPO_DIR/.env.bak-pre-$VERSION-$STAMP restores .env if it was edited"
 note ".env backup: $REPO_DIR/.env.bak-pre-$VERSION-$STAMP"
 
 bold "Pull (before the roll, so the outage is only the restart)"
-remote "$COMPOSE pull --quiet"
+remote "$COMPOSE pull --quiet" \
+  || die "pull failed; nothing was restarted, but the checkout and pin are already on $TAG"
 
 confirm "Roll now? migrate runs first, then api/worker/scheduler restart (expect ~1 min of 502s)"
-remote "$COMPOSE up -d"
+remote "$COMPOSE up -d" \
+  || die "\`up -d\` failed part-way; check \`docker compose ps\` and the migrate logs on the VM"
 
 # --- verify ---------------------------------------------------------------------------------
 
 bold "Waiting for $HEALTH_URL to report $VERSION"
 for _ in $(seq 1 60); do
-  BODY="$(curl -sS -m 5 "$HEALTH_URL" 2>/dev/null || true)"
+  BODY="$(curl -sS -m 5 "$HEALTH_URL" </dev/null 2>/dev/null || true)"
   if grep -q "\"version\":\"$VERSION\"" <<<"$BODY"; then note "$BODY"; break; fi
   sleep 5
 done
@@ -143,7 +159,7 @@ grep -q "\"version\":\"$VERSION\"" <<<"${BODY:-}" || die "health did not report 
 
 bold "After"
 note "alembic: $(psql_q 'table alembic_version')"
-remote "sudo docker ps --format '   {{.Names}}\t{{.Image}}\t{{.Status}}'"
+remote "sudo docker ps --format '{{.Names}}\t{{.Image}}\t{{.Status}}'" | sed 's/^/   /'
 remote "sudo docker logs \$(sudo docker ps -a --format '{{.Names}}' | grep -m1 migrate) 2>&1 | tail -5" | sed 's/^/   migrate: /'
 
 bold "Done: $TAG"
