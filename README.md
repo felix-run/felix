@@ -629,12 +629,16 @@ Storage and execution:
   rest with `read_artifact`, sized by `default_window_chars` / `max_window_chars`
 - Durable facts via `spec.memory.capture`; how-tos via `spec.procedural_memory`
 - `spec.execution.mode: durable` enqueues a fiber (Temporal optional) and returns `202` with a
-  `resume_token`; a step that keeps failing backs off and is `dead` after `FELIX_FIBER_MAX_ATTEMPTS`
+  `resume_token`; a step that keeps failing backs off and is `dead` after `FELIX_FIBER_MAX_ATTEMPTS`.
+  Each worker polls for due fibers every `FELIX_FIBER_POLL_SECONDS` (1.0; 0 leaves only the
+  once-a-minute `fiber_scheduler` sweep) and advances up to `FELIX_FIBER_CONCURRENCY` (8) at once,
+  so a new run starts within about a second and one parked on an approval holds up no other
 - `spec.execution.webhooks: [ops]` announces a durable run's end to operator-registered endpoints
   (`FELIX_WEBHOOK_ENDPOINTS`, a JSON map of id → `{url, secret, tenants, private?}`): the worker
   POSTs `run.completed|failed|expired|dead` with the run view, signed per Standard Webhooks
   (`webhook-id`, `webhook-timestamp`, `webhook-signature: v1,…`), retries with backoff up to
-  `FELIX_WEBHOOK_MAX_ATTEMPTS` (8), and reports each endpoint's state on `GET /chat/runs/{token}`.
+  `FELIX_WEBHOOK_MAX_ATTEMPTS` (8) with each attempt bounded by `FELIX_WEBHOOK_TIMEOUT_SECONDS`
+  (10), and reports each endpoint's state on `GET /chat/runs/{token}`.
   A manifest names ids, never URLs; an id not registered for the caller's tenant is `422`
 - `POST /chat/stream` on a durable manifest streams the run instead: `run_accepted` → `run_status`
   → `final`, interleaved with `session_event` frames tailed from the thread's session log, so tool
