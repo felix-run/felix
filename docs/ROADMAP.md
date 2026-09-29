@@ -584,7 +584,13 @@ comment explaining exactly that. It is conditional, not inert.
       libraries more than paid for `libpq5`. `psycopg.pq.__impl__` reports `c`, migrations run
       to head against real Postgres 17.11, and the scan exits 0 with no ignore file at all.
 
-- [ ] **`session.context_window_tokens` should default to a sentinel, not a number.** It is the
+- [x] **`session.context_window_tokens` should default to a sentinel, not a number.** Done: the
+      default is `None` (the model's window), `runtime.py` no longer reads `model_fields_set`,
+      and the pin hash now tells a written 128000 from an omitted field. Found on the way: the
+      model listing (`usage/catalog.py`) read this field, so every manifest listed a 128K window,
+      and its fallback looked the window up by the manifest's *name*; it uses the function
+      compaction does now. The bundled manifests keep their explicit 128000, so they compact as
+      before. As written: it is the
       one field in the schema where writing the default and omitting it mean different things:
       `runtime.py` reads `model_fields_set` to tell them apart, so an explicit `128000` compacts
       against 128K while omitting it compacts against the model's real window (1M on a

@@ -177,7 +177,7 @@ def _build_compat(provider_name: str) -> EmbedderFactory:
         # default is `bge-base-en-v1.5`, a sentence-transformers name, and reading it
         # unconditionally sent that string to OpenAI as a model id — which the old
         # `_build_openai` did too, since its own default was unreachable behind a field
-        # that is never empty. Same trick `runtime.py` uses for `context_window_tokens`.
+        # that is never empty.
         declared = "memory_embedding_model" in getattr(settings, "model_fields_set", set())
         configured = str(getattr(settings, "memory_embedding_model", "") or "")
         model = (configured if declared else "") or spec.embedding_model
