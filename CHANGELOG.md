@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Credentials no longer appear in a `repr`.** `Settings` printed provider API keys, connection
+  URLs with their passwords, the S3 keys and the signing secrets in clear, and every request's
+  context carries `Settings`; the model client printed its API key and extra headers. Nothing
+  logged them, so this was latent — one debug line or one traceback's locals away. They are
+  hidden from `repr` now, values unchanged, and a new setting whose name looks like a credential
+  fails a test until it is hidden too.
+
 - **Memory capture extracts from the screened reply.** With reply controls and
   `spec.memory.capture` on, facts were extracted from the reply as the model wrote it, so a
   fact built from text the PII guardrails redacted was stored and came back in every later

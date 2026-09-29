@@ -1141,12 +1141,14 @@ cycle's, and the route contracts below are the next capability-adjacent step.
 
 ### Repo / release hygiene
 
-- [ ] **Credentials survive a `repr`.** `Settings` renders `anthropic_api_key` / `openai_api_key`
-      in clear, `RequestContext` carries `Settings` on every request, and `HttpModelClient` keeps
-      `api_key` as a plain dataclass field — no call site logs any of them today, so this is one
-      `logger.debug("%r", client)` away rather than live. `SecretStr` on the credential fields
-      and `field(repr=False)` on the client close it (`_ReactAgent.settings` got the latter in
-      the `/v1` streaming change). Found by the 2026-09-04 readiness security review.
+- [x] **Credentials survive a `repr`.** Closed with `repr=False` rather than `SecretStr`: the
+      value is untouched, so no call site changes, and what leaked was the rendering. Fourteen
+      `Settings` fields — provider keys, `auth_api_keys`, `jwks_private`, the S3 keys, the
+      signing secrets, the JSON blobs that carry credentials (`model_provider_options`,
+      `webhook_endpoints`), and the URLs that can carry a password (`database_url`, `redis_url`,
+      `warehouse_url`) — plus `HttpModelClient.api_key` and `extra_headers` (a gateway token can
+      ride there). `tests/unit/test_credentials_out_of_repr.py` makes a new one fail closed: a
+      field whose name looks like a credential must be hidden or listed as not one.
 
 - [~] **Required status checks + `CODEOWNERS`** — the status-check half is **done** and this
       entry was wrong: `main` requires 13 contexts, all bound to the Actions app, and the
