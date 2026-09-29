@@ -6,7 +6,7 @@ import time
 import uuid
 from typing import Any, Literal
 
-from sqlalchemy import select, update
+from sqlalchemy import collate, select, update
 
 from felix.approvals.interrupt import DEFAULT_TIMEOUT_SECONDS
 from felix.config import Settings
@@ -117,7 +117,9 @@ async def list_approvals(
             and (status is None or row["status"] == status)
             and (thread_id is None or row.get("thread_id", "") == thread_id)
         ]
-        items.sort(key=lambda r: r["created_at"], reverse=True)
+        # Ending on the id, as `find_approved` does: a tie on `created_at` is broken the same way
+        # on both arms, so a page cut through the tie holds the same rows.
+        items.sort(key=lambda r: (r["created_at"], r["id"]), reverse=True)
         return items[:limit]
 
     factory = get_session_factory(settings=settings)
@@ -125,7 +127,7 @@ async def list_approvals(
         stmt = (
             select(Approval)
             .where(Approval.tenant_id == tenant_id)
-            .order_by(Approval.created_at.desc())
+            .order_by(Approval.created_at.desc(), collate(Approval.id, "C").desc())
             .limit(limit)
         )
         if status is not None:

@@ -569,3 +569,19 @@ async def test_a_reused_pending_row_keeps_the_thread_that_opened_it(store_settin
 
     assert second["id"] == first["id"], "the reuse key changed; this contract no longer applies"
     assert second["thread_id"] == "default:first", "a later thread overwrote the originator"
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_approvals_created_in_one_millisecond_page_the_same_on_both_arms(
+    store_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`list_approvals` ordered on `created_at` alone, so a page cut through a tie held whichever
+    rows Postgres returned and the twin's insertion order otherwise. It ends on the id now."""
+    monkeypatch.setattr(approvals, "now_ms", lambda: 1_800_000_000_000)
+    created = [await _pending(store_settings, call_signature=f"{SIG}:{i}") for i in range(5)]
+
+    full = [a["id"] for a in await approvals.list_approvals(store_settings, TENANT, limit=100)]
+    assert full == sorted((a["id"] for a in created), reverse=True), "newest first, then by id"
+    page = [a["id"] for a in await approvals.list_approvals(store_settings, TENANT, limit=2)]
+    assert page == full[:2]

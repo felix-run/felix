@@ -824,7 +824,9 @@ async def consolidate_pools(settings: Settings, *, max_facts: int = 500) -> int:
         active = [
             ((tenant_id, mem_id), row) for (tenant_id, mem_id), row in _memory_rows.items() if _is_active(row)
         ]
-        active.sort(key=lambda item: int(item[1].get("created_at") or 0))
+        # The first of two duplicates scanned is the one kept, so ties on `created_at` decide
+        # the survivor — broken by tenant, then id, byte order, the same on both arms.
+        active.sort(key=lambda item: (int(item[1].get("created_at") or 0), item[0][0], item[1]["id"]))
         for (tenant_id, mem_id), row in active[:scan_limit]:
             key = (tenant_id, row.get("manifest_id", ""), row.get("content", ""))
             if key in seen:
@@ -851,7 +853,11 @@ async def consolidate_pools(settings: Settings, *, max_facts: int = 500) -> int:
                 await db.scalars(
                     select(MemoryVector)
                     .where(MemoryVector.status == ACTIVE)
-                    .order_by(MemoryVector.created_at.asc())
+                    .order_by(
+                        MemoryVector.created_at.asc(),
+                        collate(MemoryVector.tenant_id, "C").asc(),
+                        collate(MemoryVector.id, "C").asc(),
+                    )
                     .limit(scan_limit)
                 )
             ).all()

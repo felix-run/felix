@@ -39,10 +39,9 @@ EXEMPT = {
 
 # Sites that may tie and matter — debt from `docs/ROADMAP.md`, "More listings whose two arms can
 # disagree about order". Fix one and this test tells you to delete its entry.
-KNOWN_OPEN = {
-    "approvals/store.py:list_approvals": "`created_at` only, limited",
-    "plans/store.py:list_plans": "`updated_at` only, limited",
-    "memory/store.py:consolidate_pools": "`created_at` only, cut at `max_facts`",
+KNOWN_OPEN: dict[str, str] = {
+    # Empty since `list_approvals`, `list_plans` and `consolidate_pools` gained their id
+    # tiebreaks. Debt found later goes here, with a line saying what ties — never into EXEMPT.
 }
 
 # Files the scan must reach, or it has stopped scanning what it was written for.

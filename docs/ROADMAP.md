@@ -1056,7 +1056,11 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       neighbour its author opens. The carrier would be a shared conformance assertion that
       every store's read is mutation-isolated, not four more deepcopies.
 
-- [ ] **More listings whose two arms can disagree about order.** Not one shape but three, and
+- [x] **More listings whose two arms can disagree about order.** Closed: `list_approvals`,
+      `list_plans` and `consolidate_pools` end on the id (tenant then id for the cross-tenant
+      sweep), `collate(..., "C")` on Postgres so both arms compare bytes, each with a
+      conformance case that goes red on either arm without it; `KNOWN_OPEN` in
+      `tests/unit/test_ordering_rule.py` is empty. As written: Not one shape but three, and
       the first survey found only the first: a tie the twin breaks by insertion order and
       Postgres by nothing; a text key ordered by database collation on one arm and code point
       on the other; and the two arms sorting the same keys in *opposite directions*. The jobs
