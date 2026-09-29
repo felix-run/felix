@@ -12,6 +12,38 @@ not fail. Keep that habit: a wave entry that lists only wins is not worth writin
 
 ## Waves
 
+### v0.5.0 and the first scripted production roll (Sep 2026, #363, #368, #370, #372–#375)
+
+Not an audit wave: one release, cut and rolled to production in a day, with most of what went
+wrong in the tooling around the change rather than the change.
+
+- **A durable run waited for the minute.** Measured on the reference deployment: runs started on
+  the `* * * * *` cron's :53 tick, ~25s after submission, and a sweep that stepped its batch in
+  order took 89s behind one approval. A per-worker poll (1s) and concurrent steps fixed both; a
+  run now starts within a second and completes a no-tool turn in 3s (#363).
+- **`make up-self` could fail its own first boot.** api and worker ran `self-entrypoint.sh` at
+  once on one volume; on a fresh volume both cloned and *both* failed, leaving a `.git` that
+  failed the next start too. The live symptom was only the milder race on an existing clone,
+  a `cannot lock ref` line per restart (#368).
+- **The changelog's union merge rewrote the release twice.** Each rebase of the release PR put a
+  newly merged entry under no heading and re-added a second `### Changed` and `### Fixed`. What
+  held up: rebuild the close-out from `main`'s changelog mechanically and assert every entry line
+  survives, rather than resolving the merge by eye. And merge a release PR the moment it is green.
+- **Gates run before the bump miss what the bump breaks.** `test_version_single_source` built its
+  expected file with `replace(version)`, which at 0.5.0 also rewrote `pgvector>=0.5.0`; the bump
+  was right and the oracle was wrong, and only a release number matching a pin could show it.
+- **A CVE landed mid-release** (PyJWT, #372). The fixed version was 18 days old and the newest
+  was inside the 48-hour hold, so the lock pins the fix rather than the latest.
+- **The roll script's dry runs passed with stubs that behaved better than the real tools.** Its
+  first real run hung at `gh`'s pager, lost typed-ahead answers to `gcloud compute ssh`, and
+  half-switched `/opt/felix` because earlier `sudo git` rolls left 485 root-owned paths (#374).
+  The fix's tests use stubs that page and swallow stdin, and the old script fails them. A stub
+  is only evidence when it can fail the way the real thing does.
+- **The smoke test was a source of the noise it should detect.** Its durable prompt made `cowork`
+  write a file, so every six hours it left a pending approval in production's queue (#375).
+  Approval rows store `created_at` in milliseconds; reading them as seconds dated that row to
+  06:08 and nearly misattributed it.
+
 ### Governance mutation audit (Sep 2026, #141–#150)
 
 Method: disable each of the nine governance controls in turn — `return tools`, the shape a
