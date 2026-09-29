@@ -77,10 +77,10 @@ class Settings(BaseSettings):
     # resolved against the plugin registry at request time and 401s if absent.
     # `validate_runtime` rejects an unknown mode with no plugin behind it.
     auth_mode: str = "none"
-    auth_api_keys: str = ""  # JSON map token -> {tenant_id, sub, scopes[]}
+    auth_api_keys: str = Field(default="", repr=False)  # JSON map token -> {tenant_id, sub, scopes[]}
     jwt_verifiers: str = ""  # comma-separated scheme:issuer (access|cognito|self)
     jwks_public: str = ""  # PEM or JWKS JSON for self-issued
-    jwks_private: str = ""  # PEM for minting (CLI)
+    jwks_private: str = Field(default="", repr=False)  # PEM for minting (CLI)
     # Comma-separated tenants a JWT may claim. Empty = any claimed tenant is
     # accepted, which is only safe when the IdP is the sole writer of that claim.
     allowed_tenants: str = ""
@@ -131,18 +131,18 @@ class Settings(BaseSettings):
     shell_allowed_commands: str = ""
 
     # --- data plane (cloud-agnostic; AWS + GCP first) ---
-    database_url: str = "postgresql+psycopg://felix:felix@localhost:5432/felix"
+    database_url: str = Field(default="postgresql+psycopg://felix:felix@localhost:5432/felix", repr=False)
     # Opt-in Postgres RLS (requires migration 0006). Sets app.tenant_id per txn.
     database_rls: bool = False
-    redis_url: str = "redis://localhost:6379/0"
+    redis_url: str = Field(default="redis://localhost:6379/0", repr=False)
     # Object store: s3 (AWS/MinIO) | gcs (GCP) | fs (local dir, small VMs) | memory
     # Lean default is fs — matches Docker image without aws/gcp extras.
     # Registrable: felix.storage.register_object_store adds a backend.
     object_store: str = "fs"
     object_store_path: str = ""  # FELIX_OBJECT_STORE=fs → under data_dir/objects if empty
     s3_endpoint: str = "http://localhost:9000"  # empty = AWS default endpoint
-    s3_access_key: str = "felix"
-    s3_secret_key: str = "felixsecret"
+    s3_access_key: str = Field(default="felix", repr=False)
+    s3_secret_key: str = Field(default="felixsecret", repr=False)
     s3_bucket: str = "felix-bundles"
     s3_region: str = "us-east-1"
     gcs_bucket: str = ""
@@ -161,15 +161,15 @@ class Settings(BaseSettings):
     # Sonnet tier by default, matching the prior posture. `claude-opus` and
     # `claude-fable` are available routes; changing this changes every run's cost.
     default_model_id: str = "claude-sonnet"
-    anthropic_api_key: str = ""
-    openai_api_key: str = ""
+    anthropic_api_key: str = Field(default="", repr=False)
+    openai_api_key: str = Field(default="", repr=False)
     ollama_base_url: str = "http://localhost:11434"
     litellm_base_url: str = ""
     model_routes: str = ""  # JSON override of logical id -> {provider, model}
     # JSON: provider name -> {"base_url": ..., "api_key": ...}. The built-in providers
     # have named fields above; a plugin's provider cannot, because Settings ignores
     # extras, so without this an installed provider had no way to be given a key.
-    model_provider_options: str = ""
+    model_provider_options: str = Field(default="", repr=False)
     # JSON override of logical id -> {provider, model} for *decision* providers — models that
     # answer typed questions (choose, score, true/false) rather than generate text, selected
     # by `spec.decider.id`. Credentials come from FELIX_MODEL_PROVIDER_OPTIONS under the
@@ -202,7 +202,7 @@ class Settings(BaseSettings):
     # JSON: {"id": {"url": "https://...", "secret": "secret:NAME", "tenants": [...], "private":
     # false}}. `secret` signs every delivery; `tenants` (required) lists who may name it, or
     # "*" for every tenant; `private: true` lets the URL resolve to a private address.
-    webhook_endpoints: str = ""
+    webhook_endpoints: str = Field(default="", repr=False)
     # Delivery tries per endpoint before it is marked `dead`; backoff 1m, 2m, 4m … up to 1h.
     webhook_max_attempts: int = Field(default=8, ge=1)
     webhook_timeout_seconds: float = Field(default=10.0, gt=0)
@@ -283,7 +283,7 @@ class Settings(BaseSettings):
     # Registrable: felix.warehouse.register_warehouse_backend adds a backend.
     warehouse: str = "none"
     warehouse_path: str = ""  # duckdb file; default $FELIX_DATA_DIR/warehouse/felix.duckdb
-    warehouse_url: str = ""  # clickhouse http(s)://… or doris mysql://…
+    warehouse_url: str = Field(default="", repr=False)  # clickhouse http(s)://… or doris mysql://…
     warehouse_database: str = "felix"
 
     # --- long-term memory ---
@@ -315,7 +315,7 @@ class Settings(BaseSettings):
     # Base URL of that backend. Operator-supplied, and still validated by the egress guard —
     # a search endpoint in private space is refused like any other outbound destination.
     search_url: str = ""
-    search_api_key: str = ""
+    search_api_key: str = Field(default="", repr=False)
     # Bounded like every other integration timeout. Unbounded, a misconfiguration presented
     # as a call that never returns rather than as a boot failure.
     search_timeout_seconds: float = Field(default=15.0, gt=0, le=300.0)
@@ -440,8 +440,8 @@ class Settings(BaseSettings):
     # loop runs in the API, so the API must flush too — the worker cron alone only
     # ever drained the worker's (always-empty) buffer. 0 disables the loop.
     audit_flush_seconds: float = 5.0
-    consumer_shared_secret: str = ""
-    webhook_secret: str = ""
+    consumer_shared_secret: str = Field(default="", repr=False)
+    webhook_secret: str = Field(default="", repr=False)
     policy_bundle_pubkey: str = ""
 
     data_dir: str = Field(default="./data")
