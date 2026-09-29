@@ -44,10 +44,10 @@ class RememberArgs(BaseModel):
     topic_key: str = Field(
         default="",
         description=(
-            "Stable dotted key such as 'user.timezone'. Storing a new memory with the "
-            "same topic_key usually supersedes the old value rather than sitting beside "
-            "it. Set "
-            "it for facts and instructions; leave it empty for events and tasks."
+            "Stable dotted key such as 'user.timezone'. A new memory with the same "
+            "topic_key is recorded as the current value; the older one is kept until an "
+            "operator retires it. Set it for facts and instructions; leave it empty for "
+            "events and tasks."
         ),
     )
     importance: float = Field(default=0.5, ge=0.0, le=1.0)
@@ -155,8 +155,8 @@ def _remember_tool(b: _Binding) -> Tool:
             "Store something worth knowing in future sessions. Use 'fact' for stable "
             "knowledge or preferences, 'event' for something that happened, "
             "'instruction' for a rule to follow, 'task' for work in progress. Set "
-            "topic_key on facts and instructions so a newer value can supersede the old "
-            "one rather than sitting alongside it."
+            "topic_key on facts and instructions so a newer value is recognised as the "
+            "current one."
         ),
         args=RememberArgs,
         handler=handler,

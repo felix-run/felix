@@ -1,6 +1,6 @@
 [project]
 name = "felix"
-version = "0.4.0"
+version = "0.5.0"
 description = "Felix — a self-hostable managed agents harness. YAML manifests compile into governed agents with durable fibers, memory, skills, eval, approvals, and sandboxes — over OpenAI, A2A, MCP, and SSE."
 readme = "README.md"
 license = "Apache-2.0"
@@ -8,6 +8,7 @@ authors = [{ name = "Blake Bauman", email = "blake.bauman@gmail.com" }]
 requires-python = ">=3.14"
 dependencies = [
     "felix-ai",
+    "felix-client",
     "felix-harness",
     "felix-cli",
     "felix-api",
@@ -63,6 +64,7 @@ members = ["packages/*", "apps/*"]
 
 [tool.uv.sources]
 felix-ai = { workspace = true }
+felix-client = { workspace = true }
 felix-harness = { workspace = true }
 felix-cli = { workspace = true }
 felix-api = { workspace = true }

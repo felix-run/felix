@@ -7,238 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Security
-
-- **Memory capture extracts from the screened reply.** With reply controls and
-  `spec.memory.capture` on, facts were extracted from the reply as the model wrote it, so a
-  fact built from text the PII guardrails redacted was stored and came back in every later
-  prompt that recalled it. Capture now reads the reply as the controls ship it, and captures
-  nothing from a reply a judge denied. A router's controls reach its child's capture too.
-  Facts stored before this change are left as they are.
-
-- **The session log keeps the screened reply.** With reply controls on (`guardrails.providers:
-  [pii]` targeting `output`/`final_response`, or `final_response` judges), the thread's log
-  held the reply as the model wrote it. The react loop appends each message before the reply
-  wrapper sees the output, so `/chat/sessions/{id}/export`, `/chat/history`, a stream
-  reattach and a durable run's live tail all carried the unscreened text. Assistant messages
-  are now redacted, and a reply judged, at the write, with the same verdicts the client gets:
-  a redacted reply is stored redacted, and a denied one as its denial. That covers a router's
-  child, which writes the caller's thread, and reflect's critique, which quotes its draft.
-  Threads written before this change keep what they hold.
-
-- **`POST /chat/ui` answers only a prompt on the caller's own thread.** It checked no tenant, no
-  thread and no ownership — the one route where every other one does — so the whole control was
-  the secrecy of a 96-bit request id. A prompt's waiter is now scoped to its thread, which
-  `effective_thread_id` namespaces to the caller's tenant, the shape `/chat/tool_result` already
-  had. **Breaking:** the body requires `thread_id` (the `ui_request` frame carries it) and a
-  request without one is `422`; `request_id` is capped at 64 characters. `FelixClient.resolve_ui`
-  takes `thread_id=`; felix-web's client sends it from the frame. Upgrade the harness and the web
-  client together — an old client's answers are refused rather than delivered.
-
-- **A conversation summary never re-enters the system tier.** `ab5ad59` moved the compaction
-  summary — a model's rewrite of a transcript that includes raw tool output — out of the system
-  tier on the turn it was made. Every path that *replays* it on later turns (the checkpoint
-  rebuild, the re-walk, and both paths of `SummarizingSessionStrategy`) still injected it as
-  `role="system"`, and the test pinning the fix read the module's source for one string, so it
-  passed throughout. Every path now goes through one constructor, user-role and labelled as
-  reference material, and fenced so a summary cannot forge its own boundary.
-  `SummarizingSessionStrategy` and the branch summariser now fence their input and carry the
-  untrusted-data notice, as compaction's summariser does. The cross-provider handoff note put the prior transcript, tool results
-  included, into a system message; it now carries harness text only, since the conversation
-  follows it in full.
-
-
 ### Fixed
 
-- **A steer sent to an idle thread reaches the next run.** `POST /chat/steer` with `kind: steer`
-  on a thread with no run in progress answered 200 and was counted on the snapshot, then dropped
-  before reaching the model or the transcript. It is now held and delivered at the start of the
-  thread's next run, after that run's own turn, and the "cancel remaining tools" flag it raised
-  is cleared there so it no longer cancels that run's tool calls. A steer or follow-up arriving
-  after a run's last drain is kept for the next run as well, rather than released with the run.
-
-- **One unwritable audit or usage event no longer blocks every later one.** A failed flush was
-  requeued whole, so a row Postgres would never accept was retried forever and everything behind
-  it waited until the buffer's ceiling started dropping the oldest. A failed batch is now written
-  an event at a time: rows the database refuses as data are quarantined — dropped, counted as
-  `felix_buffer_quarantined` (alerted as `FelixBufferQuarantined`) and logged by event id — and
-  the rest land; an unavailable database still requeues everything, after a single extra try.
-  Audit and usage inserts are also idempotent now, so a retry after a partial commit no longer
-  collides on the primary key.
-
-- **Usage is recorded under `FELIX_DATABASE_RLS`.** The worker's usage flush bound no tenant, so on
-  a deployment whose database role enforces row-level security every flush failed the policy,
-  was requeued and failed again: no usage row was ever written, `/usage` and cost reporting saw
-  nothing, and the in-process buffer eventually dropped the oldest events. Each flush now
-  writes per tenant under that tenant, as the audit flush already did. Usage lost before this
-  change is not recoverable.
-
-- **A durable run re-claimed after a crash resumes from its session log.** A worker killed
-  mid-invoke left the fiber at the same step, and the next claim re-sent the user turn onto a
-  thread that already held the run's model turns and tool results: the model answered the
-  request twice and could repeat tool calls that had already taken effect. The step now
-  records where its turn begins in the log and a re-claim continues from there — or, when the
-  reply was already logged, takes it without calling the model. Temporal retries too. It applies
-  to `react` and `deep` manifests; composites (which route or score from the incoming turn),
-  `semantic:N` sessions and `memory.checkpointer: none` keep re-sending, as before.
-
-- **A non-streaming `/chat` says which approvals its run asked for.** The `approval_required` frame
-  reaches only a stream, so `POST /chat` on a gated tool held the caller for the rule's whole TTL
-  and then answered with a denial, and nothing in the response said an approval had been
-  requested. The response now carries `approvals`: each is the frame the stream would have sent —
-  `approval_id`, `tool_name`, `rule_id`, `reason`, `expires_at` — plus how it ended, `approved`,
-  `denied` or `expired`. While the request is still blocked, `GET /approvals?thread_id=` finds it.
-
-- **A pinned thread runs the sub-agents its pin checked.** The pin check and the compile resolved
-  a router's children separately, so a child activated between the two compiled for one turn under
-  a pin that had verified its predecessor. The check now records what it resolved on the request's
-  `ResolvedManifest`, and every build after a check compiles from that — including a child the
-  check found nowhere, which stays refused for the turn.
-
-- **An activation, rollback or canary change is served at once.** The resolver caches each
-  manifest's active version for 30 seconds, and the function that drops that entry had no caller,
-  so the process that took a rollback kept serving the version it rolled back from for up to half
-  a minute. The store now invalidates the entry after each write that moves the pointer. Other API
-  replicas and the worker still follow within the 30-second window, as the README now says.
-
-- **A plan write no longer erases a concurrent one, or fields it was not sent** (#320).
-  `PUT /plans/{id}` takes an optional `expected_updated_at` and answers `409` with
-  `{error: "plan_changed", current}` when the plan has moved on; the agent's
-  `plan_update_step` writes the same way and re-applies its step change to what is stored, so
-  an operator's edit made mid-run survives it. Omitting `manifest_id` or `expires_at` now leaves
-  them as stored — they used to reset to `""` and no expiry, orphaning the plan from its
-  manifest and exempting it from retention. `updated_at` advances on every write, even two in
-  one millisecond.
-- **`pin_compile` covers a router's sub-agents.** The pin hashed the manifest a request named and
-  nothing it compiled, which was complete while sub-agents came from bundled YAML and stopped
-  being so when they began resolving from the tenant's store: an edited child's tools, policies
-  or approvals reached a pinned thread — or a durable run resuming with stored authority — on its
-  next turn. The pin now records a digest of every sub-agent, recursively, and a changed one is
-  drift (409 on a turn, a failed fiber on resume). A thread pinned before this gains the digest on
-  its next turn rather than failing, and a manifest without sub-agents pins exactly as before.
-
-- **The ruleless-rubric warning no longer says it passes "any answer at all".** A rubric with no
-  rule scores as non-empty, which rejects a blank answer — `negative.json` relies on exactly that.
-  The warning now says "passes any answer that is not blank".
-- **Screened tool output is read in full.** The model screener — and now the decider — saw only
-  the first 4,000 characters of a tool result, so a benign prefix longer than that carried a
-  payload past both; only the markers read the whole text. Tool output is screened window by
-  window like a user turn, and output longer than eight windows is treated as unscreenable, so
-  `on_flag` quarantines or blocks it. Applies when `content_screening.model` or `.decider` is set.
-
-- **The model injection screener is metered.** `content_screening.model` runs on every user turn
-  and every untrusted tool result, and its calls never reached `record_usage`, so screening spend
-  escaped `limits.max_cost_usd` and the usage table.
-
-- **Procedural memory no longer defeats system-prompt caching.** Recalled procedures were appended
-  as a system message each turn, and the Anthropic wire folds every system message into the one
-  cached `system` block — so the block changed per request and a manifest with
-  `procedural_memory` never read its system prompt from cache. They are sent as transient guidance
-  now, which also moves model-extracted text out of the instruction tier.
-- **Claude Code hooks work inside a git worktree.** `manifest-validate`, `doc-sync-reminder` and
-  `settings-sync-reminder` were silent for every edit made in a worktree, and `ruff-format` ran the
-  main checkout's ruff — and reformatted Markdown outside any repository. `protect-files` now
-  fails closed without `jq`, reads NotebookEdit targets, and covers every `.env*` spelling;
-  `git-guard` catches clustered flags (`-fu`, `-fd`, `commit -n`), `+ref` pushes, whole-tree
-  `checkout`/`restore`, and `stash clear`; the doc-drift gate asks only about the session's own
-  changes.
-
-- **Model-backed judges are metered.** `llm_judge_score` — behind every judge with a `model`, and
-  eval's `llm_judge` rubrics — called the model and never recorded the usage, so judge spend
-  escaped `limits.max_cost_usd` and the usage table.
-
-- **A router's sub-agents are the tenant's own agents, not blank ones.** Sub-agents were compiled
-  from bundled YAML only, and a name missing there became an empty manifest — `You are <name>.`
-  with no tools — so a router whose children were stored manifests routed every request to a
-  blank agent without an error. Children now resolve as a request would (manifest store, object
-  store, bundled) under the parent's tenant. A child that resolves nowhere fails the compile, and
-  routers that name each other in a cycle are refused instead of recursing until the stack gave out.
-  Each child compiles once per request however many parents name it, and nesting deeper than four
-  routers is refused, so a stored tree cannot turn one chat into an unbounded compile.
-
-- **A run ending on a denied tool is recorded with `final_response` status reflecting the
-  denial.** Until now, a run that ended because an approval timed out or a tool was denied still
-  wrote `final_response` with `status=ok`, so a denied run read as a successful completion in the
-  audit log. The turn loop now tracks whether the last tool batch had a denial and records
-  `final_response` with `status=error` when the run ends with that denial — a denial followed by
-  a closing message is an error row; a denial followed by more tool calls is not.
-
-- **Prompt caching covers the conversation, not just the preamble.** `spec.model.cache: true` put a
-  cache breakpoint on the system block and the last tool definition — a few thousand fixed tokens —
-  and left the conversation uncached, so every file an agent had read and every tool result it had
-  received was re-billed at full input price on every subsequent turn. For an agentic run that is
-  nearly the entire bill: one 212-call run metered 16.25M uncached input tokens against 2.7M read
-  from cache, a 14% hit rate, and $48.76 of its $51.07 was that uncached input. The newest message
-  now carries a breakpoint too, so each turn reads the turns before it at a tenth of base input and
-  pays the write premium only on the delta. Blocks that may not carry a marker are skipped —
-  notably `thinking`, which a run with extended thinking replays verbatim — and an isolated request
-  still caches nothing.
-
-- **A manifest can declare a token budget for a long agentic run.** `ABSOLUTE_LIMITS` was both
-  the value an unset field fell back to and the maximum a manifest could declare, so raising the
-  cap for one agent meant raising the floor under every agent that declares nothing — and
-  `max_input_tokens` was 1,000,000 for both. The counter sums the tokens each turn actually
-  processed, and a react run re-sends its prefix every turn, so an agent with a 38 KiB prompt hit
-  the ceiling in about 26 turns and stopped mid-work with `policy_deny control=limits`. The two
-  are separate now: `DEFAULT_LIMITS` fills an unset field and is unchanged, `ABSOLUTE_LIMITS`
-  bounds what may be declared and allows 20M input tokens. Cache reads still count in full —
-  they are tokens the provider processed, and summing them is what makes the budget mean the same
-  thing on the Anthropic wire, where `input` excludes them, and the OpenAI wire, where
-  `prompt_tokens` already includes them.
-
-### Changed
-
-- **An approval rule whose `when_args` names nothing is refused or reported.** `when_args` gates
-  only the calls carrying those arguments, so a misspelled name (`when_args: [topickey]` on
-  `remember`) was a rule that never fired and still validated. `PUT /manifests` and
-  `felix validate-manifest` now refuse one naming a built-in, plugin or memory tool literally
-  when the name is none of its arguments; for MCP tools and globs the compile logs a warning and
-  counts `felix_approval_when_args_unknown` instead, since those schemas can change under a
-  stored manifest. Stored manifests still load.
-
-- **Documented: sub-agents inherit the caller's admission.** `spec.auth.inbound` is checked on
-  the manifest a request names, not on each sub-agent a router compiles, so a child's own
-  `required_scopes` apply when it is called by name and not when a router hands it a request.
-  That was already the behaviour — bundled `router` reaches `deep` this way — and is now the
-  stated one, in `deploy/GOVERNANCE.md`.
-
-- **Bundled manifests cache their prompts.** `quick`, `deep`, `router`, `hybrid-router`,
-  `governed`, `support` and `cowork` now set `spec.model.cache: true`, matching `contributor` and
-  `triage`, so each turn reads the conversation before it from cache instead of re-billing it at
-  full input price. `oss-only` is left off: Ollama reuses prompt prefixes on its own and has no use
-  for `prompt_cache_key`. A deployment holding a stored copy of one of these manifests keeps that
-  copy's setting, because the store is read ahead of the bundled YAML.
-
-- **A router whose classifier names no sub-agent now says so.** It still sends the request to the
-  first sub-agent, but logs a warning and counts `felix_router_choice{method="unmatched"}` instead
-  of making that indistinguishable from a deliberate choice.
-
-- **The workspace is a named volume, not the deployment's checkout.** Compose mounted
-  `${FELIX_WORKSPACE_HOST:-./workspace}` at `/workspace`, so an agent's files landed inside the
-  deployment's own git checkout unless the operator overrode it, and the published image — uid
-  `10001` — could not write a directory the host owned (`Errno 13` on the reference deployment).
-  The default is now the named `felix-workspace` volume; the image creates `/workspace` owned by
-  its runtime user so a new volume is seeded writable; `FELIX_WORKSPACE_HOST` still overrides it;
-  and `scripts/check-compose-render.py` fails a render that bind-mounts a host directory there
-  without that override. **A deployment relying on the old default starts with an empty
-  workspace** — `UPGRADING.md` says how to keep or copy the old directory. Phase 0 of
-  `docs/WORKSPACE.md`.
-### Fixed
-
-- **A workspace tool that fails is audited as failing.** `list_dir`, `read_file`, `write_file`,
-  `edit_file` and `search_files` returned every failure as plain `error: …` text, which carries
-  no error marker, so the tool runner wrote the audit row as `tool_call` / `ok`, the metrics
-  counted a success, and the eval trajectory did not count a failure. On the reference
-  deployment an approved `write_file` failed with `Errno 13` twice and both rows said `ok`. Every
-  failure now goes through `tool_error_output`: `permission_denied` for a filesystem refusal,
-  `invalid_arguments` for a bad path, missing file or ambiguous edit, `transport_unavailable`
-  when no workspace is configured, `timeout` for a search past its budget, `internal`
-  otherwise. The text the model reads keeps its wording, now under a `[tool error/<code>]`
-  prefix. An `OSError` is rendered as `PermissionError: [Errno 13] …`, because
-  `tool_error_output` skips its prefix for text that already starts with `[`.
-
+- **`deploy/gcp/roll.sh` survives its first real roll.** Three bugs, all found rolling 0.5.0:
+  `gh` opened a pager and waited at `(END)` for a key; `gcloud compute ssh` and the other tools
+  read the terminal and swallowed answers typed ahead of a prompt; and the checkout ran as the
+  directory's owner, which fails part-way on the root-owned files earlier `sudo git` rolls leave,
+  half-switching the tree. Only the prompts read the terminal now, git runs as root with a
+  `safe.directory` override, and each step that changes the host stops with what it left behind
+  and how to restore it.
 
 ### Added
+
+- **`deploy/gcp/roll.sh`: upgrade a GCE + Compose deployment in one command.** It runs the
+  `docs/UPGRADING.md` sequence from your machine over `gcloud compute ssh`: preflight (release and
+  image exist, clean checkout, schema, durable runs in flight, table sizes, disk), a backup that
+  must read back with `pg_restore --list`, the checkout and `FELIX_IMAGE_TAG` pin with `.env`
+  backed up, pull, `up -d` with the running stack's own compose files, and a wait for `/health`.
+  It asks before every change; `--check` only reads.
+
+## [0.5.0] — 2026-09-29
+
+### Added
+
+- **MCP server instructions as tool guidance (opt-in).** Set `use_instructions: true` on an
+  `mcp_servers` entry and the `instructions` the server returns from `initialize` become its tools'
+  line in the system prompt's tool guidance — collapsed to one line, capped at 1,000 characters,
+  and dropped if the injection markers flag them (`felix_mcp_instructions`). Off by default: it is
+  server-written text in the system prompt.
+
+- **`spec.tool_guidance`: tool advice that goes with the tool.** A map from tool name or glob to
+  one line of guidance, appended to the system prompt in a "Tool guidance" section — only for tools
+  the agent actually has, so removing a tool removes its advice instead of leaving the prompt
+  recommending it. Tools defined in code can carry their own line (`Tool.prompt_guidance`).
+  `system_prompt.include_tool_guidance: false` turns the section off. `deep`'s search and fetch
+  advice now lives there.
+
+- **The wire contract is checked in.** `schemas/openapi.json` (the HTTP API) and
+  `schemas/sse-events.json` (every SSE frame name the server can emit) are generated by
+  `make contract` and verified by a unit test, so a change to either surface shows up as a diff
+  in review. Clients — felix-run/web's stream handling first — can read the event list rather
+  than mirror it by hand.
+
+- **`felix-client`: the Python client as its own package (experimental).** `FelixClient` moved out
+  of the harness into `packages/client`, which depends on httpx and nothing in Felix — importing
+  it used to pull in FastAPI, SQLAlchemy, psycopg and the rest of the server. `from felix_client
+  import FelixClient`; `from felix.sdk import FelixClient` still works. It covers chat, durable
+  runs and approvals, and may change between releases; the OpenAPI document attached to each
+  release is the full contract. Not on PyPI yet: install from the repository with
+  `subdirectory=packages/client`.
 
 - **`content_screening.model_tools`: choose which tools pay for the screener.** A glob list of
   the screened tools that get the paid scoring — the `model` screener and the `decider` battery,
@@ -377,6 +194,334 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The gpt-4.1 family now carries pricing in the model catalog.** Usage rows and cost caps for
   gpt-4.1, gpt-4.1-mini, and gpt-4.1-nano are now computed instead of silently zero. An unpriced
   model reports zero cost, so a cost cap never fires on it.
+
+### Changed
+
+- **Migration `0020_ordering_indexes`: no listing sorts any more.** Indexes that match each
+  listing's ordering exactly, tiebreak and collation included — audit, usage, approvals, plans,
+  active memory and job run history, plus a partial index for the fiber claim. Before it, those
+  plans sorted each timestamp's rows (and, for job runs and the claim, everything the filter
+  matched) before the `LIMIT`. The build takes a write lock per table; see `docs/UPGRADING.md`
+  before running it on a large `audit_events` or `usage_events`.
+
+- **`session.context_window_tokens` defaults to unset, meaning the model's own window.** It
+  defaulted to 128000, and an omitted field already meant "the model's window" — only a written
+  128000 meant 128K, a difference the compile-pin hash could not see. Behaviour is unchanged for
+  both, but a manifest that writes `context_window_tokens: 128000` (the bundled `quick`,
+  `governed`, `cowork`, `triage` and `contributor` do) now hashes differently, once: a thread
+  whose compile is pinned and in flight across the upgrade — a durable run carrying authority
+  always is — may be refused at its next step as drifted. Durable runs last at most 24 hours.
+
+- **An approval rule whose `when_args` names nothing is refused or reported.** `when_args` gates
+  only the calls carrying those arguments, so a misspelled name (`when_args: [topickey]` on
+  `remember`) was a rule that never fired and still validated. `PUT /manifests` and
+  `felix validate-manifest` now refuse one naming a built-in, plugin or memory tool literally
+  when the name is none of its arguments; for MCP tools and globs the compile logs a warning and
+  counts `felix_approval_when_args_unknown` instead, since those schemas can change under a
+  stored manifest. Stored manifests still load.
+
+- **Documented: sub-agents inherit the caller's admission.** `spec.auth.inbound` is checked on
+  the manifest a request names, not on each sub-agent a router compiles, so a child's own
+  `required_scopes` apply when it is called by name and not when a router hands it a request.
+  That was already the behaviour — bundled `router` reaches `deep` this way — and is now the
+  stated one, in `deploy/GOVERNANCE.md`.
+
+- **Bundled manifests cache their prompts.** `quick`, `deep`, `router`, `hybrid-router`,
+  `governed`, `support` and `cowork` now set `spec.model.cache: true`, matching `contributor` and
+  `triage`, so each turn reads the conversation before it from cache instead of re-billing it at
+  full input price. `oss-only` is left off: Ollama reuses prompt prefixes on its own and has no use
+  for `prompt_cache_key`. A deployment holding a stored copy of one of these manifests keeps that
+  copy's setting, because the store is read ahead of the bundled YAML.
+
+- **A router whose classifier names no sub-agent now says so.** It still sends the request to the
+  first sub-agent, but logs a warning and counts `felix_router_choice{method="unmatched"}` instead
+  of making that indistinguishable from a deliberate choice.
+
+- **The workspace is a named volume, not the deployment's checkout.** Compose mounted
+  `${FELIX_WORKSPACE_HOST:-./workspace}` at `/workspace`, so an agent's files landed inside the
+  deployment's own git checkout unless the operator overrode it, and the published image — uid
+  `10001` — could not write a directory the host owned (`Errno 13` on the reference deployment).
+  The default is now the named `felix-workspace` volume; the image creates `/workspace` owned by
+  its runtime user so a new volume is seeded writable; `FELIX_WORKSPACE_HOST` still overrides it;
+  and `scripts/check-compose-render.py` fails a render that bind-mounts a host directory there
+  without that override. **A deployment relying on the old default starts with an empty
+  workspace** — `UPGRADING.md` says how to keep or copy the old directory. Phase 0 of
+  `docs/WORKSPACE.md`.
+
+### Fixed
+
+- **The model listing reports each manifest's real context window.** It reported 128K for every
+  manifest — the session field's old default — and otherwise looked the window up by the
+  manifest's name rather than its model. It now reports the window compaction uses.
+- **`make up-self` no longer races itself on the shared workspace.** The api and worker mount
+  one `felix-self-workspace` volume and both ran `self-entrypoint.sh` at once. On a fresh volume
+  both cloned into it and **both** failed, leaving a broken `.git` that failed the next start
+  too; on an existing clone the two fetches contended for ref locks and one logged
+  `cannot lock ref 'refs/remotes/origin/main'` on every restart. The entrypoint now holds a
+  `flock` on the workspace directory across clone, fetch and `uv sync`, and releases it before
+  exec'ing Felix.
+
+- **Audit and usage pages order ties the same on Postgres and in memory.** The paging cursor
+  breaks a timestamp tie on the event id, which Postgres compared under the database's collation
+  and the memory store by code point. Both now compare bytes. Only a caller-supplied id outside
+  lowercase hex could tell the difference; generated ids sorted the same either way.
+
+- **Approvals, plans and memory consolidation order the same on Postgres and in memory.**
+  `GET /approvals` and the plan listing ordered on a timestamp alone and then cut to `limit`, so
+  rows written in the same millisecond paged differently on each backend; memory consolidation
+  kept whichever of two tied duplicates it scanned first, which differed too. Each now ends its
+  ordering on the id, compared byte for byte on both backends.
+
+- **A durable run starts within a second, not at the next minute.** Submitting one wrote a
+  `pending` fiber that only the `* * * * *` `fiber_scheduler` cron picked up, so every durable
+  run waited 0–60s (30s on average) before its first model call. Each worker now polls for due
+  fibers every `FELIX_FIBER_POLL_SECONDS` (1.0; 0 turns it off) through the same lease-and-
+  `SKIP LOCKED` claim, and the cron sweep remains as a backstop.
+- **A run waiting on an approval no longer holds up other runs.** The sweep stepped its batch
+  one fiber at a time, so a fiber parked on an approval delayed every fiber claimed after it for
+  as long as the person took to answer. Fibers now advance concurrently, up to
+  `FELIX_FIBER_CONCURRENCY` (8) per worker, and the poll claims only as many as it has free
+  slots for, so a busy worker leaves the rest for another.
+
+- **Concurrent publishes of one manifest all land.** `PUT /manifests/{name}` read the highest
+  version and inserted the next, so two publishes of the same name at once picked the same
+  number and the second failed with a 500. Publishes of one name are now serialized for the
+  length of the write, and each gets the next version; other manifests are unaffected.
+
+- **A steer sent to an idle thread reaches the next run.** `POST /chat/steer` with `kind: steer`
+  on a thread with no run in progress answered 200 and was counted on the snapshot, then dropped
+  before reaching the model or the transcript. It is now held and delivered at the start of the
+  thread's next run, after that run's own turn, and the "cancel remaining tools" flag it raised
+  is cleared there so it no longer cancels that run's tool calls. A steer or follow-up arriving
+  after a run's last drain is kept for the next run as well, rather than released with the run.
+
+- **One unwritable audit or usage event no longer blocks every later one.** A failed flush was
+  requeued whole, so a row Postgres would never accept was retried forever and everything behind
+  it waited until the buffer's ceiling started dropping the oldest. A failed batch is now written
+  an event at a time: rows the database refuses as data are quarantined — dropped, counted as
+  `felix_buffer_quarantined` (alerted as `FelixBufferQuarantined`) and logged by event id — and
+  the rest land; an unavailable database still requeues everything, after a single extra try.
+  Audit and usage inserts are also idempotent now, so a retry after a partial commit no longer
+  collides on the primary key.
+
+- **Usage is recorded under `FELIX_DATABASE_RLS`.** The worker's usage flush bound no tenant, so on
+  a deployment whose database role enforces row-level security every flush failed the policy,
+  was requeued and failed again: no usage row was ever written, `/usage` and cost reporting saw
+  nothing, and the in-process buffer eventually dropped the oldest events. Each flush now
+  writes per tenant under that tenant, as the audit flush already did. Usage lost before this
+  change is not recoverable.
+
+- **A durable run re-claimed after a crash resumes from its session log.** A worker killed
+  mid-invoke left the fiber at the same step, and the next claim re-sent the user turn onto a
+  thread that already held the run's model turns and tool results: the model answered the
+  request twice and could repeat tool calls that had already taken effect. The step now
+  records where its turn begins in the log and a re-claim continues from there — or, when the
+  reply was already logged, takes it without calling the model. Temporal retries too. It applies
+  to `react` and `deep` manifests; composites (which route or score from the incoming turn),
+  `semantic:N` sessions and `memory.checkpointer: none` keep re-sending, as before.
+
+- **A non-streaming `/chat` says which approvals its run asked for.** The `approval_required` frame
+  reaches only a stream, so `POST /chat` on a gated tool held the caller for the rule's whole TTL
+  and then answered with a denial, and nothing in the response said an approval had been
+  requested. The response now carries `approvals`: each is the frame the stream would have sent —
+  `approval_id`, `tool_name`, `rule_id`, `reason`, `expires_at` — plus how it ended, `approved`,
+  `denied` or `expired`. While the request is still blocked, `GET /approvals?thread_id=` finds it.
+
+- **A pinned thread runs the sub-agents its pin checked.** The pin check and the compile resolved
+  a router's children separately, so a child activated between the two compiled for one turn under
+  a pin that had verified its predecessor. The check now records what it resolved on the request's
+  `ResolvedManifest`, and every build after a check compiles from that — including a child the
+  check found nowhere, which stays refused for the turn.
+
+- **An activation, rollback or canary change is served at once.** The resolver caches each
+  manifest's active version for 30 seconds, and the function that drops that entry had no caller,
+  so the process that took a rollback kept serving the version it rolled back from for up to half
+  a minute. The store now invalidates the entry after each write that moves the pointer. Other API
+  replicas and the worker still follow within the 30-second window, as the README now says.
+
+- **A plan write no longer erases a concurrent one, or fields it was not sent** (#320).
+  `PUT /plans/{id}` takes an optional `expected_updated_at` and answers `409` with
+  `{error: "plan_changed", current}` when the plan has moved on; the agent's
+  `plan_update_step` writes the same way and re-applies its step change to what is stored, so
+  an operator's edit made mid-run survives it. Omitting `manifest_id` or `expires_at` now leaves
+  them as stored — they used to reset to `""` and no expiry, orphaning the plan from its
+  manifest and exempting it from retention. `updated_at` advances on every write, even two in
+  one millisecond.
+- **`pin_compile` covers a router's sub-agents.** The pin hashed the manifest a request named and
+  nothing it compiled, which was complete while sub-agents came from bundled YAML and stopped
+  being so when they began resolving from the tenant's store: an edited child's tools, policies
+  or approvals reached a pinned thread — or a durable run resuming with stored authority — on its
+  next turn. The pin now records a digest of every sub-agent, recursively, and a changed one is
+  drift (409 on a turn, a failed fiber on resume). A thread pinned before this gains the digest on
+  its next turn rather than failing, and a manifest without sub-agents pins exactly as before.
+
+- **The ruleless-rubric warning no longer says it passes "any answer at all".** A rubric with no
+  rule scores as non-empty, which rejects a blank answer — `negative.json` relies on exactly that.
+  The warning now says "passes any answer that is not blank".
+- **Screened tool output is read in full.** The model screener — and now the decider — saw only
+  the first 4,000 characters of a tool result, so a benign prefix longer than that carried a
+  payload past both; only the markers read the whole text. Tool output is screened window by
+  window like a user turn, and output longer than eight windows is treated as unscreenable, so
+  `on_flag` quarantines or blocks it. Applies when `content_screening.model` or `.decider` is set.
+
+- **The model injection screener is metered.** `content_screening.model` runs on every user turn
+  and every untrusted tool result, and its calls never reached `record_usage`, so screening spend
+  escaped `limits.max_cost_usd` and the usage table.
+
+- **Procedural memory no longer defeats system-prompt caching.** Recalled procedures were appended
+  as a system message each turn, and the Anthropic wire folds every system message into the one
+  cached `system` block — so the block changed per request and a manifest with
+  `procedural_memory` never read its system prompt from cache. They are sent as transient guidance
+  now, which also moves model-extracted text out of the instruction tier.
+- **Claude Code hooks work inside a git worktree.** `manifest-validate`, `doc-sync-reminder` and
+  `settings-sync-reminder` were silent for every edit made in a worktree, and `ruff-format` ran the
+  main checkout's ruff — and reformatted Markdown outside any repository. `protect-files` now
+  fails closed without `jq`, reads NotebookEdit targets, and covers every `.env*` spelling;
+  `git-guard` catches clustered flags (`-fu`, `-fd`, `commit -n`), `+ref` pushes, whole-tree
+  `checkout`/`restore`, and `stash clear`; the doc-drift gate asks only about the session's own
+  changes.
+
+- **Model-backed judges are metered.** `llm_judge_score` — behind every judge with a `model`, and
+  eval's `llm_judge` rubrics — called the model and never recorded the usage, so judge spend
+  escaped `limits.max_cost_usd` and the usage table.
+
+- **A router's sub-agents are the tenant's own agents, not blank ones.** Sub-agents were compiled
+  from bundled YAML only, and a name missing there became an empty manifest — `You are <name>.`
+  with no tools — so a router whose children were stored manifests routed every request to a
+  blank agent without an error. Children now resolve as a request would (manifest store, object
+  store, bundled) under the parent's tenant. A child that resolves nowhere fails the compile, and
+  routers that name each other in a cycle are refused instead of recursing until the stack gave out.
+  Each child compiles once per request however many parents name it, and nesting deeper than four
+  routers is refused, so a stored tree cannot turn one chat into an unbounded compile.
+
+- **A run ending on a denied tool is recorded with `final_response` status reflecting the
+  denial.** Until now, a run that ended because an approval timed out or a tool was denied still
+  wrote `final_response` with `status=ok`, so a denied run read as a successful completion in the
+  audit log. The turn loop now tracks whether the last tool batch had a denial and records
+  `final_response` with `status=error` when the run ends with that denial — a denial followed by
+  a closing message is an error row; a denial followed by more tool calls is not.
+
+- **Prompt caching covers the conversation, not just the preamble.** `spec.model.cache: true` put a
+  cache breakpoint on the system block and the last tool definition — a few thousand fixed tokens —
+  and left the conversation uncached, so every file an agent had read and every tool result it had
+  received was re-billed at full input price on every subsequent turn. For an agentic run that is
+  nearly the entire bill: one 212-call run metered 16.25M uncached input tokens against 2.7M read
+  from cache, a 14% hit rate, and $48.76 of its $51.07 was that uncached input. The newest message
+  now carries a breakpoint too, so each turn reads the turns before it at a tenth of base input and
+  pays the write premium only on the delta. Blocks that may not carry a marker are skipped —
+  notably `thinking`, which a run with extended thinking replays verbatim — and an isolated request
+  still caches nothing.
+
+- **A manifest can declare a token budget for a long agentic run.** `ABSOLUTE_LIMITS` was both
+  the value an unset field fell back to and the maximum a manifest could declare, so raising the
+  cap for one agent meant raising the floor under every agent that declares nothing — and
+  `max_input_tokens` was 1,000,000 for both. The counter sums the tokens each turn actually
+  processed, and a react run re-sends its prefix every turn, so an agent with a 38 KiB prompt hit
+  the ceiling in about 26 turns and stopped mid-work with `policy_deny control=limits`. The two
+  are separate now: `DEFAULT_LIMITS` fills an unset field and is unchanged, `ABSOLUTE_LIMITS`
+  bounds what may be declared and allows 20M input tokens. Cache reads still count in full —
+  they are tokens the provider processed, and summing them is what makes the budget mean the same
+  thing on the Anthropic wire, where `input` excludes them, and the OpenAI wire, where
+  `prompt_tokens` already includes them.
+
+- **A workspace tool that fails is audited as failing.** `list_dir`, `read_file`, `write_file`,
+  `edit_file` and `search_files` returned every failure as plain `error: …` text, which carries
+  no error marker, so the tool runner wrote the audit row as `tool_call` / `ok`, the metrics
+  counted a success, and the eval trajectory did not count a failure. On the reference
+  deployment an approved `write_file` failed with `Errno 13` twice and both rows said `ok`. Every
+  failure now goes through `tool_error_output`: `permission_denied` for a filesystem refusal,
+  `invalid_arguments` for a bad path, missing file or ambiguous edit, `transport_unavailable`
+  when no workspace is configured, `timeout` for a search past its budget, `internal`
+  otherwise. The text the model reads keeps its wording, now under a `[tool error/<code>]`
+  prefix. An `OSError` is rendered as `PermissionError: [Errno 13] …`, because
+  `tool_error_output` skips its prefix for text that already starts with `[`.
+
+### Security
+
+- **PyJWT is 2.14.0 (CVE-2026-102274).** A malformed RSA key in a JWK Set made PyJWT reject the
+  whole set instead of skipping that key, so every token from its issuer would fail to verify.
+  Felix's own JWT verification does not use PyJWT; it arrives through the MCP SDK (`mcp[crypto]`),
+  which uses it for MCP servers' OAuth. 2.15.1 is newer but inside the 48-hour dependency hold.
+
+- **Only an operator retires a memory by its `topic_key`.** Any agent write — post-turn capture,
+  which runs through no governance wrapper, or the `remember` tool, which a prompt injection can
+  call with a key it chose — used to retire every active agent-written fact sharing its key, so
+  one injected turn could delete what the agent knew about a topic. Agent writes on a held key
+  are now stored alongside; the facts prelude shows one current value per topic (most trusted,
+  then latest turn), and the operator settles contradictions on `/memory`. **Behaviour change:**
+  a topic can hold several active values until an operator retires the stale ones, and the
+  `remember` tool's description no longer says a new value supersedes the old.
+
+- **Recalled memory is screened.** `recall` and `list_memories` were trusted local tools, so with
+  content screening on they were screened only where a manifest named them. Memory capture runs
+  over turns that carried untrusted tool output, so a payload screening quarantined on its way in
+  could be captured as a "fact" and handed back unscreened. Memory tools now count as untrusted:
+  every manifest with screening enabled scans their output (the marker scan is free; paid scoring
+  follows `content_screening.model_tools`). `governed.yaml` screens recall with no edit.
+  `deploy/GOVERNANCE.md` also states the Temporal trust assumptions: workflow history holds each
+  run's recorded authority, and whoever can start a workflow on `felix-fibers` chooses it.
+
+- **Credentials no longer appear in a `repr`.** `Settings` printed provider API keys, connection
+  URLs with their passwords, the S3 keys and the signing secrets in clear, and every request's
+  context carries `Settings`; the model client printed its API key and extra headers. Nothing
+  logged them, so this was latent — one debug line or one traceback's locals away. They are
+  hidden from `repr` now, values unchanged, and a new setting whose name looks like a credential
+  fails a test until it is hidden too.
+
+- **Memory capture extracts from the screened reply.** With reply controls and
+  `spec.memory.capture` on, facts were extracted from the reply as the model wrote it, so a
+  fact built from text the PII guardrails redacted was stored and came back in every later
+  prompt that recalled it. Capture now reads the reply as the controls ship it, and captures
+  nothing from a reply a judge denied. A router's controls reach its child's capture too.
+  Facts stored before this change are left as they are.
+
+- **The session log keeps the screened reply.** With reply controls on (`guardrails.providers:
+  [pii]` targeting `output`/`final_response`, or `final_response` judges), the thread's log
+  held the reply as the model wrote it. The react loop appends each message before the reply
+  wrapper sees the output, so `/chat/sessions/{id}/export`, `/chat/history`, a stream
+  reattach and a durable run's live tail all carried the unscreened text. Assistant messages
+  are now redacted, and a reply judged, at the write, with the same verdicts the client gets:
+  a redacted reply is stored redacted, and a denied one as its denial. That covers a router's
+  child, which writes the caller's thread, and reflect's critique, which quotes its draft.
+  Threads written before this change keep what they hold.
+
+- **`POST /chat/ui` answers only a prompt on the caller's own thread.** It checked no tenant, no
+  thread and no ownership — the one route where every other one does — so the whole control was
+  the secrecy of a 96-bit request id. A prompt's waiter is now scoped to its thread, which
+  `effective_thread_id` namespaces to the caller's tenant, the shape `/chat/tool_result` already
+  had. **Breaking:** the body requires `thread_id` (the `ui_request` frame carries it) and a
+  request without one is `422`; `request_id` is capped at 64 characters. `FelixClient.resolve_ui`
+  takes `thread_id=`; felix-web's client sends it from the frame. Upgrade the harness and the web
+  client together — an old client's answers are refused rather than delivered.
+
+- **A conversation summary never re-enters the system tier.** `ab5ad59` moved the compaction
+  summary — a model's rewrite of a transcript that includes raw tool output — out of the system
+  tier on the turn it was made. Every path that *replays* it on later turns (the checkpoint
+  rebuild, the re-walk, and both paths of `SummarizingSessionStrategy`) still injected it as
+  `role="system"`, and the test pinning the fix read the module's source for one string, so it
+  passed throughout. Every path now goes through one constructor, user-role and labelled as
+  reference material, and fenced so a summary cannot forge its own boundary.
+  `SummarizingSessionStrategy` and the branch summariser now fence their input and carry the
+  untrusted-data notice, as compaction's summariser does. The cross-provider handoff note put the prior transcript, tool results
+  included, into a system message; it now carries harness text only, since the conversation
+  follows it in full.
+
+## [0.4.1] — 2026-09-28
+
+A hotfix on 0.4.0, branched from its tag, carrying one fix. Everything else under
+`[Unreleased]` is in the next minor release.
+
+### Fixed
+
+- **A timed-out approval is closed, not left pending.** When nobody answered, the gate denied
+  the call and wrote nothing back, so the row read `pending` for the life of the deployment:
+  `GET /approvals?status=pending` offered a decision already made (one production row was
+  twenty-nine hours past its deadline), and a byte-identical re-ask joined that row, carrying its
+  expired `expires_at` while the gate waited a fresh ttl on it. The row now becomes `denied`
+  with `decision_note: "timeout"` and `decided_by: "felix"`, and `create_pending` closes a
+  lapsed pending row rather than reusing it. `POST /chat` still reports such an approval as
+  `expired`. Rows left pending by earlier versions are closed the next time an identical call
+  asks; others stay until decided or swept.
 
 ## [0.4.0] — 2026-09-24
 
@@ -3169,3 +3314,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.1.0]: https://github.com/felix-run/felix/releases/tag/v0.1.0
 [0.3.0]: https://github.com/felix-run/felix/releases/tag/v0.3.0
 [0.4.0]: https://github.com/felix-run/felix/releases/tag/v0.4.0
+[0.4.1]: https://github.com/felix-run/felix/releases/tag/v0.4.1
+[0.5.0]: https://github.com/felix-run/felix/releases/tag/v0.5.0

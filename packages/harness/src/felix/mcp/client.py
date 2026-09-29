@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from typing import Any
 
 import httpx
@@ -101,13 +102,15 @@ async def list_remote_tools(
     ref: McpServerRef,
     *,
     allow_http: bool = False,
+    handshake: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
+    """The server's tools. ``handshake``, when given, receives the ``initialize`` result."""
     if ref.transport == "stdio":
         from felix.mcp.stdio import list_stdio_tools
 
-        return await list_stdio_tools(ref, wait_s=_timeout_s(ref))
+        return await list_stdio_tools(ref, wait_s=_timeout_s(ref), handshake=handshake)
     try:
-        await mcp_rpc(
+        init = await mcp_rpc(
             ref.url,
             "initialize",
             {
@@ -119,6 +122,8 @@ async def list_remote_tools(
             allow_http=allow_http,
             wait_s=_timeout_s(ref),
         )
+        if handshake is not None and isinstance(init, dict):
+            handshake.update(init)
     except Exception:
         logger.debug("MCP initialize failed for %s (continuing)", ref.name, exc_info=True)
     result = await mcp_rpc(
@@ -191,6 +196,33 @@ def _bind_remote_tool(
     )
 
 
+# Instructions reach the system prompt; a server's is at most this long there.
+MAX_INSTRUCTIONS_CHARS = 1000
+
+
+def server_guidance(ref: McpServerRef, handshake: dict[str, Any], *, manifest_id: str = "") -> str:
+    """The line of tool guidance a server's ``instructions`` become, or "" for none.
+
+    Only when the manifest opted in for this server. Collapsed to one line and capped, because
+    it is one entry in a list, and dropped whole when the injection markers flag it: this text
+    is written by the server and read as the system prompt, which no tool output ever is.
+    """
+    raw = handshake.get("instructions") if ref.use_instructions else None
+    if not isinstance(raw, str) or not raw.strip():
+        return ""
+    from felix.governance.content_screening import _INJECTION
+
+    text = " ".join(raw.split())
+    if any(rx.search(text) for rx in _INJECTION):
+        logger.warning("MCP server %s: instructions flagged by the injection markers; not used", ref.name)
+        record_counter("felix_mcp_instructions", {"manifest_id": manifest_id, "outcome": "flagged"})
+        return ""
+    if len(text) > MAX_INSTRUCTIONS_CHARS:
+        text = text[: MAX_INSTRUCTIONS_CHARS - 1].rstrip() + "…"
+    record_counter("felix_mcp_instructions", {"manifest_id": manifest_id, "outcome": "used"})
+    return f"{ref.name} (from the server): {text}"
+
+
 def _allowlist_patterns(ref: McpServerRef) -> list[str]:
     """`ref.tools` as patterns over the *remote* names.
 
@@ -212,8 +244,9 @@ async def tools_from_mcp_servers(
     """Discover and bind tools from each MCP server ref."""
     out: list[Tool] = []
     for ref in refs:
+        handshake: dict[str, Any] = {}
         try:
-            remotes = await list_remote_tools(ref, allow_http=allow_http)
+            remotes = await list_remote_tools(ref, allow_http=allow_http, handshake=handshake)
         except Exception:
             logger.warning("failed to list MCP tools from %s", ref.name, exc_info=True)
             continue
@@ -232,9 +265,12 @@ async def tools_from_mcp_servers(
                     {"manifest_id": manifest_id, "kind": "mcp_allowlist", "rule": ref.name},
                 )
             remotes = [r for r in remotes if matches_any(patterns, str(r["name"]))]
+        guidance = server_guidance(ref, handshake, manifest_id=manifest_id)
         for remote in remotes:
             try:
-                out.append(_bind_remote_tool(ref, remote, allow_http=allow_http))
+                tool = _bind_remote_tool(ref, remote, allow_http=allow_http)
+                # One line per server; the prompt section lists an identical line once.
+                out.append(replace(tool, prompt_guidance=guidance) if guidance else tool)
             except Exception:
                 logger.debug("skip remote tool %s from %s", remote.get("name"), ref.name, exc_info=True)
     return out

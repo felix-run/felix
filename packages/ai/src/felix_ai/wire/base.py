@@ -294,12 +294,13 @@ class HttpModelClient(ABC):
     settings: ModelConfig
     spec: Any
     base_url: str
-    api_key: str
+    # Out of `repr`: a client in a log line or a traceback's locals would print the key.
+    api_key: str = field(repr=False)
     # Headers a provider needs beyond auth and content type — routing hints, tenancy, an
     # API version. Merged last, so a provider can also override what the wire format sets:
     # Cloudflare AI Gateway authenticates with `cf-aig-authorization` and wants the plain
     # `Authorization` header gone.
-    extra_headers: dict[str, str] = field(default_factory=dict)
+    extra_headers: dict[str, str] = field(default_factory=dict, repr=False)
 
     def _headers(self, base: dict[str, str]) -> dict[str, str]:
         """Wire-format headers with the provider's overrides applied.

@@ -20,8 +20,10 @@ from tests._scripts import load_script
 ROOT = Path(__file__).resolve().parents[2]
 HARNESS = ROOT / "packages" / "harness" / "src" / "felix"
 AI = ROOT / "packages" / "ai" / "src" / "felix_ai"
+CLIENT = ROOT / "packages" / "client" / "src" / "felix_client"
 SOURCE_ROOTS = [
     ROOT / "packages" / "ai" / "src",
+    ROOT / "packages" / "client" / "src",
     ROOT / "packages" / "harness" / "src",
     ROOT / "packages" / "cli" / "src",
     ROOT / "apps" / "api" / "src",
@@ -502,8 +504,13 @@ def test_every_memory_store_function_is_classified() -> None:
 
     # Routes that can take a memory out of recall, and the predicate that guards each.
     RETIREMENT = {
-        "_put_in_memory": "guarded: _may_displace / _may_reactivate, then _preserve",
-        "_put_in_postgres": "guarded: _refused_in_sql on every preserved column",
+        "_put_in_memory": (
+            "guarded: the topic sweep by _may_retire_by_topic (operator rank only), the "
+            "same-id upsert by _may_displace / _may_reactivate, then _preserve"
+        ),
+        "_put_in_postgres": (
+            "guarded: the topic sweep by _may_retire_by_topic, then _refused_in_sql on every preserved column"
+        ),
         "forget": "guarded: _rank(source) vs _trust(row), _retirer_rank stamp only rises",
         "supersede": "guarded: _rank(source) vs max(_trust, _retirer_rank), stamps retirer",
         "put_memory": (
@@ -535,6 +542,7 @@ def test_every_memory_store_function_is_classified() -> None:
         "_preserve",
         "_may_reactivate",
         "_may_displace",
+        "_may_retire_by_topic",
         "_refused_in_sql",
         "_write_embedding",
         "_configured_dim",
@@ -1243,6 +1251,36 @@ def test_no_outbound_http_client_hardcodes_its_timeout() -> None:
     )
 
 
+def _imported_top_levels(base: Path) -> list[tuple[str, str]]:
+    """`(file, top-level module)` for every import in `base`, lazy ones included."""
+    found = []
+    for path in _python_files(base):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Import):
+                found += [(str(path.relative_to(ROOT)), a.name.split(".")[0]) for a in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+                found.append((str(path.relative_to(ROOT)), node.module.split(".")[0]))
+    return found
+
+
+def test_the_model_layer_and_the_client_import_nothing_of_felix() -> None:
+    """`felix_ai` may not import the harness, and `felix_client` may not import any of Felix.
+
+    The first is what makes Felix model-agnostic rather than claiming to be; the second is what
+    lets the client install without the server. `CLAUDE.md` said this file enforced the first,
+    and nothing did: an `import felix.config` added to `felix_ai` left the whole unit suite
+    green. Every import node is walked, lazy ones inside functions included, because a lazy
+    import is still a dependency.
+    """
+    harness_side = {"felix", "felix_api", "felix_worker", "felix_cli", "felix_client"}
+    ai = [(f, m) for f, m in _imported_top_levels(AI) if m in harness_side]
+    client = [
+        (f, m) for f, m in _imported_top_levels(CLIENT) if m.startswith("felix") and m != "felix_client"
+    ]
+    assert ai == [], f"felix_ai imports the harness: {ai}"
+    assert client == [], f"felix_client imports Felix: {client}"
+
+
 def test_outbound_clients_go_through_the_egress_guard() -> None:
     """A raw `httpx.AsyncClient` reaching a manifest- or model-supplied URL is unguarded.
 
@@ -1254,7 +1292,7 @@ def test_outbound_clients_go_through_the_egress_guard() -> None:
     exempt = {
         "auth/jwt.py": "JWKS URL comes from FELIX_JWT_VERIFIERS, never from a token claim",
         "memory/embedder.py": "embedding base_url is operator config",
-        "sdk.py": "client library — dials the caller's own base_url",
+        "felix_client/client.py": "client library — dials the caller's own base_url",
         "security/egress.py": "this is the guarded client",
         # The model layer may not import the harness — that is what makes Felix
         # model-agnostic — so it cannot reach `safe_async_client`. Safe because a provider
@@ -1575,12 +1613,12 @@ def test_every_consumer_of_run_status_agrees_on_what_is_terminal() -> None:
     AST — importing it needs `temporalio`). A status missing from any copy is a run a client
     polls until its own deadline, or a workflow that spins on a row nothing will change."""
     from felix.durability.fibers import FIBER_TERMINAL_STATUSES
-    from felix.sdk import RUN_TERMINAL as SDK_RUN_TERMINAL
     from felix_api.routes._streaming import RUN_TERMINAL as STREAM_RUN_TERMINAL
+    from felix_client import RUN_TERMINAL as SDK_RUN_TERMINAL
 
     assert {"completed", "failed", "expired", "dead"} <= FIBER_TERMINAL_STATUSES, "the source set was emptied"
     assert FIBER_TERMINAL_STATUSES <= SDK_RUN_TERMINAL, (
-        "felix.sdk.RUN_TERMINAL is missing a fiber terminal status"
+        "felix_client.RUN_TERMINAL is missing a fiber terminal status"
     )
     assert FIBER_TERMINAL_STATUSES <= STREAM_RUN_TERMINAL, (
         "the resume stream is missing a fiber terminal status"

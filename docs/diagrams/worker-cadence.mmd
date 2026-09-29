@@ -1,10 +1,11 @@
 ---
 title: Worker and scheduler cadence
 ---
-%% Source of truth: apps/worker/src/felix_worker/tasks.py — Taskiq cron labels.
+%% Source of truth: apps/worker/src/felix_worker/tasks.py — Taskiq cron labels, plus the
+%% fiber loop `_start_fiber_loop` starts in each worker.
 flowchart LR
     accTitle: Everything periodic in Felix, and what fires it
-    accDescr: felix-scheduler holds the cron labels and felix-worker executes the tasks; running the worker without the scheduler means nothing fires at all, which is the most common deployment mistake. Seven built-in tasks run on their own cadences, and plugins that expose cron_tasks are registered at worker startup on a one-minute tick. The audit and usage flushes are the two that matter most for correctness — every other subsystem writes into their buffers and depends on this drain to reach Postgres.
+    accDescr: felix-scheduler holds the cron labels and felix-worker executes the tasks; running the worker without the scheduler means nothing fires at all, which is the most common deployment mistake. Seven built-in tasks run on their own cadences, and plugins that expose cron_tasks are registered at worker startup on a one-minute tick. Durable runs are not on the cron: each worker polls for them every FELIX_FIBER_POLL_SECONDS, one second by default, and the one-minute fiber_scheduler sweep is only the backstop. The audit and usage flushes are the two that matter most for correctness — every other subsystem writes into their buffers and depends on this drain to reach Postgres.
 
     sched["felix-scheduler<br/>Taskiq cron labels"] -->|"enqueues due tasks"| broker[("Valkey / Redis<br/>broker")]
     broker --> worker["felix-worker"]
@@ -12,7 +13,7 @@ flowchart LR
     worker -->|"every 1m"| audit["flush_audit"]
     worker -->|"every 1m"| usage["flush_usage"]
     worker -->|"every 1m"| jobs["run_scheduled_jobs<br/>fires enabled cron rows"]
-    worker -->|"every 1m"| fibers["fiber_scheduler<br/>claims and steps durable runs"]
+    worker -->|"every 1s"| fibers["fiber loop<br/>claims and steps durable runs"]
     worker -->|"every 15m"| mem["consolidate_memory"]
     worker -->|"every 30m"| anom["anomaly_scan"]
     worker -->|"every 10m"| ceval["continuous_eval"]

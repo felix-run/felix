@@ -10,6 +10,16 @@ repo="${FELIX_SELF_REPO:-https://github.com/felix-run/felix.git}"
 branch="${FELIX_SELF_BRANCH:-main}"
 ws="${FELIX_WORKSPACE_ROOT:-/workspace}"
 
+# The api and the worker mount this volume and run this script at the same moment, so without
+# a lock they race: two `git fetch`es contend for the same ref locks and one fails with
+# "cannot lock ref 'refs/remotes/origin/main': is at … but expected …" on every restart, two
+# `uv sync`s write one venv at once, and on a fresh volume both see no `.git` and both clone —
+# the second into a directory that is no longer empty, which under `set -e` exits the container.
+# The lock is on the directory itself rather than a file in it, because `git clone` needs `$ws`
+# empty on first boot. Both containers share one kernel, so `flock` serialises them.
+exec 9<"$ws"
+flock 9
+
 if [ ! -d "$ws/.git" ]; then
   echo "self-entrypoint: cloning $repo ($branch) into $ws" >&2
   git clone --quiet --branch "$branch" "$repo" "$ws"
@@ -26,5 +36,11 @@ if [ "${FELIX_SELF_SYNC:-1}" = "1" ]; then
   echo "self-entrypoint: syncing the workspace venv" >&2
   (cd "$ws" && uv sync --locked --dev --extra temporal --extra warehouse --extra sandbox --extra otel --quiet)
 fi
+
+# Released before the exec, not by it: a lock belongs to the open file, and an fd left open
+# here is inherited by the Felix process, which would hold the other container at `flock` for
+# as long as it runs.
+flock -u 9
+exec 9<&-
 
 exec "$@"

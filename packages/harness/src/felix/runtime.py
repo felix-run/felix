@@ -79,17 +79,14 @@ async def prepare_tenant_invoke(
 
 
 def _context_window_for_manifest(manifest: Any, strategy_spec: Any) -> int:
-    """Tokens of context to compact against.
+    """Tokens of context to compact against: the declared value, else the model's own window.
 
-    `spec.session.context_window_tokens` carries a schema default of 128000, and pydantic
-    fills it in whether or not the operator wrote it. Reading it unconditionally meant a
-    manifest on a 1M-context model compacted at 128K minus reserve — summarising away
-    seven eighths of the window it had paid for, and paying a summarisation call to do
-    it. An explicitly declared value still wins; otherwise the model's own window is used.
+    The field used to default to 128000 and this read `model_fields_set` to tell a written
+    value from the default, because a manifest on a 1M-context model otherwise compacted at
+    128K minus reserve. The default is `None` now, so the value itself says which it is.
     """
     declared = getattr(strategy_spec, "context_window_tokens", None)
-    was_set = "context_window_tokens" in getattr(strategy_spec, "model_fields_set", set())
-    if was_set and declared:
+    if declared:
         return int(declared)
 
     model_spec = getattr(getattr(manifest, "spec", None), "model", None)

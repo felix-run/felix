@@ -123,11 +123,11 @@ async def put_memory(
 ) -> dict[str, Any]:
     """Store a memory, superseding active rows that share its ``topic_key``.
 
-    Supersession is conditional on the writer: a row is retired only by a writer of
-    equal or greater standing (``_TRUST_RANK``). A lower-ranked write is stored
-    *alongside* the row it cannot displace, so a topic can briefly carry two active
-    values — a visible contradiction rather than a silent deletion, which is the
-    better failure but is not the invariant the older docstrings promised.
+    Supersession by ``topic_key`` is an operator's act: only a writer ranked above
+    ``_DEFAULT_TRUST`` (``_TRUST_RANK``) retires other rows by naming their key. An agent
+    write — capture, or the `remember` tool — is stored *alongside* what already holds the
+    key, so a changed fact is a visible contradiction the operator resolves, never a silent
+    deletion an injected turn could cause. See `_may_retire_by_topic`.
 
     Idempotent by content: re-storing the same text under the same manifest reactivates
     the existing row and keeps its original provenance, rather than adding a second
@@ -343,6 +343,19 @@ def _may_reactivate(incoming: dict[str, Any], existing: dict[str, Any]) -> bool:
     return _trust(incoming) >= _retirer_rank(existing)
 
 
+def _may_retire_by_topic(incoming: dict[str, Any]) -> bool:
+    """Whether `incoming` may retire *other* rows by naming their `topic_key`.
+
+    Only above agent rank. The key is chosen from the transcript — by the extractor on
+    capture, which runs through no governance wrapper at all, or by whoever steers the
+    `remember` tool, which a prompt injection can call directly — so letting agent writes
+    sweep a topic let one injected turn retire every fact the agent had kept on it. An
+    agent's newer value is stored beside the old one instead: recall sees both, the newer
+    ranks first, and the operator's memory route is where the contradiction is settled.
+    """
+    return _trust(incoming) > _DEFAULT_TRUST
+
+
 def _may_displace(incoming: dict[str, Any], existing: dict[str, Any]) -> bool:
     """Whether `incoming` may retire or rewrite `existing`.
 
@@ -354,7 +367,7 @@ def _may_displace(incoming: dict[str, Any], existing: dict[str, Any]) -> bool:
 
 def _put_in_memory(row: dict[str, Any]) -> dict[str, Any]:
     tenant_id, mem_id = row["tenant_id"], row["id"]
-    if row["topic_key"]:
+    if row["topic_key"] and _may_retire_by_topic(row):
         for (other_tenant, other_id), other in _memory_rows.items():
             if (
                 other_tenant == tenant_id
@@ -419,7 +432,7 @@ async def _put_in_postgres(settings: Settings, row: dict[str, Any], *, embedding
     async with factory() as db:
         # Supersession and insert share one transaction: a crash between them would
         # otherwise leave a topic with two active rows, or none.
-        if row["topic_key"]:
+        if row["topic_key"] and _may_retire_by_topic(row):
             await db.execute(
                 update(MemoryVector)
                 .where(
@@ -824,7 +837,9 @@ async def consolidate_pools(settings: Settings, *, max_facts: int = 500) -> int:
         active = [
             ((tenant_id, mem_id), row) for (tenant_id, mem_id), row in _memory_rows.items() if _is_active(row)
         ]
-        active.sort(key=lambda item: int(item[1].get("created_at") or 0))
+        # The first of two duplicates scanned is the one kept, so ties on `created_at` decide
+        # the survivor — broken by tenant, then id, byte order, the same on both arms.
+        active.sort(key=lambda item: (int(item[1].get("created_at") or 0), item[0][0], item[1]["id"]))
         for (tenant_id, mem_id), row in active[:scan_limit]:
             key = (tenant_id, row.get("manifest_id", ""), row.get("content", ""))
             if key in seen:
@@ -851,7 +866,11 @@ async def consolidate_pools(settings: Settings, *, max_facts: int = 500) -> int:
                 await db.scalars(
                     select(MemoryVector)
                     .where(MemoryVector.status == ACTIVE)
-                    .order_by(MemoryVector.created_at.asc())
+                    .order_by(
+                        MemoryVector.created_at.asc(),
+                        collate(MemoryVector.tenant_id, "C").asc(),
+                        collate(MemoryVector.id, "C").asc(),
+                    )
                     .limit(scan_limit)
                 )
             ).all()

@@ -584,7 +584,13 @@ comment explaining exactly that. It is conditional, not inert.
       libraries more than paid for `libpq5`. `psycopg.pq.__impl__` reports `c`, migrations run
       to head against real Postgres 17.11, and the scan exits 0 with no ignore file at all.
 
-- [ ] **`session.context_window_tokens` should default to a sentinel, not a number.** It is the
+- [x] **`session.context_window_tokens` should default to a sentinel, not a number.** Done: the
+      default is `None` (the model's window), `runtime.py` no longer reads `model_fields_set`,
+      and the pin hash now tells a written 128000 from an omitted field. Found on the way: the
+      model listing (`usage/catalog.py`) read this field, so every manifest listed a 128K window,
+      and its fallback looked the window up by the manifest's *name*; it uses the function
+      compaction does now. The bundled manifests keep their explicit 128000, so they compact as
+      before. As written: it is the
       one field in the schema where writing the default and omitting it mean different things:
       `runtime.py` reads `model_fields_set` to tell them apart, so an explicit `128000` compacts
       against 128K while omitting it compacts against the model's real window (1M on a
@@ -661,12 +667,17 @@ comment explaining exactly that. It is conditional, not inert.
       README example uses — has no long-term memory at all. Extraction quality is whatever one
       prompt returns; a live run stored an assistant's apology as a durable fact.
       `consolidation.py` is 14 lines against `extraction.py`'s 340, so the store only grows.
-- [ ] **Who may retire a memory by naming its `topic_key`** — `put_memory` supersedes any active
+- [x] **Who may retire a memory by naming its `topic_key`** — decided: the operator only.
+      `memory/store.py:_may_retire_by_topic` requires rank above `_DEFAULT_TRUST` for the
+      topic sweep on both arms; agent writes are stored alongside, and the facts prelude shows
+      one current value per topic (trust, then turn). The `remember` tool no longer tells the
+      model a new value supersedes the old. As written: — `put_memory` supersedes any active
       row sharing a `topic_key`, and `capture_from_turn` reaches the same supersession post-turn
       through no governance wrapper at all. The durable fix is store-level: require rank above
       `_DEFAULT_TRUST` for a cross-row sweep, so rank-1 writers store alongside rather than
       retire. A real ergonomic change, which is why it is a decision and not a patch.
-- [ ] **`deploy/GOVERNANCE.md`: which layer owns retirement** — follows whichever way the above
+- [x] **`deploy/GOVERNANCE.md`: which layer owns retirement** — the store; the new "Memory: who
+      may retire what" section says so. As written: — follows whichever way the above
       lands. `retired_by` versus `source`, why resurrection is gated on who retired rather than
       who wrote, and which of the manifest, the store and the approval wrapper is authoritative.
       Enforced in `tests/conformance/test_memory_trust_matrix.py`; the prose does not exist.
@@ -682,9 +693,16 @@ comment explaining exactly that. It is conditional, not inert.
 - [ ] **Split-turn compaction** — when one turn alone exceeds `keep_recent_tokens` the cut lands
       mid-turn and one summary covers both sides. Two summaries with different prompts and budgets
       is the fix. Narrow: only bites on very long single turns.
-- [ ] **Tools carry their own prompt copy** — a `prompt_line` / `prompt_guidance` on `Tool`,
-      assembled in `builder.py`, so the system prompt is derived from the active tool set instead
-      of hand-maintained. Removes a drift class; more valuable once **A** multiplies the tool set.
+- [x] **Tools carry their own prompt copy** — `Tool.prompt_guidance` for tools defined in code,
+      and `spec.tool_guidance` (tool name or glob → one line) for everything a manifest binds,
+      MCP included; `builder.tool_guidance_section` appends a "Tool guidance" section built from
+      the tools the agent actually has, so advice for an unbound tool never reaches the prompt.
+      `system_prompt.include_tool_guidance: false` turns it off; an entry matching no tool counts
+      as `felix_rule_targets_nothing`. `deep.yaml`'s search/fetch advice moved there. Built-in
+      tools carry no guidance yet — adding model-facing text to every manifest wants an eval run
+      first. Followed by `McpServerRef.use_instructions`: an opted-in server's `initialize`
+      `instructions` become its tools' guidance, capped, one line, dropped when the injection
+      markers flag them — opt-in because it is server text in the system prompt.
 - [x] **Telemetry vocabulary** — `docs/OBSERVABILITY.md` carries the metric catalog and the span
       schema, and `tests/unit/test_metric_catalog.py` re-derives it from the source so it cannot
       drift. Spans now follow the OTel GenAI semantic conventions, and a model call is a span at
@@ -757,25 +775,31 @@ rather than from re-reading a file. The wave itself is written up in [HISTORY.md
       never pruned audit rows at all — it filtered the `DurableBuffer` as if it were the list —
       and swept plans for tenant `default` only; both fixed, and `tests/conformance/test_retention.py`
       runs the contract against both arms.
-- [ ] **Temporal carries `state["auth"]` into workflow history.** `start_fiber_workflow` passes
+- [x] **Temporal carries `state["auth"]` into workflow history.** Documented as an assumption in
+      `deploy/GOVERNANCE.md` (Temporal is inside the trust boundary) rather than changed. `start_fiber_workflow` passes
       the whole fiber dict as the workflow argument, and the activity re-passes it per step, so
       `{principal_sub, scopes, scheme}` for every tenant accumulates in one namespace outside
       the RLS boundary and outside the run's TTL. User message content already went there; a
       scope inventory is new.
-- [ ] **The Temporal path trusts the fiber row wholesale.** `fiber_step` calls `advance_fiber`
+- [x] **The Temporal path trusts the fiber row wholesale.** Documented beside the entry above:
+      access to the namespace and the `felix-fibers` queue is treated like database access. `fiber_step` calls `advance_fiber`
       with the row straight from the workflow argument, never re-read from Postgres, and
       `_save_fiber` writes under `rls_bypass()`. Anyone who can start a workflow on the
       `felix-fibers` task queue therefore chooses `tenant_id`, `expires_at` and now
       `state["auth"]`. Temporal access is privileged; this should be a documented assumption.
-- [ ] **Memory tools are not untrusted.** `recall` and `list_memories` are `transport: local`
+- [x] **Memory tools are not untrusted.** Decided: untrusted by default — `memory` joins
+      `_UNTRUSTED_SOURCE_PREFIXES`, so every screened manifest scans recall output (markers
+      free; paid scoring per `model_tools`); `governed.yaml`, which names no tools, now screens
+      it. As written: `recall` and `list_memories` are `transport: local`
       with `source: memory`, which is not in `_UNTRUSTED_SOURCE_PREFIXES`, so recall is not
       screened by default — `cowork.yaml` names them explicitly instead. Capture runs over turns
       containing untrusted tool output, so recall is a re-entry path for content quarantined on
       the way in. Either add `memory` to the untrusted prefixes or keep it a per-manifest choice.
-- [ ] **`scheme` replay on resume.** A resumed fiber presents the recorded scheme without
+- [x] **`scheme` replay on resume.** The sentence is in `deploy/GOVERNANCE.md`. A resumed fiber presents the recorded scheme without
       holding a credential, so `auth.inbound.schemes` can only ever agree with the enqueue-side
       check. Defence in depth lost, not a hole; worth a sentence in GOVERNANCE.md.
-- [ ] **`pr-quality-gate.sh` does not treat `durability/` as a control path.** It reported
+- [x] **`pr-quality-gate.sh` does not treat `durability/` as a control path.** Added, with a
+      case in `tests/unit/test_pr_quality_gate_hook.py`. It reported
       "felix-security-reviewer is not needed" on #149, the most security-relevant change of the
       session — a resumed run's authority comes from there. Add `durability` to the token list.
 - [ ] **felix-web docs lag #148–#150.** `internals/governance.mdx` covers screening and glob
@@ -805,16 +829,24 @@ rather than from re-reading a file. The wave itself is written up in [HISTORY.md
       `FELIX_` setting. Related: `request_ui` / `request_confirm` / `request_select` have **zero
       callers in core**, so no tool exposes them and an agent cannot currently ask the user a
       structured question — a capability-surface item hiding in a documentation one.
-- [ ] **Wire-contract snapshot** — snapshot `/openapi.json` and the SSE event-name set.
-      `felix-run/web` mirrors `StreamEvent` by hand and its union has an open arm, so an added or
-      renamed frame silently does nothing on both sides. Fold in **snapshot-authoritative
-      streaming** if it happens.
-- [ ] **Publish the SDK, or say it is not one.** `felix/sdk.py` is 570 lines covering ~27 of ~72
-      operations, all in `/chat` + `/approvals`, returning `dict[str, Any]` throughout — no
-      response models, no event-name enums, no typed exceptions, no pagination helpers — and it
-      lives inside the harness, so importing it drags the whole server dependency tree. The
-      durable-run polling and lease handling in it are genuinely good. The README never mentions
-      it, so a Python adopter finds it by reading source.
+- [x] **Wire-contract snapshot** — `schemas/openapi.json` and `schemas/sse-events.json`, written
+      by `scripts/gen-wire-contract.py` (`make contract`), held by `tests/unit/test_wire_contract.py`.
+      The event names are scanned off the source — `Event(event=...)`, `{"event", "data"}` frames,
+      `side_events.emit` — and a non-literal name must be a listed pass-through or the scan fails,
+      so a new producer cannot slip past the snapshot. The OpenAPI snapshot drops `info.version`,
+      which the per-release export keeps. Left for felix-run/web: generate its `StreamEvent`
+      union from `sse-events.json` and close the open arm. **Snapshot-authoritative streaming**
+      was not folded in.
+- [x] **Publish the SDK, or say it is not one.** Decided: a light package, marked experimental.
+      `felix/sdk.py` moved to `packages/client` (`felix-client`, module `felix_client`), httpx
+      and nothing else, same API; `felix.sdk` re-exports it. The README says what it covers,
+      that it is experimental, how to install it from the repository, and that the OpenAPI
+      document on each release is the contract. Typed models, enums and full route coverage
+      were deliberately not taken on — that is a compatibility promise, not a move.
+      Found doing it: **the `felix_ai` → `felix` import boundary was enforced nowhere.** CLAUDE.md
+      said `test_invariants.py` held it; an `import felix.config` planted in `felix_ai` left all
+      2,996 unit tests and ruff green. `test_the_model_layer_and_the_client_import_nothing_of_felix`
+      now walks every import node, lazy ones included, for both packages.
 
 ### Control plane
 
@@ -915,12 +947,14 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       which swallows a per-tenant exception, had scored nothing since its first ever tick while
       reporting a normal result.
 
-- [ ] **`put_version` has a read-modify-write race on Postgres only.** It computes
-      `SELECT coalesce(max(version),0)` then inserts, with no lock and no retry, so four
-      concurrent publishes of one manifest name leave one winner and three `UniqueViolation`s —
-      a 500 for a concurrent double-publish. The twin cannot race at all, since nothing awaits
-      between its max and its write, so the contract cannot state a shared behaviour until one
-      is chosen. Measured against a live database while verifying the manifest contract.
+- [x] **`put_version` has a read-modify-write race on Postgres only.** It computed
+      `SELECT coalesce(max(version),0)` then inserted, with no lock and no retry, so concurrent
+      publishes of one name left one winner and `UniqueViolation`s — a 500 for a double-publish.
+      The behaviour chosen: every publish lands, in order. A transaction-scoped advisory lock on
+      `felix:manifest:{tenant}:{name}` serializes publishes of one name (the session store's
+      append lock, same shape); other names never wait, and it releases at commit, so a
+      transaction-mode pooler is fine. `test_concurrent_publishes_of_one_name_all_land_in_order`
+      fires six at once on both arms and goes red on Postgres without the lock.
 
 - [x] **An enforcing-RLS arm for the conformance suite.** Done
       (`tests/conformance/test_rls_enforcement.py`): a `NOSUPERUSER NOBYPASSRLS` role with
@@ -946,14 +980,23 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       migrations drift) **and stepwise per-revision up/down**; today it only goes base to head
       in one hop.
 
-- [ ] **`create_fiber` cannot insert under an enforcing RLS role.** It is the one write in
+- [x] **`create_fiber` cannot insert under an enforcing RLS role.** Stale: both `create_fiber`
+      and `get_fiber` open `tenant_session(settings, tenant_id)` since #201. As written: it was the one write in
       `durability/fibers.py` that neither wraps `rls_bypass()` nor binds the tenant GUC, so with
       `FELIX_DATABASE_RLS=true` and a non-superuser it fails with "new row violates row-level
       security policy". `get_fiber` has the same gap. Invisible to the conformance suite because
       that connects as a superuser with RLS off. Found while verifying the fiber claim contract
       against a live database; fixed in a separate change.
 
-- [ ] **Promote the ordering rule to a scanner.** It has now been fixed six times — the audit
+- [x] **Promote the ordering rule to a scanner.** Done: `tests/unit/test_ordering_rule.py` scans
+      every module for an SQL `order_by` in a `.limit` chain and a Python sort whose result is
+      sliced — assigned, sorted in place, or iterated in a sliced comprehension — and requires
+      the last key to be a primary-key component (or, in a Python key, a PK column's name,
+      `r["id"]` included). Sites keyed `file:function`; ties that are harmless are `EXEMPT`
+      with a reason, and the three real ones are `KNOWN_OPEN`, a ratchet that fails when a fixed
+      site stays listed. Floors per kind (14 SQL, 20 Python matched) and the three files named
+      below must be reached — the first run of the mutations showed one shared floor let SQL
+      matching break unnoticed. As written: it has now been fixed six times — the audit
       and usage cursors, `list_runs`, `list_jobs`'s collation, `list_active` twice — and two
       more shapes are still open below. The repo's own rule is that a lesson learned this often
       earns a structural gate rather than another round of review. The shape: over *any* module
@@ -1024,7 +1067,11 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       neighbour its author opens. The carrier would be a shared conformance assertion that
       every store's read is mutation-isolated, not four more deepcopies.
 
-- [ ] **More listings whose two arms can disagree about order.** Not one shape but three, and
+- [x] **More listings whose two arms can disagree about order.** Closed: `list_approvals`,
+      `list_plans` and `consolidate_pools` end on the id (tenant then id for the cross-tenant
+      sweep), `collate(..., "C")` on Postgres so both arms compare bytes, each with a
+      conformance case that goes red on either arm without it; `KNOWN_OPEN` in
+      `tests/unit/test_ordering_rule.py` is empty. As written: Not one shape but three, and
       the first survey found only the first: a tie the twin breaks by insertion order and
       Postgres by nothing; a text key ordered by database collation on one arm and code point
       on the other; and the two arms sorting the same keys in *opposite directions*. The jobs
@@ -1033,7 +1080,9 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       is fixed with the jobs work because it already had a contract to assert it in.
 
       `memory/store.py`'s `list_active` (both sorts) and `as_of` are done, and so is
-      `memory/recall.py` — see the item above. Remaining, ranked by what a wrong answer costs,
+      `memory/recall.py` — see the item above. The remaining sites are `KNOWN_OPEN` in
+      `tests/unit/test_ordering_rule.py` now, which fails when one is fixed and left listed.
+      Remaining, ranked by what a wrong answer costs,
       and by function rather than line so the list stops rotting on every edit:
       `approvals/store.py`'s `list_approvals` (`created_at`,
       limited); `plans/store.py`'s `list_plans` (`updated_at`, limited); `eval/store.py`'s
@@ -1072,7 +1121,10 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       Nothing in `packages` or `apps` supplies an id — `record_event` mints a uuid — so a
       collision can only be a retry; revisit if an id ever becomes caller-supplied.
 
-- [ ] **The keyset cursor's tie-break is collation-dependent.** `felix/cursors.py` pairs the
+- [x] **The keyset cursor's tie-break is collation-dependent.** Fixed with the other orderings:
+      `keyset_order` and `keyset_before` both compare the id `COLLATE "C"`, so audit and usage
+      page ties in byte order on both arms; a mixed-case conformance case pages one row at a
+      time and goes red on Postgres with either half reverted. As written: `felix/cursors.py` pairs the
       timestamp with the row id, and `id` is text — so Postgres orders it by the database
       collation while the in-memory twin orders it by Python code point. The ids actually
       written are `uuid4().hex`, which sorts the same under every common collation, and
@@ -1081,7 +1133,7 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       millisecond differing between them, which no contract would catch because every test
       asserts set equality over pages. Fix if a caller-supplied id ever becomes ordinary.
 
-- [ ] **An index for the active-memory ordering's new tiebreak.** `idx_memory_active` is
+- [x] **An index for the active-memory ordering's new tiebreak.** Done in migration `0020_ordering_indexes`, with approvals and plans too; `EXPLAIN` on 50k–200k seeded rows shows every listing as a plain index scan, where `0019` had an Incremental Sort (and a full sort for job runs and the claim). As written: `idx_memory_active` is
       `(tenant_id, manifest_id, status, created_at DESC)` and does not carry `id`, so the
       tiebreak adds an Incremental Sort over each `created_at` group. Bounded and cheap in the
       common case — but the case the tiebreak exists for is the batch write where one group is
@@ -1091,7 +1143,7 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       expression to be used at all. The prioritised branch leads on a `metadata`-derived trust
       expression no btree covers, so it benefits from none of this. Measured plan, not a guess.
 
-- [ ] **An index for the job run history's ordering.** `list_runs` filters
+- [x] **An index for the job run history's ordering.** Done in migration `0020_ordering_indexes`, with approvals and plans too; `EXPLAIN` on 50k–200k seeded rows shows every listing as a plain index scan, where `0019` had an Incremental Sort (and a full sort for job runs and the claim). As written: `list_runs` filters
       `(tenant_id, job_name)` and orders by `(started_at DESC, run_id DESC)`, while the only
       index on `job_runs` is the primary key `(tenant_id, job_name, run_id)` — so the ordering
       column is unindexed and the plan sorts a job's entire history before the `LIMIT` applies,
@@ -1100,7 +1152,7 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       first. Same family as the audit and usage item below, and one revision could carry all
       three.
 
-- [ ] **An index for the audit and usage listings' new ordering.** Both now
+- [x] **An index for the audit and usage listings' new ordering.** Done in migration `0020_ordering_indexes`, with approvals and plans too; `EXPLAIN` on 50k–200k seeded rows shows every listing as a plain index scan, where `0019` had an Incremental Sort (and a full sort for job runs and the claim). As written: Both now
       `ORDER BY ts DESC, id DESC` so the keyset cursor has a total order to page on, while
       `idx_audit_tenant_ts` and `idx_usage_tenant_ts` cover `(tenant_id, ts)` only. Measured at
       100k rows, 50 per distinct `ts`, the plan is an `Index Scan Backward` on that index under
@@ -1110,7 +1162,7 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       id DESC)` index removes the sort node and makes the cursor a pure index seek; that is one
       revision, and a refinement rather than a correctness gap.
 
-- [ ] **An index for the fiber claim's ordering.** `ORDER BY updated_at LIMIT 50` has no
+- [x] **An index for the fiber claim's ordering.** Done in migration `0020_ordering_indexes`, with approvals and plans too; `EXPLAIN` on 50k–200k seeded rows shows every listing as a plain index scan, where `0019` had an Incremental Sort (and a full sort for job runs and the claim). As written: `ORDER BY updated_at LIMIT 50` has no
       supporting index; measured at 200k rows it is 11 ms, and a partial index matching the
       claim's WHERE takes it to 0.15 ms at a fifth the size of `idx_fibers_due`. Worth doing now
       that the WHERE clause is stable.
@@ -1130,12 +1182,14 @@ cycle's, and the route contracts below are the next capability-adjacent step.
 
 ### Repo / release hygiene
 
-- [ ] **Credentials survive a `repr`.** `Settings` renders `anthropic_api_key` / `openai_api_key`
-      in clear, `RequestContext` carries `Settings` on every request, and `HttpModelClient` keeps
-      `api_key` as a plain dataclass field — no call site logs any of them today, so this is one
-      `logger.debug("%r", client)` away rather than live. `SecretStr` on the credential fields
-      and `field(repr=False)` on the client close it (`_ReactAgent.settings` got the latter in
-      the `/v1` streaming change). Found by the 2026-09-04 readiness security review.
+- [x] **Credentials survive a `repr`.** Closed with `repr=False` rather than `SecretStr`: the
+      value is untouched, so no call site changes, and what leaked was the rendering. Fourteen
+      `Settings` fields — provider keys, `auth_api_keys`, `jwks_private`, the S3 keys, the
+      signing secrets, the JSON blobs that carry credentials (`model_provider_options`,
+      `webhook_endpoints`), and the URLs that can carry a password (`database_url`, `redis_url`,
+      `warehouse_url`) — plus `HttpModelClient.api_key` and `extra_headers` (a gateway token can
+      ride there). `tests/unit/test_credentials_out_of_repr.py` makes a new one fail closed: a
+      field whose name looks like a credential must be hidden or listed as not one.
 
 - [~] **Required status checks + `CODEOWNERS`** — the status-check half is **done** and this
       entry was wrong: `main` requires 13 contexts, all bound to the Actions app, and the
@@ -1179,10 +1233,12 @@ cycle's, and the route contracts below are the next capability-adjacent step.
 
 ### Deploy
 
-- [ ] **Cowork completion smoke on GCE** — local durable poll reaches `completed`; prod smoke
-      still only asserts a cowork `202` accept. Extend `.github/workflows/smoke.yml` with a
-      **soft** completion poll (`continue-on-error: true`, ~3 min). Cheaper once **B1** removes the
-      two-tick floor.
+- [x] **Cowork completion smoke on GCE** — the smoke's durable step polls
+      `GET /chat/runs/{token}` to `completed` and asserts the reply (#375). A hard check rather than
+      the soft one proposed: the worker now picks a fiber up within a second (#363) and runs it to
+      suspension, so a completion takes seconds (3s on the first run). The old `noop smoke` prompt
+      also left a pending `write_file` approval in production after every run; the prompt now asks
+      for no tools.
 - [ ] **Governed demo path (decide)** — either enable on GCE (RBAC scopes for chat keys) **or**
       keep the demo anonymous and document that choice in `deploy/GOVERNANCE.md`.
 - [ ] **GKE dogfood** — Helm + ESO → one known-good install note under `deploy/gcp/`.

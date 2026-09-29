@@ -38,7 +38,11 @@ class AuditEvent(Base):
         JSONB, server_default=text("'{}'::jsonb"), default=dict
     )
 
-    __table_args__ = (Index("idx_audit_tenant_ts", "tenant_id", "ts"),)
+    # Matches `keyset_order` exactly, collation included, or the planner cannot use it to sort
+    # (migration 0020).
+    __table_args__ = (
+        Index("idx_audit_tenant_ts_id", "tenant_id", text("ts DESC"), text('id COLLATE "C" DESC')),
+    )
 
 
 class Plan(Base):
@@ -52,7 +56,11 @@ class Plan(Base):
     expires_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     plan_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
 
-    __table_args__ = (Index("idx_plans_tenant_updated", "tenant_id", "updated_at"),)
+    __table_args__ = (
+        Index(
+            "idx_plans_tenant_updated_id", "tenant_id", text("updated_at DESC"), text('id COLLATE "C" DESC')
+        ),
+    )
 
 
 class Job(Base):
@@ -106,7 +114,15 @@ class Approval(Base):
     # Set when a one_shot grant is spent, so it cannot authorize a second identical call.
     consumed_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
-    __table_args__ = (Index("idx_approvals_tenant_status", "tenant_id", "status", "created_at"),)
+    __table_args__ = (
+        Index(
+            "idx_approvals_tenant_status_created_id",
+            "tenant_id",
+            "status",
+            text("created_at DESC"),
+            text('id COLLATE "C" DESC'),
+        ),
+    )
 
 
 class SkillActivation(Base):
@@ -290,6 +306,12 @@ class Fiber(Base):
 
     __table_args__ = (
         Index("idx_fibers_due", "status", "wake_at", "lease_until"),
+        # The claim orders by `updated_at` under a status filter; partial on that filter.
+        Index(
+            "idx_fibers_claim",
+            "updated_at",
+            postgresql_where=text("status IN ('running', 'pending', 'sleeping')"),
+        ),
         Index(
             "idx_fibers_webhook_due",
             "webhook_due_at",
@@ -318,7 +340,9 @@ class UsageEvent(Base):
     cost_usd: Mapped[float] = mapped_column(Numeric(14, 8, asdecimal=False), server_default="0", default=0)
     meta_json: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default=text("'{}'::jsonb"), default=dict)
 
-    __table_args__ = (Index("idx_usage_tenant_ts", "tenant_id", "ts"),)
+    __table_args__ = (
+        Index("idx_usage_tenant_ts_id", "tenant_id", text("ts DESC"), text('id COLLATE "C" DESC')),
+    )
 
 
 class A2ATask(Base):
@@ -352,6 +376,11 @@ class JobRun(Base):
     error: Mapped[str] = mapped_column(Text, server_default="", default="")
     result_json: Mapped[dict[str, Any]] = mapped_column(
         JSONB, server_default=text("'{}'::jsonb"), default=dict
+    )
+
+    # `list_runs` orders a job's history newest first; without this it sorted all of it.
+    __table_args__ = (
+        Index("idx_job_runs_history", "tenant_id", "job_name", text("started_at DESC"), text("run_id DESC")),
     )
 
 

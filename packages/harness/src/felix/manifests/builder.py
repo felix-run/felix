@@ -187,6 +187,27 @@ def _replace_content(out: ToolOutput, content: str) -> ToolOutput:
     return out
 
 
+def tool_guidance_section(tools: list[Tool], by_name: dict[str, str]) -> str:
+    """The system prompt's tool guidance: one line per line of guidance, for present tools only.
+
+    From two places — a tool's own `prompt_guidance`, and `spec.tool_guidance` keyed by name or
+    glob — in the order the tools resolved, each line once. Built from the tools the agent has
+    after the compile, so guidance for a tool that is not bound never reaches the prompt: the
+    drift that hand-written tool advice in `system_prompt` accumulates.
+    """
+    lines: list[str] = []
+    for tool in tools:
+        own = [tool.prompt_guidance] if tool.prompt_guidance else []
+        declared = [line for pattern, line in by_name.items() if matches_any([pattern], tool.name)]
+        for line in (*own, *declared):
+            text = " ".join(line.split())
+            if text and text not in lines:
+                lines.append(text)
+    if not lines:
+        return ""
+    return "Tool guidance:\n" + "\n".join(f"- {line}" for line in lines)
+
+
 def _clone_tool(tool: Tool, executor: Any) -> Tool:
     """Copy a tool with a new executor, carrying every other field forward.
 
@@ -407,6 +428,12 @@ _UNTRUSTED_SOURCE_PREFIXES = (
     # transport is `local` but whose source is a retrieval binding — which is what the `http`
     # and `search` entries beside it are also for.
     "documents",
+    # A recalled memory is a relay, not a source. Capture runs over turns that carried untrusted
+    # tool output, so a payload screening quarantined on its way in can be extracted as a "fact"
+    # and handed back by `recall` or `list_memories` turns later. Unlike `documents` this entry
+    # is not redundant: memory tools are `transport: local`, and without it they were screened
+    # only where a manifest named them — `cowork` did, `governed` did not.
+    "memory",
 )
 
 
@@ -499,6 +526,22 @@ def apply_content_screening(
     return _wrap_tools(tools, wrap_one)
 
 
+async def _close_if_timed_out(req: Any, approval_id: str, note: str) -> None:
+    """Write a timeout back to the row, so `/approvals` stops offering a decided call.
+
+    Best effort: the denial has already been returned to the caller, and a store error
+    here must not turn a refused tool call into a failed run.
+    """
+    if note != "timeout" or not approval_id:
+        return
+    try:
+        from felix.approvals import store as approvals_store
+
+        await approvals_store.close_timed_out(req.settings, req.auth.tenant_id, approval_id)
+    except Exception:
+        logger.debug("approvals store close_timed_out failed", exc_info=True)
+
+
 async def _await_approval(
     *,
     manifest_id: str,
@@ -577,6 +620,7 @@ async def _await_approval(
         timeout=float(ttl_seconds) if ttl_seconds else None,
     )
     if decision.decision != "approved":
+        await _close_if_timed_out(req, approval_id, decision.note)
         return False, args, decision.note or "denied"
     if decision.edited_args:
         args = dict(decision.edited_args)
@@ -943,6 +987,7 @@ def apply_approvals(tools: list[Tool], rules: list[ApprovalRule], manifest_id: s
                     timeout=float(rule.ttl_seconds) if rule.ttl_seconds else None,
                 )
                 if decision.decision != "approved":
+                    await _close_if_timed_out(req, approval_id, decision.note)
                     note = decision.note or "denied"
                     return deny_output(
                         f"[approval {note}] tool={tool.name} rule={rule.id}",
@@ -1055,6 +1100,8 @@ def _warn_unmatched_tool_patterns(m: Manifest, bound: list[str]) -> None:
                     )
                 continue
             targets.append(("judge", judge.name, list(judge.target_tools)))
+    if m.spec.tool_guidance:
+        targets.append(("tool_guidance", "tool_guidance", list(m.spec.tool_guidance)))
     if m.spec.content_screening and m.spec.content_screening.enabled:
         targets.append(("content_screening", "content_screening", list(m.spec.content_screening.tools)))
         paid = list(m.spec.content_screening.model_tools)
@@ -1622,6 +1669,10 @@ async def build_agent(
         final_prompt = (
             system_prompt or f"You are {m.metadata.name}. Use your tools when needed to answer accurately."
         )
+        if m.spec.system_prompt.include_tool_guidance:
+            guidance = tool_guidance_section(resolved, m.spec.tool_guidance)
+            if guidance:
+                final_prompt = f"{final_prompt}\n\n{guidance}"
 
         pattern_builder = get_pattern(m.spec.pattern)
         if pattern_builder is None:

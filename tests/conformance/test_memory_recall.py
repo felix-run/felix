@@ -221,7 +221,14 @@ async def test_one_tenants_memories_are_not_recalled_for_another(memory_settings
 async def test_a_superseded_memory_is_not_recalled(memory_settings: Any) -> None:
     """`recall` filters on active status in the channel *and* again in `_rank`."""
     await _put(memory_settings, "timezone is utc", topic_key="user.timezone", origin_seq=1)
-    await _put(memory_settings, "timezone is cet", topic_key="user.timezone", origin_seq=2)
+    # An operator's write: only that rank retires a row by its topic_key.
+    await _put(
+        memory_settings,
+        "timezone is cet",
+        topic_key="user.timezone",
+        origin_seq=2,
+        metadata={"source": "management_api"},
+    )
 
     hits = await _recall(memory_settings, "timezone")
 

@@ -673,6 +673,22 @@ Four things to know before relying on it:
   | Never longer than the run | `expires_at`, checked before every step, on both the fiber scheduler and the Temporal activity. `hibernate_after_seconds` (300s) by default, `execution.resume_token_ttl_seconds` if set, capped at `ABSOLUTE_LIMITS["resume_token_ttl_seconds"]` (24h). |
   | Never longer than the token | Clamped to the token's `exp` when it has one. Felix has no revocation, so `exp` is the only bound on a compromised credential and a durable run must not outlive it. |
 
+  **With `FELIX_DURABILITY=temporal`, Temporal is inside the trust boundary.** The workflow is
+  started with the fiber row as its argument and each activity is handed that row, so Temporal's
+  workflow history holds every run's recorded `principal_sub`, scopes and scheme, alongside the
+  user's message — in one namespace, outside Postgres RLS and outside the run's TTL, for as long
+  as the namespace retains history. And the activity advances the row it is *given*, not one
+  re-read from Postgres: whoever can start a workflow on the `felix-fibers` task queue chooses
+  the run's `tenant_id`, `expires_at` and recorded authority. Treat access to that namespace and
+  task queue like access to the database — restricted, per deployment, with history retention no
+  longer than the runs need.
+
+  **A resumed run replays its scheme without a credential.** The run's recorded `scheme` is
+  presented at resume, but nothing re-presents the token it came from, so
+  `auth.inbound.schemes` can only agree with the check made when the run was enqueued. That is
+  defence in depth lost, not a hole: the enqueue-side check is the one that ran with a
+  credential.
+
   Two things this does **not** bound. `expires_at` gates step *entry*, so a step that starts
   just inside the horizon runs to completion — cap it with `limits.max_wall_clock_seconds`.
   The fiber *row* outlives the run's usability by `FELIX_FIBER_RETENTION_DAYS` (7): the nightly
@@ -705,8 +721,10 @@ Four things to know before relying on it:
 
 `content_screening.tools` is **additive**. Screening covers every untrusted tool — anything
 whose transport is not `local`, plus anything whose `source` starts with `mcp`, `peer`, `a2a`,
-`queue`, `browser`, `client`, `sandbox` or `container` — and, in addition, whatever `tools`
-names. Naming a trusted local tool extends screening to it;
+`queue`, `browser`, `client`, `sandbox`, `container`, `http`, `search`, `documents` or `memory` —
+and, in addition, whatever `tools` names. `memory` covers `recall` and `list_memories`: capture
+runs over turns that carried untrusted tool output, so a payload quarantined on its way in could
+otherwise come back as a remembered "fact". Naming a trusted local tool extends screening to it;
 it does not narrow screening away from anything.
 
 There is deliberately no way to turn screening off for an untrusted tool while leaving it on
@@ -718,6 +736,14 @@ was removed rather than renamed. On cost: neither `content_screening.model` nor 
 the only one there was. It is free in the default configuration — both bundled manifests that
 enable screening leave `model` empty, and the marker path is a substring scan — and it costs a
 model call per untrusted tool per turn where `model` *is* set.
+
+An MCP server's own `instructions` — the text it returns from `initialize` about how its tools are
+meant to be used — are **not** read unless the manifest sets `use_instructions: true` on that
+server. Tool descriptions already reach the model as tool schemas; instructions would reach the
+*system prompt*, which is the server writing to your agent with the operator's voice. When opted
+in they become one line of the system prompt's tool guidance, collapsed to one line, capped at
+1,000 characters, and dropped whole (`felix_mcp_instructions{outcome="flagged"}`) when the
+injection markers match. Opt in only for servers you would let edit the prompt.
 
 That knob is `content_screening.model_tools`: a glob list of which screened tools get the paid
 scoring — `model` and `decider`, a call per window each. Empty, the default, is every screened
@@ -765,6 +791,31 @@ is what `manifests/cowork.yaml` does for its client tools.
 The warning reports what **compiled**, not what was declared: every outbound binder catches its
 own failure, so an unreachable MCP server binds zero tools and produces no warning. In staging,
 CI and `felix validate-manifest` that means a manifest declaring five MCP servers can be silent.
+
+## Memory: who may retire what
+
+Every memory row records its writer, and writers have two ranks: the **operator** (the
+`/memory` management API, `memory:write`) and the **agent** (auto-capture, and the `remember` /
+`remember_procedure` tools). The store — not the manifest, not a governance wrapper — decides
+what a write may take out of recall, so the rule holds for every path including capture, which
+passes through no wrapper at all:
+
+- **Retiring by `topic_key` is the operator's.** An operator write retires other active rows
+  under the same key. An agent write under a key already held is stored **alongside**: the
+  key is chosen from the transcript, by the extractor or by whoever steers `remember`, and
+  letting it retire meant one injected turn could delete every fact the agent kept on a topic.
+- **The prelude shows the current value per topic** — the most trusted, then the latest turn —
+  so the model reads one belief each turn while both rows stay active, recallable, and visible
+  on `GET /memory`, where the operator settles the contradiction by writing the value or
+  forgetting the stale row.
+- **An agent never retires or rewrites an operator's row**, by topic or by restating its text.
+- **Forgetting stamps who forgot it**, and a row comes back only for a writer of at least that
+  rank: an operator's correction is not undone by the agent restating the sentence it removed.
+  Resurrection is gated on who *retired* the row, not who wrote it.
+
+`governed.yaml` still puts an approval in front of `remember` calls that carry a `topic_key`
+(`when_args: [topic_key]`). With the store refusing agent retirements that gate no longer
+prevents a deletion; it keeps a human seeing a key-changing write, which is what it is for now.
 
 ## Approval semantics
 

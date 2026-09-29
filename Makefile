@@ -1,4 +1,4 @@
-.PHONY: help schema schema-check bundle toolkit eval e2e install install-full install-warehouse lint fmt type test test-cov check check-ci conformance dev dev-key up up-lite up-gcp up-full up-pooled up-replicas up-observability up-temporal up-self metrics-token down down-all cli seed migrate doctor docker-build
+.PHONY: help schema schema-check contract contract-check bundle toolkit eval e2e install install-full install-warehouse lint fmt type test test-cov check check-ci conformance dev dev-key up up-lite up-gcp up-full up-pooled up-replicas up-observability up-temporal up-self metrics-token down down-all cli seed migrate doctor docker-build
 
 COMPOSE := docker compose -f deploy/docker/compose.yml --project-directory .
 COMPOSE_LITE := $(COMPOSE) -f deploy/docker/compose.lite.yml
@@ -19,7 +19,8 @@ help:
 	@echo "  test-cov          the suite against the coverage floor (what check and CI run)"
 	@echo "  e2e               tests/e2e only: the real app over HTTP, scripted model"
 	@echo "  check-ci          check + every other gate CI runs (no infrastructure)"
-	@echo "  bundle / schema-check / toolkit / eval   check-ci's parts, one at a time"
+	@echo "  bundle / schema-check / contract-check / toolkit / eval   check-ci's parts, one at a time"
+	@echo "  contract          regenerate the wire contract (schemas/openapi.json, schemas/sse-events.json)"
 	@echo "  conformance       store contract vs a real Postgres (needs FELIX_CONFORMANCE_DATABASE_URL;"
 	@echo "                    add FELIX_CONFORMANCE_REDIS_URL for the cross-replica arm, as CI does)"
 	@echo "  dev               run API locally (auth=none)"
@@ -99,7 +100,7 @@ check: lint type test-cov
 # target below. `lean` is meaningful only in a lean venv: scripts/lean-import-check.py
 # proves nothing when the extras are installed, and a gate that passes vacuously is worse
 # than no gate. tests/unit/test_invariants.py checks the same rule statically, in any venv.
-check-ci: check bundle schema-check toolkit eval
+check-ci: check bundle schema-check contract-check toolkit eval
 	uv run python scripts/check-scalar-sri.py
 	uv run pre-commit run --all-files
 
@@ -109,6 +110,12 @@ bundle:
 
 schema-check:
 	uv run python scripts/gen-manifest-schema.py --check
+
+contract:  ## regenerate schemas/openapi.json and schemas/sse-events.json (the wire contract)
+	uv run python scripts/gen-wire-contract.py
+
+contract-check:
+	uv run python scripts/gen-wire-contract.py --check
 
 toolkit:
 	python3 scripts/validate-toolkit.py

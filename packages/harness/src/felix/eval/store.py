@@ -92,15 +92,12 @@ def run_stats(
 
 
 def _run_dict(row: EvalRun | dict[str, Any]) -> dict[str, Any]:
-    out = _run_fields(row)
-    out["stats"] = run_stats(
-        out["scores"] or [], started_at=out["started_at"], finished_at=out["finished_at"]
-    )
-    return out
-
-
-def _run_fields(row: EvalRun | dict[str, Any]) -> dict[str, Any]:
+    # Every key spelled out in each branch, `stats` included — the one `_<row>_dict` convention
+    # the store modules hold to, and what felix-run/web's payload recorder reads to guard its
+    # `EvalRun` type. Building the dict in a helper and adding `stats` after left it unreadable,
+    # and the guard went on passing while checking nothing.
     if isinstance(row, dict):
+        scores = row.get("scores_json") or row.get("scores") or []
         return {
             "id": row["id"],
             "tenant_id": row["tenant_id"],
@@ -112,8 +109,9 @@ def _run_fields(row: EvalRun | dict[str, Any]) -> dict[str, Any]:
             "pass_count": row.get("pass_count", 0),
             "fail_count": row.get("fail_count", 0),
             "error_count": row.get("error_count", 0),
-            "scores": row.get("scores_json") or row.get("scores") or [],
+            "scores": scores,
             "manifest_version": row.get("manifest_version"),
+            "stats": run_stats(scores, started_at=row["started_at"], finished_at=row.get("finished_at")),
         }
     return {
         "id": row.id,
@@ -128,6 +126,7 @@ def _run_fields(row: EvalRun | dict[str, Any]) -> dict[str, Any]:
         "error_count": row.error_count,
         "scores": row.scores_json,
         "manifest_version": row.manifest_version,
+        "stats": run_stats(row.scores_json or [], started_at=row.started_at, finished_at=row.finished_at),
     }
 
 

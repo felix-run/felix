@@ -138,6 +138,10 @@ class SystemPrompt(_Strict):
     system_md: str | None = None
     # When set, append this key's contents after the composed prompt (APPEND_SYSTEM.md).
     append_system_md: str | None = None
+    # Append a short section of guidance for the tools this agent actually has — from
+    # `spec.tool_guidance` and from tools that carry their own. Off for a prompt that must be
+    # exactly what was written.
+    include_tool_guidance: bool = True
 
 
 class PromptTemplateSpec(_Strict):
@@ -183,6 +187,11 @@ class McpServerRef(_Strict):
     # `felix_rule_targets_nothing` at bind time rather than refused, for the reason discovery
     # failures are: the bound set legitimately varies with the server.
     tools: list[str] = Field(default_factory=list)
+    # Use the `instructions` the server returns from `initialize` as its tools' guidance in the
+    # system prompt. Opt-in per server: tool descriptions already reach the model, but these
+    # land in the *system* prompt, which is the server writing instructions to your agent.
+    # Capped, collapsed to one line, and dropped if the injection markers flag them.
+    use_instructions: bool = False
 
     @field_validator("auth", mode="before")
     @classmethod
@@ -524,8 +533,10 @@ class SessionSpec(_Strict):
     compaction_enabled: bool = True
     reserve_tokens: int = Field(default=16384, ge=0)
     keep_recent_tokens: int = Field(default=20000, ge=0)
-    # Approximate context window for overflow detection (chars/4 estimate).
-    context_window_tokens: int = Field(default=128000, ge=1024)
+    # Context window to compact against (chars/4 estimate). Unset, the model's own window from
+    # the catalog. It defaulted to 128000, and writing that default meant something different
+    # from omitting it — the one field where it did — which the compile-pin hash could not see.
+    context_window_tokens: int | None = Field(default=None, ge=1024)
     # Steer drain: "all" (default) or "one-at-a-time".
     steering_mode: Literal["all", "one-at-a-time"] = "all"
     follow_up_mode: Literal["all", "one-at-a-time"] = "all"
@@ -898,6 +909,21 @@ class Spec(_Strict):
     skills_declared_only: bool = False
     mcp: list[McpServerRef] = Field(default_factory=list, alias="mcp_servers", max_length=MAX_REFS)
     peers: list[A2APeerRef] = Field(default_factory=list, max_length=MAX_REFS)
+    # How to use a tool well, one line per tool name or glob, appended to the system prompt only
+    # for tools the agent actually has. Guidance written into `system_prompt` about a tool that
+    # is later removed goes on recommending it; guidance here goes with the tool.
+    tool_guidance: dict[str, str] = Field(default_factory=dict, max_length=MAX_REFS)
+
+    @field_validator("tool_guidance")
+    @classmethod
+    def _tool_guidance_is_one_line_each(cls, v: dict[str, str]) -> dict[str, str]:
+        for name, line in v.items():
+            if not name.strip() or not line.strip():
+                raise ValueError("tool_guidance needs a tool name and a line of guidance for each entry")
+            if len(line) > 500:
+                raise ValueError(f"tool_guidance[{name!r}] is over 500 characters: one line, not a manual")
+        return v
+
     containers: list[ContainerRef] = Field(default_factory=list, max_length=MAX_REFS)
     queues: list[QueueRef] = Field(default_factory=list, max_length=MAX_REFS)
     sandboxes: list[SandboxRef] = Field(default_factory=list, max_length=MAX_REFS)

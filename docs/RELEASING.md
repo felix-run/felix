@@ -43,19 +43,24 @@ python scripts/bump-version.py 0.3.0          # sets every location, then `uv lo
    make install-full
    make check                       # ruff + ty + pytest w/ coverage floor + format check
    uv run felix bundle-manifests
-   uv run felix eval --dataset smoke --manifest quick \
-     --fixture fixtures/eval/smoke.json --mock
-   ./scripts/eval-counter-smoke.sh   # the run above passes by construction; this is the half
-                                     # that proves the scorer can still reject an answer
+   make eval                         # the smoke eval (--mock) in memory, then the counter-smoke,
+                                     # which proves the scorer can still reject an answer
    uv sync --locked --no-dev && uv run --no-sync python scripts/lean-import-check.py
    make install-full                # restore the full venv afterwards
    ```
+
+   `make eval` and not the bare `felix eval`: the target sets `FELIX_DATABASE_URL=memory://`,
+   and without it the command reads whatever database URL the environment holds. Cutting 0.5.0,
+   that was an unrelated project's Postgres on `:5432`.
 
 3. **Pick the number.** Pre-1.0, a breaking change to a manifest field, an HTTP surface, or a
    `FELIX_` setting is a minor bump; everything else is a patch. Removing or renaming a manifest
    `spec.*` field breaks operators' YAML — treat it as breaking even when the code still parses.
 
 4. **Bump the version**: `python scripts/bump-version.py X.Y.Z` (every location, then `uv lock`).
+   Then run `make test-cov` again. Step 2 ran before the bump, and the bump can break a test on
+   its own: at 0.5.0 the version string also matched `pgvector>=0.5.0`, and a test that rewrote
+   every occurrence of it failed a correct bump in CI.
 
 5. **Close out the changelog.** Rename `## [Unreleased]` to `## [X.Y.Z] — YYYY-MM-DD`, open a
    fresh empty `## [Unreleased]` above it, and add the comparison link at the foot of the file.

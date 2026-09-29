@@ -6,8 +6,9 @@ import time
 import uuid
 from typing import Any, Literal
 
-from sqlalchemy import select
+from sqlalchemy import collate, select, update
 
+from felix.approvals.interrupt import DEFAULT_TIMEOUT_SECONDS
 from felix.config import Settings
 from felix.db.models import Approval
 from felix.db.session import _use_memory, get_session_factory
@@ -29,6 +30,21 @@ now_ms = lambda: int(time.time() * 1000)
 MAX_REASON_CHARS = 2048
 
 _memory_approvals: dict[tuple[str, str], dict[str, Any]] = {}
+
+
+# Who a row names as its decider when nobody answered: the harness stopped waiting.
+TIMEOUT_DECIDER = "felix"
+TIMEOUT_NOTE = "timeout"
+
+
+def _lapsed(expires_at: int | None, created_at: int, now: int) -> bool:
+    """Whether a pending row's wait is over, by the row's own deadline.
+
+    A null `expires_at` means the rule set no ttl, and `wait_for_decision` then waits its
+    own default -- so the row still has a deadline, it is just not written down.
+    """
+    deadline = expires_at if expires_at is not None else created_at + int(DEFAULT_TIMEOUT_SECONDS * 1000)
+    return deadline <= now
 
 
 def reset_approvals_for_tests() -> None:
@@ -101,7 +117,9 @@ async def list_approvals(
             and (status is None or row["status"] == status)
             and (thread_id is None or row.get("thread_id", "") == thread_id)
         ]
-        items.sort(key=lambda r: r["created_at"], reverse=True)
+        # Ending on the id, as `find_approved` does: a tie on `created_at` is broken the same way
+        # on both arms, so a page cut through the tie holds the same rows.
+        items.sort(key=lambda r: (r["created_at"], r["id"]), reverse=True)
         return items[:limit]
 
     factory = get_session_factory(settings=settings)
@@ -109,7 +127,7 @@ async def list_approvals(
         stmt = (
             select(Approval)
             .where(Approval.tenant_id == tenant_id)
-            .order_by(Approval.created_at.desc())
+            .order_by(Approval.created_at.desc(), collate(Approval.id, "C").desc())
             .limit(limit)
         )
         if status is not None:
@@ -234,7 +252,12 @@ async def create_pending(
     thread_id: str = "",
     tool_call_id: str = "",
 ) -> dict[str, Any]:
-    # Reuse existing pending for the same signature.
+    # Reuse a *live* pending row for the same signature, so identical concurrent calls share
+    # one decision. A row past its deadline is not live: the wait that opened it has already
+    # been denied, and until it was closed here a re-ask joined it -- a card that read
+    # "denied" to every client while the harness waited a fresh ttl on it. It is closed as
+    # the timeout it was, and the call gets a row of its own.
+    ts = now_ms()
     if _use_memory(settings):
         for row in _memory_approvals.values():
             if (
@@ -244,6 +267,9 @@ async def create_pending(
                 and row["call_signature"] == call_signature
                 and row["status"] == "pending"
             ):
+                if _lapsed(row.get("expires_at"), row["created_at"], ts):
+                    _close_memory_row(row, ts)
+                    continue
                 return _approval_dict(row)
     else:
         factory = get_session_factory(settings=settings)
@@ -258,14 +284,18 @@ async def create_pending(
                         Approval.call_signature == call_signature,
                         Approval.status == "pending",
                     )
-                    .limit(1)
+                    .order_by(Approval.created_at.desc())
                 )
-            ).first()
-            if existing is not None:
-                return _approval_dict(existing)
+            ).all()
+            stale = [row.id for row in existing if _lapsed(row.expires_at, row.created_at, ts)]
+            live = next((row for row in existing if row.id not in stale), None)
+            if stale:
+                await db.execute(_close_statement(tenant_id, stale, ts))
+                await db.commit()
+            if live is not None:
+                return _approval_dict(live)
 
     approval_id = uuid.uuid4().hex
-    ts = now_ms()
     expires_at = ts + ttl_seconds * 1000 if ttl_seconds is not None else None
     # Bounded on the way in, once, so both arms store the same thing. See MAX_REASON_CHARS.
     reason = reason[:MAX_REASON_CHARS]
@@ -358,6 +388,50 @@ async def decide(
         return _approval_dict(row)
 
 
+def _close_memory_row(row: dict[str, Any], ts: int) -> None:
+    row["status"] = "denied"
+    row["decided_at"] = ts
+    row["decided_by"] = TIMEOUT_DECIDER
+    row["decision_note"] = TIMEOUT_NOTE
+
+
+def _close_statement(tenant_id: str, approval_ids: list[str], ts: int) -> Any:
+    # Conditional on `pending`, so a decision that landed first is never overwritten.
+    return (
+        update(Approval)
+        .where(
+            Approval.tenant_id == tenant_id,
+            Approval.id.in_(approval_ids),
+            Approval.status == "pending",
+        )
+        .values(status="denied", decided_at=ts, decided_by=TIMEOUT_DECIDER, decision_note=TIMEOUT_NOTE)
+    )
+
+
+async def close_timed_out(settings: Settings, tenant_id: str, approval_id: str) -> bool:
+    """Record that nobody answered: `pending` becomes `denied` with the note `timeout`.
+
+    `wait_for_decision` has always returned that denial to the caller and written nothing,
+    so the row read `pending` for the life of the deployment. Every client polling
+    `/approvals` then offered a decision the harness had already made -- chat.felix.run
+    showed one twenty-nine hours past its deadline. Returns False when the row was not
+    pending any more, which is a decision that arrived first and is left alone.
+    """
+    ts = now_ms()
+    if _use_memory(settings):
+        row = _memory_approvals.get((tenant_id, approval_id))
+        if row is None or row["status"] != "pending":
+            return False
+        _close_memory_row(row, ts)
+        return True
+
+    factory = get_session_factory(settings=settings)
+    async with factory() as db:
+        result = await db.execute(_close_statement(tenant_id, [approval_id], ts))
+        await db.commit()
+        return bool(getattr(result, "rowcount", 0))
+
+
 async def consume_approval(settings: Settings, tenant_id: str, approval_id: str) -> bool:
     """Mark a one_shot grant spent. Returns False when it was already consumed.
 
@@ -390,6 +464,7 @@ async def consume_approval(settings: Settings, tenant_id: str, approval_id: str)
 
 
 __all__ = [
+    "close_timed_out",
     "consume_approval",
     "create_pending",
     "decide",

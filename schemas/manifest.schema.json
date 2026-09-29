@@ -1078,6 +1078,11 @@
           },
           "title": "Tools",
           "type": "array"
+        },
+        "use_instructions": {
+          "default": false,
+          "title": "Use Instructions",
+          "type": "boolean"
         }
       },
       "required": [
@@ -1711,10 +1716,17 @@
           "type": "integer"
         },
         "context_window_tokens": {
-          "default": 128000,
-          "minimum": 1024,
-          "title": "Context Window Tokens",
-          "type": "integer"
+          "anyOf": [
+            {
+              "minimum": 1024,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Context Window Tokens"
         },
         "steering_mode": {
           "default": "all",
@@ -1926,6 +1938,14 @@
           "maxItems": 64,
           "title": "Peers",
           "type": "array"
+        },
+        "tool_guidance": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "maxProperties": 64,
+          "title": "Tool Guidance",
+          "type": "object"
         },
         "containers": {
           "items": {
@@ -2175,6 +2195,11 @@
           ],
           "default": null,
           "title": "Append System Md"
+        },
+        "include_tool_guidance": {
+          "default": true,
+          "title": "Include Tool Guidance",
+          "type": "boolean"
         }
       },
       "title": "SystemPrompt",

@@ -14,13 +14,11 @@ compare the pair. This module owns the whole rule rather than only the string fo
 two stores implementing it in parallel is how the halves drift: audit and usage had already
 grown a `next_cursor` predicate that differed between their own memory and Postgres arms.
 
-One caveat, latent rather than live: `id` is text, so Postgres orders it by the database
-collation and the in-memory twin orders it by Python code point. Those agree for the ids
-actually written — `uuid4().hex` is lowercase hex, which sorts identically under every common
-collation — but `record_event` accepts a caller-supplied id, and under a non-C collation an id
-outside that alphabet could order differently on the two backends. Paging stays correct and
-complete either way, because each backend is self-consistent; only the order between two rows
-in the same millisecond could differ.
+`id` is text, and Postgres would order it by the database collation while the twin orders it
+by Python code point. Both the order and the page predicate use `COLLATE "C"`, so Postgres
+compares ids byte for byte too and the two backends agree on the order of rows that share a
+millisecond. The ids written today are lowercase hex, which sorted the same under any
+collation; `record_event` accepts a caller-supplied id, and that is what this covers.
 """
 
 from __future__ import annotations
@@ -105,8 +103,10 @@ def position_of(row: Any) -> Position:
 
 
 def keyset_order(ts_col: OrderableColumn, id_col: OrderableColumn) -> tuple[Any, Any]:
-    """`ORDER BY ts DESC, id DESC` — the total order the cursor addresses positions in."""
-    return ts_col.desc(), id_col.desc()
+    """`ORDER BY ts DESC, id COLLATE "C" DESC` — the total order the cursor addresses positions in."""
+    from sqlalchemy import collate
+
+    return ts_col.desc(), collate(id_col, "C").desc()
 
 
 def keyset_before(ts_col: OrderableColumn, id_col: OrderableColumn, cursor: str) -> _ColumnElement[bool]:
@@ -115,9 +115,11 @@ def keyset_before(ts_col: OrderableColumn, id_col: OrderableColumn, cursor: str)
     A row constructor, not an `AND` chain: Postgres compares it lexicographically, which is
     what Python does to the tuple on the other arm, so the two agree by construction.
     """
-    from sqlalchemy import tuple_
+    from sqlalchemy import collate, tuple_
 
-    return tuple_(ts_col, id_col) < decode_cursor(cursor)
+    # Collated exactly as `keyset_order` is: an order and a predicate that compared ids under
+    # different collations would skip or repeat the rows at a tie.
+    return tuple_(ts_col, collate(id_col, "C")) < decode_cursor(cursor)
 
 
 def order_and_seek[Row](rows: Sequence[Row], cursor: str | None) -> list[Row]:

@@ -16,7 +16,8 @@ make install            # uv sync --dev (lean core; CI lint/type jobs use --all-
 make install-full       # uv sync --all-extras --dev (aws/gcp/mcp/browser/embeddings/…)
 make check              # ruff check + ty check + pytest w/ coverage floor + ruff format --check
 make test-cov           # the suite with coverage against the floor; `check` and CI both run this
-make check-ci           # check + bundle, schema-check, toolkit, eval, SRI, pre-commit (each also a target)
+make check-ci           # check + bundle, schema-check, contract-check, toolkit, eval, SRI, pre-commit (each also a target)
+make contract           # regenerate the wire contract: schemas/openapi.json + schemas/sse-events.json
 make e2e                # tests/e2e only: the real app over HTTP, scripted model
 make conformance        # store contract vs Postgres (needs FELIX_CONFORMANCE_DATABASE_URL; + _REDIS_URL as CI)
 make lint / fmt / type / test
@@ -56,13 +57,27 @@ Structural gates (fast, no infrastructure):
 uv sync --locked --no-dev && uv run --no-sync python scripts/lean-import-check.py
 python3 scripts/validate-toolkit.py               # .claude/ hooks, settings, skills, and every path they cite
 uv run python scripts/gen-manifest-schema.py --check   # editor JSON Schema is current
+uv run python scripts/gen-wire-contract.py --check     # OpenAPI + SSE event snapshots are current
 ```
+
+The wire contract — `schemas/openapi.json` and `schemas/sse-events.json` — is checked in so a
+change to the HTTP surface or the stream's frame names arrives as a reviewed diff;
+`tests/unit/test_wire_contract.py` fails when either is stale. The event names are scanned from
+the source: a frame whose name is not a string literal must be a listed pass-through in
+`scripts/gen-wire-contract.py`, or the scan fails. After touching a route, a response model or a
+frame, run `make contract` and read the diff.
 
 `tests/unit/test_invariants.py` turns the rules below into failures: `.env.example` covers every
 `Settings` field, no optional dependency is imported at module scope, every Postgres-touching module
 has a `memory://` path, the governance wrapper order is unchanged, `schemas/manifest.schema.json`
 still matches the pydantic models, and the CI test job installs every extra the tests gate on.
 Change a rule deliberately and you update the test with it.
+
+`tests/unit/test_ordering_rule.py` holds every ordered-then-truncated listing — SQL `order_by`
+with `.limit`, and Python sorts that are then sliced, in any module — to ending on a primary-key
+component, so the store's two arms cannot disagree about which tied row falls on a page. A
+harmless tie goes in `EXEMPT` with its reason; the real ones left are `KNOWN_OPEN`, which only
+shrinks.
 
 `tests/unit/test_entrypoint_wiring.py` covers the references production depends on that no import
 statement mentions: every `[project.scripts]` target, the `module:attr` string Granian is handed, the
@@ -121,6 +136,9 @@ same pair locally. Neither fixture means anything without the other.
   Felix model-agnostic rather than merely claiming to be. Anything the harness injects
   arrives as a Protocol (`ToolSchema`, `ModelConfig`) or a sink (`felix_ai.observability`,
   `felix_ai.context`, installed by `patterns/model_sinks.py`).
+- `packages/client` (`felix_client`) — the experimental Python client (`FelixClient`), httpx
+  and nothing else. **It may not import any `felix*` package**, enforced beside the `felix_ai`
+  rule, so installing the client never installs the server. `felix.sdk` is a re-export of it.
 - `packages/harness` (`felix`) — all the logic: manifests, patterns, tools, session,
   governance, auth, memory, eval, durability, storage, plugins.
 - `packages/cli` (`felix`) — `migrate | eval | mint-jwt | bundle-manifests | validate-manifest | doctor | version | temporal-worker`.

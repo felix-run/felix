@@ -319,8 +319,15 @@ A dropped stream is recoverable: structural SSE frames carry an `id:` cursor (to
 
 Management surfaces: `/audit`, `/approvals`, `/plans`, `/jobs`, `/manifests`, `/eval`, `/usage`, `/memory`. `POST /jobs/{name}/run` runs a job now instead of waiting for cron; `GET /manifests/{name}/versions` lists what a rollback can go back to. `/memory` lists, searches (the same hybrid ranking the agent sees), time-travels (`/memory/as-of/{turn_seq}`), writes and forgets long-term memories — an agent that remembers across sessions otherwise accumulates a store nobody can inspect.
 
-Python client: `from felix.sdk import FelixClient` — `prompt`, `stream`, `steer`, `follow_up`,
-`fork`, `rewind`, `set_model`.
+Python client (**experimental**): the `felix-client` package — `from felix_client import
+FelixClient` — covering chat (`prompt`, `stream`, `steer`, `follow_up`, `fork`, `rewind`,
+`set_model`), durable runs with their polling, and approvals. It depends on httpx and nothing in
+Felix, so installing it does not install the server; its surface may change between releases
+without a deprecation period. Not yet on PyPI — install it from the repository:
+`pip install "felix-client @ git+https://github.com/felix-run/felix#subdirectory=packages/client"`.
+For everything else, and as the contract, use the HTTP API: each release attaches its
+`openapi.json`, from which a client in any language can be generated. `from felix.sdk import
+FelixClient` still works inside the harness.
 
 ### Models
 
@@ -622,12 +629,16 @@ Storage and execution:
   rest with `read_artifact`, sized by `default_window_chars` / `max_window_chars`
 - Durable facts via `spec.memory.capture`; how-tos via `spec.procedural_memory`
 - `spec.execution.mode: durable` enqueues a fiber (Temporal optional) and returns `202` with a
-  `resume_token`; a step that keeps failing backs off and is `dead` after `FELIX_FIBER_MAX_ATTEMPTS`
+  `resume_token`; a step that keeps failing backs off and is `dead` after `FELIX_FIBER_MAX_ATTEMPTS`.
+  Each worker polls for due fibers every `FELIX_FIBER_POLL_SECONDS` (1.0; 0 leaves only the
+  once-a-minute `fiber_scheduler` sweep) and advances up to `FELIX_FIBER_CONCURRENCY` (8) at once,
+  so a new run starts within about a second and one parked on an approval holds up no other
 - `spec.execution.webhooks: [ops]` announces a durable run's end to operator-registered endpoints
   (`FELIX_WEBHOOK_ENDPOINTS`, a JSON map of id → `{url, secret, tenants, private?}`): the worker
   POSTs `run.completed|failed|expired|dead` with the run view, signed per Standard Webhooks
   (`webhook-id`, `webhook-timestamp`, `webhook-signature: v1,…`), retries with backoff up to
-  `FELIX_WEBHOOK_MAX_ATTEMPTS` (8), and reports each endpoint's state on `GET /chat/runs/{token}`.
+  `FELIX_WEBHOOK_MAX_ATTEMPTS` (8) with each attempt bounded by `FELIX_WEBHOOK_TIMEOUT_SECONDS`
+  (10), and reports each endpoint's state on `GET /chat/runs/{token}`.
   A manifest names ids, never URLs; an id not registered for the caller's tenant is `422`
 - `POST /chat/stream` on a durable manifest streams the run instead: `run_accepted` → `run_status`
   → `final`, interleaved with `session_event` frames tailed from the thread's session log, so tool

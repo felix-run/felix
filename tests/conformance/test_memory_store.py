@@ -22,6 +22,8 @@ parametrized = pytest.mark.parametrize("memory_settings", BACKENDS, indirect=Tru
 
 TENANT = "conformance"
 MANIFEST = "m"
+# Only an operator retires a memory by its topic_key; an agent write is stored alongside.
+OPERATOR = {"source": "management_api"}
 
 
 @pytest.fixture
@@ -58,7 +60,9 @@ async def test_same_content_collapses_to_one_row(memory_settings: Any) -> None:
 @pytest.mark.asyncio
 async def test_topic_key_supersedes_the_previous_value(memory_settings: Any) -> None:
     old = await _put(memory_settings, "Timezone is UTC.", topic_key="user.timezone", origin_seq=4)
-    new = await _put(memory_settings, "Timezone is CET.", topic_key="user.timezone", origin_seq=7)
+    new = await _put(
+        memory_settings, "Timezone is CET.", topic_key="user.timezone", origin_seq=7, metadata=OPERATOR
+    )
 
     rows = await memory_store.get_many(memory_settings, TENANT, [old["id"], new["id"]])
     assert rows[old["id"]]["status"] == SUPERSEDED
@@ -88,7 +92,9 @@ async def test_supersession_is_scoped_to_one_manifest(memory_settings: Any) -> N
 @pytest.mark.asyncio
 async def test_as_of_reconstructs_the_earlier_belief(memory_settings: Any) -> None:
     await _put(memory_settings, "Timezone is UTC.", topic_key="user.timezone", origin_seq=4)
-    await _put(memory_settings, "Timezone is CET.", topic_key="user.timezone", origin_seq=7)
+    await _put(
+        memory_settings, "Timezone is CET.", topic_key="user.timezone", origin_seq=7, metadata=OPERATOR
+    )
 
     at5 = await memory_store.as_of(memory_settings, TENANT, 5, manifest_id=MANIFEST)
     at9 = await memory_store.as_of(memory_settings, TENANT, 9, manifest_id=MANIFEST)
@@ -259,7 +265,9 @@ async def test_superseded_and_forgotten_are_not_recalled(memory_settings: Any) -
     from felix.memory.recall import recall
 
     await _put(memory_settings, "Timezone is UTC.", topic_key="user.timezone", origin_seq=1)
-    await _put(memory_settings, "Timezone is CET.", topic_key="user.timezone", origin_seq=2)
+    await _put(
+        memory_settings, "Timezone is CET.", topic_key="user.timezone", origin_seq=2, metadata=OPERATOR
+    )
     gone = await _put(memory_settings, "Timezone trivia nobody wants.")
     await memory_store.forget(memory_settings, TENANT, gone["id"])
 
@@ -344,22 +352,29 @@ async def test_a_curated_writer_still_supersedes_an_automatic_row(memory_setting
 
 @parametrized
 @pytest.mark.asyncio
-async def test_equal_rank_still_supersedes(memory_settings: Any) -> None:
-    """Two captures on one topic is the ordinary case and the newer value must win."""
-    await _put(
-        memory_settings,
-        "The user's timezone is UTC.",
-        topic_key="user.timezone",
-        metadata={"source": "assistant"},
-    )
-    await _put(
-        memory_settings,
-        "The user's timezone is CET.",
-        topic_key="user.timezone",
-        metadata={"source": "assistant"},
-    )
+async def test_an_agent_write_on_a_topic_is_stored_alongside_not_retiring(memory_settings: Any) -> None:
+    """Only an operator retires by topic_key. The key is chosen from the transcript — by the
+    extractor, through no governance wrapper, or by whoever steers `remember` — so an agent
+    write that retired what held the key let one injected turn delete the agent's facts on it.
+    Both values stay active; the prelude the model reads each turn shows the newer one."""
+    from felix.memory.capture import active_facts_prompt
+
+    for turn, content in enumerate(("The user's timezone is UTC.", "The user's timezone is CET."), start=1):
+        await _put(
+            memory_settings,
+            content,
+            topic_key="user.timezone",
+            origin_seq=turn,
+            metadata={"source": "assistant"},
+        )
+
     active = await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST)
-    assert [r["content"] for r in active] == ["The user's timezone is CET."]
+    assert sorted(r["content"] for r in active) == [
+        "The user's timezone is CET.",
+        "The user's timezone is UTC.",
+    ]
+    prelude = await active_facts_prompt(memory_settings, TENANT, manifest_id=MANIFEST)
+    assert "CET" in prelude and "UTC" not in prelude, "the current value, once"
 
 
 @parametrized
@@ -681,3 +696,50 @@ async def test_as_of_truncates_by_the_same_total_order(memory_settings: Any, one
     assert [r["id"] for r in page] == expected, page
     degenerate = ({r["id"] for r in written[:3]}, {r["id"] for r in written[-3:]})
     assert set(expected) not in degenerate, "the corpus stopped discriminating"
+
+
+async def _make_duplicates(settings: Any, rows: list[dict[str, Any]], *, content: str, ts: int) -> None:
+    """Force rows into byte-identical duplicates with one `created_at` — the pre-hash-id rows
+    `consolidate_pools` exists for, which `put_memory` can no longer write."""
+    if memory_store._use_memory(settings):
+        for row in rows:
+            stored = memory_store._memory_rows[(TENANT, row["id"])]
+            stored.update(content=content, created_at=ts)
+        return
+    from felix.db.models import MemoryVector
+    from felix.db.session import get_session_factory, rls_bypass
+    from sqlalchemy import update
+
+    # One row at a time, in the given order: an UPDATE rewrites each row, and one statement
+    # would rewrite them in index order — lowest id first — which is the order the tiebreak
+    # produces anyway, so a missing tiebreak would pass unnoticed.
+    with rls_bypass():
+        async with get_session_factory(settings=settings)() as db:
+            for row in rows:
+                await db.execute(
+                    update(MemoryVector)
+                    .where(MemoryVector.tenant_id == TENANT, MemoryVector.id == row["id"])
+                    .values(content=content, created_at=ts)
+                )
+                await db.commit()
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_consolidation_keeps_the_same_duplicate_on_both_arms(memory_settings: Any) -> None:
+    """The first duplicate scanned survives, so a tie on `created_at` decided the survivor —
+    differently on each arm. It breaks on tenant, then id, in byte order, now."""
+    # Written highest id first, so the id the tiebreak keeps is the *last* inserted: without it,
+    # both arms keep the first-inserted row, and a lucky content hash would pass the test.
+    contents = sorted(
+        (f"distinct fact number {i}" for i in range(3)),
+        key=lambda c: memory_store.memory_id(MANIFEST, c),
+        reverse=True,
+    )
+    rows = [await _put(memory_settings, c) for c in contents]
+    assert rows[-1]["id"] == min(r["id"] for r in rows)
+    await _make_duplicates(memory_settings, rows, content="the same fact", ts=1_800_000_000_000)
+
+    assert await memory_store.consolidate_pools(memory_settings) == 2
+    active = await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST)
+    assert [r["id"] for r in active] == [min(r["id"] for r in rows)]

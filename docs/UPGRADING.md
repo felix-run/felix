@@ -31,6 +31,28 @@ entries between them. Anything under **Removed** or **Changed** is where an upgr
 
 ---
 
+## `0020_ordering_indexes` locks tables while it builds
+
+**Six indexes rebuilt, one added — plan a quiet window on a large deployment.**
+
+The listings now order down to a unique key (timestamp, then id `COLLATE "C"`), and 0020 builds
+indexes that match those orderings exactly so no listing sorts: `audit_events`, `usage_events`,
+`approvals`, `plans`, `memory_vectors` and `job_runs` each get one, five of them replacing an
+index that is a prefix of the new one, and `fibers` gains a partial index for the worker's claim.
+Like every migration here it uses plain `CREATE INDEX`, which holds a write lock on the table
+for the length of the build. `audit_events` and `usage_events` are the ones that grow without
+bound; on those, time the build before you commit to a window:
+
+```bash
+psql "$FELIX_DATABASE_URL" -c "select relname, n_live_tup from pg_stat_user_tables \
+  where relname in ('audit_events','usage_events','memory_vectors','job_runs','fibers')"
+```
+
+The downgrade restores the previous indexes. Reads keep working during the build — only writes
+to the table being indexed wait, and the audit and usage writers buffer and retry.
+
+---
+
 ## Tenant ids are held to a charset
 
 **No migration, and it can still lock people out — check before you deploy.**
@@ -224,6 +246,10 @@ docker compose <-f overlays…> up -d
 # To migrate ahead of the roll instead (a long migration you want to watch):
 docker compose <-f overlays…> run --rm migrate
 ```
+
+On a GCE + Compose deployment, `deploy/gcp/roll.sh <version>` runs this whole sequence from your
+own machine, with a preflight and a verified backup first, asking before each change (`--check`
+for the read-only preflight alone).
 
 `make up-gcp` wraps that last command, but **`make` is not installed on every host** — a minimal
 VM image often lacks it, and the failure (`make: command not found`) happens before anything rolls.

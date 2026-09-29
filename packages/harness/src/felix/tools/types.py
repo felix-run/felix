@@ -104,6 +104,10 @@ class Tool:
     # latency; re-running a payment charges twice. Defaults to False so a tool that has
     # not considered the question is never replayed.
     replay_safe: bool = False
+    # One line for the system prompt about how to use this tool well, assembled by the compile
+    # from the tools the agent actually has — so the prompt cannot recommend a tool that was
+    # removed. `spec.tool_guidance` sets it per manifest; this is for tools defined in code.
+    prompt_guidance: str = ""
 
     def __post_init__(self) -> None:
         if self.peer and not self.is_peer:
@@ -207,6 +211,7 @@ def define_tool(
     fatal: bool = False,
     transport: str = "local",
     replay_safe: bool = False,
+    prompt_guidance: str = "",
     validate: Callable[[ToolInput], ToolInput | Mapping[str, Any]] | None = None,
 ) -> Tool:
     from felix.tools.errors import tool_error_output
@@ -252,6 +257,7 @@ def define_tool(
         source=source,
         fatal=fatal,
         replay_safe=replay_safe,
+        prompt_guidance=prompt_guidance,
         executor=local_executor(_execute, transport=transport),
     )
 
@@ -269,6 +275,7 @@ def define_tool_with_executor(
     source: str | None = None,
     fatal: bool = False,
     replay_safe: bool = False,
+    prompt_guidance: str = "",
 ) -> Tool:
     schema = args_schema if args_schema is not None else args
     return Tool(
@@ -281,6 +288,7 @@ def define_tool_with_executor(
         source=source,
         fatal=fatal,
         replay_safe=replay_safe,
+        prompt_guidance=prompt_guidance,
         executor=executor,
     )
 

@@ -290,10 +290,14 @@ async def test_a_payload_cannot_forge_the_speaker_labels() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_topic_key_makes_a_later_value_supersede() -> None:
-    """The reason to ask for structure at all: a fact store of current facts."""
+async def test_a_later_captured_value_is_current_without_retiring_the_earlier() -> None:
+    """Capture chooses the topic_key from the transcript, through no governance wrapper, so it
+    may not retire what already holds the key — one injected turn would delete the facts on it.
+    Both values stay active; the prelude the model reads each turn shows the later turn's."""
+    from felix.memory.capture import active_facts_prompt
+
     settings = _settings()
-    for value in ("UTC", "CET"):
+    for turn, value in enumerate(("UTC", "CET"), start=1):
         await capture_from_turn(
             settings,
             TENANT,
@@ -304,10 +308,16 @@ async def test_a_topic_key_makes_a_later_value_supersede() -> None:
             model=_ScriptedModel(
                 _payload({"content": f"The user's timezone is {value}.", "topic_key": "user.timezone"})
             ),
+            origin_seq=turn,
         )
 
     active = await memory_store.list_active(settings, TENANT, manifest_id=MANIFEST)
-    assert [r["content"] for r in active] == ["The user's timezone is CET."]
+    assert sorted(r["content"] for r in active) == [
+        "The user's timezone is CET.",
+        "The user's timezone is UTC.",
+    ]
+    prelude = await active_facts_prompt(settings, TENANT, manifest_id=MANIFEST)
+    assert "CET" in prelude and "UTC" not in prelude
 
 
 @pytest.mark.asyncio
