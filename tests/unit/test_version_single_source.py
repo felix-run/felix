@@ -90,6 +90,18 @@ def test_bump_rewrites_every_location_without_touching_anything_else(
     before = bump.check(None)
     bump.bump("1.2.3")
     assert bump.check("1.2.3") == "1.2.3"
+    # Compared line by line, not as `original.replace(before, "1.2.3")`: that oracle rewrites every
+    # occurrence of the version string, so it failed the correct bump to 0.5.0 because
+    # `packages/harness/pyproject.toml` also pins `pgvector>=0.5.0` — which the script rightly
+    # leaves alone. What the test means is: each location's line changes, and nothing else does.
+    per_file: dict[str, int] = {}
     for rel, _field, _pattern in bump.LOCATIONS:
-        original = (ROOT / rel).read_text(encoding="utf-8")
-        assert (scratch_tree / rel).read_text(encoding="utf-8") == original.replace(before, "1.2.3")
+        per_file[rel] = per_file.get(rel, 0) + 1
+    for rel, locations in per_file.items():
+        old = (ROOT / rel).read_text(encoding="utf-8").splitlines(keepends=True)
+        new = (scratch_tree / rel).read_text(encoding="utf-8").splitlines(keepends=True)
+        assert len(old) == len(new), rel
+        changed = [(o, n) for o, n in zip(old, new, strict=True) if o != n]
+        assert len(changed) == locations, (rel, changed)
+        for o, n in changed:
+            assert n == o.replace(before, "1.2.3"), (rel, o, n)
