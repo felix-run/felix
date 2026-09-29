@@ -187,6 +187,11 @@ class McpServerRef(_Strict):
     # `felix_rule_targets_nothing` at bind time rather than refused, for the reason discovery
     # failures are: the bound set legitimately varies with the server.
     tools: list[str] = Field(default_factory=list)
+    # Use the `instructions` the server returns from `initialize` as its tools' guidance in the
+    # system prompt. Opt-in per server: tool descriptions already reach the model, but these
+    # land in the *system* prompt, which is the server writing instructions to your agent.
+    # Capped, collapsed to one line, and dropped if the injection markers flag them.
+    use_instructions: bool = False
 
     @field_validator("auth", mode="before")
     @classmethod

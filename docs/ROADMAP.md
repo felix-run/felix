@@ -689,7 +689,9 @@ comment explaining exactly that. It is conditional, not inert.
       `system_prompt.include_tool_guidance: false` turns it off; an entry matching no tool counts
       as `felix_rule_targets_nothing`. `deep.yaml`'s search/fetch advice moved there. Built-in
       tools carry no guidance yet — adding model-facing text to every manifest wants an eval run
-      first. Next: an MCP server's `instructions` from `initialize` as its tools' guidance.
+      first. Followed by `McpServerRef.use_instructions`: an opted-in server's `initialize`
+      `instructions` become its tools' guidance, capped, one line, dropped when the injection
+      markers flag them — opt-in because it is server text in the system prompt.
 - [x] **Telemetry vocabulary** — `docs/OBSERVABILITY.md` carries the metric catalog and the span
       schema, and `tests/unit/test_metric_catalog.py` re-derives it from the source so it cannot
       drift. Spans now follow the OTel GenAI semantic conventions, and a model call is a span at
