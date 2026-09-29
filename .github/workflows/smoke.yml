@@ -68,21 +68,46 @@ jobs:
           print("ok", content[:80])
           PY
 
-      - name: Cowork durable accept
-        # Assert durable path accepts work (202). Completion is worker-dependent.
+      - name: Cowork durable run completes
+        # A durable run is accepted (202 + resume_token) and then finishes. The prompt asks for no
+        # tools on purpose: `cowork` gates `write_file`, and the old "noop smoke" prompt made the
+        # model write a file, so every run left an approval pending in production for its 600s
+        # ttl — "waiting on you" in every client's attention line, several times a day, for a
+        # decision nobody should make. A stray tool call now fails this step instead of sitting
+        # in the queue. Since the worker polls for fibers every second, completion is quick.
         run: |
           set -euo pipefail
           AUTH="Authorization: Bearer ${API_KEY}"
+          started="$(date +%s)"
           code="$(curl -sS -o /tmp/cowork.json -w '%{http_code}' --max-time 30 \
             -X POST "$BASE_URL/chat" \
             -H "$AUTH" \
             -H 'content-type: application/json' \
-            -d '{"manifest":"cowork","messages":[{"role":"user","content":"noop smoke"}]}')"
+            -d '{"manifest":"cowork","messages":[{"role":"user","content":"Reply with exactly: pong. Do not call any tools."}]}')"
           echo "POST /chat cowork → $code"
           cat /tmp/cowork.json
           echo
           test "$code" = "202"
-          python3 -c 'import json; b=json.load(open("/tmp/cowork.json")); assert b.get("resume_token")'
+          token="$(python3 -c 'import json; print(json.load(open("/tmp/cowork.json"))["resume_token"])')"
+
+          status=""
+          for _ in $(seq 1 40); do
+            curl -sS -o /tmp/run.json --max-time 10 -H "$AUTH" "$BASE_URL/chat/runs/$token"
+            status="$(python3 -c 'import json; print(json.load(open("/tmp/run.json")).get("status") or "")')"
+            case "$status" in completed|failed|expired|dead) break ;; esac
+            sleep 3
+          done
+          echo "run $token → $status after $(( $(date +%s) - started ))s"
+          cat /tmp/run.json
+          echo
+          test "$status" = "completed"
+          python3 - <<'PY'
+          import json
+          run = json.load(open("/tmp/run.json"))
+          content = ((run.get("final") or {}).get("content") or "").lower()
+          assert "pong" in content, run
+          print("ok", content[:80])
+          PY
 
       - name: Session surfaces (thinking, lease, search, abort)
         run: |
