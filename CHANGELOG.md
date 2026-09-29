@@ -9,28 +9,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.5.0] — 2026-09-29
 
-- **PyJWT is 2.14.0 (CVE-2026-102274).** A malformed RSA key in a JWK Set made PyJWT reject the
-  whole set instead of skipping that key, so every token from its issuer would fail to verify.
-  Felix's own JWT verification does not use PyJWT; it arrives through the MCP SDK (`mcp[crypto]`),
-  which uses it for MCP servers' OAuth. 2.15.1 is newer but inside the 48-hour dependency hold.
-
-- **Only an operator retires a memory by its `topic_key`.** Any agent write — post-turn capture,
-  which runs through no governance wrapper, or the `remember` tool, which a prompt injection can
-  call with a key it chose — used to retire every active agent-written fact sharing its key, so
-  one injected turn could delete what the agent knew about a topic. Agent writes on a held key
-  are now stored alongside; the facts prelude shows one current value per topic (most trusted,
-  then latest turn), and the operator settles contradictions on `/memory`. **Behaviour change:**
-  a topic can hold several active values until an operator retires the stale ones, and the
-  `remember` tool's description no longer says a new value supersedes the old.
-
-- **Recalled memory is screened.** `recall` and `list_memories` were trusted local tools, so with
-  content screening on they were screened only where a manifest named them. Memory capture runs
-  over turns that carried untrusted tool output, so a payload screening quarantined on its way in
-  could be captured as a "fact" and handed back unscreened. Memory tools now count as untrusted:
-  every manifest with screening enabled scans their output (the marker scan is free; paid scoring
-  follows `content_screening.model_tools`). `governed.yaml` screens recall with no edit.
-  `deploy/GOVERNANCE.md` also states the Temporal trust assumptions: workflow history holds each
-  run's recorded authority, and whoever can start a workflow on `felix-fibers` chooses it.
 ### Added
 
 - **MCP server instructions as tool guidance (opt-in).** Set `use_instructions: true` on an
@@ -440,6 +418,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `tool_error_output` skips its prefix for text that already starts with `[`.
 
 ### Security
+
+- **PyJWT is 2.14.0 (CVE-2026-102274).** A malformed RSA key in a JWK Set made PyJWT reject the
+  whole set instead of skipping that key, so every token from its issuer would fail to verify.
+  Felix's own JWT verification does not use PyJWT; it arrives through the MCP SDK (`mcp[crypto]`),
+  which uses it for MCP servers' OAuth. 2.15.1 is newer but inside the 48-hour dependency hold.
 
 - **Only an operator retires a memory by its `topic_key`.** Any agent write — post-turn capture,
   which runs through no governance wrapper, or the `remember` tool, which a prompt injection can
