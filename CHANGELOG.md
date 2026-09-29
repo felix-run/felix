@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **PyJWT is 2.14.0 (CVE-2026-102274).** A malformed RSA key in a JWK Set made PyJWT reject the
+  whole set instead of skipping that key, so every token from its issuer would fail to verify.
+  Felix's own JWT verification does not use PyJWT; it arrives through the MCP SDK (`mcp[crypto]`),
+  which uses it for MCP servers' OAuth. 2.15.1 is newer but inside the 48-hour dependency hold.
+
 - **Only an operator retires a memory by its `topic_key`.** Any agent write — post-turn capture,
   which runs through no governance wrapper, or the `remember` tool, which a prompt injection can
   call with a key it chose — used to retire every active agent-written fact sharing its key, so
