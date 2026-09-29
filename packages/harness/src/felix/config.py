@@ -196,6 +196,14 @@ class Settings(BaseSettings):
     # Consecutive step failures (outside the invoke's own handler) before a fiber is
     # marked `dead` instead of retried. Retries back off 1m, 2m, 4m … up to an hour.
     fiber_max_attempts: int = Field(default=5, ge=1)
+    # How often each worker checks for durable runs to start or resume, in seconds. The
+    # minute cron was the only thing that did, so a new run waited up to a minute before its
+    # first model call. 0 turns the loop off and leaves only the cron sweep.
+    fiber_poll_seconds: float = Field(default=1.0, ge=0)
+    # How many fibers one worker advances at once. A fiber parked on an approval holds its
+    # slot until the person answers, so this bounds how many such waits can pile up before a
+    # new run has to wait for one.
+    fiber_concurrency: int = Field(default=8, ge=1)
     # Completion webhooks: endpoints a durable run may be announced to, registered here by the
     # operator and named by id in `spec.execution.webhooks` — a manifest never carries a URL,
     # since a tenant-chosen URL on a path carrying run output is an exfiltration channel.
