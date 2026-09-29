@@ -66,6 +66,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Audit and usage pages order ties the same on Postgres and in memory.** The paging cursor
+  breaks a timestamp tie on the event id, which Postgres compared under the database's collation
+  and the memory store by code point. Both now compare bytes. Only a caller-supplied id outside
+  lowercase hex could tell the difference; generated ids sorted the same either way.
+
 - **Approvals, plans and memory consolidation order the same on Postgres and in memory.**
   `GET /approvals` and the plan listing ordered on a timestamp alone and then cut to `limit`, so
   rows written in the same millisecond paged differently on each backend; memory consolidation

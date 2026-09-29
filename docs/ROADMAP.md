@@ -1110,7 +1110,10 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       Nothing in `packages` or `apps` supplies an id — `record_event` mints a uuid — so a
       collision can only be a retry; revisit if an id ever becomes caller-supplied.
 
-- [ ] **The keyset cursor's tie-break is collation-dependent.** `felix/cursors.py` pairs the
+- [x] **The keyset cursor's tie-break is collation-dependent.** Fixed with the other orderings:
+      `keyset_order` and `keyset_before` both compare the id `COLLATE "C"`, so audit and usage
+      page ties in byte order on both arms; a mixed-case conformance case pages one row at a
+      time and goes red on Postgres with either half reverted. As written: `felix/cursors.py` pairs the
       timestamp with the row id, and `id` is text — so Postgres orders it by the database
       collation while the in-memory twin orders it by Python code point. The ids actually
       written are `uuid4().hex`, which sorts the same under every common collation, and
