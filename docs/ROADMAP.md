@@ -1128,7 +1128,7 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       millisecond differing between them, which no contract would catch because every test
       asserts set equality over pages. Fix if a caller-supplied id ever becomes ordinary.
 
-- [ ] **An index for the active-memory ordering's new tiebreak.** `idx_memory_active` is
+- [x] **An index for the active-memory ordering's new tiebreak.** Done in migration `0020_ordering_indexes`, with approvals and plans too; `EXPLAIN` on 50k–200k seeded rows shows every listing as a plain index scan, where `0019` had an Incremental Sort (and a full sort for job runs and the claim). As written: `idx_memory_active` is
       `(tenant_id, manifest_id, status, created_at DESC)` and does not carry `id`, so the
       tiebreak adds an Incremental Sort over each `created_at` group. Bounded and cheap in the
       common case — but the case the tiebreak exists for is the batch write where one group is
@@ -1138,7 +1138,7 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       expression to be used at all. The prioritised branch leads on a `metadata`-derived trust
       expression no btree covers, so it benefits from none of this. Measured plan, not a guess.
 
-- [ ] **An index for the job run history's ordering.** `list_runs` filters
+- [x] **An index for the job run history's ordering.** Done in migration `0020_ordering_indexes`, with approvals and plans too; `EXPLAIN` on 50k–200k seeded rows shows every listing as a plain index scan, where `0019` had an Incremental Sort (and a full sort for job runs and the claim). As written: `list_runs` filters
       `(tenant_id, job_name)` and orders by `(started_at DESC, run_id DESC)`, while the only
       index on `job_runs` is the primary key `(tenant_id, job_name, run_id)` — so the ordering
       column is unindexed and the plan sorts a job's entire history before the `LIMIT` applies,
@@ -1147,7 +1147,7 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       first. Same family as the audit and usage item below, and one revision could carry all
       three.
 
-- [ ] **An index for the audit and usage listings' new ordering.** Both now
+- [x] **An index for the audit and usage listings' new ordering.** Done in migration `0020_ordering_indexes`, with approvals and plans too; `EXPLAIN` on 50k–200k seeded rows shows every listing as a plain index scan, where `0019` had an Incremental Sort (and a full sort for job runs and the claim). As written: Both now
       `ORDER BY ts DESC, id DESC` so the keyset cursor has a total order to page on, while
       `idx_audit_tenant_ts` and `idx_usage_tenant_ts` cover `(tenant_id, ts)` only. Measured at
       100k rows, 50 per distinct `ts`, the plan is an `Index Scan Backward` on that index under
@@ -1157,7 +1157,7 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       id DESC)` index removes the sort node and makes the cursor a pure index seek; that is one
       revision, and a refinement rather than a correctness gap.
 
-- [ ] **An index for the fiber claim's ordering.** `ORDER BY updated_at LIMIT 50` has no
+- [x] **An index for the fiber claim's ordering.** Done in migration `0020_ordering_indexes`, with approvals and plans too; `EXPLAIN` on 50k–200k seeded rows shows every listing as a plain index scan, where `0019` had an Incremental Sort (and a full sort for job runs and the claim). As written: `ORDER BY updated_at LIMIT 50` has no
       supporting index; measured at 200k rows it is 11 ms, and a partial index matching the
       claim's WHERE takes it to 0.15 ms at a fifth the size of `idx_fibers_due`. Worth doing now
       that the WHERE clause is stable.

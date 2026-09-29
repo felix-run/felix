@@ -242,6 +242,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Migration `0020_ordering_indexes`: no listing sorts any more.** Indexes that match each
+  listing's ordering exactly, tiebreak and collation included — audit, usage, approvals, plans,
+  active memory and job run history, plus a partial index for the fiber claim. Before it, those
+  plans sorted each timestamp's rows (and, for job runs and the claim, everything the filter
+  matched) before the `LIMIT`. The build takes a write lock per table; see `docs/UPGRADING.md`
+  before running it on a large `audit_events` or `usage_events`.
+
 - **`session.context_window_tokens` defaults to unset, meaning the model's own window.** It
   defaulted to 128000, and an omitted field already meant "the model's window" — only a written
   128000 meant 128K, a difference the compile-pin hash could not see. Behaviour is unchanged for
