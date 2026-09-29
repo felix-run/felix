@@ -12,7 +12,8 @@ in future turns, and it will be recalled forever, because nothing supersedes it.
 Three things fix that, and none of them is a longer prompt:
 
 **Structure.** Asking for JSON with a `topic_key` gets a key that later values
-supersede, so a store of facts stays a store of current facts rather than an
+are recognised against — the newest is shown as current, and an operator retires the
+rest — so a store of facts stays a store of current facts rather than an
 accumulation of everything ever said. Line-oriented output has nowhere to put one.
 
 **An explicit exclusion.** "Skip ephemeral chatter" does not tell a model that a

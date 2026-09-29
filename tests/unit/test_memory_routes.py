@@ -132,6 +132,8 @@ async def test_as_of_is_read_only_and_shows_the_earlier_belief() -> None:
             manifest_id="m",
             topic_key="user.timezone",
             origin_seq=seq,
+            # The operator's route: the one writer that retires by topic_key.
+            metadata={"source": "management_api"},
         )
 
     async with _client() as client:

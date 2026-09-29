@@ -56,14 +56,15 @@ async def test_recall_reports_no_hits_rather_than_erroring() -> None:
 
 
 @pytest.mark.asyncio
-async def test_topic_key_supersedes_through_the_tool() -> None:
-    """The convention the tool description teaches has to actually work."""
+async def test_a_remembered_topic_value_does_not_retire_the_earlier_one() -> None:
+    """`remember` is the tool a prompt injection can call directly, with a topic_key it chose.
+    If a tool write retired what held the key, one injected call would delete the fact it
+    named; it is stored beside it instead, and an operator retires the stale one."""
     await _run("remember", content="Timezone is UTC.", topic_key="user.timezone")
     await _run("remember", content="Timezone is CET.", topic_key="user.timezone")
 
     listed = await _run("list_memories")
-    assert "CET" in listed
-    assert "UTC" not in listed
+    assert "CET" in listed and "UTC" in listed
 
 
 @pytest.mark.asyncio
@@ -95,11 +96,13 @@ async def test_remember_records_the_thread_it_came_from() -> None:
     assert rows[0]["thread_id"] == "th-1"
 
 
-def test_tool_descriptions_teach_the_supersession_convention() -> None:
-    """A convention the model is never told about is a convention it will not follow."""
+def test_tool_descriptions_teach_the_topic_convention() -> None:
+    """A convention the model is never told about is one it will not follow — and it must not be
+    told a newer value replaces the old one, which is no longer what happens."""
     remember = _tools()["remember"]
     assert "topic_key" in remember.description
-    assert "supersede" in remember.description.lower()
+    assert "current" in remember.description.lower()
+    assert "supersede" not in remember.description.lower()
 
 
 # --- governance placement ---------------------------------------------------------
