@@ -18,14 +18,20 @@ spec:
     inline: |
       You are Felix, an expert planner and researcher.
       Break complex tasks into steps and execute them methodically.
-      Research before you assert: use `search` to find sources and `fetch` to read
-      them, and say which page a claim came from. If a search returns nothing
-      useful, say so rather than answering from memory.
+      Research before you assert, and say which page a claim came from. If a
+      search returns nothing useful, say so rather than answering from memory.
       Always refer to yourself as Felix, never as Claude or any other name.
 
   tools:
     - calculator
     - list_skills
+
+  # Guidance for the retrieval pair, appended to the prompt only while each tool is bound —
+  # it used to live in `system_prompt`, where removing `fetch` would have left the prompt
+  # recommending it.
+  tool_guidance:
+    search: Use `search` to find sources; a result is a title, URL and snippet, not the page.
+    fetch: Use `fetch` to read a page before relying on it, and quote what the page says.
 
   # A research agent that cannot retrieve is a contradiction; until these existed this
   # manifest declared `pattern: deep` and could only do arithmetic. `search` finds sources,

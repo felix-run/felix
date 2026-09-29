@@ -682,9 +682,14 @@ comment explaining exactly that. It is conditional, not inert.
 - [ ] **Split-turn compaction** — when one turn alone exceeds `keep_recent_tokens` the cut lands
       mid-turn and one summary covers both sides. Two summaries with different prompts and budgets
       is the fix. Narrow: only bites on very long single turns.
-- [ ] **Tools carry their own prompt copy** — a `prompt_line` / `prompt_guidance` on `Tool`,
-      assembled in `builder.py`, so the system prompt is derived from the active tool set instead
-      of hand-maintained. Removes a drift class; more valuable once **A** multiplies the tool set.
+- [x] **Tools carry their own prompt copy** — `Tool.prompt_guidance` for tools defined in code,
+      and `spec.tool_guidance` (tool name or glob → one line) for everything a manifest binds,
+      MCP included; `builder.tool_guidance_section` appends a "Tool guidance" section built from
+      the tools the agent actually has, so advice for an unbound tool never reaches the prompt.
+      `system_prompt.include_tool_guidance: false` turns it off; an entry matching no tool counts
+      as `felix_rule_targets_nothing`. `deep.yaml`'s search/fetch advice moved there. Built-in
+      tools carry no guidance yet — adding model-facing text to every manifest wants an eval run
+      first. Next: an MCP server's `instructions` from `initialize` as its tools' guidance.
 - [x] **Telemetry vocabulary** — `docs/OBSERVABILITY.md` carries the metric catalog and the span
       schema, and `tests/unit/test_metric_catalog.py` re-derives it from the source so it cannot
       drift. Spans now follow the OTel GenAI semantic conventions, and a model call is a span at
