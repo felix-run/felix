@@ -272,6 +272,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **MCP server instructions as tool guidance (opt-in).** Set `use_instructions: true` on an
+  `mcp_servers` entry and the `instructions` the server returns from `initialize` become its tools'
+  line in the system prompt's tool guidance — collapsed to one line, capped at 1,000 characters,
+  and dropped if the injection markers flag them (`felix_mcp_instructions`). Off by default: it is
+  server-written text in the system prompt.
+
 - **`spec.tool_guidance`: tool advice that goes with the tool.** A map from tool name or glob to
   one line of guidance, appended to the system prompt in a "Tool guidance" section — only for tools
   the agent actually has, so removing a tool removes its advice instead of leaving the prompt
