@@ -72,11 +72,13 @@ def catalog_from_manifest(name: str, manifest: Any | None = None) -> dict[str, A
             mid = getattr(spec, "id", None)
             if mid:
                 model_id = str(mid)
+            # The window compaction uses: the declared value, else the model's own — resolved
+            # through the route. This read the session field, whose 128000 default meant every
+            # listing said 128K, and the fallback looked the window up by the *manifest's* name.
+            from felix.runtime import _context_window_for_manifest
+
             session = getattr(getattr(manifest, "spec", None), "session", None)
-            if session is not None:
-                cw = getattr(session, "context_window_tokens", None)
-                if cw:
-                    context_window = int(cw)
+            context_window = _context_window_for_manifest(manifest, session)
             raw_price = getattr(spec, "price", None)
             if isinstance(raw_price, dict) and raw_price:
                 price = dict(raw_price)

@@ -42,12 +42,11 @@ def manifest_content_hash(manifest: Manifest) -> str:
     A second digest over `Spec()`'s own defaults would catch it and would also move on every
     field addition, which is the outage this exists to remove; so it is documented instead.
 
-    One field also breaks the "written default == omitted" rule today, independently of
-    this: `session.context_window_tokens` is read through `model_fields_set` in
-    `runtime.py`, so writing its default and omitting it mean different things there and
-    hash the same. The old hash was equally blind to it. `docs/ROADMAP.md` carries the fix,
-    which is to make the schema default a sentinel so the serialized form matches the
-    meaning.
+    `session.context_window_tokens` was the one field that broke the "written default ==
+    omitted" rule: its default was 128000 and `runtime.py` told a written 128000 from an
+    omitted one through `model_fields_set`, so the two meant different things and hashed the
+    same. Its default is `None` now, so the serialized form carries the meaning — and a
+    manifest that wrote 128000 hashed differently once, at that change.
 
     Changing this rotates every hash exactly once, which is the same one-time cost as the
     additions it prevents -- taken deliberately here rather than accidentally on the next

@@ -66,6 +66,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The model listing reports each manifest's real context window.** It reported 128K for every
+  manifest — the session field's old default — and otherwise looked the window up by the
+  manifest's name rather than its model. It now reports the window compaction uses.
+
 - **Audit and usage pages order ties the same on Postgres and in memory.** The paging cursor
   breaks a timestamp tie on the event id, which Postgres compared under the database's collation
   and the memory store by code point. Both now compare bytes. Only a caller-supplied id outside
@@ -230,6 +234,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `prompt_tokens` already includes them.
 
 ### Changed
+
+- **`session.context_window_tokens` defaults to unset, meaning the model's own window.** It
+  defaulted to 128000, and an omitted field already meant "the model's window" — only a written
+  128000 meant 128K, a difference the compile-pin hash could not see. Behaviour is unchanged for
+  both, but a manifest that writes `context_window_tokens: 128000` (the bundled `quick`,
+  `governed`, `cowork`, `triage` and `contributor` do) now hashes differently, once: a thread
+  whose compile is pinned and in flight across the upgrade — a durable run carrying authority
+  always is — may be refused at its next step as drifted. Durable runs last at most 24 hours.
 
 - **An approval rule whose `when_args` names nothing is refused or reported.** `when_args` gates
   only the calls carrying those arguments, so a misspelled name (`when_args: [topickey]` on

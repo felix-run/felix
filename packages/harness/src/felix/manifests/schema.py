@@ -533,8 +533,10 @@ class SessionSpec(_Strict):
     compaction_enabled: bool = True
     reserve_tokens: int = Field(default=16384, ge=0)
     keep_recent_tokens: int = Field(default=20000, ge=0)
-    # Approximate context window for overflow detection (chars/4 estimate).
-    context_window_tokens: int = Field(default=128000, ge=1024)
+    # Context window to compact against (chars/4 estimate). Unset, the model's own window from
+    # the catalog. It defaulted to 128000, and writing that default meant something different
+    # from omitting it — the one field where it did — which the compile-pin hash could not see.
+    context_window_tokens: int | None = Field(default=None, ge=1024)
     # Steer drain: "all" (default) or "one-at-a-time".
     steering_mode: Literal["all", "one-at-a-time"] = "all"
     follow_up_mode: Literal["all", "one-at-a-time"] = "all"

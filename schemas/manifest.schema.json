@@ -1716,10 +1716,17 @@
           "type": "integer"
         },
         "context_window_tokens": {
-          "default": 128000,
-          "minimum": 1024,
-          "title": "Context Window Tokens",
-          "type": "integer"
+          "anyOf": [
+            {
+              "minimum": 1024,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Context Window Tokens"
         },
         "steering_mode": {
           "default": "all",
