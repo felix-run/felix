@@ -66,6 +66,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A durable run starts within a second, not at the next minute.** Submitting one wrote a
+  `pending` fiber that only the `* * * * *` `fiber_scheduler` cron picked up, so every durable
+  run waited 0–60s (30s on average) before its first model call. Each worker now polls for due
+  fibers every `FELIX_FIBER_POLL_SECONDS` (1.0; 0 turns it off) through the same lease-and-
+  `SKIP LOCKED` claim, and the cron sweep remains as a backstop.
+- **A run waiting on an approval no longer holds up other runs.** The sweep stepped its batch
+  one fiber at a time, so a fiber parked on an approval delayed every fiber claimed after it for
+  as long as the person took to answer. Fibers now advance concurrently, up to
+  `FELIX_FIBER_CONCURRENCY` (8) per worker, and the poll claims only as many as it has free
+  slots for, so a busy worker leaves the rest for another.
+
 - **Concurrent publishes of one manifest all land.** `PUT /manifests/{name}` read the highest
   version and inserted the next, so two publishes of the same name at once picked the same
   number and the second failed with a 500. Publishes of one name are now serialized for the

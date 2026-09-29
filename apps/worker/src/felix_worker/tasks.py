@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import logging
 from collections.abc import Awaitable, Callable
@@ -38,6 +39,11 @@ broker = ListQueueBroker(
 )
 scheduler = TaskiqScheduler(broker=broker, sources=[LabelScheduleSource(broker)])
 
+# The fast path for durable runs: one polling loop per worker process, started with the worker
+# and stopped with it. `fiber_scheduler` below stays as the once-a-minute backstop.
+_fiber_loop: asyncio.Task[None] | None = None
+_fiber_loop_stop: asyncio.Event | None = None
+
 
 @broker.on_event(TaskiqEvents.WORKER_STARTUP)
 async def _on_worker_startup(_state: object) -> None:
@@ -61,6 +67,7 @@ async def _on_worker_startup(_state: object) -> None:
     _settings.validate_runtime()
     await hydrate_secrets(_settings)
     _register_plugin_cron_tasks()
+    _start_fiber_loop()
     logger.info(
         "worker_startup secrets_backend=%s plugins=%s",
         _settings.secrets_backend,
@@ -68,8 +75,30 @@ async def _on_worker_startup(_state: object) -> None:
     )
 
 
+def _start_fiber_loop() -> None:
+    """Start picking up durable runs as they arrive, unless `fiber_poll_seconds` is 0."""
+    global _fiber_loop, _fiber_loop_stop
+    if _settings.fiber_poll_seconds <= 0 or _fiber_loop is not None:
+        return
+    from felix.durability.fibers import run_fiber_loop
+
+    _fiber_loop_stop = asyncio.Event()
+    _fiber_loop = asyncio.create_task(run_fiber_loop(_settings, _fiber_loop_stop))
+
+
+async def _stop_fiber_loop() -> None:
+    """Stop claiming, and give fibers already running the loop's drain window to finish."""
+    global _fiber_loop, _fiber_loop_stop
+    if _fiber_loop is None or _fiber_loop_stop is None:
+        return
+    _fiber_loop_stop.set()
+    await _fiber_loop
+    _fiber_loop, _fiber_loop_stop = None, None
+
+
 @broker.on_event(TaskiqEvents.WORKER_SHUTDOWN)
 async def _on_worker_shutdown(_state: object) -> None:
+    await _stop_fiber_loop()
     # Without this the BatchSpanProcessor's queue dies with the process and the last
     # batch of spans is simply lost.
     shutdown_observability()

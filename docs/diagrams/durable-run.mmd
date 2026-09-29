@@ -5,10 +5,10 @@ title: Durable run (fiber) lifecycle
 %% FIBER_TERMINAL_STATUSES, _park, _retry_or_dead, _claim_due.
 stateDiagram-v2
     accTitle: States a durable fiber moves through, including the retry ladder
-    accDescr: A manifest with spec.execution.mode durable answers POST /chat with 202 and a resume token instead of running the turn inline. The fiber row starts pending; the worker's fiber_scheduler task claims due rows under a lease, oldest first, so two replicas cannot run the same step and no tenant starves; rows backed by Temporal are excluded because Temporal drives those itself, and each step either advances the cursor or parks the fiber for a backoff. The backoff doubles from one minute to a ceiling of one hour, and after FELIX_FIBER_MAX_ATTEMPTS consecutive failures the fiber is buried as dead rather than retried forever. A step that reached a terminal status and then failed only at its save keeps that status, because coercing it back to sleeping would re-enter the step loop with the cursor past the end and report a failed invoke as completed.
+    accDescr: A manifest with spec.execution.mode durable answers POST /chat with 202 and a resume token instead of running the turn inline. The fiber row starts pending; each worker's fiber loop polls every second and claims due rows under a lease, with the one-minute fiber_scheduler sweep as a backstop, oldest first, so two replicas cannot run the same step and no tenant starves; rows backed by Temporal are excluded because Temporal drives those itself, and each step either advances the cursor or parks the fiber for a backoff. The backoff doubles from one minute to a ceiling of one hour, and after FELIX_FIBER_MAX_ATTEMPTS consecutive failures the fiber is buried as dead rather than retried forever. A step that reached a terminal status and then failed only at its save keeps that status, because coercing it back to sleeping would re-enter the step loop with the cursor past the end and report a failed invoke as completed.
 
     [*] --> Pending : start_durable_chat writes the row, API returns 202
-    Pending --> Running : fiber_scheduler claims it under a lease
+    Pending --> Running : a worker's fiber loop claims it under a lease, within a poll
 
     Running --> Running : step advances the cursor
     Running --> Sleeping : _park for a timer or a screener outage
