@@ -138,6 +138,10 @@ class SystemPrompt(_Strict):
     system_md: str | None = None
     # When set, append this key's contents after the composed prompt (APPEND_SYSTEM.md).
     append_system_md: str | None = None
+    # Append a short section of guidance for the tools this agent actually has — from
+    # `spec.tool_guidance` and from tools that carry their own. Off for a prompt that must be
+    # exactly what was written.
+    include_tool_guidance: bool = True
 
 
 class PromptTemplateSpec(_Strict):
@@ -898,6 +902,21 @@ class Spec(_Strict):
     skills_declared_only: bool = False
     mcp: list[McpServerRef] = Field(default_factory=list, alias="mcp_servers", max_length=MAX_REFS)
     peers: list[A2APeerRef] = Field(default_factory=list, max_length=MAX_REFS)
+    # How to use a tool well, one line per tool name or glob, appended to the system prompt only
+    # for tools the agent actually has. Guidance written into `system_prompt` about a tool that
+    # is later removed goes on recommending it; guidance here goes with the tool.
+    tool_guidance: dict[str, str] = Field(default_factory=dict, max_length=MAX_REFS)
+
+    @field_validator("tool_guidance")
+    @classmethod
+    def _tool_guidance_is_one_line_each(cls, v: dict[str, str]) -> dict[str, str]:
+        for name, line in v.items():
+            if not name.strip() or not line.strip():
+                raise ValueError("tool_guidance needs a tool name and a line of guidance for each entry")
+            if len(line) > 500:
+                raise ValueError(f"tool_guidance[{name!r}] is over 500 characters: one line, not a manual")
+        return v
+
     containers: list[ContainerRef] = Field(default_factory=list, max_length=MAX_REFS)
     queues: list[QueueRef] = Field(default_factory=list, max_length=MAX_REFS)
     sandboxes: list[SandboxRef] = Field(default_factory=list, max_length=MAX_REFS)

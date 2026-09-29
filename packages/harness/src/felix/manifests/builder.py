@@ -187,6 +187,27 @@ def _replace_content(out: ToolOutput, content: str) -> ToolOutput:
     return out
 
 
+def tool_guidance_section(tools: list[Tool], by_name: dict[str, str]) -> str:
+    """The system prompt's tool guidance: one line per line of guidance, for present tools only.
+
+    From two places — a tool's own `prompt_guidance`, and `spec.tool_guidance` keyed by name or
+    glob — in the order the tools resolved, each line once. Built from the tools the agent has
+    after the compile, so guidance for a tool that is not bound never reaches the prompt: the
+    drift that hand-written tool advice in `system_prompt` accumulates.
+    """
+    lines: list[str] = []
+    for tool in tools:
+        own = [tool.prompt_guidance] if tool.prompt_guidance else []
+        declared = [line for pattern, line in by_name.items() if matches_any([pattern], tool.name)]
+        for line in (*own, *declared):
+            text = " ".join(line.split())
+            if text and text not in lines:
+                lines.append(text)
+    if not lines:
+        return ""
+    return "Tool guidance:\n" + "\n".join(f"- {line}" for line in lines)
+
+
 def _clone_tool(tool: Tool, executor: Any) -> Tool:
     """Copy a tool with a new executor, carrying every other field forward.
 
@@ -1079,6 +1100,8 @@ def _warn_unmatched_tool_patterns(m: Manifest, bound: list[str]) -> None:
                     )
                 continue
             targets.append(("judge", judge.name, list(judge.target_tools)))
+    if m.spec.tool_guidance:
+        targets.append(("tool_guidance", "tool_guidance", list(m.spec.tool_guidance)))
     if m.spec.content_screening and m.spec.content_screening.enabled:
         targets.append(("content_screening", "content_screening", list(m.spec.content_screening.tools)))
         paid = list(m.spec.content_screening.model_tools)
@@ -1646,6 +1669,10 @@ async def build_agent(
         final_prompt = (
             system_prompt or f"You are {m.metadata.name}. Use your tools when needed to answer accurately."
         )
+        if m.spec.system_prompt.include_tool_guidance:
+            guidance = tool_guidance_section(resolved, m.spec.tool_guidance)
+            if guidance:
+                final_prompt = f"{final_prompt}\n\n{guidance}"
 
         pattern_builder = get_pattern(m.spec.pattern)
         if pattern_builder is None:

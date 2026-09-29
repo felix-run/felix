@@ -1927,6 +1927,14 @@
           "title": "Peers",
           "type": "array"
         },
+        "tool_guidance": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "maxProperties": 64,
+          "title": "Tool Guidance",
+          "type": "object"
+        },
         "containers": {
           "items": {
             "$ref": "#/$defs/ContainerRef"
@@ -2175,6 +2183,11 @@
           ],
           "default": null,
           "title": "Append System Md"
+        },
+        "include_tool_guidance": {
+          "default": true,
+          "title": "Include Tool Guidance",
+          "type": "boolean"
         }
       },
       "title": "SystemPrompt",
