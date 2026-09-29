@@ -757,22 +757,27 @@ rather than from re-reading a file. The wave itself is written up in [HISTORY.md
       never pruned audit rows at all — it filtered the `DurableBuffer` as if it were the list —
       and swept plans for tenant `default` only; both fixed, and `tests/conformance/test_retention.py`
       runs the contract against both arms.
-- [ ] **Temporal carries `state["auth"]` into workflow history.** `start_fiber_workflow` passes
+- [x] **Temporal carries `state["auth"]` into workflow history.** Documented as an assumption in
+      `deploy/GOVERNANCE.md` (Temporal is inside the trust boundary) rather than changed. `start_fiber_workflow` passes
       the whole fiber dict as the workflow argument, and the activity re-passes it per step, so
       `{principal_sub, scopes, scheme}` for every tenant accumulates in one namespace outside
       the RLS boundary and outside the run's TTL. User message content already went there; a
       scope inventory is new.
-- [ ] **The Temporal path trusts the fiber row wholesale.** `fiber_step` calls `advance_fiber`
+- [x] **The Temporal path trusts the fiber row wholesale.** Documented beside the entry above:
+      access to the namespace and the `felix-fibers` queue is treated like database access. `fiber_step` calls `advance_fiber`
       with the row straight from the workflow argument, never re-read from Postgres, and
       `_save_fiber` writes under `rls_bypass()`. Anyone who can start a workflow on the
       `felix-fibers` task queue therefore chooses `tenant_id`, `expires_at` and now
       `state["auth"]`. Temporal access is privileged; this should be a documented assumption.
-- [ ] **Memory tools are not untrusted.** `recall` and `list_memories` are `transport: local`
+- [x] **Memory tools are not untrusted.** Decided: untrusted by default — `memory` joins
+      `_UNTRUSTED_SOURCE_PREFIXES`, so every screened manifest scans recall output (markers
+      free; paid scoring per `model_tools`); `governed.yaml`, which names no tools, now screens
+      it. As written: `recall` and `list_memories` are `transport: local`
       with `source: memory`, which is not in `_UNTRUSTED_SOURCE_PREFIXES`, so recall is not
       screened by default — `cowork.yaml` names them explicitly instead. Capture runs over turns
       containing untrusted tool output, so recall is a re-entry path for content quarantined on
       the way in. Either add `memory` to the untrusted prefixes or keep it a per-manifest choice.
-- [ ] **`scheme` replay on resume.** A resumed fiber presents the recorded scheme without
+- [x] **`scheme` replay on resume.** The sentence is in `deploy/GOVERNANCE.md`. A resumed fiber presents the recorded scheme without
       holding a credential, so `auth.inbound.schemes` can only ever agree with the enqueue-side
       check. Defence in depth lost, not a hole; worth a sentence in GOVERNANCE.md.
 - [ ] **`pr-quality-gate.sh` does not treat `durability/` as a control path.** It reported

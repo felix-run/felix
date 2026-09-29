@@ -407,6 +407,12 @@ _UNTRUSTED_SOURCE_PREFIXES = (
     # transport is `local` but whose source is a retrieval binding — which is what the `http`
     # and `search` entries beside it are also for.
     "documents",
+    # A recalled memory is a relay, not a source. Capture runs over turns that carried untrusted
+    # tool output, so a payload screening quarantined on its way in can be extracted as a "fact"
+    # and handed back by `recall` or `list_memories` turns later. Unlike `documents` this entry
+    # is not redundant: memory tools are `transport: local`, and without it they were screened
+    # only where a manifest named them — `cowork` did, `governed` did not.
+    "memory",
 )
 
 
