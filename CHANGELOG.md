@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`deploy/gcp/roll.sh`: upgrade a GCE + Compose deployment in one command.** It runs the
+  `docs/UPGRADING.md` sequence from your machine over `gcloud compute ssh`: preflight (release and
+  image exist, clean checkout, schema, durable runs in flight, table sizes, disk), a backup that
+  must read back with `pg_restore --list`, the checkout and `FELIX_IMAGE_TAG` pin with `.env`
+  backed up, pull, `up -d` with the running stack's own compose files, and a wait for `/health`.
+  It asks before every change; `--check` only reads.
+
 ## [0.5.0] — 2026-09-29
 
 ### Added

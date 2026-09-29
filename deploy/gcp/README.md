@@ -68,6 +68,14 @@ docker compose -f deploy/docker/compose.yml \
 
 See `deploy/docker/README.md`.
 
+### Upgrading
+
+`deploy/gcp/roll.sh <version>` runs the upgrade in [`docs/UPGRADING.md`](../../docs/UPGRADING.md)
+against the VM from your own machine: preflight, a backup it proves can be read back, the
+checkout and `FELIX_IMAGE_TAG` pin, a pull, `docker compose up -d`, and a wait for `/health` to
+report the version. It asks before each step that changes the host. Run it with `--check` first,
+which only reads. Its header lists the variables that point it at your VM.
+
 ## Helm
 
 ```bash

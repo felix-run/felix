@@ -247,6 +247,10 @@ docker compose <-f overlays…> up -d
 docker compose <-f overlays…> run --rm migrate
 ```
 
+On a GCE + Compose deployment, `deploy/gcp/roll.sh <version>` runs this whole sequence from your
+own machine, with a preflight and a verified backup first, asking before each change (`--check`
+for the read-only preflight alone).
+
 `make up-gcp` wraps that last command, but **`make` is not installed on every host** — a minimal
 VM image often lacks it, and the failure (`make: command not found`) happens before anything rolls.
 The compose invocation above is what the target runs and needs no `make`.
