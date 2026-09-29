@@ -200,6 +200,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Migration `0020_ordering_indexes`: no listing sorts any more.** Indexes that match each
+  listing's ordering exactly, tiebreak and collation included — audit, usage, approvals, plans,
+  active memory and job run history, plus a partial index for the fiber claim. Before it, those
+  plans sorted each timestamp's rows (and, for job runs and the claim, everything the filter
+  matched) before the `LIMIT`. The build takes a write lock per table; see `docs/UPGRADING.md`
+  before running it on a large `audit_events` or `usage_events`.
+
 - **`session.context_window_tokens` defaults to unset, meaning the model's own window.** It
   defaulted to 128000, and an omitted field already meant "the model's window" — only a written
   128000 meant 128K, a difference the compile-pin hash could not see. Behaviour is unchanged for
@@ -420,60 +427,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   thing on the Anthropic wire, where `input` excludes them, and the OpenAI wire, where
   `prompt_tokens` already includes them.
 
-### Changed
-
-- **Migration `0020_ordering_indexes`: no listing sorts any more.** Indexes that match each
-  listing's ordering exactly, tiebreak and collation included — audit, usage, approvals, plans,
-  active memory and job run history, plus a partial index for the fiber claim. Before it, those
-  plans sorted each timestamp's rows (and, for job runs and the claim, everything the filter
-  matched) before the `LIMIT`. The build takes a write lock per table; see `docs/UPGRADING.md`
-  before running it on a large `audit_events` or `usage_events`.
-
-- **`session.context_window_tokens` defaults to unset, meaning the model's own window.** It
-  defaulted to 128000, and an omitted field already meant "the model's window" — only a written
-  128000 meant 128K, a difference the compile-pin hash could not see. Behaviour is unchanged for
-  both, but a manifest that writes `context_window_tokens: 128000` (the bundled `quick`,
-  `governed`, `cowork`, `triage` and `contributor` do) now hashes differently, once: a thread
-  whose compile is pinned and in flight across the upgrade — a durable run carrying authority
-  always is — may be refused at its next step as drifted. Durable runs last at most 24 hours.
-
-- **An approval rule whose `when_args` names nothing is refused or reported.** `when_args` gates
-  only the calls carrying those arguments, so a misspelled name (`when_args: [topickey]` on
-  `remember`) was a rule that never fired and still validated. `PUT /manifests` and
-  `felix validate-manifest` now refuse one naming a built-in, plugin or memory tool literally
-  when the name is none of its arguments; for MCP tools and globs the compile logs a warning and
-  counts `felix_approval_when_args_unknown` instead, since those schemas can change under a
-  stored manifest. Stored manifests still load.
-
-- **Documented: sub-agents inherit the caller's admission.** `spec.auth.inbound` is checked on
-  the manifest a request names, not on each sub-agent a router compiles, so a child's own
-  `required_scopes` apply when it is called by name and not when a router hands it a request.
-  That was already the behaviour — bundled `router` reaches `deep` this way — and is now the
-  stated one, in `deploy/GOVERNANCE.md`.
-
-- **Bundled manifests cache their prompts.** `quick`, `deep`, `router`, `hybrid-router`,
-  `governed`, `support` and `cowork` now set `spec.model.cache: true`, matching `contributor` and
-  `triage`, so each turn reads the conversation before it from cache instead of re-billing it at
-  full input price. `oss-only` is left off: Ollama reuses prompt prefixes on its own and has no use
-  for `prompt_cache_key`. A deployment holding a stored copy of one of these manifests keeps that
-  copy's setting, because the store is read ahead of the bundled YAML.
-
-- **A router whose classifier names no sub-agent now says so.** It still sends the request to the
-  first sub-agent, but logs a warning and counts `felix_router_choice{method="unmatched"}` instead
-  of making that indistinguishable from a deliberate choice.
-
-- **The workspace is a named volume, not the deployment's checkout.** Compose mounted
-  `${FELIX_WORKSPACE_HOST:-./workspace}` at `/workspace`, so an agent's files landed inside the
-  deployment's own git checkout unless the operator overrode it, and the published image — uid
-  `10001` — could not write a directory the host owned (`Errno 13` on the reference deployment).
-  The default is now the named `felix-workspace` volume; the image creates `/workspace` owned by
-  its runtime user so a new volume is seeded writable; `FELIX_WORKSPACE_HOST` still overrides it;
-  and `scripts/check-compose-render.py` fails a render that bind-mounts a host directory there
-  without that override. **A deployment relying on the old default starts with an empty
-  workspace** — `UPGRADING.md` says how to keep or copy the old directory. Phase 0 of
-  `docs/WORKSPACE.md`.
-### Fixed
-
 - **A workspace tool that fails is audited as failing.** `list_dir`, `read_file`, `write_file`,
   `edit_file` and `search_files` returned every failure as plain `error: …` text, which carries
   no error marker, so the tool runner wrote the audit row as `tool_call` / `ok`, the metrics
@@ -487,6 +440,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `tool_error_output` skips its prefix for text that already starts with `[`.
 
 ### Security
+
+- **Only an operator retires a memory by its `topic_key`.** Any agent write — post-turn capture,
+  which runs through no governance wrapper, or the `remember` tool, which a prompt injection can
+  call with a key it chose — used to retire every active agent-written fact sharing its key, so
+  one injected turn could delete what the agent knew about a topic. Agent writes on a held key
+  are now stored alongside; the facts prelude shows one current value per topic (most trusted,
+  then latest turn), and the operator settles contradictions on `/memory`. **Behaviour change:**
+  a topic can hold several active values until an operator retires the stale ones, and the
+  `remember` tool's description no longer says a new value supersedes the old.
 
 - **Recalled memory is screened.** `recall` and `list_memories` were trusted local tools, so with
   content screening on they were screened only where a manifest named them. Memory capture runs
