@@ -456,3 +456,22 @@ async def test_an_event_postgres_refuses_is_quarantined_and_the_rest_land(store_
     assert buffer.quarantined == 1
     events, _ = await audit.query(store_settings, TENANT)
     assert sorted(e["principal_subj"] for e in events) == ["after", "before"]
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_ids_sharing_a_millisecond_page_in_byte_order_on_both_arms(store_settings: Any) -> None:
+    """The cursor's tiebreak is the id, and ids are text: Postgres compared them under the
+    database collation while the twin compared code points, so two rows in one millisecond
+    could come back in a different order on each. Mixed case is where the two part ways."""
+    ids = ["alpha", "Bravo", "charlie", "Delta"]
+    await _record_many(store_settings, [{"ts": 10, "id": i} for i in ids])
+
+    seen: list[str] = []
+    cursor = None
+    for _ in range(len(ids) + 1):
+        page, cursor = await audit.query(store_settings, TENANT, limit=1, cursor=cursor)
+        seen += [e["id"] for e in page]
+        if cursor is None:
+            break
+    assert seen == sorted(ids, reverse=True), "one page at a time, byte order, nothing lost or repeated"
