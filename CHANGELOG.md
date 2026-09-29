@@ -69,6 +69,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The model listing reports each manifest's real context window.** It reported 128K for every
   manifest — the session field's old default — and otherwise looked the window up by the
   manifest's name rather than its model. It now reports the window compaction uses.
+- **`make up-self` no longer races itself on the shared workspace.** The api and worker mount
+  one `felix-self-workspace` volume and both ran `self-entrypoint.sh` at once. On a fresh volume
+  both cloned into it and **both** failed, leaving a broken `.git` that failed the next start
+  too; on an existing clone the two fetches contended for ref locks and one logged
+  `cannot lock ref 'refs/remotes/origin/main'` on every restart. The entrypoint now holds a
+  `flock` on the workspace directory across clone, fetch and `uv sync`, and releases it before
+  exec'ing Felix.
 
 - **Audit and usage pages order ties the same on Postgres and in memory.** The paging cursor
   breaks a timestamp tie on the event id, which Postgres compared under the database's collation
