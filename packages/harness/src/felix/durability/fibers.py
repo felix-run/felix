@@ -610,7 +610,7 @@ async def _run_fiber_step(
     return row
 
 
-async def _claim_due_memory(settings: Settings, ts: int) -> list[dict[str, Any]]:
+async def _claim_due_memory(settings: Settings, ts: int, limit: int = FIBER_BATCH) -> list[dict[str, Any]]:
     claimed: list[dict[str, Any]] = []
     for row in _memory_fibers.values():
         if (row.get("state_json") or {}).get("backend") == "temporal":
@@ -632,12 +632,12 @@ async def _claim_due_memory(settings: Settings, ts: int) -> list[dict[str, Any]]
         row["updated_at"] = ts
         row["version"] = int(row.get("version") or 0) + 1
         claimed.append(dict(row))
-        if len(claimed) >= FIBER_BATCH:
+        if len(claimed) >= limit:
             break
     return claimed
 
 
-async def _claim_due_postgres(settings: Settings, ts: int) -> list[dict[str, Any]]:
+async def _claim_due_postgres(settings: Settings, ts: int, limit: int = FIBER_BATCH) -> list[dict[str, Any]]:
     """Claim a bounded batch of due fibers, skipping rows another worker holds.
 
     ``FOR UPDATE SKIP LOCKED`` plus a lease column is what stops the same step running
@@ -670,7 +670,7 @@ async def _claim_due_postgres(settings: Settings, ts: int) -> list[dict[str, Any
                     Fiber.state_json["backend"].astext.is_distinct_from("temporal"),
                 )
                 .order_by(Fiber.updated_at)
-                .limit(FIBER_BATCH)
+                .limit(limit)
                 .with_for_update(skip_locked=True)
             )
             rows = (await db.scalars(stmt)).all()
@@ -687,6 +687,43 @@ async def _claim_due_postgres(settings: Settings, ts: int) -> list[dict[str, Any
             return claimed
 
 
+async def _claim_due(settings: Settings, limit: int = FIBER_BATCH) -> list[dict[str, Any]]:
+    """Claim up to `limit` due fibers from whichever store this process uses."""
+    ts = now_ms()
+    if _use_memory(settings):
+        return await _claim_due_memory(settings, ts, limit)
+    return await _claim_due_postgres(settings, ts, limit)
+
+
+async def _advance_claimed(settings: Settings, row: dict[str, Any]) -> None:
+    """Run one claimed fiber to its next suspension, and charge a failure against it.
+
+    Never raises. Both callers run this as one of several concurrent tasks, and an exception
+    escaping one would either be lost with its task or cancel its siblings mid-step.
+    """
+    # A step that completes writes 0 with its own save; a step that raises is charged
+    # against the count it was claimed with.
+    prior_failures = int(row.get("attempts") or 0)
+    row["attempts"] = 0
+    try:
+        landed, failure = await _step_with_lease(settings, row)
+    except Exception as exc:  # the lease bookkeeping itself, not a step
+        landed, failure = 0, exc
+    if failure is None:
+        return
+    # `attempts` counts *consecutive* failures, and a claim now runs several steps. If any of
+    # them landed before this one failed, the streak was broken inside this claim and the
+    # charge is 1 — the same arithmetic as before, when a landed step and a failed step could
+    # never share a claim. Charging `prior_failures + 1` regardless would bury a fiber that had
+    # just made progress.
+    attempt = 1 if landed else prior_failures + 1
+    logger.warning("fiber step failed id=%s attempt=%d", row.get("id"), attempt, exc_info=failure)
+    try:
+        await _retry_or_dead(settings, row, attempt, failure)
+    except Exception:  # the store is down; the claim lapses and a later sweep retries it
+        logger.warning("fiber retry bookkeeping failed id=%s", row.get("id"), exc_info=True)
+
+
 async def resume_due_fibers(settings: Settings) -> int:
     """Claim and advance due fibers. Returns how many were stepped.
 
@@ -695,34 +732,81 @@ async def resume_due_fibers(settings: Settings) -> int:
 
     Each fiber is claimed before it is stepped, so a step still running when the next
     scheduler tick fires is not picked up again.
-    """
-    ts = now_ms()
-    if _use_memory(settings):
-        due = await _claim_due_memory(settings, ts)
-    else:
-        due = await _claim_due_postgres(settings, ts)
 
-    ran = 0
-    for row in due:
-        # A step that completes writes 0 with its own save; a step that raises is charged
-        # against the count it was claimed with.
-        prior_failures = int(row.get("attempts") or 0)
-        row["attempts"] = 0
-        try:
-            landed, failure = await _step_with_lease(settings, row)
-        except Exception as exc:  # the lease bookkeeping itself, not a step
-            landed, failure = 0, exc
-        if failure is not None:
-            # `attempts` counts *consecutive* failures, and a claim now runs several steps.
-            # If any of them landed before this one failed, the streak was broken inside this
-            # sweep and the charge is 1 — the same arithmetic as before, when a landed step
-            # and a failed step could never share a claim. Charging `prior_failures + 1`
-            # regardless would bury a fiber that had just made progress.
-            attempt = 1 if landed else prior_failures + 1
-            logger.warning("fiber step failed id=%s attempt=%d", row.get("id"), attempt, exc_info=failure)
-            await _retry_or_dead(settings, row, attempt, failure)
-        ran += 1
-    return ran
+    The claimed fibers advance **concurrently**, at most `fiber_concurrency` at a time. They
+    ran one after another, so a fiber parked on an approval held every fiber claimed after it
+    for as long as the person took to answer: measured on the reference deployment, one
+    `write_file` approval made a sweep take 89 seconds. Each fiber holds its own lease and
+    renews it itself, so nothing they share needs the order.
+
+    This is the backstop. `run_fiber_loop` is what picks a new run up within a second.
+    """
+    due = await _claim_due(settings)
+    gate = asyncio.Semaphore(settings.fiber_concurrency)
+
+    async def _bounded(row: dict[str, Any]) -> None:
+        async with gate:
+            await _advance_claimed(settings, row)
+
+    await asyncio.gather(*(_bounded(row) for row in due))
+    return len(due)
+
+
+# How long a stopping worker waits for in-flight fibers before cancelling them. A cancelled
+# fiber keeps its lease and is taken over when the lease lapses — the crashed-worker path.
+FIBER_LOOP_DRAIN_S = 30.0
+# The poll backs off to this while claiming keeps failing, so a store that is down is
+# asked once a minute rather than once a second.
+FIBER_LOOP_MAX_BACKOFF_S = 60.0
+
+
+async def run_fiber_loop(settings: Settings, stop: asyncio.Event) -> None:
+    """Pick up due fibers as they arrive, until `stop` is set.
+
+    Submitting a durable run writes a `pending` fiber and returns; nothing tells the worker.
+    The only thing that ran it was `fiber_scheduler`, a `* * * * *` cron, so every durable run
+    waited for the next minute boundary before its first model call — 0 to 60 seconds, 30 on
+    average, with the client reading `pending` the whole time. On the reference deployment
+    two runs started at 01:08:53 and 01:14:53, the second the cron fired, both about 25s
+    after they were submitted. Cron cannot tick faster than a minute.
+
+    This polls every `fiber_poll_seconds` instead. The claim is cheap — `FOR UPDATE SKIP
+    LOCKED` over an ordered, limited select — and it is the same claim the cron sweep takes,
+    so the two cannot run one fiber twice; whichever claims first owns it.
+
+    Unlike the sweep it does not wait for a batch to finish. Each claimed fiber runs as its
+    own task, and the loop claims only as many as it has free slots for, out of
+    `fiber_concurrency`, so one fiber waiting minutes on an approval occupies one slot and
+    delays nothing else.
+    """
+    interval = settings.fiber_poll_seconds
+    capacity = settings.fiber_concurrency
+    in_flight: set[asyncio.Task[None]] = set()
+    delay = interval
+    logger.info("fiber_loop started interval=%ss concurrency=%d", interval, capacity)
+    try:
+        while not stop.is_set():
+            free = capacity - len(in_flight)
+            if free > 0:
+                try:
+                    due = await _claim_due(settings, min(free, FIBER_BATCH))
+                    delay = interval
+                except Exception:
+                    due = []
+                    delay = min(max(delay * 2, interval), FIBER_LOOP_MAX_BACKOFF_S)
+                    logger.warning("fiber_loop claim failed; next attempt in %ss", delay, exc_info=True)
+                for row in due:
+                    task = asyncio.create_task(_advance_claimed(settings, row))
+                    in_flight.add(task)
+                    task.add_done_callback(in_flight.discard)
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(stop.wait(), timeout=delay)
+    finally:
+        if in_flight:
+            _, pending = await asyncio.wait(in_flight, timeout=FIBER_LOOP_DRAIN_S)
+            for task in pending:
+                task.cancel()
+        logger.info("fiber_loop stopped")
 
 
 def _park(row: dict[str, Any], delay_ms: int) -> None:
@@ -1040,5 +1124,6 @@ __all__ = [
     "get_fiber",
     "now_ms",
     "resume_due_fibers",
+    "run_fiber_loop",
     "save_fiber",
 ]
