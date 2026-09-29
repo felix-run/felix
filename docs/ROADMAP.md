@@ -1233,10 +1233,12 @@ cycle's, and the route contracts below are the next capability-adjacent step.
 
 ### Deploy
 
-- [ ] **Cowork completion smoke on GCE** — local durable poll reaches `completed`; prod smoke
-      still only asserts a cowork `202` accept. Extend `.github/workflows/smoke.yml` with a
-      **soft** completion poll (`continue-on-error: true`, ~3 min). Cheaper once **B1** removes the
-      two-tick floor.
+- [x] **Cowork completion smoke on GCE** — the smoke's durable step polls
+      `GET /chat/runs/{token}` to `completed` and asserts the reply (#375). A hard check rather than
+      the soft one proposed: the worker now picks a fiber up within a second (#363) and runs it to
+      suspension, so a completion takes seconds (3s on the first run). The old `noop smoke` prompt
+      also left a pending `write_file` approval in production after every run; the prompt now asks
+      for no tools.
 - [ ] **Governed demo path (decide)** — either enable on GCE (RBAC scopes for chat keys) **or**
       keep the demo anonymous and document that choice in `deploy/GOVERNANCE.md`.
 - [ ] **GKE dogfood** — Helm + ESO → one known-good install note under `deploy/gcp/`.
