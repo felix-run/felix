@@ -226,6 +226,12 @@ async def _stored_manifest_names(settings: Any, tenant_id: str) -> list[str]:
     listed either: the catalogue names what a request can actually reach. A store that
     cannot be read degrades to the bundled list rather than failing it — the same rule
     the per-manifest `return_exceptions=True` below keeps for resolution.
+
+    The resolver's object-store layers (`manifests/{tenant}/{name}.json`, then
+    `manifests/{name}.json`) are not listed, for the same reason: no request can reach
+    them. `resolve_tenant_manifest` passes no `object_store` and core has no `get_json`
+    implementation (see `_read_object`), so a name found only there would be listed and
+    then fail to resolve. The day those layers are wired up, their names belong here.
     """
     try:
         if settings.bundled_only:
