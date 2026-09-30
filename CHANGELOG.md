@@ -22,6 +22,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`GET /audit/export`: the audit log over a time range, as JSONL.** An auditor's second
+  question after "who was refused" is "give me everything from last quarter", and the only
+  answer was paging `GET /audit` by hand, 500 rows at a time. The export streams every matching
+  event, one per line and newest first, with no row cap, under the same `audit:read` scope.
+  `since` (inclusive) and `until` (exclusive) are epoch milliseconds, so consecutive windows
+  tile a history without sharing a row; `event_type`, `status` and `manifest_id` narrow it. The
+  range is applied in the store rather than after a page, and `GET /audit` accepts it too,
+  along with `manifest_id`. An empty or reversed range is a `400` on both, not an empty answer. A store failure after the first row ends the
+  file with an `{"error": "export_incomplete"}` line: raising instead left Granian holding the
+  connection open, so the client hung rather than seeing a truncated body.
+
 - **`deploy/gcp/roll.sh --yes`: roll without a terminal.** The confirmations read `/dev/tty`, so
   run from CI, an agent's shell or Claude Code's `!` prefix the script reached its first question
   only after writing the production backup, then died on `/dev/tty: Device not configured` (the

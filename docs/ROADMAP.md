@@ -473,12 +473,17 @@ and fixed; the comment at `fibers.py:36-46` is the record.
       the half with nothing to attribute. It is the *originating* thread, because `create_pending`
       still reuses a pending row across threads. Widening that reuse key would change grant scope
       and is a product decision, not part of this.
-- [~] **Attribute denials in the audit record.** Landed: `policy_deny` rows carry
+- [x] **Attribute denials in the audit record.** Landed: `policy_deny` rows carry
       `payload.control` naming the wrapper that refused — the source was on every deny output
       already (`deny_output` stamps it) and the loop was the one reader that dropped it, so the
-      fix was a read, not a design. Not landed, and still the auditor's second question:
-      `GET /audit/export` over a time range; `audit.py`'s docstring already promises an export
-      that does not exist.
+      fix was a read, not a design. And the auditor's second question: `GET /audit/export`
+      streams a time range as JSONL, uncapped, with `since`/`until` as a half-open range applied
+      in the store (both arms, conformance-pinned) so windows tile. Open-ended, it reads only
+      what has been flushed; an export whose `until` is in the past is stable.
+      Unpinned: the route sets `rls_tenant` per page read, since later pages are read after the
+      handler returns. That only matters with `FELIX_DATABASE_RLS` on, where a lost scope would
+      read zero rows and end the file early *without* an error line; e2e runs on `memory://`
+      over `ASGITransport` and cannot see it. Wants a case in `test_rls_enforcement.py`.
 - [x] **Surface eval instrumentation.** Correction to the entry as written: there was no
       `ItemScore` and no per-item duration or token count stored anywhere — only `tool_calls` /
       `tool_errors` on the score row. Each item now records `duration_ms`, `tokens_input`,

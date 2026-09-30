@@ -3,15 +3,38 @@
 from __future__ import annotations
 
 import contextlib
+import json
+import logging
+from collections.abc import AsyncIterator
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 from felix.auth.mgmt import SCOPE_AUDIT_READ, require_mgmt_scopes, tenant_id_from_request
 from felix.cursors import InvalidCursor
 
-from felix_api.errors import client_safe_message
+from felix_api.errors import client_safe_message, internal_error_message
+
+logger = logging.getLogger("felix_api.routes.audit")
 
 router = APIRouter(tags=["Audit"])
+
+
+def _time_range(
+    since: int | None = Query(default=None, ge=0, description="Epoch ms, inclusive"),
+    until: int | None = Query(default=None, ge=0, description="Epoch ms, exclusive"),
+) -> tuple[int | None, int | None]:
+    """The half-open `[since, until)` window both audit reads accept, refused when empty.
+
+    A reversed range selects nothing, and an empty answer reads as "nothing happened".
+    """
+    if since is not None and until is not None and until <= since:
+        raise HTTPException(status_code=400, detail="until must be later than since")
+    return since, until
+
+
+def _jsonl_line(obj: Any) -> str:
+    return json.dumps(obj, separators=(",", ":"), default=str) + "\n"
 
 
 @router.get("")
@@ -22,10 +45,13 @@ async def list_audit(
     cursor: str | None = None,
     event_type: str | None = None,
     status: str | None = None,
+    manifest_id: str | None = None,
+    time_range: tuple[int | None, int | None] = Depends(_time_range),
 ) -> dict[str, Any]:
     from felix.audit import store as audit_store
 
     require_mgmt_scopes(request, SCOPE_AUDIT_READ)
+    since, until = time_range
     try:
         items, next_cursor = await audit_store.list_events(
             request.app.state.settings,
@@ -34,6 +60,9 @@ async def list_audit(
             cursor=cursor,
             event_type=event_type,
             status=status,
+            manifest_id=manifest_id,
+            since=since,
+            until=until,
         )
     except InvalidCursor as exc:
         # A cursor is a query parameter, so it arrives from the client and can be anything.
@@ -50,6 +79,87 @@ async def list_audit(
         ) from exc
     # `events` alias keeps chat-ui clients that expect the TS shape working.
     return {"items": items, "events": items, "next_cursor": next_cursor}
+
+
+# Rows per store read. The export streams, so this bounds memory, not the export's size.
+_EXPORT_PAGE = 500
+
+
+@router.get(
+    "/export",
+    response_class=StreamingResponse,
+    responses={
+        200: {
+            "description": "One audit event per line, newest first.",
+            "content": {"application/x-ndjson": {"schema": {"type": "string"}}},
+        }
+    },
+)
+async def export_audit(
+    request: Request,
+    event_type: str | None = None,
+    status: str | None = None,
+    manifest_id: str | None = None,
+    time_range: tuple[int | None, int | None] = Depends(_time_range),
+) -> StreamingResponse:
+    """Every matching event as JSONL, newest first — the whole range, not a page.
+
+    Rows are shaped as `GET /audit` lists them, and nothing caps the count: an export that
+    stopped at a limit would look complete to the auditor holding it. Only flushed events are
+    read, so an export whose `until` is in the past is stable. The first page is read before
+    the response starts, so a failure there is a status code rather than an empty file. One
+    after it ends the file with an `{"error": ...}` line: raising instead leaves Granian holding
+    the connection open, so the client hangs rather than seeing a truncated body.
+    """
+    from felix.audit import store as audit_store
+    from felix.db.session import rls_tenant
+
+    require_mgmt_scopes(request, SCOPE_AUDIT_READ)
+    since, until = time_range
+    settings = request.app.state.settings
+    tenant_id = tenant_id_from_request(request)
+
+    async def read_page(cursor: str | None) -> tuple[list[dict[str, Any]], str | None]:
+        # Later pages are read while the body streams, after the handler has returned; the
+        # tenant scope is set per read rather than trusted to still be in effect by then.
+        with rls_tenant(tenant_id):
+            return await audit_store.list_events(
+                settings,
+                tenant_id,
+                limit=_EXPORT_PAGE,
+                cursor=cursor,
+                event_type=event_type,
+                status=status,
+                manifest_id=manifest_id,
+                since=since,
+                until=until,
+            )
+
+    first = await read_page(None)
+
+    async def lines() -> AsyncIterator[str]:
+        page, cursor = first
+        try:
+            while True:
+                for event in page:
+                    yield _jsonl_line(event)
+                if cursor is None:
+                    return
+                page, cursor = await read_page(cursor)
+        except Exception:  # cancellation is a BaseException and passes through
+            # A store failure is never a relayable type, so the exception stays in the log.
+            logger.exception("audit export failed after its first page")
+            yield _jsonl_line({"error": "export_incomplete", "detail": internal_error_message()})
+
+    # Built from integers only, so nothing a caller sends reaches the header.
+    start = "start" if since is None else since
+    end = "now" if until is None else until
+    filename = f"audit-{start}-{end}.jsonl"
+    return StreamingResponse(
+        lines(),
+        media_type="application/x-ndjson",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/metrics")

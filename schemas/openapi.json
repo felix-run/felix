@@ -1726,6 +1726,60 @@
               ],
               "title": "Status"
             }
+          },
+          {
+            "in": "query",
+            "name": "manifest_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Manifest Id"
+            }
+          },
+          {
+            "description": "Epoch ms, inclusive",
+            "in": "query",
+            "name": "since",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Epoch ms, inclusive",
+              "title": "Since"
+            }
+          },
+          {
+            "description": "Epoch ms, exclusive",
+            "in": "query",
+            "name": "until",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Epoch ms, exclusive",
+              "title": "Until"
+            }
           }
         ],
         "responses": {
@@ -1821,6 +1875,60 @@
               ],
               "title": "Status"
             }
+          },
+          {
+            "in": "query",
+            "name": "manifest_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Manifest Id"
+            }
+          },
+          {
+            "description": "Epoch ms, inclusive",
+            "in": "query",
+            "name": "since",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Epoch ms, inclusive",
+              "title": "Since"
+            }
+          },
+          {
+            "description": "Epoch ms, exclusive",
+            "in": "query",
+            "name": "until",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Epoch ms, exclusive",
+              "title": "Until"
+            }
           }
         ],
         "responses": {
@@ -1848,6 +1956,126 @@
           }
         },
         "summary": "List Audit",
+        "tags": [
+          "Audit"
+        ]
+      }
+    },
+    "/audit/export": {
+      "get": {
+        "description": "Every matching event as JSONL, newest first \u2014 the whole range, not a page.\n\nRows are shaped as `GET /audit` lists them, and nothing caps the count: an export that\nstopped at a limit would look complete to the auditor holding it. Only flushed events are\nread, so an export whose `until` is in the past is stable. The first page is read before\nthe response starts, so a failure there is a status code rather than an empty file. One\nafter it ends the file with an `{\"error\": ...}` line: raising instead leaves Granian holding\nthe connection open, so the client hangs rather than seeing a truncated body.",
+        "operationId": "export_audit_audit_export_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "event_type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Event Type"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "manifest_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Manifest Id"
+            }
+          },
+          {
+            "description": "Epoch ms, inclusive",
+            "in": "query",
+            "name": "since",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Epoch ms, inclusive",
+              "title": "Since"
+            }
+          },
+          {
+            "description": "Epoch ms, exclusive",
+            "in": "query",
+            "name": "until",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Epoch ms, exclusive",
+              "title": "Until"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/x-ndjson": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "One audit event per line, newest first."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Export Audit",
         "tags": [
           "Audit"
         ]
