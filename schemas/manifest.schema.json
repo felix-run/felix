@@ -723,6 +723,37 @@
       "title": "GovernanceSpec",
       "type": "object"
     },
+    "Greeting": {
+      "additionalProperties": false,
+      "description": "What a client says on an empty thread, before the starters.\n\nPresentation only, like `Starter`. Both fields are plain text; a client renders them as\nwritten and supplies its own default for anything the manifest leaves out.",
+      "properties": {
+        "headline": {
+          "maxLength": 80,
+          "minLength": 1,
+          "title": "Headline",
+          "type": "string"
+        },
+        "subtitle": {
+          "anyOf": [
+            {
+              "maxLength": 300,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Subtitle"
+        }
+      },
+      "required": [
+        "headline"
+      ],
+      "title": "Greeting",
+      "type": "object"
+    },
     "Guardrails": {
       "additionalProperties": false,
       "properties": {
@@ -1242,6 +1273,17 @@
           "maxItems": 8,
           "title": "Starters",
           "type": "array"
+        },
+        "greeting": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Greeting"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "required": [

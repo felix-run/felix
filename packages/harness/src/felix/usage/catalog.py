@@ -67,9 +67,13 @@ def catalog_from_manifest(name: str, manifest: Any | None = None) -> dict[str, A
     context_window = None
     price = None
     starters: list[dict[str, str]] = []
+    greeting: dict[str, str | None] | None = None
     if manifest is not None:
         meta = getattr(manifest, "metadata", None)
         starters = [{"title": s.title, "prompt": s.prompt} for s in (getattr(meta, "starters", None) or [])]
+        declared = getattr(meta, "greeting", None)
+        if declared is not None:
+            greeting = {"headline": declared.headline, "subtitle": declared.subtitle}
         spec = getattr(getattr(manifest, "spec", None), "model", None)
         if spec is not None:
             mid = getattr(spec, "id", None)
@@ -95,6 +99,8 @@ def catalog_from_manifest(name: str, manifest: Any | None = None) -> dict[str, A
     # Always a list, empty when the manifest declares none or could not be resolved, so a
     # client can tell "this harness lists starters" from an older one that has no key.
     entry["felix"]["starters"] = starters
+    # `null` when the manifest declares none: the client's own greeting stands.
+    entry["felix"]["greeting"] = greeting
     return entry
 
 
