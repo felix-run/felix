@@ -135,6 +135,7 @@ def _isolate_process_global_stores():
     from felix.jobs.store import reset_jobs_for_tests
     from felix.manifests import store as manifest_store
     from felix.manifests.resolver import clear_resolver_cache
+    from felix.memory.store import reset_memory_for_tests
     from felix.session.search import reset_search_index_for_tests
     from felix.session.store import _memory_session_stores
     from felix.session.thread_state import reset_thread_meta_for_tests
@@ -179,6 +180,11 @@ def _isolate_process_global_stores():
         # found this the hard way: they passed alone and failed in the suite.
         audit_store.clear_memory()
         usage_store.clear_memory()
+        # Long-term memory rows, missed the same way: a test that stored a fact left it in the
+        # tenant's pool, and the next test to list that pool counted one row too many. Serially
+        # the order hid it; under xdist a worker's order differs, and CI failed on a test and a
+        # change that had nothing to do with each other.
+        reset_memory_for_tests()
 
     _clear()
     yield
