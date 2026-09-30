@@ -399,7 +399,9 @@ jobs:
           tags: felix:ci
           load: true
           cache-from: type=gha,scope=felix-lean
-          cache-to: type=gha,scope=felix-lean,mode=max
+          # Written from main only. A pull request reads main's layers and writes nothing back:
+          # the export is ~13s a run, and a branch cannot seed a layer main then builds on.
+          cache-to: ${{ github.event_name == 'push' && 'type=gha,scope=felix-lean,mode=max' || '' }}
       # Scans the image we actually ship, OS packages included. Unfixed
       # findings are reported but do not fail the build — there is nothing to
       # act on until upstream ships a patch.
