@@ -38,12 +38,17 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends gcc libc6-dev libpq-dev; \
     rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml uv.lock README.md LICENSE NOTICE ./
-COPY packages ./packages
-COPY apps ./apps
-COPY manifests ./manifests
-COPY migrations ./migrations
-COPY alembic.ini ./
+# Dependencies first, sources after. A layer rebuilds when anything copied ahead of it
+# changes, and the psycopg compile below is most of the build — 34s of CI's 66. With only the
+# lock and each workspace member's pyproject ahead of it, it reruns when a dependency changes,
+# not on every commit. A new workspace member needs its pyproject listed here.
+COPY pyproject.toml uv.lock ./
+COPY packages/ai/pyproject.toml packages/ai/
+COPY packages/cli/pyproject.toml packages/cli/
+COPY packages/client/pyproject.toml packages/client/
+COPY packages/harness/pyproject.toml packages/harness/
+COPY apps/api/pyproject.toml apps/api/
+COPY apps/worker/pyproject.toml apps/worker/
 
 # Core install only. Optional: FELIX_EXTRAS=aws,gcp,otel,temporal,warehouse (comma-separated)
 # Always --locked: the image must be built from the committed uv.lock, the same
@@ -52,16 +57,9 @@ COPY alembic.ini ./
 # happily build from a lock that no longer matches. Run `uv lock` and commit it.
 RUN --mount=type=cache,target=/root/.cache/uv \
     set -eux; \
-    if [ -z "${FELIX_EXTRAS}" ]; then \
-      uv sync --locked --no-dev; \
-    else \
-      extras="$(echo "${FELIX_EXTRAS}" | tr ',' ' ')"; \
-      set --; \
-      for e in ${extras}; do \
-        set -- "$@" --extra "${e}"; \
-      done; \
-      uv sync --locked --no-dev "$@"; \
-    fi
+    set --; \
+    for e in $(echo "${FELIX_EXTRAS}" | tr ',' ' '); do set -- "$@" --extra "${e}"; done; \
+    uv sync --locked --no-dev --no-install-workspace "$@"
 
 # The image ships `psycopg[c]`, not `psycopg[binary]`, and this is the one place the two
 # diverge: `pyproject.toml` keeps `[binary]` so that installing Felix -- or contributing to
@@ -82,7 +80,22 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     set -eux; \
     version="$(uv pip show psycopg | awk '/^Version:/ {print $2}')"; \
     uv pip uninstall psycopg-binary; \
-    uv pip install --no-cache "psycopg[c]==${version}"; \
+    uv pip install --no-cache "psycopg[c]==${version}"
+
+COPY README.md LICENSE NOTICE ./
+COPY packages ./packages
+COPY apps ./apps
+COPY manifests ./manifests
+COPY migrations ./migrations
+COPY alembic.ini ./
+
+# The workspace itself. `--inexact` keeps `psycopg-c`, which the lock does not name, and
+# `--no-install-package` keeps this sync from putting `psycopg-binary` back.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    set -eux; \
+    set --; \
+    for e in $(echo "${FELIX_EXTRAS}" | tr ',' ' '); do set -- "$@" --extra "${e}"; done; \
+    uv sync --locked --no-dev --inexact --no-install-package psycopg-binary "$@"; \
     ! uv pip show psycopg-binary >/dev/null 2>&1
 
 FROM python:3.14-slim@sha256:cad9a2c871761c413caa6fdd6441c783451e740a48aaeba60ae62a8b53525ef6 AS runtime
@@ -99,13 +112,18 @@ ENV UV_CACHE_DIR=/tmp/uv \
 
 WORKDIR /app
 
-COPY --from=builder /app /app
+# The OS layers come before the venv, so a commit that changes only Felix reuses them. Cached,
+# `apt-get upgrade` would patch only as of whenever the layer was first built; APT_REFRESH
+# is part of this layer's key, and CI passes the date, so the upgrade reruns at most once a
+# day. A build without it (the release, a local build with no cache) always runs it fresh.
+ARG APT_REFRESH=""
 
 # Patch OS packages, then drop pip: the venv is built by uv in the builder
 # stage and copied whole, so the runtime needs neither pip nor its vendored
 # libraries (which carry their own CVEs). Both shrink the attack surface of
 # what actually ships.
 RUN set -eux; \
+    echo "apt refresh: ${APT_REFRESH:-none}"; \
     apt-get update; \
     apt-get upgrade -y --no-install-recommends; \
     apt-get install -y --no-install-recommends libpq5; \
@@ -131,6 +149,8 @@ RUN set -eux; \
 RUN mkdir -p /data /workspace \
     && useradd --uid 10001 --create-home --shell /usr/sbin/nologin felix \
     && chown -R felix:felix /data /workspace
+
+COPY --from=builder /app /app
 
 USER felix
 EXPOSE 8080

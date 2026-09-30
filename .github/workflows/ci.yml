@@ -379,8 +379,27 @@ jobs:
           # one, so it demands a tag. Any non-empty value satisfies an interpolation
           # check -- this step parses the file, it does not pull anything.
           FELIX_IMAGE_TAG: ci-compose-check
+      # Layers are cached across runs in the Actions cache: the Dockerfile puts the dependency
+      # install and the psycopg compile ahead of the sources, so a commit that changes only
+      # Felix rebuilds only Felix. APT_REFRESH keys the runtime `apt-get upgrade` layer to the
+      # day, so the image scanned below is never patched as of a stale cache. release.yml does
+      # not read this cache: what ships is always built from nothing.
+      - name: Date for the apt layer
+        id: apt
+        run: echo "day=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v3.9.0
       - name: Build lean image
-        run: docker build -f deploy/docker/Dockerfile --build-arg FELIX_EXTRAS= -t felix:ci .
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v6.9.0
+        with:
+          context: .
+          file: deploy/docker/Dockerfile
+          build-args: |
+            FELIX_EXTRAS=
+            APT_REFRESH=${{ steps.apt.outputs.day }}
+          tags: felix:ci
+          load: true
+          cache-from: type=gha,scope=felix-lean
+          cache-to: type=gha,scope=felix-lean,mode=max
       # Scans the image we actually ship, OS packages included. Unfixed
       # findings are reported but do not fail the build — there is nothing to
       # act on until upstream ships a patch.
