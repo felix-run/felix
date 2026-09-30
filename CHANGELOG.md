@@ -258,6 +258,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Memory capture stops storing the assistant talking about itself.** The filter behind the
+  extraction prompt only recognised first-person present tense ("I'm", "I can"), but the
+  extractor resolves pronouns, so an apology or a limitation arrived as "The assistant could not
+  find the runbook" and was stored as a fact. It now also refuses past tense, apologies and third
+  person. On a fixed corpus it catches 13 of 13 such sentences, up from 3, and still keeps every
+  fact about the user beside them.
+
 - **The model listing reports each manifest's real context window.** It reported 128K for every
   manifest — the session field's old default — and otherwise looked the window up by the
   manifest's name rather than its model. It now reports the window compaction uses.
