@@ -66,7 +66,10 @@ def catalog_from_manifest(name: str, manifest: Any | None = None) -> dict[str, A
     model_id = name
     context_window = None
     price = None
+    starters: list[dict[str, str]] = []
     if manifest is not None:
+        meta = getattr(manifest, "metadata", None)
+        starters = [{"title": s.title, "prompt": s.prompt} for s in (getattr(meta, "starters", None) or [])]
         spec = getattr(getattr(manifest, "spec", None), "model", None)
         if spec is not None:
             mid = getattr(spec, "id", None)
@@ -89,6 +92,9 @@ def catalog_from_manifest(name: str, manifest: Any | None = None) -> dict[str, A
     )
     # Keep OpenAI id as the manifest name (Felix convention); nest provider model under felix.
     entry["felix"]["providerModel"] = model_id if model_id != name else None
+    # Always a list, empty when the manifest declares none or could not be resolved, so a
+    # client can tell "this harness lists starters" from an older one that has no key.
+    entry["felix"]["starters"] = starters
     return entry
 
 

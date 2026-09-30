@@ -6,6 +6,13 @@ metadata:
   version: 1.0.0
   description: Felix ReAct agent — direct questions, factual lookups, calculations.
   tags: [react, default]
+  starters:
+    - title: "Calculate"
+      prompt: "What is 17.5% of 2,340, and what is that as a monthly amount over a year?"
+    - title: "Summarize Felix"
+      prompt: "In two sentences, what is Felix and who is it for?"
+    - title: "Draft a reply"
+      prompt: "Draft a short, polite reply declining a meeting that conflicts with a deadline."
 
 spec:
   pattern: react
