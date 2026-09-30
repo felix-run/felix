@@ -7,25 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- **`/v1/models` lists the tenant's published manifests, not only the bundled ones.** A manifest
-  published with `PUT /manifests/{name}` under a new name was callable — `/chat`,
-  `/v1/chat/completions` and the resolver all found it — but the listing read the bundled
-  directory alone, so a client that builds its agent picker from `/v1/models` could never select
-  it. Bundled names keep their order and come first; a stored manifest shadowing a bundled name is
-  listed once. Under `bundled_only` the store is not listed, since the resolver does not read it,
-  and a store that cannot be read leaves the bundled listing rather than failing it.
-
-- **`deploy/gcp/roll.sh` survives its first real roll.** Three bugs, all found rolling 0.5.0:
-  `gh` opened a pager and waited at `(END)` for a key; `gcloud compute ssh` and the other tools
-  read the terminal and swallowed answers typed ahead of a prompt; and the checkout ran as the
-  directory's owner, which fails part-way on the root-owned files earlier `sudo git` rolls leave,
-  half-switching the tree. Only the prompts read the terminal now, git runs as root with a
-  `safe.directory` override, and each step that changes the host stops with what it left behind
-  and how to restore it.
+## [0.5.1] — 2026-09-30
 
 ### Added
+
+- **A manifest can declare its starter prompts: `metadata.starters`.** Up to eight `{title,
+  prompt}` entries a client offers on an empty thread, sending `prompt` verbatim when one is
+  chosen. `GET /v1/models` lists them as `felix.starters` — always a list, empty when none are
+  declared, so a client can tell this harness from an older one. Presentation only: nothing reads
+  them to decide what a run may do. `cowork`, `quick`, `deep`, `support` and `oss-only` declare
+  them.
+
+- **A manifest can set its empty-thread greeting: `metadata.greeting`.** `{headline, subtitle?}`,
+  plain text, listed on `GET /v1/models` as `felix.greeting` (`null` when not declared, and the
+  client keeps its own). `cowork`, `deep` and `support` declare one.
 
 - **`deploy/gcp/roll.sh`: upgrade a GCE + Compose deployment in one command.** It runs the
   `docs/UPGRADING.md` sequence from your machine over `gcloud compute ssh`: preflight (release and
@@ -47,6 +42,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   without it, recall runs on full text and topic keys as before. `auto` never picks a hosted
   embedder: that would send every stored memory to a provider, and the column is 768 wide. Set
   `none` to keep the old behaviour on an image that has the extra.
+
+### Fixed
+
+- **urllib3 2.8.0 and PyJWT 2.15.0**, for CVE-2026-97687, CVE-2026-97688 and CVE-2026-97689
+  (urllib3 2.7.0) and CVE-2026-101918 (PyJWT 2.14.0), which the dependency scan raised. Both
+  arrive transitively — urllib3 through botocore, requests, sentry-sdk and others, PyJWT through
+  the `mcp` extra's `mcp[crypto]` — so only the lock changes.
+
+- **`/v1/models` lists the tenant's published manifests, not only the bundled ones.** A manifest
+  published with `PUT /manifests/{name}` under a new name was callable — `/chat`,
+  `/v1/chat/completions` and the resolver all found it — but the listing read the bundled
+  directory alone, so a client that builds its agent picker from `/v1/models` could never select
+  it. Bundled names keep their order and come first; a stored manifest shadowing a bundled name is
+  listed once. Under `bundled_only` the store is not listed, since the resolver does not read it,
+  and a store that cannot be read leaves the bundled listing rather than failing it.
+
+- **`deploy/gcp/roll.sh` survives its first real roll.** Three bugs, all found rolling 0.5.0:
+  `gh` opened a pager and waited at `(END)` for a key; `gcloud compute ssh` and the other tools
+  read the terminal and swallowed answers typed ahead of a prompt; and the checkout ran as the
+  directory's owner, which fails part-way on the root-owned files earlier `sudo git` rolls leave,
+  half-switching the tree. Only the prompts read the terminal now, git runs as root with a
+  `safe.directory` override, and each step that changes the host stops with what it left behind
+  and how to restore it.
 
 ## [0.5.0] — 2026-09-29
 
@@ -3345,3 +3363,4 @@ A hotfix on 0.4.0, branched from its tag, carrying one fix. Everything else unde
 [0.4.0]: https://github.com/felix-run/felix/releases/tag/v0.4.0
 [0.4.1]: https://github.com/felix-run/felix/releases/tag/v0.4.1
 [0.5.0]: https://github.com/felix-run/felix/releases/tag/v0.5.0
+[0.5.1]: https://github.com/felix-run/felix/releases/tag/v0.5.1
