@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **After compaction, a kept tool result is replayed with the call it answers.** A compaction
+  checkpoint recorded each kept turn's `tool_calls`, and the replay rebuilt the turns from
+  `role`, `content`, `tool_call_id` and `name` only. So on every turn after a compaction, a kept
+  tool result reached the model with no assistant turn calling it, which Anthropic refuses, and
+  a signed thinking block that extended thinking must see again was dropped. `contributor` and
+  `triage` both compact. Checkpoints and live history now go through one conversion,
+  `chat_message_from_parts`, and a checkpoint records its kept turns with `retained_turn`, beside
+  it, so save and load cannot drift again; a round-trip test holds them equal. Checkpoints stored
+  before this still replay their tool calls.
+
+
 ### Added
 
 - **`deploy/gcp/roll.sh --yes`: roll without a terminal.** The confirmations read `/dev/tty`, so

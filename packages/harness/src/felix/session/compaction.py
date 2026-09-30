@@ -13,8 +13,10 @@ from felix.session.types import (
     Session,
     SessionEvent,
     SessionRenderOpts,
+    chat_message_from_parts,
     event_to_chat_message,
     include_in_llm_context,
+    retained_turn,
 )
 
 logger = logging.getLogger("felix.session.compaction")
@@ -348,12 +350,16 @@ class CompactingSessionStrategy:
             out.append(summary_message(latest_summary.content))
             for item in retained_tail:
                 if isinstance(item, dict):
+                    # The same conversion history uses. Checkpoints written before `metadata`
+                    # was recorded still carry `tool_calls`, which is the part a provider needs.
                     out.append(
-                        ChatMessage(
-                            role=item.get("role") or "assistant",  # type: ignore[arg-type]
-                            content=str(item.get("content") or ""),
+                        chat_message_from_parts(
+                            role=item.get("role"),
+                            content=item.get("content"),
                             tool_call_id=item.get("tool_call_id"),
                             name=item.get("name"),
+                            tool_calls=item.get("tool_calls"),
+                            metadata=item.get("metadata"),
                         )
                     )
             out.extend(event_to_chat_message(e) for e in post if include_in_llm_context(e))
@@ -521,16 +527,7 @@ class CompactingSessionStrategy:
 
         if summary_text:
             first_kept = kept[0] if kept else None
-            retained = [
-                {
-                    "role": e.role,
-                    "content": e.content,
-                    "tool_call_id": e.tool_call_id,
-                    "name": e.name,
-                    "tool_calls": e.tool_calls,
-                }
-                for e in kept
-            ]
+            retained = [retained_turn(e) for e in kept]
             md: dict[str, Any] = {
                 "type": COMPACTION_METADATA_TYPE,
                 "covers_to_seq": older[-1].seq,
