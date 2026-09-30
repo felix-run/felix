@@ -936,3 +936,25 @@ async def test_volume_alone_cannot_evict_a_curated_memory() -> None:
 
     prompt = await _prelude(settings)
     assert "Require approval before any production write." in prompt
+
+
+@pytest.mark.asyncio
+async def test_a_third_person_apology_from_the_extractor_is_not_stored() -> None:
+    """The extractor resolves pronouns, so the apology arrives as "The assistant apologized…",
+    past the first-person filter the prompt's exclusion relied on. The fact beside it is kept."""
+    settings = _settings()
+    stored = await capture_from_turn(
+        settings,
+        TENANT,
+        manifest_id=MANIFEST,
+        user_text="where is the runbook",
+        assistant_text="Sorry for the confusion — it is in the ops repository.",
+        capture=MemoryCapture(enabled=True, max_facts=3, min_chars=5),
+        model=_ScriptedModel(
+            _payload(
+                {"content": "The assistant apologized for the confusion.", "kind": "event"},
+                {"content": "The deploy runbook lives in the ops repository.", "topic_key": "deploy.runbook"},
+            )
+        ),
+    )
+    assert stored == ["The deploy runbook lives in the ops repository."]

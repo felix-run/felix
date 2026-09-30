@@ -671,6 +671,10 @@ comment explaining exactly that. It is conditional, not inert.
       `cowork` and `governed` enable capture and recall tools, so `quick` — the manifest every
       README example uses — has no long-term memory at all. Extraction quality is whatever one
       prompt returns; a live run stored an assistant's apology as a durable fact.
+      The meta filter behind the prompt is wider since: it knew only first-person present
+      tense, and the extractor — told to resolve pronouns — writes "The assistant could not…";
+      measured on `tests/unit/test_memory_meta_filter.py`'s corpus it caught 3 of 13 and now
+      catches 13 of 13, refusing none of the 8 user facts beside them. The defaults remain.
       `consolidation.py` is 14 lines against `extraction.py`'s 340, so the store only grows.
 - [x] **Who may retire a memory by naming its `topic_key`** — decided: the operator only.
       `memory/store.py:_may_retire_by_topic` requires rank above `_DEFAULT_TRUST` for the
