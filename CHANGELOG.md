@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **urllib3 is 2.8.0 (CVE-2026-97687, CVE-2026-97689).** The `pip-audit` gate failed on 2.7.0
+  for every pull request once both were published. Felix does not depend on urllib3 directly; it
+  arrives through `requests` (the `docker` sandbox client and Google API libraries), `botocore`
+  (the S3 object store) and `clickhouse-connect` (the ClickHouse warehouse). Lockfile-only change;
+  2.8.0 was released on 2026-09-15, outside the 48-hour dependency hold.
+
+
 ### Fixed
 
 - **`/v1/models` lists the tenant's published manifests, not only the bundled ones.** A manifest
