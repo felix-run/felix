@@ -191,14 +191,44 @@ def include_in_llm_context(e: SessionEvent) -> bool:
 
 
 def event_to_chat_message(e: SessionEvent) -> ChatMessage:
-    tool_calls = None
-    if e.tool_calls:
-        tool_calls = [
+    return chat_message_from_parts(
+        role=e.role,
+        content=e.content,
+        tool_call_id=e.tool_call_id,
+        name=e.name,
+        tool_calls=e.tool_calls,
+        metadata=e.metadata,
+    )
+
+
+# Carried into a compaction checkpoint's retained tail so a replayed turn is the turn that was
+# kept, not a text-only copy of it.
+REPLAYED_METADATA_KEYS = ("thinking", "attachments")
+
+
+def chat_message_from_parts(
+    *,
+    role: str | None,
+    content: str | None,
+    tool_call_id: str | None = None,
+    name: str | None = None,
+    tool_calls: list[dict[str, Any]] | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> ChatMessage:
+    """One stored turn as a model message. The one conversion, for events and checkpoints alike.
+
+    A compaction checkpoint used to rebuild its kept turns by hand and dropped `tool_calls` --
+    so every replayed tool result arrived with no call to answer, which Anthropic rejects. Both
+    now come through here, so a field added to one is added to both.
+    """
+    calls = None
+    if tool_calls:
+        calls = [
             ToolCall(id=str(tc["id"]), name=str(tc["name"]), args=dict(tc.get("args") or {}))
-            for tc in e.tool_calls
+            for tc in tool_calls
         ]
     attachments = None
-    raw_atts = (e.metadata or {}).get("attachments")
+    raw_atts = (metadata or {}).get("attachments")
     if isinstance(raw_atts, list) and raw_atts:
         from felix.patterns.types import ImageAttachment
 
@@ -212,18 +242,18 @@ def event_to_chat_message(e: SessionEvent) -> ChatMessage:
             for a in raw_atts
             if isinstance(a, dict)
         ]
-    raw_thinking = (e.metadata or {}).get("thinking")
+    raw_thinking = (metadata or {}).get("thinking")
     thinking = (
         [b for b in raw_thinking if isinstance(b, dict)]
         if isinstance(raw_thinking, list) and raw_thinking
         else None
     )
     return ChatMessage(
-        role=e.role or "assistant",  # type: ignore[arg-type]
-        content=e.content or "",
-        tool_call_id=e.tool_call_id,
-        name=e.name,
-        tool_calls=tool_calls,
+        role=role or "assistant",  # type: ignore[arg-type]
+        content=content or "",
+        tool_call_id=tool_call_id,
+        name=name,
+        tool_calls=calls,
         attachments=attachments,
         thinking=thinking,
     )
@@ -268,6 +298,7 @@ def analyze_wake(events: list[SessionEvent]) -> WakeState:
 
 
 __all__ = [
+    "REPLAYED_METADATA_KEYS",
     "AppendableEvent",
     "EventKind",
     "GetEventsOpts",
