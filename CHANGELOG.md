@@ -45,9 +45,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **urllib3 2.8.0**, for CVE-2026-97687, CVE-2026-97688 and CVE-2026-97689, which the dependency
-  scan raised against 2.7.0. It arrives transitively (botocore, requests, sentry-sdk and others);
-  only the lock changes.
+- **urllib3 2.8.0 and PyJWT 2.15.1**, for CVE-2026-97687, CVE-2026-97688 and CVE-2026-97689
+  (urllib3 2.7.0) and CVE-2026-101918 (PyJWT 2.14.0), which the dependency scan raised. Both
+  arrive transitively — urllib3 through botocore, requests, sentry-sdk and others, PyJWT through
+  the `mcp` extra's `mcp[crypto]` — so only the lock changes.
 
 - **`/v1/models` lists the tenant's published manifests, not only the bundled ones.** A manifest
   published with `PUT /manifests/{name}` under a new name was callable — `/chat`,
