@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`deploy/gcp/roll.sh --yes`: roll without a terminal.** The confirmations read `/dev/tty`, so
+  run from CI, an agent's shell or Claude Code's `!` prefix the script reached its first question
+  only after writing the production backup, then died on `/dev/tty: Device not configured` (the
+  0.5.1 roll). Without a terminal it now refuses before the preflight, naming `--yes`; with `--yes`
+  every confirmation is answered yes and printed. Durable runs in flight still stop it, since
+  restarting the worker under them is a decision rather than a formality. Options may come in any
+  order, and an unknown one is refused.
+
 ## [0.5.1] — 2026-09-30
 
 ### Added

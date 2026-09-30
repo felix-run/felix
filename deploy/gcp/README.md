@@ -76,6 +76,11 @@ checkout and `FELIX_IMAGE_TAG` pin, a pull, `docker compose up -d`, and a wait f
 report the version. It asks before each step that changes the host. Run it with `--check` first,
 which only reads. Its header lists the variables that point it at your VM.
 
+The questions are read from the terminal, so run it from one. With no terminal — CI, an agent's
+shell, Claude Code's `!` prefix — it refuses before doing anything, unless you pass `--yes`, which
+answers every confirmation yes and prints each one. `--yes` still stops if durable runs are in
+flight: restarting the worker under them is a decision to make interactively.
+
 ## Helm
 
 ```bash
