@@ -17,6 +17,7 @@ from tests.conformance.conftest import (
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("empty_database")
 async def test_state_tracks_the_schema() -> None:
     url = postgres_url_or_skip("the migration-state contract")
     settings = Settings(database_url=url)
