@@ -92,6 +92,19 @@ class Starter(_Strict):
     prompt: str = Field(min_length=1, max_length=2000)
 
 
+class Greeting(_Strict):
+    """What a client says on an empty thread, before the starters.
+
+    Presentation only, like `Starter`. Both fields are plain text; a client renders them as
+    written and supplies its own default for anything the manifest leaves out.
+    """
+
+    #: The heading, e.g. "What should we do in this folder?".
+    headline: str = Field(min_length=1, max_length=80)
+    #: One or two sentences under it. Omitted, the client says which agent this is itself.
+    subtitle: str | None = Field(default=None, min_length=1, max_length=300)
+
+
 class Metadata(_Strict):
     name: str = Field(min_length=1, max_length=128)
     version: str = "1.0.0"
@@ -100,6 +113,8 @@ class Metadata(_Strict):
     #: Listed by `GET /v1/models` as `felix.starters`. Capped because every entry is a button
     #: on an empty thread; past a handful they stop being suggestions and become a menu.
     starters: list[Starter] = Field(default_factory=list, max_length=8)
+    #: Listed by `GET /v1/models` as `felix.greeting`, `null` when not declared.
+    greeting: Greeting | None = None
 
     @field_validator("name")
     @classmethod
@@ -1095,6 +1110,7 @@ __all__ = [
     "DeciderSpec",
     "ExecutionSpec",
     "GovernanceSpec",
+    "Greeting",
     "Guardrails",
     "Limits",
     "Manifest",

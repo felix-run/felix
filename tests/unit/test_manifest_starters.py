@@ -68,3 +68,30 @@ def test_the_bundled_agents_that_had_client_side_starters_declare_them(name: str
 
     raw = yaml.safe_load((REPO / "manifests" / f"{name}.yaml").read_text())
     assert parse_manifest(raw).metadata.starters
+
+
+def test_the_listing_carries_a_declared_greeting() -> None:
+    entry = catalog_from_manifest("listed", _manifest(greeting={"headline": "What should we fix?"}))
+    assert entry["felix"]["greeting"] == {"headline": "What should we fix?", "subtitle": None}
+    both = {"headline": "Hi", "subtitle": "One line."}
+    assert catalog_from_manifest("listed", _manifest(greeting=both))["felix"]["greeting"] == both
+
+
+def test_no_greeting_is_null_so_the_client_keeps_its_own() -> None:
+    assert catalog_from_manifest("listed", _manifest())["felix"]["greeting"] is None
+    assert catalog_from_manifest("unresolved", None)["felix"]["greeting"] is None
+
+
+@pytest.mark.parametrize(
+    "greeting",
+    [
+        {"subtitle": "no headline"},
+        {"headline": ""},
+        {"headline": "x" * 81},
+        {"headline": "x", "subtitle": ""},
+        {"headline": "x", "emoji": "wave"},
+    ],
+)
+def test_a_malformed_greeting_is_refused(greeting: dict[str, str]) -> None:
+    with pytest.raises(ManifestParseError):
+        _manifest(greeting=greeting)

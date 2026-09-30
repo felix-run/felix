@@ -6,6 +6,9 @@ metadata:
   version: 1.0.0
   description: Felix workspace agent — goals, files, client tools, and approvals.
   tags: [react, workspace, durable]
+  greeting:
+    headline: "What should we do in this folder?"
+    subtitle: "cowork reads the workspace without asking, and asks before it writes a file or runs a command."
   starters:
     - title: "List the workspace"
       prompt: "List the top-level files and folders in the workspace."
