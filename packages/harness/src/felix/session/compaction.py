@@ -9,7 +9,6 @@ from felix.hooks import run_before_compact, run_compact_failed
 from felix.patterns.types import ChatMessage
 from felix.security.fencing import fence
 from felix.session.types import (
-    REPLAYED_METADATA_KEYS,
     AppendableEvent,
     Session,
     SessionEvent,
@@ -17,6 +16,7 @@ from felix.session.types import (
     chat_message_from_parts,
     event_to_chat_message,
     include_in_llm_context,
+    retained_turn,
 )
 
 logger = logging.getLogger("felix.session.compaction")
@@ -355,7 +355,7 @@ class CompactingSessionStrategy:
                     out.append(
                         chat_message_from_parts(
                             role=item.get("role"),
-                            content=str(item.get("content") or ""),
+                            content=item.get("content"),
                             tool_call_id=item.get("tool_call_id"),
                             name=item.get("name"),
                             tool_calls=item.get("tool_calls"),
@@ -527,19 +527,7 @@ class CompactingSessionStrategy:
 
         if summary_text:
             first_kept = kept[0] if kept else None
-            retained = [
-                {
-                    "role": e.role,
-                    "content": e.content,
-                    "tool_call_id": e.tool_call_id,
-                    "name": e.name,
-                    "tool_calls": e.tool_calls,
-                    "metadata": {
-                        k: (e.metadata or {})[k] for k in REPLAYED_METADATA_KEYS if (e.metadata or {}).get(k)
-                    },
-                }
-                for e in kept
-            ]
+            retained = [retained_turn(e) for e in kept]
             md: dict[str, Any] = {
                 "type": COMPACTION_METADATA_TYPE,
                 "covers_to_seq": older[-1].seq,

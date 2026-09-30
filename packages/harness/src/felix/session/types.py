@@ -201,9 +201,29 @@ def event_to_chat_message(e: SessionEvent) -> ChatMessage:
     )
 
 
-# Carried into a compaction checkpoint's retained tail so a replayed turn is the turn that was
-# kept, not a text-only copy of it.
-REPLAYED_METADATA_KEYS = ("thinking", "attachments")
+# The metadata `chat_message_from_parts` reads. `retained_turn` copies exactly these into a
+# compaction checkpoint, and the round-trip test holds the two together: a key the converter
+# learns and this tuple does not is dropped from every replayed turn, the bug that tuple fixed.
+_REPLAYED_METADATA_KEYS = ("thinking", "attachments")
+
+
+def retained_turn(e: SessionEvent) -> dict[str, Any]:
+    """A kept turn as a compaction checkpoint stores it: exactly what the converter reads.
+
+    Beside the converter on purpose, so save and load are one module's contract. Attachments
+    are copied as stored, so a `data:` image is held twice -- in the log and in the
+    checkpoint -- for as long as both live; that is the price of a replay that does not
+    depend on the log still holding the turn.
+    """
+    metadata = e.metadata or {}
+    return {
+        "role": e.role,
+        "content": e.content,
+        "tool_call_id": e.tool_call_id,
+        "name": e.name,
+        "tool_calls": e.tool_calls,
+        "metadata": {k: metadata[k] for k in _REPLAYED_METADATA_KEYS if metadata.get(k)},
+    }
 
 
 def chat_message_from_parts(
@@ -298,7 +318,6 @@ def analyze_wake(events: list[SessionEvent]) -> WakeState:
 
 
 __all__ = [
-    "REPLAYED_METADATA_KEYS",
     "AppendableEvent",
     "EventKind",
     "GetEventsOpts",
@@ -310,7 +329,9 @@ __all__ = [
     "SessionStrategy",
     "WakeState",
     "analyze_wake",
+    "chat_message_from_parts",
     "chat_message_to_event",
     "event_to_chat_message",
     "include_in_llm_context",
+    "retained_turn",
 ]

@@ -15,8 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tool result reached the model with no assistant turn calling it, which Anthropic refuses, and
   a signed thinking block that extended thinking must see again was dropped. `contributor` and
   `triage` both compact. Checkpoints and live history now go through one conversion,
-  `chat_message_from_parts`, and a checkpoint also records each kept turn's thinking and
-  attachments. Checkpoints stored before this still replay their tool calls.
+  `chat_message_from_parts`, and a checkpoint records its kept turns with `retained_turn`, beside
+  it, so save and load cannot drift again; a round-trip test holds them equal. Checkpoints stored
+  before this still replay their tool calls.
 
 
 ### Added
