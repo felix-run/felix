@@ -160,6 +160,8 @@ async def query(
     event_type: str | None = None,
     status: str | None = None,
     manifest_id: str | None = None,
+    since: int | None = None,
+    until: int | None = None,
 ) -> tuple[list[dict[str, Any]], str | None]:
     """Query audit events for a tenant.
 
@@ -169,6 +171,11 @@ async def query(
     exceed the page would get an empty list for another, indistinguishable on the wire from
     "that manifest has no events". It is also a first-class column here --
     `list_manifests_with_events` groups by it and `jobs/retention.py` sweeps by it.
+
+    `since` and `until` bound `ts` as a half-open range, `since <= ts < until`, in epoch
+    milliseconds — half-open so consecutive windows tile a history without sharing an edge row.
+    They are here for the same reason `manifest_id` is: an export over a range that filtered
+    after the page would stop at the first page holding nothing in range.
     """
     if _use_memory(settings):
         items = [e for e in _memory_events if e["tenant_id"] == tenant_id]
@@ -178,6 +185,10 @@ async def query(
             items = [e for e in items if e["status"] == status]
         if manifest_id is not None:
             items = [e for e in items if e["manifest_id"] == manifest_id]
+        if since is not None:
+            items = [e for e in items if e["ts"] >= since]
+        if until is not None:
+            items = [e for e in items if e["ts"] < until]
         # `felix.cursors` owns the rule, not just the string: the twin and the store paged in
         # parallel here and their `next_cursor` predicates had already drifted apart.
         rows, next_cursor = take_page(order_and_seek(items, cursor), limit=limit)
@@ -200,6 +211,10 @@ async def query(
             stmt = stmt.where(AuditEvent.status == status)
         if manifest_id is not None:
             stmt = stmt.where(AuditEvent.manifest_id == manifest_id)
+        if since is not None:
+            stmt = stmt.where(AuditEvent.ts >= since)
+        if until is not None:
+            stmt = stmt.where(AuditEvent.ts < until)
         if cursor is not None:
             stmt = stmt.where(keyset_before(AuditEvent.ts, AuditEvent.id, cursor))
         found = (await db.scalars(stmt)).all()
@@ -216,6 +231,8 @@ async def list_events(
     event_type: str | None = None,
     status: str | None = None,
     manifest_id: str | None = None,
+    since: int | None = None,
+    until: int | None = None,
 ) -> tuple[list[dict[str, Any]], str | None]:
     """Compatibility name for `query`, kept because the API routes and plugins import it.
 
@@ -229,6 +246,8 @@ async def list_events(
         event_type=event_type,
         manifest_id=manifest_id,
         status=status,
+        since=since,
+        until=until,
     )
 
 

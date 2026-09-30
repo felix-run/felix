@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import pytest
 from felix_ai.providers.scripted import ScriptedTurn
 
 ADMIN = "sk-admin-not-a-secret"
@@ -377,6 +378,201 @@ async def test_a_malformed_audit_cursor_is_a_bad_request(boot: Any) -> None:
 
         usage = await app.client.get("/usage", params={"cursor": "nope"}, headers=_as(ADMIN))
         assert usage.status_code == 400, usage.text
+
+
+def _watch_audit_reads(monkeypatch: Any, *, fail_on: int | None = None) -> list[int]:
+    """Count the store reads a route makes, and fail the `fail_on`-th one.
+
+    It wraps the real store rather than replacing it, so every read that is not failed returns
+    what the memory arm holds. The count is how a paging test proves it crossed pages at all.
+    """
+    from felix.audit import store as audit_store
+
+    real = audit_store.list_events
+    reads = [0]
+
+    async def watched(*args: Any, **kwargs: Any) -> Any:
+        reads[0] += 1
+        if reads[0] == fail_on:
+            raise RuntimeError("the store went away")
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(audit_store, "list_events", watched)
+    return reads
+
+
+async def test_the_audit_listing_takes_a_time_range_and_pages_within_it(boot: Any) -> None:
+    """`GET /audit` passes the window to the store, and its cursor stays inside it.
+
+    Rows sit on both edges: 200 is in and 400 is out. Two tie at 250 so a two-row page cannot
+    tell a working cursor from one that restarts.
+    """
+    from felix.audit import store as audit_store
+    from felix.flush import flush_all
+
+    async with boot([], env=_keys(reader=["audit:read"])) as app:
+        for ts in (100, 200, 250, 250, 300, 400):
+            audit_store.record_event(app.settings, "default", "tool_call", ts=ts)
+        await flush_all(app.settings)
+
+        walked: list[int] = []
+        params: dict[str, Any] = {"since": 200, "until": 400, "limit": 2}
+        for _ in range(10):
+            page = await app.client.get("/audit", params=params, headers=_as(ADMIN))
+            assert page.status_code == 200, page.text
+            walked += [e["ts"] for e in page.json()["items"]]
+            if page.json()["next_cursor"] is None:
+                break
+            params["cursor"] = page.json()["next_cursor"]
+
+    assert walked == [300, 250, 250, 200]
+
+
+async def test_the_audit_export_is_the_whole_range_across_pages(boot: Any, monkeypatch: Any) -> None:
+    """Every event in range, once, as JSONL — and nothing outside it.
+
+    The page is shrunk to two rows, so seven matching events take four store reads, three of
+    them while the body streams; the read count is asserted, since a page size captured at
+    import would make this one read and prove nothing about paging. Each filter has a row that
+    only it excludes, placed where it would surface on a follow-up page. Two events tie at 315
+    in positions two and three, so a cursor lands between them.
+    """
+    from felix.audit import store as audit_store
+    from felix.flush import flush_all
+    from felix_api.routes import audit as audit_route
+
+    monkeypatch.setattr(audit_route, "_EXPORT_PAGE", 2)
+    async with boot([], env=_keys(reader=["audit:read"])) as app:
+        matching = [(200, "a"), (250, "b"), (250, "c"), (300, "d"), (315, "e"), (315, "f"), (330, "g")]
+        for ts, subject in [*matching, (100, "early"), (400, "late")]:
+            audit_store.record_event(
+                app.settings,
+                "default",
+                "tool_call",
+                ts=ts,
+                principal_subj=subject,
+                manifest_id="m",
+                status="ok",
+            )
+        seed = audit_store.record_event
+        seed(
+            app.settings,
+            "default",
+            "policy_deny",
+            ts=260,
+            principal_subj="denied",
+            manifest_id="m",
+            status="ok",
+        )
+        seed(
+            app.settings,
+            "default",
+            "tool_call",
+            ts=305,
+            principal_subj="elsewhere",
+            manifest_id="n",
+            status="ok",
+        )
+        seed(
+            app.settings,
+            "default",
+            "tool_call",
+            ts=245,
+            principal_subj="failed",
+            manifest_id="m",
+            status="error",
+        )
+        seed(
+            app.settings, "other", "tool_call", ts=260, principal_subj="theirs", manifest_id="m", status="ok"
+        )
+        await flush_all(app.settings)
+
+        reads = _watch_audit_reads(monkeypatch)
+        exported = await app.client.get(
+            "/audit/export",
+            params={
+                "since": 200,
+                "until": 400,
+                "event_type": "tool_call",
+                "manifest_id": "m",
+                "status": "ok",
+            },
+            headers=_as(ADMIN),
+        )
+
+    assert exported.status_code == 200, exported.text
+    assert reads == [4], reads
+    assert exported.headers["content-type"].startswith("application/x-ndjson")
+    assert 'filename="audit-200-400.jsonl"' in exported.headers["content-disposition"]
+    rows = [json.loads(line) for line in exported.text.splitlines()]
+    assert sorted(r["principal_subj"] for r in rows) == ["a", "b", "c", "d", "e", "f", "g"], rows
+    assert [r["ts"] for r in rows] == sorted((r["ts"] for r in rows), reverse=True)
+
+
+async def test_an_audit_export_that_fails_midway_says_so_in_the_file(boot: Any, monkeypatch: Any) -> None:
+    """A store failure after the 200 has gone out ends the file with an `error` line.
+
+    Raising from the body is not a truncation under Granian: it logs the exception and holds
+    the connection open, so the client hangs (checked against 2.8.2 with curl). Returning
+    quietly would be worse — a short file that ended cleanly. The rows before the failure are
+    real, so they stay, and the last line says the rest is missing — without the exception text.
+    """
+    from felix.audit import store as audit_store
+    from felix.flush import flush_all
+    from felix_api.routes import audit as audit_route
+
+    monkeypatch.setattr(audit_route, "_EXPORT_PAGE", 2)
+    async with boot([], env=_keys(reader=["audit:read"])) as app:
+        for ts in (100, 200, 300):
+            audit_store.record_event(app.settings, "default", "tool_call", ts=ts)
+        await flush_all(app.settings)
+        _watch_audit_reads(monkeypatch, fail_on=2)
+        exported = await app.client.get("/audit/export", headers=_as(ADMIN))
+
+    assert exported.status_code == 200, exported.text
+    lines = [json.loads(line) for line in exported.text.splitlines()]
+    assert [row["ts"] for row in lines[:-1]] == [300, 200]
+    assert lines[-1]["error"] == "export_incomplete", lines[-1]
+    assert "the store went away" not in lines[-1]["detail"], lines[-1]
+
+
+async def test_an_audit_export_that_fails_before_its_first_row_is_an_error_status(
+    boot: Any, monkeypatch: Any
+) -> None:
+    """The first page is read before the response starts, so an outage there is not a 200.
+
+    Read inside the body instead, it would be a 200 whose only line is the error sentinel —
+    a status every client that does not read the body treats as success. `ASGITransport`
+    re-raises what production answers as a 500, so the raise is the evidence: the body-side
+    version never raises, because the stream catches it.
+    """
+    async with boot([], env=_keys(reader=["audit:read"])) as app:
+        reads = _watch_audit_reads(monkeypatch, fail_on=1)
+        with pytest.raises(RuntimeError, match="the store went away"):
+            await app.client.get("/audit/export", headers=_as(ADMIN))
+
+    assert reads == [1]
+
+
+async def test_the_audit_export_needs_a_read_scope_and_a_forward_range(boot: Any) -> None:
+    """The export is the audit log in bulk, so it has the log's gate, and an empty or backwards
+    range is refused rather than answered with nothing, which reads as "nothing happened".
+    The listing shares the rule, so it is asserted there too."""
+    async with boot([], env=_keys(reader=["jobs:read"], writer=["audit:read"])) as app:
+        refused = await app.client.get("/audit/export", headers=_as(READER))
+        granted = await app.client.get("/audit/export", headers=_as(WRITER))
+        empty = await app.client.get(
+            "/audit/export", params={"since": 500, "until": 500}, headers=_as(WRITER)
+        )
+        backwards = await app.client.get(
+            "/audit/export", params={"since": 600, "until": 500}, headers=_as(WRITER)
+        )
+        listing = await app.client.get("/audit", params={"since": 600, "until": 500}, headers=_as(WRITER))
+
+    assert refused.status_code == 403, refused.text
+    assert granted.status_code == 200, granted.text
+    assert granted.text == ""
+    assert (empty.status_code, backwards.status_code, listing.status_code) == (400, 400, 400)
 
 
 # --- approvals -----------------------------------------------------------------------------

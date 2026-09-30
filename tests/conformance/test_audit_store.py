@@ -214,6 +214,59 @@ async def test_filters_select_and_compose(store_settings: Any) -> None:
 
 @parametrized
 @pytest.mark.asyncio
+async def test_a_time_range_is_half_open_and_pages_within_itself(store_settings: Any) -> None:
+    """`since <= ts < until`, on both arms, applied before the page rather than after it.
+
+    The edges are the point, and each carries a tie: two rows on `since` and two on `until`, so
+    an arm that wrote `>` or `<=` loses or gains a pair, and a seek at the edge cannot quietly
+    keep one of two. Half-open is what lets `[a, b)` and `[b, c)` tile a history, which is how
+    an auditor exports it in windows. Walked one row at a time because an implementation that
+    filtered the range after `LIMIT` returns short or empty pages that still carry a cursor.
+    """
+    await _record_many(store_settings, [{"ts": ts} for ts in (10, 20, 20, 25, 30, 30, 40)])
+
+    whole, _ = await audit.query(store_settings, TENANT, since=20, until=30)
+    assert [e["ts"] for e in whole] == [25, 20, 20]
+    assert [e["ts"] for e in (await audit.query(store_settings, TENANT, since=30))[0]] == [40, 30, 30]
+    assert [e["ts"] for e in (await audit.query(store_settings, TENANT, until=20))[0]] == [10]
+
+    walked: list[int] = []
+    cursor: str | None = None
+    for _ in range(10):
+        page, cursor = await audit.query(store_settings, TENANT, since=20, until=30, limit=1, cursor=cursor)
+        walked += [e["ts"] for e in page]
+        if cursor is None:
+            break
+    assert walked == [25, 20, 20]
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_a_time_range_composes_with_the_other_filters(store_settings: Any) -> None:
+    """The range is one more clause, not a replacement for the ones before it.
+
+    Each row outside the answer is excluded by exactly one condition, so dropping any single
+    clause on either arm adds a row. The e2e export test covers this only on the memory arm.
+    """
+    await _record_many(
+        store_settings,
+        [
+            {"ts": 20, "event_type": "tool_call", "manifest_id": "m", "principal_subj": "hit"},
+            {"ts": 21, "event_type": "policy_deny", "manifest_id": "m", "principal_subj": "wrong-type"},
+            {"ts": 22, "event_type": "tool_call", "manifest_id": "n", "principal_subj": "wrong-manifest"},
+            {"ts": 5, "event_type": "tool_call", "manifest_id": "m", "principal_subj": "too-early"},
+            {"ts": 50, "event_type": "tool_call", "manifest_id": "m", "principal_subj": "too-late"},
+        ],
+    )
+
+    found, _ = await audit.query(
+        store_settings, TENANT, event_type="tool_call", manifest_id="m", since=10, until=40
+    )
+    assert [e["principal_subj"] for e in found] == ["hit"]
+
+
+@parametrized
+@pytest.mark.asyncio
 async def test_a_filter_still_applies_on_the_second_page(store_settings: Any) -> None:
     """The cursor and the `WHERE` have to survive together.
 
