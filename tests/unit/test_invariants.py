@@ -549,6 +549,8 @@ def test_every_memory_store_function_is_classified() -> None:
         "get_many",
         "list_active",
         "as_of",
+        # Clears the in-memory twin between tests; no request path reaches it.
+        "reset_memory_for_tests",
     }
 
     src = Path(__file__).resolve().parents[2] / "packages/harness/src/felix/memory/store.py"
