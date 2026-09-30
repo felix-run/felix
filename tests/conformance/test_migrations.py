@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from tests.conformance.conftest import downgrade_to_base, drop_everything, migrate_to_head, postgres_url
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.usefixtures("empty_database")]
 
 
 def _url_or_skip() -> str:
@@ -48,6 +48,12 @@ async def _scalar(url: str, sql: str) -> object:
 async def test_upgrade_head_applies_every_revision() -> None:
     """`alembic upgrade head` on an empty database, which CI never did before."""
     url = _url_or_skip()
+    # The contract fixtures leave the schema at head for the next test; upgrading that is a
+    # no-op, and this would pass without applying a revision. `empty_database` is what makes
+    # "empty" true.
+    assert await _scalar(url, "SELECT to_regclass('public.alembic_version')") is None, (
+        "the database was not empty — this test would be upgrading a schema already at head"
+    )
     try:
         await migrate_to_head(url)
         stamped = await _scalar(url, "SELECT count(*) FROM alembic_version")

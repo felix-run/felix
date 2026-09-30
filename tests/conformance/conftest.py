@@ -79,6 +79,59 @@ async def drop_everything(url: str) -> None:
         await engine.dispose()
 
 
+async def ready_schema(url: str) -> None:
+    """A schema at head with no rows in it — migrating only when it is not already there.
+
+    Each contract test used to apply every revision on setup and drop the schema on teardown:
+    about 170 ms a test, paid again for each new revision and each new test, and roughly half
+    of the job's wall time by revision 0020. The schema a test needs is the same every time, so
+    it is built once, and each test after the first starts from `TRUNCATE` instead. What the
+    rebuild bought — that every revision applies, that the DDL only a migration creates is
+    present — `test_migrations.py` asserts on its own, from an empty database it drops to first.
+
+    Reset at setup rather than at teardown, so a test that died mid-teardown cannot hand its
+    rows to the next one; and decided by the stamped revision rather than a process flag, so a
+    test that downgraded, dropped or half-migrated the schema is followed by a rebuild.
+    """
+    from felix.db.migrations import script_head
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    engine = create_async_engine(url, future=True)
+    try:
+        async with engine.begin() as conn:
+            stamped = await conn.scalar(text("SELECT to_regclass('public.alembic_version')"))
+            current = await conn.scalar(text("SELECT version_num FROM alembic_version")) if stamped else None
+            if current is not None and current == script_head():
+                tables = (
+                    await conn.execute(
+                        text(
+                            "SELECT quote_ident(tablename) FROM pg_tables "
+                            "WHERE schemaname = 'public' AND tablename <> 'alembic_version'"
+                        )
+                    )
+                ).scalars()
+                await conn.execute(text(f"TRUNCATE {', '.join(tables)} RESTART IDENTITY CASCADE"))
+                return
+    finally:
+        await engine.dispose()
+    await drop_everything(url)
+    await migrate_to_head(url)
+
+
+@pytest_asyncio.fixture
+async def empty_database() -> None:
+    """Start from no schema at all, for a test about applying the migrations themselves.
+
+    The contract fixtures leave the schema at head for the next test (`ready_schema`), so a
+    migration test that trusted the database to be empty would be upgrading a no-op — green
+    whether or not a revision applies.
+    """
+    url = postgres_url()
+    if url:
+        await drop_everything(url)
+
+
 RLS_ROLE = "felix_conformance_rls"
 # Interpolated into `CREATE ROLE` as a SQL literal, because DDL takes no bind parameters —
 # so it must contain no apostrophe. A throwaway value for a throwaway role on a test database.
@@ -171,7 +224,7 @@ async def rls_settings(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[Any]:
     from sqlalchemy.engine import make_url
 
     admin_url = postgres_url_or_skip("the RLS enforcement contract")
-    await migrate_to_head(admin_url)
+    await ready_schema(admin_url)
     await _grant_restricted_role(admin_url)
 
     # `render_as_string(hide_password=False)`, never `str(...)`: `URL.__str__` masks the
@@ -223,14 +276,13 @@ async def store_settings(request: pytest.FixtureRequest) -> AsyncIterator[Any]:
         return
 
     url = postgres_url_or_skip("the store contract")
-    await migrate_to_head(url)
+    await ready_schema(url)
     try:
         yield Settings(database_url=url)
     finally:
         # `get_engine` is lru_cached per URL, so pooled connections outlive this fixture and
-        # would hold locks on the schema the teardown drops.
+        # would hold locks on the tables the next setup truncates.
         await dispose_engine()
-        await drop_everything(url)
 
 
 @pytest_asyncio.fixture
@@ -258,14 +310,13 @@ async def memory_settings(request: pytest.FixtureRequest) -> AsyncIterator[Any]:
             pytest.fail(f"{REQUIRE_ENV} is set but {PG_URL_ENV} is not — the Postgres arm cannot run")
         pytest.skip(f"{PG_URL_ENV} unset — the Postgres arm of the contract did not run")
 
-    await migrate_to_head(url)
+    await ready_schema(url)
     try:
         yield Settings(database_url=url)
     finally:
         # `get_engine` is lru_cached per URL, so the pooled connections outlive this
-        # fixture and would hold locks on the schema the teardown is about to drop.
+        # fixture and would hold locks on the tables the next setup truncates.
         await dispose_engine()
-        await drop_everything(url)
 
 
 @pytest_asyncio.fixture
@@ -293,12 +344,11 @@ async def usage_settings(request: pytest.FixtureRequest) -> AsyncIterator[Any]:
             pytest.fail(f"{REQUIRE_ENV} is set but {PG_URL_ENV} is not — the Postgres arm cannot run")
         pytest.skip(f"{PG_URL_ENV} unset — the Postgres arm of the usage contract did not run")
 
-    await migrate_to_head(url)
+    await ready_schema(url)
     try:
         yield Settings(database_url=url)
     finally:
         await dispose_engine()
-        await drop_everything(url)
 
 
 @pytest_asyncio.fixture
@@ -325,13 +375,12 @@ async def store(request: pytest.FixtureRequest) -> AsyncIterator[Any]:
     from felix.session.store import PostgresSessionStore
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-    await migrate_to_head(url)
+    await ready_schema(url)
     engine = create_async_engine(url, future=True)
     factory = async_sessionmaker(engine, expire_on_commit=False)
     try:
         yield PostgresSessionStore(factory, tenant_id="conformance")
     finally:
-        await drop_everything(url)
         await engine.dispose()
 
 
@@ -362,17 +411,14 @@ async def document_settings(request: pytest.FixtureRequest) -> AsyncIterator[Any
             pytest.fail(f"{REQUIRE_ENV} is set but {PG_URL_ENV} is not — the Postgres arm cannot run")
         pytest.skip(f"{PG_URL_ENV} unset — the Postgres arm of the corpus contract did not run")
 
-    await migrate_to_head(url)
+    await ready_schema(url)
     try:
         yield Settings(database_url=url)
     finally:
-        # Teardown, like the sibling fixtures. Without it the Postgres arm never reset while
-        # the memory arm reset around every test, so the two were no longer running the same
-        # contract from the same state — which is the premise. It passed only because every
-        # test here ingests the same (source, title) and so overwrites the same doc_id; the
-        # first test with a second title would have made the arm order-dependent.
+        # The reset is `ready_schema`'s, at the next setup. It once had none here while the
+        # memory arm reset around every test, so the two were no longer running the same
+        # contract from the same state — which is the premise.
         await dispose_engine()
-        await drop_everything(url)
 
 
 @pytest_asyncio.fixture
@@ -424,12 +470,11 @@ async def retention_settings(request: pytest.FixtureRequest) -> AsyncIterator[An
             pytest.fail(f"{REQUIRE_ENV} is set but {PG_URL_ENV} is not — the Postgres arm cannot run")
         pytest.skip(f"{PG_URL_ENV} unset — the Postgres arm of the retention contract did not run")
 
-    await migrate_to_head(url)
+    await ready_schema(url)
     try:
         yield Settings(database_url=url)
     finally:
         await dispose_engine()
-        await drop_everything(url)
         clear()
 
 
@@ -453,9 +498,8 @@ async def fiber_settings(request: pytest.FixtureRequest) -> AsyncIterator[Any]:
             pytest.fail(f"{REQUIRE_ENV} is set but {PG_URL_ENV} is not — the Postgres arm cannot run")
         pytest.skip(f"{PG_URL_ENV} unset — the Postgres arm of the fiber contract did not run")
 
-    await migrate_to_head(url)
+    await ready_schema(url)
     try:
         yield Settings(database_url=url)
     finally:
         await dispose_engine()
-        await drop_everything(url)
