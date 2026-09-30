@@ -175,3 +175,87 @@ async def test_the_models_listing_keeps_manifest_order(monkeypatch: pytest.Monke
 
     result = await oc.list_models(type("R", (), {"app": _App()})())
     assert [row["id"] for row in result["data"]] == names
+
+
+def _models_request(settings: Any) -> Any:
+    class _App:
+        state = type("S", (), {"settings": settings})()
+
+    return type("R", (), {"app": _App()})()
+
+
+def _resolves_to_nothing(monkeypatch: pytest.MonkeyPatch, oc: Any) -> None:
+    async def _resolve(_settings: Any, _tenant: str, _name: str, **_k: Any) -> Any:
+        class _Resolved:
+            manifest = None
+
+        return _Resolved()
+
+    monkeypatch.setattr(oc, "resolve_tenant_manifest", _resolve)
+    monkeypatch.setattr(oc, "_auth", lambda _r: type("A", (), {"tenant_id": "t"})())
+
+
+@pytest.mark.asyncio
+async def test_the_models_listing_includes_the_tenants_published_manifests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A manifest published under a new name was callable and invisible.
+
+    `/chat` and the resolver found it, but this listing read the bundled directory only,
+    so a client building its picker from `/v1/models` could never select it. Bundled
+    names keep their order; a stored manifest shadowing a bundled one is listed once.
+    """
+    from felix.manifests import store as manifest_store
+    from felix_api.routes import openai_compat as oc
+
+    monkeypatch.setattr(oc, "list_bundled", lambda: ["cowork", "quick"])
+    seen_tenants: list[str] = []
+
+    async def _list_active(_settings: Any, tenant_id: str) -> list[dict[str, Any]]:
+        seen_tenants.append(tenant_id)
+        return [{"name": "zeta-inline"}, {"name": "quick"}, {"name": "cowork-inline"}]
+
+    monkeypatch.setattr(manifest_store, "list_active", _list_active)
+    _resolves_to_nothing(monkeypatch, oc)
+
+    result = await oc.list_models(_models_request(type("S", (), {"bundled_only": False})()))
+    assert [row["id"] for row in result["data"]] == ["cowork", "quick", "cowork-inline", "zeta-inline"]
+    assert seen_tenants == ["t"], "the store must be read for the caller's tenant only"
+
+
+@pytest.mark.asyncio
+async def test_bundled_only_does_not_list_stored_manifests(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Under `bundled_only` the resolver never reads the store, so neither does the listing:
+    the catalogue names what a request can actually reach."""
+    from felix.manifests import store as manifest_store
+    from felix_api.routes import openai_compat as oc
+
+    monkeypatch.setattr(oc, "list_bundled", lambda: ["quick"])
+
+    async def _list_active(_settings: Any, _tenant_id: str) -> list[dict[str, Any]]:
+        raise AssertionError("the store must not be consulted under bundled_only")
+
+    monkeypatch.setattr(manifest_store, "list_active", _list_active)
+    _resolves_to_nothing(monkeypatch, oc)
+
+    result = await oc.list_models(_models_request(type("S", (), {"bundled_only": True})()))
+    assert [row["id"] for row in result["data"]] == ["quick"]
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_store_leaves_the_bundled_catalogue(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The store being down is not a reason for `/v1/models` to fail: it degrades to the
+    bundled list, the same rule `return_exceptions=True` keeps for one bad manifest."""
+    from felix.manifests import store as manifest_store
+    from felix_api.routes import openai_compat as oc
+
+    monkeypatch.setattr(oc, "list_bundled", lambda: ["quick", "deep"])
+
+    async def _list_active(_settings: Any, _tenant_id: str) -> list[dict[str, Any]]:
+        raise ConnectionError("postgres is down")
+
+    monkeypatch.setattr(manifest_store, "list_active", _list_active)
+    _resolves_to_nothing(monkeypatch, oc)
+
+    result = await oc.list_models(_models_request(type("S", (), {"bundled_only": False})()))
+    assert [row["id"] for row in result["data"]] == ["quick", "deep"]
