@@ -8,6 +8,11 @@ metadata:
     Fully open-source agent — runs on Ollama (Llama) with no Anthropic/OpenAI
     keys. Tools, memory embeddings, and judges stay on self-hosted models.
   tags: [react, oss, ollama]
+  starters:
+    - title: "Pick a local model"
+      prompt: "Recommend an open model size for coding help on a 16GB laptop and explain why."
+    - title: "Speed up local inference"
+      prompt: "Give three practical tips for when a local LLM feels too slow for interactive chat."
 
 spec:
   pattern: react

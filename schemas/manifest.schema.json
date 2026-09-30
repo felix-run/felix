@@ -1234,6 +1234,14 @@
           },
           "title": "Tags",
           "type": "array"
+        },
+        "starters": {
+          "items": {
+            "$ref": "#/$defs/Starter"
+          },
+          "maxItems": 8,
+          "title": "Starters",
+          "type": "array"
         }
       },
       "required": [
@@ -2145,6 +2153,30 @@
         }
       },
       "title": "Spec",
+      "type": "object"
+    },
+    "Starter": {
+      "additionalProperties": false,
+      "description": "A prompt a client may offer on an empty thread, sent verbatim when chosen.\n\nPresentation only: nothing in the harness reads it to decide what a run may do. It lives\non the manifest so every client offers the same prompts for an agent, and so a renamed or\nnewly published manifest brings its own instead of each client keeping a table by name.",
+      "properties": {
+        "title": {
+          "maxLength": 60,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "prompt": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Prompt",
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "prompt"
+      ],
+      "title": "Starter",
       "type": "object"
     },
     "SystemPrompt": {

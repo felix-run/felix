@@ -6,6 +6,13 @@ metadata:
   version: 1.0.0
   description: Felix support agent — step-by-step troubleshooting and how-tos.
   tags: [support, ops]
+  starters:
+    - title: "Troubleshoot a stream"
+      prompt: "My chat stream returns 500 only for some agents. Walk me through diagnosing it step by step."
+    - title: "How do approvals work?"
+      prompt: "How do tool approvals work in Felix, and what happens if nobody answers one?"
+    - title: "Search the docs"
+      prompt: "Search the docs for how durable runs are resumed after a disconnect."
 
 spec:
   pattern: react

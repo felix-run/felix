@@ -6,6 +6,15 @@ metadata:
   version: 1.0.0
   description: Felix workspace agent — goals, files, client tools, and approvals.
   tags: [react, workspace, durable]
+  starters:
+    - title: "List the workspace"
+      prompt: "List the top-level files and folders in the workspace."
+    - title: "Find TODOs"
+      prompt: "Search the workspace for TODO and summarize the matches by file."
+    - title: "Write a note"
+      prompt: "Create notes/todo.md with three short tasks for today, then read the file back to confirm it."
+    - title: "Draft a README"
+      prompt: "Read the workspace, draft a one-paragraph README for it, and write it to README.md (I will approve the write)."
 
 spec:
   pattern: react
