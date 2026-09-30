@@ -70,8 +70,10 @@ type:
 		exit 1; }
 	uv run ty check packages apps
 
+# `-n auto`: one worker per core. The suite spent more than half its wall time waiting on
+# subprocesses and timers; single-file runs through ./scripts/test.sh stay serial.
 test:
-	./scripts/test.sh
+	./scripts/test.sh -n auto
 
 # The coverage floor lives on this recipe: one home, and `make check` enforces the number CI
 # does. Locally it enforced nothing before, because `check` ran the suite without coverage at
@@ -83,7 +85,7 @@ test:
 # this audit started; ratchet it deliberately, never aspirationally.
 # `check` runs this and not `test` so the bare `test` stays fast for the edit loop.
 test-cov:
-	./scripts/test.sh -q --cov --cov-report=term:skip-covered --cov-fail-under=79
+	./scripts/test.sh -q -n auto --cov --cov-report=term:skip-covered --cov-fail-under=79
 
 schema:
 	# schemas/manifest.schema.json backs the yaml-language-server header in

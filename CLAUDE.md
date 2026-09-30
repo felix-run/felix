@@ -39,11 +39,17 @@ reads it, so a bare `uv run pytest` fails on DB-touching tests. `./scripts/test.
 in-memory environment and is what `make test` and CI both run:
 
 ```bash
-./scripts/test.sh                                   # full suite (~50s)
+./scripts/test.sh -n auto                           # full suite, one worker per core (~35s)
+./scripts/test.sh                                   # full suite, serially (~2 min)
 ./scripts/test.sh tests/unit/test_react_loop.py -q  # one file
 ./scripts/test.sh -k compact                        # one theme
 make check                                          # lint + type + test + format check
 ```
+
+`make test` and `make test-cov` (so `make check` and CI) pass `-n auto` (pytest-xdist). Every
+worker must collect the same test ids, so a parametrize id may not embed anything that differs
+per process — an `object()`'s repr is its address. The conformance Postgres arm never runs under
+xdist, since every worker would share one database; `postgres_url` returns nothing there.
 
 `memory://` in the DB URL flips every store to its in-memory implementation
 (`felix/db/session.py:_use_memory`, `felix/session/store.py:get_session_store`) — that is

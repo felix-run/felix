@@ -21,6 +21,14 @@ REQUIRE_ENV = "FELIX_CONFORMANCE_REQUIRE_POSTGRES"
 
 
 def postgres_url() -> str | None:
+    """The conformance database — never under xdist, where every worker would share it.
+
+    The arm resets one schema per test (`ready_schema`), so two workers on one database truncate
+    each other's rows mid-test. `make test` runs `-n auto`; the CI conformance job, and
+    `make conformance`, run serially. Under xdist the arm skips, or fails where it is required.
+    """
+    if os.environ.get("PYTEST_XDIST_WORKER"):
+        return None
     return os.environ.get(PG_URL_ENV) or None
 
 
@@ -268,8 +276,8 @@ async def store_settings(request: pytest.FixtureRequest) -> AsyncIterator[Any]:
     # suggest it does not.
     #
     # `dispose_engine` below is process-global and disposes engines other fixtures made, so
-    # this is safe only while the suite runs serially. There is no xdist today; if that
-    # changes, this fixture needs its own engine rather than the shared cache.
+    # this is safe only while the arm runs serially — which `postgres_url` ensures: under
+    # xdist (`make test`) the Postgres arm does not run at all.
     backend = request.param
     if backend == "memory":
         yield Settings(database_url="memory://conformance")
