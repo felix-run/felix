@@ -19,7 +19,8 @@ pydantic-settings reads it, so every database-touching test fails against a serv
 running. This is an environment failure, not a test failure.
 
 ```bash
-./scripts/test.sh                                   # whole suite (~50s)
+./scripts/test.sh -n auto                           # whole suite, one worker per core (~35s)
+./scripts/test.sh                                   # whole suite, serially (~2 min)
 ./scripts/test.sh tests/unit/test_react_loop.py -q  # one file
 ./scripts/test.sh -k compact                        # one theme
 ```
