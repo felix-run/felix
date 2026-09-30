@@ -214,6 +214,31 @@ def _auth(request: Request) -> AuthContext:
     return AuthContext()
 
 
+async def _stored_manifest_names(settings: Any, tenant_id: str) -> list[str]:
+    """The tenant's published manifests: the names `GET /manifests` reports as active.
+
+    A manifest published with `PUT /manifests/{name}` under a name no bundled file uses
+    was callable — `/chat`, `/v1/chat/completions` and the resolver all find it — but
+    absent from this listing, which read the bundled directory alone. A client that
+    builds its agent picker from `/v1/models` (chat-ui does) could never select it.
+
+    Under `bundled_only` the store is not consulted by the resolver, so it is not
+    listed either: the catalogue names what a request can actually reach. A store that
+    cannot be read degrades to the bundled list rather than failing it — the same rule
+    the per-manifest `return_exceptions=True` below keeps for resolution.
+    """
+    try:
+        if settings.bundled_only:
+            return []
+        from felix.manifests import store as manifest_store
+
+        rows = await manifest_store.list_active(settings, tenant_id)
+    except Exception:  # a listing degrades; it never fails on the store
+        logger.warning("stored manifests unavailable for /v1/models; listing bundled only", exc_info=True)
+        return []
+    return sorted({str(row["name"]) for row in rows if row.get("name")})
+
+
 @router.get("/models")
 async def list_models(request: Request) -> dict[str, Any]:
     """List bundled + discoverable manifests as OpenAI models with Felix catalog metadata."""
@@ -221,7 +246,12 @@ async def list_models(request: Request) -> dict[str, Any]:
 
     settings = request.app.state.settings
     auth = _auth(request)
-    names = list_bundled()
+    bundled = list_bundled()
+    # Bundled first, in their existing order; a stored manifest that shadows a bundled
+    # name is the same model (the resolver prefers the stored version) and is not
+    # listed twice.
+    seen = set(bundled)
+    names = bundled + [n for n in await _stored_manifest_names(settings, auth.tenant_id) if n not in seen]
     # Warm, the resolver cache hides this. Cold -- the first request after a deploy,
     # which is exactly when a client is probing -- it was one round trip per manifest,
     # in series.

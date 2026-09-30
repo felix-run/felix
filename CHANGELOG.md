@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`/v1/models` lists the tenant's published manifests, not only the bundled ones.** A manifest
+  published with `PUT /manifests/{name}` under a new name was callable — `/chat`,
+  `/v1/chat/completions` and the resolver all found it — but the listing read the bundled
+  directory alone, so a client that builds its agent picker from `/v1/models` could never select
+  it. Bundled names keep their order and come first; a stored manifest shadowing a bundled name is
+  listed once. Under `bundled_only` the store is not listed, since the resolver does not read it,
+  and a store that cannot be read leaves the bundled listing rather than failing it.
+
 - **`deploy/gcp/roll.sh` survives its first real roll.** Three bugs, all found rolling 0.5.0:
   `gh` opened a pager and waited at `(END)` for a key; `gcloud compute ssh` and the other tools
   read the terminal and swallowed answers typed ahead of a prompt; and the checkout ran as the
