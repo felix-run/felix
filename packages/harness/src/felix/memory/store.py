@@ -45,6 +45,11 @@ def now_ms() -> int:
 _memory_rows: dict[tuple[str, str], dict[str, Any]] = {}
 
 
+def reset_memory_for_tests() -> None:
+    """Drop every in-memory row; the test suite's autouse reset calls this around each test."""
+    _memory_rows.clear()
+
+
 def memory_id(manifest_id: str, content: str) -> str:
     """A stable id for this content under this manifest.
 
@@ -901,5 +906,6 @@ __all__ = [
     "list_active",
     "memory_id",
     "put_memory",
+    "reset_memory_for_tests",
     "supersede",
 ]
