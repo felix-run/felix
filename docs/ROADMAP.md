@@ -666,16 +666,18 @@ comment explaining exactly that. It is conditional, not inert.
 - [ ] **Long-context price tiers** — `estimate_cost` supports request-wide tiers but no bundled
       entry sets one. Needs current rates per deployment via a manifest price override. Folded
       into C where it touches `max_cost_usd`.
-- [ ] **Memory defaults** — `FELIX_MEMORY_EMBEDDER=none` by default, so the vector channel never
-      runs out of the box and nothing exercises it outside tests. Of eleven bundled manifests only
-      `cowork` and `governed` enable capture and recall tools, so `quick` — the manifest every
-      README example uses — has no long-term memory at all. Extraction quality is whatever one
-      prompt returns; a live run stored an assistant's apology as a durable fact.
-      The meta filter behind the prompt is wider since: it knew only first-person present
-      tense, and the extractor — told to resolve pronouns — writes "The assistant could not…";
-      measured on `tests/unit/test_memory_meta_filter.py`'s corpus it caught 3 of 13 and now
-      catches 13 of 13, refusing none of the 8 user facts beside them. The defaults remain.
-      `consolidation.py` is 14 lines against `extraction.py`'s 340, so the store only grows.
+- [x] **Memory defaults** — `FELIX_MEMORY_EMBEDDER` defaults to `auto`: the local bge model when
+      `felix-harness[embeddings]` is installed, no vector channel otherwise. Local only by design —
+      a hosted embedder would send every stored memory to a provider, and the column is 768 wide
+      where OpenAI's is 1536. Memory-on-by-default is a new `assistant` manifest rather than a
+      change to `quick`: memory is keyed by tenant and manifest, not by caller, so on a shared or
+      anonymous deployment one caller's facts would reach another's prompt. `assistant` refuses
+      anonymous callers; `quick` stays stateless. `tests/e2e/test_assistant_manifest.py` carries a
+      fact from one session into the next. The meta filter now catches 13 of 13 on
+      `tests/unit/test_memory_meta_filter.py`'s corpus (was 3), refusing none of the 8 user facts.
+- [ ] **Memory consolidation** — `consolidation.py` is 14 lines against `extraction.py`'s 340, so
+      the store only grows. With `assistant` capturing on every long turn, that is now a
+      default-path growth rather than an opt-in one.
 - [x] **Who may retire a memory by naming its `topic_key`** — decided: the operator only.
       `memory/store.py:_may_retire_by_topic` requires rank above `_DEFAULT_TRUST` for the
       topic sweep on both arms; agent writes are stored alongside, and the facts prelude shows

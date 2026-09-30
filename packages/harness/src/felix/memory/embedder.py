@@ -157,6 +157,22 @@ def _build_sentence_transformers(settings: Settings) -> Embedder:
     )
 
 
+def _build_auto(settings: Settings) -> Embedder:
+    """The local model when `felix-harness[embeddings]` is installed, otherwise none.
+
+    The default, and deliberately local only. The `memory_vectors.embedding` column is
+    `vector(768)` — the local model's width, not a hosted provider's — and a hosted embedder
+    would send every stored memory to whichever provider had a key configured, which may not
+    be the one the conversation went to. Installing the extra is the opt-in; the weights are
+    fetched on first use.
+    """
+    import importlib.util
+
+    if importlib.util.find_spec("sentence_transformers") is None:
+        return NullEmbedder()
+    return _build_sentence_transformers(settings)
+
+
 def _build_compat(provider_name: str) -> EmbedderFactory:
     """An embedder against a registered OpenAI-compatible provider that serves `/embeddings`.
 
@@ -200,6 +216,7 @@ def _build_compat(provider_name: str) -> EmbedderFactory:
 
 
 register_embedder_backend("none", _build_none)
+register_embedder_backend("auto", _build_auto)
 register_embedder_backend("sentence_transformers", _build_sentence_transformers)
 
 
@@ -227,7 +244,7 @@ def build_embedder(settings: Settings) -> Embedder:
     An unknown backend degrades to :class:`NullEmbedder` with a warning rather than
     failing startup: a typo in a setting should cost semantic recall, not the service.
     """
-    name = str(getattr(settings, "memory_embedder", "none") or "none")
+    name = str(getattr(settings, "memory_embedder", "auto") or "auto")
     factory = _backends.get(name)
     if factory is None:
         logger.warning(
