@@ -3,6 +3,7 @@
 #
 #   deploy/gcp/roll.sh 0.5.0            # preflight, backup, then asks before changing anything
 #   deploy/gcp/roll.sh 0.5.0 --check    # preflight only: reads, changes nothing
+#   deploy/gcp/roll.sh 0.5.0 --yes      # the same roll, answering its confirmations itself
 #
 # It is docs/UPGRADING.md "The sequence" as one command: check the release and its `-gcp` image
 # exist, report the checkout, pin, schema, durable runs in flight, table sizes and disk; back up
@@ -10,6 +11,12 @@
 # backing up .env); pull; `docker compose up -d` with the compose files the running stack already
 # uses; then wait for /health to report the version. Every step that changes the host asks first,
 # and the script stops at the first failure.
+#
+# The confirmations read the terminal, so a caller with none — CI, an agent's shell, Claude Code's
+# `!` prefix — used to reach the first one only after the backup and die there on
+# `/dev/tty: Device not configured`. Without --yes that is now refused before anything runs. With
+# --yes every confirmation is answered yes and printed as such, except one: durable runs in flight
+# stop the roll, because restarting the worker under them is a decision, not a formality.
 #
 # Needs gcloud (with ssh access to the VM), gh, docker and curl locally, and sudo on the VM.
 # The defaults are the reference deployment's; override any of them:
@@ -28,22 +35,44 @@ BACKUP_DIR="${FELIX_BACKUP_DIR:-/opt/felix-backups}"
 HEALTH_URL="${FELIX_HEALTH_URL:-https://api.felix.run/health}"
 IMAGE="${FELIX_IMAGE:-ghcr.io/felix-run/felix}"
 
-usage() { echo "usage: $0 <version, e.g. 0.5.0> [--check]" >&2; exit 2; }
+usage() { echo "usage: $0 <version, e.g. 0.5.0> [--check] [--yes]" >&2; exit 2; }
 [ $# -ge 1 ] || usage
 VERSION="${1#v}"
 CHECK_ONLY=0
-[ "${2:-}" = "--check" ] && CHECK_ONLY=1
+ASSUME_YES=0
+for arg in "${@:2}"; do
+  case "$arg" in
+    --check) CHECK_ONLY=1 ;;
+    --yes) ASSUME_YES=1 ;;
+    *) echo "unknown option: $arg" >&2; usage ;;
+  esac
+done
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "not a version: $1" >&2; usage; }
 TAG="v$VERSION"
 
 bold() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 note() { printf '   %s\n' "$*"; }
 die() { printf '\n\033[31mSTOP: %s\033[0m\n' "$*" >&2; exit 1; }
+# Opening /dev/tty is the test, not `-t 0`: stdin is redirected on purpose (see above), and a
+# process can have a terminal on stdout with none it can open for reading.
+have_tty() { { : </dev/tty; } 2>/dev/null; }
 confirm() {
+  if [ "$ASSUME_YES" = 1 ]; then
+    note "$1 — yes (--yes)"
+    return 0
+  fi
   local reply
   read -r -p "   $1 [y/N] " reply </dev/tty
   [[ "$reply" =~ ^[Yy]$ ]] || die "not confirmed — nothing further was changed"
 }
+
+# Before the preflight, not at the first confirmation: by then the backup has been written.
+if [ "$CHECK_ONLY" = 0 ] && [ "$ASSUME_YES" = 0 ] && ! have_tty; then
+  echo "no terminal to confirm on. Run this from a terminal, or pass --yes to answer every" >&2
+  echo "confirmation yes (durable runs in flight still stop it). --check needs neither." >&2
+  exit 2
+fi
+
 remote() { gcloud compute ssh "$VM" --zone "$ZONE" --quiet --command "$1" </dev/null; }
 psql_q() {
   # One query against the deployment's own database, tab-separated, no headers.
@@ -106,7 +135,10 @@ fi
 # --- backup: writes a new file only ---------------------------------------------------------
 
 bold "Backup"
-[ -z "$FIBERS" ] || confirm "Durable runs are in flight (above). Continue anyway?"
+if [ -n "$FIBERS" ]; then
+  [ "$ASSUME_YES" = 0 ] || die "durable runs are in flight (above); --yes does not roll over them. Wait for them, or run interactively"
+  confirm "Durable runs are in flight (above). Continue anyway?"
+fi
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 DUMP="$BACKUP_DIR/felix-pre-$VERSION-$STAMP.dump"
 remote "sudo mkdir -p '$BACKUP_DIR' && sudo sh -c \"docker exec \$(sudo docker ps --format '{{.Names}}' | grep -m1 postgres) pg_dump -U felix -d felix -Fc > '$DUMP'\"" \

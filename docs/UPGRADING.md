@@ -249,7 +249,8 @@ docker compose <-f overlays…> run --rm migrate
 
 On a GCE + Compose deployment, `deploy/gcp/roll.sh <version>` runs this whole sequence from your
 own machine, with a preflight and a verified backup first, asking before each change (`--check`
-for the read-only preflight alone).
+for the read-only preflight alone). The questions need a terminal; without one it refuses up
+front, and `--yes` answers them all yes — except with durable runs in flight, where it stops.
 
 `make up-gcp` wraps that last command, but **`make` is not installed on every host** — a minimal
 VM image often lacks it, and the failure (`make: command not found`) happens before anything rolls.
