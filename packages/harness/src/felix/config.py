@@ -300,12 +300,13 @@ class Settings(BaseSettings):
     # declares what it is. 768 is also `bge-base-en-v1.5`, the model the rest of the
     # repo defaults to. Changing it is a re-embed of every row, not a config flip.
     memory_embedding_dim: int = 768
-    # Semantic recall is optional. The default costs nothing and needs nothing
-    # installed; recall runs its full-text and topic-key channels and skips the
-    # vector one. `sentence_transformers` needs felix-harness[embeddings]; `openai`
-    # and `ollama` speak an OpenAI-compatible /embeddings endpoint over httpx.
+    # Semantic recall. `auto` (the default) uses the local model when
+    # felix-harness[embeddings] is installed and runs without the vector channel when it is
+    # not — local only, because a hosted embedder would send stored memories to a provider
+    # and the column is 768-wide. `none` turns it off; `sentence_transformers` requires the
+    # extra; `openai` and `ollama` speak an OpenAI-compatible /embeddings endpoint.
     # Registrable: felix.memory.embedder.register_embedder_backend adds a backend.
-    memory_embedder: str = "none"
+    memory_embedder: str = "auto"
 
     # Extra directory of SKILL.md packages, appended to the bundled `skills/` dir.
     # Without this the only paths were derived from __file__ (a repo checkout), so a

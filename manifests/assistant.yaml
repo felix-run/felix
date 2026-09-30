@@ -1,0 +1,80 @@
+# yaml-language-server: $schema=../schemas/manifest.schema.json
+#
+# `quick`, with long-term memory: a personal assistant that remembers across sessions.
+#
+# Memory is shared by everyone in a tenant — it is keyed by tenant and manifest, not by who is
+# talking — so this manifest is for a deployment that is yours, and it refuses anonymous callers:
+# on a shared or anonymous deployment, one caller's facts would reach another's prompt. `quick`
+# stays stateless for exactly that reason. Locally, `make up` generates an API key (`make dev-key`)
+# to call it with; under `make dev` (no auth) it answers 401.
+apiVersion: felix/v1
+kind: Agent
+metadata:
+  name: assistant
+  version: 1.0.0
+  description: Felix with long-term memory — remembers facts and preferences across sessions.
+  tags: [react, memory]
+
+spec:
+  pattern: react
+
+  model:
+    temperature: 0
+    cache: true
+
+  system_prompt:
+    inline: |
+      You are Felix, a helpful AI assistant with access to tools and a long-term memory.
+      Use tools when needed to answer accurately. What you already know appears under
+      known facts; `recall` searches the rest. Remember what will matter in a later
+      session — a preference, a standing instruction, a durable fact — not the turn itself.
+      Always refer to yourself as Felix, never as Claude or any other name.
+
+  tools:
+    - calculator
+    - list_skills
+    - activate_skill
+    - deactivate_skill
+
+  skills:
+    - name: calculator-help
+
+  session:
+    strategy: compacting
+    compaction_enabled: true
+
+  memory:
+    checkpointer: postgres
+    store: pgvector
+    capture:
+      # One extraction call per turn, on the small model rather than the turn's.
+      enabled: true
+      model: claude-haiku
+      max_facts: 3
+      min_chars: 200
+    recall:
+      tools: true
+      limit: 5
+
+  # Recalled memory is untrusted — capture reads turns that can repeat tool output — so the
+  # memory tools are screened like any untrusted tool. The marker scan costs nothing.
+  content_screening:
+    enabled: true
+    on_flag: quarantine
+
+  # An agent write can no longer retire a fact by naming its topic, but `forget` still removes
+  # one, and an injected turn could enumerate with `list_memories` and forget the lot. A human
+  # sees each one.
+  approvals:
+    - id: memory-forget
+      description: Confirm forgetting a stored memory
+      tools: [forget]
+      ttl_seconds: 600
+      allow_unattended: false
+
+  auth:
+    inbound:
+      allow_anonymous: false
+
+  observability:
+    trace: true

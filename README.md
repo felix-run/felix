@@ -82,6 +82,12 @@ curl -s http://localhost:8080/v1/chat/completions \
   -d '{"model":"quick","messages":[{"role":"user","content":"hi"}]}' | jq
 ```
 
+`quick` is stateless. For an assistant that remembers across sessions, send the same request to
+`assistant`: it captures durable facts from each turn, shows them to the next session, and has
+`recall` / `remember` / `forget` tools (`forget` waits for an approval). Memory is shared across a
+tenant rather than per caller, so `assistant` refuses anonymous requests — under `make dev`
+(`FELIX_AUTH_MODE=none`) it answers 401; use the Compose stack and `$FELIX_KEY`.
+
 ### Local development without Compose
 
 ```bash
@@ -188,7 +194,7 @@ Client → Ingress (Caddy / Traefik / nginx / Cloudflare DNS+CDN)
 | `packages/ai` | Model layer: wire formats, catalog, turn types. Imports nothing from `felix` |
 | `packages/harness` | Manifests, patterns, tools, session, governance, auth, plugins |
 | `packages/cli` | `felix migrate \| eval \| mint-jwt \| bundle-manifests \| validate-manifest \| doctor \| version \| temporal-worker` |
-| `manifests/` | Bundled agents: `quick`, `deep`, `router`, `oss-only`, `hybrid-router`, `support`, `decider-support`, `cowork`, `governed`, `contributor`, `triage` |
+| `manifests/` | Bundled agents: `quick`, `assistant`, `deep`, `router`, `oss-only`, `hybrid-router`, `support`, `decider-support`, `cowork`, `governed`, `contributor`, `triage` |
 
 ### Vendor independence
 

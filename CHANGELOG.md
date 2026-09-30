@@ -34,6 +34,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   backed up, pull, `up -d` with the running stack's own compose files, and a wait for `/health`.
   It asks before every change; `--check` only reads.
 
+- **An `assistant` manifest: `quick` with long-term memory.** It captures durable facts from each
+  turn on the small model, shows them at the start of the next session, and offers `remember`,
+  `recall`, `forget` and `list_memories`, with `forget` behind a human approval and the memory
+  tools under content screening. Memory is shared across a tenant, not kept per caller, so it
+  refuses anonymous callers; `quick` stays stateless for the same reason.
+
+### Changed
+
+- **`FELIX_MEMORY_EMBEDDER` defaults to `auto`.** With `felix-harness[embeddings]` installed,
+  recall now uses its vector channel with the local bge model (weights fetched on first use);
+  without it, recall runs on full text and topic keys as before. `auto` never picks a hosted
+  embedder: that would send every stored memory to a provider, and the column is 768 wide. Set
+  `none` to keep the old behaviour on an image that has the extra.
+
 ## [0.5.0] — 2026-09-29
 
 ### Added

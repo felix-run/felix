@@ -48,4 +48,7 @@ export FELIX_ANTHROPIC_API_KEY=""
 export FELIX_OPENAI_API_KEY=""
 export FELIX_SEARCH_API_KEY=""
 export FELIX_MODEL_PROVIDER_OPTIONS=""
+# `auto` would load the local embedding model wherever the extra is installed — a download on
+# first use. Tests that need a vector channel set their own embedder.
+export FELIX_MEMORY_EMBEDDER=none
 exec uv run pytest "${@:--q}"
