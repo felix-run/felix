@@ -310,7 +310,13 @@ _ARG_SHAPES = [
 ]
 
 
-@pytest.mark.parametrize(("value", "should_gate"), _ARG_SHAPES, ids=lambda v: repr(v)[:24])
+# A bare `object()` reprs as its address, so its id would differ between two collections —
+# and under xdist every worker must collect the same ids, or the run refuses to start.
+@pytest.mark.parametrize(
+    ("value", "should_gate"),
+    _ARG_SHAPES,
+    ids=lambda v: "sentinel" if type(v) is object else repr(v)[:24],
+)
 @pytest.mark.asyncio
 async def test_when_args_separates_presence_from_truthiness(value: object, should_gate: bool) -> None:
     """A gate must fail toward gating, and `0` is a supplied value.
