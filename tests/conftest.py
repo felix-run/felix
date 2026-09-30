@@ -185,6 +185,11 @@ def _isolate_process_global_stores():
         # the order hid it; under xdist a worker's order differs, and CI failed on a test and a
         # change that had nothing to do with each other.
         reset_memory_for_tests()
+        # Content-addressed, so a stale entry would answer a later test's transcription call
+        # before its scripted model was ever asked.
+        from felix.governance.image_screening import clear_image_transcripts
+
+        clear_image_transcripts()
 
     _clear()
     yield

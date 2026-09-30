@@ -184,9 +184,29 @@ First, because everything else governs it.
         `apply_inbound_screening`. Checked rather than reasoned — `governance/inbound.py:_message_text`
         collects only blocks whose type is `text`, so image content has never reached a screener
         and resolving early would have handed it a block it ignores. So this is not a coverage
-        regression; it puts `file_id` images exactly where inline images already were. What
-        remains open is the real item underneath: **image content is not screened at all**, and
-        text rendered inside an uploaded image is an injection channel on both paths.
+        regression; it puts `file_id` images exactly where inline images already were. The real
+        item underneath — **image content was not screened at all**, so text rendered inside an
+        image was an injection channel on both paths — landed as `content_screening.image_model`:
+        a vision model transcribes each user image and the transcript goes through the text
+        screeners. Resolution for screening happens inside the control, under the same request
+        context, so it reads the bytes the wire will send; the wire's own late resolution is
+        unchanged. Remote URLs are unscreenable by construction (the provider fetches them) and
+        fall under `on_flag`. Found on the way: a turn beginning `[quarantined]` skipped the model
+        and decider scorers, because "already quarantined" was a test of caller-written text.
+      - Open, from the security review of image screening:
+        - **Replayed history is not screened.** Only the incoming turn passes the screen; an image
+          already in the session replays unscreened. Threads are tenant-scoped, not
+          manifest-scoped, so a caller can stage an image through a lightly governed manifest and
+          continue the thread on a governed one; enabling `image_model` later leaves existing
+          threads' images unscreened; and `/internal/sessions/*/events` can write
+          `metadata.attachments` whose only screen is the marker regex. Options: screen at the
+          wire (every step; the transcript cache keeps it cheap), bind threads to a manifest, or
+          screen attachments on the internal write-back.
+        - **Input PII does not read image transcripts.** Pixels cannot be redacted, so a match
+          could only quarantine the image or refuse the turn.
+        - **Screening spend is recorded without a `manifest_id`** when it runs in the route's
+          pre-screen, so it sits outside per-manifest usage and `limits.max_cost_usd`. True of
+          the text screener already; images make it larger.
       - Follow-up, from the quality review of the quota: **split `felix/attachments.py`**. It is
         ~600 lines doing four jobs — magic-number validation, key and containment rules, the
         `felix-file://` resolver, and now a Postgres-backed ledger — and the fourth brought a

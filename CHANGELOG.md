@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **A user turn beginning with `[quarantined]` skipped the model and decider screeners.** The
+  check meant "screening already replaced this text" and was written as a test of the text's
+  prefix, which the caller controls — so typing that prefix left a turn to the marker scan
+  alone. Screening now tracks whether it replaced the text itself.
+
 ### Fixed
 
 - **After compaction, a kept tool result is replayed with the call it answers.** A compaction
@@ -21,6 +28,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 ### Added
+
+- **`content_screening.image_model`: screen the text inside user images.** Inbound screening
+  read only a turn's text blocks, so an image of the words "ignore previous instructions" went
+  past every screener, and a turn with no text at all was never screened. With a vision model
+  named here, each user image is transcribed and the transcript screened like typed text;
+  `on_flag` then quarantines or refuses per image. Uploaded files are resolved under the
+  caller's tenant first, so the screener reads the bytes the model gets. Remote image URLs are
+  treated as unscreenable, since the provider fetches them separately, and so is any transcript
+  that was refused, filtered, truncated or empty. At most eight uncached transcriptions per
+  request; transcripts are cached per tenant by content, so resent history costs nothing
+  further. Only the incoming turn is screened, not images replayed from a thread's history.
+  Off by default; see `deploy/GOVERNANCE.md`.
 
 - **`GET /audit/export`: the audit log over a time range, as JSONL.** An auditor's second
   question after "who was refused" is "give me everything from last quarter", and the only
