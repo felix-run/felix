@@ -6,6 +6,9 @@ metadata:
   version: 1.0.0
   description: Felix planning agent — multi-step research and analysis.
   tags: [deep, planning, research]
+  greeting:
+    headline: "What should we research?"
+    subtitle: "deep plans multi-step research and analysis, then works through it. Give it a question worth a few minutes."
   starters:
     - title: "Plan a rollout"
       prompt: "Plan a multi-step rollout of a public API behind a chat UI. Include risks and validation steps."

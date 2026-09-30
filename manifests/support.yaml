@@ -6,6 +6,9 @@ metadata:
   version: 1.0.0
   description: Felix support agent — step-by-step troubleshooting and how-tos.
   tags: [support, ops]
+  greeting:
+    headline: "What are you stuck on?"
+    subtitle: "support walks through troubleshooting step by step and searches the docs as it goes."
   starters:
     - title: "Troubleshoot a stream"
       prompt: "My chat stream returns 500 only for some agents. Walk me through diagnosing it step by step."
