@@ -50,15 +50,20 @@ async def test_fibers_resume(settings: Settings) -> None:
 async def test_memory_turn_versioning(settings: Settings) -> None:
     from felix.memory.store import consolidate_pools, list_active, put_memory
 
-    a = await put_memory(settings, "default", content="Felix is a harness", origin_seq=1)
+    # Its own tenant. The in-memory store is one dict per process and `list_active` filters
+    # by tenant alone, so under `-n auto` any test sharing this worker that leaves an active
+    # memory for "default" (an e2e boot runs as "default") made this count 2 -- a flake on
+    # whichever unrelated PR drew that split (#385).
+    tenant = "protocols-memory-versioning"
+    a = await put_memory(settings, tenant, content="Felix is a harness", origin_seq=1)
     await put_memory(
         settings,
-        "default",
+        tenant,
         content="Felix is a harness",
         origin_seq=2,
         supersedes_id=a["id"],
     )
-    active = await list_active(settings, "default")
+    active = await list_active(settings, tenant)
     assert len(active) == 1
     n = await consolidate_pools(settings)
     assert n >= 0
