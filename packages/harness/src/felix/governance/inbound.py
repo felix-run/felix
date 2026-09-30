@@ -3,12 +3,22 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from felix.config import Settings
 from felix.governance.content_screening import screen_content
+from felix.governance.image_screening import TranscriptionBudget, has_images, screen_message_images
 from felix.governance.pii import redact_pii
+from felix.governance.screening import (
+    INJECTION_THRESHOLD,
+    MAX_SCREEN_CHUNKS,
+    SCREEN_CHARS,
+    SCREEN_OVERLAP,
+    InboundScreeningError,
+    ScreenResult,
+    note_screening,
+    settle_screening,
+)
 from felix.manifests.schema import Manifest
 from felix.observability.metrics import record_counter
 from felix.patterns.types import copy_agent_surface
@@ -17,15 +27,6 @@ if TYPE_CHECKING:
     from felix.decisions import MeteredDecider
 
 logger = logging.getLogger("felix.governance.inbound")
-
-
-class InboundScreeningError(PermissionError):
-    """User/input content failed screening."""
-
-    def __init__(self, detail: str, *, status_code: int = 422) -> None:
-        super().__init__(detail)
-        self.detail = detail
-        self.status_code = status_code
 
 
 def _message_text(msg: Any) -> str:
@@ -100,35 +101,6 @@ def _role_of(msg: Any) -> str:
     if isinstance(msg, dict):
         return str(msg.get("role") or "")
     return str(getattr(msg, "role", "") or "")
-
-
-@dataclass(frozen=True)
-class ScreenResult:
-    """Tri-state screening outcome.
-
-    ``None`` used to mean both "clean" and "the screener could not run", and every call
-    site read it as clean — so a missing API key, an expired credential, a 429, or a
-    provider outage silently turned ``content_screening.on_flag: block`` into a no-op,
-    with ``logger.debug`` as the only signal.
-    """
-
-    score: float | None = None
-    available: bool = True
-    reason: str = ""
-
-    @property
-    def flagged(self) -> bool:
-        return self.available and self.score is not None and self.score >= INJECTION_THRESHOLD
-
-    @property
-    def unavailable(self) -> bool:
-        return not self.available
-
-
-# Text beyond this is not seen by the model screener; a payload placed past it would
-# otherwise be silently unscreened.
-SCREEN_CHARS = 4000
-INJECTION_THRESHOLD = 0.8
 
 
 # The decider's battery: one Noul per way a text can try to take over an assistant, asked
@@ -281,72 +253,110 @@ async def apply_inbound_screening(
     except Exception:
         # Unavailable, like a model screener that cannot run: `on_flag` decides, and under
         # quarantine every user turn is quarantined — never admitted unscreened.
-        _note(manifest, "turn", "unavailable")
+        note_screening(manifest, "turn", "unavailable")
         if screening.on_flag == "block":
             raise InboundScreeningError("content_screening_unavailable:decider", status_code=503) from None
         decider, decider_down = None, True
+    budget = TranscriptionBudget() if content_on and screening.image_model.strip() else None
     out: list[Any] = []
     for msg in messages:
         if _role_of(msg) != "user":
             out.append(msg)
             continue
         text = _message_text(msg)
-        if not text:
-            out.append(msg)
-            continue
+        if text:
+            screened = await _screen_turn_text(manifest, text, settings, decider, decider_down=decider_down)
+            if screened != text:
+                msg = _set_message_text(msg, screened)
+        if budget is not None and has_images(msg):
 
-        if content_on:
-            verdict = await screen_content(
-                text,
-                settings=settings,
-                block_on_injection=True,
-                redact_pii=False,
+            async def screen_text(transcript: str) -> ScreenResult:
+                return await _screen_transcript(manifest, transcript, settings, decider)
+
+            msg = await screen_message_images(
+                manifest, msg, settings, screen_text=screen_text, budget=budget, decider_down=decider_down
             )
-            if verdict.denied:
-                _note(manifest, "turn", "denied" if screening.on_flag == "block" else "quarantined")
-                if screening.on_flag == "block":
-                    raise InboundScreeningError("content_screening_denied", status_code=422)
-                text = "[quarantined] user input flagged as potentially hostile"
-            if decider_down:
-                text = "[quarantined] user input could not be screened"
-            model_id = (screening.model or "").strip()
-            if (model_id or decider) and len(text) > MAX_SCREEN_CHUNKS * SCREEN_CHARS:
-                # Windowing removed the truncation bypass; this keeps it from becoming an
-                # amplifier — a body-limit-sized turn is not screened one window at a time.
-                _note(manifest, "turn", "oversize")
-                if screening.on_flag == "block":
-                    raise InboundScreeningError("turn_too_large", status_code=422)
-                text = "[quarantined] user input too long to screen"
-            if (model_id or decider) and text and not text.startswith("[quarantined]"):
-                result = await _screen_chunks(settings, text, model_id, decider)
-                if result.unavailable:
-                    # A control that cannot run has not cleared anything. Honour on_flag
-                    # rather than silently admitting the turn.
-                    _note(manifest, "turn", "unavailable")
-                    if screening.on_flag == "block":
-                        raise InboundScreeningError(
-                            f"content_screening_unavailable:{result.reason}",
-                            status_code=503,
-                        )
-                    text = "[quarantined] user input could not be screened"
-                elif result.flagged:
-                    # The score stays in the log: returned, it is a threshold oracle.
-                    logger.info("inbound screening flagged a turn score=%.2f", result.score)
-                    _note(manifest, "turn", "denied" if screening.on_flag == "block" else "quarantined")
-                    if screening.on_flag == "block":
-                        raise InboundScreeningError("content_screening_denied", status_code=422)
-                    text = "[quarantined] user input flagged by model screener"
-
-        if pii_on_input:
-            result = redact_pii(text)
-            if result.matched:
-                _note(manifest, "turn", "denied" if guardrails.block_on_match else "redacted")
-                if guardrails.block_on_match:
-                    raise InboundScreeningError("pii_blocked", status_code=422)
-                text = result.text
-
-        out.append(_set_message_text(msg, text) if text != _message_text(msg) else msg)
+        out.append(msg)
     return out
+
+
+async def _screen_turn_text(
+    manifest: Manifest,
+    text: str,
+    settings: Settings,
+    decider: MeteredDecider | None,
+    *,
+    decider_down: bool,
+) -> str:
+    """One user turn's text, screened: returned as-is, replaced by a `[quarantined]` note, or
+    PII-redacted. Raises `InboundScreeningError` where `on_flag: block` refuses the turn."""
+    screening = manifest.spec.content_screening
+    guardrails = manifest.spec.guardrails
+    if screening.enabled:
+        # Whether *screening* replaced the text. Asked of a flag, not of the text: a turn the
+        # caller began with "[quarantined]" is still the caller's, and testing the prefix let
+        # it skip the model and decider scoring.
+        quarantined = False
+        if (await screen_content(text, settings=settings, block_on_injection=True, redact_pii=False)).denied:
+            settle_screening(manifest, "turn", "flagged", error="content_screening_denied", status_code=422)
+            text, quarantined = "[quarantined] user input flagged as potentially hostile", True
+        if decider_down:
+            text, quarantined = "[quarantined] user input could not be screened", True
+        model_id = (screening.model or "").strip()
+        if (model_id or decider) and len(text) > MAX_SCREEN_CHUNKS * SCREEN_CHARS:
+            # Windowing removed the truncation bypass; this keeps it from becoming an
+            # amplifier — a body-limit-sized turn is not screened one window at a time.
+            settle_screening(manifest, "turn", "oversize", error="turn_too_large", status_code=422)
+            text, quarantined = "[quarantined] user input too long to screen", True
+        if (model_id or decider) and not quarantined:
+            result = await _screen_chunks(settings, text, model_id, decider)
+            if result.unavailable:
+                # A control that cannot run has not cleared anything. Honour on_flag
+                # rather than silently admitting the turn.
+                settle_screening(
+                    manifest,
+                    "turn",
+                    "unavailable",
+                    error=f"content_screening_unavailable:{result.reason}",
+                    status_code=503,
+                )
+                text = "[quarantined] user input could not be screened"
+            elif result.flagged:
+                # The score stays in the log: returned, it is a threshold oracle.
+                logger.info("inbound screening flagged a turn score=%.2f", result.score)
+                settle_screening(
+                    manifest, "turn", "flagged", error="content_screening_denied", status_code=422
+                )
+                text = "[quarantined] user input flagged by model screener"
+
+    if input_pii_enabled(guardrails):
+        result = redact_pii(text)
+        if result.matched:
+            note_screening(manifest, "turn", "denied" if guardrails.block_on_match else "redacted")
+            if guardrails.block_on_match:
+                raise InboundScreeningError("pii_blocked", status_code=422)
+            text = result.text
+    return text
+
+
+async def _screen_transcript(
+    manifest: Manifest, text: str, settings: Settings, decider: MeteredDecider | None
+) -> ScreenResult:
+    """The verdict on an image's transcript, held to the rule the turn's own text is.
+
+    A verdict rather than a rewrite, because the image, not the text, is what gets removed.
+    The marker scan reads the whole transcript whatever its length; the length ceiling applies
+    only when a paid scorer would read it window by window, as it does for text.
+    """
+    screening = manifest.spec.content_screening
+    if (await screen_content(text, settings=settings, block_on_injection=True, redact_pii=False)).denied:
+        return ScreenResult(score=1.0, reason="marker")
+    model_id = (screening.model or "").strip()
+    if not (model_id or decider):
+        return ScreenResult(score=0.0)
+    if len(text) > MAX_SCREEN_CHUNKS * SCREEN_CHARS:
+        return ScreenResult(available=False, reason="oversize")
+    return await _screen_chunks(settings, text, model_id, decider)
 
 
 def input_pii_enabled(guardrails: Any) -> bool:
@@ -354,26 +364,6 @@ def input_pii_enabled(guardrails: Any) -> bool:
     `reply_pii_enabled`). `input` is in the default targets."""
     targets = set(getattr(guardrails, "targets", None) or [])
     return "pii" in (getattr(guardrails, "providers", None) or []) and (not targets or "input" in targets)
-
-
-def _note(manifest: Manifest, surface: str, action: str) -> None:
-    """A screening decision is a governance event: a counter and an audit row, no content."""
-    from felix.audit.emit import emit_agent_audit
-    from felix.observability.metrics import record_counter
-
-    name = manifest.metadata.name
-    record_counter("felix_inbound_screening", {"manifest_id": name, "surface": surface, "action": action})
-    emit_agent_audit("inbound_screening", status=action, payload={"surface": surface}, manifest_id=name)
-
-
-# The model screener reads SCREEN_CHARS at a time; a turn or argument set longer than
-# this many chunks is refused rather than screened, because each chunk is a model call
-# and rate limiting counts requests, not calls.
-MAX_SCREEN_CHUNKS = 8
-
-
-# Windows overlap by this much so a payload straddling a boundary is inside one of them.
-SCREEN_OVERLAP = 200
 
 
 async def _screen_chunks(
@@ -468,31 +458,31 @@ async def screen_tool_arguments(
         return args
     joined = "\n".join(texts)
     if len(texts) > MAX_ARGUMENT_STRINGS or len(joined) > MAX_SCREEN_CHUNKS * SCREEN_CHARS:
-        _note(manifest, "tool_arguments", "oversize")
+        note_screening(manifest, "tool_arguments", "oversize")
         raise InboundScreeningError("arguments_too_large", status_code=422)
     if screening.enabled:
         for text in texts:
             verdict = await screen_content(text, settings=settings, block_on_injection=True, redact_pii=False)
             if verdict.denied:
-                _note(manifest, "tool_arguments", "denied")
+                note_screening(manifest, "tool_arguments", "denied")
                 raise InboundScreeningError("content_screening_denied", status_code=422)
         model_id = (screening.model or "").strip()
         decider = _decider_or_refuse(manifest, settings)
         if model_id or decider:
             result = await _screen_chunks(settings, joined, model_id, decider)
             if result.unavailable:
-                _note(manifest, "tool_arguments", "unavailable")
+                note_screening(manifest, "tool_arguments", "unavailable")
                 if screening.on_flag == "block":
                     raise InboundScreeningError(
                         f"content_screening_unavailable:{result.reason}", status_code=503
                     )
             elif result.flagged:
                 logger.info("inbound screening flagged tool arguments score=%.2f", result.score)
-                _note(manifest, "tool_arguments", "denied")
+                note_screening(manifest, "tool_arguments", "denied")
                 raise InboundScreeningError("content_screening_denied", status_code=422)
     if pii_on_input:
         if any(redact_pii(k).matched for k in _keys_in(args)):
-            _note(manifest, "tool_arguments", "denied")
+            note_screening(manifest, "tool_arguments", "denied")
             raise InboundScreeningError("pii_blocked", status_code=422)
         matched = False
 
@@ -504,7 +494,7 @@ async def screen_tool_arguments(
 
         redacted = _map_values(args, _redact)
         if matched:
-            _note(manifest, "tool_arguments", "denied" if guardrails.block_on_match else "redacted")
+            note_screening(manifest, "tool_arguments", "denied" if guardrails.block_on_match else "redacted")
             if guardrails.block_on_match:
                 raise InboundScreeningError("pii_blocked", status_code=422)
             return redacted
@@ -544,32 +534,32 @@ async def screen_output_schema(manifest: Manifest, schema: dict[str, Any], setti
         return
     joined = "\n".join(texts)
     if len(texts) > MAX_SCHEMA_STRINGS or len(joined) > MAX_SCREEN_CHUNKS * SCREEN_CHARS:
-        _note(manifest, "output_schema", "oversize")
+        note_screening(manifest, "output_schema", "oversize")
         raise InboundScreeningError("output_schema_too_large", status_code=422)
     if screening.enabled:
         for text in texts:
             verdict = await screen_content(text, settings=settings, block_on_injection=True, redact_pii=False)
             if verdict.denied:
-                _note(manifest, "output_schema", "denied")
+                note_screening(manifest, "output_schema", "denied")
                 raise InboundScreeningError("content_screening_denied", status_code=422)
         model_id = (screening.model or "").strip()
         decider = _decider_or_refuse(manifest, settings)
         if model_id or decider:
             result = await _screen_chunks(settings, joined, model_id, decider)
             if result.unavailable:
-                _note(manifest, "output_schema", "unavailable")
+                note_screening(manifest, "output_schema", "unavailable")
                 if screening.on_flag == "block":
                     raise InboundScreeningError(
                         f"content_screening_unavailable:{result.reason}", status_code=503
                     )
             elif result.flagged:
                 logger.info("inbound screening flagged an output schema score=%.2f", result.score)
-                _note(manifest, "output_schema", "denied")
+                note_screening(manifest, "output_schema", "denied")
                 raise InboundScreeningError("content_screening_denied", status_code=422)
     if pii_on_input and any(redact_pii(t).matched for t in texts):
         # Always a refusal, `block_on_match` or not: the redacted alternative is a schema whose
         # descriptions no longer say what the caller wrote.
-        _note(manifest, "output_schema", "denied")
+        note_screening(manifest, "output_schema", "denied")
         raise InboundScreeningError("pii_blocked", status_code=422)
 
 
@@ -637,9 +627,13 @@ def apply_inbound_controls(agent: Any, manifest: Manifest, settings: Settings | 
 
 __all__ = [
     "INBOUND_SCREENED_EXTRA",
+    # Re-exported from `screening`, where they moved; callers and tests import them from here.
+    "INJECTION_THRESHOLD",
     "MAX_SCREEN_CHUNKS",
+    "SCREEN_CHARS",
     "InboundScreeningAgent",
     "InboundScreeningError",
+    "ScreenResult",
     "apply_inbound_controls",
     "apply_inbound_screening",
     "inbound_controls_enabled",

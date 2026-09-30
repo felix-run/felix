@@ -895,11 +895,20 @@ class ContentScreening(_Strict):
     #: A manifest binding twenty MCP tools pays twenty screener calls a turn without it, since
     #: `tools` became additive and stopped being the way to name fewer.
     model_tools: list[str] = Field(default_factory=list, max_length=MAX_REFS)
+    #: A vision model that reads the text in each user image; the transcript is then screened
+    #: exactly as the turn's typed text is, and `on_flag` applies per image. Empty, the default,
+    #: leaves images unscreened. A remote image URL cannot be screened — the provider fetches it
+    #: separately — so it is treated like a screener outage.
+    image_model: str = ""
 
     @model_validator(mode="after")
     def _model_tools_need_a_scorer(self) -> ContentScreening:
         if self.model_tools and not (self.model.strip() or self.decider):
             raise ValueError("content_screening.model_tools needs content_screening.model or decider: true")
+        # Inert otherwise: images are screened only when screening is on, and a field that
+        # reads as a control while doing nothing is the failure this schema exists to refuse.
+        if self.image_model.strip() and not self.enabled:
+            raise ValueError("content_screening.image_model needs content_screening.enabled: true")
         return self
 
 

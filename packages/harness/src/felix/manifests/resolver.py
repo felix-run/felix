@@ -5,10 +5,10 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
+from felix.bounded_cache import BoundedCache
 from felix.manifests.loader import load_bundled, parse_stored_manifest
 from felix.manifests.schema import Manifest, assert_valid_manifest_name
 
@@ -68,46 +68,14 @@ class ResolveOptions:
 MAX_CACHE_ENTRIES = 1024
 
 
-class _BoundedCache:
-    """A mapping that forgets its least-recently-used entry instead of growing.
+class _BoundedCache(BoundedCache):
+    """`BoundedCache` at the resolver's size, under the name its caches and tests predate the
+    move with."""
 
-    Deliberately not a `dict` subclass. The first version was, and inheriting from
-    `dict` meant overriding `get` -- whose stdlib signature is positional-only with a
-    key typed `object` -- which produced a stream of type errors for no benefit. The
-    resolver needs five operations; a class that offers exactly those five has no
-    signature to conflict with, and it cannot be handed somewhere that quietly expects
-    the other thirty.
-    """
-
-    __slots__ = ("_data", "_maxsize")
+    __slots__ = ()
 
     def __init__(self, maxsize: int = MAX_CACHE_ENTRIES) -> None:
-        self._data: OrderedDict[str, Any] = OrderedDict()
-        self._maxsize = maxsize
-
-    def get(self, key: str, default: Any = None) -> Any:
-        if key not in self._data:
-            return default
-        self._data.move_to_end(key)
-        return self._data[key]
-
-    def __setitem__(self, key: str, value: Any) -> None:
-        self._data[key] = value
-        self._data.move_to_end(key)
-        while len(self._data) > self._maxsize:
-            self._data.popitem(last=False)
-
-    def pop(self, key: str, default: Any = None) -> Any:
-        return self._data.pop(key, default)
-
-    def clear(self) -> None:
-        self._data.clear()
-
-    def __len__(self) -> int:
-        return len(self._data)
-
-    def __contains__(self, key: str) -> bool:
-        return key in self._data
+        super().__init__(maxsize)
 
 
 _version_blob_cache: _BoundedCache = _BoundedCache()

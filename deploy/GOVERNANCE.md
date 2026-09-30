@@ -483,6 +483,7 @@ Screening and PII degrade **loudly**, and "unavailable" is not treated as "clean
 |---------|----------------------|
 | `content_screening.model` (LLM screener) | Honours `on_flag`: `block` denies with 503 / `[screening unavailable]`; otherwise the turn or tool output is quarantined. Emits `felix_control_unavailable{control="content_screening"}`. |
 | `content_screening.decider` (decision model) | The same as the model screener, and independently of it: with both set, either one unable to run leaves the text unscreened rather than cleared, and a decider whose route no longer resolves is unavailable too. |
+| `content_screening.image_model` (image text) | Per image, honours `on_flag`: `block` denies with 503; otherwise the image is removed and replaced by `[quarantined] image could not be screened`. Covers a transcriber error; a transcript that did not finish normally — cut off at the output limit, refused, or filtered; an empty reply (only `NO_TEXT` means "no text"); and every remote `http(s)` image — the provider fetches those itself, so this process cannot screen what the model will be shown. Emits `felix_control_unavailable{control="image_screening"}` on a transcriber error. |
 | `guardrails.providers: [pii]` | Falls back to three regexes (email, US SSN, card-like digits) with a `WARNING` and `felix_control_degraded{control="pii"}`. A *transient* engine failure is retried rather than latched for the process lifetime. |
 
 The lean image ships neither Presidio nor a spaCy model, so `providers: [pii]` there is
@@ -716,6 +717,35 @@ Four things to know before relying on it:
   starts a new thread with no pin, so a forked conversation continues under the current
   manifest. That is the design — the pin protects a run in progress — and it is also the
   recovery path when a deliberate manifest edit leaves a pinned thread refusing.
+
+## Screening images
+
+Text rendered inside an image is an injection channel: the screeners read a turn's text blocks,
+and an image carrying "ignore previous instructions" passed all of them. Set
+`content_screening.image_model` to a vision-capable model and each user image is transcribed by
+it, and the transcript screened exactly as typed text is — the marker scan, then `model` and the
+decider if set. `on_flag` applies per image: `quarantine` removes the image and says so in the
+turn, leaving the text and any clean images; `block` refuses the turn with 422.
+
+- **What is screened is what the model gets.** An uploaded file (`felix-file://`) is resolved
+  under the caller's tenant before transcription, the way the model call resolves it.
+- **Remote image URLs are not screened, and are treated as unscreenable.** The provider fetches
+  them separately, so a server can answer the screener and the model with different images.
+- **Cost.** One vision call per distinct image, and at most `MAX_SCREEN_IMAGES` (8) per
+  *request* — counted across every message in it, since one body can carry many. Past that,
+  `block` refuses with 422 `too_many_images` and `quarantine` removes the rest. Transcripts are
+  cached per tenant by content, so a client that resends its history pays once per image, and a
+  cached image does not count against the eight.
+- **Only the incoming turn is screened.** An image already in a thread's session history replays
+  without being screened again. Threads are scoped to the tenant, not the manifest, so an image
+  admitted by a manifest without `image_model` in the same thread — or by this manifest before
+  `image_model` was set — reaches the model unscreened on later turns.
+- **Injection only.** `guardrails.providers: [pii]` does not read image transcripts; an image of
+  an SSN is not caught by the input PII guardrail.
+- **Limit.** The transcriber reads hostile input, and an image can tell it to report no text.
+  This is one layer, not a guarantee — the same caveat as every model-based screener.
+
+It needs `content_screening.enabled: true`; the manifest is refused without it.
 
 ## Content screening targets
 

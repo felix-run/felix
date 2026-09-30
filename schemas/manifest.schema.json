@@ -554,6 +554,11 @@
           "maxItems": 64,
           "title": "Model Tools",
           "type": "array"
+        },
+        "image_model": {
+          "default": "",
+          "title": "Image Model",
+          "type": "string"
         }
       },
       "title": "ContentScreening",

@@ -125,6 +125,8 @@ spec:
     on_flag: quarantine
     # Optional LLM screener — leave empty for marker-only (default).
     # model: llama-3-fast
+    # Optional: screen the text inside user images with a vision model (see deploy/GOVERNANCE.md).
+    # image_model: claude-sonnet
 
   command_screening:
     enabled: true
