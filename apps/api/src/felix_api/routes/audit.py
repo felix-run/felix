@@ -13,7 +13,7 @@ from fastapi.responses import StreamingResponse
 from felix.auth.mgmt import SCOPE_AUDIT_READ, require_mgmt_scopes, tenant_id_from_request
 from felix.cursors import InvalidCursor
 
-from felix_api.errors import client_safe_message
+from felix_api.errors import client_safe_message, internal_error_message
 
 logger = logging.getLogger("felix_api.routes.audit")
 
@@ -146,9 +146,10 @@ async def export_audit(
                 if cursor is None:
                     return
                 page, cursor = await read_page(cursor)
-        except Exception as exc:  # cancellation is a BaseException and passes through
+        except Exception:  # cancellation is a BaseException and passes through
+            # A store failure is never a relayable type, so the exception stays in the log.
             logger.exception("audit export failed after its first page")
-            yield _jsonl_line({"error": "export_incomplete", "detail": client_safe_message(exc)})
+            yield _jsonl_line({"error": "export_incomplete", "detail": internal_error_message()})
 
     # Built from integers only, so nothing a caller sends reaches the header.
     start = "start" if since is None else since

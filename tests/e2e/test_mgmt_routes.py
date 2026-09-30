@@ -533,6 +533,7 @@ async def test_an_audit_export_that_fails_midway_says_so_in_the_file(boot: Any, 
     lines = [json.loads(line) for line in exported.text.splitlines()]
     assert [row["ts"] for row in lines[:-1]] == [300, 200]
     assert lines[-1]["error"] == "export_incomplete", lines[-1]
+    assert lines[-1]["detail"].startswith("internal error"), lines[-1]
     assert "the store went away" not in lines[-1]["detail"], lines[-1]
 
 

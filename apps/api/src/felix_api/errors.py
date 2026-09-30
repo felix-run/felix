@@ -91,6 +91,15 @@ def client_safe_message(exc: BaseException, *, authored_for_clients: bool = Fals
         # rather than each deciding which attribute is the client-facing one.
         detail = getattr(exc, "detail", None)
         return str(detail) if isinstance(detail, str) and detail else str(exc)
+    return internal_error_message()
+
+
+def internal_error_message() -> str:
+    """The fixed text for a failure a client may not see the cause of, with the request id.
+
+    For a site whose exception is never a relayable type, so there is nothing to decide and
+    no reason to hand the exception to the response at all.
+    """
     request_id = get_request_id()
     if request_id and request_id != "-":
         return f"internal error (request {request_id})"
