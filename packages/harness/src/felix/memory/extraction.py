@@ -98,10 +98,9 @@ Return ONLY a JSON array. Each element:
 Rules:
 - content must stand alone. Resolve pronouns, name the subject. A reader with no
   access to this conversation must understand it.
-- topic_key groups values that replace each other, so a newer one generally
-  supersedes the older: "user.timezone", "deploy.runbook". Set it for facts and
-  instructions. Leave it empty for events and tasks, which accumulate rather than
-  replace.
+- topic_key groups values of one thing, so a newer one is recognised as its current
+  value: "user.timezone", "deploy.runbook". Set it for facts and instructions. Leave it
+  empty for events and tasks, which accumulate rather than replace.
 - kind: "fact" is stable knowledge or preference; "event" is something that happened;
   "instruction" is a rule to follow; "task" is work in progress.
 
@@ -241,9 +240,18 @@ async def _ask(model: Any, system: str, user: str, *, max_tokens: int = 2048) ->
 # also stopped matching a pleasantry in the second sentence. Requiring the object
 # ("if you need *me*", "happy to *help*") separates the assistant talking about
 # itself from an instruction that merely contains the same words, at any position.
+# The assistant talking about itself, in the forms extraction actually produces. First person
+# is the obvious one; third person is the one that got through: the prompt tells the extractor
+# to resolve pronouns, so "I couldn't find the file" arrives as "The assistant could not find
+# the file" — and a durable fact about the assistant is never what memory is for. Past tense
+# and apologies were missing too. `tests/unit/test_memory_meta_filter.py` holds both directions:
+# what must be refused, and near-misses about the *user* that must be kept.
 _META = re.compile(
     r"\b(i'?ll |i am |i'?m |i can|i have|i don'?t|my memory|as an ai|"
-    r"if you need me|happy to help|let me know if you|feel free to ask me)",
+    r"if you need me|happy to help|let me know if you|feel free to ask me|"
+    r"i (?:could|couldn'?t|would|wouldn'?t|was|wasn'?t|did|didn'?t|will|won'?t|apologi[sz]e)\b|"
+    r"the assistant\b|as a (?:large )?language model|sorry\b|apologi[sz](?:e|ed|es|ing)\b for the confusion|"
+    r"(?:the )?(?:ai|assistant|model) (?:is|was) (?:unable|not able))",
     re.IGNORECASE,
 )
 
