@@ -80,11 +80,26 @@ class _Strict(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class Starter(_Strict):
+    """A prompt a client may offer on an empty thread, sent verbatim when chosen.
+
+    Presentation only: nothing in the harness reads it to decide what a run may do. It lives
+    on the manifest so every client offers the same prompts for an agent, and so a renamed or
+    newly published manifest brings its own instead of each client keeping a table by name.
+    """
+
+    title: str = Field(min_length=1, max_length=60)
+    prompt: str = Field(min_length=1, max_length=2000)
+
+
 class Metadata(_Strict):
     name: str = Field(min_length=1, max_length=128)
     version: str = "1.0.0"
     description: str = ""
     tags: list[str] = Field(default_factory=list)
+    #: Listed by `GET /v1/models` as `felix.starters`. Capped because every entry is a button
+    #: on an empty thread; past a handful they stop being suggestions and become a menu.
+    starters: list[Starter] = Field(default_factory=list, max_length=8)
 
     @field_validator("name")
     @classmethod
@@ -1088,6 +1103,7 @@ __all__ = [
     "Policy",
     "PromptTemplateSpec",
     "Spec",
+    "Starter",
     "any_limit",
     "assert_valid_manifest_name",
     "guardrails_enabled",

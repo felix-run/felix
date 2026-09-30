@@ -6,6 +6,13 @@ metadata:
   version: 1.0.0
   description: Felix planning agent — multi-step research and analysis.
   tags: [deep, planning, research]
+  starters:
+    - title: "Plan a rollout"
+      prompt: "Plan a multi-step rollout of a public API behind a chat UI. Include risks and validation steps."
+    - title: "Research a comparison"
+      prompt: "Compare Docker Compose and Kubernetes for running a small self-hosted agent API. Cite sources."
+    - title: "Design an eval set"
+      prompt: "Propose five golden eval prompts for a general-purpose agent and how to judge each."
 
 spec:
   pattern: deep
