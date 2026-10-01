@@ -35,6 +35,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   call now spends it, and a second call parked on the same pending row is refused
   (`[approval already used]`).
 
+- **`bind_principal` holds while a call waits, not only when it finds a grant.** Identical calls
+  share one pending approval, keyed on the arguments alone, so a second caller could join the
+  first caller's request: the approver read the first principal, approved, and the second
+  caller's waiting call ran on that approval — and, under `one_shot`, spent it. Under
+  `bind_principal` a call that would join another principal's pending request is now refused at
+  once.
+
 ### Added
 
 - **`content_screening.image_model`: screen the text inside user images.** Inbound screening

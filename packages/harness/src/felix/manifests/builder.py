@@ -860,7 +860,8 @@ async def _approval_preview(tool: Tool, args: ToolInput) -> str | None:
         raise _PreviewFailed(f"timed out after {_PREVIEW_TIMEOUT_S:.0f}s") from None
     except Exception as exc:
         logger.warning("approval preview for %s failed", tool.name, exc_info=True)
-        raise _PreviewFailed(redact_text(f"{type(exc).__name__}: {str(exc)[:200]}")) from None
+        # Redact, then cut: cut first and a secret straddling the cut survives as a prefix.
+        raise _PreviewFailed(redact_text(f"{type(exc).__name__}: {exc}")[:200]) from None
     return redact_text(text)
 
 
@@ -1002,6 +1003,28 @@ def apply_approvals(tools: list[Tool], rules: list[ApprovalRule], manifest_id: s
                 return deny_output(
                     f"[approval preview failed] tool={tool.name} rule={rule.id}: {preview_failure}. "
                     "No approval was requested; fix the call and retry.",
+                    "approvals",
+                )
+
+            # `create_pending` shares a live row between identical calls, keyed on the signature
+            # alone. Under `bind_principal` that let a second caller join the first caller's
+            # request: the approver read the first principal, granted it, and the second
+            # caller's waiting call ran on it -- and, with `one_shot`, spent it. A row opened by
+            # someone else is not this caller's to wait on.
+            if (
+                not granted
+                and pending_row is not None
+                and rule.bind_principal
+                and req is not None
+                and str(pending_row.get("principal_subj") or "") != str(req.auth.principal_sub or "")
+            ):
+                record_counter(
+                    "felix_approval_required",
+                    {"manifest_id": manifest_id, "tool": tool.name, "rule": rule.id},
+                )
+                return deny_output(
+                    f"[approval required] tool={tool.name} rule={rule.id}: an identical request "
+                    "from another caller is already pending; this caller's request was not joined to it.",
                     "approvals",
                 )
 
