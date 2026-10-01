@@ -108,6 +108,13 @@ class Tool:
     # from the tools the agent actually has — so the prompt cannot recommend a tool that was
     # removed. `spec.tool_guidance` sets it per manifest; this is for tools defined in code.
     prompt_guidance: str = ""
+    # What a person approving a call to this tool reads, computed by the harness from the call's
+    # arguments rather than written by the model. `apply_approvals` stores it on the pending row
+    # and the `approval_required` frame under `args["preview"]`, and keeps it out of the call
+    # signature and out of the arguments the tool runs with. For a tool whose arguments are a
+    # reference (a commit sha) rather than the content itself, this is what makes the approval
+    # row show what is about to happen. A preview that raises never blocks the approval.
+    approval_preview: Callable[[ToolInput], Awaitable[str]] | None = None
 
     def __post_init__(self) -> None:
         if self.peer and not self.is_peer:
@@ -276,6 +283,7 @@ def define_tool_with_executor(
     fatal: bool = False,
     replay_safe: bool = False,
     prompt_guidance: str = "",
+    approval_preview: Callable[[ToolInput], Awaitable[str]] | None = None,
 ) -> Tool:
     schema = args_schema if args_schema is not None else args
     return Tool(
@@ -289,6 +297,7 @@ def define_tool_with_executor(
         fatal=fatal,
         replay_safe=replay_safe,
         prompt_guidance=prompt_guidance,
+        approval_preview=approval_preview,
         executor=executor,
     )
 

@@ -68,6 +68,10 @@ NEVER_BOUND_GITHUB_TOOLS = frozenset(
         "create_repository",
         "fork_repository",
         "run_secret_scanning",
+        # Whole-file writes. Publishing is `publish_commits`, which carries a sha rather than the
+        # files; these put every changed file into the model's context and the approval row (#307).
+        "push_files",
+        "create_or_update_file",
     }
 )
 
@@ -122,7 +126,7 @@ def test_no_shell_prefix_can_publish_or_run_arbitrary_code(manifest: Manifest) -
 
 def test_workspace_writes_are_not_gated_the_host_is(manifest: Manifest) -> None:
     """Deliberate: approvals sit at publication. A person approving every write_file stops
-    reading them; the push_files approval carries the diff. deploy/GOVERNANCE.md 'Shell tools'
+    reading them; the publish_commits approval carries the diff. deploy/GOVERNANCE.md 'Shell tools'
     is what makes the checkout safe to write to ungated."""
     for tool in ("write_file", "edit_file"):
         assert tool in manifest.spec.tools
@@ -286,3 +290,33 @@ def test_it_declares_a_token_budget_a_whole_ticket_fits_in(manifest: Manifest) -
     declared = manifest.spec.limits.max_input_tokens
     assert declared is not None, "an unset budget is the 1M default, which is under a run"
     assert DEFAULT_LIMITS["max_input_tokens"] < declared <= ABSOLUTE_LIMITS["max_input_tokens"]
+
+
+def test_commits_are_published_by_the_harness_and_gated(manifest: Manifest) -> None:
+    """`publish_commits` is the one path by which commits leave the machine.
+
+    Bound from `spec.github_publish`, not from MCP, so the allowlist proof above cannot see it:
+    this is its half. Unset, the agent has no way to publish; ungated, it publishes unreviewed.
+    """
+    publish = manifest.spec.github_publish
+    assert publish is not None, "no publishing path: spec.github_publish is unset"
+    assert publish.repo == "felix-run/felix"
+    assert secret_ref_name(publish.auth) == "GITHUB_MCP_TOKEN"
+    assert publish.branch_prefix == "felix/" and publish.base == "main"
+    assert "publish_commits" in _approval_gated_tools(manifest)
+
+
+def test_a_publish_approval_is_spent_once_and_by_its_own_caller(manifest: Manifest) -> None:
+    """The rule that decides `publish_commits` — the last naming it literally, as `apply_approvals`
+    selects — is one-shot and principal-bound. Without `one_shot` an approved sha could be
+    published again on a replay for the rest of the TTL; without `bind_principal` one caller's
+    approval would authorize another caller's identical call."""
+    literal = [r for r in manifest.spec.approvals if "publish_commits" in r.tools]
+    assert literal, "publish_commits is not named by any approval rule"
+    rule = literal[-1]
+    assert rule.id == "publish"
+    assert rule.tools == ["publish_commits"], "the publish rule's flags must not leak to other tools"
+    assert rule.one_shot is True
+    assert rule.bind_principal is True
+    assert rule.ttl_seconds == 3600 and rule.allow_unattended is False
+    assert "preview" in rule.description, "the description should tell the approver what to read"

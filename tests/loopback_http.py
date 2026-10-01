@@ -29,6 +29,10 @@ class Request:
 
     path: str
     headers: dict[str, str]
+    # Defaulted so a responder that only reads the path is unchanged. A write API's fake needs
+    # both: the method is what distinguishes create from update, and the body is the call.
+    method: str = "GET"
+    body: bytes = b""
 
 
 Responder = Callable[[Request, asyncio.StreamWriter], object]
@@ -59,7 +63,16 @@ async def serve(responder: Responder) -> AsyncIterator[str]:
             name, sep, value = line.partition(":")
             if sep:
                 headers[name.strip().lower()] = value.strip()
-        request = Request(path=parts[1] if len(parts) > 1 else "/", headers=headers)
+        body = b""
+        length = int(headers.get("content-length") or 0)
+        if length:
+            try:
+                body = await reader.readexactly(length)
+            except asyncio.IncompleteReadError, ConnectionError:
+                return
+        request = Request(
+            path=parts[1] if len(parts) > 1 else "/", headers=headers, method=parts[0], body=body
+        )
         try:
             result = responder(request, writer)
             if asyncio.iscoroutine(result):

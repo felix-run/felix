@@ -472,8 +472,60 @@ own:
   — `uv` resolves an index the workspace names. And secret confinement covers what Felix
   masks, not a file in the checkout — the workspace holds no `.env` and no deployment secret,
   because an allowlisted `git diff` or a failing test can print one into the transcript.
+- **The child can read the API's own environment.** It inherits only the five variables above,
+  but it runs as the API's user, so it may read `/proc/<api pid>/environ` — every secret the
+  `env` backend resolves from there, the GitHub token included. Withholding a variable from the
+  child is not withholding it from code the child runs. Only a separate user or a separate
+  container with no secrets in it closes this, and the bundled deployments do neither.
 - **One tenant per process.** `FELIX_WORKSPACE_ROOT` is process-global; every tenant's shell
   tool reads and writes the same tree. A multi-tenant deployment does not bind one.
+
+## Publishing commits
+
+`spec.github_publish` binds `publish_commits(branch, head_sha, title?)`, which publishes commits
+already made in `FELIX_WORKSPACE_ROOT` to one GitHub repository. It exists so the workspace never
+needs a credential: the shell tool above runs repository code, so whatever that process can read,
+the agent can print. The token (`auth: secret:NAME`, a secret ref only — a literal is refused)
+is resolved in the API process and Felix uses it only in the `Authorization` header of one
+egress-guarded HTTP client. The git the tool runs is read-only plumbing (`rev-parse`, `merge-base`, `diff`, `log`,
+`cat-file`) with an environment built from nothing — no token, no API secret — and with system
+and global config, hooks, fsmonitor, external diff drivers and textconv switched off, because the
+repository's own `.git/config` is agent-writable.
+
+What an approval of `publish_commits` binds:
+
+- **The content.** `head_sha` is in the call signature and is content-addressed, so approving one
+  sha authorizes that tree and nothing else; a new commit on the same branch is a new approval.
+  After building the tree the tool compares GitHub's tree sha with `head_sha^{tree}` and refuses
+  to commit on a mismatch, and every blob sha GitHub returns is checked against the local one —
+  what lands is byte-for-byte the tree that was approved.
+- **The branch.** It must start with `branch_prefix` (required) and may not be `base`, which may
+  not itself start with the prefix.
+- **No history rewrite.** The parent is the remote tip of the branch (or of `base` for a new
+  branch), it must be an ancestor of `head_sha`, and the ref moves with `force: false`.
+- **Once, and for one person**, in `contributor.yaml`: the `publish` rule is `one_shot` and
+  `bind_principal`, so a grant publishes one call and only for the caller it was granted to.
+
+A preview that raises or takes longer than 60 seconds refuses the call with
+`[approval preview failed]` and writes no row. Without that, a `head_sha` that is not yet a
+commit when the preview runs — and is one by the time the person answers — would put an
+approval on content nobody was shown.
+
+**What this does not protect: the token from the workspace.** Felix never passes the token to a
+git process or into the shell tool's environment. But on the single-container builder deployment
+(`compose.self.yml`) the shell tool's children run in the API's container *as the API's user*, so
+code the agent writes and runs through an allowlisted command — `make test` imports it — can read
+`/proc/<api pid>/environ`, where the `env` secrets backend found `GITHUB_MCP_TOKEN`. That was true
+of the MCP token before `publish_commits` existed and is not changed by it. The approval gates what
+*Felix* publishes; code holding the token can use it directly, within the PAT's permissions and the
+branch protections in `docs/SELF.md`. Closing it means running the shell as a separate user, or in
+a separate container with no secrets in its environment; neither is done yet.
+
+The preview on the row is `git diff --stat` and the unified diff between that parent and
+`head_sha`, the diff capped at 32 KiB with a note saying so (the `--stat` is never cut). One
+publish carries at most 300 files and 8 MiB. Whole-file MCP writes (`push_files`,
+`create_or_update_file`) put every changed file into the model's context and the approval row —
+196 KiB for one CHANGELOG line — which is why `contributor.yaml` no longer binds them.
 
 ## Sandbox confinement
 
@@ -870,7 +922,7 @@ gated before, and never displaces a stricter literal rule.
 | Field | Behaviour |
 |-------|-----------|
 | `ttl_seconds` | How long the run waits for a decision before failing closed. |
-| `one_shot` | The grant is marked consumed on use; a replay of the same call needs a new approval. |
+| `one_shot` | The grant is spent by the one call it authorizes — the call that waited for the decision, or a later call that found it approved; a replay of the same call needs a new approval. |
 | `bind_principal` | Only the principal who was approved may use the grant. Without it, any principal in the tenant can reuse it. |
 | `allow_unattended` | EU AI Act high-risk manifests must set this to `false`. |
 | `when_args` | Gate only the calls that carry these arguments (non-empty); empty gates every call. Each name must be an argument some tool the rule reaches takes, or the rule never fires. For tools whose schemas ship with the harness — built-ins, plugin tools, the memory tools — a rule naming them literally is **refused** at `PUT /manifests` and by `felix validate-manifest` when a name is not one of their arguments. For everything else (MCP tools, globs) it is a compile-time warning and `felix_approval_when_args_unknown`, not a refusal: an MCP schema can change under a stored manifest, and that must not become an outage. A glob such as `github__*` with `when_args: [force]` is flagged only if *no* tool it reaches takes `force`. |
@@ -885,6 +937,18 @@ Approvals are matched on `(tenant, manifest, tool, sha256(args))` and stored in 
 **What an operator sees, on either channel.** A pending row and the `approval_required` stream
 frame carry the same story: `rule_id`, `reason` (the rule's `description`, or the finding for a
 command-screening gate), `thread_id`, `tool_call_id`, and `expires_at`.
+
+**A preview, for a tool whose arguments are a reference.** A tool may carry an
+`approval_preview` — a harness-side function of the call's arguments. When it does, the row's
+`args` and the frame's `args` gain a `preview` string computed *before* the row is written, with
+known secret values redacted. It is for the person reading, and it is kept out of everything
+else: `sha256(args)` is taken over the original arguments, so a preview can neither widen nor
+narrow what an approval authorizes; and `edited_args` sent back with a decision have `preview`
+stripped before the tool runs. A preview that fails or takes longer than 60 seconds **refuses the
+call** — the model gets `[approval preview failed]` with the reason, no row is written, and
+`felix_approval_preview_failed` counts it — because a tool has a preview precisely when its
+arguments do not show the content, and an approval without one binds content nobody saw. Only `publish_commits` has one today
+— see below.
 
 That symmetry is what lets a **durable** run announce a gate at all. Its agent runs in the
 worker while its stream is served by the API, so the in-process side event cannot cross — and
