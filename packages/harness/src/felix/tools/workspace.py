@@ -168,7 +168,7 @@ def workspace_parts(user_path: str) -> list[str]:
     return parts
 
 
-def open_at(dir_fd: int, name: str, flags: int, shown: str, mode: int = 0o666) -> int:
+def open_at(dir_fd: int, name: str, flags: int, shown: str, mode: int = 0o644) -> int:
     """`openat(dir_fd, name)` that never follows a symlink — the only way a name is opened.
 
     `O_NOFOLLOW` makes the kernel refuse a symlink as the final (and only) component; the
@@ -251,7 +251,7 @@ class NotAFileError(ValueError):
     """The path names something other than a regular file — a directory, a FIFO, a device."""
 
 
-def open_regular(dir_fd: int, name: str, flags: int, shown: str, mode: int = 0o666) -> int:
+def open_regular(dir_fd: int, name: str, flags: int, shown: str, mode: int = 0o644) -> int:
     """`open_at` that also refuses anything but a regular file.
 
     `O_NONBLOCK` so a FIFO the agent left in the workspace cannot park the open forever; it

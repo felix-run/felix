@@ -61,9 +61,17 @@ class RunRequest(ShellArgs):
     timeout_ms: int = Field(default=int(DEFAULT_SHELL_TIMEOUT_S * 1000), gt=0, le=MAX_INTEGRATION_TIMEOUT_MS)
 
 
-def _denied(reason: str, message: str) -> JSONResponse:
-    logger.warning("shell_runner_denied reason=%s", reason)
-    return JSONResponse({"reason": reason, "message": message}, status_code=403)
+# What the caller is told. Fixed text, never an exception's: the detail is logged here, where an
+# operator reads it, and the reply carries only the stable reason the API maps to a tool error.
+_DENIED_MESSAGES = {
+    "argv": "the command is not on this runner's allowlist",
+    "cwd": "the working directory is not inside this runner's workspace",
+}
+
+
+def _denied(reason: str, detail: str) -> JSONResponse:
+    logger.warning("shell_runner_denied reason=%s detail=%s", reason, detail)
+    return JSONResponse({"reason": reason, "message": _DENIED_MESSAGES[reason]}, status_code=403)
 
 
 def _authorized(request: Request, token: str) -> bool:
@@ -167,8 +175,10 @@ def create_runner_app(settings: Settings | None = None) -> FastAPI:
                 exec_argv(req.argv, cwd=cwd, root=root, stdin=req.stdin, timeout_s=timeout_s),
                 request.is_disconnected,
             )
-        except OSError as exc:
-            return JSONResponse({"message": str(exc)}, status_code=422)
+        except OSError:
+            # Logged, not returned: the text names paths inside this container.
+            logger.warning("shell_runner_exec_failed", exc_info=True)
+            return JSONResponse({"message": "the command could not be started"}, status_code=422)
         if not completed:
             # Nobody is reading this; the process group is already dead.
             return Response(status_code=499)

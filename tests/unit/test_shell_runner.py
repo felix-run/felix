@@ -210,16 +210,22 @@ async def test_the_runner_with_no_allowlist_runs_nothing(tmp_path: Path) -> None
 
 
 @pytest.mark.parametrize(("cwd", "why"), [("..", "escapes workspace root"), ("/", "absolute paths")])
-async def test_the_runner_confines_cwd_to_its_own_workspace(tmp_path: Path, cwd: str, why: str) -> None:
+async def test_the_runner_confines_cwd_to_its_own_workspace(
+    tmp_path: Path, cwd: str, why: str, caplog: pytest.LogCaptureFixture
+) -> None:
     ws = tmp_path / "ws"
     ws.mkdir()
-    async with _runner(ws, "pwd") as client:
-        resp = await client.post(
-            "/run", json={"argv": ["pwd"], "cwd": cwd}, headers={"authorization": f"Bearer {TOKEN}"}
-        )
+    with caplog.at_level("WARNING", logger="felix.shell_runner"):
+        async with _runner(ws, "pwd") as client:
+            resp = await client.post(
+                "/run", json={"argv": ["pwd"], "cwd": cwd}, headers={"authorization": f"Bearer {TOKEN}"}
+            )
     assert resp.status_code == 403
     assert resp.json()["reason"] == "cwd"
-    assert why in resp.json()["message"]
+    # The reply is fixed text (an exception's message never leaves the runner); the reason it
+    # was refused is in the runner's own log, where an operator reads it.
+    assert why not in resp.json()["message"]
+    assert any(why in r.getMessage() for r in caplog.records), [r.getMessage() for r in caplog.records]
 
 
 async def test_the_runner_kills_a_command_at_its_timeout(tmp_path: Path) -> None:
