@@ -885,10 +885,25 @@ turn, leaving the text and any clean images; `block` refuses the turn with 422.
   `block` refuses with 422 `too_many_images` and `quarantine` removes the rest. Transcripts are
   cached per tenant by content, so a client that resends its history pays once per image, and a
   cached image does not count against the eight.
-- **Only the incoming turn is screened.** An image already in a thread's session history replays
-  without being screened again. Threads are scoped to the tenant, not the manifest, so an image
-  admitted by a manifest without `image_model` in the same thread — or by this manifest before
-  `image_model` was set — reaches the model unscreened on later turns.
+- **Replayed history is screened too.** Threads are scoped to the tenant, not the manifest, so
+  a thread can hold images this manifest never screened: sent through another manifest, sent
+  before `image_model` was set, or written by a session write-back. The screen sits on the
+  session strategy's `render`, so every rebuild of history passes it — the turn's own
+  assembly, compaction after a turn, recovery from a context overflow, and any plugin
+  pattern's render — without any of them opting in. A router's screen holds for the children
+  it forwards the thread to: each compile wraps the strategy it inherits, so a child's own
+  rules add to its router's and cannot loosen them. A replayed image is always
+  **quarantined, never refused** — even under `block` — because the log is append-only and
+  refusing would refuse every later turn of the thread. The image leaves that prompt; the log
+  is not rewritten. The incoming turn is not screened a second time here.
+- **Cost on replay.** Transcripts *and* verdicts are cached, keyed per tenant and by what the
+  verdict depends on (the scorer model and the decider), so a replayed image is transcribed
+  and scored once, not every turn. An upload is keyed by its file id, so a cached one costs no
+  object-store read; an uncached one past the budget is quarantined before its bytes are read.
+  Each render has its own budget of eight, and the incoming turn its own, so a turn makes at
+  most sixteen transcription calls. The caches are per process: after a restart or on another
+  replica, a long thread's images are re-screened eight per render, and those past the budget
+  are left out of the prompt until they have been.
 - **Injection only.** `guardrails.providers: [pii]` does not read image transcripts; an image of
   an SSN is not caught by the input PII guardrail.
 - **Limit.** The transcriber reads hostile input, and an image can tell it to report no text.

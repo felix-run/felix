@@ -68,14 +68,18 @@ def settle_screening(
     *,
     error: str,
     status_code: int,
+    refuse: bool | None = None,
 ) -> None:
     """Record a screening decision, and refuse the request when `on_flag` is `block`.
 
     Returns under `quarantine`, and the caller substitutes its own `[quarantined]` note. One
     place for the rule, because the copies of it had begun to disagree about the status an
     oversize input earns and which audit action it records.
+
+    `refuse=False` quarantines whatever `on_flag` says: for content replayed from a session,
+    where refusing would refuse every later turn of an append-only thread.
     """
-    block = manifest.spec.content_screening.on_flag == "block"
+    block = manifest.spec.content_screening.on_flag == "block" if refuse is None else refuse
     action = ("denied" if block else "quarantined") if outcome == "flagged" else outcome
     note_screening(manifest, surface, action)
     if block:

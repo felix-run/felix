@@ -203,14 +203,21 @@ First, because everything else governs it.
         fall under `on_flag`. Found on the way: a turn beginning `[quarantined]` skipped the model
         and decider scorers, because "already quarantined" was a test of caller-written text.
       - Open, from the security review of image screening:
-        - **Replayed history is not screened.** Only the incoming turn passes the screen; an image
-          already in the session replays unscreened. Threads are tenant-scoped, not
-          manifest-scoped, so a caller can stage an image through a lightly governed manifest and
-          continue the thread on a governed one; enabling `image_model` later leaves existing
-          threads' images unscreened; and `/internal/sessions/*/events` can write
-          `metadata.attachments` whose only screen is the marker regex. Options: screen at the
-          wire (every step; the transcript cache keeps it cheap), bind threads to a manifest, or
-          screen attachments on the internal write-back.
+        - ~~**Replayed history is not screened.**~~ Done: `ScreenedSessionStrategy` screens every
+          `render` of a session — a turn's assembly, compaction after a turn, overflow recovery,
+          a plugin pattern's — and every way an image got into the log (another manifest, before
+          `image_model`, a write-back). On the render, not at a caller: the first version
+          screened in `_assemble_messages` only, and the security review found compaction and
+          overflow recovery re-render and send history straight to the model. Not at the wire
+          either: that runs every step and would screen its own transcriber call. Always
+          quarantine, never refuse, since the log is append-only. Each compile wraps the
+          strategy it inherits, so a router's screen holds for its children. Verdicts are cached
+          beside transcripts, so a replayed image is scored once.
+        - Open, small: a flagged replayed image writes an `inbound_screening` audit row (surface
+          `history_image`) on every turn the thread lives; deduplicate per thread and image if
+          it proves noisy. And `BuildDeps.compiled` memoises a child by name, so a child first
+          compiled under a parent with no screen keeps none when another router reuses it in
+          the same build — the same memo behaviour `reply_screen` already has.
         - **Input PII does not read image transcripts.** Pixels cannot be redacted, so a match
           could only quarantine the image or refuse the turn.
         - **Screening spend is recorded without a `manifest_id`** when it runs in the route's
