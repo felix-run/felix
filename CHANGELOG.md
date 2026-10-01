@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **An agent can ask the person watching a question.** `ask_user` is a built-in tool over the
+  `ui_request` prompts both web clients already render: `confirm`, `select` from `options`, or
+  free-text `input`, waiting up to `timeout_seconds` (default 300, max 900). It returns
+  `{"answered": true, "value": …}`, or `{"answered": false, "reason": …}` with guidance when the
+  prompt timed out or was dismissed. Until now no tool exposed `request_ui`, so no agent could
+  ever ask and the clients' prompt banner never appeared. It asks only when someone can answer:
+  a prompt reaches a person through a live `/chat/stream` alone, so on a non-streaming
+  `POST /chat`, a durable run, `/v1` or A2A it returns `reason: "no_one_watching"` at once
+  instead of blocking the run for the whole timeout. The streaming route marks its request with
+  `LIVE_STREAM_EXTRA`, which is what the tool checks. List `ask_user` in a manifest's `tools` to
+  enable it.
+
 - **A person can rate an answer.** `POST /chat/sessions/feedback` takes `{thread_id, event_id,
   rating: "up" | "down" | null, note?}` for an assistant message (404 `unknown_event_id` for an id
   the thread does not have, 400 `not_an_assistant_message` for anything else; `null` clears).
