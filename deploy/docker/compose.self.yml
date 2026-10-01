@@ -6,9 +6,17 @@
 #
 # The api and worker run the builder image (deploy/docker/Dockerfile.builder): the lean image
 # plus git, make and uv, with a separate clone of the repository at /workspace that the
-# `contributor` and `triage` manifests edit and run the gates in. The host these two
-# containers are is the shell tool's boundary — deploy/GOVERNANCE.md "Shell tools" — so they
-# mount no Docker socket, carry no cloud credentials, and share the workspace with no person.
+# `contributor` and `triage` manifests edit and run the gates in. They mount no Docker socket,
+# carry no cloud credentials, and share the workspace with no person.
+#
+# Shell tools do not exec in them. The `shell` service below runs `felix-shell-runner` from the
+# same image, and api/worker send every allowlisted argv there (FELIX_SHELL_RUNNER_URL) after
+# their own checks. That container shares only the workspace volume, sits on a network that
+# reaches the api and worker and nothing else in the stack, and holds no secret: code the agent
+# runs through `make test` can no longer read the GitHub token or the model keys out of
+# /proc/<api pid>/environ, because the API's processes are not in its PID namespace. It also
+# owns the workspace — clone, fetch, venv — so no git in the API's container runs a hook or a
+# config the agent wrote. deploy/GOVERNANCE.md "Shell tools" has the rest.
 
 name: felix
 
@@ -20,22 +28,35 @@ x-self-build: &self-build
       BASE_IMAGE: felix:latest
   image: felix-self:latest
 
-x-self-env: &self-env
-  # Approvals must not be anonymous: under `none` the caller could approve its own mutation.
-  # The base anchor already defaults to api_key; pinned here so an overlay cannot loosen it.
-  FELIX_AUTH_MODE: api_key
-  FELIX_WORKSPACE_ROOT: /workspace
+# What the shell may run, where, and the bearer that lets api/worker ask it to: the settings
+# both sides hold. Everything else in `x-self-env` is withheld from the `shell` service.
+x-shell-shared: &shell-shared
   # The argv prefixes the shell tool may exec — exactly what `contributor.yaml` declares, so
   # the manifest's own list is what narrows. `git push`, `git remote`, `gh`, `uv run python`
   # are deliberately absent. Commits are published by `publish_commits`, which runs in the API
-  # process with the bot's token; the pull request goes through GitHub MCP.
+  # process with the bot's token; the pull request goes through GitHub MCP. The runner checks
+  # every argv against its own copy of this list as well as the API's.
   FELIX_SHELL_ALLOWED_COMMANDS: ${FELIX_SHELL_ALLOWED_COMMANDS:-uv run ruff,uv run ty,./scripts/test.sh,make lint,make type,make test,make schema,uv run felix validate-manifest,git status,git diff,git log,git fetch,git switch,git restore,git stash,git add,git commit,git branch,git show,git rev-parse,git mv,git rm}
+  # Generated into .env by `make up-self` (scripts/shell-runner-token.sh). It keeps other
+  # containers from running commands in `shell`; it is not a secret from the code `shell` runs.
+  FELIX_SHELL_RUNNER_TOKEN: ${FELIX_SHELL_RUNNER_TOKEN:?run `make up-self` (or scripts/shell-runner-token.sh) to generate a shell runner token}
+  FELIX_WORKSPACE_ROOT: /workspace
+
+x-self-env: &self-env
+  <<: *shell-shared
+  # Approvals must not be anonymous: under `none` the caller could approve its own mutation.
+  # The base anchor already defaults to api_key; pinned here so an overlay cannot loosen it.
+  FELIX_AUTH_MODE: api_key
+  # Every shell tool call goes to the `shell` service. If it is down the call fails; nothing
+  # falls back to running the command in this container.
+  FELIX_SHELL_RUNNER_URL: http://shell:8080
+  # The workspace belongs to `shell` (self-entrypoint.sh): api and worker run no git, no hook
+  # and no venv sync against the agent-writable checkout at startup.
+  FELIX_SELF_PREPARE_WORKSPACE: "0"
   # Resolved by the `env` secrets backend for `mcp_servers[].auth` and `github_publish.auth`
-  # (`secret:GITHUB_MCP_TOKEN`). The API process reads it; Felix passes it to neither the shell
-  # tool's children nor the git `publish_commits` runs. They are still the API's user in this
-  # container, though, so code the agent runs can read it from /proc/<api pid>/environ — see
-  # deploy/GOVERNANCE.md "Publishing commits" for what that does and does not protect. Empty binds an agent with no GitHub
-  # tools and no publish tool (logged, not fatal) — set it in .env.
+  # (`secret:GITHUB_MCP_TOKEN`). Only api and worker hold it; the `shell` service, where code
+  # the agent writes runs, does not — see deploy/GOVERNANCE.md "Publishing commits". Empty binds
+  # an agent with no GitHub tools and no publish tool (logged, not fatal) — set it in .env.
   GITHUB_MCP_TOKEN: ${GITHUB_MCP_TOKEN:-}
   # The default 120s is a chat timeout. A contributor turn carries the skill catalogue, a
   # long transcript and a publication instruction, and the model answers in one go — three
@@ -43,8 +64,6 @@ x-self-env: &self-env
   # deliberately does not retry a ReadTimeout (the bytes were already accepted; the fix is
   # a larger ceiling, not three of them).
   FELIX_MODEL_TIMEOUT_SECONDS: ${FELIX_MODEL_TIMEOUT_SECONDS:-600}
-  FELIX_SELF_REPO: ${FELIX_SELF_REPO:-https://github.com/felix-run/felix.git}
-  FELIX_SELF_BRANCH: ${FELIX_SELF_BRANCH:-main}
 
 services:
   api:
@@ -54,9 +73,10 @@ services:
     volumes: !override
       - felix-data:/data
       - felix-self-workspace:/workspace
-    # The test suite runs inside this container; the lean default is too small for it.
-    mem_limit: ${FELIX_SELF_MEM_LIMIT:-3g}
-    cpus: ${FELIX_SELF_CPUS:-2.0}
+    networks: [default, shell]
+    depends_on:
+      shell:
+        condition: service_healthy
 
   worker:
     <<: *self-build
@@ -65,8 +85,51 @@ services:
     volumes: !override
       - felix-data:/data
       - felix-self-workspace:/workspace
+    networks: [default, shell]
+    depends_on:
+      shell:
+        condition: service_healthy
+
+  # Where shell tools exec. Same image and same uid (felix, 10001) as api/worker — see
+  # deploy/GOVERNANCE.md "Shell tools" for why the uid is shared and the container is not.
+  # Its environment is the list below and the image's own non-secret defaults: no
+  # GITHUB_MCP_TOKEN, no model key, no FELIX_DATABASE_URL, no FELIX_REDIS_URL, no API keys.
+  # Add nothing to it that you would not hand to the code the agent writes.
+  shell:
+    <<: *self-build
+    command: ["felix-shell-runner"]
+    environment:
+      <<: *shell-shared
+      # self-entrypoint.sh clones, fetches and syncs the workspace here, before the runner
+      # starts; api/worker wait on the healthcheck, so they never see a half-made checkout.
+      FELIX_SELF_REPO: ${FELIX_SELF_REPO:-https://github.com/felix-run/felix.git}
+      FELIX_SELF_BRANCH: ${FELIX_SELF_BRANCH:-main}
+    volumes:
+      - felix-self-workspace:/workspace
+    # Not `default`: Postgres, Valkey and MinIO are unreachable from here, and Valkey has no
+    # password — a Taskiq message enqueued from the workspace would run in the worker. Egress
+    # to the internet stays (`git fetch`, the first `uv sync`).
+    networks: [shell]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    # The test suite runs in this container now; the lean default is too small for it.
     mem_limit: ${FELIX_SELF_MEM_LIMIT:-3g}
     cpus: ${FELIX_SELF_CPUS:-2.0}
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2).status==200 else 1)"
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      # A first boot clones the repository and syncs its venv before the runner starts.
+      start_period: 900s
+    restart: unless-stopped
+
+networks:
+  shell:
 
 volumes:
   felix-self-workspace:

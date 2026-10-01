@@ -39,6 +39,11 @@ Homepage = "https://github.com/felix-run/felix"
 Repository = "https://github.com/felix-run/felix"
 Issues = "https://github.com/felix-run/felix/issues"
 
+# The shell runner lives beside the shell tool whose exec core it shares (`felix.tools.shell`),
+# not in apps/api: it serves no Felix route and must not need the API's settings to boot.
+[project.scripts]
+felix-shell-runner = "felix.shell_runner:main"
+
 [project.optional-dependencies]
 sandbox = ["docker>=7.1"]
 browser = ["playwright>=1.57"]

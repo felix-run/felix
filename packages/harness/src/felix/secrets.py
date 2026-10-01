@@ -69,6 +69,9 @@ _HYDRATE_MAP: dict[str, tuple[str, ...]] = {
     # `collected_secret_values` is negligible for an API key: high entropy, so it never
     # matches unrelated text.
     "search_api_key": ("SEARCH_API_KEY", "search_api_key", "felix/search_api_key"),
+    # Listed for masking: a tool result that echoes it is redacted like any credential. It must
+    # still be in the environment, since `validate_runtime` checks it before hydration runs.
+    "shell_runner_token": ("SHELL_RUNNER_TOKEN", "shell_runner_token", "felix/shell_runner_token"),
 }
 
 

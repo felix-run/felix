@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **On the Compose builder stack, shell tools no longer run beside the API's secrets.** A shell
+  tool's command ran as a child of the API, as the API's user, so code the agent wrote and ran
+  through an allowlisted `make test` could read `/proc/<api pid>/environ` — `GITHUB_MCP_TOKEN`,
+  model keys, database and Valkey credentials. `FELIX_SHELL_RUNNER_URL` and
+  `FELIX_SHELL_RUNNER_TOKEN` now send each call to `felix-shell-runner`, a new console script,
+  after the API's own checks. The runner requires the bearer, re-checks argv and `cwd` against its
+  own allowlist and workspace, and execs through the same code as the local path. A runner that
+  is down, errors or hangs fails the call; nothing falls back to a local exec. `compose.self.yml`
+  runs it as a `shell` service that mounts only the workspace volume, holds no secret, and sits on
+  a network without Postgres, Valkey or MinIO. That service now owns the workspace clone, fetch
+  and venv sync, so api and worker run no git against the agent-writable checkout. It runs as the
+  same uid as the API; the container provides the isolation. `make up-self` generates the token
+  into `.env`, and api and worker no longer take the builder's 3 GiB memory limit, which moved to
+  `shell` with the test suite. With the URL unset (`make dev`, the base stack, Helm) shell tools
+  exec locally as before, and `deploy/GOVERNANCE.md` "Shell tools" says what that still exposes.
 - **A user turn beginning with `[quarantined]` skipped the model and decider screeners.** The
   check meant "screening already replaced this text" and was written as a test of the text's
   prefix, which the caller controls — so typing that prefix left a turn to the marker scan

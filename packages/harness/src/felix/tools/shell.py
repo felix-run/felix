@@ -9,11 +9,15 @@ an unlisted command (manifest prefix ∩ operator prefix, checked per call), out
 and when the calling task is cancelled), or flood the API (output is read in bounded chunks
 and only a tail is kept — `MAX_OUTPUT_BYTES` bounds memory, not just the transcript).
 
-What it cannot prevent: an allowlisted command runs repository code as the API's user —
-`./scripts/test.sh` imports whatever the agent just wrote, and a relative `argv[0]` resolves
-against the `cwd` the model chose. The host is that boundary, which is why the builder
-deployment holds no cloud credentials, no Docker socket, no deployment secrets in the
-checkout, and one tenant. `deploy/GOVERNANCE.md` carries the full list.
+What it cannot prevent: an allowlisted command runs repository code — `./scripts/test.sh`
+imports whatever the agent just wrote, and a relative `argv[0]` resolves against the `cwd` the
+model chose. Where that code runs is the boundary. With `FELIX_SHELL_RUNNER_URL` unset it is a
+child of this process, as this process's user, and can read this process's environment through
+`/proc`. With it set, every check above still runs here and the exec happens in
+`felix.shell_runner`, a separate process (on the builder stack, a separate container sharing
+only the workspace volume and holding no secrets). A runner that cannot be reached fails the
+call: there is no fallback to a local exec. `deploy/GOVERNANCE.md` "Shell tools" carries the
+full list.
 """
 
 from __future__ import annotations
@@ -24,9 +28,11 @@ import json
 import os
 import signal
 import time
+from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+import httpx
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from felix.context import try_get_context
 from felix.manifests.schema import ShellToolRef
@@ -38,7 +44,7 @@ from felix.security.shell_policy import (
     split_prefix,
 )
 from felix.security.stdio_policy import stdio_child_env
-from felix.timeouts import timeout_seconds
+from felix.timeouts import DEFAULT_CONNECT_TIMEOUT_S, timeout_seconds
 from felix.tools.errors import ToolErrorCode, tool_error_output
 from felix.tools.types import Tool, ToolInput, ToolInvocationCtx, ToolOutput, define_tool_with_executor
 from felix.tools.workspace import resolve_under_root, workspace_root
@@ -56,6 +62,13 @@ _MAX_ARGV_BYTES = 64_000
 _MAX_STDIN_CHARS = 256_000
 # How long to wait for a killed group's pipes to close before giving up on its output.
 _DRAIN_AFTER_KILL_S = 5.0
+# Remote mode: how long past the command's own timeout the API waits for the runner's answer.
+# The runner kills at `timeout_ms` and then drains for up to `_DRAIN_AFTER_KILL_S`, so this
+# only fires when the runner itself is wedged.
+RUNNER_GRACE_S = 30.0
+# The most of a runner response the API reads. Two output tails, argv and JSON escaping (a
+# control byte is six bytes escaped) fit well inside it; anything larger is not a runner.
+MAX_RUNNER_RESPONSE_BYTES = 2 * 1024 * 1024
 
 
 class ShellArgs(BaseModel):
@@ -180,66 +193,199 @@ class _ShellExecutor:
             return self._refuse("argv", str(exc))
         try:
             root = workspace_root()
-            cwd = resolve_under_root(root, str(args.get("cwd") or "."))
+            cwd = resolve_cwd(root, str(args.get("cwd") or "."))
         except ValueError as exc:
             return self._refuse("cwd", str(exc))
-        if not cwd.is_dir():
-            return self._refuse("cwd", f"not a directory: {args.get('cwd')}")
         stdin = args.get("stdin")
-        stdin_bytes = str(stdin)[:_MAX_STDIN_CHARS].encode("utf-8") if stdin is not None else None
-        started = time.monotonic()
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *argv,
-                cwd=str(cwd),
-                env=_child_env(),
-                stdin=asyncio.subprocess.PIPE if stdin_bytes is not None else asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                start_new_session=True,
+        stdin_text = str(stdin)[:_MAX_STDIN_CHARS] if stdin is not None else None
+        runner_url = str(getattr(settings, "shell_runner_url", "") or "").strip()
+        if runner_url:
+            # Remote mode. Every check above has run here, in the API, and the runner repeats
+            # the allowlist and the cwd against its own configuration. What it must never do
+            # is come back to the branch below: a runner that cannot be reached fails the call.
+            return await self._run_remote(
+                runner_url,
+                str(getattr(settings, "shell_runner_token", "") or ""),
+                argv,
+                str(cwd.relative_to(root)),
+                stdin_text,
             )
+        try:
+            result = await exec_argv(argv, cwd=cwd, root=root, stdin=stdin_text, timeout_s=self._timeout_s)
         except OSError as exc:
             return tool_error_output(ToolErrorCode.TRANSPORT_UNAVAILABLE, f"[shell] {exc}")
+        return json.dumps(result)
 
-        out, err, budget = _Stream(), _Stream(), _Budget()
-        tasks = [
-            asyncio.create_task(_feed(proc, stdin_bytes)),
-            asyncio.create_task(_drain(proc.stdout, out, budget, proc)),
-            asyncio.create_task(_drain(proc.stderr, err, budget, proc)),
-        ]
-        timed_out = False
+    async def _run_remote(
+        self, url: str, token: str, argv: list[str], cwd: str, stdin: str | None
+    ) -> ToolOutput:
+        body: dict[str, Any] = {"argv": argv, "cwd": cwd, "timeout_ms": max(1, int(self._timeout_s * 1000))}
+        if stdin is not None:
+            body["stdin"] = stdin
         try:
+            async with (
+                _runner_client(self._timeout_s + RUNNER_GRACE_S) as client,
+                client.stream(
+                    "POST", url.rstrip("/") + "/run", json=body, headers={"authorization": f"Bearer {token}"}
+                ) as resp,
+            ):
+                status = resp.status_code
+                raw = await _read_capped(resp, MAX_RUNNER_RESPONSE_BYTES)
+        except httpx.TimeoutException:
+            return _runner_unavailable("did not answer in time")
+        except (httpx.HTTPError, _ResponseTooLarge) as exc:
+            # The class name only: an httpx message can carry the URL, and the URL is the
+            # operator's to read in config, not the model's to read in a transcript.
+            return _runner_unavailable(f"is unreachable ({type(exc).__name__})")
+        return self._map_runner_response(status, raw, argv, cwd)
+
+    def _map_runner_response(self, status: int, raw: bytes, argv: list[str], cwd: str) -> ToolOutput:
+        if status == 200:
             try:
-                await asyncio.wait_for(proc.wait(), timeout=self._timeout_s)
-            except TimeoutError:
-                timed_out = True
-                _kill_group(proc)
-                await proc.wait()
-            # The group is dead or exited; give its pipes a bounded moment to close.
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(
-                    asyncio.gather(*tasks, return_exceptions=True), timeout=_DRAIN_AFTER_KILL_S
-                )
-        finally:
-            # Cancellation of the calling task lands here too: nothing it spawned survives it.
+                result = RunnerResult.model_validate_json(raw)
+            except ValidationError:
+                return _runner_unavailable("returned a malformed result")
+            # argv and cwd are what this process asked for, not what the runner says it ran.
+            return json.dumps({**result.model_dump(), "argv": argv, "cwd": cwd})
+        detail = _runner_detail(raw)
+        if status == 403:
+            return self._refuse("runner", f"the shell runner refused it: {detail}")
+        if status == 401:
+            return _runner_unavailable("rejected the token (FELIX_SHELL_RUNNER_TOKEN must match)")
+        if status == 422 and detail:
+            return tool_error_output(ToolErrorCode.TRANSPORT_UNAVAILABLE, f"[shell] {detail}")
+        return _runner_unavailable(f"answered HTTP {status}")
+
+
+class RunnerResult(BaseModel):
+    """What `POST /run` answers — the same fields the local exec returns, and nothing else."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    argv: list[str]
+    cwd: str
+    exit_code: int | None
+    timed_out: bool
+    output_exceeded: bool
+    # Characters, not bytes, but a decoded tail never has more characters than bytes.
+    stdout: str = Field(max_length=MAX_OUTPUT_BYTES)
+    stderr: str = Field(max_length=MAX_OUTPUT_BYTES)
+    truncated: bool
+    duration_ms: int
+
+
+class _ResponseTooLarge(Exception):
+    pass
+
+
+def _runner_client(timeout_s: float) -> httpx.AsyncClient:
+    """The one client that reaches the shell runner.
+
+    Not `safe_async_client`, deliberately: the runner is a private Compose hostname (`shell`)
+    that the egress guard exists to refuse. The exemption holds because the URL comes from
+    `Settings.shell_runner_url` and nowhere else — never a manifest field or a model argument.
+    No redirects (a 3xx would carry the bearer to wherever it pointed) and no proxy from the
+    environment.
+    """
+    return httpx.AsyncClient(
+        timeout=httpx.Timeout(timeout_s, connect=DEFAULT_CONNECT_TIMEOUT_S),
+        follow_redirects=False,
+        trust_env=False,
+    )
+
+
+async def _read_capped(resp: httpx.Response, limit: int) -> bytes:
+    buf = bytearray()
+    async for chunk in resp.aiter_bytes():
+        buf += chunk
+        if len(buf) > limit:
+            raise _ResponseTooLarge
+    return bytes(buf)
+
+
+def _runner_detail(raw: bytes) -> str:
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return ""
+    message = data.get("message") if isinstance(data, dict) else None
+    return str(message)[:500] if message else ""
+
+
+def _runner_unavailable(what: str) -> ToolOutput:
+    # Fail closed, and say so: the command did not run anywhere.
+    return tool_error_output(
+        ToolErrorCode.TRANSPORT_UNAVAILABLE, f"[shell] the shell runner {what}; the command did not run"
+    )
+
+
+def resolve_cwd(root: Path, raw: str) -> Path:
+    """`raw` resolved under `root`, or `ValueError` — escapes, absolute paths, non-directories."""
+    cwd = resolve_under_root(root, raw or ".")
+    if not cwd.is_dir():
+        raise ValueError(f"not a directory: {raw}")
+    return cwd
+
+
+async def exec_argv(
+    argv: list[str], *, cwd: Path, root: Path, stdin: str | None, timeout_s: float
+) -> dict[str, Any]:
+    """Exec `argv` in `cwd` and return the result the model sees. The one exec path.
+
+    Shared by the in-process tool and `felix.shell_runner`, so the scrubbed environment, the
+    process-group kill and the bounded tail are the same code on both sides. Callers have
+    already checked the allowlist and resolved `cwd` under `root`. Raises `OSError` when the
+    command cannot be spawned.
+    """
+    stdin_bytes = stdin[:_MAX_STDIN_CHARS].encode("utf-8") if stdin is not None else None
+    started = time.monotonic()
+    proc = await asyncio.create_subprocess_exec(
+        *argv,
+        cwd=str(cwd),
+        env=_child_env(),
+        stdin=asyncio.subprocess.PIPE if stdin_bytes is not None else asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,
+    )
+
+    out, err, budget = _Stream(), _Stream(), _Budget()
+    tasks = [
+        asyncio.create_task(_feed(proc, stdin_bytes)),
+        asyncio.create_task(_drain(proc.stdout, out, budget, proc)),
+        asyncio.create_task(_drain(proc.stderr, err, budget, proc)),
+    ]
+    timed_out = False
+    try:
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=timeout_s)
+        except TimeoutError:
+            timed_out = True
             _kill_group(proc)
-            for task in tasks:
-                task.cancel()
-            if proc.returncode is None:
-                await proc.wait()
-        return json.dumps(
-            {
-                "argv": argv,
-                "cwd": str(cwd.relative_to(root)),
-                "exit_code": proc.returncode,
-                "timed_out": timed_out,
-                "output_exceeded": budget.exceeded,
-                "stdout": out.tail.decode("utf-8", errors="replace"),
-                "stderr": err.tail.decode("utf-8", errors="replace"),
-                "truncated": out.truncated or err.truncated or budget.exceeded,
-                "duration_ms": int((time.monotonic() - started) * 1000),
-            }
-        )
+            await proc.wait()
+        # The group is dead or exited; give its pipes a bounded moment to close.
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(
+                asyncio.gather(*tasks, return_exceptions=True), timeout=_DRAIN_AFTER_KILL_S
+            )
+    finally:
+        # Cancellation of the calling task lands here too: nothing it spawned survives it.
+        _kill_group(proc)
+        for task in tasks:
+            task.cancel()
+        if proc.returncode is None:
+            await proc.wait()
+    return {
+        "argv": argv,
+        "cwd": str(cwd.relative_to(root)),
+        "exit_code": proc.returncode,
+        "timed_out": timed_out,
+        "output_exceeded": budget.exceeded,
+        "stdout": out.tail.decode("utf-8", errors="replace"),
+        "stderr": err.tail.decode("utf-8", errors="replace"),
+        "truncated": out.truncated or err.truncated or budget.exceeded,
+        "duration_ms": int((time.monotonic() - started) * 1000),
+    }
 
 
 def tools_from_shell_refs(refs: list[ShellToolRef], *, settings: Any | None = None) -> list[Tool]:
@@ -274,7 +420,11 @@ def tools_from_shell_refs(refs: list[ShellToolRef], *, settings: Any | None = No
 __all__ = [
     "DEFAULT_SHELL_TIMEOUT_S",
     "MAX_OUTPUT_BYTES",
+    "MAX_RUNNER_RESPONSE_BYTES",
     "MAX_TOTAL_OUTPUT_BYTES",
+    "RunnerResult",
     "ShellArgs",
+    "exec_argv",
+    "resolve_cwd",
     "tools_from_shell_refs",
 ]

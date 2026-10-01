@@ -189,6 +189,7 @@ up-temporal: dev-key
 # Felix builds Felix (docs/SELF.md). The builder image is FROM felix:latest, so the base
 # image must exist before the overlay builds on top of it.
 up-self: dev-key
+	./scripts/shell-runner-token.sh
 	$(COMPOSE) build api
 	$(COMPOSE_SELF) up --build
 

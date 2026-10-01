@@ -357,8 +357,9 @@ class ShellToolRef(_Strict):
     must cover each prefix here (a manifest narrows; it cannot widen), and which is empty by
     default — a shell tool on a deployment that has not opted in is refused at manifest write.
 
-    What it cannot bound: the listed command runs repo code as the API's user. The host it
-    runs on is the boundary — `deploy/GOVERNANCE.md` says what that host must not hold.
+    What it cannot bound: the listed command runs repo code — as the API's user, unless
+    `FELIX_SHELL_RUNNER_URL` sends it to a separate runner. Wherever it execs is the boundary —
+    `deploy/GOVERNANCE.md` says what that place must not hold.
     """
 
     name: str = Field(min_length=1)

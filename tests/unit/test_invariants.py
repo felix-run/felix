@@ -1304,6 +1304,8 @@ def test_outbound_clients_go_through_the_egress_guard() -> None:
         "wire/transport.py": "provider base_url is operator config; felix_ai cannot import felix",
         "decide/typesafe.py": "decision provider base_url is operator config; felix_ai cannot import felix",
         "durability/webhooks.py": "only for an endpoint the operator marked `private: true`; others use the guard",
+        # The runner is a private Compose hostname, which is what the guard refuses.
+        "tools/shell.py": "FELIX_SHELL_RUNNER_URL is operator config, never a manifest or model value",
     }
     seen_clients = 0
     offenders: list[str] = []

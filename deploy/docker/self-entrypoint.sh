@@ -6,11 +6,21 @@
 # the extras CI's test job installs, so `./scripts/test.sh` and `uv run ty` behave as CI does.
 set -euo pipefail
 
+# On the builder stack the workspace belongs to the `shell` service, where shell tools exec;
+# api and worker set FELIX_SELF_PREPARE_WORKSPACE=0 and skip straight to their process. That is
+# not only tidiness: `git fetch` runs hooks (reference-transaction) and reads the checkout's
+# `.git/config`, both writable by code the agent runs, so running it here would execute that
+# code in a container that holds the GitHub token. Unset, it defaults to preparing, as before.
+if [ "${FELIX_SELF_PREPARE_WORKSPACE:-1}" != "1" ]; then
+  exec "$@"
+fi
+
 repo="${FELIX_SELF_REPO:-https://github.com/felix-run/felix.git}"
 branch="${FELIX_SELF_BRANCH:-main}"
 ws="${FELIX_WORKSPACE_ROOT:-/workspace}"
 
-# The api and the worker mount this volume and run this script at the same moment, so without
+# Every container that prepares the workspace mounts this volume and runs this script at the
+# same moment — api and worker did, before the shell runner owned it — so without
 # a lock they race: two `git fetch`es contend for the same ref locks and one fails with
 # "cannot lock ref 'refs/remotes/origin/main': is at … but expected …" on every restart, two
 # `uv sync`s write one venv at once, and on a fresh volume both see no `.git` and both clone —

@@ -231,7 +231,10 @@ First, because everything else governs it.
       and rung 2 of it cannot exist without a way to run `./scripts/test.sh`. Landing as
       `spec.shell_tools` behind `FELIX_SHELL_ALLOWED_COMMANDS` (argv prefixes, no shell interpreter,
       scrubbed env, cwd pinned under the workspace root), not as a `ShellBackend` registry — one
-      implementation does not earn a registry.
+      implementation does not earn a registry. The local child could read the API's environment
+      through `/proc`; `FELIX_SHELL_RUNNER_URL` now sends the exec to `felix-shell-runner`, which
+      the builder stack runs as a `shell` container holding no secrets. Local exec is still the
+      default everywhere else.
 
 - [x] **Decision models (Jev).** Plan: `~/.claude/plans/we-want-to-use-sprightly-sprout.md`.
       Some calls decide rather than write, and each one asked a chat model for prose and

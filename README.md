@@ -579,7 +579,10 @@ Outbound integrations, all declared on the manifest:
 > [!WARNING]
 > **stdio MCP is disabled** unless `FELIX_MCP_STDIO_ALLOWED_COMMANDS` names the exact commands
 > allowed, and **shell tools are disabled** unless `FELIX_SHELL_ALLOWED_COMMANDS` names the argv
-> prefixes allowed. Manifest-supplied argv is arbitrary code execution.
+> prefixes allowed. Manifest-supplied argv is arbitrary code execution. A shell tool's command
+> runs as the API's user and can read the API's environment unless `FELIX_SHELL_RUNNER_URL` points
+> it at a `felix-shell-runner` (with `FELIX_SHELL_RUNNER_TOKEN`), which the builder stack runs in
+> a container holding no secrets — see [deploy/GOVERNANCE.md](deploy/GOVERNANCE.md#shell-tools).
 
 Structured output — `spec.output_schema` is a JSON Schema the agent's answer must match, and the
 model provider is what enforces it rather than the prompt:

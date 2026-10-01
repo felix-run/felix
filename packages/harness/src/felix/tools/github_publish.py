@@ -2,9 +2,10 @@
 
 The workspace is where repository code runs, so Felix hands it no GitHub credential: the shell
 tool cannot push, its children inherit no token, and the git this module runs gets an
-environment built from nothing. That is not isolation — on the single-container builder
-deployment the shell runs as the API's user and can read the API's own environment
-(`/proc/<pid>/environ`), token included; see deploy/GOVERNANCE.md "Publishing commits".
+environment built from nothing. Withholding is not isolation by itself: a shell tool that execs
+locally runs as the API's user and can read the API's own environment (`/proc/<pid>/environ`),
+token included. The builder stack sends shell tools to `felix-shell-runner` in a container that
+holds no secrets; see deploy/GOVERNANCE.md "Shell tools" and "Publishing commits".
 
 Publishing used to go through GitHub's `push_files` MCP tool, which carries *whole file
 contents* as tool arguments — a one-line CHANGELOG entry put ~196 KiB into the model's context
