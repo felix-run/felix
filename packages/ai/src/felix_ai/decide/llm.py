@@ -40,9 +40,13 @@ _SYSTEM = (
 def _schema_for(q: Question) -> dict[str, Any]:
     if isinstance(q, Choice):
         return {"type": "string", "enum": list(q.criteria)}
+    # No numeric bounds: Anthropic's native structured outputs refuse `minimum`/`maximum`, and a
+    # schema carrying them falls back to the schema tool — which Opus 5.5, Sonnet 5.5, Fable 5.1
+    # and Mythos 5.1 can only offer, not require. A score's range is an `enum` of its indices,
+    # the same constraint in a form every wire takes; a probability is clamped by `_answer`.
     if isinstance(q, Score):
-        return {"type": "integer", "minimum": 0, "maximum": len(q.levels) - 1}
-    return {"type": "number", "minimum": 0, "maximum": 1}
+        return {"type": "integer", "enum": list(range(len(q.levels)))}
+    return {"type": "number", "description": "a probability between 0 and 1"}
 
 
 def output_schema_for(questions: Mapping[str, Question]) -> dict[str, Any]:

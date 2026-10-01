@@ -17,6 +17,7 @@ from typing import Any
 import httpx
 
 from felix_ai.catalog import clamp_effort, entry_for
+from felix_ai.output_schema import anthropic_native_misfit
 from felix_ai.types import (
     ChatMessage,
     ModelChatResult,
@@ -261,24 +262,37 @@ def _anthropic_thinking_blocks(m: ChatMessage) -> list[dict[str, Any]]:
     return blocks
 
 
-# The Anthropic messages API has no `response_format`, so a schema becomes a tool. The name is
-# sent to the provider and read back off the response, and it is the one identifier that must
-# not collide with a real tool the manifest bound.
+# Where a model has no native structured outputs, or the schema is outside their subset, the
+# schema becomes a tool. The name is sent to the provider and read back off the response, and it
+# is the one identifier that must not collide with a real tool the manifest bound.
 STRUCTURED_OUTPUT_TOOL = "felix_structured_output"
 
 
 def apply_anthropic_output_schema(body: dict[str, Any], schema: dict[str, Any]) -> None:
-    """Ask for a schema-shaped answer the only way this wire can: a tool the model must call.
+    """Ask for a schema-shaped answer in the strongest form this model and schema allow.
 
-    `tool_choice` is `any` rather than `tool` whenever the turn also carries real tools.
-    Naming this one would stop the model calling the others, and in a react loop the
-    structured answer is the *last* turn rather than the only one — `any` says "end this turn
-    in a tool call", and the structured tool is then the way to finish without doing more work.
-    With no other tools there is nothing to preserve, so the choice is named outright.
+    Three routes, tried in order:
 
-    Extended thinking is the exception, and a loud one: Anthropic rejects any `tool_choice`
-    but `auto` while `thinking` is set, so there the schema can only be offered. Call it after
-    `apply_anthropic_thinking_cache`, which is what decides whether `thinking` is on the body.
+    1. **Native.** A model with structured outputs (`ModelQuirks.structured_outputs`) and a
+       schema inside their subset (`anthropic_native_misfit`) gets `output_config.format`. The
+       answer is a text block holding the JSON — already the shape `fold_structured_output`
+       produces from a tool call, so there is nothing to fold — and real tools stay callable.
+       It is the one route that holds with extended thinking on. `output_config` may already
+       carry `effort` from the thinking pass, so the format is merged in, never assigned over it.
+    2. **Forced tool.** The schema as a tool the model must call: `tool_choice` `any` when real
+       tools are also bound — naming this one would stop the model calling the others, and in a
+       react loop the structured answer is the *last* turn rather than the only one — and the
+       tool named outright when there is nothing else to preserve. Only when the model accepts a
+       forced choice (`ModelQuirks.forced_tool_choice`) and `thinking` is off.
+    3. **Offered tool.** The same tool under `tool_choice: auto`, logged as not guaranteed. The
+       route for extended thinking on a model without native outputs, and for a schema outside
+       the native subset on a model that refuses a forced choice — Fable 5.1, Mythos 5.1, Opus
+       5.5 and Sonnet 5.5 answer `any` and `tool` with a 400 whether or not real tools are bound.
+       No `strict: true` on the tool: strict tool use takes the same schema subset on the same
+       models as route 1, so whenever it would be accepted route 1 was taken instead.
+
+    Call it after `apply_anthropic_thinking_cache`, which decides whether `thinking` and
+    `output_config.effort` are on the body.
 
     A caller's `/v1` `response_format` reaches here too, which means a *request* can set
     `tool_choice` on a manifest whose author asked for none. That is deliberate and it is the
@@ -293,11 +307,21 @@ def apply_anthropic_output_schema(body: dict[str, Any], schema: dict[str, Any]) 
     if any(t.get("name") == STRUCTURED_OUTPUT_TOOL for t in tools):
         # Otherwise the fold below would swallow that tool's call and re-emit its arguments
         # as the turn's answer. The collision is unlikely and silent, which is the pair that
-        # earns a raise rather than a comment asserting it cannot happen.
+        # earns a raise rather than a comment asserting it cannot happen. Raised on the native
+        # route too, so whether a manifest compiles does not depend on which model it routes to.
         raise ValueError(
             f"a bound tool is named {STRUCTURED_OUTPUT_TOOL!r}, which this wire reserves for "
             "structured output; rename the tool in the manifest"
         )
+    model = str(body.get("model") or "")
+    quirks = entry_for(model).quirks
+    misfit = anthropic_native_misfit(schema) if quirks.structured_outputs else None
+    if quirks.structured_outputs and misfit is None:
+        output_config = dict(body.get("output_config") or {})
+        output_config["format"] = {"type": "json_schema", "schema": schema}
+        body["output_config"] = output_config
+        return
+
     tools.append(
         {
             "name": STRUCTURED_OUTPUT_TOOL,
@@ -309,17 +333,24 @@ def apply_anthropic_output_schema(body: dict[str, Any], schema: dict[str, Any]) 
         }
     )
     body["tools"] = tools
-    if body.get("thinking"):
-        logger.warning(
-            "extended thinking forbids a forced tool choice, so the output schema is offered "
-            "to %s rather than required of it; the reply may be plain text",
-            body.get("model") or "the model",
-        )
-        body["tool_choice"] = {"type": "auto"}
-    elif len(tools) > 1:
-        body["tool_choice"] = {"type": "any"}
+    if quirks.forced_tool_choice and not body.get("thinking"):
+        if len(tools) > 1:
+            body["tool_choice"] = {"type": "any"}
+        else:
+            body["tool_choice"] = {"type": "tool", "name": STRUCTURED_OUTPUT_TOOL}
+        return
+
+    if not quirks.forced_tool_choice:
+        why = f"{model or 'the model'} rejects a forced tool choice"
     else:
-        body["tool_choice"] = {"type": "tool", "name": STRUCTURED_OUTPUT_TOOL}
+        why = "extended thinking forbids a forced tool choice"
+    if misfit is not None:
+        why += f", and the schema cannot use native structured outputs ({misfit})"
+    logger.warning(
+        "%s, so the output schema is offered rather than required; the reply may be plain text",
+        why,
+    )
+    body["tool_choice"] = {"type": "auto"}
 
 
 def fold_structured_output(
@@ -444,7 +475,8 @@ class AnthropicMessagesClient(HttpModelClient):
                 for t in tools
             ]
         apply_anthropic_thinking_cache(body, self.spec, self.route.model, isolate_cache=isolate_cache)
-        # After the thinking pass, which is what decides whether a forced tool choice is legal.
+        # After the thinking pass, which is what decides whether a forced tool choice is legal
+        # and has already put `effort` into the `output_config` a native format joins.
         if output_schema:
             apply_anthropic_output_schema(body, output_schema)
         for m in transient:
@@ -626,9 +658,11 @@ class AnthropicMessagesClient(HttpModelClient):
             if entry.get("name")
         ]
         thinking = [thinking_by_index[i] for i in sorted(thinking_by_index)]
-        # The structured answer streams as `input_json_delta` on a tool block, so nothing here
-        # yielded a text delta for it. Everything downstream that renders a stream forwards
-        # text deltas only — react re-emits `text_delta`, and `/v1` streaming filters to
+        # On the native route the structured answer is ordinary text and has streamed already;
+        # the fold below leaves it alone. On the tool routes it streams as `input_json_delta` on
+        # a tool block, so nothing here yielded a text delta for it. Everything downstream that
+        # renders a stream forwards text deltas only — react re-emits `text_delta`, and `/v1`
+        # streaming filters to
         # `REPLY_TEXT_EVENTS` — so without the delta below a client streaming a structured
         # agent received `[DONE]` and no content at all.
         #

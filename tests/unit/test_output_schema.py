@@ -315,11 +315,14 @@ def test_a_loose_schema_drops_to_non_strict_and_says_so(caplog: pytest.LogCaptur
     assert "strict" in caplog.text
 
 
-# --- Anthropic, which has no response_format ------------------------------------------------
+# --- Anthropic, on a model without native structured outputs ---------------------------------
+
+# Accepts a forced tool choice and has no `output_config.format`, so the schema becomes a tool.
+TOOL_MODEL = "claude-sonnet-4-5"
 
 
 def test_the_schema_becomes_a_tool_the_model_must_call() -> None:
-    body: dict[str, Any] = {"model": "claude-sonnet-5", "messages": []}
+    body: dict[str, Any] = {"model": TOOL_MODEL, "messages": []}
     apply_anthropic_output_schema(body, STRICT)
     assert body["tool_choice"] == {"type": "tool", "name": STRUCTURED_OUTPUT_TOOL}
     assert [t["name"] for t in body["tools"]] == [STRUCTURED_OUTPUT_TOOL]
@@ -331,7 +334,7 @@ def test_real_tools_survive_and_the_choice_relaxes_to_any() -> None:
     structured answer is the last turn rather than the only one. `any` keeps every tool
     reachable while still forbidding a plain-text ending."""
     body: dict[str, Any] = {
-        "model": "claude-sonnet-5",
+        "model": TOOL_MODEL,
         "messages": [],
         "tools": [{"name": "calculator", "input_schema": {"type": "object", "properties": {}}}],
     }
@@ -345,7 +348,7 @@ def test_extended_thinking_downgrades_to_offering_the_schema(caplog: pytest.LogC
     choice there is a 400 on every request — the agent would answer nothing at all. The
     schema can only be offered, and the operator has to be told that it is not a guarantee."""
     body: dict[str, Any] = {
-        "model": "claude-sonnet-5",
+        "model": TOOL_MODEL,
         "messages": [],
         "thinking": {"type": "enabled", "budget_tokens": 4096},
     }
@@ -357,8 +360,8 @@ def test_extended_thinking_downgrades_to_offering_the_schema(caplog: pytest.LogC
 
 def _anthropic_client(spec: Any) -> AnthropicMessagesClient:
     return AnthropicMessagesClient(
-        model_id="claude-sonnet-5",
-        route=ModelRoute(provider="anthropic", model="claude-sonnet-5"),
+        model_id=TOOL_MODEL,
+        route=ModelRoute(provider="anthropic", model=TOOL_MODEL),
         settings=type("_S", (), {"model_timeout_seconds": 30})(),
         spec=spec,
         base_url="https://example.invalid",
@@ -432,7 +435,7 @@ def test_the_reserved_tool_name_cannot_be_shadowed() -> None:
     called `felix_structured_output` would have its call swallowed and re-emitted as the
     turn's answer. Silent and unlikely is the pair that earns a raise over a comment."""
     body: dict[str, Any] = {
-        "model": "claude-sonnet-5",
+        "model": TOOL_MODEL,
         "messages": [],
         "tools": [{"name": STRUCTURED_OUTPUT_TOOL, "input_schema": {"type": "object"}}],
     }

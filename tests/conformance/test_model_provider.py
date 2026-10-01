@@ -132,10 +132,15 @@ class _Arm:
     what makes it a contract rather than three copies of the same test.
     """
 
-    def __init__(self, wire: str, client: Any, transport: _Transport | None) -> None:
+    def __init__(self, wire: str, client: Any, transport: _Transport | None, *, native: bool = False) -> None:
         self.wire = wire
         self.client = client
         self.transport = transport
+        # Anthropic answers a schema in one of two shapes, by model: natively, as JSON text
+        # (`output_config.format`), or as a call to the tool the schema became. The
+        # `anthropic` arm routes to a model with native structured outputs and
+        # `anthropic-tool` to one without, so the contract holds for both.
+        self.native = native
 
     def program_turn(
         self, *, content: str = "hello", tool_calls: list[ToolCall] | None = None, stop: str = "end_turn"
@@ -214,7 +219,7 @@ class _Arm:
         must be true of both: the caller gets a JSON document and no tool call.
         """
         assert self.transport is not None
-        if self.wire == "openai":
+        if self.wire == "openai" or self.native:
             self.program_turn(content=json.dumps(payload))
             return
         from felix_ai.wire.anthropic_messages import STRUCTURED_OUTPUT_TOOL
@@ -231,9 +236,9 @@ class _Arm:
         )
 
     def program_structured_stream(self, payload: dict[str, Any]) -> None:
-        """The same reply, streamed. Anthropic sends it as `input_json_delta`, not text."""
+        """The same reply, streamed. Anthropic's tool route sends it as `input_json_delta`, not text."""
         assert self.transport is not None
-        if self.wire == "openai":
+        if self.wire == "openai" or self.native:
             self.program_stream(content=json.dumps(payload).replace('"', '\\"'))
             return
         from felix_ai.wire.anthropic_messages import STRUCTURED_OUTPUT_TOOL
@@ -259,6 +264,9 @@ class _Arm:
         """
         if self.wire == "openai":
             return ((body.get("response_format") or {}).get("json_schema") or {}).get("schema")
+        fmt = (body.get("output_config") or {}).get("format") or {}
+        if fmt.get("type") == "json_schema":
+            return fmt.get("schema")
         from felix_ai.wire.anthropic_messages import STRUCTURED_OUTPUT_TOOL
 
         if (body.get("tool_choice") or {}).get("type") not in ("any", "tool"):
@@ -288,6 +296,11 @@ def arm(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> _Arm
     from felix.config import Settings
 
     wire = request.param
+    native = wire == "anthropic"
+    model = "claude-sonnet-5"
+    if wire == "anthropic-tool":
+        # No native structured outputs, and a forced tool choice is accepted.
+        wire, model = "anthropic", "claude-sonnet-4-5"
     if wire == "scripted":
         from felix_ai.providers.scripted import ScriptedClient
 
@@ -317,14 +330,14 @@ def arm(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> _Arm
         from felix_ai.wire.anthropic_messages import AnthropicMessagesClient
 
         client = AnthropicMessagesClient(
-            model_id="claude-sonnet-5",
-            route=ModelRoute(provider="anthropic", model="claude-sonnet-5"),
+            model_id=model,
+            route=ModelRoute(provider="anthropic", model=model),
             settings=settings,
             spec=None,
             base_url="https://example.invalid",
             api_key="k",
         )
-    return _Arm(wire, client, transport)
+    return _Arm(wire, client, transport, native=native)
 
 
 def _user(text: str = "hi") -> list[ChatMessage]:
@@ -828,9 +841,13 @@ OUTPUT_SCHEMA: dict[str, Any] = {
     "required": ["answer", "confidence"],
     "additionalProperties": False,
 }
+# Anthropic twice: once on a model with native structured outputs, once on one that gets the
+# schema as a forced tool. The two reply shapes have nothing in common, and a caller must not
+# be able to tell which one answered.
+STRUCTURED_ARMS = ["openai", "anthropic", "anthropic-tool"]
 
 
-@pytest.mark.parametrize("arm", ["openai", "anthropic"], indirect=True)
+@pytest.mark.parametrize("arm", STRUCTURED_ARMS, indirect=True)
 @pytest.mark.asyncio
 async def test_an_output_schema_is_enforced_on_every_path(arm: _Arm) -> None:
     """A schema that reaches only `chat` is a feature that works until the caller streams.
@@ -853,7 +870,7 @@ async def test_an_output_schema_is_enforced_on_every_path(arm: _Arm) -> None:
         assert arm.output_constraint(body) == OUTPUT_SCHEMA
 
 
-@pytest.mark.parametrize("arm", ["openai", "anthropic"], indirect=True)
+@pytest.mark.parametrize("arm", STRUCTURED_ARMS, indirect=True)
 @pytest.mark.asyncio
 async def test_the_text_only_stream_is_constrained_too(arm: _Arm) -> None:
     """`stream()` is the third public path — the one `react.py` takes for a provider with no
@@ -866,7 +883,7 @@ async def test_the_text_only_stream_is_constrained_too(arm: _Arm) -> None:
     assert arm.output_constraint(arm.transport.sent[-1]) == OUTPUT_SCHEMA
 
 
-@pytest.mark.parametrize("arm", ["openai", "anthropic"], indirect=True)
+@pytest.mark.parametrize("arm", STRUCTURED_ARMS, indirect=True)
 @pytest.mark.asyncio
 async def test_a_turn_without_a_schema_constrains_nothing(arm: _Arm) -> None:
     """The counterpart, so the test above cannot pass by constraining every request.
@@ -881,7 +898,7 @@ async def test_a_turn_without_a_schema_constrains_nothing(arm: _Arm) -> None:
     assert "tool_choice" not in arm.transport.sent[-1]
 
 
-@pytest.mark.parametrize("arm", ["openai", "anthropic"], indirect=True)
+@pytest.mark.parametrize("arm", STRUCTURED_ARMS, indirect=True)
 @pytest.mark.asyncio
 async def test_a_structured_answer_is_json_text_on_either_wire(arm: _Arm) -> None:
     """The reason the harness can set one option and stop caring which provider answers.
