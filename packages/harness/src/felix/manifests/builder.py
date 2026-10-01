@@ -824,6 +824,49 @@ def _arg_present(args: ToolInput, name: str) -> bool:
     return True
 
 
+PREVIEW_ARG = "preview"
+# A preview is computed on the approval path, ahead of a person reading it; it must not be the
+# thing that holds a run open. Past this the row says the preview is unavailable and the
+# approval goes ahead without it.
+_PREVIEW_TIMEOUT_S = 60.0
+
+
+async def _approval_preview(tool: Tool, args: ToolInput) -> str | None:
+    """The text a person reads before approving `tool`, or None when the tool has none.
+
+    Never raises: a preview is an aid to the decision, not a precondition of it, so a failure
+    reads as `preview unavailable: …` on the row and the approval proceeds. Known secret values
+    are redacted — the preview is computed from state the harness can see, and the row is read
+    by whoever holds `approvals:read`.
+    """
+    fn = tool.approval_preview
+    if fn is None:
+        return None
+    import asyncio
+
+    from felix.secrets import redact_text
+
+    try:
+        async with asyncio.timeout(_PREVIEW_TIMEOUT_S):
+            text = str(await fn(dict(args)))
+    except TimeoutError:
+        text = f"preview unavailable: timed out after {_PREVIEW_TIMEOUT_S:.0f}s"
+    except Exception as exc:
+        logger.warning("approval preview for %s failed", tool.name, exc_info=True)
+        text = f"preview unavailable: {type(exc).__name__}: {str(exc)[:200]}"
+    return redact_text(text)
+
+
+def _without_preview(tool: Tool, args: ToolInput) -> ToolInput:
+    """Arguments an approver sent back, minus the preview the harness added for them to read.
+
+    Only for a tool that has a preview: on any other tool `preview` is an ordinary argument name.
+    """
+    if tool.approval_preview is None:
+        return dict(args)
+    return {k: v for k, v in args.items() if k != PREVIEW_ARG}
+
+
 def apply_approvals(tools: list[Tool], rules: list[ApprovalRule], manifest_id: str) -> list[Tool]:
     if not any(r.tools for r in rules):
         return tools
@@ -874,6 +917,10 @@ def apply_approvals(tools: list[Tool], rules: list[ApprovalRule], manifest_id: s
             req = try_get_context()
             granted = bool((req.extras if req else {}).get(f"approval:{tool.name}"))
             pending_row: dict[str, object] | None = None
+            # What the row and the frame show. Equal to `args` unless the tool computes a
+            # preview, which is added here and nowhere else: the signature below is hashed from
+            # `args`, so a preview can neither widen nor narrow what an approval authorizes.
+            shown_args: ToolInput = dict(args)
             # Before `create_pending`, so the row carries it too — `GET /approvals` is the only
             # channel a durable run has, and it was the half with no thread on it.
             thread_id = (ctx.thread_id if ctx else None) or (req.thread_id if req else None)
@@ -912,15 +959,18 @@ def apply_approvals(tools: list[Tool], rules: list[ApprovalRule], manifest_id: s
                     if approved:
                         granted = True
                         if approved.get("edited_args"):
-                            args = dict(approved["edited_args"])
+                            args = _without_preview(tool, approved["edited_args"])
                     else:
+                        preview = await _approval_preview(tool, args)
+                        if preview is not None:
+                            shown_args[PREVIEW_ARG] = preview
                         pending_row = await approvals_store.create_pending(
                             req.settings,
                             req.auth.tenant_id,
                             manifest_id=manifest_id,
                             tool_name=tool.name,
                             call_signature=sig,
-                            args=dict(args),
+                            args=dict(shown_args),
                             principal_subj=req.auth.principal_sub,
                             rule_id=rule.id,
                             ttl_seconds=rule.ttl_seconds,
@@ -952,7 +1002,7 @@ def apply_approvals(tools: list[Tool], rules: list[ApprovalRule], manifest_id: s
                     {
                         "approval_id": approval_id,
                         "tool_name": tool.name,
-                        "args": dict(args),
+                        "args": dict(shown_args),
                         "rule_id": rule.id,
                         # The operator's own words for why this gate exists. Without it the
                         # frame named the rule and nothing else, and `description` -- the one
@@ -994,7 +1044,7 @@ def apply_approvals(tools: list[Tool], rules: list[ApprovalRule], manifest_id: s
                         "approvals",
                     )
                 if decision.edited_args:
-                    args = dict(decision.edited_args)
+                    args = _without_preview(tool, decision.edited_args)
                 return await inner.execute(args, ctx)
             return await inner.execute(args, ctx)
 
@@ -1416,6 +1466,25 @@ async def build_agent(
                 )
             except Exception:
                 logger.warning("search tool binding failed", exc_info=True)
+
+        # Publish local commits to GitHub from this process. Bound here, ahead of the governance
+        # stack, so approvals — with the diff preview the tool computes — gate it like any write.
+        if m.spec.github_publish is not None:
+            try:
+                if deps.settings is None:
+                    raise ValueError("no settings to resolve github_publish.auth with")
+                from felix.secrets import build_secrets, resolve_secret_value
+                from felix.tools.github_publish import tool_from_github_publish
+
+                token = await resolve_secret_value(build_secrets(deps.settings), m.spec.github_publish.auth)
+                _append_unique_tools(
+                    resolved,
+                    [tool_from_github_publish(m.spec.github_publish, token=token, allow_http=allow_http)],
+                )
+            except Exception:
+                # The message names the secret, never its value: `resolve_secret_value` raises
+                # `secret not found: NAME`, and the binder raises before a token exists.
+                logger.warning("github publish tool binding failed", exc_info=True)
 
         # Retrieval over the operator's own corpus. Unlike the two above it reaches nothing
         # outbound, so there is no egress to guard — but it needs the tenant, because the

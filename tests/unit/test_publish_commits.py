@@ -1,0 +1,598 @@
+"""`publish_commits` — publish workspace commits through GitHub's Git Data API, from the harness.
+
+Everything here runs against a **real git repository** and a **real HTTP server** on loopback
+through the real egress-guarded client. The fake GitHub is honest where it matters: it hashes
+the blobs it is sent and builds the tree it is asked for with git itself, so the tool's
+tree-sha integrity check is tested against what was actually sent rather than a canned answer.
+
+What the tests pin, in the order the module docstring promises it:
+
+* the call sequence — blobs, a tree on the parent's tree with deletions as `sha: null`, one
+  commit on the right parent, then a created or fast-forwarded ref;
+* the refusals — a branch outside the prefix, a head that does not contain the remote tip;
+* the approval row shows the diff, computed from `head_sha`, while the call signature and the
+  arguments the tool runs with never include it;
+* an approval binds content: the same branch with a different `head_sha` is a new approval;
+* the #307 regression — a one-line change to a 100+ KiB file puts a small preview in the row
+  and none of the file in the model's context.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import hashlib
+import json
+import os
+from collections.abc import Iterator
+from pathlib import Path
+from typing import Any
+
+import pytest
+from felix.approvals import store as approvals_store
+from felix.config import Settings
+from felix.context import AuthContext, RequestContext, async_run_with_context
+from felix.manifests.builder import PREVIEW_ARG, apply_approvals
+from felix.manifests.schema import ApprovalRule, GithubPublishSpec
+from felix.side_events import requested_on
+from felix.tools import github_publish as gp
+from felix.tools.errors import read_tool_error_code
+from felix.tools.types import Tool, ToolInvocationCtx, define_tool, tool_output_content
+from pydantic import ValidationError
+
+from tests.git_fixture import git as fixture_git
+from tests.loopback_http import Request, respond, serve
+
+REPO = "felix-run/felix"
+TOKEN = "t0k"
+TENANT = "default"
+BIG_MARKER = "UNCHANGED-MIDDLE-OF-THE-BIG-FILE"
+
+
+# --- a real repository -----------------------------------------------------------------
+
+
+_IDENTITY = {
+    "GIT_AUTHOR_NAME": "Felix",
+    "GIT_AUTHOR_EMAIL": "felix@example.invalid",
+    "GIT_COMMITTER_NAME": "Felix",
+    "GIT_COMMITTER_EMAIL": "felix@example.invalid",
+}
+
+
+def git(ws: Path, *args: str, env: dict[str, str] | None = None) -> str:
+    """`tests/git_fixture.py:git` with a commit identity; never an ambient git environment."""
+    return fixture_git(ws, *args, extra={**_IDENTITY, **(env or {})})
+
+
+def commit(ws: Path, message: str) -> str:
+    git(ws, "add", "-A")
+    git(ws, "commit", "-q", "-m", message)
+    return git(ws, "rev-parse", "HEAD").strip()
+
+
+def _big_changelog(extra: str = "") -> str:
+    lines = [f"- entry {i}: something that happened in release {i}" for i in range(2500)]
+    lines.insert(1200, BIG_MARKER)
+    return "# Changelog\n\n## [Unreleased]\n" + extra + "\n".join(lines) + "\n"
+
+
+@pytest.fixture
+def ws(tmp_path: Path) -> Path:
+    root = tmp_path / "ws"
+    root.mkdir()
+    git(root, "init", "-q", "-b", "main")
+    (root / "README.md").write_text("hello\n")
+    (root / "old.txt").write_text("to be deleted\n")
+    (root / "CHANGELOG.md").write_text(_big_changelog())
+    commit(root, "base")
+    return root
+
+
+def feature_commit(ws: Path) -> str:
+    git(ws, "switch", "-q", "-c", "felix/307-publish")
+    (ws / "CHANGELOG.md").write_text(_big_changelog("- Added publish_commits.\n"))
+    (ws / "new.txt").write_text("brand new\n")
+    (ws / "old.txt").unlink()
+    return commit(ws, "Publish commits from the harness\n\nCloses #307.")
+
+
+# --- a fake GitHub that is honest about hashes -------------------------------------------
+
+
+class FakeGitHub:
+    def __init__(self, ws: Path, refs: dict[str, str]) -> None:
+        self.ws = ws
+        self.refs = dict(refs)
+        self.calls: list[tuple[str, str, Any]] = []
+        self.auth: list[str] = []
+        self.blob_bytes = 0
+        self.commits: dict[str, dict[str, Any]] = {}
+        self.wrong_tree = False
+
+    def writes(self) -> list[tuple[str, str]]:
+        return [(m, p) for m, p, _ in self.calls if m != "GET"]
+
+    def bodies(self, method: str, path: str) -> list[Any]:
+        return [b for m, p, b in self.calls if m == method and p == path]
+
+    def _tree(self, body: dict[str, Any]) -> str:
+        index = self.ws.parent / "fake-index"
+        env = {"GIT_INDEX_FILE": str(index)}
+        git(self.ws, "read-tree", body["base_tree"], env=env)
+        for e in body["tree"]:
+            if e["sha"] is None:
+                git(self.ws, "update-index", "--force-remove", "--", e["path"], env=env)
+            else:
+                git(
+                    self.ws,
+                    "update-index",
+                    "--add",
+                    "--cacheinfo",
+                    f"{e['mode']},{e['sha']},{e['path']}",
+                    env=env,
+                )
+        sha = git(self.ws, "write-tree", env=env).strip()
+        index.unlink()
+        return sha
+
+    async def __call__(self, req: Request, writer: asyncio.StreamWriter) -> None:
+        self.auth.append(req.headers.get("authorization", ""))
+        prefix = f"/repos/{REPO}"
+        assert req.path.startswith(prefix), req.path
+        path = req.path[len(prefix) :]
+        body = json.loads(req.body) if req.body else None
+        self.calls.append((req.method, path, body))
+
+        def ok(data: Any, status: str = "200 OK") -> None:
+            respond(writer, json.dumps(data).encode(), status=status, ctype="application/json")
+
+        if req.method == "GET" and path.startswith("/git/ref/heads/"):
+            name = path[len("/git/ref/heads/") :]
+            if name in self.refs:
+                return ok({"ref": f"refs/heads/{name}", "object": {"sha": self.refs[name], "type": "commit"}})
+            return ok({"message": "Not Found"}, "404 Not Found")
+        if req.method == "POST" and path == "/git/blobs":
+            data = base64.b64decode(body["content"])
+            self.blob_bytes += len(data)
+            sha = hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+            return ok({"sha": sha}, "201 Created")
+        if req.method == "POST" and path == "/git/trees":
+            sha = "0" * 40 if self.wrong_tree else self._tree(body)
+            return ok({"sha": sha}, "201 Created")
+        if req.method == "POST" and path == "/git/commits":
+            sha = hashlib.sha1(json.dumps(body, sort_keys=True).encode()).hexdigest()
+            self.commits[sha] = body
+            return ok({"sha": sha}, "201 Created")
+        if req.method == "POST" and path == "/git/refs":
+            self.refs[body["ref"].removeprefix("refs/heads/")] = body["sha"]
+            return ok({"ref": body["ref"]}, "201 Created")
+        if req.method == "PATCH" and path.startswith("/git/refs/heads/"):
+            self.refs[path[len("/git/refs/heads/") :]] = body["sha"]
+            return ok({"ref": path})
+        return ok({"message": f"unexpected {req.method} {path}"}, "422 Unprocessable Entity")
+
+
+# --- binding and context ------------------------------------------------------------------
+
+
+def _spec(**kw: Any) -> GithubPublishSpec:
+    base: dict[str, Any] = {
+        "repo": REPO,
+        "auth": "secret:GITHUB_MCP_TOKEN",
+        "base": "main",
+        "branch_prefix": "felix/",
+    }
+    base.update(kw)
+    return GithubPublishSpec(**base)
+
+
+def _tool(api: str) -> Tool:
+    return gp.tool_from_github_publish(_spec(), token=TOKEN, allow_http=True, api_base=api)
+
+
+def _settings(ws: Path) -> Settings:
+    return Settings(workspace_root=str(ws), allow_insecure=True, auth_mode="none", environment="development")
+
+
+def _req(ws: Path, thread: str = "default:t-publish") -> RequestContext:
+    return RequestContext(
+        settings=_settings(ws),
+        auth=AuthContext(tenant_id=TENANT),
+        manifest_id="contributor",
+        thread_id=thread,
+    )
+
+
+async def _call(tool: Tool, ws: Path, args: dict[str, Any]) -> Any:
+    async with async_run_with_context(_req(ws)):
+        return await tool.executor.execute(args, ToolInvocationCtx(tool_call_id="c1"))
+
+
+@pytest.fixture(autouse=True)
+def _clean_approvals() -> Iterator[None]:
+    approvals_store.reset_approvals_for_tests()
+    yield
+    approvals_store.reset_approvals_for_tests()
+
+
+# --- publishing ----------------------------------------------------------------------------
+
+
+async def test_a_new_branch_is_published_as_blobs_tree_commit_ref(ws: Path) -> None:
+    base = git(ws, "rev-parse", "HEAD").strip()
+    head = feature_commit(ws)
+    fake = FakeGitHub(ws, {"main": base})
+    async with serve(fake) as api:
+        out = await _call(_tool(api), ws, {"branch": "felix/307-publish", "head_sha": head})
+
+    text = tool_output_content(out)
+    assert read_tool_error_code(out) is None, text
+    assert [m for m, _ in fake.writes()] == ["POST", "POST", "POST", "POST", "POST"], fake.writes()
+    (tree,) = fake.bodies("POST", "/git/trees")
+    assert tree["base_tree"] == git(ws, "rev-parse", f"{base}^{{tree}}").strip()
+    entries = {e["path"]: e for e in tree["tree"]}
+    assert set(entries) == {"CHANGELOG.md", "new.txt", "old.txt"}
+    assert entries["old.txt"]["sha"] is None, "a deleted file must be a null-sha entry"
+    (commit_body,) = fake.bodies("POST", "/git/commits")
+    assert commit_body["parents"] == [base]
+    assert commit_body["tree"] == git(ws, "rev-parse", f"{head}^{{tree}}").strip()
+    assert commit_body["message"].startswith("Publish commits from the harness")
+    (ref,) = fake.bodies("POST", "/git/refs")
+    assert ref["ref"] == "refs/heads/felix/307-publish"
+    assert fake.refs["felix/307-publish"] == ref["sha"]
+    assert set(fake.auth) == {f"Bearer {TOKEN}"}
+
+    assert ref["sha"] in text and "3 file(s)" in text
+    assert f"https://github.com/{REPO}/compare/main...felix/307-publish" in text
+    assert BIG_MARKER not in text and len(text) < 500
+
+
+async def test_an_existing_branch_is_fast_forwarded_from_its_remote_tip(ws: Path) -> None:
+    base = git(ws, "rev-parse", "HEAD").strip()
+    first = feature_commit(ws)
+    (ws / "second.txt").write_text("more\n")
+    head = commit(ws, "A second change")
+    fake = FakeGitHub(ws, {"main": base, "felix/307-publish": first})
+    async with serve(fake) as api:
+        out = await _call(_tool(api), ws, {"branch": "felix/307-publish", "head_sha": head})
+
+    assert read_tool_error_code(out) is None, tool_output_content(out)
+    (commit_body,) = fake.bodies("POST", "/git/commits")
+    assert commit_body["parents"] == [first], "the parent is the branch's remote tip, not base"
+    (tree,) = fake.bodies("POST", "/git/trees")
+    assert [e["path"] for e in tree["tree"]] == ["second.txt"]
+    (patch,) = fake.bodies("PATCH", "/git/refs/heads/felix/307-publish")
+    assert patch["force"] is False
+    assert not fake.bodies("POST", "/git/refs")
+
+
+async def test_several_local_commits_are_published_as_one_titled_commit(ws: Path) -> None:
+    base = git(ws, "rev-parse", "HEAD").strip()
+    feature_commit(ws)
+    (ws / "second.txt").write_text("more\n")
+    head = commit(ws, "A second change")
+    fake = FakeGitHub(ws, {"main": base})
+    async with serve(fake) as api:
+        out = await _call(
+            _tool(api), ws, {"branch": "felix/307-publish", "head_sha": head, "title": "Publish it"}
+        )
+
+    assert read_tool_error_code(out) is None, tool_output_content(out)
+    (commit_body,) = fake.bodies("POST", "/git/commits")
+    assert commit_body["message"] == ("Publish it\n\n- Publish commits from the harness\n- A second change\n")
+
+
+async def test_a_head_that_does_not_contain_the_remote_tip_is_refused(ws: Path) -> None:
+    base = git(ws, "rev-parse", "HEAD").strip()
+    (ws / "elsewhere.txt").write_text("someone else's\n")
+    remote_only = commit(ws, "Pushed by someone else")
+    git(ws, "reset", "-q", "--hard", base)
+    head = feature_commit(ws)
+    fake = FakeGitHub(ws, {"main": base, "felix/307-publish": remote_only})
+    async with serve(fake) as api:
+        out = await _call(_tool(api), ws, {"branch": "felix/307-publish", "head_sha": head})
+
+    text = tool_output_content(out)
+    assert read_tool_error_code(out) == "invalid_arguments", text
+    assert "does not contain the remote felix/307-publish" in text
+    assert fake.writes() == [], "a refused publish wrote to GitHub"
+
+
+async def test_a_remote_tip_the_workspace_never_fetched_says_to_fetch(ws: Path) -> None:
+    head = feature_commit(ws)
+    fake = FakeGitHub(ws, {"main": "f" * 40})
+    async with serve(fake) as api:
+        out = await _call(_tool(api), ws, {"branch": "felix/307-publish", "head_sha": head})
+
+    text = tool_output_content(out)
+    assert read_tool_error_code(out) == "invalid_arguments", text
+    assert "git" in text and "fetch" in text and "f" * 40 in text
+    assert fake.writes() == []
+
+
+@pytest.mark.parametrize(
+    "branch,why",
+    [
+        ("main", "must start with 'felix/'"),
+        ("feature/x", "must start with 'felix/'"),
+        ("felix/../main", "not a valid branch name"),
+        ("felix/a b", "not a valid branch name"),
+        ("felix/x.lock", "not a valid branch name"),
+    ],
+)
+async def test_branches_outside_the_prefix_or_malformed_are_refused(ws: Path, branch: str, why: str) -> None:
+    head = git(ws, "rev-parse", "HEAD").strip()
+    fake = FakeGitHub(ws, {"main": head})
+    async with serve(fake) as api:
+        out = await _call(_tool(api), ws, {"branch": branch, "head_sha": head})
+    assert why in tool_output_content(out)
+    assert fake.calls == [], "a refused branch reached GitHub"
+
+
+async def test_an_unknown_or_short_sha_is_refused(ws: Path) -> None:
+    head = git(ws, "rev-parse", "HEAD").strip()
+    fake = FakeGitHub(ws, {"main": head})
+    async with serve(fake) as api:
+        short = await _call(_tool(api), ws, {"branch": "felix/x", "head_sha": head[:12]})
+        unknown = await _call(_tool(api), ws, {"branch": "felix/x", "head_sha": "a" * 40})
+    assert "full 40-character sha" in tool_output_content(short)
+    assert "is not a commit in the workspace" in tool_output_content(unknown)
+    assert fake.writes() == []
+
+
+async def test_a_tree_that_is_not_the_head_tree_is_never_committed(ws: Path) -> None:
+    base = git(ws, "rev-parse", "HEAD").strip()
+    head = feature_commit(ws)
+    fake = FakeGitHub(ws, {"main": base})
+    fake.wrong_tree = True
+    async with serve(fake) as api:
+        out = await _call(_tool(api), ws, {"branch": "felix/307-publish", "head_sha": head})
+    assert "refusing to commit it" in tool_output_content(out)
+    assert not fake.bodies("POST", "/git/commits") and not fake.bodies("POST", "/git/refs")
+
+
+def test_the_git_subprocess_environment_carries_no_credential(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GITHUB_MCP_TOKEN", "the-token-value")
+    monkeypatch.setenv("FELIX_ANTHROPIC_API_KEY", "another-secret")
+    env = gp._git_env()
+    assert "the-token-value" not in env.values() and "another-secret" not in env.values()
+    assert env["GIT_CONFIG_NOSYSTEM"] == "1" and env["GIT_CONFIG_GLOBAL"] == os.devnull
+    assert "core.hooksPath=/dev/null" in gp._GIT_PRELUDE and "core.fsmonitor=false" in gp._GIT_PRELUDE
+
+
+# --- the approval preview ------------------------------------------------------------------
+
+
+def _gated(tool: Tool, ttl: int = 5) -> Tool:
+    rule = ApprovalRule(id="github-mutate", tools=[gp.TOOL_NAME, "probe"], ttl_seconds=ttl)
+    return apply_approvals([tool], [rule], "contributor")[0]
+
+
+def _sig(args: dict[str, Any]) -> str:
+    """The signature `apply_approvals` computes, re-derived here on purpose."""
+    return hashlib.sha256(json.dumps(args, sort_keys=True, default=str).encode()).hexdigest()[:32]
+
+
+async def _run_with_decision(
+    tool: Tool, ws: Path, args: dict[str, Any], *, decision: str = "approved", edit: bool = False
+) -> tuple[Any, dict[str, Any], RequestContext]:
+    """Call the gated tool; when its approval row appears, record it and decide it."""
+    from felix.approvals.interrupt import signal_decision
+
+    req = _req(ws)
+    seen: dict[str, Any] = {}
+
+    async def _decide() -> None:
+        for _ in range(200):
+            pending = await approvals_store.list_approvals(req.settings, TENANT, status="pending")
+            if pending:
+                break
+            await asyncio.sleep(0.02)
+        else:
+            return
+        row = pending[0]
+        seen.update(row)
+        edited = dict(row["args"]) if edit else None
+        await approvals_store.decide(
+            req.settings, TENANT, row["id"], decision=decision, decided_by="op", edited_args=edited
+        )
+        await signal_decision(row["id"], decision, edited_args=edited)
+
+    helper = asyncio.create_task(_decide())
+    async with async_run_with_context(req):
+        out = await tool.executor.execute(args, ToolInvocationCtx(tool_call_id="c1"))
+    await helper
+    return out, seen, req
+
+
+async def test_the_approval_row_and_frame_carry_the_diff_but_the_signature_does_not(ws: Path) -> None:
+    base = git(ws, "rev-parse", "HEAD").strip()
+    head = feature_commit(ws)
+    fake = FakeGitHub(ws, {"main": base})
+    args = {"branch": "felix/307-publish", "head_sha": head}
+    async with serve(fake) as api:
+        out, row, req = await _run_with_decision(_gated(_tool(api)), ws, args)
+
+    assert read_tool_error_code(out) is None, tool_output_content(out)
+    preview = row["args"][PREVIEW_ARG]
+    assert "diff --git a/CHANGELOG.md b/CHANGELOG.md" in preview
+    assert "+- Added publish_commits." in preview
+    assert "diff --git a/old.txt b/old.txt" in preview and "deleted file mode" in preview
+    assert "new branch from " + base in preview
+    (frame,) = requested_on(req.extras, "approval_required")
+    assert frame["args"][PREVIEW_ARG] == preview
+    assert row["call_signature"] == _sig(args), "the preview leaked into the call signature"
+
+
+async def test_a_one_line_change_to_a_large_file_stays_small_everywhere(ws: Path) -> None:
+    """#307: push_files carried the whole 196 KiB CHANGELOG as an argument, into the model's
+    context and the approval row. Now the file goes to GitHub and nowhere else."""
+    size = (ws / "CHANGELOG.md").stat().st_size
+    assert size > 100 * 1024, "the fixture must be the large-file case"
+    base = git(ws, "rev-parse", "HEAD").strip()
+    head = feature_commit(ws)
+    fake = FakeGitHub(ws, {"main": base})
+    args = {"branch": "felix/307-publish", "head_sha": head}
+    async with serve(fake) as api:
+        out, row, _ = await _run_with_decision(_gated(_tool(api)), ws, args)
+
+    text = tool_output_content(out)
+    assert read_tool_error_code(out) is None, text
+    assert fake.blob_bytes > size, "the file did go to GitHub"
+    preview = row["args"][PREVIEW_ARG]
+    assert "+- Added publish_commits." in preview, "the preview must show the change it summarises"
+    assert len(preview.encode()) < 4 * 1024, len(preview)
+    for where in (text, json.dumps(args), preview):
+        assert BIG_MARKER not in where
+
+
+async def test_a_large_diff_is_truncated_in_the_preview_and_says_so(ws: Path) -> None:
+    base = git(ws, "rev-parse", "HEAD").strip()
+    git(ws, "switch", "-q", "-c", "felix/big")
+    (ws / "CHANGELOG.md").write_text("rewritten\n")
+    head = commit(ws, "Rewrite the changelog")
+    fake = FakeGitHub(ws, {"main": base})
+    async with serve(fake) as api:
+        executor = _tool(api).executor
+        async with async_run_with_context(_req(ws)):
+            preview = await executor.preview({"branch": "felix/big", "head_sha": head})
+
+    assert "CHANGELOG.md" in preview.split("diff --git", 1)[0], "--stat must precede the diff"
+    assert f"[diff truncated at {gp.MAX_PREVIEW_BYTES} bytes" in preview
+    assert len(preview.encode()) < gp.MAX_PREVIEW_BYTES + 4096
+
+
+async def test_an_approval_for_one_head_does_not_authorize_another(ws: Path) -> None:
+    """`head_sha` is content-addressed and in the signature, so an approval binds the content.
+    The same branch with a different head is a different call and waits for its own decision."""
+    base = git(ws, "rev-parse", "HEAD").strip()
+    first = feature_commit(ws)
+    fake = FakeGitHub(ws, {"main": base})
+    async with serve(fake) as api:
+        gated = _gated(_tool(api), ttl=1)
+        out, _, _ = await _run_with_decision(gated, ws, {"branch": "felix/307-publish", "head_sha": first})
+        assert read_tool_error_code(out) is None, tool_output_content(out)
+        published = len(fake.writes())
+        # Point the remote branch at a commit the workspace has, so that were the second call
+        # authorized it would publish — a refusal must come from the approval, not from a stale tip.
+        fake.refs["felix/307-publish"] = first
+
+        (ws / "sneaky.txt").write_text("not what was approved\n")
+        second = commit(ws, "Something else")
+        async with async_run_with_context(_req(ws)):
+            denied = await gated.executor.execute(
+                {"branch": "felix/307-publish", "head_sha": second}, ToolInvocationCtx(tool_call_id="c2")
+            )
+
+    assert "[approval timeout]" in tool_output_content(denied)
+    assert len(fake.writes()) == published, "the second head was published on the first approval"
+
+
+async def test_edited_args_lose_the_preview_before_the_tool_runs(ws: Path) -> None:
+    ran: list[dict[str, Any]] = []
+
+    async def _probe(args: dict[str, Any]) -> str:
+        ran.append(dict(args))
+        return "ok"
+
+    async def _preview(args: dict[str, Any]) -> str:
+        return f"would do {args['x']}"
+
+    tool = define_tool(name="probe", description="p", handler=_probe)
+    tool.approval_preview = _preview
+    out, row, _ = await _run_with_decision(_gated(tool), ws, {"x": 1}, edit=True)
+
+    assert tool_output_content(out) == "ok"
+    assert row["args"] == {"x": 1, PREVIEW_ARG: "would do 1"}
+    assert ran == [{"x": 1}], "the approver's echo of the preview reached the tool as an argument"
+
+
+async def test_a_failing_preview_does_not_block_the_approval(ws: Path) -> None:
+    async def _probe(args: dict[str, Any]) -> str:
+        return "ran"
+
+    async def _broken(args: dict[str, Any]) -> str:
+        raise RuntimeError("git is gone")
+
+    tool = define_tool(name="probe", description="p", handler=_probe)
+    tool.approval_preview = _broken
+    out, row, _ = await _run_with_decision(_gated(tool), ws, {"x": 1})
+
+    assert tool_output_content(out) == "ran"
+    assert row["args"][PREVIEW_ARG] == "preview unavailable: RuntimeError: git is gone"
+
+
+async def test_a_tool_without_a_preview_keeps_a_preview_argument(ws: Path) -> None:
+    """`preview` is only reserved on a tool that computes one."""
+    ran: list[dict[str, Any]] = []
+
+    async def _probe(args: dict[str, Any]) -> str:
+        ran.append(dict(args))
+        return "ok"
+
+    tool = define_tool(name="probe", description="p", handler=_probe)
+    _, row, _ = await _run_with_decision(_gated(tool), ws, {PREVIEW_ARG: "mine"}, edit=True)
+    assert row["args"] == {PREVIEW_ARG: "mine"}
+    assert ran == [{PREVIEW_ARG: "mine"}]
+
+
+# --- schema and binding ---------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"repo": "not-a-repo"},
+        {"repo": "felix-run/.."},
+        {"auth": "ghp_literaltoken"},
+        {"branch_prefix": ""},
+        {"branch_prefix": "bad prefix/"},
+        {"base": "felix/main"},
+        {"base": "a..b"},
+    ],
+)
+def test_the_spec_refuses_what_it_cannot_enforce(override: dict[str, Any]) -> None:
+    with pytest.raises(ValidationError):
+        _spec(**override)
+
+
+def _manifest() -> dict[str, Any]:
+    return {
+        "apiVersion": "felix/v1",
+        "kind": "Agent",
+        "metadata": {"name": "publisher"},
+        "spec": {
+            "pattern": "react",
+            "github_publish": {
+                "repo": REPO,
+                "auth": "secret:FELIX_TEST_PUBLISH_TOKEN",
+                "base": "main",
+                "branch_prefix": "felix/",
+            },
+            "approvals": [{"id": "publish", "tools": [gp.TOOL_NAME], "ttl_seconds": 5}],
+        },
+    }
+
+
+async def test_the_compile_binds_it_with_its_preview_through_the_governance_stack(
+    ws: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from felix.manifests.builder import build_agent
+    from felix.tools.builtins import default_tool_provider
+
+    monkeypatch.setenv("FELIX_TEST_PUBLISH_TOKEN", "t1")
+    agent = await build_agent(_manifest(), default_tool_provider(), settings=_settings(ws))
+    tool = next((t for t in agent.tools if t.name == gp.TOOL_NAME), None)
+    assert tool is not None, "spec.github_publish bound nothing"
+    assert tool.approval_preview is not None, "the preview did not survive the governance stack"
+    assert tool.replay_safe is False
+
+
+async def test_an_unresolvable_token_binds_no_tool(ws: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from felix.manifests.builder import build_agent
+    from felix.tools.builtins import default_tool_provider
+
+    monkeypatch.delenv("FELIX_TEST_PUBLISH_TOKEN", raising=False)
+    agent = await build_agent(_manifest(), default_tool_provider(), settings=_settings(ws))
+    assert gp.TOOL_NAME not in {t.name for t in agent.tools}

@@ -464,6 +464,36 @@ own:
 - **One tenant per process.** `FELIX_WORKSPACE_ROOT` is process-global; every tenant's shell
   tool reads and writes the same tree. A multi-tenant deployment does not bind one.
 
+## Publishing commits
+
+`spec.github_publish` binds `publish_commits(branch, head_sha, title?)`, which publishes commits
+already made in `FELIX_WORKSPACE_ROOT` to one GitHub repository. It exists so the workspace never
+needs a credential: the shell tool above runs repository code, so whatever that process can read,
+the agent can print. The token (`auth: secret:NAME`, a secret ref only — a literal is refused)
+is resolved in the API process and lives in the `Authorization` header of one egress-guarded HTTP
+client. The git the tool runs is read-only plumbing (`rev-parse`, `merge-base`, `diff`, `log`,
+`cat-file`) with an environment built from nothing — no token, no API secret — and with system
+and global config, hooks, fsmonitor, external diff drivers and textconv switched off, because the
+repository's own `.git/config` is agent-writable.
+
+What an approval of `publish_commits` binds:
+
+- **The content.** `head_sha` is in the call signature and is content-addressed, so approving one
+  sha authorizes that tree and nothing else; a new commit on the same branch is a new approval.
+  After building the tree the tool compares GitHub's tree sha with `head_sha^{tree}` and refuses
+  to commit on a mismatch, and every blob sha GitHub returns is checked against the local one —
+  what lands is byte-for-byte the tree that was approved.
+- **The branch.** It must start with `branch_prefix` (required) and may not be `base`, which may
+  not itself start with the prefix.
+- **No history rewrite.** The parent is the remote tip of the branch (or of `base` for a new
+  branch), it must be an ancestor of `head_sha`, and the ref moves with `force: false`.
+
+The preview on the row is `git diff --stat` and the unified diff between that parent and
+`head_sha`, the diff capped at 32 KiB with a note saying so (the `--stat` is never cut). One
+publish carries at most 300 files and 8 MiB. Whole-file MCP writes (`push_files`,
+`create_or_update_file`) put every changed file into the model's context and the approval row —
+196 KiB for one CHANGELOG line — which is why `contributor.yaml` no longer binds them.
+
 ## Sandbox confinement
 
 `spec.sandboxes[].binding` names a container image and reaches `docker run`, so images
@@ -874,6 +904,16 @@ Approvals are matched on `(tenant, manifest, tool, sha256(args))` and stored in 
 **What an operator sees, on either channel.** A pending row and the `approval_required` stream
 frame carry the same story: `rule_id`, `reason` (the rule's `description`, or the finding for a
 command-screening gate), `thread_id`, `tool_call_id`, and `expires_at`.
+
+**A preview, for a tool whose arguments are a reference.** A tool may carry an
+`approval_preview` — a harness-side function of the call's arguments. When it does, the row's
+`args` and the frame's `args` gain a `preview` string computed *before* the row is written, with
+known secret values redacted. It is for the person reading, and it is kept out of everything
+else: `sha256(args)` is taken over the original arguments, so a preview can neither widen nor
+narrow what an approval authorizes; `edited_args` sent back with a decision have `preview`
+stripped before the tool runs; and a preview that fails or takes longer than 60 seconds reads
+`preview unavailable: …` rather than blocking the approval. Only `publish_commits` has one today
+— see below.
 
 That symmetry is what lets a **durable** run announce a gate at all. Its agent runs in the
 worker while its stream is served by the API, so the in-process side event cannot cross — and

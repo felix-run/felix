@@ -40,6 +40,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   request; transcripts are cached per tenant by content, so resent history costs nothing
   further. Only the incoming turn is screened, not images replayed from a thread's history.
   Off by default; see `deploy/GOVERNANCE.md`.
+- **`publish_commits`: publish the commits an agent made, from the harness, with a diff on the
+  approval.** `spec.github_publish` (`repo`, `auth: secret:NAME`, `base`, `branch_prefix`) binds a
+  tool that takes a branch and a local commit sha and writes them to GitHub through the Git Data
+  API — blobs, one tree on the remote tip, one commit, a created or fast-forwarded ref. The token
+  stays in the API process; the workspace, where repository code runs, never holds it. The
+  approval row and the `approval_required` frame carry a `preview` the harness computes from the
+  sha (`git diff --stat` and the unified diff, capped at 32 KiB), while the call signature is
+  still the arguments alone — so an approval binds the exact content, and the same branch with a
+  new sha asks again. `contributor` publishes this way and no longer binds GitHub's
+  `push_files` / `create_or_update_file`, which put every changed file into the model's context
+  and the approval row: 196 KiB for a one-line CHANGELOG entry (#307). Any tool can now offer an
+  approval preview through `Tool.approval_preview`.
 
 - **`GET /audit/export`: the audit log over a time range, as JSONL.** An auditor's second
   question after "who was refused" is "give me everything from last quarter", and the only
