@@ -141,10 +141,12 @@ required and `felix-boundary` fails the check when one is missing.
 Branches are `felix/<issue>-<slug>`, and `publish_commits` refuses any other name. It publishes
 the commits made locally, never file contents: the harness reads them with read-only git and
 writes them through GitHub's Git Data API with the bot's token, which Felix never hands to git or
-to the shell tool. That is not isolation: the shell tool runs as the API's user in the same
-container, so code Felix runs (`make test` imports what it wrote) can read the token from the API
-process's environment. The approval gates what Felix publishes, not what it could reach — see
-`deploy/GOVERNANCE.md`, "Publishing commits". Several local commits land as one. A branch that already exists is fast-forwarded, so when
+to the shell tool. The shell tool does not run beside the token either: on the builder stack it
+execs in the `shell` container (`felix-shell-runner`), which holds no secrets and cannot see the
+API's processes, so code Felix runs (`make test` imports what it wrote) cannot read the token from
+the API's environment. That holds only where `FELIX_SHELL_RUNNER_URL` is set; under `make dev` the
+shell tool is still the API's child and the old caveat applies. The approval gates what Felix
+publishes — see `deploy/GOVERNANCE.md`, "Shell tools" and "Publishing commits". Several local commits land as one. A branch that already exists is fast-forwarded, so when
 the remote has moved the tool says so and Felix fetches, rebases and publishes the new sha — the
 old approval does not cover it, because the sha is the call. Pull requests open as drafts and are flipped to ready only after
 `github__get_pull_request_status` reports CI green. Felix never merges, never approves, and never
@@ -245,7 +247,12 @@ Detection of the failure modes the program forbids, one mechanism each:
 ## Runbook — builder host
 
 The builder is a dedicated checkout on a host that holds no cloud credentials and no Docker socket:
-`make up-self` once `deploy/docker/compose.self.yml` exists. It is **never**
+`make up-self` once `deploy/docker/compose.self.yml` exists. "No cloud credentials" includes the
+instance's own: the `shell` container has outbound internet for `git fetch` and `uv sync`, and the
+cloud metadata address (`169.254.169.254`) is reachable from it, so a builder VM must not carry an
+instance role, service account or metadata-served credential. An egress proxy allowlisting only
+the git and package hosts would remove that dependence; it is not built (`deploy/GOVERNANCE.md`,
+"The shell runner"). It is **never**
 `~/Projects/felix` or any tree a person or another agent works in — two test runs in one tree fake a
 flaky suite. `FELIX_AUTH_MODE=api_key`, because under `none` the approvals API is anonymous too and
 the same caller could approve its own mutation (the `cowork.yaml` comment records why).

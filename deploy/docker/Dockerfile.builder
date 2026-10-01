@@ -8,9 +8,10 @@
 # changed code" two different events.
 #
 # Built FROM the lean image, so `make up-self` builds `felix:latest` first (the Makefile does).
-# Adds only what the gates need on the host the shell tool execs on: git, make, uv. No cloud
-# SDKs, no Docker socket, no credentials — deploy/GOVERNANCE.md "Shell tools" says why the
-# host is the boundary and what it therefore must not hold.
+# Adds only what the gates need where the shell tool execs: git, make, uv. No cloud SDKs, no
+# Docker socket, no credentials. compose.self.yml runs this one image three ways — api, worker
+# and `shell` (`felix-shell-runner`), and only `shell` execs shell tools; deploy/GOVERNANCE.md
+# "Shell tools" says why that container is the boundary and what it therefore must not hold.
 
 ARG BASE_IMAGE=felix:latest
 FROM ghcr.io/astral-sh/uv:0.12@sha256:b485bd65cc2cf1c9a93b3554012c9c3778cf7b1b5fd3d3096ce9e1226c97e1e6 AS uv

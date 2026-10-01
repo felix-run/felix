@@ -79,6 +79,9 @@ EXPECTED_COMMANDS = {
     # The Temporal overlay is the only deploy surface that runs the fourth binary. It has
     # no `felix-api` of its own — it layers onto compose.yml, which supplies the rest.
     "deploy/docker/compose.temporal.yml": ["felix-temporal-worker"],
+    # The builder overlay adds one process the base stack does not run: the shell runner, in a
+    # container of its own. api and worker inherit their commands from compose.yml.
+    "deploy/docker/compose.self.yml": ["felix-shell-runner"],
     # One Deployment per process, so the Service, HPA and PDB can select the api alone.
     "deploy/helm/felix/templates/deployment-api.yaml": ["felix-api"],
     "deploy/helm/felix/templates/deployment-worker.yaml": ["felix-worker"],
@@ -227,6 +230,7 @@ def test_every_console_script_target_resolves() -> None:
         "felix",
         "felix-api",
         "felix-scheduler",
+        "felix-shell-runner",
         "felix-temporal-worker",
         "felix-worker",
     }, f"the workspace's console scripts changed: {sorted(scripts)}"
@@ -258,7 +262,8 @@ def test_every_console_script_target_resolves() -> None:
 def test_every_module_reference_in_an_entrypoint_module_resolves() -> None:
     """The ASGI factory path, the Taskiq broker and scheduler paths, and the module list.
 
-    `felix_api.main` hands Granian the string `"felix_api.main:create_application"`, and
+    `felix_api.main` hands Granian the string `"felix_api.main:create_application"`,
+    `felix.shell_runner` hands it `"felix.shell_runner:create_application"`, and
     `felix_worker.main` hands Taskiq `"felix_worker.tasks:broker"`, `":scheduler"`, and
     `modules=["felix_worker.tasks"]`. Each is a callable or module named in a string in the
     same file that would otherwise have imported it, which is the one form of reference an
@@ -267,7 +272,8 @@ def test_every_module_reference_in_an_entrypoint_module_resolves() -> None:
     modules = _entrypoint_modules()
     # Exact, like the console-script set: a floor at the current value cannot see one module
     # disappearing while another arrives.
-    assert len(modules) == 3, f"expected a source file per console-script module, found {modules}"
+    # `felix.shell_runner` is the fourth: its own Granian factory string, the runner's.
+    assert len(modules) == 4, f"expected a source file per console-script module, found {modules}"
 
     targets = 0
     for module_path in modules:
@@ -280,8 +286,8 @@ def test_every_module_reference_in_an_entrypoint_module_resolves() -> None:
             except ImportError as exc:  # pragma: no cover - the message is the point
                 pytest.fail(f"{module_path.name} names module {name!r}, which does not import ({exc})")
             targets += 1
-    assert targets == 4, (
-        "expected exactly the factory, broker, scheduler and module paths; resolved "
+    assert targets == 5, (
+        "expected exactly the two factories, broker, scheduler and module paths; resolved "
         f"{targets} — a reference was added or lost"
     )
 
@@ -360,6 +366,22 @@ def test_the_api_boots_with_the_arguments_production_passes() -> None:
     assert app.state.settings.database_url.startswith("memory://"), (
         f"create_app() did not resolve settings from the environment: {app.state.settings.database_url}"
     )
+
+
+def test_the_shell_runner_boots_with_the_arguments_production_passes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`felix.shell_runner:create_application`, called as Granian calls it — with nothing.
+
+    Every runner test builds the app with `settings=`; this is the branch that reads them
+    from the environment, as the `shell` container does.
+    """
+    from felix.config import get_settings
+    from felix.shell_runner import create_application
+
+    monkeypatch.setenv("FELIX_SHELL_RUNNER_TOKEN", "entrypoint-wiring-" + "0" * 24)
+    get_settings.cache_clear()
+    app = create_application()
+    paths = {getattr(route, "path", "") for route in app.routes}
+    assert {"/health", "/run"} <= paths, sorted(paths)
 
 
 @pytest.mark.parametrize(

@@ -35,6 +35,7 @@ EXEMPT = {
     "session/strategies.py:render": "a stable sort over seq-ordered events: ties keep seq order",
     "skills/suggest.py:_rank": "ends on the skill's position in the catalogue, unique per skill",
     "tools/decider_retrieval.py:shortlist": "ends on the tool's position in the offered list, unique per tool",
+    "tools/workspace.py:_list_dir": "ends on the entry's exact name, unique within one directory",
 }
 
 # Sites that may tie and matter — debt from `docs/ROADMAP.md`, "More listings whose two arms can

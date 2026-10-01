@@ -9,6 +9,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **On the Compose builder stack, shell tools no longer run beside the API's secrets.** A shell
+  tool's command ran as a child of the API, as the API's user, so code the agent wrote and ran
+  through an allowlisted `make test` could read `/proc/<api pid>/environ` — `GITHUB_MCP_TOKEN`,
+  model keys, database and Valkey credentials. `FELIX_SHELL_RUNNER_URL` and
+  `FELIX_SHELL_RUNNER_TOKEN` now send each call to `felix-shell-runner`, a new console script,
+  after the API's own checks. The runner requires the bearer, re-checks argv and `cwd` against its
+  own allowlist and workspace, and execs through the same code as the local path. A runner that
+  is down, errors or hangs fails the call; nothing falls back to a local exec. `compose.self.yml`
+  runs it as a `shell` service that mounts only the workspace volume, holds no secret, and sits on
+  a network without Postgres, Valkey or MinIO. That service now owns the workspace clone, fetch
+  and venv sync, so api and worker run no git against the agent-writable checkout. It runs as the
+  same uid as the API; the container provides the isolation. `make up-self` generates the token
+  into `.env`, and api and worker no longer take the builder's 3 GiB memory limit, which moved to
+  `shell` with the test suite. With the URL unset (`make dev`, the base stack, Helm) shell tools
+  exec locally as before, and `deploy/GOVERNANCE.md` "Shell tools" says what that still exposes.
+- **The workspace file tools no longer follow a symlink anywhere in a path.** With shell tools in
+  another container, code there can keep swapping a workspace directory for a link to
+  `/proc/self` or `/data`; the tools checked a path and then opened it by name, so a swap between
+  the two had the API read its own `environ` — in pieces, through `offset`/`limit`. `read_file`,
+  `write_file`, `edit_file`, `list_dir`, `search_files`, context-file loading and the shell tool's
+  `cwd` check now walk each path by descriptor with `O_NOFOLLOW` and refuse a symlink component
+  with the usual path-refusal error; `list_dir` shows a link as `symlink`, and `search_files`
+  neither descends into nor reads through one. The builder overlay now publishes no host port
+  for Postgres, Valkey or MinIO (Docker Desktop's `host.docker.internal` reached them from
+  `shell`), caps `shell` at 512 processes, and documents that a builder host must hold no cloud
+  instance credentials, since `shell` can reach the metadata address. The API's call to the runner
+  is bounded end to end, so a runner trickling bytes fails closed at `timeout_ms` plus 30 seconds,
+  and an out-of-range `exit_code` or `duration_ms` in its answer is a malformed result.
+- **A workspace the agent's code writes can no longer make a file tool exhaust the API.**
+  `read_file` reads only its `offset`/`limit` window (at most 512 KB) off the event loop, where it
+  read the whole file and sliced it — a sparse 50 GiB file was a 50 GiB allocation. A local context
+  file over 256 KB is ignored with a warning instead of read whole into every agent build.
+  `search_files` walks with an explicit stack at most 64 directories deep, and it and `list_dir`
+  read at most 10,000 entries of one directory. `edit_file`'s temporary file has a random, short
+  name, so a directory planted at the old predictable name no longer blocks edits and a leaf near
+  255 bytes can be edited. `FELIX_WORKSPACE_ROOT` may not itself be a symlink; it is opened with
+  `O_NOFOLLOW`.
 - **A user turn beginning with `[quarantined]` skipped the model and decider screeners.** The
   check meant "screening already replaced this text" and was written as a test of the text's
   prefix, which the caller controls — so typing that prefix left a turn to the marker scan

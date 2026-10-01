@@ -379,6 +379,9 @@ jobs:
           # one, so it demands a tag. Any non-empty value satisfies an interpolation
           # check -- this step parses the file, it does not pull anything.
           FELIX_IMAGE_TAG: ci-compose-check
+          # The builder overlay refuses to start its shell runner without a bearer; `make
+          # up-self` generates one into .env. Any non-empty value satisfies the parse.
+          FELIX_SHELL_RUNNER_TOKEN: ci-compose-check-not-a-secret
       # Layers are cached across runs in the Actions cache: the Dockerfile puts the dependency
       # install and the psycopg compile ahead of the sources, so a commit that changes only
       # Felix rebuilds only Felix. APT_REFRESH keys the runtime `apt-get upgrade` layer to the

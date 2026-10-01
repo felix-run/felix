@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,12 @@ CONTEXT_FILENAMES = ("AGENTS.md", "AGENTS.override.md", "CLAUDE.md")
 # Discovery order for the AGENTS layer — override wins, which is not the order
 # CONTEXT_FILENAMES happens to be written in.
 _AGENTS_MD_PRECEDENCE = ("AGENTS.override.md", "AGENTS.md", "CLAUDE.md")
+
+# A local context file is read on every agent build, from a directory the agent's own code can
+# write, and all of it goes into the system prompt. 256 KB is where `search_files` stops reading
+# a file, and far past any instruction file worth sending a model every turn. A file over it is
+# ignored with a warning rather than cut short: half an instruction file is a different one.
+MAX_CONTEXT_FILE_BYTES = 256_000
 
 
 async def _get_text(store: Any | None, key: str) -> str | None:
@@ -39,22 +46,36 @@ def _read_local(root: Path, key: str) -> str | None:
 
     This took a prebuilt `root / key`, which is not containment: `Path("/srv/ws") /
     "/etc/passwd"` is `/etc/passwd`, and `../` was never normalised. The keys are
-    manifest-supplied strings, so the workspace tools' own resolver is the right
-    gate — same rule, one implementation.
+    manifest-supplied strings, so the workspace tools' own walk is the right gate — same
+    rule, one implementation, and the same refusal of a symlink at any component, since the
+    workspace is writable by the code the agent runs.
     """
-    from felix.tools.workspace import resolve_under_root
+    from felix.tools.workspace import open_regular, open_workspace_parent
 
     try:
-        path = resolve_under_root(root, key)
+        with open_workspace_parent(root, key) as (parent, leaf, rel):
+            if leaf is None:
+                return None
+            fd = open_regular(parent, leaf, os.O_RDONLY, rel)
+            with os.fdopen(fd, "rb") as fh:
+                # The fstat refuses without reading; the bounded read, one byte past the cap,
+                # refuses a file that grew after it.
+                too_big = os.fstat(fd).st_size > MAX_CONTEXT_FILE_BYTES
+                data = b"" if too_big else fh.read(MAX_CONTEXT_FILE_BYTES + 1)
     except ValueError:
-        logger.warning("context file key %r escapes the workspace root; ignored", key)
+        logger.warning("context file key %r escapes the workspace root or is not a file; ignored", key)
+        return None
+    except OSError:
+        logger.debug("local context file read failed for %s", key, exc_info=True)
+        return None
+    if too_big or len(data) > MAX_CONTEXT_FILE_BYTES:
+        logger.warning("context file %s exceeds %d bytes; ignored", key, MAX_CONTEXT_FILE_BYTES)
         return None
     try:
-        if path.is_file():
-            return path.read_text(encoding="utf-8")
-    except OSError:
-        logger.debug("local context file read failed for %s", path, exc_info=True)
-    return None
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        logger.warning("context file %s is not valid utf-8; ignored", key)
+        return None
 
 
 def _tenant_key(tenant_id: str, key: str) -> str:

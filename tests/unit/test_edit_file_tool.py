@@ -244,7 +244,7 @@ async def test_an_edited_file_keeps_its_mode(ws: Path) -> None:
 
     assert stat.S_IMODE(script.stat().st_mode) == 0o755
     assert script.read_text(encoding="utf-8") == "#!/bin/sh\nnew\n"
-    assert not list(ws.glob(".*.felix-edit")), "the temp file does not outlive the rename"
+    assert [p.name for p in ws.iterdir()] == ["run.sh"], "the temp file does not outlive the rename"
 
 
 def test_the_read_and_the_write_are_both_inside_the_lock() -> None:
@@ -283,17 +283,15 @@ async def test_a_write_that_fails_leaves_the_original_where_it_was(
     a whole-file write, the edit's arguments do not carry the pre-image to retry from."""
     target = ws / "a.txt"
     target.write_text("original\n", encoding="utf-8")
-    real_write = Path.write_bytes
 
-    def full_disk(self: Path, data: bytes) -> int:
-        if self.name.endswith(".felix-edit"):
-            raise OSError(28, "No space left on device")
-        return real_write(self, data)
+    def full_disk(fd: int, payload: bytes) -> None:
+        # The edit's only write is the temporary sibling; the original is renamed over, never written.
+        raise OSError(28, "No space left on device")
 
-    monkeypatch.setattr(Path, "write_bytes", full_disk)
+    monkeypatch.setattr(workspace, "_write_all", full_disk)
 
     out = await _edit(ws, path="a.txt", old_string="original", new_string="edited")
 
     assert "No space left on device" in out
     assert target.read_text(encoding="utf-8") == "original\n"
-    assert not list(ws.glob(".*.felix-edit"))
+    assert [p.name for p in ws.iterdir()] == ["a.txt"], "the temp file is removed on failure"

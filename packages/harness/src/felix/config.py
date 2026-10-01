@@ -14,6 +14,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger("felix.config")
 
+# Shared by `validate_runtime` (the API side) and `felix-shell-runner` (which refuses to start
+# with less), so the two ends of one credential cannot disagree about what is long enough.
+MIN_SHELL_RUNNER_TOKEN_CHARS = 32
+
 
 def _is_loopback_host(host: str) -> bool:
     """True when binding ``host`` cannot be reached from off-host.
@@ -129,6 +133,18 @@ class Settings(BaseSettings):
     # `uv run ruff,./scripts/test.sh,git status`). Empty (default) disables shell tools —
     # a manifest's prefixes must each be covered by one listed here.
     shell_allowed_commands: str = ""
+    # Where `spec.shell_tools` exec. Empty (default): a child of this process, as this
+    # process's user — which can read this process's environment through /proc. Set: every
+    # check still runs here, and the argv is sent to `felix-shell-runner` at this URL (on the
+    # builder stack, `http://shell:8080`, a container holding no secrets). An unreachable
+    # runner fails the call; there is no fallback to a local exec. Operator config only — no
+    # manifest or model value can name this destination.
+    # Out of repr like every URL here: one can carry userinfo.
+    shell_runner_url: str = Field(default="", repr=False)
+    # Bearer the API presents to the runner, and the runner requires. Required when the URL
+    # is set. It authenticates callers *to* the runner; code running inside the runner's
+    # container can read it, which grants nothing it does not already have.
+    shell_runner_token: str = Field(default="", repr=False)
 
     # --- data plane (cloud-agnostic; AWS + GCP first) ---
     database_url: str = Field(default="postgresql+psycopg://felix:felix@localhost:5432/felix", repr=False)
@@ -707,6 +723,20 @@ class Settings(BaseSettings):
             except ValueError as exc:
                 raise RuntimeError(f"{label} is not a usable tenant id: {exc}") from exc
 
+    def _validate_shell_runner(self) -> None:
+        """A runner URL without a token would be an unauthenticated exec endpoint's client."""
+        url = self.shell_runner_url.strip()
+        if not url:
+            return
+        if not url.startswith(("http://", "https://")):
+            raise RuntimeError(f"FELIX_SHELL_RUNNER_URL must be an http(s) URL, got {url!r}.")
+        if len(self.shell_runner_token.strip()) < MIN_SHELL_RUNNER_TOKEN_CHARS:
+            raise RuntimeError(
+                "FELIX_SHELL_RUNNER_URL is set, so FELIX_SHELL_RUNNER_TOKEN is required "
+                f"(at least {MIN_SHELL_RUNNER_TOKEN_CHARS} characters; openssl rand -hex 32). "
+                "scripts/shell-runner-token.sh writes one into .env."
+            )
+
     def validate_runtime(self) -> None:
         """Fail fast on unsafe or incomplete configuration."""
         self._validate_registry_backed_settings()
@@ -737,6 +767,7 @@ class Settings(BaseSettings):
                 "ones included — anonymously on an authenticated deployment"
             )
 
+        self._validate_shell_runner()
         self._validate_configured_tenant_ids()
         self._validate_jwt_tenant_posture()
         if self.scale_out:

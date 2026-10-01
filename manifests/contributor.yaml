@@ -4,15 +4,17 @@
 # skills, `publish_commits` to publish its local commits as a branch, and GitHub over MCP for the
 # pull request and the issue.
 #
-# Requires, on the process running the API (deploy/docker/compose.self.yml sets all three):
+# Requires, on the process running the API (deploy/docker/compose.self.yml sets all of them):
 #   FELIX_WORKSPACE_ROOT=/workspace         # the clone this agent edits and runs the gates in
 #   FELIX_SHELL_ALLOWED_COMMANDS=...        # must cover every prefix under shell_tools below
+#   FELIX_SHELL_RUNNER_URL / _TOKEN         # where the shell tool execs: the `shell` container
 #   GITHUB_MCP_TOKEN=<fine-grained PAT>     # Contents:write + Pull requests:write + Issues:write
 #                                           # read by the API process only: github_publish and MCP
 #
-# The host those run on is the shell tool's boundary — deploy/GOVERNANCE.md "Shell tools" says
-# what it must not hold. That is why the builder container exists; do not point this at a
-# checkout a person works in.
+# Wherever the shell tool execs is its boundary — deploy/GOVERNANCE.md "Shell tools" says what
+# that place must not hold. On the builder stack it is the `shell` container, which holds no
+# secrets; without FELIX_SHELL_RUNNER_URL it is the API's own container. Either way, do not
+# point this at a checkout a person works in.
 #
 # Validate (the write check needs the operator allowlist, as a deployment would):
 #   FELIX_SHELL_ALLOWED_COMMANDS="uv run ruff,uv run ty,./scripts/test.sh,make lint,make type,make test,make schema,uv run felix validate-manifest,git status,git diff,git log,git fetch,git switch,git restore,git stash,git add,git commit,git branch" \
@@ -125,7 +127,8 @@ spec:
     - name: felix-self
 
   # The governed shell: argv prefixes, no interpreter, execs in FELIX_WORKSPACE_ROOT with a
-  # five-variable environment, killed as a process group at the timeout. Every prefix here must
+  # five-variable environment, killed as a process group at the timeout — on the builder stack
+  # in the `shell` container, which re-checks every argv against its own allowlist. Every prefix here must
   # be covered by FELIX_SHELL_ALLOWED_COMMANDS or the manifest is refused at write — the
   # operator bounds, the manifest narrows. The list is the gates plus the git verbs that stay
   # inside the checkout: no push, no remote, no config, no gh, no bare python. Publishing goes
@@ -209,9 +212,9 @@ spec:
   # Commits leave the machine through publish_commits and nothing else. The harness reads the
   # commits named by head_sha from the workspace with read-only git and writes them through
   # GitHub's Git Data API with the token above. Felix never passes that token to git or to the
-  # shell tool's environment — but on the single-container builder the shell runs as the API's
-  # user, so code the agent runs can read it from the API's /proc/<pid>/environ. The approval
-  # gates what Felix publishes; it does not keep the token from the workspace (GOVERNANCE.md).
+  # shell tool's environment, and on the builder stack the shell tool execs in the `shell`
+  # container, which does not hold it and cannot read the API's /proc/<pid>/environ. Run with
+  # FELIX_SHELL_RUNNER_URL unset, the shell is the API's child and could (GOVERNANCE.md).
   # Whole-file writes over MCP (push_files, create_or_update_file) are not bound: they carried
   # every changed file as a tool argument, 196 KiB for one CHANGELOG line (#307).
   github_publish:

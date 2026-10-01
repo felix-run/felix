@@ -434,14 +434,15 @@ manifest author's:
 
 ## Shell tools
 
-`spec.shell_tools` execs an argv on the host the API runs on, in the `FELIX_WORKSPACE_ROOT`
-checkout. There is no shell interpreter: `&&`, `|` and `;` are literal arguments. The
+`spec.shell_tools` execs an argv in the `FELIX_WORKSPACE_ROOT` checkout — as a child of the API
+process by default, or in a separate `felix-shell-runner` when `FELIX_SHELL_RUNNER_URL` is set
+(below). There is no shell interpreter: `&&`, `|` and `;` are literal arguments. The
 manifest's `commands` are argv prefixes (`git status` covers `git status --short`, not
 `git push` and not `git -c … status`), and every one must be covered by a prefix in
 `FELIX_SHELL_ALLOWED_COMMANDS` — checked at manifest write, at compile, and per call.
 Empty, the default, refuses every shell tool. The child inherits only `PATH`, `HOME`, `LANG`,
-`LC_ALL`, `TZ`; `cwd` resolves under the workspace root; the run is killed at `timeout_ms`;
-output is capped and marked truncated.
+`LC_ALL`, `TZ`; `cwd` resolves under the workspace root with no symlink at any component; the
+run is killed at `timeout_ms`; output is capped and marked truncated.
 
 The run is a process group of its own: at `timeout_ms`, past `MAX_TOTAL_OUTPUT_BYTES`, or
 when the calling request is cancelled, the whole group is killed — the pytest a test script
@@ -456,11 +457,11 @@ approvals that would gate the tool are anonymous too when the caller is.
 What the allowlist cannot bound, and a deployment that binds a shell tool must hold true on its
 own:
 
-- **A listed command runs repository code as the API's user.** `./scripts/test.sh` imports
-  whatever the agent wrote; `uv run ruff` reads the workspace's `pyproject.toml`. The uid is the
+- **A listed command runs repository code.** `./scripts/test.sh` imports whatever the agent
+  wrote; `uv run ruff` reads the workspace's `pyproject.toml`. Wherever the command execs is the
   boundary — not `HOME`, which only decides which config files a tool reads silently
-  (`~/.gitconfig` credential helpers, `~/.netrc`, `~/.config/gh`). The host holds no cloud
-  credentials, no Docker socket, and no credentials in that user's home.
+  (`~/.gitconfig` credential helpers, `~/.netrc`, `~/.config/gh`). That place holds no cloud
+  credentials, no Docker socket, and no credentials in its user's home.
 - **A relative `argv[0]` resolves against the `cwd` the model chose.** The prefix pins a
   string, not a file. `write_file` and `edit_file` can replace `scripts/test.sh` before `run` execs it.
 - **Choose commands with no argument-driven code execution and no network.** `git status`
@@ -472,13 +473,96 @@ own:
   — `uv` resolves an index the workspace names. And secret confinement covers what Felix
   masks, not a file in the checkout — the workspace holds no `.env` and no deployment secret,
   because an allowlisted `git diff` or a failing test can print one into the transcript.
-- **The child can read the API's own environment.** It inherits only the five variables above,
-  but it runs as the API's user, so it may read `/proc/<api pid>/environ` — every secret the
-  `env` backend resolves from there, the GitHub token included. Withholding a variable from the
-  child is not withholding it from code the child runs. Only a separate user or a separate
-  container with no secrets in it closes this, and the bundled deployments do neither.
+- **Run locally, the child can read the API's own environment.** With `FELIX_SHELL_RUNNER_URL`
+  unset — `make dev`, a plain `make up`, any deployment that does not set it — the child inherits
+  only the five variables above, but it runs as the API's user in the API's PID namespace, so it
+  may read `/proc/<api pid>/environ`: every secret the `env` backend resolves from there, the
+  GitHub token included. Withholding a variable from the child is not withholding it from code
+  the child runs. The shell runner below is what closes this; nothing else does.
 - **One tenant per process.** `FELIX_WORKSPACE_ROOT` is process-global; every tenant's shell
   tool reads and writes the same tree. A multi-tenant deployment does not bind one.
+
+### The shell runner
+
+Set `FELIX_SHELL_RUNNER_URL` (with `FELIX_SHELL_RUNNER_TOKEN`, 32+ characters; `validate_runtime`
+refuses the URL without it) and the API stops execing. It still makes every check above — the
+manifest prefix, the operator prefix, `cwd` confinement, argument bounds, and the governance
+stack's command screening, which wraps the tool and so runs before the executor is reached —
+and then sends `{argv, cwd, timeout_ms, stdin}` to `POST /run` on `felix-shell-runner` with the
+token as a bearer. The runner compares the token in constant time before reading the body,
+checks the argv against **its own** `FELIX_SHELL_ALLOWED_COMMANDS` and the `cwd` against **its
+own** `FELIX_WORKSPACE_ROOT`, and execs through the same code the local path uses (scrubbed
+environment, process-group kill at the deadline, past the output budget and when the API's
+request goes away, bounded tail). The result reaches the model in the same shape as a local run.
+
+**It fails closed.** A runner that is unreachable, answers an error or a malformed result,
+redirects, or has not finished answering within `timeout_ms` plus 30 seconds fails the call with
+a `transport_unavailable` tool error that says the command did not run. That deadline bounds the
+whole exchange — connect, headers and body — so a runner that trickles a byte at a time cannot
+hold the call open past it. A result whose `exit_code` is outside -255..255 or whose
+`duration_ms` is negative or longer than any timeout allows is malformed. Nothing falls back to a
+local exec. The error names neither the URL nor the token.
+
+The URL is the one internal destination the egress guard does not cover — it would refuse a
+private Compose hostname, which is its job. It is exempt because it comes from `Settings` alone:
+no manifest field and no model argument can name it. The API's client follows no redirects and
+reads no proxy from the environment, and the API reads at most 2 MiB of a runner's answer and
+validates its fields, so a runner the workspace code has replaced can lie about a command's
+output — which that code could already do — and nothing more.
+
+**On the Compose builder stack** (`compose.self.yml`) the runner is the `shell` service: the
+builder image running `felix-shell-runner`, mounting only the workspace volume, with an
+environment of the allowlist, the workspace root, the token and the repository to clone — no
+`GITHUB_MCP_TOKEN`, no model key, no database or Valkey URL, no API keys. It is on a network
+of its own that the api and worker join and Postgres, Valkey and MinIO do not, so code in the
+workspace cannot reach the unauthenticated Valkey a Taskiq message would be enqueued on. It
+drops every capability, sets `no-new-privileges`, and may run at most 512 processes
+(`pids_limit`), so a fork bomb in the workspace stops in that container. The overlay also
+resets the host ports the base file publishes for Postgres, Valkey and MinIO: on Docker Desktop
+`host.docker.internal` reaches the host's loopback, which would otherwise hand `shell` the Valkey
+its own network keeps it from. It owns the workspace too: the clone, the
+fetch and the venv sync run in that container, and api and worker skip them
+(`FELIX_SELF_PREPARE_WORKSPACE=0`), because `git fetch` runs hooks the agent can write.
+
+What is true there now, and what is not:
+
+- Code the agent runs through an allowlisted command cannot read the API's or the worker's
+  environment. Their processes are not in its PID namespace, and the container it runs in was
+  started with nothing in its environment worth taking.
+- **It runs as the same uid** (`felix`, 10001) as api and worker. Separation comes from the
+  container — PID namespace, environment, mounts, network — not the uid. Both sides must write
+  the shared workspace (the API's `write_file` and `edit_file`; the runner's `git commit` and
+  venv), and a second uid would need group-writable files under a shared umask plus git's
+  `safe.directory` on both sides, where `publish_commits` deliberately ignores system and global
+  git config. A second uid would protect nothing the container does not: the only surface both
+  share is the workspace, which both may write by design.
+- The token is readable by the code the runner execs (`/proc/<runner pid>/environ` is in its
+  namespace). It stops other containers calling `/run`; it grants that code nothing new.
+- The workspace is still shared, and code in `shell` can change it while the API is using it —
+  from a process that outlives the tool call. Anything the API does *with* the checkout must
+  treat it as agent-written. `read_file`, `write_file`, `edit_file`, `list_dir`, `search_files`,
+  context-file loading (`AGENTS.md`, `system_prompt.files`) and the shell tool's `cwd` check
+  never open a workspace path by name: they walk it from a descriptor of the root, one
+  component at a time with `O_NOFOLLOW`, and refuse a symlink at any component, pointing out of
+  the workspace or back into it. A directory swapped for a link to `/proc/self` or `/data`
+  between a check and an open is therefore refused, not followed into the API's own
+  `environ`. `list_dir` reports a link as `symlink`; `search_files` does not descend into or read
+  through one. A hard link cannot stand in for one: the workspace is its own volume, and a hard
+  link cannot cross filesystems. `publish_commits` reads the checkout with hooks, fsmonitor,
+  external diff and textconv switched off; the git it runs still opens paths under `.git` by name
+  and follows symlinks there, and reads only what parses as a git object. Code the agent writes
+  is never executed in the API's container.
+- The runner has internet egress (`git fetch`, `uv sync`), as the API's container did. That
+  includes the cloud metadata address (`169.254.169.254`): **a builder host must carry no cloud
+  instance role, service account or metadata credentials**, or the workspace's code can fetch
+  them. An egress proxy that allowlists the git and package hosts would close this; it is not
+  built. On Docker Desktop, any other service listening on the host's loopback is reachable from
+  `shell` through `host.docker.internal` — only the stack's own stores are unpublished.
+
+With `FELIX_SHELL_RUNNER_URL` unset — `make dev`, the base `make up`, the Helm chart, any
+deployment that does not run a runner — the local-exec caveat above still applies in full. The
+Helm chart deploys no shell tools and no builder: it sets no `FELIX_SHELL_ALLOWED_COMMANDS` and
+mounts no workspace, so it has no runner to add.
 
 ## Publishing commits
 
@@ -511,15 +595,17 @@ A preview that raises or takes longer than 60 seconds refuses the call with
 commit when the preview runs — and is one by the time the person answers — would put an
 approval on content nobody was shown.
 
-**What this does not protect: the token from the workspace.** Felix never passes the token to a
-git process or into the shell tool's environment. But on the single-container builder deployment
-(`compose.self.yml`) the shell tool's children run in the API's container *as the API's user*, so
-code the agent writes and runs through an allowlisted command — `make test` imports it — can read
-`/proc/<api pid>/environ`, where the `env` secrets backend found `GITHUB_MCP_TOKEN`. That was true
-of the MCP token before `publish_commits` existed and is not changed by it. The approval gates what
-*Felix* publishes; code holding the token can use it directly, within the PAT's permissions and the
-branch protections in `docs/SELF.md`. Closing it means running the shell as a separate user, or in
-a separate container with no secrets in its environment; neither is done yet.
+**The token and the workspace.** Felix never passes the token to a git process or into the shell
+tool's environment. On the Compose builder stack (`compose.self.yml`) shell tools exec in the
+`shell` container, which does not hold `GITHUB_MCP_TOKEN` and cannot see the API's processes, so
+code the agent writes and runs through an allowlisted command — `make test` imports it — has no
+way to read the token out of `/proc/<api pid>/environ`, nor to make the API's own file tools
+read it through a symlink in the workspace; see "The shell runner" above for exactly what that
+container holds and shares. Where shell tools exec locally (`FELIX_SHELL_RUNNER_URL`
+unset) that code still runs as the API's user and can read the token there, as it could the MCP
+token before `publish_commits` existed. In both cases the approval gates what *Felix* publishes;
+whoever holds the token can use it directly, within the PAT's permissions and the branch
+protections in `docs/SELF.md`.
 
 The preview on the row is `git diff --stat` and the unified diff between that parent and
 `head_sha`, the diff capped at 32 KiB with a note saying so (the `--stat` is never cut). One
