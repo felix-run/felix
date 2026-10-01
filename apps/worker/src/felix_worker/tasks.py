@@ -216,11 +216,19 @@ async def run_scheduled_jobs() -> None:
 @broker.task(schedule=[{"cron": "*/15 * * * *"}])
 @_instrumented("consolidate_memory")
 async def consolidate_memory() -> None:
-    """Exact content-hash dedupe of active memory facts (not LLM merge)."""
-    from felix.memory.consolidation import consolidate_pools
+    """Exact content-hash dedupe, then model-judged duplicate merging where a manifest opts in.
+
+    The second pass reads `spec.memory.consolidate` per (tenant, manifest) pool and supersedes
+    agent-written facts the consolidation model groups as saying the same thing; see
+    `felix.memory.consolidation`. Its own failures are counted per pool, never raised, so one
+    tenant's broken route cannot stop another's pass.
+    """
+    from felix.memory.consolidation import consolidate_all_pools, consolidate_pools
 
     n = await consolidate_pools(_settings)
     logger.info("memory_consolidate superseded=%s", n)
+    merged = await consolidate_all_pools(_settings)
+    logger.info("memory_consolidate_merge %s", merged)
 
 
 @broker.task(schedule=[{"cron": "0 3 * * *"}])

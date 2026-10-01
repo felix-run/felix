@@ -723,9 +723,18 @@ comment explaining exactly that. It is conditional, not inert.
       anonymous callers; `quick` stays stateless. `tests/e2e/test_assistant_manifest.py` carries a
       fact from one session into the next. The meta filter now catches 13 of 13 on
       `tests/unit/test_memory_meta_filter.py`'s corpus (was 3), refusing none of the 8 user facts.
-- [ ] **Memory consolidation** — `consolidation.py` is 14 lines against `extraction.py`'s 340, so
-      the store only grows. With `assistant` capturing on every long turn, that is now a
-      default-path growth rather than an opt-in one.
+- [x] **Memory consolidation** — decided: merge duplicates only. `spec.memory.consolidate`
+      now drives a model pass in the `consolidate_memory` cron after the exact-hash dedupe:
+      per (tenant, manifest) pool, resolved like a request, the model names groups of
+      agent-written facts that say the same thing (ids only), and `memory/store.py:merge_duplicates`
+      supersedes each duplicate by an existing fact, refusing operator rows, mixed kinds and two
+      different `topic_key`s on both arms. No summarising or rewriting — a fact is never
+      authored by consolidation. Still open: each enabled pool above `after_facts` pays one
+      model call per 15-minute tick even when nothing changed since the last pass; a "pool
+      unchanged since last pass" skip needs somewhere to persist the fingerprint. As written: —
+      `consolidation.py` is 14 lines against `extraction.py`'s 340, so the store only grows.
+      With `assistant` capturing on every long turn, that is now a default-path growth rather
+      than an opt-in one.
 - [x] **Who may retire a memory by naming its `topic_key`** — decided: the operator only.
       `memory/store.py:_may_retire_by_topic` requires rank above `_DEFAULT_TRUST` for the
       topic sweep on both arms; agent writes are stored alongside, and the facts prelude shows
@@ -1335,8 +1344,8 @@ cycle's, and the route contracts below are the next capability-adjacent step.
 ---
 ## Later / explicit non-goals
 
-- [!] **`memory.consolidate` LLM merge** — worker already hash-dedupes.
-      `enabled` / `model` / `after_facts` stay unused on purpose (v1).
+- [x] **`memory.consolidate` LLM merge** — shipped as duplicate merging only (see "Memory
+      consolidation" above); summarising facts into new text remains a non-goal.
 - [x] **`memory.checkpointer` aliases** — resolved by implementing the field
       rather than deleting it. `postgres` / `none` are built in and the registry is
       open (`register_checkpointer`), so `agentcore` can be a plugin. `do` names

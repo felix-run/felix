@@ -165,6 +165,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`spec.memory.consolidate` merges duplicate memories.** The block was declared and read by
+  nothing; the worker only ran an exact-hash dedupe. With `enabled: true`, the
+  `consolidate_memory` cron (every 15 minutes) shows the `consolidate.model` route the newest
+  `max_facts` agent-written facts of each pool holding more than `after_facts`, fenced as
+  untrusted data, and asks which say the same thing. The model returns ids only: each duplicate
+  is superseded by an existing fact (`superseded_seq` at the duplicate's own turn,
+  `retired_by: consolidation`), and no memory text is written. Operator-written facts are never
+  shown or retired, facts of different kinds or `topic_key`s are never merged, and an answer
+  naming an id it was not shown, an id twice, or malformed JSON applies nothing for that group
+  (or at all), counted in `felix_memory_consolidation_rejected`. The call is metered to the
+  pool's tenant and manifest. A merged duplicate an agent restates comes back, as any agent
+  retirement does.
+
 - **`content_screening.image_model`: screen the text inside user images.** Inbound screening
   read only a turn's text blocks, so an image of the words "ignore previous instructions" went
   past every screener, and a turn with no text at all was never screened. With a vision model

@@ -601,6 +601,17 @@ class MemoryCapture(_Strict):
 
 
 class MemoryConsolidate(_Strict):
+    """Periodic merging of agent-written facts that say the same thing.
+
+    When ``enabled``, the worker's ``consolidate_memory`` cron (every 15 minutes) shows the
+    ``model`` route the newest ``max_facts`` active, agent-written facts of this manifest's
+    pool — once more than ``after_facts`` of them exist — and asks which state the same
+    thing. The model answers with ids only: each duplicate is superseded by an existing fact
+    it repeats, and no memory text is written. Operator-written facts (``/memory``) are
+    never shown and never retired; facts of different ``kind`` or under two different
+    ``topic_key`` values are never merged. The call is metered to the tenant and manifest.
+    """
+
     enabled: bool = False
     # Same reasoning as MemoryCapture.model above, which this was the missed sibling of:
     # `llama-3-fast` routes to Ollama, so a deployment holding only an Anthropic key would

@@ -235,8 +235,6 @@ async def test_anomaly_disabled_manifest_is_skipped(monkeypatch: pytest.MonkeyPa
 # it changes nothing. Left in place only because deciding wire-or-remove is a separate call
 # per field — but the set may not grow, and shrinking it is the point.
 KNOWN_INERT_FIELDS = {
-    "after_facts",  # MemoryConsolidate
-    "consolidate",  # MemorySpec
     "min_rate",  # AnomalySpec
     "precount",  # Limits
 }

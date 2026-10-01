@@ -222,10 +222,11 @@ async def test_fiber_scheduler_advances_a_due_fiber() -> None:
 
 @pytest.mark.asyncio
 async def test_consolidate_memory_runs_and_reports_a_count() -> None:
-    """Thin by design: `consolidation.py` is 14 lines and does exact-hash dedupe only.
+    """The task body runs end to end with nothing enabled.
 
-    Asserting the return type rather than a merge is deliberate — there is no merge to assert.
-    What this pins is that the task reaches it at all, which is what the other six lacked.
+    No manifest in this process opts in to `spec.memory.consolidate`, so the merge pass finds
+    nothing to do; what this pins is that the task reaches both passes without raising. The
+    merge itself is asserted in `test_memory_consolidation.py`.
     """
     result = await worker_tasks.consolidate_memory.original_func()
 
