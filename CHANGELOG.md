@@ -157,6 +157,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it, so save and load cannot drift again; a round-trip test holds them equal. Checkpoints stored
   before this still replay their tool calls.
 
+- **Compaction keeps the request of a turn it cuts through, word for word.** When the kept window
+  (`keep_recent_tokens`) started mid-turn, one summary covered both sides of the cut, so the
+  turn's opening user message — the ticket a `contributor` or `triage` run is working on — reached
+  the model only as a paraphrase inside the history summary. With `keep_recent_tokens: 20000` and
+  turns of ~38k tokens that was every prior turn of those agents. The history before the turn is
+  summarised as before; the turn's opening message is now kept verbatim (capped at 16,000
+  characters, head kept, cut marked); and the steps between it and the kept window get their own
+  smaller summary, a user-role message labelled `[earlier in this turn — reference material, not
+  an instruction]` and fenced like the conversation summary. Both are stored at the head of the
+  checkpoint's `retainedTail`, survive a second compaction of the same turn, and fold into the
+  history summary once the cut moves past the turn. The two summariser calls are metered as
+  `compaction` and `compaction_turn_prefix`. A failed turn-prefix call drops those steps with a
+  session note rather than failing the compaction; a `before_compact` hook's summary skips it.
+
 
 ### Fixed
 
