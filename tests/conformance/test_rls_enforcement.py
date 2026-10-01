@@ -238,3 +238,101 @@ async def test_the_usage_flush_lands_every_tenants_rows_under_the_policy(rls_set
             assert [r["tenant_id"] for r in rows] == [tenant], (tenant, rows)
     finally:
         usage_store.pending_buffer().reset_for_tests()
+
+
+# --- the audit export ------------------------------------------------------------------------
+
+
+async def _seed_audit(settings: Any, tenant: str, count: int) -> None:
+    """Through the store, which binds each event's tenant itself — the production write path."""
+    from felix.audit import store as audit_store
+
+    for i in range(count):
+        audit_store.record_event(settings, tenant, "tool_call", ts=1_700_000_000_000 + i)
+    assert await audit_store.flush_pending(settings) == count
+
+
+async def _export(client: Any) -> list[dict[str, Any]]:
+    import json
+
+    resp = await client.get("/audit/export")
+    assert resp.status_code == 200, resp.text
+    rows = [json.loads(line) for line in resp.text.splitlines()]
+    assert not [r for r in rows if "error" in r], rows
+    return rows
+
+
+async def test_the_audit_export_returns_every_page_under_the_policy(
+    rls_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The production stack, end to end: `create_application()` behind the real middleware.
+
+    Under an enforcing policy a read with no tenant bound is empty, not an error — so an export
+    whose later pages lost the binding would end early as a clean, short file. Five events at a
+    page of two is three reads, two of them while the body streams. The other tenant's rows
+    are in the table too, so a read that escaped the policy would show up as extra rows.
+
+    Four things bind the tenant on this path, and removing any one of them leaves it green:
+    the query's own `WHERE`, the export's per-read `rls_tenant`, the binding
+    `async_run_with_context` makes for the whole request, and the session listener's fallback to
+    the request context. Only removing every binding empties it. That is the claim here — the
+    stack exports under the policy — and the test below pins the export's own guard alone.
+    """
+    from felix.audit import store as audit_store
+    from felix.config import get_settings
+    from felix_api.routes import audit as audit_route
+    from httpx import ASGITransport, AsyncClient
+
+    audit_store.pending_buffer().reset_for_tests()
+    await _seed_audit(rls_settings, "default", 5)
+    await _seed_audit(rls_settings, OTHER, 3)
+
+    monkeypatch.setattr(audit_route, "_EXPORT_PAGE", 2)
+    monkeypatch.setenv("FELIX_DATABASE_URL", str(rls_settings.database_url))
+    monkeypatch.setenv("FELIX_DATABASE_RLS", "true")
+    monkeypatch.setenv("FELIX_AUTH_MODE", "none")
+    monkeypatch.setenv("FELIX_REDIS_URL", "")
+    get_settings.cache_clear()
+    try:
+        from felix_api.main import create_application
+
+        app = create_application()
+        assert app.state.settings.database_rls, "the app must run with the policy on"
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://felix.test") as client:
+            rows = await _export(client)
+    finally:
+        get_settings.cache_clear()
+        audit_store.pending_buffer().reset_for_tests()
+
+    assert len(rows) == 5, f"the export ended early: {len(rows)} of 5"
+    assert {r["tenant_id"] for r in rows} == {"default"}
+
+
+async def test_the_audit_export_binds_the_tenant_on_every_read_itself(
+    rls_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same export with no middleware, so nothing else binds a tenant.
+
+    The middleware's binding covers the streamed body today because it wraps the whole ASGI
+    call. The export does not rely on that: it binds per read, because its later pages are
+    read after the handler has returned. This pins that second guard on its own — without it,
+    every read here is unbound and the export is empty.
+    """
+    from fastapi import FastAPI
+    from felix.audit import store as audit_store
+    from felix_api.routes import audit as audit_route
+    from httpx import ASGITransport, AsyncClient
+
+    audit_store.pending_buffer().reset_for_tests()
+    try:
+        await _seed_audit(rls_settings, "default", 5)
+        monkeypatch.setattr(audit_route, "_EXPORT_PAGE", 2)
+        app = FastAPI()
+        app.include_router(audit_route.router, prefix="/audit")
+        app.state.settings = rls_settings.model_copy(update={"auth_mode": "none"})
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://felix.test") as client:
+            rows = await _export(client)
+    finally:
+        audit_store.pending_buffer().reset_for_tests()
+
+    assert len(rows) == 5, f"the export ended early: {len(rows)} of 5"
