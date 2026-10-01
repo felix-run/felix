@@ -1,12 +1,14 @@
 # yaml-language-server: $schema=../schemas/manifest.schema.json
 # Felix working on Felix — rung 2 and 3 of docs/SELF.md. Workspace file tools over its own
 # checkout, a governed shell that runs the repository's gates in that checkout, developer
-# skills, and GitHub over MCP so it can publish a branch and a pull request.
+# skills, `publish_commits` to publish its local commits as a branch, and GitHub over MCP for the
+# pull request and the issue.
 #
 # Requires, on the process running the API (deploy/docker/compose.self.yml sets all three):
 #   FELIX_WORKSPACE_ROOT=/workspace         # the clone this agent edits and runs the gates in
 #   FELIX_SHELL_ALLOWED_COMMANDS=...        # must cover every prefix under shell_tools below
 #   GITHUB_MCP_TOKEN=<fine-grained PAT>     # Contents:write + Pull requests:write + Issues:write
+#                                           # read by the API process only: github_publish and MCP
 #
 # The host those run on is the shell tool's boundary — deploy/GOVERNANCE.md "Shell tools" says
 # what it must not hold. That is why the builder container exists; do not point this at a
@@ -22,7 +24,8 @@ metadata:
   version: 2.0.0
   description: >
     Felix as a contributor to its own codebase — edits the workspace checkout, runs the
-    repository's gates in it through a governed shell, and publishes through GitHub MCP.
+    repository's gates in it through a governed shell, publishes its commits from the harness,
+    and opens the pull request through GitHub MCP.
   tags: [react, coding, workspace, shell, mcp]
 
 spec:
@@ -81,9 +84,12 @@ spec:
       - Commit in the checkout with ["git","add",...] and ["git","commit","-m",...] so the
         diff is recorded; that commit never leaves the machine by git.
 
-      Publishing, through the github__ tools only, each of which pauses for a person:
-      - github__create_branch felix/<issue>-<slug> from main, github__push_files with the
-        files you changed, github__create_pull_request as a draft whose body follows
+      Publishing, each step of which pauses for a person:
+      - publish_commits with branch felix/<issue>-<slug> and head_sha from
+        ["git","rev-parse","HEAD"]. It publishes the commits you made, not file contents: the
+        person approving it reads the diff the harness computes from that sha. If it says the
+        remote moved, fetch, rebase onto it, commit, and call it again with the new sha.
+      - github__create_pull_request as a draft whose body follows
         .github/PULL_REQUEST_TEMPLATE.md exactly: "Closes #<issue>", the evidence re-verified at
         the HEAD you branched from, "## Gates run" with the pasted output, "## Not verified",
         "## Companions", and the "Felix-Thread:" trailer.
@@ -123,7 +129,7 @@ spec:
   # be covered by FELIX_SHELL_ALLOWED_COMMANDS or the manifest is refused at write — the
   # operator bounds, the manifest narrows. The list is the gates plus the git verbs that stay
   # inside the checkout: no push, no remote, no config, no gh, no bare python. Publishing goes
-  # through github__ below, where a person approves it. tests/unit/test_contributor_manifest.py
+  # through publish_commits below, where a person approves it. tests/unit/test_contributor_manifest.py
   # holds this list equal to the one deploy/docker/compose.self.yml exports.
   shell_tools:
     - name: run
@@ -193,8 +199,6 @@ spec:
         - get_job_logs
         # write — every one of these is named in the approval rule below
         - create_branch
-        - push_files
-        - create_or_update_file
         - create_pull_request
         - update_pull_request
         - update_pull_request_branch
@@ -202,13 +206,28 @@ spec:
         - sub_issue_write
         - add_issue_comment
 
+  # Commits leave the machine through publish_commits and nothing else. The harness reads the
+  # commits named by head_sha from the workspace with read-only git and writes them through
+  # GitHub's Git Data API with the token above. Felix never passes that token to git or to the
+  # shell tool's environment — but on the single-container builder the shell runs as the API's
+  # user, so code the agent runs can read it from the API's /proc/<pid>/environ. The approval
+  # gates what Felix publishes; it does not keep the token from the workspace (GOVERNANCE.md).
+  # Whole-file writes over MCP (push_files, create_or_update_file) are not bound: they carried
+  # every changed file as a tool argument, 196 KiB for one CHANGELOG line (#307).
+  github_publish:
+    repo: felix-run/felix
+    auth: secret:GITHUB_MCP_TOKEN
+    base: main
+    branch_prefix: felix/
+
   # Approvals pause the run; resume with POST /approvals/{id}/decide.
   #
   # Gated at *publication*, not at every write: the workspace writes and run act inside the builder
   # checkout, which is the boundary deploy/GOVERNANCE.md describes, and a person approving
-  # forty file writes is a person who stops reading them. The approval row for push_files
-  # carries the files as its arguments — that is the diff about to leave the machine, and it
-  # is what the person reads.
+  # forty file writes is a person who stops reading them. The approval row for publish_commits
+  # carries a `preview` the harness computes from head_sha — `git diff --stat` and the unified
+  # diff — which is the change about to leave the machine, and it is what the person reads.
+  # head_sha is in the call signature, so the approval binds exactly that content.
   #
   # Rules match tool names by glob, and a literal name beats a pattern. The write tools are
   # listed by name rather than as `github__*` because a glob would gate the read tools too and
@@ -217,12 +236,23 @@ spec:
   # allow_unattended is only enforced under eu_ai_act at risk_tier high, which is why the
   # governance block below sets exactly that — otherwise the field is decoration.
   approvals:
+    # Its own rule, stricter than the one below. one_shot: a grant publishes once — a resumed or
+    # replayed call with the same sha needs a new decision, not the hour-old one. bind_principal:
+    # a grant made for one caller's call does not authorize another caller's identical call.
+    - id: publish
+      description: >-
+        Publish the commits shown in the preview to a felix/ branch on felix-run/felix. Read the
+        diff — it is exactly what will land, and approving it authorizes this sha once.
+      tools:
+        - publish_commits
+      ttl_seconds: 3600
+      one_shot: true
+      bind_principal: true
+      allow_unattended: false
     - id: github-mutate
-      description: Confirm a branch, commit, pull request, or issue against the repository
+      description: Confirm a branch, pull request, or issue against the repository
       tools:
         - github__create_branch
-        - github__push_files
-        - github__create_or_update_file
         - github__create_pull_request
         - github__update_pull_request
         - github__update_pull_request_branch
@@ -243,7 +273,7 @@ spec:
     rules:
       - pattern: '\bgit\s+push\b'
         decision: deny
-        reason: pushes go through the approved github__ tools, not a shell
+        reason: commits are published by the approved publish_commits tool, not a shell
       - pattern: '\bgh\s+(pr|repo|auth)\b'
         decision: deny
         reason: use the github__ tools so the approval gate applies

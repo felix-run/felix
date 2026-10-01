@@ -38,7 +38,7 @@ Felix decides which problem matters or merges anything.
 | **0 — Propose** | Reads real-run signals and the roadmap; drafts at most three issues per run using the `felix_task` template. Every `issue_write` pauses for approval. | Approves or denies each issue; sets `p1` / `p2` / `p3`. | ≥ 90 % of filed issues carry evidence in an accepted shape over four consecutive runs; zero duplicates of an open issue. |
 | **1 — Confirm ready** | Scores every open `felix:task` against the Definition of Ready; posts one comment naming what is missing; applies `felix:ready`, `felix:needs-detail` or `felix:needs-human`. | Applies `felix:go` — the act of judgment that authorises implementation. | A person overrides Felix's verdict at most twice in ten tickets; the pinned `felix:canary` issue is always marked `needs-detail`. |
 | **2 — Implement locally** | On a `felix:go` ticket: branches in the builder checkout, edits, runs `ruff`, `ty` and `./scripts/test.sh` through the shell tool, reports the literal output. | Reads the transcript. | Three tickets reach "all gates green" with real gate output in the report. |
-| **3 — Open pull requests** | Publishes through `github__create_branch`, `github__push_files`, `github__create_pull_request` — each approval-gated, and the approval row's arguments *are* the diff about to leave the machine. PR body follows the contract below. | Reviews and merges. | Over ten `felix:authored` PRs: ≥ 60 % merged, median ≤ 2 review rounds, zero reverts, `felix-boundary` never tripped. |
+| **3 — Open pull requests** | Commits in the builder checkout, then publishes with `publish_commits` (branch + `head_sha`) and opens the pull request with `github__create_pull_request` — each approval-gated. The `publish_commits` approval row carries a `preview` the harness computes from that sha: `git diff --stat` and the unified diff about to leave the machine. PR body follows the contract below. | Reviews and merges. | Over ten `felix:authored` PRs: ≥ 60 % merged, median ≤ 2 review rounds, zero reverts, `felix-boundary` never tripped. |
 | **4+ — not built** | Unattended issue filing; scheduled runs carrying scopes; Felix reviewing Felix; harness-side protected paths; a container gateway. | — | Designed only when rung 3 has produced its numbers. |
 
 ## Where work comes from
@@ -138,7 +138,15 @@ required and `felix-boundary` fails the check when one is missing.
 - **Companions** — the ticket's checkboxes, ticked or explained.
 - `Felix-Thread: <thread_id>` — the join key the scoreboard uses for cost and time-horizon.
 
-Branches are `felix/<issue>-<slug>`. Pull requests open as drafts and are flipped to ready only after
+Branches are `felix/<issue>-<slug>`, and `publish_commits` refuses any other name. It publishes
+the commits made locally, never file contents: the harness reads them with read-only git and
+writes them through GitHub's Git Data API with the bot's token, which Felix never hands to git or
+to the shell tool. That is not isolation: the shell tool runs as the API's user in the same
+container, so code Felix runs (`make test` imports what it wrote) can read the token from the API
+process's environment. The approval gates what Felix publishes, not what it could reach — see
+`deploy/GOVERNANCE.md`, "Publishing commits". Several local commits land as one. A branch that already exists is fast-forwarded, so when
+the remote has moved the tool says so and Felix fetches, rebases and publishes the new sha — the
+old approval does not cover it, because the sha is the call. Pull requests open as drafts and are flipped to ready only after
 `github__get_pull_request_status` reports CI green. Felix never merges, never approves, and never
 requests changes on a pull request; the reviewer role is rung 4.
 
@@ -170,7 +178,7 @@ Any one of these stops the loop; none needs code.
 
 | Switch | Effect | Where |
 |---|---|---|
-| Revoke the bot's PAT | every `github__*` call fails; nothing leaves the machine | GitHub settings |
+| Revoke the bot's PAT | every `github__*` and `publish_commits` call fails; nothing leaves the machine | GitHub settings |
 | `PUT /jobs/<name>` with `enabled: false` | scheduled runs stop firing | builder API, `jobs:write` |
 | Apply `felix:paused` to any issue | every run stops at its first tool call | GitHub |
 | Stop the builder container | everything stops | `docker compose … down` |

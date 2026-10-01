@@ -190,10 +190,29 @@ def include_in_llm_context(e: SessionEvent) -> bool:
     }
 
 
+CLIENT_ENTRY_LABEL = "[entry added by the client, not by the operator]"
+
+
+def _model_role_and_content(e: SessionEvent) -> tuple[str | None, str | None]:
+    """The role and text an event reaches the model with.
+
+    One rule, in the one place both live history and a compaction checkpoint read: a
+    `custom` entry never enters the system tier. `/chat/sessions/custom` takes its role from
+    the caller -- the agent's end user, anonymous on some manifests -- and `in_context` put
+    that text beside the operator's own prompt, outranking the caller's own turns. Stored as
+    written (a UI may show an operator-styled note); sent to the model as a labelled user
+    turn. `assistant` is left alone: a caller can already supply assistant history on `/v1`.
+    """
+    if e.kind == "custom" and e.role == "system":
+        return "user", f"{CLIENT_ENTRY_LABEL}\n{e.content or ''}"
+    return e.role, e.content
+
+
 def event_to_chat_message(e: SessionEvent) -> ChatMessage:
+    role, content = _model_role_and_content(e)
     return chat_message_from_parts(
-        role=e.role,
-        content=e.content,
+        role=role,
+        content=content,
         tool_call_id=e.tool_call_id,
         name=e.name,
         tool_calls=e.tool_calls,
@@ -216,9 +235,12 @@ def retained_turn(e: SessionEvent) -> dict[str, Any]:
     depend on the log still holding the turn.
     """
     metadata = e.metadata or {}
+    # Stored as the model sees it, so a replayed checkpoint cannot restore a tier the live
+    # history would not grant.
+    role, content = _model_role_and_content(e)
     return {
-        "role": e.role,
-        "content": e.content,
+        "role": role,
+        "content": content,
         "tool_call_id": e.tool_call_id,
         "name": e.name,
         "tool_calls": e.tool_calls,
@@ -318,6 +340,7 @@ def analyze_wake(events: list[SessionEvent]) -> WakeState:
 
 
 __all__ = [
+    "CLIENT_ENTRY_LABEL",
     "AppendableEvent",
     "EventKind",
     "GetEventsOpts",

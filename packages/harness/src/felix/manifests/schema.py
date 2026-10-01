@@ -489,6 +489,91 @@ class DocumentSearchToolRef(_Strict):
     fatal: bool = False
 
 
+_REPO_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/[A-Za-z0-9._-]{1,100}$")
+_REF_CHARS_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
+
+
+def is_valid_branch_name(name: str) -> bool:
+    """A branch name `git check-ref-format --branch` accepts, over a deliberately small alphabet.
+
+    Narrower than git on purpose: letters, digits, `.`, `_`, `-` and `/` cover every name a
+    person or an agent actually writes, and anything outside them — `~`, `^`, `:`, `@{`, a
+    space, a control byte — is either invalid to git or a name that reads differently in a URL
+    than in a ref. The structural rules are git's own.
+    """
+    # `fullmatch`, not `match`: `$` also matches before a trailing newline, so `main\n` passed.
+    if not name or len(name) > 200 or not _REF_CHARS_RE.fullmatch(name):
+        return False
+    if name.startswith(("-", "/")) or name.endswith(("/", ".", ".lock")):
+        return False
+    if ".." in name or "//" in name:
+        return False
+    return all(part and not part.startswith(".") and not part.endswith(".lock") for part in name.split("/"))
+
+
+class GithubPublishSpec(_Strict):
+    """Bind `publish_commits`: publish commits already made in the workspace, from the harness.
+
+    The workspace commits locally and holds no credential; this tool reads those commits with
+    read-only git and writes them through GitHub's Git Data API from the harness process, so Felix
+    uses the token in one HTTP client and passes it to no process that runs repository code (which
+    is not the same as that code being unable to read it — deploy/GOVERNANCE.md, "Publishing
+    commits"). Everything here is operator-fixed — the model chooses a branch under
+    `branch_prefix` and a commit sha, and nothing else. See `felix/tools/github_publish.py`.
+    """
+
+    # owner/name on github.com.
+    repo: str
+    # A `secret:NAME` ref, never a literal: the value is a write credential to `repo`.
+    auth: str = Field(min_length=1)
+    # The branch a new branch starts from, and the one the tool will never write to.
+    base: str = "main"
+    # Every branch the tool may create or move starts with this. Required, so a manifest cannot
+    # hand the model every branch in the repository by omission.
+    branch_prefix: str = Field(min_length=1)
+
+    @field_validator("repo")
+    @classmethod
+    def _repo_is_owner_name(cls, v: str) -> str:
+        if not _REPO_RE.fullmatch(v) or v.split("/", 1)[1] in {".", ".."}:
+            raise ValueError(f"github_publish.repo must be owner/name, got {v!r}")
+        return v
+
+    @field_validator("auth")
+    @classmethod
+    def _auth_is_a_secret_ref(cls, v: str) -> str:
+        from felix.secrets import is_secret_ref
+
+        if not is_secret_ref(v):
+            # Not echoed: the value may be the very token this refuses to store.
+            raise ValueError("github_publish.auth must be a secret ref (secret:NAME)")
+        return v
+
+    @field_validator("base")
+    @classmethod
+    def _base_is_a_branch(cls, v: str) -> str:
+        if not is_valid_branch_name(v):
+            raise ValueError(f"github_publish.base is not a valid branch name: {v!r}")
+        return v
+
+    @field_validator("branch_prefix")
+    @classmethod
+    def _prefix_is_ref_shaped(cls, v: str) -> str:
+        # The prefix alone need not be a branch (`felix/` is not one), but prefix + name must
+        # be able to become one.
+        if not is_valid_branch_name(v + "x"):
+            raise ValueError(f"github_publish.branch_prefix cannot start a valid branch name: {v!r}")
+        return v
+
+    @model_validator(mode="after")
+    def _base_is_outside_the_prefix(self) -> GithubPublishSpec:
+        # A base under the prefix would be a branch the model is allowed to name; the per-call
+        # `branch != base` check still holds, but the configuration says two things at once.
+        if self.base.startswith(self.branch_prefix):
+            raise ValueError("github_publish.base must not start with branch_prefix")
+        return self
+
+
 class ClientToolRef(_Strict):
     """Tool executed by the connected client; the server waits for a result."""
 
@@ -971,6 +1056,8 @@ class Spec(_Strict):
     http_tools: list[HttpFetchToolRef] = Field(default_factory=list, max_length=MAX_REFS)
     search_tools: list[SearchToolRef] = Field(default_factory=list, max_length=MAX_REFS)
     document_tools: list[DocumentSearchToolRef] = Field(default_factory=list, max_length=MAX_REFS)
+    # Binds `publish_commits`. Unset binds nothing.
+    github_publish: GithubPublishSpec | None = None
     client_tools: list[ClientToolRef] = Field(default_factory=list, max_length=MAX_REFS)
     sub_agents: list[str] = Field(default_factory=list)
     aggregator_prompt: str = ""

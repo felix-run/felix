@@ -103,6 +103,7 @@ worth having at all — each one means a control did not do what the manifest im
 | `felix_inbound_screening` | `manifest_id`, `surface`, `action` | Inbound screening acted on a user turn (`surface=turn`) or on MCP tool-call arguments (`surface=tool_arguments`); `action` is `denied`, `quarantined` or `unavailable`. |
 | `felix_secret_masking` | `manifest_id`, `tool` | A secret was masked out of tool output. |
 | `felix_approval_required` | `manifest_id`, `tool`, `rule` | A call paused for human approval. |
+| `felix_approval_preview_failed` | `manifest_id`, `tool`, `rule` | A tool with an approval preview (`publish_commits`) could not compute it, so the call was refused and no approval row was written. |
 | `felix_control_unavailable` | `control` | **Watch this.** A control could not run at all. |
 | `felix_mcp_instructions` | `manifest_id`, `outcome` | An opted-in MCP server's `initialize` instructions were `used` as its tools' guidance, or `flagged` by the injection markers and dropped. |
 | `felix_approval_when_args_unknown` | `manifest_id` | An approval rule's `when_args` names an argument no tool it reaches takes, so the rule never fires. Once per process per rule; the log line names the rule, the tools and the arguments they do take. |

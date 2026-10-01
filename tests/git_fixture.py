@@ -28,8 +28,12 @@ import subprocess
 from pathlib import Path
 
 
-def git(repo: Path | str, *args: str, check: bool = True) -> str:
-    """Run `git <args>` against `repo`, immune to an ambient git environment."""
+def git(repo: Path | str, *args: str, check: bool = True, extra: dict[str, str] | None = None) -> str:
+    """Run `git <args>` against `repo`, immune to an ambient git environment.
+
+    `extra` adds variables *after* the scrub -- a temporary `GIT_INDEX_FILE`, an author identity
+    -- so a caller can set what it needs without inheriting what it did not ask for.
+    """
     # Positively, not by unsetting a list. Naming variables to remove is a denylist, and this
     # repo's own rule is that trust is an allowlist — `GIT_OBJECT_DIRECTORY`,
     # `GIT_ALTERNATE_OBJECT_DIRECTORIES` and friends would still be inherited. Setting
@@ -38,6 +42,7 @@ def git(repo: Path | str, *args: str, check: bool = True) -> str:
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     env["GIT_DIR"] = str(Path(repo) / ".git")
     env["GIT_WORK_TREE"] = str(repo)
+    env.update(extra or {})
     done = subprocess.run(
         ["git", "-c", "commit.gpgsign=false", *args],
         cwd=str(repo),
