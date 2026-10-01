@@ -509,10 +509,12 @@ and fixed; the comment at `fibers.py:36-46` is the record.
       streams a time range as JSONL, uncapped, with `since`/`until` as a half-open range applied
       in the store (both arms, conformance-pinned) so windows tile. Open-ended, it reads only
       what has been flushed; an export whose `until` is in the past is stable.
-      Unpinned: the route sets `rls_tenant` per page read, since later pages are read after the
-      handler returns. That only matters with `FELIX_DATABASE_RLS` on, where a lost scope would
-      read zero rows and end the file early *without* an error line; e2e runs on `memory://`
-      over `ASGITransport` and cannot see it. Wants a case in `test_rls_enforcement.py`.
+      Pinned under an enforcing policy in `test_rls_enforcement.py`: the production stack
+      exports every page, and the route's per-read `rls_tenant` holds on its own with no
+      middleware. Correction to this entry as written: a lost scope does not end the file
+      early unless *every* binding goes — the request-wide one `async_run_with_context` makes
+      covers the streamed body, and the session listener falls back to the request context —
+      so the per-read binding is a second guard, not the only one.
 - [x] **Surface eval instrumentation.** Correction to the entry as written: there was no
       `ItemScore` and no per-item duration or token count stored anywhere — only `tool_calls` /
       `tool_errors` on the score row. Each item now records `duration_ms`, `tokens_input`,

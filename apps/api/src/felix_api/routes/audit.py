@@ -120,8 +120,9 @@ async def export_audit(
     tenant_id = tenant_id_from_request(request)
 
     async def read_page(cursor: str | None) -> tuple[list[dict[str, Any]], str | None]:
-        # Later pages are read while the body streams, after the handler has returned; the
-        # tenant scope is set per read rather than trusted to still be in effect by then.
+        # Later pages are read while the body streams, after the handler has returned. The
+        # middleware's binding still covers them today, since it wraps the whole ASGI call;
+        # binding per read means the export does not depend on that staying true.
         with rls_tenant(tenant_id):
             return await audit_store.list_events(
                 settings,
