@@ -118,9 +118,14 @@ First, because everything else governs it.
       `/v1/chat/completions` accepts OpenAI's `response_format` for the same thing per request
       (the manifest's wins). The OpenAI wire emits `response_format`, strict when the schema
       closes every object and requires every property; the Anthropic wire, which has no
-      equivalent, sends the schema as a tool the model must call and folds the call back into the
-      reply, so `message.content` is a JSON document on either. `tool_choice` is `any` rather than
-      naming that tool whenever real tools are also bound, so a react loop can still reach them.
+      equivalent on older models, sends the schema as a tool the model must call and folds the
+      call back into the reply, so `message.content` is a JSON document on either. `tool_choice`
+      is `any` rather than naming that tool whenever real tools are also bound, so a react loop
+      can still reach them. A model with native structured outputs (`ModelQuirks.structured_outputs`)
+      gets `output_config.format` instead when the schema is inside Anthropic's subset
+      (`output_schema.anthropic_native_misfit`), merged beside `effort`; and a model that refuses a
+      forced choice (`ModelQuirks.forced_tool_choice` — Fable 5.1, Mythos 5.1, Opus 5.5,
+      Sonnet 5.5, and every family key and unknown id) is never sent `any` or `tool`.
       - **The composite patterns** — done for four of five. `router`, `parallel`, `reflect`
         and `plan_execute` now thread `ModelChatOptions` onto the one turn whose output the
         caller receives, and declare `honours_output_schema`. Placement is per pattern and
@@ -136,10 +141,14 @@ First, because everything else governs it.
         prefix on it. Supporting it means dropping the stamp or adding a synthesis turn.
       - Not done, and deliberately a separate item: **validation with a repair retry.** The
         provider is what enforces the shape here, which is the guarantee worth having and is why
-        this shipped without a retry loop. Extended thinking is the hole — Anthropic forbids a
-        forced `tool_choice` while `thinking` is set, so there the schema is offered and logged as
-        not guaranteed. A validate-and-retry pass would close that arm; until then, do not promise
-        the shape on a thinking-enabled Anthropic agent.
+        this shipped without a retry loop. Native structured outputs closed the extended-thinking
+        hole for every model that has them and every schema inside their subset. What is left is
+        offered, not guaranteed, and logged with the reason: a schema outside the subset
+        (`maxLength`, `minimum`, `pattern`, `minItems`, recursion, an open object) on a model that
+        refuses forcing or with thinking on; Sonnet 4.x and Opus 4.6/4.7 with thinking on; and an
+        id the catalog does not know. A validate-and-retry pass would close those arms; until then,
+        do not promise the shape there. Native output on a `refusal` or `max_tokens` stop may not
+        match the schema either — the stop reason passes through, as it does on the tool route.
 - [~] **Attachments** — split, on the evidence that the two smaller features in the document
       retrieval workstream each drew ~7 review findings where one wide branch would have drawn
       them all at once.
