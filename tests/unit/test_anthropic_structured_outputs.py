@@ -134,7 +134,7 @@ def test_the_native_format_joins_effort_rather_than_replacing_it() -> None:
     body = _body(NATIVE_MODEL, STRICT, thinking=8192)
     assert body["thinking"] == {"type": "adaptive"}
     assert body["output_config"] == {
-        "effort": "medium",
+        "effort": "xhigh",
         "format": {"type": "json_schema", "schema": STRICT},
     }
     assert "tool_choice" not in body, "native output needs no choice, and thinking forbids a forced one"

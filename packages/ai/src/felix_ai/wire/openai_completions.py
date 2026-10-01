@@ -15,7 +15,7 @@ from typing import Any
 
 import httpx
 
-from felix_ai.catalog import known_entry_for
+from felix_ai.catalog import effort_for_budget, effort_for_spec, known_entry_for
 from felix_ai.context import resolve_cache_key
 from felix_ai.output_schema import is_strict
 from felix_ai.types import (
@@ -40,13 +40,24 @@ from felix_ai.wire.transport import ModelGatewayError, post_with_retry
 logger = logging.getLogger("felix_ai.wire.openai_completions")
 
 
+# What `reasoning_effort` accepts across the models the catalog vouches for. The tiers above
+# `high` (`xhigh`, `max`) are Anthropic's and are sent as `high`; `minimal` is not modelled
+# per model, so the level of that name already arrives here as `low`.
+_REASONING_EFFORTS = frozenset({"low", "medium", "high"})
+
+
+def reasoning_effort_for(effort: str) -> str:
+    """Coerce a Felix effort tier onto OpenAI ``reasoning_effort``."""
+    return effort if effort in _REASONING_EFFORTS else "high"
+
+
 def reasoning_effort_from_budget(budget: int) -> str:
-    """Map Anthropic-style budget tokens onto OpenAI ``reasoning_effort``."""
-    if budget < 4096:
-        return "low"
-    if budget < 16384:
-        return "medium"
-    return "high"
+    """Map a bare thinking budget onto OpenAI ``reasoning_effort``.
+
+    Read against the level budgets (`felix_ai.catalog.effort_for_budget`), so a budget a
+    thinking level would have set lands where that level does.
+    """
+    return reasoning_effort_for(effort_for_budget(budget))
 
 
 # OpenAI requires a name for the schema and accepts `^[a-zA-Z0-9_-]{1,64}$`. It is echoed
@@ -126,8 +137,10 @@ def apply_openai_thinking_cache(
     budget = getattr(spec, "thinking_budget", None) if spec is not None else None
     if budget:
         n = int(budget)
-        if entry is not None and entry.supports_thinking:
-            body["reasoning_effort"] = reasoning_effort_from_budget(n)
+        effort = effort_for_spec(spec)
+        if entry is not None and entry.supports_thinking and effort:
+            # From the thinking level when the spec carries one, not from its budget (#398).
+            body["reasoning_effort"] = reasoning_effort_for(effort)
         # An Anthropic model reached through a LiteLLM-style OpenAI shim still wants the
         # Anthropic block. Keyed on the dialect the model natively speaks, because
         # `caps.budget_tokens` defaults to True and so cannot tell an OpenAI entry apart
@@ -435,5 +448,6 @@ class OpenAICompletionsClient(HttpModelClient):
 __all__ = [
     "OpenAICompletionsClient",
     "apply_openai_thinking_cache",
+    "reasoning_effort_for",
     "reasoning_effort_from_budget",
 ]

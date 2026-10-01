@@ -67,7 +67,8 @@ def test_reasoning_effort_is_not_sent_to_a_model_that_cannot_take_it() -> None:
 def test_reasoning_effort_is_sent_to_a_model_that_can() -> None:
     body: dict[str, Any] = {}
     apply_openai_thinking_cache(body, _Thinking(), "gpt-4.1")
-    assert body["reasoning_effort"] == "medium"
+    # 8,192 is `xhigh`'s budget, and `reasoning_effort` tops out at `high`.
+    assert body["reasoning_effort"] == "high"
 
 
 # --- the reasoning models become reachable ----------------------------------------------

@@ -73,6 +73,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Thinking levels now send distinct efforts to models that take one.** On adaptive Claude
+  models and OpenAI reasoning models, a level's effort was derived from its budget through
+  thresholds at 4,096 / 16,384 / 32,768 that none of the level budgets were chosen against:
+  `minimal`, `low`, `medium` and `high` all sent `effort: low`, `xhigh` sent `medium`, `max` sent
+  `high`, and the `xhigh` and `max` tiers were never sent. The effort now comes from the level —
+  `minimal` and `low` as `low`, the rest by name — clamped to what the model accepts (`xhigh` is
+  `high` on Opus/Sonnet 4.6), and OpenAI's `reasoning_effort` sends `high` for `xhigh` and `max`.
+  A `thinking_budget` with no level takes the effort of the highest level whose budget it reaches,
+  so a manifest budget of 5,000 now sends `high` rather than `medium`. Models that take
+  `budget_tokens` are sent the same budget as before. (#398)
 - **A streamed run now reports its token usage when it ends.** No frame on `POST /chat/stream`
   carried usage. `on_chain_end` holds the in-process `InvokeOutput`, which reaches the wire as its
   `repr`, and `done` had no usage field. A client could learn a turn's tokens only by re-reading
