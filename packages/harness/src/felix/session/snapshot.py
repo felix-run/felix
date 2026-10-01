@@ -48,6 +48,7 @@ def build_snapshot(
     thinking_level: str | None = None,
     parent_session_id: str | None = None,
     labels: dict[str, str] | None = None,
+    feedback: dict[str, dict[str, Any]] | None = None,
     queued_steer: list[dict[str, Any]] | None = None,
     attached: bool = False,
     locked: bool = False,
@@ -86,6 +87,9 @@ def build_snapshot(
         "revision": revision if revision is not None else (events[-1].seq + 1 if events else 0),
         "leafId": leaf_id,
         "labels": labels or {},
+        # A person's rating of an assistant turn, keyed by its event id:
+        # `{"rating": "up" | "down", "note": str, "at": epoch ms}`.
+        "feedback": feedback or {},
         "transcript": transcript,
         "queuedSteer": queued_steer or [],
         "queuedSteerCount": len(queued_steer or []),
@@ -168,6 +172,7 @@ async def gather_thread_snapshot(*, settings: Any, tenant_id: str, thread: str) 
         thinking_level=meta.get("thinking_level"),
         parent_session_id=meta.get("parent_session_id"),
         labels=dict(meta.get("labels") or {}),
+        feedback=dict(meta.get("feedback") or {}),
         queued_steer=[{"placeholder": True}] * steer_n if steer_n else [],
         revision=int(meta.get("revision") or 0),
         attached=bool(lease.get("attached")),

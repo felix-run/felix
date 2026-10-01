@@ -193,6 +193,16 @@ class LabelRequest(BaseModel):
     label: str | None = None
 
 
+class FeedbackRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    thread_id: str = Field(min_length=1)
+    event_id: str = Field(min_length=1)
+    # `None` clears a rating, the way a `None` label clears a label.
+    rating: Literal["up", "down"] | None = None
+    note: str = Field(default="", max_length=1000)
+
+
 class CustomEntryRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
@@ -1190,6 +1200,68 @@ async def set_session_label(body: LabelRequest, request: Request) -> dict[str, A
         ],
     )
     return {"ok": True, "thread_id": thread, "event_id": body.event_id, "label": body.label}
+
+
+@router.post("/sessions/feedback")
+async def set_session_feedback(body: FeedbackRequest, request: Request) -> dict[str, Any]:
+    """Rate an assistant turn up or down, or clear a rating.
+
+    Stored twice, for two readers. The thread's metadata holds the current rating per
+    event, which the snapshot returns as `feedback` so a client can draw it. And every
+    change is an audit event, `turn_feedback`, because the question an operator asks of
+    feedback is tenant-wide -- which answers did people mark down this week -- and the
+    audit log is the record that is already filterable, paged and tenant-scoped.
+
+    Unlike a label, nothing is appended to the session log: a rating is about the
+    conversation, not part of it, and an event there would move the thread's leaf.
+    """
+    from felix.audit import store as audit_store
+    from felix.session.thread_state import get_thread_meta, update_thread_meta
+    from felix.session.tree import get_event_id
+
+    auth = _auth_from_request(request)
+    settings = request.app.state.settings
+    thread = effective_thread_id(auth.tenant_id, body.thread_id)
+    if thread is None:
+        raise HTTPException(status_code=400, detail="invalid_thread_id")
+
+    store = get_session_store(settings, tenant_id=auth.tenant_id)
+    events = await store.open(thread).get_events()
+    target = next((e for e in events if get_event_id(e) == body.event_id), None)
+    if target is None:
+        raise HTTPException(status_code=404, detail="unknown_event_id")
+    # A rating says how good an *answer* was. On a user message it would mean nothing,
+    # and on a tool result it would grade the tool rather than the agent.
+    if target.kind != "message" or target.role != "assistant":
+        raise HTTPException(status_code=400, detail="not_an_assistant_message")
+
+    entry: dict[str, Any] | None = (
+        None
+        if body.rating is None
+        else {"rating": body.rating, "note": body.note, "at": int(time.time() * 1000)}
+    )
+    await update_thread_meta(
+        settings=settings,
+        tenant_id=auth.tenant_id,
+        thread_id=thread,
+        feedback={body.event_id: entry},
+    )
+    meta = await get_thread_meta(settings=settings, tenant_id=auth.tenant_id, thread_id=thread)
+    audit_store.record_event(
+        settings,
+        auth.tenant_id,
+        "turn_feedback",
+        principal_subj=auth.principal_sub or "",
+        status=body.rating or "cleared",
+        payload={
+            "thread_id": thread,
+            "event_id": body.event_id,
+            "rating": body.rating,
+            "note": body.note,
+            "model_id": meta.get("model_id") or "",
+        },
+    )
+    return {"ok": True, "thread_id": thread, "event_id": body.event_id, "feedback": entry}
 
 
 @router.post("/abort")
