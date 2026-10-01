@@ -165,13 +165,17 @@ async def test_a_directory_swapped_for_a_link_mid_call_never_leaks(tmp_path: Pat
     real, hold = ws / "d", ws / "hold"
 
     stop = threading.Event()
+    errors: list[BaseException] = []
 
     def swap() -> None:
-        while not stop.is_set():
-            os.rename(real, hold)
-            os.symlink(outside, real)
-            os.unlink(real)
-            os.rename(hold, real)
+        try:
+            while not stop.is_set():
+                os.rename(real, hold)
+                os.symlink(outside, real)
+                os.unlink(real)
+                os.rename(hold, real)
+        except BaseException as exc:  # recorded and asserted on: a dead swapper races nothing
+            errors.append(exc)
 
     # A short switch interval makes the interpreter interleave the two threads between the
     # syscalls of one tool call, which is where the window is.
@@ -179,22 +183,121 @@ async def test_a_directory_swapped_for_a_link_mid_call_never_leaks(tmp_path: Pat
     sys.setswitchinterval(1e-6)
     swapper = threading.Thread(target=swap, daemon=True)
     outcomes: dict[str, int] = {"public": 0, "refused": 0, "missing": 0}
+    swapper_alive = False
     try:
         swapper.start()
         deadline = time.monotonic() + 2.0
         while time.monotonic() < deadline:
-            out = output_text(await _call(ws, workspace._read_file, workspace.ReadFileArgs(path="d/f.txt")))
-            assert SECRET not in out, "read the file outside the workspace through a swapped link"
-            if '"public"' in out:
-                outcomes["public"] += 1
-            elif REFUSED in out:
-                outcomes["refused"] += 1
-            else:
-                outcomes["missing"] += 1
+            out = await _call(ws, workspace._read_file, workspace.ReadFileArgs(path="d/f.txt"))
+            text = output_text(out)
+            assert SECRET not in text, "read the file outside the workspace through a swapped link"
+            outcomes[_classify_read(out)] += 1
+        swapper_alive = swapper.is_alive()
     finally:
         stop.set()
-        swapper.join()
+        swapper.join(timeout=5)
         sys.setswitchinterval(previous)
+    assert errors == [], errors
+    assert swapper_alive, "the swapper stopped early, so the race was not run for the whole window"
     # The race was actually run: the reader saw the directory both as itself and as a link.
     assert outcomes["public"] > 0, outcomes
     assert outcomes["refused"] + outcomes["missing"] > 0, outcomes
+
+
+def _classify_read(out: object) -> str:
+    """Exactly one of the three outcomes the race may produce, or the test fails on the output."""
+    text = output_text(out)
+    if read_tool_error_code(out) is None:
+        assert json.loads(text)["content"] == "public", text
+        return "public"
+    assert read_tool_error_code(out) == ToolErrorCode.INVALID_ARGUMENTS, text
+    if REFUSED in text:
+        return "refused"  # `d` was the link when the walk reached it
+    assert "not a file: d/f.txt" in text, text  # `d` was mid-rename: not there at all
+    return "missing"
+
+
+@pytest.mark.parametrize("append", [False, True])
+async def test_a_dangling_link_is_not_created_through(layout: tuple[Path, Path], append: bool) -> None:
+    """`O_CREAT` follows a dangling link and creates its target; `O_NOFOLLOW` refuses it."""
+    ws, outside = layout
+    (ws / "dangling").symlink_to(outside / "new.txt")
+    args = workspace.WriteFileArgs(path="dangling", content="planted", append=append)
+    _assert_refused(await _call(ws, workspace._write_file, args))
+    assert sorted(p.name for p in outside.iterdir()) == ["secret.txt"]
+
+
+@pytest.mark.parametrize("append", [False, True])
+async def test_a_file_swapped_for_a_link_mid_write_is_never_written_through(
+    tmp_path: Path, append: bool
+) -> None:
+    """The leaf alternates, by atomic rename, between a regular file and a link to the secret.
+    Every write either lands in the regular file or is refused; the secret never changes."""
+    ws, outside = tmp_path / "ws", tmp_path / "outside"
+    ws.mkdir()
+    outside.mkdir()
+    (outside / "secret.txt").write_text(SECRET, encoding="utf-8")
+    ws = ws.resolve()
+    leaf, link_tmp, file_tmp = ws / "f.txt", ws / "link.tmp", ws / "file.tmp"
+    leaf.write_text("public", encoding="utf-8")
+
+    stop = threading.Event()
+    errors: list[BaseException] = []
+
+    def swap() -> None:
+        try:
+            while not stop.is_set():
+                os.symlink(outside / "secret.txt", link_tmp)
+                os.rename(link_tmp, leaf)
+                file_tmp.write_text("public", encoding="utf-8")
+                os.rename(file_tmp, leaf)
+        except BaseException as exc:
+            errors.append(exc)
+
+    previous = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)
+    swapper = threading.Thread(target=swap, daemon=True)
+    outcomes = {"written": 0, "refused": 0}
+    swapper_alive = False
+    try:
+        swapper.start()
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            args = workspace.WriteFileArgs(path="f.txt", content="x", append=append)
+            out = await _call(ws, workspace._write_file, args)
+            text = output_text(out)
+            if read_tool_error_code(out) is None:
+                assert json.loads(text)["path"] == "f.txt", text
+                outcomes["written"] += 1
+            else:
+                _assert_refused(out)
+                outcomes["refused"] += 1
+        swapper_alive = swapper.is_alive()
+    finally:
+        stop.set()
+        swapper.join(timeout=5)
+        sys.setswitchinterval(previous)
+    assert errors == [], errors
+    assert swapper_alive
+    assert (outside / "secret.txt").read_text(encoding="utf-8") == SECRET
+    assert sorted(p.name for p in outside.iterdir()) == ["secret.txt"]
+    assert outcomes["written"] > 0 and outcomes["refused"] > 0, outcomes
+
+
+async def test_a_symlinked_workspace_root_is_refused(layout: tuple[Path, Path]) -> None:
+    """The root is opened `O_NOFOLLOW` too. Not a check that it is a mountpoint: a dev or test
+    root is a plain directory, and only a link in its *last* component is refused."""
+    ws, _ = layout
+    alias = ws.parent / "ws_alias"
+    alias.symlink_to(ws, target_is_directory=True)
+    out = await _call(alias, workspace._read_file, workspace.ReadFileArgs(path="real/inner.txt"))
+    assert read_tool_error_code(out) == ToolErrorCode.TRANSPORT_UNAVAILABLE, out
+    assert "workspace_root is a symlink" in output_text(out)
+    # A caller handing the walk a root it did not get from `workspace_root()` is refused at the open.
+    with (
+        pytest.raises(ValueError, match="workspace_root is a symlink"),
+        workspace.open_workspace_parent(alias, "real/inner.txt"),
+    ):
+        pass
+    assert _read_local(alias, "real/inner.txt") is None
+    assert _read_local(ws, "real/inner.txt") == "inner text\n"

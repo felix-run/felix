@@ -336,6 +336,7 @@ async def test_a_call_reaches_the_runner_with_the_bearer_and_the_checked_argumen
 
 
 async def test_the_api_allowlist_refuses_before_any_request(tmp_path: Path, no_local_exec: list[str]) -> None:
+    marker = tmp_path / "touched"
     seen: list[Request] = []
 
     def _responder(req: Request, writer: asyncio.StreamWriter) -> None:
@@ -345,13 +346,14 @@ async def test_the_api_allowlist_refuses_before_any_request(tmp_path: Path, no_l
     async with serve(_responder) as url:
         settings = _settings(tmp_path, "git status", url=url)
         tool = _tool(settings, ["git status"])
-        out = await _call(tool, settings, {"argv": ["touch", "x"]})
+        out = await _call(tool, settings, {"argv": ["touch", str(marker)]})
         cwd_out = await _call(tool, settings, {"argv": ["git", "status"], "cwd": ".."})
 
     assert read_tool_error_code(out) == ToolErrorCode.PERMISSION_DENIED
     assert read_tool_error_code(cwd_out) == ToolErrorCode.PERMISSION_DENIED
     assert seen == [], "a refused call must not reach the runner"
     assert no_local_exec == []
+    assert not marker.exists()
 
 
 async def test_a_runner_refusal_is_a_permission_denied(tmp_path: Path, no_local_exec: list[str]) -> None:
@@ -418,6 +420,7 @@ async def test_a_runner_that_errors_fails_closed(
 async def test_a_runner_that_hangs_fails_closed(
     tmp_path: Path, no_local_exec: list[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    marker = tmp_path / "touched"
     monkeypatch.setattr(shell_mod, "RUNNER_GRACE_S", 0.5)
     release = asyncio.Event()
 
@@ -427,19 +430,23 @@ async def test_a_runner_that_hangs_fails_closed(
     async with serve(_responder) as url:
         settings = _settings(tmp_path, "touch", url=url)
         started = time.monotonic()
-        out = await _call(_tool(settings, ["touch"], timeout_ms=500), settings, {"argv": ["touch", "x"]})
+        out = await _call(
+            _tool(settings, ["touch"], timeout_ms=500), settings, {"argv": ["touch", str(marker)]}
+        )
         elapsed = time.monotonic() - started
         release.set()
     assert read_tool_error_code(out) == ToolErrorCode.TRANSPORT_UNAVAILABLE, tool_output_content(out)
     assert "did not answer in time" in tool_output_content(out)
     assert elapsed < 10
     assert no_local_exec == []
+    assert not marker.exists()
 
 
 async def test_a_runner_that_trickles_fails_closed_at_the_deadline(
     tmp_path: Path, no_local_exec: list[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A byte every 0.2s never trips httpx's per-read timeout; the call's own deadline must."""
+    marker = tmp_path / "touched"
     monkeypatch.setattr(shell_mod, "RUNNER_GRACE_S", 0.5)
 
     async def _responder(req: Request, writer: asyncio.StreamWriter) -> None:
@@ -452,12 +459,15 @@ async def test_a_runner_that_trickles_fails_closed_at_the_deadline(
     async with serve(_responder) as url:
         settings = _settings(tmp_path, "touch", url=url)
         started = time.monotonic()
-        out = await _call(_tool(settings, ["touch"], timeout_ms=500), settings, {"argv": ["touch", "x"]})
+        out = await _call(
+            _tool(settings, ["touch"], timeout_ms=500), settings, {"argv": ["touch", str(marker)]}
+        )
         elapsed = time.monotonic() - started
     assert read_tool_error_code(out) == ToolErrorCode.TRANSPORT_UNAVAILABLE, tool_output_content(out)
     assert "did not answer in time" in tool_output_content(out)
     assert elapsed < 4, elapsed
     assert no_local_exec == []
+    assert not marker.exists()
 
 
 @pytest.mark.parametrize(
@@ -474,8 +484,9 @@ async def test_a_runner_that_trickles_fails_closed_at_the_deadline(
 async def test_an_out_of_range_number_from_the_runner_fails_closed(
     tmp_path: Path, no_local_exec: list[str], field: dict[str, int]
 ) -> None:
+    marker = tmp_path / "touched"
     result = {
-        "argv": ["touch", "x"],
+        "argv": ["touch", str(marker)],
         "cwd": ".",
         "exit_code": 0,
         "timed_out": False,
@@ -494,19 +505,20 @@ async def test_an_out_of_range_number_from_the_runner_fails_closed(
 
     async with serve(_responder(result)) as url:
         settings = _settings(tmp_path, "touch", url=url)
-        assert (
-            _ok(await _call(_tool(settings, ["touch"]), settings, {"argv": ["touch", "x"]}))["exit_code"] == 0
-        )
+        ok = _ok(await _call(_tool(settings, ["touch"]), settings, {"argv": ["touch", str(marker)]}))
+        assert ok["exit_code"] == 0
     async with serve(_responder({**result, **field})) as url:
         settings = _settings(tmp_path, "touch", url=url)
-        out = await _call(_tool(settings, ["touch"]), settings, {"argv": ["touch", "x"]})
+        out = await _call(_tool(settings, ["touch"]), settings, {"argv": ["touch", str(marker)]})
     assert read_tool_error_code(out) == ToolErrorCode.TRANSPORT_UNAVAILABLE, tool_output_content(out)
     assert "malformed result" in tool_output_content(out)
+    assert not marker.exists()
 
 
 async def test_an_oversized_runner_response_fails_closed(
     tmp_path: Path, no_local_exec: list[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    marker = tmp_path / "touched"
     monkeypatch.setattr(shell_mod, "MAX_RUNNER_RESPONSE_BYTES", 1024)
 
     def _responder(req: Request, writer: asyncio.StreamWriter) -> None:
@@ -514,9 +526,10 @@ async def test_an_oversized_runner_response_fails_closed(
 
     async with serve(_responder) as url:
         settings = _settings(tmp_path, "touch", url=url)
-        out = await _call(_tool(settings, ["touch"]), settings, {"argv": ["touch", "x"]})
+        out = await _call(_tool(settings, ["touch"]), settings, {"argv": ["touch", str(marker)]})
     assert read_tool_error_code(out) == ToolErrorCode.TRANSPORT_UNAVAILABLE, tool_output_content(out)
     assert no_local_exec == []
+    assert not marker.exists()
 
 
 # ---------------------------------------------------------------------------

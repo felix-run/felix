@@ -37,6 +37,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instance credentials, since `shell` can reach the metadata address. The API's call to the runner
   is bounded end to end, so a runner trickling bytes fails closed at `timeout_ms` plus 30 seconds,
   and an out-of-range `exit_code` or `duration_ms` in its answer is a malformed result.
+- **A workspace the agent's code writes can no longer make a file tool exhaust the API.**
+  `read_file` reads only its `offset`/`limit` window (at most 512 KB) off the event loop, where it
+  read the whole file and sliced it — a sparse 50 GiB file was a 50 GiB allocation. A local context
+  file over 256 KB is ignored with a warning instead of read whole into every agent build.
+  `search_files` walks with an explicit stack at most 64 directories deep, and it and `list_dir`
+  read at most 10,000 entries of one directory. `edit_file`'s temporary file has a random, short
+  name, so a directory planted at the old predictable name no longer blocks edits and a leaf near
+  255 bytes can be edited. `FELIX_WORKSPACE_ROOT` may not itself be a symlink; it is opened with
+  `O_NOFOLLOW`.
 - **A user turn beginning with `[quarantined]` skipped the model and decider screeners.** The
   check meant "screening already replaced this text" and was written as a test of the text's
   prefix, which the caller controls — so typing that prefix left a turn to the marker scan

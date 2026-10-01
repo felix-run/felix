@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import errno
 import json
 import os
 import re
+import secrets
 import stat
 import time
 from collections.abc import Iterator
@@ -36,6 +38,15 @@ _MAX_SEARCH_FILE_BYTES = 256_000
 _MAX_QUERY_CHARS = 512
 _MAX_SEARCH_LINE_CHARS = 4_000
 _SEARCH_BUDGET_S = 5.0
+# A tree walk keeps one descriptor open per level it is inside, so the depth is bounded, and so
+# is how much of one directory is read before it is sorted: a directory of a million entries
+# would otherwise be listed whole to return the first 500, or to find the first 20 hits.
+_MAX_SEARCH_DEPTH = 64
+_MAX_DIR_BATCH = 10_000
+# The temporary sibling an edit writes before renaming it over the target. Random, so a
+# directory or link planted under a predictable name cannot block every edit of a file, and
+# short and fixed-length, so a leaf near NAME_MAX still has a temporary name that fits.
+_EDIT_TMP_PREFIX = ".felix-edit-"
 
 
 class PathArgs(BaseModel):
@@ -163,17 +174,38 @@ def open_at(dir_fd: int, name: str, flags: int, shown: str, mode: int = 0o666) -
     `O_NOFOLLOW` makes the kernel refuse a symlink as the final (and only) component; the
     errno for that differs (Linux `ELOOP`, or `ENOTDIR` beside `O_DIRECTORY`; BSDs `EMLINK`),
     so the failure is classified by an `lstat` afterwards. That lstat only chooses the
-    message: the refusal itself already happened in the open.
+    message: the refusal itself already happened in the open. `ELOOP` needs no lstat — for a
+    single component under `O_NOFOLLOW` it can only mean a link — and must not get one: a link
+    swapped back for a file between the open and the lstat would be reported as an internal
+    error instead of the refusal it was.
     """
     try:
         return os.open(name, flags | os.O_NOFOLLOW | os.O_CLOEXEC, mode, dir_fd=dir_fd)
-    except OSError:
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise SymlinkRefusedError(shown) from None
         try:
             is_link = stat.S_ISLNK(os.stat(name, dir_fd=dir_fd, follow_symlinks=False).st_mode)
         except OSError:
             is_link = False
         if is_link:
             raise SymlinkRefusedError(shown) from None
+        raise
+
+
+def _open_root(root: Path) -> int:
+    """The workspace root, opened as a directory and never through a symlink.
+
+    The root is the operator's (FELIX_WORKSPACE_ROOT), and `workspace_root()` already refuses
+    one configured as a link. This holds the line at the open itself, for a root that is
+    swapped for a link afterwards and for callers that pass a root they did not get from there.
+    Components *above* the root may be links (`/tmp` on macOS is one); only the root is checked.
+    """
+    try:
+        return os.open(root, _DIR_FLAGS | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError:
+        if os.path.islink(root):
+            raise ValueError(f"workspace_root is a symlink: {root}") from None
         raise
 
 
@@ -190,8 +222,7 @@ def open_workspace_parent(
     ``OSError`` (`FileNotFoundError`, `NotADirectoryError`) for one that is not there.
     """
     parts = workspace_parts(user_path)
-    # The root is the operator's (FELIX_WORKSPACE_ROOT, already resolved), not the agent's.
-    fd = os.open(root, _DIR_FLAGS | os.O_CLOEXEC)
+    fd = _open_root(root)
     try:
         for i, seg in enumerate(parts[:-1]):
             if create:
@@ -233,9 +264,46 @@ def open_regular(dir_fd: int, name: str, flags: int, shown: str, mode: int = 0o6
     return fd
 
 
-def _read_fd(fd: int) -> bytes:
-    with os.fdopen(os.dup(fd), "rb") as fh:
-        return fh.read()
+def _pread(fd: int, size: int, offset: int) -> bytes:
+    """At most `size` bytes of `fd` from `offset` — never more, whatever the file's size."""
+    chunks: list[bytes] = []
+    while size > 0:
+        got = os.pread(fd, size, offset)
+        if not got:
+            break
+        chunks.append(got)
+        size -= len(got)
+        offset += len(got)
+    return b"".join(chunks)
+
+
+def _dir_batch(fd: int, *, dirs_and_files_only: bool = False) -> list[tuple[str, os.stat_result]]:
+    """Up to `_MAX_DIR_BATCH` entries of the directory `fd` as `(name, lstat)`, unsorted.
+
+    `scandir` over the descriptor, not `listdir` and a sort: the read stops at the batch, so a
+    directory of millions of entries costs the same as one of ten thousand. Ordering is the
+    tools' contract (a listing and a search are reproducible), so callers sort the batch —
+    which means a directory past it shows the first `_MAX_DIR_BATCH` entries in *directory*
+    order, sorted, rather than the lexically first ones. Nothing is followed: the stat is the
+    entry's own (`follow_symlinks=False`).
+    """
+    out: list[tuple[str, os.stat_result]] = []
+    with os.scandir(fd) as it:
+        for entry in it:
+            if len(out) >= _MAX_DIR_BATCH:
+                break
+            try:
+                st = entry.stat(follow_symlinks=False)
+            except OSError:
+                continue  # vanished between the read and the stat
+            if dirs_and_files_only and not (stat.S_ISDIR(st.st_mode) or stat.S_ISREG(st.st_mode)):
+                continue
+            out.append((entry.name, st))
+    return out
+
+
+def _by_name(entry: tuple[str, os.stat_result]) -> str:
+    return entry[0]
 
 
 def _write_all(fd: int, payload: bytes) -> None:
@@ -252,7 +320,12 @@ def workspace_root() -> Path:
         root = str(getattr(ctx.settings, "workspace_root", "") or "")
     if not root:
         raise ValueError("workspace_root is not configured (set FELIX_WORKSPACE_ROOT)")
-    path = Path(root).expanduser().resolve()
+    configured = Path(root).expanduser()
+    # The root itself may not be a link: whoever can repoint it moves every tool to another
+    # directory. Components above it may be (`/tmp` on macOS), and are resolved below.
+    if configured.is_symlink():
+        raise ValueError(f"workspace_root is a symlink: {configured}")
+    path = configured.resolve()
     if not path.exists():
         raise ValueError(f"workspace_root does not exist: {path}")
     if not path.is_dir():
@@ -307,20 +380,16 @@ async def _list_dir(args: PathArgs) -> ToolOutput:
         root = workspace_root()
         with open_workspace_dir(root, args.path) as (fd, rel):
             entries: list[dict[str, Any]] = []
-            for name in sorted(os.listdir(fd), key=str.lower):
-                if len(entries) >= _MAX_LIST_ENTRIES:
-                    break
-                try:
-                    st = os.stat(name, dir_fd=fd, follow_symlinks=False)
-                except OSError:
-                    continue
+            # Case-folded, then the exact name, which is unique in a directory: `A` and `a`
+            # cannot swap places with the cut at `_MAX_LIST_ENTRIES` between them.
+            batch = sorted(_dir_batch(fd), key=lambda e: (e[0].lower(), e[0]))
+            for name, st in batch[:_MAX_LIST_ENTRIES]:
+                mode = st.st_mode
                 # A symlink is reported as one, never as what it points at: the tools will
                 # not follow it, so calling it a file or a directory would be a lie.
-                kind = (
-                    "dir" if stat.S_ISDIR(st.st_mode) else "symlink" if stat.S_ISLNK(st.st_mode) else "file"
-                )
+                kind = "dir" if stat.S_ISDIR(mode) else "symlink" if stat.S_ISLNK(mode) else "file"
                 item: dict[str, Any] = {"path": _child_rel(rel, name), "type": kind}
-                if stat.S_ISREG(st.st_mode):
+                if stat.S_ISREG(mode):
                     item["size"] = st.st_size
                 entries.append(item)
     except ValueError as exc:
@@ -334,17 +403,33 @@ async def _list_dir(args: PathArgs) -> ToolOutput:
     return json.dumps({"path": rel, "entries": entries})
 
 
+def _read_window(root: Path, user_path: str, offset: int, limit: int) -> tuple[str, int, bytes]:
+    """`(rel, size, chunk)`: the file's size, and only the `limit` bytes at `offset` of it.
+
+    The whole file used to be read and then sliced, so `read_file` on a sparse 50 GiB file
+    allocated 50 GiB to return the first 512 KB of it. `limit` is capped at `_MAX_READ_BYTES` by
+    the argument model and again here, so that is the most one call reads, whatever the size.
+    """
+    with open_workspace_parent(root, user_path) as (parent, leaf, rel):
+        if leaf is None:
+            raise NotAFileError(rel)
+        fd = open_regular(parent, leaf, os.O_RDONLY, rel)
+        try:
+            size = os.fstat(fd).st_size
+            # Past the end is an empty window, as the slice it replaces was — and an offset past
+            # what `off_t` holds never reaches `pread`, which would raise OverflowError on it.
+            chunk = _pread(fd, min(limit, _MAX_READ_BYTES), offset) if offset < size else b""
+        finally:
+            os.close(fd)
+    return rel, size, chunk
+
+
 async def _read_file(args: ReadFileArgs) -> ToolOutput:
     try:
         root = workspace_root()
-        with open_workspace_parent(root, args.path) as (parent, leaf, rel):
-            if leaf is None:
-                return _refuse(f"not a file: {args.path}")
-            fd = open_regular(parent, leaf, os.O_RDONLY, rel)
-            try:
-                data = _read_fd(fd)
-            finally:
-                os.close(fd)
+        # Off the event loop: a bounded read, but a read of a file the agent's code controls,
+        # on whatever filesystem the workspace is.
+        rel, size, chunk = await asyncio.to_thread(_read_window, root, args.path, args.offset, args.limit)
     except NotAFileError:
         return _refuse(f"not a file: {args.path}")
     except ValueError as exc:
@@ -353,7 +438,6 @@ async def _read_file(args: ReadFileArgs) -> ToolOutput:
         if _missing(exc):
             return _refuse(f"not a file: {args.path}")
         return _os_failed(exc)
-    chunk = data[args.offset : args.offset + args.limit]
     try:
         text = chunk.decode("utf-8")
     except UnicodeDecodeError:
@@ -362,7 +446,7 @@ async def _read_file(args: ReadFileArgs) -> ToolOutput:
                 "path": rel,
                 "offset": args.offset,
                 "binary": True,
-                "size": len(data),
+                "size": size,
                 "bytes_read": len(chunk),
             }
         )
@@ -370,7 +454,7 @@ async def _read_file(args: ReadFileArgs) -> ToolOutput:
         {
             "path": rel,
             "offset": args.offset,
-            "size": len(data),
+            "size": size,
             "content": text,
         }
     )
@@ -430,24 +514,31 @@ async def _write_file(args: WriteFileArgs) -> ToolOutput:
     )
 
 
+def _create_edit_temp(parent: int) -> tuple[int, str]:
+    """A new, empty sibling in `parent` under a random name: `(fd, name)`."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    for _ in range(3):
+        tmp = f"{_EDIT_TMP_PREFIX}{secrets.token_hex(8)}"
+        try:
+            return open_at(parent, tmp, flags, tmp, 0o600), tmp
+        except FileExistsError, SymlinkRefusedError:
+            continue  # 64 random bits taken already: draw again, never reuse or delete it
+    raise FileExistsError("no free temporary name for the edit")
+
+
 def _replace_file(parent: int, leaf: str, mode: int, payload: bytes) -> None:
     """Write `payload` over `leaf` in the directory `parent` without ever leaving it half-written.
 
     A truncating write would leave, on failure partway, a file whose prior contents exist
     nowhere: an edit carries only the two strings, not the pre-image a whole-file write still
-    has in its own arguments. The temporary file is a sibling made with `O_EXCL` (a symlink the
-    agent planted under that name is unlinked, never written through), so the rename — which
-    replaces a name and follows nothing — is atomic, and it carries the target's mode: an
-    edited `scripts/test.sh` that came back without its executable bit would be a strange way
-    to break the gates.
+    has in its own arguments. The temporary file is a sibling under a random name, made with
+    `O_EXCL` through the directory's descriptor (so nothing already there — a planted link, a
+    directory — is written through or deleted; a collision just draws another name), and the
+    rename — which replaces a name and follows nothing — is atomic. It carries the target's
+    mode: an edited `scripts/test.sh` that came back without its executable bit would be a
+    strange way to break the gates.
     """
-    tmp = f".{leaf}.felix-edit"
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-    try:
-        fd = open_at(parent, tmp, flags, tmp, 0o600)
-    except FileExistsError, SymlinkRefusedError:
-        os.unlink(tmp, dir_fd=parent)  # a leftover from a crash, or a planted link
-        fd = open_at(parent, tmp, flags, tmp, 0o600)
+    fd, tmp = _create_edit_temp(parent)
     try:
         try:
             _write_all(fd, payload)
@@ -489,9 +580,10 @@ async def _edit_file(args: EditFileArgs) -> ToolOutput:
                 fd = open_regular(parent, leaf, os.O_RDONLY, rel)
                 try:
                     st = os.fstat(fd)
-                    if st.st_size > _MAX_EDIT_FILE_BYTES:
+                    # One byte past the cap, never the whole file: a file over it is refused.
+                    raw = _pread(fd, _MAX_EDIT_FILE_BYTES + 1, 0)
+                    if len(raw) > _MAX_EDIT_FILE_BYTES:
                         return _refuse(f"{args.path} exceeds {_MAX_EDIT_FILE_BYTES} bytes")
-                    raw = _read_fd(fd)
                 finally:
                     os.close(fd)
                 try:
@@ -625,7 +717,7 @@ def _scan_file(
     try:
         if os.fstat(fd).st_size > _MAX_SEARCH_FILE_BYTES:
             return
-        text = _read_fd(fd).decode("utf-8", errors="ignore")
+        text = _pread(fd, _MAX_SEARCH_FILE_BYTES, 0).decode("utf-8", errors="ignore")
     except OSError:
         return
     finally:
@@ -643,30 +735,46 @@ def _scan_tree(
 ) -> None:
     """Depth-first over `dir_fd`, by descriptor: a symlinked directory is never entered.
 
-    Runs on a worker thread that outlives the request's deadline, so it checks the deadline
-    itself rather than walking a large tree for nobody.
+    An explicit stack, not recursion, holding one open descriptor per level (closed as each
+    level finishes) and `_MAX_SEARCH_DEPTH` levels at most, so a deep tree the agent made can
+    neither exhaust the interpreter's stack nor the process's descriptors; deeper directories
+    are skipped. Runs on a worker thread that outlives the request's deadline, so it checks the
+    deadline itself rather than walking a large tree for nobody, and stops at the hit cap.
     """
-    for name in sorted(os.listdir(dir_fd)):
-        if len(hits) >= args.max_hits or time.monotonic() > deadline:
-            return
-        child = _child_rel(rel, name)
-        try:
-            mode = os.stat(name, dir_fd=dir_fd, follow_symlinks=False).st_mode
-        except OSError:
-            continue
-        if stat.S_ISDIR(mode):
+    # (descriptor, its rel path, entries still to visit — reverse-sorted, so `pop` is in name
+    # order and the walk is the same pre-order the recursive one was). `dir_fd` is the caller's.
+    stack = [(dir_fd, rel, sorted(_dir_batch(dir_fd, dirs_and_files_only=True), key=_by_name, reverse=True))]
+    try:
+        while stack:
+            fd, here, pending = stack[-1]
+            if not pending:
+                stack.pop()
+                if fd != dir_fd:
+                    os.close(fd)
+                continue
+            if len(hits) >= args.max_hits or time.monotonic() > deadline:
+                return
+            name, st = pending.pop()
+            child = _child_rel(here, name)
+            if stat.S_ISREG(st.st_mode):
+                _scan_file(fd, name, child, args, pattern, hits)
+                continue
+            if len(stack) > _MAX_SEARCH_DEPTH:
+                continue
             try:
-                sub = open_at(dir_fd, name, _DIR_FLAGS, child)
+                sub = open_at(fd, name, _DIR_FLAGS, child)
             except ValueError, OSError:
                 continue
             try:
-                _scan_tree(sub, child, args, pattern, hits, deadline)
+                batch = sorted(_dir_batch(sub, dirs_and_files_only=True), key=_by_name, reverse=True)
             except OSError:
-                pass
-            finally:
                 os.close(sub)
-        elif stat.S_ISREG(mode):
-            _scan_file(dir_fd, name, child, args, pattern, hits)
+                continue
+            stack.append((sub, child, batch))
+    finally:
+        for fd, _, _ in stack:
+            if fd != dir_fd:
+                os.close(fd)
 
 
 def _search(root: Path, args: SearchFilesArgs, pattern: re.Pattern[str] | None) -> list[dict[str, Any]]:

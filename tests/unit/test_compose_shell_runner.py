@@ -89,4 +89,49 @@ def test_the_stores_publish_no_host_port() -> None:
 
 def test_the_shell_service_has_a_process_ceiling() -> None:
     shell = _services()["shell"]
-    assert isinstance(shell["pids_limit"], int) and 0 < shell["pids_limit"] <= 1024
+    assert shell["pids_limit"] == 512
+
+
+# Every key the `shell` service may carry. An allowlist, not a list of dangerous keys: Compose
+# grows new ways to share a namespace with another container, and one of them (`pid:
+# "service:api"`, and `/proc/<api pid>/environ` is readable) undoes the whole overlay. A key
+# not named here fails until someone has decided it is safe and added it.
+SHELL_KEYS_ALLOWED = {
+    "build",
+    "image",
+    "command",
+    "environment",
+    "volumes",
+    "networks",
+    "cap_drop",
+    "security_opt",
+    "pids_limit",
+    "mem_limit",
+    "cpus",
+    "healthcheck",
+    "restart",
+}
+
+# Named as well as excluded by the allowlist, so the reason each one matters is on the record.
+SHELL_KEYS_FORBIDDEN = {
+    "pid",  # service:api / host -> another process's /proc/<pid>/environ
+    "ipc",
+    "volumes_from",  # mounts whatever api mounts
+    "secrets",
+    "privileged",
+    "network_mode",  # service:api shares api's loopback and its view of `default`
+    "extra_hosts",
+    "devices",
+    "cap_add",
+    "env_file",
+}
+
+
+def test_the_shell_service_carries_only_allowlisted_keys() -> None:
+    shell = _services()["shell"]
+    assert set(shell) <= SHELL_KEYS_ALLOWED, sorted(set(shell) - SHELL_KEYS_ALLOWED)
+    assert not SHELL_KEYS_FORBIDDEN & SHELL_KEYS_ALLOWED
+    for key in SHELL_KEYS_FORBIDDEN:
+        assert key not in shell, key
+    assert shell["cap_drop"] == ["ALL"]
+    assert shell["security_opt"] == ["no-new-privileges:true"]

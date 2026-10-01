@@ -244,7 +244,7 @@ async def test_an_edited_file_keeps_its_mode(ws: Path) -> None:
 
     assert stat.S_IMODE(script.stat().st_mode) == 0o755
     assert script.read_text(encoding="utf-8") == "#!/bin/sh\nnew\n"
-    assert not list(ws.glob(".*.felix-edit")), "the temp file does not outlive the rename"
+    assert [p.name for p in ws.iterdir()] == ["run.sh"], "the temp file does not outlive the rename"
 
 
 def test_the_read_and_the_write_are_both_inside_the_lock() -> None:
@@ -294,4 +294,4 @@ async def test_a_write_that_fails_leaves_the_original_where_it_was(
 
     assert "No space left on device" in out
     assert target.read_text(encoding="utf-8") == "original\n"
-    assert not list(ws.glob(".*.felix-edit"))
+    assert [p.name for p in ws.iterdir()] == ["a.txt"], "the temp file is removed on failure"

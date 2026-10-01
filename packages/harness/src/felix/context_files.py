@@ -15,6 +15,12 @@ CONTEXT_FILENAMES = ("AGENTS.md", "AGENTS.override.md", "CLAUDE.md")
 # CONTEXT_FILENAMES happens to be written in.
 _AGENTS_MD_PRECEDENCE = ("AGENTS.override.md", "AGENTS.md", "CLAUDE.md")
 
+# A local context file is read on every agent build, from a directory the agent's own code can
+# write, and all of it goes into the system prompt. 256 KB is where `search_files` stops reading
+# a file, and far past any instruction file worth sending a model every turn. A file over it is
+# ignored with a warning rather than cut short: half an instruction file is a different one.
+MAX_CONTEXT_FILE_BYTES = 256_000
+
 
 async def _get_text(store: Any | None, key: str) -> str | None:
     if store is None:
@@ -52,12 +58,18 @@ def _read_local(root: Path, key: str) -> str | None:
                 return None
             fd = open_regular(parent, leaf, os.O_RDONLY, rel)
             with os.fdopen(fd, "rb") as fh:
-                data = fh.read()
+                # The fstat refuses without reading; the bounded read, one byte past the cap,
+                # refuses a file that grew after it.
+                too_big = os.fstat(fd).st_size > MAX_CONTEXT_FILE_BYTES
+                data = b"" if too_big else fh.read(MAX_CONTEXT_FILE_BYTES + 1)
     except ValueError:
         logger.warning("context file key %r escapes the workspace root or is not a file; ignored", key)
         return None
     except OSError:
         logger.debug("local context file read failed for %s", key, exc_info=True)
+        return None
+    if too_big or len(data) > MAX_CONTEXT_FILE_BYTES:
+        logger.warning("context file %s exceeds %d bytes; ignored", key, MAX_CONTEXT_FILE_BYTES)
         return None
     try:
         return data.decode("utf-8")
