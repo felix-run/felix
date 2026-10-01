@@ -187,6 +187,87 @@ async def test_a_label_lands_on_the_event_it_names(boot: Any) -> None:
         assert labels.get(event_id) == "milestone", snap.json()
 
 
+async def _assistant_event_id(app: Booted, thread: str) -> str:
+    snap = await app.client.get(f"/chat/sessions/{thread}")
+    return next(e["id"] for e in snap.json()["transcript"] if e.get("role") == "assistant")
+
+
+async def test_feedback_reads_back_from_the_snapshot_and_clears(boot: Any) -> None:
+    """A rating lands on the turn it names, comes back on the snapshot, and `None` clears it."""
+    thread = "e2e-feedback"
+    async with boot([_answer()]) as app:
+        await _seed(app, thread)
+        event_id = await _assistant_event_id(app, thread)
+
+        rated = await app.client.post(
+            "/chat/sessions/feedback",
+            json={"thread_id": thread, "event_id": event_id, "rating": "down", "note": "wrong file"},
+        )
+        assert rated.status_code == 200, rated.text
+
+        feedback = (await app.client.get(f"/chat/sessions/{thread}")).json()["feedback"]
+        assert feedback[event_id]["rating"] == "down", feedback
+        assert feedback[event_id]["note"] == "wrong file", feedback
+
+        cleared = await app.client.post(
+            "/chat/sessions/feedback",
+            json={"thread_id": thread, "event_id": event_id, "rating": None},
+        )
+        assert cleared.status_code == 200, cleared.text
+        assert event_id not in (await app.client.get(f"/chat/sessions/{thread}")).json()["feedback"]
+
+
+async def test_feedback_is_listed_tenant_wide_in_the_audit_log(boot: Any) -> None:
+    """The operator's question is across threads -- which answers were marked down -- so every
+    rating is an audit event, filterable by type."""
+    thread = "e2e-feedback-audit"
+    async with boot([_answer()]) as app:
+        await _seed(app, thread)
+        event_id = await _assistant_event_id(app, thread)
+        await app.client.post(
+            "/chat/sessions/feedback",
+            json={"thread_id": thread, "event_id": event_id, "rating": "down"},
+        )
+
+        # The flush loop is a lifespan task, which ASGITransport never starts (see conftest).
+        from felix.flush import flush_all
+
+        await flush_all(app.settings)
+        audit = await app.client.get("/audit", params={"event_type": "turn_feedback"})
+        assert audit.status_code == 200, audit.text
+        rows = audit.json()["items"]
+        assert any(
+            (r.get("payload_json") or {}).get("event_id") == event_id and r.get("status") == "down"
+            for r in rows
+        ), rows
+
+
+async def test_feedback_refuses_what_is_not_an_answer(boot: Any) -> None:
+    """A rating grades an answer: an unknown id is a 404, a user message a 400."""
+    thread = "e2e-feedback-refuse"
+    async with boot([_answer()]) as app:
+        await _seed(app, thread)
+        unknown = await app.client.post(
+            "/chat/sessions/feedback",
+            json={"thread_id": thread, "event_id": "nope", "rating": "up"},
+        )
+        assert unknown.status_code == 404, unknown.text
+
+        snap = await app.client.get(f"/chat/sessions/{thread}")
+        user_id = next(e["id"] for e in snap.json()["transcript"] if e.get("role") == "user")
+        on_user = await app.client.post(
+            "/chat/sessions/feedback",
+            json={"thread_id": thread, "event_id": user_id, "rating": "up"},
+        )
+        assert on_user.status_code == 400, on_user.text
+
+        bad = await app.client.post(
+            "/chat/sessions/feedback",
+            json={"thread_id": thread, "event_id": user_id, "rating": "meh"},
+        )
+        assert bad.status_code == 422, bad.text
+
+
 # --- exporting -----------------------------------------------------------------------------
 
 

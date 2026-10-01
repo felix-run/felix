@@ -128,6 +128,15 @@ async def update_thread_meta(
                 else:
                     _mem_set_label(k, str(v))
             meta["labels"] = labels
+        elif key == "feedback" and isinstance(value, dict):
+            # Same merge as labels: keyed by event id, `None` clears one.
+            feedback = dict(meta.get("feedback") or {})
+            for k, v in value.items():
+                if v is None:
+                    feedback.pop(k, None)
+                else:
+                    feedback[k] = v
+            meta["feedback"] = feedback
         elif value is not None or key in {"session_name", "parent_session_id", "model_id"}:
             meta[key] = value
     meta["updated_at"] = int(time.time() * 1000)

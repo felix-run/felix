@@ -450,6 +450,48 @@
         "title": "EvalRunRequest",
         "type": "object"
       },
+      "FeedbackRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "event_id": {
+            "minLength": 1,
+            "title": "Event Id",
+            "type": "string"
+          },
+          "note": {
+            "default": "",
+            "maxLength": 1000,
+            "title": "Note",
+            "type": "string"
+          },
+          "rating": {
+            "anyOf": [
+              {
+                "enum": [
+                  "up",
+                  "down"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rating"
+          },
+          "thread_id": {
+            "minLength": 1,
+            "title": "Thread Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "thread_id",
+          "event_id"
+        ],
+        "title": "FeedbackRequest",
+        "type": "object"
+      },
       "ForkRequest": {
         "additionalProperties": false,
         "properties": {
@@ -2673,6 +2715,50 @@
           }
         },
         "summary": "Append Custom Entry",
+        "tags": [
+          "Threads"
+        ]
+      }
+    },
+    "/chat/sessions/feedback": {
+      "post": {
+        "description": "Rate an assistant turn up or down, or clear a rating.\n\nStored twice, for two readers. The thread's metadata holds the current rating per\nevent, which the snapshot returns as `feedback` so a client can draw it. And every\nchange is an audit event, `turn_feedback`, because the question an operator asks of\nfeedback is tenant-wide -- which answers did people mark down this week -- and the\naudit log is the record that is already filterable, paged and tenant-scoped.\n\nUnlike a label, nothing is appended to the session log: a rating is about the\nconversation, not part of it, and an event there would move the thread's leaf.",
+        "operationId": "set_session_feedback_chat_sessions_feedback_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FeedbackRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Set Session Feedback Chat Sessions Feedback Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Session Feedback",
         "tags": [
           "Threads"
         ]

@@ -259,6 +259,27 @@ class FelixClient:
             resp.raise_for_status()
             return resp.json()
 
+    async def feedback(
+        self,
+        event_id: str,
+        rating: str | None,
+        *,
+        note: str = "",
+        thread_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Rate an assistant turn `"up"` or `"down"`, or clear it with `None`."""
+        tid = thread_id if thread_id is not None else self._thread_id
+        if not tid:
+            raise ValueError("thread_id required for feedback")
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.post(
+                f"{self.base_url.rstrip('/')}/chat/sessions/feedback",
+                headers=self._headers(),
+                json={"thread_id": tid, "event_id": event_id, "rating": rating, "note": note},
+            )
+            resp.raise_for_status()
+            return resp.json()
+
     async def abort(self, *, thread_id: str | None = None) -> dict[str, Any]:
         tid = thread_id if thread_id is not None else self._thread_id
         if not tid:
