@@ -51,11 +51,35 @@ def test_declared_value_equal_to_the_default_is_still_honoured() -> None:
     assert _context_window_for_manifest(_Manifest("claude-opus-5"), spec) == 128_000
 
 
-def test_manifest_without_a_model_falls_back_to_the_default() -> None:
+def test_manifest_without_a_model_uses_the_default_models_window() -> None:
+    """A manifest naming no model runs on `default_model_id`, so that model's window applies.
+
+    This used to return a flat 128000 -- every bundled manifest, since none names a model --
+    so each compacted at 128K on a 200K model and `/v1/models` listed 128K for all of them.
+    """
+    from felix.config import Settings
+
     class _Bare:
         spec = None
 
-    assert _context_window_for_manifest(_Bare(), SessionSpec()) == 128_000
+    on_200k = Settings(database_url="memory://cw", default_model_id="claude-sonnet-4-5")
+    assert _context_window_for_manifest(_Bare(), SessionSpec(), on_200k) == 200_000
+    on_1m = Settings(database_url="memory://cw", default_model_id="claude-opus-5")
+    assert _context_window_for_manifest(_Bare(), SessionSpec(), on_1m) == 1_000_000
+    # A declared window still wins over the default model's.
+    declared = SessionSpec(context_window_tokens=64_000)
+    assert _context_window_for_manifest(_Bare(), declared, on_1m) == 64_000
+
+
+def test_a_default_with_no_model_at_all_still_answers() -> None:
+    """No model named and no default configured is the one case the fixed number is for."""
+    from felix.config import Settings
+
+    class _Bare:
+        spec = None
+
+    unset = Settings(database_url="memory://cw", default_model_id="")
+    assert _context_window_for_manifest(_Bare(), SessionSpec(), unset) == 128_000
 
 
 def test_missing_session_spec_is_not_an_error() -> None:
@@ -93,6 +117,26 @@ def test_the_model_listing_reports_the_window_compaction_uses() -> None:
     assert catalog_from_manifest("listed", _real())["felix"]["contextWindow"] == 1_000_000
     declared = catalog_from_manifest("listed", _real(context_window_tokens=64_000))
     assert declared["felix"]["contextWindow"] == 64_000
+
+
+def test_the_listing_reports_the_default_models_window_for_a_manifest_naming_none(
+    monkeypatch: Any,
+) -> None:
+    """The listing only asked for the window when a manifest had a `model` block; without one
+    it looked the window up by the manifest's name, which is 128K for any name."""
+    from felix.config import get_settings
+    from felix.manifests.loader import parse_manifest
+    from felix.usage.catalog import catalog_from_manifest
+
+    monkeypatch.setenv("FELIX_DEFAULT_MODEL_ID", "claude-sonnet-4-5")
+    get_settings.cache_clear()
+    try:
+        bare = parse_manifest(
+            {"apiVersion": "felix/v1", "kind": "Agent", "metadata": {"name": "bare"}, "spec": {}}
+        )
+        assert catalog_from_manifest("bare", bare)["felix"]["contextWindow"] == 200_000
+    finally:
+        get_settings.cache_clear()
 
 
 def test_writing_a_window_and_omitting_it_hash_differently() -> None:

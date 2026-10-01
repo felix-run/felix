@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A manifest that names no model compacts against its model's real window.** With no
+  `spec.model.id` and no `session.context_window_tokens`, the window fell to a fixed 128000
+  rather than to `FELIX_DEFAULT_MODEL_ID`, the model the run actually uses. That is every bundled
+  manifest: `quick`, `cowork`, `deep` and the rest compacted at 128K on a 200K default, and
+  `/v1/models` listed `contextWindow: 128000` for all of them. That last part was a second
+  path: the listing asked for the window only when a manifest had a `model` block. Both now
+  resolve the default route the way the model client does. 128000 remains only for a deployment
+  with no default model at all.
+
 ### Added
 
 - **An agent can ask the person watching a question.** `ask_user` is a built-in tool over the
