@@ -16,6 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Four Claude models were billed at the wrong rates.** `claude-sonnet-5` was priced as Sonnet
+  4 ($3/$15 per MTok; it is $2/$10). The catalog matches model ids by longest substring, so
+  `claude-opus-5-5` was priced as Opus 5 ($5/$25; it is $4/$20, with cache reads at $0.20), and
+  `claude-fable-5-1` and `claude-mythos-5-1` read cache at the 5.0 rate ($1; it is $0.25). Every
+  error over-charged, so `limits.max_cost_usd` stopped runs before their budget was spent and
+  usage reports ran high. Rates are checked against Anthropic's pricing page, and each bundled
+  Claude rate is now pinned field by field.
+
 - **After compaction, a kept tool result is replayed with the call it answers.** A compaction
   checkpoint recorded each kept turn's `tool_calls`, and the replay rebuilt the turns from
   `role`, `content`, `tool_call_id` and `name` only. So on every turn after a compaction, a kept

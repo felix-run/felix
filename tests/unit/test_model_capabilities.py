@@ -136,14 +136,36 @@ def test_truncated_and_refused_runs_are_not_recorded_as_complete() -> None:
 # --- pricing and context --------------------------------------------------------
 
 
-def test_pricing_matches_the_current_tiers() -> None:
+# (input, output, cache_read, cache_write) per MTok, from the Anthropic pricing page read on
+# 2026-09-30. Every rate is asserted, not just input: cache reads are where the point
+# releases differ, and a long agentic session is mostly cache reads.
+_PUBLISHED = {
+    "claude-fable-5-1": (10.0, 50.0, 0.25, 12.5),
+    "claude-mythos-5-1": (10.0, 50.0, 0.25, 12.5),
+    "claude-fable-5": (10.0, 50.0, 1.0, 12.5),
+    "claude-opus-5-5": (4.0, 20.0, 0.2, 5.0),
+    "claude-opus-5": (5.0, 25.0, 0.5, 6.25),
+    "claude-opus-4-8": (5.0, 25.0, 0.5, 6.25),
+    "claude-sonnet-5": (2.0, 10.0, 0.2, 2.5),
+    "claude-sonnet-5-5": (2.0, 10.0, 0.2, 2.5),
+    "claude-sonnet-4-6": (3.0, 15.0, 0.3, 3.75),
+    # Haiku was priced at 0.8/4.0, under-reporting every run.
+    "claude-haiku-4-5": (1.0, 5.0, 0.1, 1.25),
+}
+
+
+@pytest.mark.parametrize("model_id", sorted(_PUBLISHED))
+def test_pricing_matches_the_published_rates(model_id: str) -> None:
+    """Sonnet 5 was billed at Sonnet 4's $3/$15, and the point releases matched their
+    predecessor's key by substring: `claude-opus-5-5` paid Opus 5's rates and
+    `claude-fable-5-1` read its cache at four times the price. All in the direction of
+    stopping a run under `limits.max_cost_usd` before its budget was spent."""
     from felix.usage.pricing import _lookup_price
 
-    assert _lookup_price("claude-opus-5")["input"] == 5.0
-    assert _lookup_price("claude-sonnet-5")["input"] == 3.0
-    assert _lookup_price("claude-fable-5")["output"] == 50.0
-    # Haiku was priced at 0.8/4.0, under-reporting every run.
-    assert _lookup_price("claude-haiku-4-5")["input"] == 1.0
+    price = _lookup_price(model_id)
+    assert (price["input"], price["output"], price["cache_read"], price["cache_write"]) == _PUBLISHED[
+        model_id
+    ]
 
 
 def test_context_window_is_1m_for_the_current_family() -> None:
