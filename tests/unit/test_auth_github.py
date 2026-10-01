@@ -23,7 +23,15 @@ from joserfc import jwk
 _KEY = jwk.RSAKey.generate_key(2048)
 _PRIVATE = _KEY.as_pem(private=True).decode()
 _PUBLIC = _KEY.as_pem(private=False).decode()
-_ORGS = {"acme": {"tenant": "acme", "scopes": ["manifests:write", "audit:read"]}}
+# Numeric org ids: the identity a mapping pins, since an org *name* can be re-registered.
+_ORG_IDS = {"acme": 101, "globex": 102, "acme-ops": 103}
+
+
+def _org(name: str, tenant: str, scopes: list[str] | None = None) -> dict[str, Any]:
+    return {"id": _ORG_IDS[name.lower()], "tenant": tenant, "scopes": scopes or []}
+
+
+_ORGS = {"acme": _org("acme", "acme", ["manifests:write", "audit:read"])}
 
 
 def _settings(**kw: Any) -> Settings:
@@ -51,12 +59,19 @@ class FakeGitHub:
     # org (as requested) -> (status, membership state)
     memberships: dict[str, tuple[int, str]] = field(default_factory=lambda: {"acme": (200, "active")})
     api_status: int = 200
+    # Status for the membership reads only, after `/user` has answered 200.
+    membership_status: int | None = None
+    # org (lowercased) -> the id GitHub reports for it now
+    org_ids: dict[str, int] = field(default_factory=lambda: dict(_ORG_IDS))
+    device_code_body: dict[str, Any] | None = None
     requests: list[httpx.Request] = field(default_factory=list)
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
         path = request.url.path
         if request.url.host == "github.com" and path == "/login/device/code":
+            if self.device_code_body is not None:
+                return httpx.Response(200, json=self.device_code_body)
             return httpx.Response(
                 200,
                 json={
@@ -75,9 +90,12 @@ class FakeGitHub:
             return httpx.Response(self.api_status, json={"message": "boom"})
         if path == "/user":
             return httpx.Response(200, json=self.user)
+        if self.membership_status is not None:
+            return httpx.Response(self.membership_status, json={"message": "boom"})
         org = path.removeprefix("/user/memberships/orgs/")
         status, state = self.memberships.get(org, (404, ""))
-        return httpx.Response(status, json={"state": state, "organization": {"login": org}})
+        organization = {"login": org, "id": self.org_ids.get(org.lower())}
+        return httpx.Response(status, json={"state": state, "organization": organization})
 
     def client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=httpx.MockTransport(self.handler))
@@ -106,29 +124,51 @@ def _accepted(settings: Settings, token: str) -> dict[str, Any]:
 
 
 def test_org_map_is_keyed_case_insensitively_and_keeps_the_configured_spelling() -> None:
-    grants = parse_org_tenants(json.dumps({"Acme-Corp": {"tenant": "acme", "scopes": ["a", "b", "a"]}}))
+    grants = parse_org_tenants(
+        json.dumps({"Acme-Corp": {"id": 9, "tenant": "acme", "scopes": ["a", "b", "a"]}})
+    )
     assert list(grants) == ["acme-corp"]
     assert grants["acme-corp"].org == "Acme-Corp"
+    assert grants["acme-corp"].org_id == 9
     assert grants["acme-corp"].scopes == ("a", "b")
 
 
+def test_the_cached_org_map_cannot_be_changed_by_a_caller() -> None:
+    grants = parse_org_tenants(json.dumps(_ORGS))
+    with pytest.raises(TypeError):
+        grants["evil"] = grants["acme"]  # type: ignore[index]
+
+
 @pytest.mark.parametrize(
-    "raw",
+    ("raw", "message"),
     [
-        pytest.param('["acme"]', id="not-an-object"),
-        pytest.param("{", id="not-json"),
-        pytest.param('{"acme/../admin": {"tenant": "t"}}', id="path-in-org"),
-        pytest.param('{"-acme": {"tenant": "t"}}', id="leading-hyphen"),
-        pytest.param('{"ac--me": {"tenant": "t"}}', id="double-hyphen"),
-        pytest.param('{"a": {"tenant": "t"}, "A": {"tenant": "t"}}', id="duplicate-by-case"),
-        pytest.param('{"acme": {"tenant": ""}}', id="empty-tenant"),
-        pytest.param('{"acme": {"tenant": "t", "role": "x"}}', id="unknown-key"),
-        pytest.param('{"acme": {"tenant": "t", "scopes": ["a b"]}}', id="space-in-scope"),
-        pytest.param('{"acme": {"tenant": "t", "scopes": "a"}}', id="scopes-not-a-list"),
+        pytest.param('["acme"]', "expected a JSON object", id="not-an-object"),
+        pytest.param("{", "not valid JSON", id="not-json"),
+        pytest.param(
+            '{"acme/../admin": {"id": 1, "tenant": "t"}}', "not a GitHub org name", id="path-in-org"
+        ),
+        pytest.param('{"-acme": {"id": 1, "tenant": "t"}}', "not a GitHub org name", id="leading-hyphen"),
+        pytest.param('{"ac--me": {"id": 1, "tenant": "t"}}', "not a GitHub org name", id="double-hyphen"),
+        pytest.param(
+            '{"a": {"id": 1, "tenant": "t"}, "A": {"id": 1, "tenant": "t"}}',
+            "listed twice",
+            id="duplicate-by-case",
+        ),
+        pytest.param('{"acme": {"tenant": "t"}}', "numeric GitHub id", id="missing-id"),
+        pytest.param('{"acme": {"id": "101", "tenant": "t"}}', "numeric GitHub id", id="string-id"),
+        pytest.param('{"acme": {"id": true, "tenant": "t"}}', "numeric GitHub id", id="boolean-id"),
+        pytest.param('{"acme": {"id": 1, "tenant": ""}}', "`tenant` must be", id="empty-tenant"),
+        pytest.param('{"acme": {"id": 1, "tenant": "t", "role": "x"}}', "unknown keys", id="unknown-key"),
+        pytest.param(
+            '{"acme": {"id": 1, "tenant": "t", "scopes": ["a b"]}}', "whitespace", id="space-in-scope"
+        ),
+        pytest.param(
+            '{"acme": {"id": 1, "tenant": "t", "scopes": "a"}}', "list of non-empty", id="scopes-not-list"
+        ),
     ],
 )
-def test_org_map_rejects_malformed_entries(raw: str) -> None:
-    with pytest.raises(ValueError):
+def test_org_map_rejects_malformed_entries(raw: str, message: str) -> None:
+    with pytest.raises(ValueError, match=re.escape(message)):
         parse_org_tenants(raw)
 
 
@@ -145,19 +185,40 @@ async def test_start_asks_github_for_a_device_code_with_read_org() -> None:
 
 
 @pytest.mark.parametrize(
-    ("error", "status"),
+    ("body", "code"),
     [
-        ("authorization_pending", 428),
-        ("slow_down", 428),
-        ("expired_token", 400),
-        ("access_denied", 403),
-        ("device_flow_disabled", 503),
+        pytest.param({"error": "device_flow_disabled"}, "github_config_error", id="flow-disabled"),
+        pytest.param({"error": "something_new"}, "github_config_error", id="unknown-github-error"),
+        pytest.param({"device_code": "d", "user_code": "u"}, "github_unavailable", id="incomplete"),
     ],
 )
-async def test_an_unapproved_poll_says_what_to_do_next(error: str, status: int) -> None:
+async def test_a_failed_start_says_whose_problem_it_is(body: dict[str, Any], code: str) -> None:
+    fake = FakeGitHub(device_code_body=body)
+    async with fake.client() as client:
+        with pytest.raises(GitHubLoginError) as info:
+            await start_device_flow(_settings(), client=client)
+    assert info.value.code == code
+    assert info.value.status == {"github_config_error": 503, "github_unavailable": 502}[code]
+
+
+@pytest.mark.parametrize(
+    ("error", "code", "status"),
+    [
+        ("authorization_pending", "authorization_pending", 428),
+        ("slow_down", "slow_down", 428),
+        ("expired_token", "expired_token", 400),
+        ("incorrect_device_code", "invalid_device_code", 400),
+        ("access_denied", "access_denied", 403),
+        # GitHub's vocabulary never becomes ours: an unlisted error is the operator's.
+        ("device_flow_disabled", "github_config_error", 503),
+        ("a_code_github_adds_later", "github_config_error", 503),
+    ],
+)
+async def test_an_unapproved_poll_says_what_to_do_next(error: str, code: str, status: int) -> None:
     fake = FakeGitHub(polls=[{"error": error, "interval": 10}])
     exc = await _refused(_settings(), fake)
-    assert (exc.code, exc.status, exc.interval) == (error, status, 10)
+    assert (exc.code, exc.status, exc.interval) == (code, status, 10)
+    assert error in str(exc)  # GitHub's own string survives, in the message
     # Nothing past the poll is attempted until GitHub has approved.
     assert [r.url.host for r in fake.requests] == ["github.com"]
 
@@ -174,8 +235,9 @@ async def test_an_approved_poll_mints_a_token_the_api_accepts() -> None:
     assert seen["claims"]["idp"] == "github"
     assert seen["claims"]["github_login"] == "octo"
     assert seen["claims"]["exp"] - seen["claims"]["iat"] == settings.github_login_ttl_seconds
-    # GitHub's token is used and dropped; it is not in what the caller gets back.
+    # GitHub's token is used and dropped; it is in neither the token nor what wraps it.
     assert "gho_x" not in repr(minted)
+    assert "gho_x" not in json.dumps(seen["claims"])
     assert fake.requests[-1].url.path == "/user/memberships/orgs/acme"
 
 
@@ -190,7 +252,7 @@ async def test_a_boolean_user_id_is_not_an_id() -> None:
 
 
 async def test_membership_is_read_at_the_configured_spelling_of_the_org() -> None:
-    settings = _settings(github_org_tenants=json.dumps({"Acme": {"tenant": "acme", "scopes": []}}))
+    settings = _settings(github_org_tenants=json.dumps({"Acme": _org("acme", "acme")}))
     fake = FakeGitHub(memberships={"Acme": (200, "active")})
     minted = await _exchange(settings, fake)
     assert minted.tenant == "acme"
@@ -209,15 +271,25 @@ async def test_a_non_member_is_refused() -> None:
     assert (exc.code, exc.status) == ("not_a_member", 403)
 
 
-async def test_an_org_hiding_membership_from_the_app_is_named_as_the_cause() -> None:
+async def test_an_org_hiding_membership_is_the_cause_but_not_named_to_the_caller(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Any GitHub user can finish the device flow, so the configured org names stay in the log."""
     exc = await _refused(_settings(), FakeGitHub(memberships={"acme": (403, "")}))
     assert (exc.code, exc.status) == ("org_access_restricted", 403)
-    assert "acme" in str(exc)
+    assert "acme" not in str(exc)
+    assert "acme" in caplog.text
+
+
+async def test_a_reregistered_org_name_grants_nothing() -> None:
+    """The org was renamed or deleted and someone else took the name: its id changed."""
+    exc = await _refused(_settings(), FakeGitHub(org_ids={"acme": 999}))
+    assert (exc.code, exc.status) == ("not_a_member", 403)
 
 
 _TWO_TENANTS = {
-    "acme": {"tenant": "acme", "scopes": ["audit:read"]},
-    "globex": {"tenant": "globex", "scopes": ["manifests:write"]},
+    "acme": _org("acme", "acme", ["audit:read"]),
+    "globex": _org("globex", "globex", ["manifests:write"]),
 }
 _BOTH = {"acme": (200, "active"), "globex": (200, "active")}
 
@@ -244,14 +316,15 @@ async def test_choosing_a_tenant_membership_does_not_grant_is_refused() -> None:
 
 async def test_two_orgs_on_one_tenant_merge_their_scopes() -> None:
     orgs = {
-        "acme": {"tenant": "acme", "scopes": ["audit:read"]},
-        "acme-ops": {"tenant": "acme", "scopes": ["jobs:write"]},
+        "acme": _org("acme", "acme", ["audit:read"]),
+        "acme-ops": _org("acme-ops", "acme", ["jobs:write"]),
     }
     settings = _settings(github_org_tenants=json.dumps(orgs))
     minted = await _exchange(
         settings, FakeGitHub(memberships={"acme": (200, "active"), "acme-ops": (200, "active")})
     )
-    assert set(minted.scopes) == {"audit:read", "jobs:write"}
+    seen = _accepted(settings, minted.access_token)
+    assert seen["principal"].scopes == frozenset({"audit:read", "jobs:write"})
 
 
 # --- GitHub failing ---------------------------------------------------------------------
@@ -259,6 +332,18 @@ async def test_two_orgs_on_one_tenant_merge_their_scopes() -> None:
 
 async def test_a_github_error_is_a_502_not_a_refusal() -> None:
     exc = await _refused(_settings(), FakeGitHub(api_status=500))
+    assert (exc.code, exc.status) == ("github_unavailable", 502)
+
+
+@pytest.mark.parametrize("status", [500, 401])
+async def test_a_failed_membership_read_is_not_read_as_non_membership(status: int) -> None:
+    """An outage or a revoked token must not tell a member they are not one."""
+    exc = await _refused(_settings(), FakeGitHub(membership_status=status))
+    assert (exc.code, exc.status) == ("github_unavailable", 502)
+
+
+async def test_an_approval_without_a_token_is_a_502() -> None:
+    exc = await _refused(_settings(), FakeGitHub(polls=[{"token_type": "bearer"}]))
     assert (exc.code, exc.status) == ("github_unavailable", 502)
 
 
@@ -315,7 +400,7 @@ _OTHER = jwk.RSAKey.generate_key(2048).as_pem(private=False).decode()
         pytest.param({"github_org_tenants": "{"}, "FELIX_GITHUB_ORG_TENANTS", id="bad-json"),
         pytest.param({"github_org_tenants": "{}"}, "at least one org", id="empty-map"),
         pytest.param(
-            {"github_org_tenants": json.dumps({"acme": {"tenant": "acme corp"}})},
+            {"github_org_tenants": json.dumps({"acme": _org("acme", "acme corp")})},
             "FELIX_GITHUB_ORG_TENANTS (acme)",
             id="unusable-tenant",
         ),
@@ -326,6 +411,9 @@ _OTHER = jwk.RSAKey.generate_key(2048).as_pem(private=False).decode()
         pytest.param({"jwks_private": ""}, "FELIX_JWKS_PRIVATE", id="no-private-key"),
         pytest.param({"jwks_public": _OTHER}, "FELIX_JWKS_PUBLIC pairs", id="mismatched-keys"),
         pytest.param({"allowed_tenants": "globex"}, "not in FELIX_ALLOWED_TENANTS", id="tenant-not-allowed"),
+        pytest.param(
+            {"github_org_tenants": '{"acme": {"tenant": "acme"}}'}, "numeric GitHub id", id="no-org-id"
+        ),
         pytest.param(
             {"jwt_verifiers": "self:felix-self;tenant=fixed:ops,self:felix-self"},
             "pins the tenant",
@@ -341,7 +429,17 @@ def test_a_login_that_would_mint_refused_tokens_does_not_start(
 
 
 def test_admin_scope_starts_but_says_so(caplog: pytest.LogCaptureFixture) -> None:
-    _settings(
-        github_org_tenants=json.dumps({"acme": {"tenant": "acme", "scopes": ["admin"]}})
-    ).validate_runtime()
+    _settings(github_org_tenants=json.dumps({"acme": _org("acme", "acme", ["admin"])})).validate_runtime()
     assert "admin scope" in caplog.text
+
+
+def test_an_org_map_without_a_client_id_starts_but_says_login_is_off(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    _settings(github_client_id="").validate_runtime()
+    assert "login is off" in caplog.text
+
+
+def test_the_ttl_ceiling_is_a_day_since_nothing_revokes_a_token() -> None:
+    with pytest.raises(ValueError):
+        _settings(github_login_ttl_seconds=86_401)

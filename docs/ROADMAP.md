@@ -963,7 +963,12 @@ rather than from re-reading a file. The wave itself is written up in [HISTORY.md
       - [x] 1. `felix/auth/github.py` (device flow, active-membership check, mint), settings,
         boot-time probe that every mapped tenant's token verifies.
       - [ ] 2. `POST /auth/github/device` + `POST /auth/github/token`, public only when enabled;
-        e2e through `create_application()`; `make contract`.
+        e2e through `create_application()`; `make contract`. From the PR 1 security review: a
+        per-IP rate limit on both (a `slow_down` throttles the whole client id, so one abuser
+        stalls every login); never log or audit a `device_code`; name the OAuth app plainly and
+        document consent phishing (anyone can start a flow and ask a member to approve it).
+      - [ ] Headless: a GitHub Actions OIDC exchange (`repository_owner_id` through the same
+        org map, optional repo allowlist) so CI gets short-lived tokens with no stored secret.
       - [ ] 3. `felix_client.device_login`, `felix login [--save]`, the REPL reads the saved token;
         felix-web auth guide (OAuth app setup, org approval).
 - [x] **Manifest version listing** — `GET /manifests/{name}/versions`: newest first, metadata

@@ -89,12 +89,13 @@ class Settings(BaseSettings):
     # accepted, which is only safe when the IdP is the sole writer of that claim.
     allowed_tenants: str = ""
     # GitHub login (device flow → a self-issued JWT). Off while the client id is empty.
-    # The org map is the whole user model: {"<org>": {"tenant": "<id>", "scopes": [...]}};
-    # an active member of <org> gets a token for <tenant>. Needs a `self:felix-self`
+    # The org map is the whole user model: {"<org>": {"id": <org id>, "tenant": "<id>",
+    # "scopes": [...]}}; an active member of <org> gets a token for <tenant>. `id` is required:
+    # an org name can be re-registered by someone else once it is released. Needs a `self:felix-self`
     # verifier (tenant=claim) that accepts what FELIX_JWKS_PRIVATE signs; checked at boot.
     github_client_id: str = ""
     github_org_tenants: str = ""
-    github_login_ttl_seconds: int = Field(default=28_800, ge=60, le=604_800)  # 8h; max 7d
+    github_login_ttl_seconds: int = Field(default=28_800, ge=60, le=86_400)  # 8h; max 1d (no revocation)
     github_timeout_seconds: float = Field(default=10.0, gt=0, le=120.0)
 
     # --- HTTP posture ---
@@ -859,6 +860,6 @@ def _configured_tenant_ids(settings: Settings) -> list[tuple[str, str]]:
     try:
         grants = parse_org_tenants(settings.github_org_tenants)
     except ValueError:
-        grants = {}  # shape errors are reported by `_validate_github_login`, not here
+        grants = {}  # shape errors are reported by `validate_login_config`, not here
     found.extend((f"FELIX_GITHUB_ORG_TENANTS ({g.org})", g.tenant) for g in grants.values())
     return found

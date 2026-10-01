@@ -14,15 +14,18 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from enum import StrEnum
 from functools import lru_cache
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 import httpx
 
 if TYPE_CHECKING:
+    from felix.auth.jwt import VerifierConfig
     from felix.config import Settings
 
 logger = logging.getLogger("felix.auth.github")
@@ -42,9 +45,15 @@ _ORG_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$")
 
 @dataclass(frozen=True, slots=True)
 class OrgGrant:
-    """What membership of one org is worth: a tenant and the scopes minted into it."""
+    """What membership of one org is worth: a tenant and the scopes minted into it.
+
+    `org_id` is the identity; `org` is only where to ask. A name is released when an org is
+    renamed or deleted and anyone can register it, so matching on the name alone would hand
+    the new org's members this tenant with nothing in configuration looking wrong.
+    """
 
     org: str
+    org_id: int
     tenant: str
     scopes: tuple[str, ...]
 
@@ -73,27 +82,75 @@ class LoginToken:
     subject: str
 
 
-class GitHubLoginError(Exception):
-    """A login that did not produce a token, carrying the status and code a route answers with.
+class LoginErrorCode(StrEnum):
+    """Every `code` a login can fail with — closed, so the API's error vocabulary is ours.
 
-    `authorization_pending` and `slow_down` are not failures — the user has not approved yet —
-    but they leave the same way, with `interval` telling the client how long to wait.
+    GitHub's own error strings never become a code: one it adds tomorrow would otherwise be a
+    new public Felix code nobody reviewed. An unlisted one is `github_config_error`, with
+    GitHub's string kept in the message.
     """
+
+    AUTHORIZATION_PENDING = "authorization_pending"
+    SLOW_DOWN = "slow_down"
+    EXPIRED_TOKEN = "expired_token"
+    INVALID_DEVICE_CODE = "invalid_device_code"
+    ACCESS_DENIED = "access_denied"
+    NOT_A_MEMBER = "not_a_member"
+    ORG_ACCESS_RESTRICTED = "org_access_restricted"
+    TENANT_AMBIGUOUS = "tenant_ambiguous"
+    TENANT_NOT_GRANTED = "tenant_not_granted"
+    GITHUB_UNAVAILABLE = "github_unavailable"
+    GITHUB_CONFIG_ERROR = "github_config_error"
+
+
+# The one code -> HTTP status table. `authorization_pending`/`slow_down` are not failures —
+# the user has not approved yet — but leave the same way, with `interval` saying how long to wait.
+LOGIN_ERROR_STATUS: dict[LoginErrorCode, int] = {
+    LoginErrorCode.AUTHORIZATION_PENDING: 428,
+    LoginErrorCode.SLOW_DOWN: 428,
+    LoginErrorCode.EXPIRED_TOKEN: 400,
+    LoginErrorCode.INVALID_DEVICE_CODE: 400,
+    LoginErrorCode.ACCESS_DENIED: 403,
+    LoginErrorCode.NOT_A_MEMBER: 403,
+    LoginErrorCode.ORG_ACCESS_RESTRICTED: 403,
+    LoginErrorCode.TENANT_NOT_GRANTED: 403,
+    LoginErrorCode.TENANT_AMBIGUOUS: 409,
+    LoginErrorCode.GITHUB_UNAVAILABLE: 502,
+    # The operator's to fix in the OAuth app (wrong client id, device flow disabled).
+    LoginErrorCode.GITHUB_CONFIG_ERROR: 503,
+}
+
+# GitHub's device-flow token errors that mean something to the caller. Anything else is
+# GITHUB_CONFIG_ERROR.
+_GITHUB_POLL_ERRORS: dict[str, LoginErrorCode] = {
+    "authorization_pending": LoginErrorCode.AUTHORIZATION_PENDING,
+    "slow_down": LoginErrorCode.SLOW_DOWN,
+    "expired_token": LoginErrorCode.EXPIRED_TOKEN,
+    "incorrect_device_code": LoginErrorCode.INVALID_DEVICE_CODE,
+    "access_denied": LoginErrorCode.ACCESS_DENIED,
+}
+
+
+class GitHubLoginError(Exception):
+    """A login that did not produce a token: a closed `code`, its status, and what to do next."""
 
     def __init__(
         self,
-        code: str,
+        code: LoginErrorCode,
         message: str,
         *,
-        status: int = 400,
         interval: int | None = None,
         tenants: tuple[str, ...] = (),
     ) -> None:
         super().__init__(message)
         self.code = code
-        self.status = status
+        self.status = LOGIN_ERROR_STATUS[code]
         self.interval = interval
         self.tenants = tenants
+
+
+def _unavailable(message: str) -> GitHubLoginError:
+    return GitHubLoginError(LoginErrorCode.GITHUB_UNAVAILABLE, message)
 
 
 def is_enabled(settings: Settings) -> bool:
@@ -101,7 +158,7 @@ def is_enabled(settings: Settings) -> bool:
 
 
 @lru_cache(maxsize=4)
-def parse_org_tenants(raw: str) -> dict[str, OrgGrant]:
+def parse_org_tenants(raw: str) -> Mapping[str, OrgGrant]:
     """FELIX_GITHUB_ORG_TENANTS, keyed by lowercased org. Raises ValueError on any shape error.
 
     GitHub org names are case-insensitive, and the membership response spells the org the
@@ -112,7 +169,7 @@ def parse_org_tenants(raw: str) -> dict[str, OrgGrant]:
     except ValueError as exc:
         raise ValueError(f"not valid JSON: {exc}") from exc
     if not isinstance(data, dict):
-        raise ValueError('expected a JSON object {"<org>": {"tenant": ..., "scopes": [...]}}')
+        raise ValueError('expected a JSON object {"<org>": {"id": ..., "tenant": ..., "scopes": [...]}}')
     grants: dict[str, OrgGrant] = {}
     for org, entry in data.items():
         if not isinstance(org, str) or not _ORG_RE.match(org):
@@ -120,9 +177,15 @@ def parse_org_tenants(raw: str) -> dict[str, OrgGrant]:
         if org.lower() in grants:
             raise ValueError(f"org {org!r} is listed twice (org names are case-insensitive)")
         if not isinstance(entry, dict):
-            raise ValueError(f"{org}: expected an object with `tenant` and `scopes`")
-        if unknown := set(entry) - {"tenant", "scopes"}:
+            raise ValueError(f"{org}: expected an object with `id`, `tenant` and `scopes`")
+        if unknown := set(entry) - {"id", "tenant", "scopes"}:
             raise ValueError(f"{org}: unknown keys {sorted(unknown)}")
+        org_id = entry.get("id")
+        if not isinstance(org_id, int) or isinstance(org_id, bool) or org_id <= 0:
+            raise ValueError(
+                f"{org}: `id` must be the org's numeric GitHub id (gh api orgs/{org} --jq .id); "
+                "the name alone can be re-registered by someone else"
+            )
         tenant = entry.get("tenant")
         if not isinstance(tenant, str) or not tenant:
             raise ValueError(f"{org}: `tenant` must be a non-empty string")
@@ -133,8 +196,11 @@ def parse_org_tenants(raw: str) -> dict[str, OrgGrant]:
         # whitespace when verified, so a space inside one becomes two scopes.
         if bad := [s for s in scopes if s.split() != [s]]:
             raise ValueError(f"{org}: scopes may not contain whitespace: {bad}")
-        grants[org.lower()] = OrgGrant(org=org, tenant=tenant, scopes=tuple(dict.fromkeys(scopes)))
-    return grants
+        grants[org.lower()] = OrgGrant(
+            org=org, org_id=org_id, tenant=tenant, scopes=tuple(dict.fromkeys(scopes))
+        )
+    # Cached and shared, so read-only: a caller mutating it would change every later lookup.
+    return MappingProxyType(grants)
 
 
 def github_http_client(settings: Settings) -> httpx.AsyncClient:
@@ -160,7 +226,7 @@ def _json_object(resp: httpx.Response, what: str) -> dict[str, Any]:
     except ValueError:
         body = None
     if not isinstance(body, dict):
-        raise GitHubLoginError("github_unavailable", f"{what} answered with non-object JSON", status=502)
+        raise _unavailable(f"{what} answered with non-object JSON")
     return body
 
 
@@ -168,9 +234,9 @@ async def _post_form(client: httpx.AsyncClient, url: str, data: dict[str, str]) 
     try:
         resp = await client.post(url, data=data, headers={"accept": "application/json"})
     except httpx.HTTPError as exc:
-        raise GitHubLoginError("github_unavailable", f"GitHub unreachable: {exc}", status=502) from exc
+        raise _unavailable(f"GitHub unreachable: {exc}") from exc
     if resp.status_code >= 500:
-        raise GitHubLoginError("github_unavailable", f"GitHub answered {resp.status_code}", status=502)
+        raise _unavailable(f"GitHub answered {resp.status_code}")
     return _json_object(resp, url)
 
 
@@ -185,11 +251,7 @@ async def start_device_flow(settings: Settings, *, client: httpx.AsyncClient | N
     if "error" in body:
         # `device_flow_disabled` and `unauthorized_client` are the operator's to fix, in
         # the OAuth app's settings; the caller can do nothing about them.
-        raise GitHubLoginError(
-            str(body["error"]),
-            str(body.get("error_description") or body["error"]),
-            status=503,
-        )
+        raise GitHubLoginError(LoginErrorCode.GITHUB_CONFIG_ERROR, _github_error_text(body))
     try:
         return DeviceCode(
             device_code=str(body["device_code"]),
@@ -199,20 +261,14 @@ async def start_device_flow(settings: Settings, *, client: httpx.AsyncClient | N
             interval=int(body["interval"]),
         )
     except (KeyError, TypeError, ValueError) as exc:
-        raise GitHubLoginError(
-            "github_unavailable", "GitHub's device code was incomplete", status=502
-        ) from exc
+        raise _unavailable("GitHub's device code was incomplete") from exc
 
 
-# Device-flow token errors, mapped to what the caller should do. Anything unlisted is the
-# operator's configuration (a wrong client id, device flow disabled) and answers 503.
-_POLL_ERRORS: dict[str, int] = {
-    "authorization_pending": 428,
-    "slow_down": 428,
-    "expired_token": 400,
-    "incorrect_device_code": 400,
-    "access_denied": 403,
-}
+def _github_error_text(body: dict[str, Any]) -> str:
+    """GitHub's own error, for the message — never for the code."""
+    error = str(body["error"])
+    description = body.get("error_description")
+    return f"{error}: {description}" if description else error
 
 
 async def poll_device_flow(
@@ -230,17 +286,15 @@ async def poll_device_flow(
             },
         )
     if "error" in body:
-        code = str(body["error"])
         interval = body.get("interval")
         raise GitHubLoginError(
-            code,
-            str(body.get("error_description") or code),
-            status=_POLL_ERRORS.get(code, 503),
-            interval=int(interval) if isinstance(interval, int) else None,
+            _GITHUB_POLL_ERRORS.get(str(body["error"]), LoginErrorCode.GITHUB_CONFIG_ERROR),
+            _github_error_text(body),
+            interval=interval if isinstance(interval, int) and not isinstance(interval, bool) else None,
         )
     token = body.get("access_token")
     if not isinstance(token, str) or not token:
-        raise GitHubLoginError("github_unavailable", "GitHub returned no access token", status=502)
+        raise _unavailable("GitHub returned no access token")
     return token
 
 
@@ -250,18 +304,18 @@ async def _api_get(client: httpx.AsyncClient, path: str, gh_token: str) -> httpx
             f"{GITHUB_API_URL}{path}", headers={**_API_HEADERS, "authorization": f"Bearer {gh_token}"}
         )
     except httpx.HTTPError as exc:
-        raise GitHubLoginError("github_unavailable", f"GitHub unreachable: {exc}", status=502) from exc
+        raise _unavailable(f"GitHub unreachable: {exc}") from exc
 
 
 async def fetch_user(gh_token: str, *, client: httpx.AsyncClient) -> GitHubUser:
     resp = await _api_get(client, "/user", gh_token)
     if resp.status_code != 200:
-        raise GitHubLoginError("github_unavailable", f"GET /user answered {resp.status_code}", status=502)
+        raise _unavailable(f"GET /user answered {resp.status_code}")
     body = _json_object(resp, "GET /user")
     user_id, login = body.get("id"), body.get("login")
     # `bool` is an `int`; a `true` id would otherwise mint `github:True`.
     if not isinstance(user_id, int) or isinstance(user_id, bool) or not isinstance(login, str):
-        raise GitHubLoginError("github_unavailable", "GET /user returned no id", status=502)
+        raise _unavailable("GET /user returned no id")
     return GitHubUser(id=user_id, login=login)
 
 
@@ -279,17 +333,32 @@ async def active_grants(
     for grant in parse_org_tenants(settings.github_org_tenants).values():
         resp = await _api_get(client, f"/user/memberships/orgs/{grant.org}", gh_token)
         if resp.status_code == 200:
-            # A `pending` membership is an invitation not yet accepted. It is not membership.
-            if _json_object(resp, "membership read").get("state") == "active":
+            if _is_active_member_of(_json_object(resp, "membership read"), grant):
                 grants.append(grant)
         elif resp.status_code == 403:
             # The org has OAuth app access restrictions and has not approved this app.
             restricted.append(grant.org)
         elif resp.status_code != 404:
-            raise GitHubLoginError(
-                "github_unavailable", f"membership read answered {resp.status_code}", status=502
-            )
+            raise _unavailable(f"membership read answered {resp.status_code}")
     return grants, restricted
+
+
+def _is_active_member_of(membership: dict[str, Any], grant: OrgGrant) -> bool:
+    # A `pending` membership is an invitation not yet accepted. It is not membership.
+    if membership.get("state") != "active":
+        return False
+    org = membership.get("organization")
+    org_id = org.get("id") if isinstance(org, dict) else None
+    if org_id != grant.org_id:
+        logger.error(
+            "github org %r now has id %r, not the configured %d: renamed or re-registered; "
+            "refusing its members until FELIX_GITHUB_ORG_TENANTS is updated",
+            grant.org,
+            org_id,
+            grant.org_id,
+        )
+        return False
+    return True
 
 
 def choose_grant(grants: list[OrgGrant], restricted: list[str], tenant: str | None) -> OrgGrant:
@@ -302,27 +371,33 @@ def choose_grant(grants: list[OrgGrant], restricted: list[str], tenant: str | No
     for g in grants:
         prior = by_tenant.get(g.tenant)
         scopes = tuple(dict.fromkeys((*prior.scopes, *g.scopes))) if prior else g.scopes
-        by_tenant[g.tenant] = OrgGrant(org=prior.org if prior else g.org, tenant=g.tenant, scopes=scopes)
+        by_tenant[g.tenant] = OrgGrant(
+            org=prior.org if prior else g.org,
+            org_id=prior.org_id if prior else g.org_id,
+            tenant=g.tenant,
+            scopes=scopes,
+        )
     if not by_tenant:
         if restricted:
+            # Named in the log, not the answer: GitHub may 403 a non-member too, and the
+            # caller is anyone who finished the device flow.
+            logger.warning("github orgs hiding membership from this OAuth app: %s", ", ".join(restricted))
             raise GitHubLoginError(
-                "org_access_restricted",
-                f"{', '.join(restricted)} restricts OAuth app access; an org owner must approve "
-                "this app before membership is visible",
-                status=403,
+                LoginErrorCode.ORG_ACCESS_RESTRICTED,
+                "a configured org restricts OAuth app access; an org owner must approve this app "
+                "before membership is visible",
             )
-        raise GitHubLoginError("not_a_member", "not an active member of any configured org", status=403)
+        raise GitHubLoginError(LoginErrorCode.NOT_A_MEMBER, "not an active member of any configured org")
     if tenant is not None:
         if tenant not in by_tenant:
             raise GitHubLoginError(
-                "tenant_not_granted", f"membership grants no tenant {tenant!r}", status=403
+                LoginErrorCode.TENANT_NOT_GRANTED, f"membership grants no tenant {tenant!r}"
             )
         return by_tenant[tenant]
     if len(by_tenant) > 1:
         raise GitHubLoginError(
-            "tenant_ambiguous",
+            LoginErrorCode.TENANT_AMBIGUOUS,
             "membership grants more than one tenant; pass `tenant`",
-            status=409,
             tenants=tuple(sorted(by_tenant)),
         )
     return next(iter(by_tenant.values()))
@@ -333,8 +408,8 @@ def mint_login_token(settings: Settings, user: GitHubUser, grant: OrgGrant) -> L
 
     subject = f"github:{user.id}"
     extra: dict[str, Any] = {"idp": "github", "github_login": user.login}
-    if (aud := login_audience(settings)) is not None:
-        extra["aud"] = aud
+    if (verifier := self_verifier(settings)) is not None and verifier.audience:
+        extra["aud"] = verifier.audience
     ttl = settings.github_login_ttl_seconds
     token = mint_token(
         settings,
@@ -349,13 +424,13 @@ def mint_login_token(settings: Settings, user: GitHubUser, grant: OrgGrant) -> L
     )
 
 
-def login_audience(settings: Settings) -> str | None:
-    """The `aud` the first `self:felix-self` verifier demands, so a minted token passes it."""
+def self_verifier(settings: Settings) -> VerifierConfig | None:
+    """The first `self:felix-self` verifier: the one whose `aud` a login token must carry."""
     from felix.auth.jwt import SELF_ISSUER, parse_verifiers
 
     for cfg in parse_verifiers(settings.jwt_verifiers):
         if cfg.scheme == "self" and cfg.issuer == SELF_ISSUER:
-            return cfg.audience
+            return cfg
     return None
 
 
@@ -412,37 +487,32 @@ def validate_login_config(settings: Settings) -> None:
     for grant in grants.values():
         if {"admin", "*"} & set(grant.scopes):
             logger.warning("FELIX_GITHUB_ORG_TENANTS gives every member of %s admin scope", grant.org)
-    for tenant in sorted({g.tenant for g in grants.values()}):
-        _probe_tenant(settings, tenant)
+    for grant in {g.tenant: g for g in grants.values()}.values():
+        _probe_tenant(settings, grant)
 
 
-def _probe_tenant(settings: Settings, tenant: str) -> None:
-    from felix.auth.jwt import SELF_ISSUER, mint_token, parse_verifiers, uses_jwt_verifiers, verify_jwt
+def _probe_tenant(settings: Settings, grant: OrgGrant) -> None:
+    """Mint through `mint_login_token` — the real login path, every claim and the real TTL —
+    so a rule added to either the minting or the verifiers is checked here too."""
+    from felix.auth.jwt import SELF_ISSUER, parse_verifiers, uses_jwt_verifiers, verify_jwt
 
     if not uses_jwt_verifiers(settings):
         raise RuntimeError(
             "FELIX_GITHUB_CLIENT_ID is set but no JWT verifier is in play, so a minted token would "
             f"never be checked. Set FELIX_AUTH_MODE=jwt and FELIX_JWT_VERIFIERS=self:{SELF_ISSUER}."
         )
-    verifiers = parse_verifiers(settings.jwt_verifiers)
-    if not any(v.scheme == "self" and v.issuer == SELF_ISSUER for v in verifiers):
+    if self_verifier(settings) is None:
         raise RuntimeError(
             f"FELIX_GITHUB_CLIENT_ID is set, so FELIX_JWT_VERIFIERS needs self:{SELF_ISSUER} "
             "to accept the tokens GitHub login mints."
         )
-    aud = login_audience(settings)
+    tenant = grant.tenant
     try:
-        probe = mint_token(
-            settings,
-            sub="github:probe",
-            tenant_id=tenant,
-            scopes=[],
-            ttl_seconds=300,
-            extra_claims={"aud": aud} if aud else None,
-        )
+        probe = mint_login_token(settings, GitHubUser(id=0, login="felix-boot-probe"), grant)
     except Exception as exc:
         raise RuntimeError(f"GitHub login cannot mint with FELIX_JWKS_PRIVATE: {exc}") from exc
-    result = verify_jwt(probe, verifiers, jwks_public=settings.jwks_public, settings=settings)
+    verifiers = parse_verifiers(settings.jwt_verifiers)
+    result = verify_jwt(probe.access_token, verifiers, jwks_public=settings.jwks_public, settings=settings)
     if not result.ok:
         hint = (
             f"{tenant!r} is not in FELIX_ALLOWED_TENANTS"
