@@ -302,3 +302,71 @@ async def test_supersede_cannot_launder_an_operator_forget(memory_settings: Any)
         memory_settings, TENANT, content=text, manifest_id=MANIFEST, metadata={"source": AGENT}
     )
     assert await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST) == []
+
+
+# --- consolidation as a retirer ------------------------------------------------------
+#
+# `merge_duplicates` stamps `retired_by: consolidation`, which `_TRUST_RANK` does not list,
+# so it ranks as the agent. That is the point: consolidation acts for the agent, so its
+# retirements are as reversible as the agent's own, and it can never retire what the agent
+# could not.
+
+
+@parametrized
+@pytest.mark.asyncio
+@pytest.mark.parametrize("incoming", [AGENT, TOOL, OPERATOR])
+async def test_a_merged_duplicate_comes_back_for_any_writer(memory_settings: Any, incoming: str) -> None:
+    keep = await memory_store.put_memory(
+        memory_settings,
+        TENANT,
+        content="The user prefers tea.",
+        manifest_id=MANIFEST,
+        origin_seq=1,
+        metadata={"source": AGENT},
+    )
+    # Newer, so the store keeps `keep` and retires this one.
+    dup = await memory_store.put_memory(
+        memory_settings,
+        TENANT,
+        content=CONTENT,
+        manifest_id=MANIFEST,
+        origin_seq=2,
+        metadata={"source": AGENT},
+    )
+    assert await memory_store.merge_duplicates(
+        memory_settings, TENANT, manifest_id=MANIFEST, groups=[[dup["id"], keep["id"]]]
+    ) == (1, 0)
+
+    await memory_store.put_memory(
+        memory_settings, TENANT, content=CONTENT, manifest_id=MANIFEST, metadata={"source": incoming}
+    )
+    rows = await memory_store.get_many(memory_settings, TENANT, [dup["id"]])
+    assert rows[dup["id"]]["status"] == ACTIVE, f"{incoming} could not restate a merged fact"
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_consolidation_cannot_launder_an_operator_forget(memory_settings: Any) -> None:
+    """A forgotten row is not active, so it is never a merge member — and so never moves to
+    a SUPERSEDED-by-consolidation state that would rank its retirer as the agent."""
+    keep = await memory_store.put_memory(
+        memory_settings,
+        TENANT,
+        content="The user prefers tea.",
+        manifest_id=MANIFEST,
+        metadata={"source": AGENT},
+    )
+    gone = await memory_store.put_memory(
+        memory_settings, TENANT, content=CONTENT, manifest_id=MANIFEST, metadata={"source": AGENT}
+    )
+    await memory_store.forget(memory_settings, TENANT, gone["id"], source=OPERATOR)
+
+    assert await memory_store.merge_duplicates(
+        memory_settings, TENANT, manifest_id=MANIFEST, groups=[[keep["id"], gone["id"]]]
+    ) == (0, 1)
+    await memory_store.put_memory(
+        memory_settings, TENANT, content=CONTENT, manifest_id=MANIFEST, metadata={"source": AGENT}
+    )
+    rows = await memory_store.get_many(memory_settings, TENANT, [gone["id"]])
+    assert rows[gone["id"]]["status"] == FORGOTTEN
+    assert rows[gone["id"]]["metadata"]["retired_by"] == OPERATOR

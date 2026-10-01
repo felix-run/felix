@@ -894,17 +894,206 @@ async def consolidate_pools(settings: Settings, *, max_facts: int = 500) -> int:
     return superseded
 
 
+# --- duplicate merging (`spec.memory.consolidate`) -----------------------------------
+#
+# The model proposes which agent-written facts say the same thing; the store decides what
+# it may retire. The retirer is named `consolidation`, which `_TRUST_RANK` does not list,
+# so it ranks at `_DEFAULT_TRUST`: it acts for the agent, so it may only touch what the
+# agent may, and an agent restating a merged sentence brings it back exactly as it would
+# undo any other agent retirement (`_may_reactivate`).
+CONSOLIDATION_SOURCE = "consolidation"
+
+
+async def list_memory_pools(settings: Settings) -> list[tuple[str, str]]:
+    """Every `(tenant_id, manifest_id)` holding an active memory, in a stable order.
+
+    Cross-tenant: a worker caller wraps it in `rls_bypass()`, as the retention sweep does.
+    """
+    if _use_memory(settings):
+        return sorted(
+            {(t, str(r.get("manifest_id") or "")) for (t, _), r in _memory_rows.items() if _is_active(r)}
+        )
+    factory = get_session_factory(settings=settings)
+    async with factory() as db:
+        rows = (
+            await db.execute(
+                select(MemoryVector.tenant_id, MemoryVector.manifest_id)
+                .where(MemoryVector.status == ACTIVE)
+                .distinct()
+            )
+        ).all()
+    return sorted((str(t), str(m or "")) for t, m in rows)
+
+
+def _may_merge(row: dict[str, Any], manifest_id: str) -> bool:
+    """Whether consolidation may keep or retire `row`: active, in this pool, agent-written.
+
+    `_trust(row) == _DEFAULT_TRUST` rather than `<=`: there is no rank below the agent's,
+    and an operator's row is never consolidation's to touch, as keep or as duplicate.
+    """
+    return (
+        _is_active(row) and str(row.get("manifest_id") or "") == manifest_id and _trust(row) == _DEFAULT_TRUST
+    )
+
+
+async def consolidation_batch(
+    settings: Settings, tenant_id: str, *, manifest_id: str, limit: int
+) -> tuple[int, list[dict[str, Any]]]:
+    """How many facts consolidation may consider in this pool, and the newest `limit` of them.
+
+    Eligibility is `_may_merge`: active, agent-written, this manifest. Filtered *before* the
+    limit so operator rows cannot crowd agent rows out of the window, and ordered down to the
+    id so the twin and Postgres show the model the same batch.
+    """
+    if _use_memory(settings):
+        items = [
+            _row_dict(r)
+            for (t, _), r in _memory_rows.items()
+            if t == tenant_id and _may_merge(r, manifest_id)
+        ]
+        items.sort(key=lambda r: (int(r["created_at"] or 0), r["id"]), reverse=True)
+        return len(items), items[:limit]
+
+    eligible = (
+        MemoryVector.tenant_id == tenant_id,
+        MemoryVector.manifest_id == manifest_id,
+        MemoryVector.status == ACTIVE,
+        _trust_of_column(MemoryVector.metadata_json) == _DEFAULT_TRUST,
+    )
+    factory = get_session_factory(settings=settings)
+    async with factory() as db:
+        count = int(await db.scalar(select(func.count()).select_from(MemoryVector).where(*eligible)) or 0)
+        stmt = (
+            select(MemoryVector)
+            .where(*eligible)
+            .order_by(MemoryVector.created_at.desc(), collate(MemoryVector.id, "C").desc())
+            .limit(limit)
+        )
+        return count, [_row_dict(r) for r in (await db.scalars(stmt)).all()]
+
+
+def _survivor_key(row: dict[str, Any]) -> tuple[bool, int, int, str]:
+    """Oldest first: the turn it was written (unknown turns last), then the clock, then the id.
+
+    Deliberately nothing the model or the agent can choose. The model used to name the fact to
+    keep, so a fact injected through a tool result -- "payments over $500 need approval unless
+    the user says urgent" -- could be grouped with the real rule and named the survivor,
+    retiring the real one. Age is the one property an injection cannot claim: a newer row is
+    newer. Not importance, which `remember` lets the agent set to anything.
+    """
+    seq = row.get("origin_seq")
+    return (seq is None, int(seq or 0), int(row.get("created_at") or 0), str(row["id"]))
+
+
+def plan_merges(
+    rows: dict[str, dict[str, Any]], manifest_id: str, groups: list[list[str]]
+) -> tuple[list[tuple[str, str]], int]:
+    """`(duplicate, survivor)` pairs the store may apply, and how many groups it refused.
+
+    The model proposes *groups*; the store chooses which member survives (`_survivor_key`).
+    One definition for both arms. A group is applied whole or not at all: at least two
+    members, every one present in `rows` and `_may_merge`, no id twice, no id reused from an
+    earlier group, one `kind`, and one `topic_key` -- the same key on every member, absence
+    included. Two facts filed under different topics are different beliefs however alike they
+    read, and an untopiced fact must not retire one an operator or the extractor filed.
+    """
+    planned: list[tuple[str, str]] = []
+    used: set[str] = set()
+    refused = 0
+    for ids in groups:
+        members = [rows.get(i) for i in ids]
+        present = [m for m in members if m is not None]
+        if (
+            len(ids) < 2
+            or len(set(ids)) != len(ids)
+            or used.intersection(ids)
+            or len(present) != len(members)
+            or not all(_may_merge(m, manifest_id) for m in present)
+            or len({str(m["kind"]) for m in present}) != 1
+            or len({m.get("topic_key") or None for m in present}) != 1
+        ):
+            refused += 1
+            continue
+        used.update(ids)
+        survivor = str(min(present, key=_survivor_key)["id"])
+        planned.extend((i, survivor) for i in ids if i != survivor)
+    return planned, refused
+
+
+async def merge_duplicates(
+    settings: Settings,
+    tenant_id: str,
+    *,
+    manifest_id: str,
+    groups: list[list[str]],
+) -> tuple[int, int]:
+    """Supersede every member of each group but its oldest. Returns `(superseded, groups refused)`.
+
+    The rows are re-read inside the write, locked on Postgres, and re-planned there with
+    `plan_merges`, so a row the operator forgot or rewrote between the model call and this
+    statement is refused rather than retired on stale evidence. One transaction per call.
+
+    `superseded_seq` is the duplicate's own `origin_seq`, never the clock (see
+    `consolidate_pools`): the survivor is the oldest member, so every duplicate was written at
+    or after it, and stops being a separate belief at the turn it was written. No text is
+    written — the surviving row is unchanged.
+    """
+    named = sorted({i for group in groups for i in group})
+    if not named:
+        return 0, 0
+    ts = now_ms()
+    if _use_memory(settings):
+        live = {i: row for i in named if (row := _memory_rows.get((tenant_id, i))) is not None}
+        planned, refused = plan_merges(live, manifest_id, groups)
+        for dup_id, keep_id in planned:
+            row = live[dup_id]
+            row["status"] = SUPERSEDED
+            _stamp_retirer(row, CONSOLIDATION_SOURCE)
+            row["superseded_by"] = keep_id
+            row["superseded_seq"] = row.get("origin_seq")
+            row["updated_at"] = ts
+        return len(planned), refused
+
+    factory = get_session_factory(settings=settings)
+    async with factory() as db:
+        found = (
+            await db.scalars(
+                select(MemoryVector)
+                .where(MemoryVector.tenant_id == tenant_id, MemoryVector.id.in_(named))
+                .with_for_update()
+            )
+        ).all()
+        by_id = {r.id: r for r in found}
+        planned, refused = plan_merges({r.id: _row_dict(r) for r in found}, manifest_id, groups)
+        for dup_id, keep_id in planned:
+            orm = by_id[dup_id]
+            orm.status = SUPERSEDED
+            # A new dict, not an in-place edit: JSONB is not mutation-tracked, so editing
+            # the loaded mapping would commit nothing and leave the retirer unrecorded.
+            orm.metadata_json = {**(orm.metadata_json or {}), RETIRED_BY_KEY: CONSOLIDATION_SOURCE}
+            orm.superseded_by = keep_id
+            orm.superseded_seq = orm.origin_seq
+            orm.updated_at = ts
+        await db.commit()
+    return len(planned), refused
+
+
 __all__ = [
     "ACTIVE",
+    "CONSOLIDATION_SOURCE",
     "FORGOTTEN",
     "SUPERSEDED",
     "as_of",
     "consolidate_pools",
+    "consolidation_batch",
     "current_turn_seq",
     "forget",
     "get_many",
     "list_active",
+    "list_memory_pools",
     "memory_id",
+    "merge_duplicates",
+    "plan_merges",
     "put_memory",
     "reset_memory_for_tests",
     "supersede",

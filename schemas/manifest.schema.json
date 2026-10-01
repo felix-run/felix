@@ -1196,6 +1196,7 @@
     },
     "MemoryConsolidate": {
       "additionalProperties": false,
+      "description": "Periodic merging of agent-written facts that say the same thing.\n\nWhen ``enabled``, the worker's ``consolidate_memory`` cron (every 15 minutes) shows the\n``model`` route the newest ``max_facts`` active, agent-written facts of this manifest's\npool \u2014 once more than ``after_facts`` of them exist \u2014 and asks which state the same\nthing. The model answers with groups of ids only; the store keeps the oldest fact of each\ngroup and supersedes the rest, and no memory text is written. A pool whose batch has not\nchanged since its last pass is not sent again. Operator-written facts (``/memory``) are\nnever shown and never retired; facts of different ``kind`` or ``topic_key`` (absent\nincluded) are never merged. The call is metered to the tenant and manifest.",
       "properties": {
         "enabled": {
           "default": false,

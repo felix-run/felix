@@ -522,6 +522,12 @@ def test_every_memory_store_function_is_classified() -> None:
             "and identical content now yields an identical id, so two such rows cannot "
             "coexist to be merged. Precondition for any future writer: ids stay content-derived."
         ),
+        "merge_duplicates": (
+            "guarded: plan_merges re-run on the rows read (locked on Postgres) inside the write; "
+            "every member must be active and ranked exactly _DEFAULT_TRUST by _trust, so an "
+            "operator row is never kept or retired, and the stamp it leaves ranks at _rank of "
+            "'consolidation' (agent), which _may_reactivate lets an agent undo"
+        ),
     }
     # Everything else: reads, projections, ranking helpers, embedding plumbing. Listed
     # explicitly rather than inferred, which is the whole point -- a new function is
@@ -549,6 +555,12 @@ def test_every_memory_store_function_is_classified() -> None:
         "get_many",
         "list_active",
         "as_of",
+        # Consolidation's reads and its pure planner; `merge_duplicates` is the write.
+        "list_memory_pools",
+        "_may_merge",
+        "consolidation_batch",
+        "plan_merges",
+        "_survivor_key",
         # Clears the in-memory twin between tests; no request path reaches it.
         "reset_memory_for_tests",
     }
