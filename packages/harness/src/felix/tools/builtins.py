@@ -62,6 +62,22 @@ def register_builtin_tools(provider: InMemoryToolProvider) -> None:
         ),
     )
     register_workspace_tools(provider)
+    from felix.ui.ask_user import AskUserArgs, ask_user_handler
+
+    provider.register(
+        "ask_user",
+        lambda: define_tool(
+            name="ask_user",
+            description=(
+                "Ask the person watching this run a question and wait for the answer: yes/no "
+                "(`confirm`), one of several `options` (`select`), or free text (`input`). Use it "
+                "when a choice is genuinely theirs to make, not to confirm routine steps. If no "
+                "one is watching live it returns at once with `answered: false`."
+            ),
+            args=AskUserArgs,
+            handler=ask_user_handler,
+        ),
+    )
     provider.register(
         "list_skills",
         lambda: define_tool(

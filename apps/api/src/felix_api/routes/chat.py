@@ -32,6 +32,7 @@ from felix.session.types import GetEventsOpts
 from felix.steer import enqueue
 from felix.thread_ids import effective_thread_id
 from felix.tools.client_bridge import MAX_TOOL_CALL_ID
+from felix.ui.ask_user import LIVE_STREAM_EXTRA
 from pydantic import BaseModel, Field
 
 from felix_api.errors import client_safe_message, log_gateway_error
@@ -676,7 +677,8 @@ async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
         manifest_id=body.manifest,
         thread_id=thread,
         # Screened above, before the stream opened or the durable run was enqueued.
-        extras={INBOUND_SCREENED_EXTRA: True},
+        # `LIVE_STREAM_EXTRA`: a person is reading this stream, so `ask_user` may ask them.
+        extras={INBOUND_SCREENED_EXTRA: True, LIVE_STREAM_EXTRA: True},
     )
 
     async def event_gen():
