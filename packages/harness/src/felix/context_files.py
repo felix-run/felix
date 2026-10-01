@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -39,22 +40,30 @@ def _read_local(root: Path, key: str) -> str | None:
 
     This took a prebuilt `root / key`, which is not containment: `Path("/srv/ws") /
     "/etc/passwd"` is `/etc/passwd`, and `../` was never normalised. The keys are
-    manifest-supplied strings, so the workspace tools' own resolver is the right
-    gate — same rule, one implementation.
+    manifest-supplied strings, so the workspace tools' own walk is the right gate — same
+    rule, one implementation, and the same refusal of a symlink at any component, since the
+    workspace is writable by the code the agent runs.
     """
-    from felix.tools.workspace import resolve_under_root
+    from felix.tools.workspace import open_regular, open_workspace_parent
 
     try:
-        path = resolve_under_root(root, key)
+        with open_workspace_parent(root, key) as (parent, leaf, rel):
+            if leaf is None:
+                return None
+            fd = open_regular(parent, leaf, os.O_RDONLY, rel)
+            with os.fdopen(fd, "rb") as fh:
+                data = fh.read()
     except ValueError:
-        logger.warning("context file key %r escapes the workspace root; ignored", key)
+        logger.warning("context file key %r escapes the workspace root or is not a file; ignored", key)
+        return None
+    except OSError:
+        logger.debug("local context file read failed for %s", key, exc_info=True)
         return None
     try:
-        if path.is_file():
-            return path.read_text(encoding="utf-8")
-    except OSError:
-        logger.debug("local context file read failed for %s", path, exc_info=True)
-    return None
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        logger.warning("context file %s is not valid utf-8; ignored", key)
+        return None
 
 
 def _tenant_key(tenant_id: str, key: str) -> str:

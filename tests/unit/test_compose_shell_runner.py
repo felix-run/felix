@@ -73,3 +73,20 @@ def test_the_runner_token_is_required_not_defaulted() -> None:
     """`:?` makes Compose refuse to start; `:-` would start an endpoint with a known bearer."""
     token = _services()["shell"]["environment"]["FELIX_SHELL_RUNNER_TOKEN"]
     assert token.startswith("${FELIX_SHELL_RUNNER_TOKEN:?"), token
+
+
+def test_the_stores_publish_no_host_port() -> None:
+    """On Docker Desktop `host.docker.internal` is the host's loopback, where the base file
+    publishes Valkey (no password) and Postgres; `shell` must not reach them that way."""
+    services = _services()
+    for name in ("postgres", "valkey", "minio"):
+        assert services[name]["ports"] == [], name
+    # The overlay must use `!reset`: a plain `ports: []` is *merged* with the base list.
+    text = SELF.read_text(encoding="utf-8")
+    for name in ("postgres", "valkey", "minio"):
+        assert f"  {name}:\n    ports: !reset []" in text, name
+
+
+def test_the_shell_service_has_a_process_ceiling() -> None:
+    shell = _services()["shell"]
+    assert isinstance(shell["pids_limit"], int) and 0 < shell["pids_limit"] <= 1024

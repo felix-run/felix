@@ -7,6 +7,9 @@ import contextlib
 import json
 import os
 import re
+import stat
+import time
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -91,7 +94,12 @@ class SearchFilesArgs(BaseModel):
 
 
 def resolve_under_root(root: Path, user_path: str) -> Path:
-    """Resolve ``user_path`` under ``root``, rejecting escapes."""
+    """Resolve ``user_path`` under ``root``, rejecting escapes.
+
+    A *check*, not a way to open anything: it follows symlinks to decide, so the answer is
+    stale the moment another process swaps a component. Every opener goes through
+    `open_workspace_parent` instead.
+    """
     root_resolved = root.expanduser().resolve()
     raw = (user_path or ".").strip() or "."
     if Path(raw).is_absolute():
@@ -100,6 +108,140 @@ def resolve_under_root(root: Path, user_path: str) -> Path:
     if not target.is_relative_to(root_resolved):
         raise ValueError("path escapes workspace root")
     return target
+
+
+# --- opening a workspace path without following a symlink ---------------------------------
+#
+# The workspace is writable by code the agent runs — on the builder stack from another
+# container, where a `setsid` loop can outlive any tool call. Check-then-open by name loses to
+# it: between `resolve()` deciding `src/x` is inside the workspace and `open("src/x")`, `src`
+# becomes a symlink to `/proc/self` and the API reads its own `environ`. So no workspace path
+# is ever opened by name from the root. The walk below opens the root, then each component
+# relative to the directory before it with `O_NOFOLLOW`, and the caller operates on the
+# descriptor it ends with. A component swapped after it was opened is irrelevant (the
+# descriptor names the inode, not the path); one swapped before is a symlink, and refused.
+# `openat` with `O_NOFOLLOW` and `O_DIRECTORY` behaves the same on Linux and macOS, which is
+# why this is not `openat2(RESOLVE_NO_SYMLINKS)` (Linux-only, and not in `os`).
+
+_DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY
+
+
+class SymlinkRefusedError(ValueError):
+    """A workspace path with a symlink in it. Refused the way an escaping path is."""
+
+    def __init__(self, shown: str) -> None:
+        super().__init__(f"symlinks are not followed in workspace paths: {shown}")
+
+
+def workspace_parts(user_path: str) -> list[str]:
+    """``user_path`` as plain components under the root, or ``ValueError``.
+
+    `..` is applied lexically, which is exact here: with no symlink ever followed, the parent
+    of a component is the directory the walk came from.
+    """
+    raw = (user_path or ".").strip() or "."
+    if Path(raw).is_absolute():
+        raise ValueError("absolute paths are not allowed")
+    parts: list[str] = []
+    for seg in raw.split("/"):
+        if seg in ("", "."):
+            continue
+        if seg == "..":
+            if not parts:
+                raise ValueError("path escapes workspace root")
+            parts.pop()
+            continue
+        if "\0" in seg:
+            raise ValueError("path contains a NUL byte")
+        parts.append(seg)
+    return parts
+
+
+def open_at(dir_fd: int, name: str, flags: int, shown: str, mode: int = 0o666) -> int:
+    """`openat(dir_fd, name)` that never follows a symlink — the only way a name is opened.
+
+    `O_NOFOLLOW` makes the kernel refuse a symlink as the final (and only) component; the
+    errno for that differs (Linux `ELOOP`, or `ENOTDIR` beside `O_DIRECTORY`; BSDs `EMLINK`),
+    so the failure is classified by an `lstat` afterwards. That lstat only chooses the
+    message: the refusal itself already happened in the open.
+    """
+    try:
+        return os.open(name, flags | os.O_NOFOLLOW | os.O_CLOEXEC, mode, dir_fd=dir_fd)
+    except OSError:
+        try:
+            is_link = stat.S_ISLNK(os.stat(name, dir_fd=dir_fd, follow_symlinks=False).st_mode)
+        except OSError:
+            is_link = False
+        if is_link:
+            raise SymlinkRefusedError(shown) from None
+        raise
+
+
+@contextlib.contextmanager
+def open_workspace_parent(
+    root: Path, user_path: str, *, create: bool = False
+) -> Iterator[tuple[int, str | None, str]]:
+    """Walk to the directory holding ``user_path``'s last component, following no symlink.
+
+    Yields ``(dir_fd, leaf, rel)``: a descriptor of that directory (closed on exit), the last
+    component (None when the path is the root itself), and the path relative to the root as
+    the tools report it. ``create`` makes missing directories on the way, like `mkdir -p`.
+    Raises ``ValueError`` for an escaping or absolute path or a symlink component, and
+    ``OSError`` (`FileNotFoundError`, `NotADirectoryError`) for one that is not there.
+    """
+    parts = workspace_parts(user_path)
+    # The root is the operator's (FELIX_WORKSPACE_ROOT, already resolved), not the agent's.
+    fd = os.open(root, _DIR_FLAGS | os.O_CLOEXEC)
+    try:
+        for i, seg in enumerate(parts[:-1]):
+            if create:
+                with contextlib.suppress(FileExistsError):
+                    os.mkdir(seg, dir_fd=fd)
+            nxt = open_at(fd, seg, _DIR_FLAGS, "/".join(parts[: i + 1]))
+            os.close(fd)
+            fd = nxt
+        yield fd, (parts[-1] if parts else None), "/".join(parts) or "."
+    finally:
+        os.close(fd)
+
+
+@contextlib.contextmanager
+def open_workspace_dir(root: Path, user_path: str) -> Iterator[tuple[int, str]]:
+    """``(dir_fd, rel)`` for a workspace directory, opened without following a symlink."""
+    with open_workspace_parent(root, user_path) as (parent, leaf, rel):
+        fd = os.dup(parent) if leaf is None else open_at(parent, leaf, _DIR_FLAGS, rel)
+        try:
+            yield fd, rel
+        finally:
+            os.close(fd)
+
+
+class NotAFileError(ValueError):
+    """The path names something other than a regular file — a directory, a FIFO, a device."""
+
+
+def open_regular(dir_fd: int, name: str, flags: int, shown: str, mode: int = 0o666) -> int:
+    """`open_at` that also refuses anything but a regular file.
+
+    `O_NONBLOCK` so a FIFO the agent left in the workspace cannot park the open forever; it
+    changes nothing for a regular file.
+    """
+    fd = open_at(dir_fd, name, flags | os.O_NONBLOCK, shown, mode)
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        os.close(fd)
+        raise NotAFileError(shown)
+    return fd
+
+
+def _read_fd(fd: int) -> bytes:
+    with os.fdopen(os.dup(fd), "rb") as fh:
+        return fh.read()
+
+
+def _write_all(fd: int, payload: bytes) -> None:
+    view = memoryview(payload)
+    while view:
+        view = view[os.write(fd, view) :]
 
 
 def workspace_root() -> Path:
@@ -151,41 +293,65 @@ def _os_failed(exc: OSError) -> ToolOutputDict:
     return tool_error_output(code, f"{type(exc).__name__}: {exc}")
 
 
+def _missing(exc: OSError) -> bool:
+    """Not there, or a component on the way is a file: the model asked for something absent."""
+    return isinstance(exc, FileNotFoundError | NotADirectoryError)
+
+
+def _child_rel(rel: str, name: str) -> str:
+    return name if rel == "." else f"{rel}/{name}"
+
+
 async def _list_dir(args: PathArgs) -> ToolOutput:
     try:
         root = workspace_root()
-        target = resolve_under_root(root, args.path)
+        with open_workspace_dir(root, args.path) as (fd, rel):
+            entries: list[dict[str, Any]] = []
+            for name in sorted(os.listdir(fd), key=str.lower):
+                if len(entries) >= _MAX_LIST_ENTRIES:
+                    break
+                try:
+                    st = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                except OSError:
+                    continue
+                # A symlink is reported as one, never as what it points at: the tools will
+                # not follow it, so calling it a file or a directory would be a lie.
+                kind = (
+                    "dir" if stat.S_ISDIR(st.st_mode) else "symlink" if stat.S_ISLNK(st.st_mode) else "file"
+                )
+                item: dict[str, Any] = {"path": _child_rel(rel, name), "type": kind}
+                if stat.S_ISREG(st.st_mode):
+                    item["size"] = st.st_size
+                entries.append(item)
     except ValueError as exc:
         return _path_refused(exc)
-    if not target.exists():
-        return _refuse(f"not found: {args.path}")
-    if not target.is_dir():
-        return _refuse(f"not a directory: {args.path}")
-    entries: list[dict[str, Any]] = []
-    for child in sorted(target.iterdir(), key=lambda p: p.name.lower()):
-        if len(entries) >= _MAX_LIST_ENTRIES:
-            break
-        kind = "dir" if child.is_dir() else "file"
-        rel = str(child.relative_to(root))
-        item: dict[str, Any] = {"path": rel, "type": kind}
-        if child.is_file():
-            with contextlib.suppress(OSError):
-                item["size"] = child.stat().st_size
-        entries.append(item)
-    return json.dumps({"path": str(target.relative_to(root)), "entries": entries})
+    except OSError as exc:
+        if isinstance(exc, FileNotFoundError):
+            return _refuse(f"not found: {args.path}")
+        if isinstance(exc, NotADirectoryError):
+            return _refuse(f"not a directory: {args.path}")
+        return _os_failed(exc)
+    return json.dumps({"path": rel, "entries": entries})
 
 
 async def _read_file(args: ReadFileArgs) -> ToolOutput:
     try:
         root = workspace_root()
-        target = resolve_under_root(root, args.path)
+        with open_workspace_parent(root, args.path) as (parent, leaf, rel):
+            if leaf is None:
+                return _refuse(f"not a file: {args.path}")
+            fd = open_regular(parent, leaf, os.O_RDONLY, rel)
+            try:
+                data = _read_fd(fd)
+            finally:
+                os.close(fd)
+    except NotAFileError:
+        return _refuse(f"not a file: {args.path}")
     except ValueError as exc:
         return _path_refused(exc)
-    if not target.exists() or not target.is_file():
-        return _refuse(f"not a file: {args.path}")
-    try:
-        data = target.read_bytes()
     except OSError as exc:
+        if _missing(exc):
+            return _refuse(f"not a file: {args.path}")
         return _os_failed(exc)
     chunk = data[args.offset : args.offset + args.limit]
     try:
@@ -193,7 +359,7 @@ async def _read_file(args: ReadFileArgs) -> ToolOutput:
     except UnicodeDecodeError:
         return json.dumps(
             {
-                "path": str(target.relative_to(root)),
+                "path": rel,
                 "offset": args.offset,
                 "binary": True,
                 "size": len(data),
@@ -202,7 +368,7 @@ async def _read_file(args: ReadFileArgs) -> ToolOutput:
         )
     return json.dumps(
         {
-            "path": str(target.relative_to(root)),
+            "path": rel,
             "offset": args.offset,
             "size": len(data),
             "content": text,
@@ -214,61 +380,84 @@ _write_locks: dict[str, asyncio.Lock] = {}
 
 
 def _write_lock(target: Path) -> asyncio.Lock:
-    """One lock per resolved path, so parallel tool calls cannot interleave on a file.
+    """One lock per path, so parallel tool calls cannot interleave on a file.
 
     `spec.tool_execution: parallel` runs a batch with `asyncio.gather`, and two calls in
-    one batch can name the same file — directly, or by two paths that resolve to it
-    through a symlink. Appends would interleave mid-write and a write racing an append
-    would drop one of them. The key is the resolved path, so aliases share a lock; the
+    one batch can name the same file. Appends would interleave mid-write and a write racing
+    an append would drop one of them. The key is the root joined with the normalised relative
+    path; with no symlink ever followed, two spellings of one file normalise to one key. The
     map is process-local, which is the same scope as the writes it is ordering.
     """
     return _write_locks.setdefault(str(target), asyncio.Lock())
 
 
+def _lock_key(root: Path, rel: str) -> Path:
+    return root if rel == "." else root.joinpath(*rel.split("/"))
+
+
 async def _write_file(args: WriteFileArgs) -> ToolOutput:
     try:
         root = workspace_root()
-        target = resolve_under_root(root, args.path)
+        rel = "/".join(workspace_parts(args.path)) or "."
     except ValueError as exc:
         return _path_refused(exc)
     payload = args.content.encode("utf-8")
     if len(payload) > _MAX_WRITE_BYTES:
         return _refuse(f"content exceeds {_MAX_WRITE_BYTES} bytes")
+    flags = os.O_WRONLY | os.O_CREAT | (os.O_APPEND if args.append else os.O_TRUNC)
     try:
-        async with _write_lock(target):
-            target.parent.mkdir(parents=True, exist_ok=True)
-            if args.append and target.exists():
-                with target.open("ab") as fh:
-                    fh.write(payload)
-            else:
-                target.write_bytes(payload)
+        async with _write_lock(_lock_key(root, rel)):
+            with open_workspace_parent(root, args.path, create=True) as (parent, leaf, rel):
+                if leaf is None:
+                    return _refuse(f"not a file: {args.path}")
+                fd = open_regular(parent, leaf, flags, rel)
+                try:
+                    _write_all(fd, payload)
+                finally:
+                    os.close(fd)
+    except NotAFileError:
+        return _refuse(f"not a file: {args.path}")
+    except ValueError as exc:
+        return _path_refused(exc)
     except OSError as exc:
         return _os_failed(exc)
     return json.dumps(
         {
-            "path": str(target.relative_to(root)),
+            "path": rel,
             "bytes": len(payload),
             "append": args.append,
         }
     )
 
 
-def _replace_file(target: Path, payload: bytes) -> None:
-    """Write `payload` over `target` without ever leaving it half-written.
+def _replace_file(parent: int, leaf: str, mode: int, payload: bytes) -> None:
+    """Write `payload` over `leaf` in the directory `parent` without ever leaving it half-written.
 
-    `write_bytes` truncates first, so a failure partway leaves a file whose prior contents
-    exist nowhere: an edit carries only the two strings, not the pre-image a whole-file write
-    still has in its own arguments. The temporary file is a sibling, so the rename is atomic,
-    and it inherits the target's mode — an edited `scripts/test.sh` that came back without its
-    executable bit would be a strange way to break the gates.
+    A truncating write would leave, on failure partway, a file whose prior contents exist
+    nowhere: an edit carries only the two strings, not the pre-image a whole-file write still
+    has in its own arguments. The temporary file is a sibling made with `O_EXCL` (a symlink the
+    agent planted under that name is unlinked, never written through), so the rename — which
+    replaces a name and follows nothing — is atomic, and it carries the target's mode: an
+    edited `scripts/test.sh` that came back without its executable bit would be a strange way
+    to break the gates.
     """
-    tmp = target.with_name(f".{target.name}.felix-edit")
+    tmp = f".{leaf}.felix-edit"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     try:
-        tmp.write_bytes(payload)
-        os.chmod(tmp, target.stat().st_mode)
-        os.replace(tmp, target)
+        fd = open_at(parent, tmp, flags, tmp, 0o600)
+    except FileExistsError, SymlinkRefusedError:
+        os.unlink(tmp, dir_fd=parent)  # a leftover from a crash, or a planted link
+        fd = open_at(parent, tmp, flags, tmp, 0o600)
+    try:
+        try:
+            _write_all(fd, payload)
+            os.fchmod(fd, mode)
+        finally:
+            os.close(fd)
+        os.replace(tmp, leaf, src_dir_fd=parent, dst_dir_fd=parent)
     except OSError:
-        tmp.unlink(missing_ok=True)
+        with contextlib.suppress(OSError):
+            os.unlink(tmp, dir_fd=parent)
         raise
 
 
@@ -287,51 +476,64 @@ async def _edit_file(args: EditFileArgs) -> ToolOutput:
     """
     try:
         root = workspace_root()
-        target = resolve_under_root(root, args.path)
+        rel = "/".join(workspace_parts(args.path)) or "."
     except ValueError as exc:
         return _path_refused(exc)
-    if not target.is_file():
-        return _refuse(f"not a file: {args.path}")
     if len(args.new_string.encode("utf-8")) > _MAX_WRITE_BYTES:
         return _refuse(f"new_string exceeds {_MAX_WRITE_BYTES} bytes")
     try:
-        async with _write_lock(target):
-            size = target.stat().st_size
-            if size > _MAX_EDIT_FILE_BYTES:
-                return _refuse(f"{args.path} exceeds {_MAX_EDIT_FILE_BYTES} bytes")
-            try:
-                text = target.read_bytes().decode("utf-8")
-            except UnicodeDecodeError:
-                return _refuse(f"not UTF-8 text: {args.path}")
-            found = text.count(args.old_string)
-            if found == 0:
-                return _refuse(f"old_string not found in {args.path}")
-            if args.old_string == args.new_string:
-                return _refuse(f"old_string and new_string are identical in {args.path}")
-            if found > 1 and not args.replace_all:
-                return _refuse(
-                    f"old_string appears {found} times in {args.path} — extend it with "
-                    "surrounding lines until it is unique, or pass replace_all"
-                )
-            # Both caps above bound an *input*, and `replace_all` multiplies them: the size of
-            # what would be written is projected from the byte delta per match and refused
-            # before `str.replace` builds it, because checking afterwards still allocates it.
-            grew = len(args.new_string.encode("utf-8")) - len(args.old_string.encode("utf-8"))
-            projected = size + found * grew
-            if projected > _MAX_EDIT_FILE_BYTES:
-                return _refuse(
-                    f"the edit would make {args.path} {projected} bytes, over the "
-                    f"{_MAX_EDIT_FILE_BYTES} limit"
-                )
-            # `found` is 1 unless replace_all said otherwise, so this replaces exactly the
-            # matches the guards above allowed.
-            payload = text.replace(args.old_string, args.new_string).encode("utf-8")
-            _replace_file(target, payload)
+        async with _write_lock(_lock_key(root, rel)):
+            with open_workspace_parent(root, args.path) as (parent, leaf, rel):
+                if leaf is None:
+                    return _refuse(f"not a file: {args.path}")
+                fd = open_regular(parent, leaf, os.O_RDONLY, rel)
+                try:
+                    st = os.fstat(fd)
+                    if st.st_size > _MAX_EDIT_FILE_BYTES:
+                        return _refuse(f"{args.path} exceeds {_MAX_EDIT_FILE_BYTES} bytes")
+                    raw = _read_fd(fd)
+                finally:
+                    os.close(fd)
+                try:
+                    text = raw.decode("utf-8")
+                except UnicodeDecodeError:
+                    return _refuse(f"not UTF-8 text: {args.path}")
+                found = text.count(args.old_string)
+                if found == 0:
+                    return _refuse(f"old_string not found in {args.path}")
+                if args.old_string == args.new_string:
+                    return _refuse(f"old_string and new_string are identical in {args.path}")
+                if found > 1 and not args.replace_all:
+                    return _refuse(
+                        f"old_string appears {found} times in {args.path} — extend it with "
+                        "surrounding lines until it is unique, or pass replace_all"
+                    )
+                # Both caps above bound an *input*, and `replace_all` multiplies them: the size
+                # of what would be written is projected from the byte delta per match and
+                # refused before `str.replace` builds it, because checking afterwards still
+                # allocates it.
+                grew = len(args.new_string.encode("utf-8")) - len(args.old_string.encode("utf-8"))
+                projected = len(raw) + found * grew
+                if projected > _MAX_EDIT_FILE_BYTES:
+                    return _refuse(
+                        f"the edit would make {args.path} {projected} bytes, over the "
+                        f"{_MAX_EDIT_FILE_BYTES} limit"
+                    )
+                # `found` is 1 unless replace_all said otherwise, so this replaces exactly the
+                # matches the guards above allowed.
+                payload = text.replace(args.old_string, args.new_string).encode("utf-8")
+                _replace_file(parent, leaf, stat.S_IMODE(st.st_mode), payload)
+    except NotAFileError:
+        return _refuse(f"not a file: {args.path}")
+    except ValueError as exc:
+        return _path_refused(exc)
     except OSError as exc:
+        if _missing(exc):
+            return _refuse(f"not a file: {args.path}")
         return _os_failed(exc)
     return json.dumps(
         {
-            "path": str(target.relative_to(root)),
+            "path": rel,
             "replacements": found,
             "bytes": len(payload),
         }
@@ -394,44 +596,107 @@ def _reject_catastrophic(pattern: str) -> str | None:
     return None
 
 
-def _scan_files(
-    files: list[Path],
+def _scan_text(
+    text: str, rel: str, args: SearchFilesArgs, pattern: re.Pattern[str] | None, hits: list[dict[str, Any]]
+) -> None:
+    for i, line in enumerate(text.splitlines(), start=1):
+        # Truncate before matching: backtracking cost grows with the length of the
+        # subject, so an unbounded line is what makes a bad pattern expensive.
+        subject = line[:_MAX_SEARCH_LINE_CHARS]
+        matched = bool(pattern.search(subject)) if pattern else args.query in subject
+        if matched:
+            hits.append({"path": rel, "line": i, "text": line[:400]})
+            if len(hits) >= args.max_hits:
+                return
+
+
+def _scan_file(
+    parent: int,
+    name: str,
+    rel: str,
     args: SearchFilesArgs,
     pattern: re.Pattern[str] | None,
-    root: Path,
-) -> list[dict[str, Any]]:
-    """Synchronous scan, run on a worker thread under a deadline."""
-    hits: list[dict[str, Any]] = []
-    for path in files:
-        if len(hits) >= args.max_hits:
-            break
+    hits: list[dict[str, Any]],
+) -> None:
+    try:
+        fd = open_regular(parent, name, os.O_RDONLY, rel)
+    except ValueError, OSError:
+        return  # a symlink, a FIFO, a file that vanished: not searched
+    try:
+        if os.fstat(fd).st_size > _MAX_SEARCH_FILE_BYTES:
+            return
+        text = _read_fd(fd).decode("utf-8", errors="ignore")
+    except OSError:
+        return
+    finally:
+        os.close(fd)
+    _scan_text(text, rel, args, pattern, hits)
+
+
+def _scan_tree(
+    dir_fd: int,
+    rel: str,
+    args: SearchFilesArgs,
+    pattern: re.Pattern[str] | None,
+    hits: list[dict[str, Any]],
+    deadline: float,
+) -> None:
+    """Depth-first over `dir_fd`, by descriptor: a symlinked directory is never entered.
+
+    Runs on a worker thread that outlives the request's deadline, so it checks the deadline
+    itself rather than walking a large tree for nobody.
+    """
+    for name in sorted(os.listdir(dir_fd)):
+        if len(hits) >= args.max_hits or time.monotonic() > deadline:
+            return
+        child = _child_rel(rel, name)
         try:
-            if path.stat().st_size > _MAX_SEARCH_FILE_BYTES:
-                continue
-            text = path.read_text(encoding="utf-8", errors="ignore")
+            mode = os.stat(name, dir_fd=dir_fd, follow_symlinks=False).st_mode
         except OSError:
             continue
-        for i, line in enumerate(text.splitlines(), start=1):
-            # Truncate before matching: backtracking cost grows with the length of the
-            # subject, so an unbounded line is what makes a bad pattern expensive.
-            subject = line[:_MAX_SEARCH_LINE_CHARS]
-            matched = bool(pattern.search(subject)) if pattern else args.query in subject
-            if matched:
-                hits.append({"path": str(path.relative_to(root)), "line": i, "text": line[:400]})
-                if len(hits) >= args.max_hits:
-                    break
+        if stat.S_ISDIR(mode):
+            try:
+                sub = open_at(dir_fd, name, _DIR_FLAGS, child)
+            except ValueError, OSError:
+                continue
+            try:
+                _scan_tree(sub, child, args, pattern, hits, deadline)
+            except OSError:
+                pass
+            finally:
+                os.close(sub)
+        elif stat.S_ISREG(mode):
+            _scan_file(dir_fd, name, child, args, pattern, hits)
+
+
+def _search(root: Path, args: SearchFilesArgs, pattern: re.Pattern[str] | None) -> list[dict[str, Any]]:
+    """Synchronous search, run on a worker thread under a deadline."""
+    hits: list[dict[str, Any]] = []
+    deadline = time.monotonic() + _SEARCH_BUDGET_S
+    with open_workspace_parent(root, args.path) as (parent, leaf, rel):
+        if leaf is None:
+            _scan_tree(parent, rel, args, pattern, hits, deadline)
+            return hits
+        mode = os.stat(leaf, dir_fd=parent, follow_symlinks=False).st_mode
+        if stat.S_ISLNK(mode):
+            raise SymlinkRefusedError(rel)
+        if stat.S_ISREG(mode):
+            _scan_file(parent, leaf, rel, args, pattern, hits)
+            return hits
+        fd = open_at(parent, leaf, _DIR_FLAGS, rel)
+        try:
+            _scan_tree(fd, rel, args, pattern, hits, deadline)
+        finally:
+            os.close(fd)
     return hits
 
 
 async def _search_files(args: SearchFilesArgs) -> ToolOutput:
     try:
         root = workspace_root()
-        target = resolve_under_root(root, args.path)
+        workspace_parts(args.path)
     except ValueError as exc:
         return _path_refused(exc)
-    if not target.exists():
-        return _refuse(f"not found: {args.path}")
-    files = [target] if target.is_file() else [p for p in target.rglob("*") if p.is_file()]
 
     pattern: re.Pattern[str] | None = None
     if args.regex:
@@ -443,14 +708,11 @@ async def _search_files(args: SearchFilesArgs) -> ToolOutput:
         except re.error as exc:
             return _refuse(f"invalid regex: {exc}")
 
-    def _scan() -> list[dict[str, Any]]:
-        return _scan_files(files, args, pattern, root)
-
     try:
         # Off the event loop and on a deadline. `re` cannot be interrupted, so the thread
         # keeps burning CPU until it finishes — but the request returns and the API stays
         # responsive, which is the difference between a slow tool and a stalled process.
-        hits = await asyncio.wait_for(asyncio.to_thread(_scan), _SEARCH_BUDGET_S)
+        hits = await asyncio.wait_for(asyncio.to_thread(_search, root, args, pattern), _SEARCH_BUDGET_S)
         return json.dumps({"query": args.query, "hits": hits})
     except TimeoutError:
         return tool_error_output(
@@ -458,6 +720,12 @@ async def _search_files(args: SearchFilesArgs) -> ToolOutput:
             f"search exceeded {_SEARCH_BUDGET_S:.0f}s — narrow the pattern "
             "(a nested-quantifier regex can be exponential)",
         )
+    except ValueError as exc:
+        return _path_refused(exc)
+    except OSError as exc:
+        if _missing(exc):
+            return _refuse(f"not found: {args.path}")
+        return _os_failed(exc)
 
 
 def register_workspace_tools(provider: InMemoryToolProvider) -> None:
@@ -516,11 +784,18 @@ def register_workspace_tools(provider: InMemoryToolProvider) -> None:
 
 __all__ = [
     "EditFileArgs",
+    "NotAFileError",
     "PathArgs",
     "ReadFileArgs",
     "SearchFilesArgs",
+    "SymlinkRefusedError",
     "WriteFileArgs",
+    "open_at",
+    "open_regular",
+    "open_workspace_dir",
+    "open_workspace_parent",
     "register_workspace_tools",
     "resolve_under_root",
+    "workspace_parts",
     "workspace_root",
 ]

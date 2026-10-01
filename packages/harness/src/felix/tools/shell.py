@@ -35,7 +35,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from felix.context import try_get_context
-from felix.manifests.schema import ShellToolRef
+from felix.manifests.schema import MAX_INTEGRATION_TIMEOUT_MS, ShellToolRef
 from felix.observability.metrics import record_counter
 from felix.security.shell_policy import (
     ShellNotAllowedError,
@@ -47,7 +47,7 @@ from felix.security.stdio_policy import stdio_child_env
 from felix.timeouts import DEFAULT_CONNECT_TIMEOUT_S, timeout_seconds
 from felix.tools.errors import ToolErrorCode, tool_error_output
 from felix.tools.types import Tool, ToolInput, ToolInvocationCtx, ToolOutput, define_tool_with_executor
-from felix.tools.workspace import resolve_under_root, workspace_root
+from felix.tools.workspace import open_workspace_dir, workspace_root
 
 DEFAULT_SHELL_TIMEOUT_S = 300.0
 # The tail of stdout and of stderr that reaches the model. A test suite's last lines are
@@ -69,6 +69,9 @@ RUNNER_GRACE_S = 30.0
 # The most of a runner response the API reads. Two output tails, argv and JSON escaping (a
 # control byte is six bytes escaped) fit well inside it; anything larger is not a runner.
 MAX_RUNNER_RESPONSE_BYTES = 2 * 1024 * 1024
+# The largest `duration_ms` a runner can truthfully report: the longest timeout a manifest may
+# set, the drain after the kill, and the grace this side waits.
+MAX_RUNNER_DURATION_MS = MAX_INTEGRATION_TIMEOUT_MS + int((_DRAIN_AFTER_KILL_S + RUNNER_GRACE_S) * 1000)
 
 
 class ShellArgs(BaseModel):
@@ -222,16 +225,21 @@ class _ShellExecutor:
         body: dict[str, Any] = {"argv": argv, "cwd": cwd, "timeout_ms": max(1, int(self._timeout_s * 1000))}
         if stdin is not None:
             body["stdin"] = stdin
+        deadline_s = self._timeout_s + RUNNER_GRACE_S
         try:
+            # httpx's timeout is per operation — connect, each read — so a runner that sends a
+            # byte every few seconds never trips it. This bounds the whole exchange: the API's
+            # tool call ends at the command's own budget plus the grace, whatever the runner does.
             async with (
-                _runner_client(self._timeout_s + RUNNER_GRACE_S) as client,
+                asyncio.timeout(deadline_s),
+                _runner_client(deadline_s) as client,
                 client.stream(
                     "POST", url.rstrip("/") + "/run", json=body, headers={"authorization": f"Bearer {token}"}
                 ) as resp,
             ):
                 status = resp.status_code
                 raw = await _read_capped(resp, MAX_RUNNER_RESPONSE_BYTES)
-        except httpx.TimeoutException:
+        except httpx.TimeoutException, TimeoutError:
             return _runner_unavailable("did not answer in time")
         except (httpx.HTTPError, _ResponseTooLarge) as exc:
             # The class name only: an httpx message can carry the URL, and the URL is the
@@ -264,14 +272,18 @@ class RunnerResult(BaseModel):
 
     argv: list[str]
     cwd: str
-    exit_code: int | None
+    # Bounded so a hostile runner's 10**5000 is a validation failure here — closed, like any
+    # malformed result — and not a ValueError when something later renders or stores it. A
+    # POSIX exit status is 0-255 and a signal death is its negative; the duration cannot
+    # exceed the longest timeout a manifest may set plus the grace.
+    exit_code: int | None = Field(ge=-255, le=255)
     timed_out: bool
     output_exceeded: bool
     # Characters, not bytes, but a decoded tail never has more characters than bytes.
     stdout: str = Field(max_length=MAX_OUTPUT_BYTES)
     stderr: str = Field(max_length=MAX_OUTPUT_BYTES)
     truncated: bool
-    duration_ms: int
+    duration_ms: int = Field(ge=0, le=MAX_RUNNER_DURATION_MS)
 
 
 class _ResponseTooLarge(Exception):
@@ -320,11 +332,18 @@ def _runner_unavailable(what: str) -> ToolOutput:
 
 
 def resolve_cwd(root: Path, raw: str) -> Path:
-    """`raw` resolved under `root`, or `ValueError` — escapes, absolute paths, non-directories."""
-    cwd = resolve_under_root(root, raw or ".")
-    if not cwd.is_dir():
-        raise ValueError(f"not a directory: {raw}")
-    return cwd
+    """`raw` under `root`, or `ValueError` — escapes, absolute paths, symlinks, non-directories.
+
+    Walked the way the workspace tools open a path, so a symlinked component is refused here
+    as it is there. The answer is still a name the exec then `chdir`s to, so this is a check,
+    not a confinement: where the command runs is the boundary, not where it starts.
+    """
+    try:
+        with open_workspace_dir(root, raw or ".") as (_fd, rel):
+            pass
+    except OSError:
+        raise ValueError(f"not a directory: {raw}") from None
+    return root if rel == "." else root.joinpath(*rel.split("/"))
 
 
 async def exec_argv(
@@ -420,6 +439,7 @@ def tools_from_shell_refs(refs: list[ShellToolRef], *, settings: Any | None = No
 __all__ = [
     "DEFAULT_SHELL_TIMEOUT_S",
     "MAX_OUTPUT_BYTES",
+    "MAX_RUNNER_DURATION_MS",
     "MAX_RUNNER_RESPONSE_BYTES",
     "MAX_TOTAL_OUTPUT_BYTES",
     "RunnerResult",

@@ -247,7 +247,12 @@ Detection of the failure modes the program forbids, one mechanism each:
 ## Runbook — builder host
 
 The builder is a dedicated checkout on a host that holds no cloud credentials and no Docker socket:
-`make up-self` once `deploy/docker/compose.self.yml` exists. It is **never**
+`make up-self` once `deploy/docker/compose.self.yml` exists. "No cloud credentials" includes the
+instance's own: the `shell` container has outbound internet for `git fetch` and `uv sync`, and the
+cloud metadata address (`169.254.169.254`) is reachable from it, so a builder VM must not carry an
+instance role, service account or metadata-served credential. An egress proxy allowlisting only
+the git and package hosts would remove that dependence; it is not built (`deploy/GOVERNANCE.md`,
+"The shell runner"). It is **never**
 `~/Projects/felix` or any tree a person or another agent works in — two test runs in one tree fake a
 flaky suite. `FELIX_AUTH_MODE=api_key`, because under `none` the approvals API is anonymous too and
 the same caller could approve its own mutation (the `cowork.yaml` comment records why).

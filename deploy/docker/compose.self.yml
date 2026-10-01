@@ -112,6 +112,9 @@ services:
     networks: [shell]
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
+    # A fork bomb in the workspace stops at this many processes in this container, instead of
+    # exhausting the host's PID space under api/worker. The suite with xdist sits well below it.
+    pids_limit: 512
     # The test suite runs in this container now; the lean default is too small for it.
     mem_limit: ${FELIX_SELF_MEM_LIMIT:-3g}
     cpus: ${FELIX_SELF_CPUS:-2.0}
@@ -127,6 +130,19 @@ services:
       # A first boot clones the repository and syncs its venv before the runner starts.
       start_period: 900s
     restart: unless-stopped
+
+  # No host port for the stores. The base file publishes them to the host's 127.0.0.1, and on
+  # Docker Desktop `host.docker.internal` forwards to exactly that loopback — so `shell`, which
+  # is kept off the `default` network, could still reach the password-less Valkey through the
+  # host and enqueue a Taskiq job for the worker, which holds every secret. Nothing on a builder
+  # host needs them from outside Compose; `docker compose exec` still does. MinIO only runs
+  # under `--profile full`, and is reset with them so that combination is covered too.
+  postgres:
+    ports: !reset []
+  valkey:
+    ports: !reset []
+  minio:
+    ports: !reset []
 
 networks:
   shell:

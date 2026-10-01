@@ -24,6 +24,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   into `.env`, and api and worker no longer take the builder's 3 GiB memory limit, which moved to
   `shell` with the test suite. With the URL unset (`make dev`, the base stack, Helm) shell tools
   exec locally as before, and `deploy/GOVERNANCE.md` "Shell tools" says what that still exposes.
+- **The workspace file tools no longer follow a symlink anywhere in a path.** With shell tools in
+  another container, code there can keep swapping a workspace directory for a link to
+  `/proc/self` or `/data`; the tools checked a path and then opened it by name, so a swap between
+  the two had the API read its own `environ` — in pieces, through `offset`/`limit`. `read_file`,
+  `write_file`, `edit_file`, `list_dir`, `search_files`, context-file loading and the shell tool's
+  `cwd` check now walk each path by descriptor with `O_NOFOLLOW` and refuse a symlink component
+  with the usual path-refusal error; `list_dir` shows a link as `symlink`, and `search_files`
+  neither descends into nor reads through one. The builder overlay now publishes no host port
+  for Postgres, Valkey or MinIO (Docker Desktop's `host.docker.internal` reached them from
+  `shell`), caps `shell` at 512 processes, and documents that a builder host must hold no cloud
+  instance credentials, since `shell` can reach the metadata address. The API's call to the runner
+  is bounded end to end, so a runner trickling bytes fails closed at `timeout_ms` plus 30 seconds,
+  and an out-of-range `exit_code` or `duration_ms` in its answer is a malformed result.
 - **A user turn beginning with `[quarantined]` skipped the model and decider screeners.** The
   check meant "screening already replaced this text" and was written as a test of the text's
   prefix, which the caller controls — so typing that prefix left a turn to the marker scan

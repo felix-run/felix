@@ -436,6 +436,74 @@ async def test_a_runner_that_hangs_fails_closed(
     assert no_local_exec == []
 
 
+async def test_a_runner_that_trickles_fails_closed_at_the_deadline(
+    tmp_path: Path, no_local_exec: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A byte every 0.2s never trips httpx's per-read timeout; the call's own deadline must."""
+    monkeypatch.setattr(shell_mod, "RUNNER_GRACE_S", 0.5)
+
+    async def _responder(req: Request, writer: asyncio.StreamWriter) -> None:
+        writer.write(b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 100000\r\n\r\n")
+        for _ in range(40):  # 8s of trickle, far past the 1s deadline
+            writer.write(b" ")
+            await writer.drain()
+            await asyncio.sleep(0.2)
+
+    async with serve(_responder) as url:
+        settings = _settings(tmp_path, "touch", url=url)
+        started = time.monotonic()
+        out = await _call(_tool(settings, ["touch"], timeout_ms=500), settings, {"argv": ["touch", "x"]})
+        elapsed = time.monotonic() - started
+    assert read_tool_error_code(out) == ToolErrorCode.TRANSPORT_UNAVAILABLE, tool_output_content(out)
+    assert "did not answer in time" in tool_output_content(out)
+    assert elapsed < 4, elapsed
+    assert no_local_exec == []
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        {"exit_code": 10**40},
+        {"exit_code": -(10**40)},
+        {"exit_code": 256},
+        {"duration_ms": 10**40},
+        {"duration_ms": -1},
+    ],
+    ids=["huge-exit", "huge-negative-exit", "exit-256", "huge-duration", "negative-duration"],
+)
+async def test_an_out_of_range_number_from_the_runner_fails_closed(
+    tmp_path: Path, no_local_exec: list[str], field: dict[str, int]
+) -> None:
+    result = {
+        "argv": ["touch", "x"],
+        "cwd": ".",
+        "exit_code": 0,
+        "timed_out": False,
+        "output_exceeded": False,
+        "stdout": "",
+        "stderr": "",
+        "truncated": False,
+        "duration_ms": 5,
+    }
+
+    def _responder(body: dict[str, Any]) -> Any:
+        def _send(req: Request, writer: asyncio.StreamWriter) -> None:
+            respond(writer, json.dumps(body).encode(), ctype="application/json")
+
+        return _send
+
+    async with serve(_responder(result)) as url:
+        settings = _settings(tmp_path, "touch", url=url)
+        assert (
+            _ok(await _call(_tool(settings, ["touch"]), settings, {"argv": ["touch", "x"]}))["exit_code"] == 0
+        )
+    async with serve(_responder({**result, **field})) as url:
+        settings = _settings(tmp_path, "touch", url=url)
+        out = await _call(_tool(settings, ["touch"]), settings, {"argv": ["touch", "x"]})
+    assert read_tool_error_code(out) == ToolErrorCode.TRANSPORT_UNAVAILABLE, tool_output_content(out)
+    assert "malformed result" in tool_output_content(out)
+
+
 async def test_an_oversized_runner_response_fails_closed(
     tmp_path: Path, no_local_exec: list[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
