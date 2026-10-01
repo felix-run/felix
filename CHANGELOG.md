@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Images replayed from a thread's history are screened.** `content_screening.image_model`
+  screened only the incoming turn, and threads are scoped to the tenant rather than the
+  manifest — so an image sent through a manifest that screens nothing, or sent before
+  `image_model` was set, replayed to a governed manifest's model on every later turn. Every
+  render of a session's history is now screened — including the re-renders compaction and
+  context-overflow recovery send straight to the model — and a router's screen holds for the
+  children it forwards the thread to. A replayed image is quarantined, never refused, since
+  refusing would refuse every later turn of the thread. Verdicts are cached beside
+  transcripts, so a replayed image is scored once rather than every turn.
+
 - **On the Compose builder stack, shell tools no longer run beside the API's secrets.** A shell
   tool's command ran as a child of the API, as the API's user, so code the agent wrote and ran
   through an allowlisted `make test` could read `/proc/<api pid>/environ` — `GITHUB_MCP_TOKEN`,
@@ -148,7 +158,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   treated as unscreenable, since the provider fetches them separately, and so is any transcript
   that was refused, filtered, truncated or empty. At most eight uncached transcriptions per
   request; transcripts are cached per tenant by content, so resent history costs nothing
-  further. Only the incoming turn is screened, not images replayed from a thread's history.
+  further.
   Off by default; see `deploy/GOVERNANCE.md`.
 - **`publish_commits`: publish the commits an agent made, from the harness, with a diff on the
   approval.** `spec.github_publish` (`repo`, `auth: secret:NAME`, `base`, `branch_prefix`) binds a

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
@@ -11,6 +12,8 @@ from felix.auth.context import AuthContext
 from felix.context import try_get_context
 from felix.decisions import MeteredDecider
 from felix.governance.content_screening import _INJECTION
+from felix.governance.image_screening import screen_session_strategy
+from felix.governance.inbound import replay_screener
 from felix.governance.judges import judge_score
 from felix.governance.reply import ReplyScreen, screen_session_store
 from felix.limits import EffectiveLimits, effective_limits
@@ -80,6 +83,33 @@ class BuildDeps:
 # Routers of routers of routers, and no further. A bound on nesting, beside the memo above, is
 # what keeps the compile a request triggers proportional to what the tenant meant to write.
 MAX_SUB_AGENT_DEPTH = 4
+
+
+@contextmanager
+def _compiling_children(deps: BuildDeps, name: str, **inherited: Any) -> Iterator[None]:
+    """While `name`'s children compile: on the stack, with what they inherit from it set.
+
+    Each value in `inherited` replaces the `BuildDeps` field of that name and is restored on
+    the way out, so one sibling's compile cannot leak into the next. One place for the rule:
+    the fields had grown to three hand-written save-and-restore pairs, and a missed restore
+    fails nothing — it quietly hands a child's store or screen to whatever compiles next.
+    Not `dataclasses.replace`: `compiled` and `compiling` must stay shared across the tree.
+    """
+    if name in deps.compiling:
+        raise ValueError(f"sub_agents form a cycle: {' -> '.join([*deps.compiling, name])}")
+    if len(deps.compiling) >= MAX_SUB_AGENT_DEPTH:
+        chain = " -> ".join([*deps.compiling, name])
+        raise ValueError(f"sub_agents nest deeper than {MAX_SUB_AGENT_DEPTH}: {chain}")
+    saved = {field_name: getattr(deps, field_name) for field_name in inherited}
+    deps.compiling.append(name)
+    for field_name, value in inherited.items():
+        setattr(deps, field_name, value)
+    try:
+        yield
+    finally:
+        for field_name, value in saved.items():
+            setattr(deps, field_name, value)
+        deps.compiling.pop()
 
 
 def _bundled_sub_agent(deps: BuildDeps) -> Callable[[str], Awaitable[Agent]]:
@@ -1401,6 +1431,10 @@ async def build_agent(
         # quoted draft): this compile's controls and every enclosing compile's. A child with
         # none of its own still owes its router's.
         screen_chain = reply_screen or deps.reply_screen
+        # Every render of history screens its images, whoever renders it. Wrapping what the
+        # enclosing compile already wrapped is what makes a router's screen hold for the
+        # children it forwards the thread to: their own screen adds to it, never replaces it.
+        session_strategy = screen_session_strategy(deps.session_strategy, replay_screener(m, deps.settings))
 
         sub_agents: dict[str, Agent] = {}
         if m.spec.sub_agents:
@@ -1412,24 +1446,17 @@ async def build_agent(
             # against the *screened* store: a router's reply controls would otherwise redact
             # the wire while an unguarded child logged the raw reply.
             builder = deps.sub_agent_builder or _bundled_sub_agent(deps)
-            if m.metadata.name in deps.compiling:
-                chain = " -> ".join([*deps.compiling, m.metadata.name])
-                raise ValueError(f"sub_agents form a cycle: {chain}")
-            if len(deps.compiling) >= MAX_SUB_AGENT_DEPTH:
-                chain = " -> ".join([*deps.compiling, m.metadata.name])
-                raise ValueError(f"sub_agents nest deeper than {MAX_SUB_AGENT_DEPTH}: {chain}")
-            deps.compiling.append(m.metadata.name)
-            outer_store, deps.session_store = deps.session_store, session_store
-            outer_screen, deps.reply_screen = deps.reply_screen, screen_chain
-            try:
+            with _compiling_children(
+                deps,
+                m.metadata.name,
+                session_store=session_store,
+                reply_screen=screen_chain,
+                session_strategy=session_strategy,
+            ):
                 for name in m.spec.sub_agents:
                     if name not in deps.compiled:
                         deps.compiled[name] = await builder(name)
                     sub_agents[name] = deps.compiled[name]
-            finally:
-                deps.session_store = outer_store
-                deps.reply_screen = outer_screen
-                deps.compiling.pop()
 
         resolved: list[Tool] = []
         if not m.spec.sub_agents:
@@ -1843,7 +1870,7 @@ async def build_agent(
                 # For model output leaving by a door other than the reply and the log:
                 # reflect's quoted draft, and the reply memory capture extracts from.
                 "reply_screen": screen_chain,
-                "session_strategy": deps.session_strategy,
+                "session_strategy": session_strategy,
                 "session_spec": m.spec.session,
                 "execution": m.spec.execution,
                 "limits": effective_limits(m.spec.limits),

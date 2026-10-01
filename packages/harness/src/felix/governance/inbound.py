@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from felix.config import Settings
 from felix.governance.content_screening import screen_content
-from felix.governance.image_screening import TranscriptionBudget, has_images, screen_message_images
+from felix.governance.image_screening import INGEST, REPLAY, ImageScreener, ImageSurface, has_images
 from felix.governance.pii import redact_pii
 from felix.governance.screening import (
     INJECTION_THRESHOLD,
@@ -257,7 +258,11 @@ async def apply_inbound_screening(
         if screening.on_flag == "block":
             raise InboundScreeningError("content_screening_unavailable:decider", status_code=503) from None
         decider, decider_down = None, True
-    budget = TranscriptionBudget() if content_on and screening.image_model.strip() else None
+    images = (
+        _image_screener(manifest, settings, INGEST, decider, decider_down)
+        if content_on and images_screened(manifest)
+        else None
+    )
     out: list[Any] = []
     for msg in messages:
         if _role_of(msg) != "user":
@@ -268,16 +273,67 @@ async def apply_inbound_screening(
             screened = await _screen_turn_text(manifest, text, settings, decider, decider_down=decider_down)
             if screened != text:
                 msg = _set_message_text(msg, screened)
-        if budget is not None and has_images(msg):
-
-            async def screen_text(transcript: str) -> ScreenResult:
-                return await _screen_transcript(manifest, transcript, settings, decider)
-
-            msg = await screen_message_images(
-                manifest, msg, settings, screen_text=screen_text, budget=budget, decider_down=decider_down
-            )
+        if images is not None and has_images(msg):
+            msg = await images.screen(msg)
         out.append(msg)
     return out
+
+
+def images_screened(manifest: Manifest) -> bool:
+    screening = manifest.spec.content_screening
+    return bool(screening.enabled and screening.image_model.strip())
+
+
+def _image_screener(
+    manifest: Manifest,
+    settings: Settings,
+    surface: ImageSurface,
+    decider: MeteredDecider | None,
+    decider_down: bool,
+) -> ImageScreener:
+    """One screening pass's `ImageScreener`. Callers check `images_screened` first."""
+    screening = manifest.spec.content_screening
+
+    async def screen_text(transcript: str) -> ScreenResult:
+        return await _screen_transcript(manifest, transcript, settings, decider)
+
+    # What `screen_text`'s answer depends on besides the transcript: the scorer, and whether
+    # this manifest's decider is asked. The marker scan and the threshold are constants.
+    decider_id = manifest.spec.decider.id if screening.decider else ""
+    return ImageScreener(
+        manifest=manifest,
+        settings=settings,
+        surface=surface,
+        screen_text=screen_text,
+        verdict_key=f"{screening.model.strip()}\0{decider_id}",
+        decider_down=decider_down,
+    )
+
+
+def replay_screener(manifest: Manifest, settings: Settings | None) -> Callable[[], ImageScreener] | None:
+    """A factory of replay screeners for one compile, or `None` when it screens no images.
+
+    The builder wraps the session strategy with it (`screen_session_strategy`), so every render
+    of history — a turn's assembly, compaction, overflow recovery, a plugin pattern's own —
+    has its images screened. A factory because each render is its own pass with its own
+    budget, and the decider is bound per pass the way the inbound screen binds it.
+    """
+    if not images_screened(manifest):
+        return None
+    if settings is None:
+        from felix.config import get_settings
+
+        settings = get_settings()
+    bound = settings
+
+    def make() -> ImageScreener:
+        try:
+            decider, down = screening_decider(manifest, bound), False
+        except Exception:
+            decider, down = None, True
+        return _image_screener(manifest, bound, REPLAY, decider, down)
+
+    return make
 
 
 async def _screen_turn_text(
@@ -636,8 +692,10 @@ __all__ = [
     "ScreenResult",
     "apply_inbound_controls",
     "apply_inbound_screening",
+    "images_screened",
     "inbound_controls_enabled",
     "input_pii_enabled",
+    "replay_screener",
     "screen_tool_arguments",
     "screen_tool_output",
 ]

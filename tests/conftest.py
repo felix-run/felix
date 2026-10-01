@@ -187,9 +187,9 @@ def _isolate_process_global_stores():
         reset_memory_for_tests()
         # Content-addressed, so a stale entry would answer a later test's transcription call
         # before its scripted model was ever asked.
-        from felix.governance.image_screening import clear_image_transcripts
+        from felix.governance.image_screening import clear_image_screening_caches
 
-        clear_image_transcripts()
+        clear_image_screening_caches()
 
     _clear()
     yield
