@@ -603,9 +603,14 @@ that answers in text that is constrained, not the turns that call a tool on the 
 gets `response_format`, strict when the schema closes every object and requires every property
 (the only setting under which the shape is *guaranteed*; the drop to non-strict is logged, and
 `strict` goes only to endpoints whose provider row declares it, since it is an OpenAI extension
-that eleven other providers share this wire without). Anthropic has no equivalent, so the schema
-becomes a tool the model must call, folded back into the reply — except with extended thinking
-on, where the provider forbids a forced tool choice and the schema can only be offered.
+that eleven other providers share this wire without). Anthropic gets native structured outputs
+(`output_config.format`) on the models that have them — Fable, Mythos and Opus 5.x, Sonnet 5.x,
+Opus 4.8, Haiku 4.5 — which hold with extended thinking on, provided the schema is inside their
+subset: every object closed with `additionalProperties: false`, and no numeric, string-length,
+`pattern` or array-size constraints. Otherwise the schema becomes a tool the model must call,
+folded back into the reply. Where that cannot be forced — extended thinking on, or Fable 5.1,
+Mythos 5.1, Opus 5.5 and Sonnet 5.5, which refuse a forced tool choice — the schema is only
+offered, and the log names why.
 
 Supported on `pattern: react` and `pattern: deep`. The composite patterns — `router`,
 `parallel`, `groupchat`, `reflect`, `plan_execute` — compose their answer in a turn that takes

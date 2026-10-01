@@ -51,6 +51,16 @@ class ModelQuirks:
     # OpenAI reasoning models renamed `max_tokens` to `max_completion_tokens` and reject
     # the old spelling outright.
     max_completion_tokens: bool = False
+    # Native structured outputs: `output_config.format = {"type": "json_schema", ...}` on
+    # /v1/messages, answered as a text block holding the JSON. Unlike a forced tool it works
+    # with extended thinking on. Off by default because sending it to a model without it is a
+    # 400, while not sending it only costs the guarantee on the paths a forced tool cannot cover.
+    structured_outputs: bool = False
+    # `tool_choice` `{"type": "any"}` / `{"type": "tool"}`. Fable 5.1, Mythos 5.1, Opus 5.5 and
+    # Sonnet 5.5 reject both with a 400 ("type "tool" and "any" are not supported for this
+    # model"); `auto` and `none` still work. True here because every earlier model accepts
+    # them — the entries that cannot vouch for a model (family keys, `_DEFAULT`) turn it off.
+    forced_tool_choice: bool = True
 
 
 @dataclass(frozen=True)
@@ -131,6 +141,16 @@ _V46_QUIRKS = ModelQuirks(
 )
 # Pre-4.6: fixed thinking budgets, sampling allowed, no effort.
 _LEGACY_QUIRKS = ModelQuirks(adaptive_thinking=False, budget_tokens=True, sampling=True, effort=False)
+# Native structured outputs, by model rather than by generation: Opus 4.8 and Haiku 4.5 have
+# them while Opus 4.6/4.7 and every Sonnet 4.x do not.
+_NATIVE = {"structured_outputs": True}
+# Native structured outputs, and no forced tool choice: the 5.1 / 5.5 point releases.
+_NATIVE_UNFORCED = {"structured_outputs": True, "forced_tool_choice": False}
+# A family key or an unknown id cannot vouch for the model behind it: `claude-opus` answers for
+# `claude-opus-6` as readily as for `claude-opus-4-1`. A forced choice sent to a model that
+# rejects it is a 400 on every structured turn, while not forcing only downgrades the schema to
+# an offer — so these say "no forcing", and "no native format", which is a 400 the other way.
+_UNVOUCHED = {"structured_outputs": False, "forced_tool_choice": False}
 
 # USD per MTok from https://platform.claude.com/docs/en/about-claude/pricing, read 2026-09-30.
 # `cache_write` is the 5-minute write (1.25x input). Matching is by longest substring, so a
@@ -166,43 +186,72 @@ _PRE_46 = ModelCatalogEntry(
     native_wire="anthropic",
 )
 
-_FAMILY = replace(_PRE_46, quirks=_MODERN_QUIRKS, max_output_tokens=128_000)
+_FAMILY = replace(_PRE_46, quirks=replace(_MODERN_QUIRKS, **_UNVOUCHED), max_output_tokens=128_000)
 
-_OPUS_5 = replace(_FRONTIER, pricing=_OPUS_PRICE, quirks=replace(_MODERN_QUIRKS, thinking_on_by_default=True))
+_OPUS_5 = replace(
+    _FRONTIER,
+    pricing=_OPUS_PRICE,
+    quirks=replace(_MODERN_QUIRKS, thinking_on_by_default=True, **_NATIVE),
+)
+_NATIVE_FRONTIER = replace(_FRONTIER, quirks=replace(_MODERN_QUIRKS, **_NATIVE))
+_UNFORCED_FRONTIER = replace(_FRONTIER, quirks=replace(_MODERN_QUIRKS, **_NATIVE_UNFORCED))
 
 _CATALOG: dict[str, ModelCatalogEntry] = {
     # --- Claude, current generation (1M context, adaptive thinking) ---
-    "claude-fable-5-1": replace(_FRONTIER, pricing=_FABLE_51_PRICE),
-    "claude-mythos-5-1": replace(_FRONTIER, pricing=_FABLE_51_PRICE),
-    "claude-fable-5": replace(_FRONTIER, pricing=_FABLE_PRICE),
-    "claude-mythos-5": replace(_FRONTIER, pricing=_FABLE_PRICE),
-    "claude-opus-5-5": replace(_OPUS_5, pricing=_OPUS_55_PRICE),
+    "claude-fable-5-1": replace(_UNFORCED_FRONTIER, pricing=_FABLE_51_PRICE),
+    "claude-mythos-5-1": replace(_UNFORCED_FRONTIER, pricing=_FABLE_51_PRICE),
+    "claude-fable-5": replace(_NATIVE_FRONTIER, pricing=_FABLE_PRICE),
+    "claude-mythos-5": replace(_NATIVE_FRONTIER, pricing=_FABLE_PRICE),
+    "claude-opus-5-5": replace(
+        _OPUS_5, pricing=_OPUS_55_PRICE, quirks=replace(_OPUS_5.quirks, **_NATIVE_UNFORCED)
+    ),
     "claude-opus-5": _OPUS_5,
-    "claude-opus-4-8": replace(_FRONTIER, pricing=_OPUS_PRICE),
+    "claude-opus-4-8": replace(_NATIVE_FRONTIER, pricing=_OPUS_PRICE),
     "claude-opus-4-7": replace(_FRONTIER, pricing=_OPUS_PRICE),
     "claude-opus-4-6": replace(_FRONTIER, pricing=_OPUS_PRICE, quirks=_V46_QUIRKS),
-    # Also answers for `claude-sonnet-5-5`, which is priced the same.
-    "claude-sonnet-5": replace(_FRONTIER, pricing=_SONNET_5_PRICE),
+    # Its own key although priced as Sonnet 5: it rejects a forced tool choice, and under the
+    # `claude-sonnet-5` key it was sent one on every structured turn.
+    "claude-sonnet-5-5": replace(_UNFORCED_FRONTIER, pricing=_SONNET_5_PRICE),
+    "claude-sonnet-5": replace(_NATIVE_FRONTIER, pricing=_SONNET_5_PRICE),
     "claude-sonnet-4-6": replace(_FRONTIER, quirks=_V46_QUIRKS),
     # --- Claude, pre-4.6 (200K context, fixed thinking budgets) ---
     "claude-opus-4-5": replace(
         _PRE_46,
         pricing=_OPUS_PRICE,
-        quirks=replace(_LEGACY_QUIRKS, effort=True, effort_xhigh=False),
+        quirks=replace(_LEGACY_QUIRKS, effort=True, effort_xhigh=False, **_NATIVE),
     ),
     "claude-sonnet-4-5": _PRE_46,
-    "claude-haiku-4-5": replace(_PRE_46, pricing=_HAIKU_PRICE),
+    "claude-haiku-4-5": replace(_PRE_46, pricing=_HAIKU_PRICE, quirks=replace(_LEGACY_QUIRKS, **_NATIVE)),
     # Family fallbacks for ids with no exact entry. Split defaults on purpose:
     # conservative on *context*, since advertising 1M for an unrecognised snapshot of an
     # old family invites a request the model rejects; but *modern* on request shape,
     # since sending a parameter the model removed is a hard 400 while omitting an
     # optional one is not. Guessing "current generation" is the direction that fails safe.
+    # They neither force a tool choice nor send a native format (`_UNVOUCHED`), with two
+    # exceptions below so the 4.x snapshots they used to cover keep their forced schema tool.
     "claude-opus": replace(_FAMILY, pricing=_OPUS_PRICE),
     "claude-sonnet": _FAMILY,
     "claude-haiku": replace(_FAMILY, pricing=_HAIKU_PRICE),
     "claude-fable": replace(_FAMILY, pricing=_FABLE_PRICE),
     "claude-mythos": replace(_FAMILY, pricing=_FABLE_PRICE),
     "claude": _FAMILY,
+    # Every 3.x id (`claude-3-5-sonnet-latest`, `claude-3-7-sonnet-…`, `claude-3-haiku-…`) matched
+    # only `claude` above, which neither forces nor goes native. They all accept a forced choice
+    # and none has native structured outputs, so they keep the forced route.
+    "claude-3": replace(_FAMILY, quirks=replace(_FAMILY.quirks, forced_tool_choice=True)),
+    # `claude-sonnet-4-20250514`, `claude-opus-4-1`, `claude-opus-4-20250514`: the family entry
+    # in every field but one. All of them accept a forced choice. An unreleased 4.x would land
+    # here too and be forced; the 5.x line, which is where forcing was withdrawn, cannot.
+    "claude-sonnet-4": replace(_FAMILY, quirks=replace(_FAMILY.quirks, forced_tool_choice=True)),
+    "claude-opus-4": replace(
+        _FAMILY, pricing=_OPUS_PRICE, quirks=replace(_FAMILY.quirks, forced_tool_choice=True)
+    ),
+    # Opus 4.1 has native structured outputs; Opus 4 does not.
+    "claude-opus-4-1": replace(
+        _FAMILY,
+        pricing=_OPUS_PRICE,
+        quirks=replace(_FAMILY.quirks, structured_outputs=True, forced_tool_choice=True),
+    ),
     # --- OpenAI ---
     "gpt-4.1": ModelCatalogEntry(
         context_window=1_047_576,
@@ -289,7 +338,8 @@ _DEFAULT = ModelCatalogEntry(
     # measured against `limits.max_cost_usd` on that basis. A 20x-wrong number is worse
     # than no number, because it looks like enforcement.
     pricing=None,
-    quirks=_MODERN_QUIRKS,
+    # Unvouched for, like the family keys: no forced tool choice, no native format.
+    quirks=replace(_MODERN_QUIRKS, **_UNVOUCHED),
 )
 
 

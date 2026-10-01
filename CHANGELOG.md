@@ -60,6 +60,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   history.
 
 
+### Changed
+
+- **Anthropic models with native structured outputs get `output_config.format` instead of the
+  schema tool**, so `spec.output_schema` and `/v1` `response_format` are now guaranteed with
+  extended thinking on — the hole `docs/ROADMAP.md` recorded. Applies to Fable, Mythos and Opus
+  5.x, Sonnet 5.x, Opus 4.8, Opus 4.5/4.1 and Haiku 4.5, for schemas inside Anthropic's subset
+  (every object `additionalProperties: false`; no `minimum`/`maximum`, `minLength`/`maxLength`,
+  `pattern`, array-size constraints or recursion). A schema outside it falls back to the tool,
+  and the warning names the keyword that cost the guarantee. Callers see no difference:
+  `message.content` is the JSON document and `stop_reason` is `end_turn` on either route.
+
 ### Fixed
 
 - **A streamed run now reports its token usage when it ends.** No frame on `POST /chat/stream`
@@ -73,6 +84,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `totalTokens` is also how full the context window is. A follow-up drained after the run now
   stores its usage on its message as well. Composite patterns synthesise their answer and are
   unchanged.
+- **An `output_schema` agent on Claude Fable 5.1, Mythos 5.1, Opus 5.5 or Sonnet 5.5 no longer
+  fails every structured turn with a 400.** The Anthropic wire enforced a schema by forcing the
+  schema tool with `tool_choice` `any` or `tool`, which those models reject outright. The catalog
+  now records `forced_tool_choice` per model, `claude-sonnet-5-5` has its own entry instead of
+  answering to `claude-sonnet-5`'s, and family keys and unknown ids are treated as unable to be
+  forced, so a model nobody has described yet gets an offered schema rather than a failed turn.
+  The LLM decider's score and probability fields dropped their numeric bounds (a score is an
+  `enum` of its levels) so its schema takes the native route above.
 
 - **Four Claude models were billed at the wrong rates.** `claude-sonnet-5` was priced as Sonnet
   4 ($3/$15 per MTok; it is $2/$10). The catalog matches model ids by longest substring, so
