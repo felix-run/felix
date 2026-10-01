@@ -208,7 +208,10 @@ spec:
 
   # Commits leave the machine through publish_commits and nothing else. The harness reads the
   # commits named by head_sha from the workspace with read-only git and writes them through
-  # GitHub's Git Data API with the token above — a token no process in the workspace ever holds.
+  # GitHub's Git Data API with the token above. Felix never passes that token to git or to the
+  # shell tool's environment — but on the single-container builder the shell runs as the API's
+  # user, so code the agent runs can read it from the API's /proc/<pid>/environ. The approval
+  # gates what Felix publishes; it does not keep the token from the workspace (GOVERNANCE.md).
   # Whole-file writes over MCP (push_files, create_or_update_file) are not bound: they carried
   # every changed file as a tool argument, 196 KiB for one CHANGELOG line (#307).
   github_publish:
@@ -233,10 +236,22 @@ spec:
   # allow_unattended is only enforced under eu_ai_act at risk_tier high, which is why the
   # governance block below sets exactly that — otherwise the field is decoration.
   approvals:
-    - id: github-mutate
-      description: Confirm a branch, commit, pull request, or issue against the repository
+    # Its own rule, stricter than the one below. one_shot: a grant publishes once — a resumed or
+    # replayed call with the same sha needs a new decision, not the hour-old one. bind_principal:
+    # a grant made for one caller's call does not authorize another caller's identical call.
+    - id: publish
+      description: >-
+        Publish the commits shown in the preview to a felix/ branch on felix-run/felix. Read the
+        diff — it is exactly what will land, and approving it authorizes this sha once.
       tools:
         - publish_commits
+      ttl_seconds: 3600
+      one_shot: true
+      bind_principal: true
+      allow_unattended: false
+    - id: github-mutate
+      description: Confirm a branch, pull request, or issue against the repository
+      tools:
         - github__create_branch
         - github__create_pull_request
         - github__update_pull_request

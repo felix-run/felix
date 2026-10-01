@@ -27,6 +27,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   before this still replay their tool calls.
 
 
+### Fixed
+
+- **A `one_shot` approval now authorizes exactly one call.** The grant was spent only when a
+  later call found it already approved; the call that waited for the decision ran without
+  spending it, so one replay of the same arguments ran again on the same approval. The waiting
+  call now spends it, and a second call parked on the same pending row is refused
+  (`[approval already used]`).
+
 ### Added
 
 - **`content_screening.image_model`: screen the text inside user images.** Inbound screening
@@ -43,12 +51,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`publish_commits`: publish the commits an agent made, from the harness, with a diff on the
   approval.** `spec.github_publish` (`repo`, `auth: secret:NAME`, `base`, `branch_prefix`) binds a
   tool that takes a branch and a local commit sha and writes them to GitHub through the Git Data
-  API — blobs, one tree on the remote tip, one commit, a created or fast-forwarded ref. The token
-  stays in the API process; the workspace, where repository code runs, never holds it. The
+  API — blobs, one tree on the remote tip, one commit, a created or fast-forwarded ref. Felix
+  never passes the token to git or to the workspace's environment — but on the single-container
+  builder the shell tool runs as the API's user and can read the API's environment, so code the
+  agent runs can still reach it (deploy/GOVERNANCE.md, "Publishing commits"). The
   approval row and the `approval_required` frame carry a `preview` the harness computes from the
   sha (`git diff --stat` and the unified diff, capped at 32 KiB), while the call signature is
   still the arguments alone — so an approval binds the exact content, and the same branch with a
-  new sha asks again. `contributor` publishes this way and no longer binds GitHub's
+  new sha asks again. A preview that fails or times out refuses the call
+  (`[approval preview failed]`, `felix_approval_preview_failed`) instead of writing a row nobody
+  can read. `contributor` gates the tool with its own `one_shot`, `bind_principal` rule and
+  publishes this way and no longer binds GitHub's
   `push_files` / `create_or_update_file`, which put every changed file into the model's context
   and the approval row: 196 KiB for a one-line CHANGELOG entry (#307). Any tool can now offer an
   approval preview through `Tool.approval_preview`.

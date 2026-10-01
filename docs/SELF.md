@@ -140,8 +140,11 @@ required and `felix-boundary` fails the check when one is missing.
 
 Branches are `felix/<issue>-<slug>`, and `publish_commits` refuses any other name. It publishes
 the commits made locally, never file contents: the harness reads them with read-only git and
-writes them through GitHub's Git Data API with the bot's token, which no process in the checkout
-holds. Several local commits land as one. A branch that already exists is fast-forwarded, so when
+writes them through GitHub's Git Data API with the bot's token, which Felix never hands to git or
+to the shell tool. That is not isolation: the shell tool runs as the API's user in the same
+container, so code Felix runs (`make test` imports what it wrote) can read the token from the API
+process's environment. The approval gates what Felix publishes, not what it could reach — see
+`deploy/GOVERNANCE.md`, "Publishing commits". Several local commits land as one. A branch that already exists is fast-forwarded, so when
 the remote has moved the tool says so and Felix fetches, rebases and publishes the new sha — the
 old approval does not cover it, because the sha is the call. Pull requests open as drafts and are flipped to ready only after
 `github__get_pull_request_status` reports CI green. Felix never merges, never approves, and never

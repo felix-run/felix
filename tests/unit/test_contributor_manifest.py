@@ -304,3 +304,19 @@ def test_commits_are_published_by_the_harness_and_gated(manifest: Manifest) -> N
     assert secret_ref_name(publish.auth) == "GITHUB_MCP_TOKEN"
     assert publish.branch_prefix == "felix/" and publish.base == "main"
     assert "publish_commits" in _approval_gated_tools(manifest)
+
+
+def test_a_publish_approval_is_spent_once_and_by_its_own_caller(manifest: Manifest) -> None:
+    """The rule that decides `publish_commits` — the last naming it literally, as `apply_approvals`
+    selects — is one-shot and principal-bound. Without `one_shot` an approved sha could be
+    published again on a replay for the rest of the TTL; without `bind_principal` one caller's
+    approval would authorize another caller's identical call."""
+    literal = [r for r in manifest.spec.approvals if "publish_commits" in r.tools]
+    assert literal, "publish_commits is not named by any approval rule"
+    rule = literal[-1]
+    assert rule.id == "publish"
+    assert rule.tools == ["publish_commits"], "the publish rule's flags must not leak to other tools"
+    assert rule.one_shot is True
+    assert rule.bind_principal is True
+    assert rule.ttl_seconds == 3600 and rule.allow_unattended is False
+    assert "preview" in rule.description, "the description should tell the approver what to read"

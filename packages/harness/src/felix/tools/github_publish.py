@@ -1,8 +1,12 @@
 """`spec.github_publish` — publish commits already made in the workspace, from the harness.
 
-The workspace is where repository code runs, so it holds no GitHub credential: the shell tool
-cannot push, and `deploy/docker/compose.self.yml` keeps the bot's token out of every process
-there. Publishing used to go through GitHub's `push_files` MCP tool, which carries *whole file
+The workspace is where repository code runs, so Felix hands it no GitHub credential: the shell
+tool cannot push, its children inherit no token, and the git this module runs gets an
+environment built from nothing. That is not isolation — on the single-container builder
+deployment the shell runs as the API's user and can read the API's own environment
+(`/proc/<pid>/environ`), token included; see deploy/GOVERNANCE.md "Publishing commits".
+
+Publishing used to go through GitHub's `push_files` MCP tool, which carries *whole file
 contents* as tool arguments — a one-line CHANGELOG entry put ~196 KiB into the model's context
 and into the approval row that is meant to be the reviewable diff (#307).
 
@@ -29,7 +33,7 @@ commit's subject) followed by the local subjects, oldest first; a single local c
 own message. Squashing keeps the API work to one tree, and the pull request is the unit a
 person reviews anyway.
 
-The token lives only in the `Authorization` header of this module's HTTP client. The git
+Felix uses the token only in the `Authorization` header of this module's HTTP client. The git
 subprocesses get a minimal environment with no credential in it, and system, global and hook
 configuration switched off — the repository's own `.git/config` is agent-writable, and git
 would otherwise run an fsmonitor, an external diff or a textconv filter it names.
@@ -91,6 +95,10 @@ _GIT_PRELUDE = (
     "core.pager=cat",
     "-c",
     "color.ui=false",
+    # `log.showSignature` makes `git log` verify signatures, which runs `gpg.program` — another
+    # path the repository's config could name.
+    "-c",
+    "log.showSignature=false",
 )
 # For the two diff invocations: no external diff driver, no textconv filter.
 _DIFF_SAFE = ("--no-ext-diff", "--no-textconv", "--no-color", "--no-renames")
@@ -309,7 +317,8 @@ class _GitHub:
 
 
 def _check_args(args: ToolInput, spec: GithubPublishSpec) -> tuple[str, str]:
-    branch = str(args.get("branch") or "").strip()
+    # Not stripped: the branch the approver read in the row is the branch that is written.
+    branch = str(args.get("branch") or "")
     head = str(args.get("head_sha") or "").strip().lower()
     if not branch.startswith(spec.branch_prefix):
         raise PublishRefused(f"branch must start with {spec.branch_prefix!r}")

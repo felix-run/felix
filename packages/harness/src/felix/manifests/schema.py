@@ -501,7 +501,8 @@ def is_valid_branch_name(name: str) -> bool:
     space, a control byte — is either invalid to git or a name that reads differently in a URL
     than in a ref. The structural rules are git's own.
     """
-    if not name or len(name) > 200 or not _REF_CHARS_RE.match(name):
+    # `fullmatch`, not `match`: `$` also matches before a trailing newline, so `main\n` passed.
+    if not name or len(name) > 200 or not _REF_CHARS_RE.fullmatch(name):
         return False
     if name.startswith(("-", "/")) or name.endswith(("/", ".", ".lock")):
         return False
@@ -514,10 +515,11 @@ class GithubPublishSpec(_Strict):
     """Bind `publish_commits`: publish commits already made in the workspace, from the harness.
 
     The workspace commits locally and holds no credential; this tool reads those commits with
-    read-only git and writes them through GitHub's Git Data API from the harness process, so the
-    token lives in one HTTP client and never in a process that runs repository code. Everything
-    here is operator-fixed — the model chooses a branch under `branch_prefix` and a commit sha,
-    and nothing else. See `felix/tools/github_publish.py`.
+    read-only git and writes them through GitHub's Git Data API from the harness process, so Felix
+    uses the token in one HTTP client and passes it to no process that runs repository code (which
+    is not the same as that code being unable to read it — deploy/GOVERNANCE.md, "Publishing
+    commits"). Everything here is operator-fixed — the model chooses a branch under
+    `branch_prefix` and a commit sha, and nothing else. See `felix/tools/github_publish.py`.
     """
 
     # owner/name on github.com.
@@ -533,7 +535,7 @@ class GithubPublishSpec(_Strict):
     @field_validator("repo")
     @classmethod
     def _repo_is_owner_name(cls, v: str) -> str:
-        if not _REPO_RE.match(v) or v.split("/", 1)[1] in {".", ".."}:
+        if not _REPO_RE.fullmatch(v) or v.split("/", 1)[1] in {".", ".."}:
             raise ValueError(f"github_publish.repo must be owner/name, got {v!r}")
         return v
 

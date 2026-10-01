@@ -826,18 +826,25 @@ def _arg_present(args: ToolInput, name: str) -> bool:
 
 PREVIEW_ARG = "preview"
 # A preview is computed on the approval path, ahead of a person reading it; it must not be the
-# thing that holds a run open. Past this the row says the preview is unavailable and the
-# approval goes ahead without it.
+# thing that holds a run open. Past this the call is refused, exactly as if the preview raised.
 _PREVIEW_TIMEOUT_S = 60.0
+
+
+class _PreviewFailed(Exception):
+    """A tool with an `approval_preview` could not produce one. The message is redacted."""
 
 
 async def _approval_preview(tool: Tool, args: ToolInput) -> str | None:
     """The text a person reads before approving `tool`, or None when the tool has none.
 
-    Never raises: a preview is an aid to the decision, not a precondition of it, so a failure
-    reads as `preview unavailable: …` on the row and the approval proceeds. Known secret values
-    are redacted — the preview is computed from state the harness can see, and the row is read
-    by whoever holds `approvals:read`.
+    Raises `_PreviewFailed` when the tool has a preview and it raises or times out. That fails
+    the call closed rather than writing a row without one: a tool carries a preview because its
+    arguments are a *reference* to the content (`publish_commits` takes a sha, not the files),
+    so an approval granted over `preview unavailable` binds content nobody saw — and the model
+    can provoke the failure, e.g. by naming a sha that is not a commit yet when the preview runs
+    and is one by the time the approval comes back. Known secret values are redacted from the
+    preview and from the failure reason alike: the row is read by whoever holds
+    `approvals:read`, and the reason goes back to the model.
     """
     fn = tool.approval_preview
     if fn is None:
@@ -850,10 +857,10 @@ async def _approval_preview(tool: Tool, args: ToolInput) -> str | None:
         async with asyncio.timeout(_PREVIEW_TIMEOUT_S):
             text = str(await fn(dict(args)))
     except TimeoutError:
-        text = f"preview unavailable: timed out after {_PREVIEW_TIMEOUT_S:.0f}s"
+        raise _PreviewFailed(f"timed out after {_PREVIEW_TIMEOUT_S:.0f}s") from None
     except Exception as exc:
         logger.warning("approval preview for %s failed", tool.name, exc_info=True)
-        text = f"preview unavailable: {type(exc).__name__}: {str(exc)[:200]}"
+        raise _PreviewFailed(redact_text(f"{type(exc).__name__}: {str(exc)[:200]}")) from None
     return redact_text(text)
 
 
@@ -904,6 +911,7 @@ def apply_approvals(tools: list[Tool], rules: list[ApprovalRule], manifest_id: s
             import hashlib
             import json
 
+            from felix.approvals import store as approvals_store
             from felix.approvals.interrupt import wait_for_decision
             from felix.side_events import emit as emit_side_event
 
@@ -917,6 +925,7 @@ def apply_approvals(tools: list[Tool], rules: list[ApprovalRule], manifest_id: s
             req = try_get_context()
             granted = bool((req.extras if req else {}).get(f"approval:{tool.name}"))
             pending_row: dict[str, object] | None = None
+            preview_failure: str | None = None
             # What the row and the frame show. Equal to `args` unless the tool computes a
             # preview, which is added here and nowhere else: the signature below is hashed from
             # `args`, so a preview can neither widen nor narrow what an approval authorizes.
@@ -926,8 +935,6 @@ def apply_approvals(tools: list[Tool], rules: list[ApprovalRule], manifest_id: s
             thread_id = (ctx.thread_id if ctx else None) or (req.thread_id if req else None)
             if not granted and req is not None:
                 try:
-                    from felix.approvals import store as approvals_store
-
                     sig = hashlib.sha256(json.dumps(args, sort_keys=True, default=str).encode()).hexdigest()[
                         :32
                     ]
@@ -981,8 +988,22 @@ def apply_approvals(tools: list[Tool], rules: list[ApprovalRule], manifest_id: s
                             thread_id=thread_id or "",
                             tool_call_id=(ctx.tool_call_id if ctx else "") or "",
                         )
+                except _PreviewFailed as exc:
+                    # No row: an approval over a missing preview binds content nobody saw.
+                    preview_failure = str(exc)
                 except Exception:
                     logger.debug("approvals store lookup failed", exc_info=True)
+
+            if preview_failure is not None:
+                record_counter(
+                    "felix_approval_preview_failed",
+                    {"manifest_id": manifest_id, "tool": tool.name, "rule": rule.id},
+                )
+                return deny_output(
+                    f"[approval preview failed] tool={tool.name} rule={rule.id}: {preview_failure}. "
+                    "No approval was requested; fix the call and retry.",
+                    "approvals",
+                )
 
             if not granted:
                 record_counter(
@@ -1041,6 +1062,20 @@ def apply_approvals(tools: list[Tool], rules: list[ApprovalRule], manifest_id: s
                     note = decision.note or "denied"
                     return deny_output(
                         f"[approval {note}] tool={tool.name} rule={rule.id}",
+                        "approvals",
+                    )
+                # one_shot spends the grant here too. Only the `find_approved` path consumed it,
+                # so the call that waited for the decision ran and left the grant unspent — one
+                # replay of the same signature later found it and ran again. Single-winner, so
+                # two calls parked on one reused row cannot both run on one decision.
+                if rule.one_shot and (
+                    req is None
+                    or not await approvals_store.consume_approval(
+                        req.settings, req.auth.tenant_id, approval_id
+                    )
+                ):
+                    return deny_output(
+                        f"[approval already used] tool={tool.name} rule={rule.id}",
                         "approvals",
                     )
                 if decision.edited_args:
