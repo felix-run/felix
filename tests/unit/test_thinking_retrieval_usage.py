@@ -16,13 +16,16 @@ from felix.tools.types import define_tool
 
 
 def test_reasoning_effort_buckets() -> None:
-    assert reasoning_effort_from_budget(1024) == "low"
-    assert reasoning_effort_from_budget(8000) == "medium"
+    """Read against the level budgets: 512 is `low`'s, 1,024 `medium`'s, 2,048 `high`'s, and
+    `reasoning_effort` has nothing above `high` (felix-run/felix#398)."""
+    assert reasoning_effort_from_budget(512) == "low"
+    assert reasoning_effort_from_budget(1024) == "medium"
+    assert reasoning_effort_from_budget(2048) == "high"
     assert reasoning_effort_from_budget(20000) == "high"
 
 
 def test_openai_thinking_and_cache() -> None:
-    spec = ModelSpec(thinking_budget=8000, cache=True)
+    spec = ModelSpec(thinking_budget=1024, cache=True)
     body: dict = {"model": "gpt-4.1", "messages": []}
     apply_openai_thinking_cache(body, spec)
     assert body["reasoning_effort"] == "medium"
@@ -78,7 +81,8 @@ def test_anthropic_thinking_current_model_uses_adaptive() -> None:
     assert body["thinking"] == {"type": "adaptive"}
     assert "budget_tokens" not in body["thinking"]
     assert "temperature" not in body, "sampling params are rejected on 4.6+"
-    assert body["output_config"]["effort"] == "medium"
+    # 5,000 reaches `high`'s budget (2,048) and not `xhigh`'s (8,192).
+    assert body["output_config"]["effort"] == "high"
 
 
 def test_anthropic_cache_control_is_applied_either_way() -> None:

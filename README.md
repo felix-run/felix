@@ -430,8 +430,13 @@ Everything Felix knows about a model — context window, max output, price, acce
 parameters, thinking support, modalities — lives in one record per family in `felix/model_catalog.py`,
 resolved by the longest key appearing in the model id. Request shaping, `/v1/models`, and cost
 estimation are all views over it. The current Claude generation takes adaptive thinking plus
-`output_config.effort`, while pre-4.6 models take a fixed `budget_tokens`; `spec.model.thinking_budget`
-works on both — it is translated to an effort level where budgets are no longer accepted.
+`output_config.effort`, while pre-4.6 models take a fixed `budget_tokens`. A thinking level is sent as
+the level's budget where a model takes one, and as an effort where it takes that instead — minimal
+and low as `low`, then `medium`, `high`, `xhigh` and `max` by name, with `xhigh` clamped to `high` on a
+model without that tier, and everything above `high` sent as `high` for OpenAI's `reasoning_effort`.
+A `spec.model.thinking_budget` with no level works on both: where an effort is needed it takes the
+effort of the highest level whose budget it reaches (1,024 → `medium`, 2,048 → `high`, 8,192 →
+`xhigh`, 32,000 → `max`).
 
 An id with no exact entry defaults in two directions on purpose: the **request shape** assumes the
 current generation, because sending a parameter a model has removed is a hard 400 while omitting an

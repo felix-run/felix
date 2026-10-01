@@ -16,7 +16,7 @@ from typing import Any
 
 import httpx
 
-from felix_ai.catalog import clamp_effort, entry_for
+from felix_ai.catalog import clamp_effort, effort_for_spec, entry_for
 from felix_ai.output_schema import anthropic_native_misfit
 from felix_ai.types import (
     ChatMessage,
@@ -43,17 +43,6 @@ logger = logging.getLogger("felix_ai.wire.anthropic_messages")
 # Non-streaming requests must stay under the SDK/HTTP timeout, so this is a floor that
 # leaves room for a real answer rather than the previous 4096.
 _DEFAULT_MAX_TOKENS = 16_000
-
-
-def _effort_from_budget(budget: int) -> str:
-    """Map a legacy thinking budget onto an effort level."""
-    if budget < 4_096:
-        return "low"
-    if budget < 16_384:
-        return "medium"
-    if budget < 32_768:
-        return "high"
-    return "xhigh"
 
 
 def apply_anthropic_thinking_cache(
@@ -90,11 +79,12 @@ def apply_anthropic_thinking_cache(
     if budget:
         n = int(budget)
         if caps.adaptive_thinking:
-            # Depth is expressed as effort now; the budget is only a hint about how hard
-            # the operator wants the model to think.
+            # Depth is expressed as effort now. It comes from the thinking level when the spec
+            # carries one, not from a round trip through that level's budget (#398).
             body["thinking"] = {"type": "adaptive"}
-            if caps.effort:
-                body.setdefault("output_config", {})["effort"] = clamp_effort(_effort_from_budget(n), caps)
+            effort = effort_for_spec(spec)
+            if caps.effort and effort:
+                body.setdefault("output_config", {})["effort"] = clamp_effort(effort, caps)
             if caps.sampling:
                 body["temperature"] = 1
         elif caps.budget_tokens:

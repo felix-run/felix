@@ -367,6 +367,58 @@ def clamp_effort(level: str, quirks: ModelQuirks) -> str:
     return lvl
 
 
+# The harness's thinking levels (`felix.session.thinking.THINKING_LEVELS`) as the effort a
+# model that takes one is sent. The vocabulary is repeated rather than imported because this
+# package may not import `felix`; `tests/unit/test_thinking_effort.py` pins the two together.
+#
+# Effort used to be derived from the level's *budget*, through thresholds at 4,096 / 16,384 /
+# 32,768 that none of the budgets were chosen against: minimal, low, medium and high all sent
+# `low`, xhigh sent `medium`, max sent `high`, and the top two tiers were unreachable
+# (felix-run/felix#398). A level now names its effort directly; `minimal` has no tier of its
+# own, so it shares `low`. Clamp the result with `clamp_effort` for the model at hand.
+EFFORT_FOR_LEVEL: dict[str, str] = {
+    "minimal": "low",
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": "xhigh",
+    "max": "max",
+}
+
+# For a spec carrying a budget and no level (a manifest that sets `thinking_budget` itself):
+# the effort of the highest level whose budget this one reaches. The floors are the level
+# budgets in `felix.session.thinking.THINKING_BUDGETS`, so a budget a level would have set
+# lands on that level's effort, and anything at or above the `max` budget reaches the top.
+_EFFORT_BUDGET_FLOORS: tuple[tuple[int, str], ...] = (
+    (32_000, "max"),
+    (8_192, "xhigh"),
+    (2_048, "high"),
+    (1_024, "medium"),
+)
+
+
+def effort_for_budget(budget: int) -> str:
+    """The effort a bare thinking budget asks for, read against the level budgets."""
+    for floor, effort in _EFFORT_BUDGET_FLOORS:
+        if budget >= floor:
+            return effort
+    return "low"
+
+
+def effort_for_spec(spec: Any) -> str | None:
+    """The unclamped effort a model spec asks for, or `None` when thinking is off.
+
+    Thinking is on when the spec carries a budget — the same gate the budget path uses, so
+    the two paths never disagree about *whether* to think. The level decides *how hard*
+    when it names one; otherwise the budget does.
+    """
+    budget = getattr(spec, "thinking_budget", None) if spec is not None else None
+    if not budget:
+        return None
+    level = str(getattr(spec, "thinking_level", None) or "").strip().lower()
+    return EFFORT_FOR_LEVEL.get(level) or effort_for_budget(int(budget))
+
+
 def known_entry_for(model_id: str | None) -> ModelCatalogEntry | None:
     """The catalog entry for a model, or `None` when nothing matched.
 
@@ -392,11 +444,14 @@ def is_priced(model_id: str | None) -> bool:
 
 
 __all__ = [
+    "EFFORT_FOR_LEVEL",
     "ModelCatalogEntry",
     "ModelPricing",
     "ModelQuirks",
     "all_entries",
     "clamp_effort",
+    "effort_for_budget",
+    "effort_for_spec",
     "entry_for",
     "is_priced",
     "known_entry_for",

@@ -86,7 +86,7 @@ def test_isolation_does_not_disable_thinking() -> None:
     # target accepts it; it used to be sent to every OpenAI-compatible endpoint, including
     # the ones that 400 on it.
     apply_openai_thinking_cache(body, _Thinking(), "gpt-4.1", isolate_cache=True)
-    assert body["reasoning_effort"] == "medium"
+    assert body["reasoning_effort"] == "high"
     assert "prompt_cache_key" not in body
 
 
