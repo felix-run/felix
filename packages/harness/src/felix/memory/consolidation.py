@@ -8,15 +8,21 @@ vestigial since ids became content hashes; kept because it is harmless.
 **Duplicate merging** (`consolidate_all_pools`) — only for a `(tenant, manifest)` pool whose
 governing manifest sets `spec.memory.consolidate.enabled`. The `consolidate.model` route is
 shown the pool's newest agent-written facts, fenced as untrusted data, and asked which of
-them state the same thing. It answers with **ids only**: the kept fact is an existing row,
-unchanged, and each duplicate is superseded by it. No memory text is ever written here, so
-a fact list carrying an injection can at worst cause a wrong merge among the agent's own
-rows — never a new belief, and never a change to an operator's row, which the store refuses
-whatever the model names (`memory.store.plan_merges`).
+them state the same thing. It answers with **groups of ids only**; the store, not the model,
+picks which member of a group survives — the oldest — and supersedes the rest by it. No memory
+text is ever written here, so a fact list carrying an injection can at worst cause a wrong merge
+among the agent's own rows in which the older fact wins: never a new belief, never an injected
+newer fact outliving the one it imitates, and never a change to an operator's row, which the
+store refuses whatever the model names (`memory.store.plan_merges`).
+
+**Spend.** A pool is re-asked only when what it would show the model has changed since the
+last clean pass in this process (`_last_fingerprint`), and at most `MAX_POOLS_PER_TICK` pools
+reach the model per tick, resuming after the last one next tick.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from dataclasses import dataclass
@@ -41,8 +47,8 @@ CONSOLIDATE_SYSTEM = """You deduplicate an agent's long-term memory.
 
 You are given a list of stored facts, one JSON object per line, each with an `id`, a `kind`,
 an optional `topic` and its `text`. Find groups of facts that state the SAME thing — the same
-claim about the same subject, differing only in wording. For each group, choose one fact to
-keep (the clearest) and list the others as duplicates.
+claim about the same subject, differing only in wording. List each such group as an array of
+its ids. Which fact is kept is decided elsewhere; you only say which facts repeat each other.
 
 Rules:
 - Facts that merely relate to each other, overlap partly, or are about the same topic but say
@@ -54,7 +60,7 @@ Rules:
 - Return ids only. Never write or rewrite fact text.
 - If nothing is duplicated, return {"groups": []}.
 
-Answer with JSON: {"groups": [{"keep": "<id>", "duplicates": ["<id>", ...]}]}
+Answer with JSON: {"groups": [["<id>", "<id>", ...], ...]}
 """
 
 _UNTRUSTED_NOTICE = """
@@ -68,15 +74,9 @@ OUTPUT_SCHEMA: dict[str, Any] = {
     "properties": {
         "groups": {
             "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "keep": {"type": "string"},
-                    "duplicates": {"type": "array", "items": {"type": "string"}},
-                },
-                "required": ["keep", "duplicates"],
-                "additionalProperties": False,
-            },
+            # A group is a bare list of ids. It once carried a `keep`; the model choosing the
+            # survivor let an injected fact retire the real one, so there is nothing to choose.
+            "items": {"type": "array", "items": {"type": "string"}},
         }
     },
     "required": ["groups"],
@@ -91,9 +91,16 @@ async def consolidate_pools(settings: Settings, *, max_facts: int = 500) -> int:
 
 @dataclass(slots=True)
 class PoolResult:
-    """What one pool's pass did. `ran` is False when it never reached the model."""
+    """What one pool's pass did. `ran` is False when it never reached the model.
+
+    `fingerprint` is the batch the pool would show next time, set only when this pass ended
+    cleanly (nothing to ask, or an answer that was read), so `consolidate_all_pools` can skip
+    an unchanged pool; `skipped` says the caller's fingerprint matched and no call was made.
+    """
 
     ran: bool = False
+    skipped: bool = False
+    fingerprint: str = ""
     eligible: int = 0
     shown: int = 0
     superseded: int = 0
@@ -119,13 +126,12 @@ def fact_list_prompt(rows: list[dict[str, Any]]) -> str:
     return fence("\n".join(lines), _FENCE_TAG)
 
 
-def parse_groups(text: str) -> list[tuple[str, list[str]]] | None:
-    """The model's answer as `(keep, duplicates)` pairs, or None when it is malformed.
+def parse_groups(text: str) -> list[list[str]] | None:
+    """The model's answer as lists of ids, or None when it is malformed.
 
     Malformed is any departure from the schema — not JSON, no `groups` list, a group that is
-    not an object, a non-string id. One bad group makes the whole answer unreadable rather
-    than partly applied: a model that broke the format once has not shown it kept to it
-    elsewhere.
+    not a list, a non-string id. One bad group makes the whole answer unreadable rather than
+    partly applied: a model that broke the format once has not shown it kept to it elsewhere.
     """
     try:
         raw = json.loads((text or "").strip())
@@ -134,24 +140,17 @@ def parse_groups(text: str) -> list[tuple[str, list[str]]] | None:
     groups = raw.get("groups") if isinstance(raw, dict) else None
     if not isinstance(groups, list):
         return None
-    out: list[tuple[str, list[str]]] = []
+    out: list[list[str]] = []
     for group in groups:
-        if not isinstance(group, dict):
+        if not isinstance(group, list) or not all(isinstance(i, str) for i in group):
             return None
-        keep, duplicates = group.get("keep"), group.get("duplicates")
-        if not isinstance(keep, str) or not isinstance(duplicates, list):
-            return None
-        if not all(isinstance(d, str) for d in duplicates):
-            return None
-        out.append((keep, list(duplicates)))
+        out.append(list(group))
     return out
 
 
-def within_batch(
-    groups: list[tuple[str, list[str]]], shown: set[str]
-) -> tuple[list[tuple[str, list[str]]], int]:
+def within_batch(groups: list[list[str]], shown: set[str]) -> tuple[list[list[str]], int]:
     """Drop every group that names an id the model was not shown, or that shares an id with
-    another group. Returns the survivors and how many were dropped.
+    another group. Returns the groups left and how many were dropped.
 
     Both sides of a shared id go, not the later one: the model contradicted itself about
     that fact, so neither of its claims about it is evidence. The store re-checks what rows
@@ -159,39 +158,83 @@ def within_batch(
     outside the batch is a real row it never saw, which the store would otherwise accept.
     """
     seen: dict[str, int] = {}
-    for keep, duplicates in groups:
-        for i in {keep, *duplicates}:
+    for group in groups:
+        for i in set(group):
             seen[i] = seen.get(i, 0) + 1
-    kept: list[tuple[str, list[str]]] = []
+    kept: list[list[str]] = []
     dropped = 0
-    for keep, duplicates in groups:
-        ids = [keep, *duplicates]
-        if any(i not in shown or seen[i] > 1 for i in ids):
+    for group in groups:
+        if any(i not in shown or seen[i] > 1 for i in group):
             dropped += 1
             continue
-        kept.append((keep, duplicates))
+        kept.append(group)
     return kept, dropped
 
 
+#: How many pools may reach the model in one tick. The rest wait for the next, which resumes
+#: after the last pool this one reached (`_resume_after`), so a busy tenant early in the order
+#: cannot starve the pools behind it.
+MAX_POOLS_PER_TICK = 50
+
+# Per worker process, deliberately: no migration, and the cost of forgetting is bounded --
+# a restarted worker asks each enabled pool once more, then settles again. Two overlapping
+# ticks are data-safe (the store re-plans under a row lock) but may each pay for one call.
+_last_fingerprint: dict[tuple[str, str], str] = {}
+_resume_after: list[tuple[str, str]] = []
+
+
+def reset_for_tests() -> None:
+    """Forget every fingerprint and the tick cursor."""
+    _last_fingerprint.clear()
+    _resume_after.clear()
+
+
+def batch_fingerprint(rows: list[dict[str, Any]], spec: Any) -> str:
+    """What the model would be shown, and asked with, as one hash.
+
+    The ids (content-derived, so an edit is a new id) and their status, plus the settings that
+    change the question: a manifest moved to another model or window is worth asking again.
+    """
+    shown = sorted((str(r["id"]), str(r.get("status") or "")) for r in rows)
+    payload = json.dumps([shown, str(spec.model), int(spec.max_facts), int(spec.after_facts)])
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+async def _shown_batch(
+    settings: Settings, tenant_id: str, manifest_id: str, spec: Any
+) -> tuple[int, list[dict[str, Any]]]:
+    eligible, rows = await memory_store.consolidation_batch(
+        settings, tenant_id, manifest_id=manifest_id, limit=int(spec.max_facts)
+    )
+    return eligible, [r for r in rows if len(r.get("content") or "") <= MAX_FACT_CHARS]
+
+
 async def consolidate_pool(
-    settings: Settings, tenant_id: str, manifest_id: str, spec: Any, model: Any
+    settings: Settings,
+    tenant_id: str,
+    manifest_id: str,
+    spec: Any,
+    model: Any,
+    *,
+    previous: str = "",
 ) -> PoolResult:
     """One duplicate-merging pass over one pool, with `model` as the judge.
 
     The caller has installed a `RequestContext` for the tenant, which is what the metering
-    and the RLS binding read.
+    and the RLS binding read. `previous` is the fingerprint of this pool's last clean pass:
+    a batch that still matches it is not sent again.
     """
     from felix.patterns.model import ModelChatOptions, record_model_usage
     from felix.patterns.types import ChatMessage
 
-    eligible, rows = await memory_store.consolidation_batch(
-        settings, tenant_id, manifest_id=manifest_id, limit=int(spec.max_facts)
-    )
+    eligible, rows = await _shown_batch(settings, tenant_id, manifest_id, spec)
     result = PoolResult(eligible=eligible)
-    if eligible <= int(spec.after_facts):
+    if eligible <= int(spec.after_facts) or len(rows) < 2:
         return result
-    rows = [r for r in rows if len(r.get("content") or "") <= MAX_FACT_CHARS]
-    if len(rows) < 2:
+    fingerprint = batch_fingerprint(rows, spec)
+    if previous and fingerprint == previous:
+        result.skipped = True
+        result.fingerprint = fingerprint
         return result
     result.ran = True
     result.shown = len(rows)
@@ -224,6 +267,12 @@ async def consolidate_pool(
     )
     result.superseded = superseded
     result.rejected = dropped + refused
+    # The batch as it stands *after* this pass, so a pool that just merged is not asked again
+    # next tick about the rows it has already settled.
+    if superseded:
+        _, rows = await _shown_batch(settings, tenant_id, manifest_id, spec)
+        fingerprint = batch_fingerprint(rows, spec)
+    result.fingerprint = fingerprint
     if result.rejected:
         logger.warning(
             "memory consolidation: %d group(s) rejected tenant=%s manifest=%s",
@@ -253,9 +302,26 @@ async def consolidate_all_pools(settings: Settings) -> dict[str, int]:
     with rls_bypass():
         pools = await memory_store.list_memory_pools(settings)
 
-    totals = {"pools": 0, "ran": 0, "superseded": 0, "rejected": 0, "failed": 0, "unresolved": 0}
+    pools = [p for p in pools if p[1]]
+    # Resume after the last pool the previous tick reached, wrapping, so the cap defers the
+    # *rest* rather than always the same tail.
+    if _resume_after:
+        start = next((n for n, p in enumerate(pools) if p > _resume_after[0]), 0)
+        pools = pools[start:] + pools[:start]
+
+    totals = {
+        "pools": 0,
+        "ran": 0,
+        "skipped": 0,
+        "deferred": 0,
+        "superseded": 0,
+        "rejected": 0,
+        "failed": 0,
+        "unresolved": 0,
+    }
     for tenant_id, manifest_id in pools:
-        if not manifest_id:
+        if totals["ran"] + totals["failed"] >= MAX_POOLS_PER_TICK:
+            totals["deferred"] += 1
             continue
         auth = AuthContext(tenant_id=tenant_id, principal_sub="consolidation", anonymous=False)
         ctx = RequestContext(settings=settings, auth=auth, manifest_id=manifest_id)
@@ -272,29 +338,55 @@ async def consolidate_all_pools(settings: Settings) -> dict[str, int]:
                     continue
                 totals["pools"] += 1
                 model = build_model(settings, ModelSpec(id=spec.model))
-                result = await consolidate_pool(settings, tenant_id, manifest_id, spec, model)
+                result = await consolidate_pool(
+                    settings,
+                    tenant_id,
+                    manifest_id,
+                    spec,
+                    model,
+                    previous=_last_fingerprint.get((tenant_id, manifest_id), ""),
+                )
         except Exception:
             totals["failed"] += 1
+            _resume_after[:] = [(tenant_id, manifest_id)]
             logger.exception(
                 "memory consolidation failed tenant=%s manifest=%s",
                 loggable(tenant_id, limit=64),
                 loggable(manifest_id, limit=64),
             )
             continue
+        if result.fingerprint:
+            _last_fingerprint[(tenant_id, manifest_id)] = result.fingerprint
+        else:
+            _last_fingerprint.pop((tenant_id, manifest_id), None)
+        if result.ran:
+            _resume_after[:] = [(tenant_id, manifest_id)]
         totals["ran"] += int(result.ran)
+        totals["skipped"] += int(result.skipped)
         totals["superseded"] += result.superseded
         totals["rejected"] += result.rejected + int(result.malformed)
+    if totals["skipped"] or totals["deferred"]:
+        logger.info(
+            "memory consolidation: %d pool(s) unchanged, %d deferred to the next tick",
+            totals["skipped"],
+            totals["deferred"],
+        )
+        record_counter("felix_memory_consolidation_skipped", {"reason": "unchanged"}, totals["skipped"])
+        record_counter("felix_memory_consolidation_skipped", {"reason": "deferred"}, totals["deferred"])
     return totals
 
 
 __all__ = [
     "CONSOLIDATE_SYSTEM",
+    "MAX_POOLS_PER_TICK",
     "OUTPUT_SCHEMA",
     "PoolResult",
+    "batch_fingerprint",
     "consolidate_all_pools",
     "consolidate_pool",
     "consolidate_pools",
     "fact_list_prompt",
     "parse_groups",
+    "reset_for_tests",
     "within_batch",
 ]

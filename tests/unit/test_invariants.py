@@ -560,6 +560,7 @@ def test_every_memory_store_function_is_classified() -> None:
         "_may_merge",
         "consolidation_batch",
         "plan_merges",
+        "_survivor_key",
         # Clears the in-memory twin between tests; no request path reaches it.
         "reset_memory_for_tests",
     }

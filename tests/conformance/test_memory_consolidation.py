@@ -78,7 +78,7 @@ async def test_a_merge_supersedes_at_the_duplicates_own_turn_and_stamps_the_reti
     dup = await _put(memory_settings, "User likes the dark theme.", seq=5)
 
     result = await memory_store.merge_duplicates(
-        memory_settings, TENANT, manifest_id=MANIFEST, groups=[(keep, [dup])]
+        memory_settings, TENANT, manifest_id=MANIFEST, groups=[[dup, keep]]
     )
 
     assert result == (1, 0)
@@ -102,7 +102,7 @@ async def test_a_merge_supersedes_at_the_duplicates_own_turn_and_stamps_the_reti
 async def test_an_operator_row_is_refused_in_either_role(memory_settings: Any, operator_as: str) -> None:
     curated = await _put(memory_settings, "Deploys need two approvers.", metadata=OPERATOR)
     agent = await _put(memory_settings, "Production deploys require two approvals.")
-    group = (curated, [agent]) if operator_as == "keep" else (agent, [curated])
+    group = [curated, agent] if operator_as == "keep" else [agent, curated]
 
     assert await memory_store.merge_duplicates(
         memory_settings, TENANT, manifest_id=MANIFEST, groups=[group]
@@ -114,24 +114,44 @@ async def test_an_operator_row_is_refused_in_either_role(memory_settings: Any, o
 @parametrized
 @pytest.mark.asyncio
 async def test_a_bad_group_is_refused_whole_and_a_good_one_beside_it_applies(memory_settings: Any) -> None:
-    keep = await _put(memory_settings, "The office is in Lisbon.")
-    dup = await _put(memory_settings, "The company office is in Lisbon.")
+    keep = await _put(memory_settings, "The office is in Lisbon.", seq=1)
+    dup = await _put(memory_settings, "The company office is in Lisbon.", seq=2)
     other_kind = await _put(memory_settings, "Answer in Lisbon time.", kind="instruction")
     a = await _put(memory_settings, "The user lives in Porto.", topic="user.city")
     b = await _put(memory_settings, "The user lives in Porto now.", topic="user.home")
+    loose = await _put(memory_settings, "Home is Porto.")
 
     superseded, refused = await memory_store.merge_duplicates(
         memory_settings,
         TENANT,
         manifest_id=MANIFEST,
-        groups=[(keep, [dup, other_kind]), (a, [b]), (dup, [keep])],
+        groups=[[keep, dup, other_kind], [a, b], [loose, a], [dup, keep]],
     )
 
-    # Group three is valid on its own; the first two are refused whole, so it applies.
-    assert (superseded, refused) == (1, 2)
-    assert await _status(memory_settings, keep) == memory_store.SUPERSEDED
-    for mem_id in (dup, other_kind, a, b):
+    # The last group is valid on its own; the first three are refused whole, so it applies.
+    assert (superseded, refused) == (1, 3)
+    assert await _status(memory_settings, dup) == memory_store.SUPERSEDED
+    for mem_id in (keep, other_kind, a, b, loose):
         assert await _status(memory_settings, mem_id) == memory_store.ACTIVE
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_the_store_keeps_the_oldest_member_whatever_order_it_is_given(memory_settings: Any) -> None:
+    """Oldest by turn, an unknown turn counting as newest; then by clock, then by id."""
+    unknown = await memory_store.put_memory(
+        memory_settings, TENANT, content="Tea, not coffee.", manifest_id=MANIFEST, metadata=dict(AGENT)
+    )
+    newer = await _put(memory_settings, "The user drinks tea rather than coffee.", seq=9)
+    oldest = await _put(memory_settings, "The user prefers tea to coffee.", seq=4)
+
+    assert await memory_store.merge_duplicates(
+        memory_settings, TENANT, manifest_id=MANIFEST, groups=[[unknown["id"], newer, oldest]]
+    ) == (2, 0)
+    rows = await memory_store.get_many(memory_settings, TENANT, [unknown["id"], newer, oldest])
+    assert rows[oldest]["status"] == memory_store.ACTIVE
+    assert rows[newer]["superseded_by"] == oldest
+    assert rows[unknown["id"]]["superseded_by"] == oldest
 
 
 @parametrized

@@ -727,11 +727,14 @@ comment explaining exactly that. It is conditional, not inert.
       now drives a model pass in the `consolidate_memory` cron after the exact-hash dedupe:
       per (tenant, manifest) pool, resolved like a request, the model names groups of
       agent-written facts that say the same thing (ids only), and `memory/store.py:merge_duplicates`
-      supersedes each duplicate by an existing fact, refusing operator rows, mixed kinds and two
-      different `topic_key`s on both arms. No summarising or rewriting — a fact is never
-      authored by consolidation. Still open: each enabled pool above `after_facts` pays one
-      model call per 15-minute tick even when nothing changed since the last pass; a "pool
-      unchanged since last pass" skip needs somewhere to persist the fingerprint. As written: —
+      keeps the oldest member of each group (never a model-chosen one) and supersedes the rest,
+      refusing operator rows, mixed kinds and differing `topic_key`s (absent included) on both
+      arms. No summarising or rewriting — a fact is never authored by consolidation. Spend: a
+      pool whose batch fingerprint matches its last clean pass is skipped, and 50 pools per tick
+      at most reach the model. Still open: the fingerprint lives in the worker process, so a
+      restart costs one call per enabled pool, and two workers each keep their own; overlapping
+      ticks are data-safe (the store re-plans under a row lock) but can each pay for one call.
+      Persisting the fingerprint would need a column or table. As written: —
       `consolidation.py` is 14 lines against `extraction.py`'s 340, so the store only grows.
       With `assistant` capturing on every long turn, that is now a default-path growth rather
       than an opt-in one.

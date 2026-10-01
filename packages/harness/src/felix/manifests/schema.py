@@ -606,10 +606,11 @@ class MemoryConsolidate(_Strict):
     When ``enabled``, the worker's ``consolidate_memory`` cron (every 15 minutes) shows the
     ``model`` route the newest ``max_facts`` active, agent-written facts of this manifest's
     pool — once more than ``after_facts`` of them exist — and asks which state the same
-    thing. The model answers with ids only: each duplicate is superseded by an existing fact
-    it repeats, and no memory text is written. Operator-written facts (``/memory``) are
-    never shown and never retired; facts of different ``kind`` or under two different
-    ``topic_key`` values are never merged. The call is metered to the tenant and manifest.
+    thing. The model answers with groups of ids only; the store keeps the oldest fact of each
+    group and supersedes the rest, and no memory text is written. A pool whose batch has not
+    changed since its last pass is not sent again. Operator-written facts (``/memory``) are
+    never shown and never retired; facts of different ``kind`` or ``topic_key`` (absent
+    included) are never merged. The call is metered to the tenant and manifest.
     """
 
     enabled: bool = False

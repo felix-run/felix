@@ -321,13 +321,20 @@ async def test_a_merged_duplicate_comes_back_for_any_writer(memory_settings: Any
         TENANT,
         content="The user prefers tea.",
         manifest_id=MANIFEST,
+        origin_seq=1,
         metadata={"source": AGENT},
     )
+    # Newer, so the store keeps `keep` and retires this one.
     dup = await memory_store.put_memory(
-        memory_settings, TENANT, content=CONTENT, manifest_id=MANIFEST, metadata={"source": AGENT}
+        memory_settings,
+        TENANT,
+        content=CONTENT,
+        manifest_id=MANIFEST,
+        origin_seq=2,
+        metadata={"source": AGENT},
     )
     assert await memory_store.merge_duplicates(
-        memory_settings, TENANT, manifest_id=MANIFEST, groups=[(keep["id"], [dup["id"]])]
+        memory_settings, TENANT, manifest_id=MANIFEST, groups=[[dup["id"], keep["id"]]]
     ) == (1, 0)
 
     await memory_store.put_memory(
@@ -355,7 +362,7 @@ async def test_consolidation_cannot_launder_an_operator_forget(memory_settings: 
     await memory_store.forget(memory_settings, TENANT, gone["id"], source=OPERATOR)
 
     assert await memory_store.merge_duplicates(
-        memory_settings, TENANT, manifest_id=MANIFEST, groups=[(keep["id"], [gone["id"]])]
+        memory_settings, TENANT, manifest_id=MANIFEST, groups=[[keep["id"], gone["id"]]]
     ) == (0, 1)
     await memory_store.put_memory(
         memory_settings, TENANT, content=CONTENT, manifest_id=MANIFEST, metadata={"source": AGENT}

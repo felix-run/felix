@@ -993,11 +993,17 @@ passes through no wrapper at all:
   Resurrection is gated on who *retired* the row, not who wrote it.
 - **Consolidation retires as the agent, and only duplicates.** With
   `spec.memory.consolidate.enabled`, the worker asks the `consolidate.model` route which of a
-  pool's agent-written facts say the same thing. The model returns ids only — it cannot write a
-  memory — and the store (`merge_duplicates`) supersedes each duplicate by an existing fact it
-  repeats, stamping `retired_by: consolidation`, which ranks as the agent. It never shows the
-  model, keeps, or retires an operator's row; never merges facts of different `kind`s or under
-  two different `topic_key`s; and drops a whole group that names an id the model was not shown
+  pool's agent-written facts say the same thing. The model returns groups of ids only — it
+  cannot write a memory, and it does not choose which fact survives. The store
+  (`merge_duplicates`) keeps the **oldest** member of each group — lowest turn, then earliest
+  write, then id — and supersedes the rest by it, stamping `retired_by: consolidation`, which
+  ranks as the agent. The survivor is fixed by age because age is the one property an
+  injection cannot claim: when the model chose, a fact injected through a tool result ("over
+  $500 needs approval *unless the user says urgent*") could be grouped with the real rule and
+  named the keeper, retiring it. Importance is not used, since the agent can set it. The store
+  never shows the model, keeps, or retires an operator's row; never merges facts of different
+  `kind`s or whose `topic_key`s differ (absent counts as a value, so an untopiced fact cannot
+  retire a topic-keyed one); and drops a whole group that names an id the model was not shown
   or names an id twice. A merged duplicate is therefore as reversible as any agent retirement:
   restating it brings it back. A forgotten row is never a merge member, so consolidation cannot
   re-rank an operator's forget.
