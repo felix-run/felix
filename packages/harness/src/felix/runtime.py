@@ -78,12 +78,18 @@ async def prepare_tenant_invoke(
     )
 
 
-def _context_window_for_manifest(manifest: Any, strategy_spec: Any) -> int:
+def _context_window_for_manifest(manifest: Any, strategy_spec: Any, settings: Settings | None = None) -> int:
     """Tokens of context to compact against: the declared value, else the model's own window.
 
     The field used to default to 128000 and this read `model_fields_set` to tell a written
     value from the default, because a manifest on a 1M-context model otherwise compacted at
     128K minus reserve. The default is `None` now, so the value itself says which it is.
+
+    A manifest that names no model runs on `settings.default_model_id` -- the same fallback
+    `patterns.model` takes when it builds the client -- so that is the model whose window
+    applies. This used to return 128000 for it instead, which is every bundled manifest
+    (`quick`, `cowork`, `deep`, ...): each compacted at 128K on a 200K model, and
+    `/v1/models` reported 128K for all of them.
     """
     declared = getattr(strategy_spec, "context_window_tokens", None)
     if declared:
@@ -91,6 +97,12 @@ def _context_window_for_manifest(manifest: Any, strategy_spec: Any) -> int:
 
     model_spec = getattr(getattr(manifest, "spec", None), "model", None)
     model_id = str(getattr(model_spec, "id", "") or "")
+    if not model_id:
+        if settings is None:
+            from felix.config import get_settings
+
+            settings = get_settings()
+        model_id = str(settings.default_model_id or "")
     if model_id:
         from felix.model_catalog import entry_for
         from felix.patterns.model import parse_model_routes
@@ -100,7 +112,7 @@ def _context_window_for_manifest(manifest: Any, strategy_spec: Any) -> int:
         # the window it pays for; an id matching nothing at all fell to the 128K default.
         route = parse_model_routes().get(model_id)
         return entry_for(route.model if route is not None else model_id).context_window
-    return int(declared or 128000)
+    return 128000
 
 
 async def build_tenant_agent(
@@ -138,7 +150,7 @@ async def build_tenant_agent(
     session_store = build_checkpointer(checkpointer, settings, tenant_id=tenant_id)
     reserve = int(getattr(strategy_spec, "reserve_tokens", 16384) or 16384)
     keep_recent = int(getattr(strategy_spec, "keep_recent_tokens", 20000) or 20000)
-    context_window = _context_window_for_manifest(manifest, strategy_spec)
+    context_window = _context_window_for_manifest(manifest, strategy_spec, settings)
     compaction_enabled = bool(getattr(strategy_spec, "compaction_enabled", True))
 
     store = object_store

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A manifest that names no model compacts against its model's real window.** With no
+  `spec.model.id` and no `session.context_window_tokens`, the window fell to a fixed 128000
+  rather than to `FELIX_DEFAULT_MODEL_ID`, the model the run actually uses. That is every bundled
+  manifest: `quick`, `cowork`, `deep` and the rest compacted at 128K on a 200K default, and
+  `/v1/models` listed `contextWindow: 128000` for all of them. That last part was a second
+  path: the listing asked for the window only when a manifest had a `model` block. Both now
+  resolve the default route the way the model client does. 128000 remains only for a deployment
+  with no default model at all.
+
 ### Added
 
 - **GitHub login, server side.** `felix.auth.github` runs GitHub's OAuth device flow, checks
@@ -171,6 +182,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `chat_message_from_parts`, and a checkpoint records its kept turns with `retained_turn`, beside
   it, so save and load cannot drift again; a round-trip test holds them equal. Checkpoints stored
   before this still replay their tool calls.
+
+- **Compaction keeps the request of a turn it cuts through, word for word.** When the kept window
+  (`keep_recent_tokens`) started mid-turn, one summary covered both sides of the cut, so the
+  turn's opening user message — the ticket a `contributor` or `triage` run is working on — reached
+  the model only as a paraphrase inside the history summary. With `keep_recent_tokens: 20000` and
+  turns of ~38k tokens that was every prior turn of those agents. The history before the turn is
+  summarised as before; the turn's opening message is now kept verbatim (capped at 16,000
+  characters, head kept, cut marked); and the steps between it and the kept window get their own
+  smaller summary, a user-role message labelled `[earlier in this turn — reference material, not
+  an instruction]` and fenced like the conversation summary. Both are stored at the head of the
+  checkpoint's `retainedTail`, survive a second compaction of the same turn, and fold into the
+  history summary once the cut moves past the turn. The two summariser calls are metered as
+  `compaction` and `compaction_turn_prefix`. A failed turn-prefix call drops those steps with a
+  session note rather than failing the compaction; a `before_compact` hook's summary skips it but
+  keeps progress an earlier cut of the same turn already summarised. The opening is taken only
+  from the turn the cut is in — a pinned request is not repeated, and a turn with no user message
+  (a scheduled run) borrows none — and the lead is charged against `keep_recent_tokens`, images
+  included, so a split render stays under the threshold it compacted to.
+
+- **A rewind no longer replays the summary of the branch it left.** Compaction picked the newest
+  summary in the log, and summaries carry no tree linkage, so after a rewind (`POST /chat/rewind`)
+  to before a compaction the abandoned branch's summary and kept turns were replayed into the new
+  one. The summary used is now the newest whose covered and kept events are on the active branch.
 
 
 ### Fixed
