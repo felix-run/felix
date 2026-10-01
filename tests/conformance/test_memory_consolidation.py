@@ -52,7 +52,13 @@ async def _status(settings: Any, mem_id: str) -> str:
 
 @parametrized
 @pytest.mark.asyncio
-async def test_the_batch_is_agent_rows_of_this_pool_counted_before_the_limit(memory_settings: Any) -> None:
+async def test_the_batch_is_agent_rows_of_this_pool_counted_before_the_limit(
+    memory_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # One instant for every row, so the order below is decided by the id tie-break on both arms.
+    # Unpinned, each write took the wall clock: the memory arm wrote inside one millisecond and the
+    # Postgres arm did not, so the two orderings agreed on rule and differed on input.
+    monkeypatch.setattr(memory_store, "now_ms", lambda: 1_900_000_000_000)
     agent = [await _put(memory_settings, f"Agent fact {i}.") for i in range(4)]
     await _put(memory_settings, "Operator fact.", metadata=OPERATOR)
     await _put(memory_settings, "Another manifest's fact.", manifest="other")
@@ -65,7 +71,6 @@ async def test_the_batch_is_agent_rows_of_this_pool_counted_before_the_limit(mem
 
     assert count == 4
     assert len(rows) == 3 and {r["id"] for r in rows} <= set(agent)
-    # Same instant on every row here, so the order is the id, descending, on both arms.
     assert [r["id"] for r in rows] == sorted(agent, reverse=True)[:3]
 
 
