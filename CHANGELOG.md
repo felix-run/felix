@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **GitHub login, server side.** `felix.auth.github` runs GitHub's OAuth device flow, checks
+  which configured org the user is an *active* member of (a pending invitation does not count),
+  and mints a self-issued JWT for that org's tenant with the org's scopes. The subject is
+  `github:<numeric id>`, never the renameable login. `FELIX_GITHUB_CLIENT_ID`,
+  `FELIX_GITHUB_ORG_TENANTS` (`{"<org>": {"tenant", "scopes"}}`) and
+  `FELIX_GITHUB_LOGIN_TTL_SECONDS` (default 8h) configure it. At boot, each mapped tenant gets a
+  probe token run through the configured verifiers, so a key mismatch, a missing
+  `self:felix-self` verifier, `FELIX_ALLOWED_TENANTS` or a `fixed:` verifier that would override
+  the tenant stops startup instead of producing logins that 401. The HTTP routes and
+  `felix login` follow. `mint_token` takes `extra_claims` (it refuses to override identity
+  claims).
+
 - **An agent can ask the person watching a question.** `ask_user` is a built-in tool over the
   `ui_request` prompts both web clients already render: `confirm`, `select` from `options`, or
   free-text `input`, waiting up to `timeout_seconds` (default 300, max 900). It returns

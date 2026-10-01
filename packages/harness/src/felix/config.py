@@ -88,6 +88,14 @@ class Settings(BaseSettings):
     # Comma-separated tenants a JWT may claim. Empty = any claimed tenant is
     # accepted, which is only safe when the IdP is the sole writer of that claim.
     allowed_tenants: str = ""
+    # GitHub login (device flow → a self-issued JWT). Off while the client id is empty.
+    # The org map is the whole user model: {"<org>": {"tenant": "<id>", "scopes": [...]}};
+    # an active member of <org> gets a token for <tenant>. Needs a `self:felix-self`
+    # verifier (tenant=claim) that accepts what FELIX_JWKS_PRIVATE signs; checked at boot.
+    github_client_id: str = ""
+    github_org_tenants: str = ""
+    github_login_ttl_seconds: int = Field(default=28_800, ge=60, le=604_800)  # 8h; max 7d
+    github_timeout_seconds: float = Field(default=10.0, gt=0, le=120.0)
 
     # --- HTTP posture ---
     # `/docs` and `/openapi.json` describe every route and are behind auth in `api_key`
@@ -770,6 +778,9 @@ class Settings(BaseSettings):
         self._validate_shell_runner()
         self._validate_configured_tenant_ids()
         self._validate_jwt_tenant_posture()
+        from felix.auth.github import validate_login_config
+
+        validate_login_config(self)
         if self.scale_out:
             if "sqlite" in self.database_url:
                 raise RuntimeError("Scale-out requires Postgres (FELIX_DATABASE_URL).")
@@ -843,4 +854,11 @@ def _configured_tenant_ids(settings: Settings) -> list[tuple[str, str]]:
             for entry in keys.values()
             if isinstance(entry, dict) and isinstance(tenant := entry.get("tenant_id"), str) and tenant
         )
+    from felix.auth.github import parse_org_tenants
+
+    try:
+        grants = parse_org_tenants(settings.github_org_tenants)
+    except ValueError:
+        grants = {}  # shape errors are reported by `_validate_github_login`, not here
+    found.extend((f"FELIX_GITHUB_ORG_TENANTS ({g.org})", g.tenant) for g in grants.values())
     return found

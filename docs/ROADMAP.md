@@ -957,6 +957,15 @@ rather than from re-reading a file. The wave itself is written up in [HISTORY.md
       `FELIX_AUTH_API_KEYS` JSON and restarting. Manifest CRUD, canary and rollback are real and
       API-driven; onboarding tenant #2 is a config edit and a process restart. Decide whether that
       is the product (single-operator self-host) or a gap, and write the answer down either way.
+- [ ] **GitHub login** (plan: device flow → self-issued JWT, org → tenant via
+      `FELIX_GITHUB_ORG_TENANTS`). Partly answers the item above: a GitHub org is how a person
+      reaches a tenant without a key edit and a restart. Three PRs, in order:
+      - [x] 1. `felix/auth/github.py` (device flow, active-membership check, mint), settings,
+        boot-time probe that every mapped tenant's token verifies.
+      - [ ] 2. `POST /auth/github/device` + `POST /auth/github/token`, public only when enabled;
+        e2e through `create_application()`; `make contract`.
+      - [ ] 3. `felix_client.device_login`, `felix login [--save]`, the REPL reads the saved token;
+        felix-web auth guide (OAuth app setup, org approval).
 - [x] **Manifest version listing** — `GET /manifests/{name}/versions`: newest first, metadata
       only, each marked `active` / `canary`, paged by `before=<version>` (`next_before`).
 - [x] **Run a job now** — `POST /jobs/{name}/run` (`jobs:write`), synchronous, returning the

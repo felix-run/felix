@@ -27,6 +27,9 @@ ALLOWED_ALGORITHMS = ("RS256", "RS384", "RS512", "ES256", "ES384", "ES512")
 # SDKs assume, and short enough that an expired token is still an expired token.
 JWT_LEEWAY_S = 60
 
+# The `iss` of every token `mint_token` signs; a `self:felix-self` verifier accepts them.
+SELF_ISSUER = "felix-self"
+
 
 @dataclass(slots=True)
 class VerifierConfig:
@@ -460,20 +463,30 @@ def mint_token(
     tenant_id: str,
     scopes: list[str],
     ttl_seconds: int = 3600,
+    extra_claims: dict[str, Any] | None = None,
 ) -> str:
-    """Mint a self-issued JWT for local dev / CLI."""
+    """Mint a self-issued JWT for the CLI and GitHub login.
+
+    `extra_claims` adds claims (`aud`, `idp`, …) but never overrides the ones that carry
+    identity and authority: a caller passing `tenant_id` there would otherwise mint a
+    token for a tenant the `tenant_id` argument was checked against.
+    """
     if not settings.jwks_private.strip():
         raise RuntimeError("FELIX_JWKS_PRIVATE is required to mint tokens")
     key = jwk.import_key(settings.jwks_private.strip(), "RSA")
     now = int(time.time())
-    claims = {
+    claims: dict[str, Any] = {
         "sub": sub,
         "tenant_id": tenant_id,
         "scope": " ".join(scopes),
-        "iss": "felix-self",
+        "iss": SELF_ISSUER,
         "iat": now,
         "exp": now + ttl_seconds,
     }
+    for name, value in (extra_claims or {}).items():
+        if name in claims:
+            raise ValueError(f"extra_claims may not set {name!r}")
+        claims[name] = value
     return jwt.encode({"alg": "RS256"}, claims, key)
 
 
