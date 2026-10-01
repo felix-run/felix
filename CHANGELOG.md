@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A person can rate an answer.** `POST /chat/sessions/feedback` takes `{thread_id, event_id,
+  rating: "up" | "down" | null, note?}` for an assistant message (404 `unknown_event_id` for an id
+  the thread does not have, 400 `not_an_assistant_message` for anything else; `null` clears).
+  The rating is kept twice, for two readers. The session snapshot returns the current one per
+  event as `feedback` (`{rating, note, at}`), so a client can draw it, and every change is an
+  audit event, `turn_feedback` (status `up` / `down` / `cleared`), so
+  `GET /audit?event_type=turn_feedback` answers the operator's real question, which is
+  tenant-wide: which answers did people mark down. Nothing is appended to the session log. A
+  rating is about the conversation, not part of it, and an event there would move the thread's
+  leaf. Stored in the thread metadata the labels already use, so there is no migration.
+  `FelixClient.feedback()` exposes it to the SDK.
+
 ### Security
 
 - **On the Compose builder stack, shell tools no longer run beside the API's secrets.** A shell
