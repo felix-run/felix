@@ -481,10 +481,16 @@ and fixed; the comment at `fibers.py:36-46` is the record.
       stays the logical route name, which is what an operator recognises.
 - [x] **`GET /usage/summary`** — by manifest / model / UTC day, with totals; both backends
       under conformance.
-- [~] **Fill the missing bundled rates** — ~~`gpt-4.1` has no entry and bills at the default~~ (priced in #301, with `-mini` and `-nano`); still open:
-      no bundled entry sets a long-context tier. Correction to this entry as written: an
-      unpriced model contributes `$0`, so `limits.max_cost_usd` fails **open** for it, not
-      closed — `felix_model_unpriced` now says when that is happening.
+- [x] **Fill the missing bundled rates** — ~~`gpt-4.1` has no entry and bills at the default~~ (priced in #301, with `-mini` and `-nano`).
+      Correction to this entry as written: an unpriced model contributes `$0`, so
+      `limits.max_cost_usd` fails **open** for it, not closed — `felix_model_unpriced` now says
+      when that is happening. The "long-context tier" it left open was not missing: see below.
+      What *was* wrong, checked against Anthropic's pricing page on 2026-09-30: `claude-sonnet-5`
+      billed at Sonnet 4's $3/$15 (it is $2/$10), and two point releases matched their
+      predecessor's key by substring — `claude-opus-5-5` paid Opus 5's $5/$25 (it is $4/$20,
+      cache reads $0.20) and `claude-fable-5-1`/`claude-mythos-5-1` read cache at $1 (it is
+      $0.25). All over-charges, so `max_cost_usd` stopped runs early and usage over-reported.
+      Every bundled Claude rate is now pinned field by field in `test_model_capabilities.py`.
 - [x] **An approval row names the thread it is blocking** (migration `0014_approval_thread_id`,
       felix-run/felix#232). The `approval_required` frame carried `thread_id`; the row did not —
       and the two channels do not cover the same runs. Side events are an in-process queue keyed
@@ -688,9 +694,12 @@ comment explaining exactly that. It is conditional, not inert.
       A new rule inherits two things: `_score_answer`'s docstring states the empty-value policy,
       and `tests/unit/test_eval_gate_can_fail.py` reads the rule names off the function, so the
       rule fails there until `negative.json` has an item that has seen it reject something.
-- [ ] **Long-context price tiers** — `estimate_cost` supports request-wide tiers but no bundled
-      entry sets one. Needs current rates per deployment via a manifest price override. Folded
-      into C where it touches `max_cost_usd`.
+- [!] **Long-context price tiers** — deferred on purpose: there is nothing to bundle. Anthropic
+      bills Claude 4.6 and later at one rate across the full 1M window, and the pre-4.6 entries
+      are sized at 200K. The prescription ("rates per deployment via a manifest price override")
+      also could not have worked: `spec.model.price` is `dict[str, float]`, so it cannot carry the
+      `tiers` list `_apply_tier` reads, and nothing configurable reaches that code. Revisit only
+      for a provider that actually tiers — then widen the override, rather than bundle a guess.
 - [x] **Memory defaults** — `FELIX_MEMORY_EMBEDDER` defaults to `auto`: the local bge model when
       `felix-harness[embeddings]` is installed, no vector channel otherwise. Local only by design —
       a hosted embedder would send every stored memory to a provider, and the column is 768 wide
