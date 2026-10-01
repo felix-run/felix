@@ -62,6 +62,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A streamed run now reports its token usage when it ends.** No frame on `POST /chat/stream`
+  carried usage. `on_chain_end` holds the in-process `InvokeOutput`, which reaches the wire as its
+  `repr`, and `done` had no usage field. A client could learn a turn's tokens only by re-reading
+  the session snapshot, so every live turn showed none until a reload. `done` now carries the
+  final model call's usage block, the same one the session log stores on the final message:
+  `input`, `output`, `cacheRead`, `cacheWrite`, `totalTokens` and `cost`. The key is absent when
+  the provider reported nothing. `input` excludes cached tokens, so the prompt is
+  `input + cacheRead + cacheWrite`. Because the final call's prompt is the whole active branch,
+  `totalTokens` is also how full the context window is. A follow-up drained after the run now
+  stores its usage on its message as well. Composite patterns synthesise their answer and are
+  unchanged.
+
 - **Four Claude models were billed at the wrong rates.** `claude-sonnet-5` was priced as Sonnet
   4 ($3/$15 per MTok; it is $2/$10). The catalog matches model ids by longest substring, so
   `claude-opus-5-5` was priced as Opus 5 ($5/$25; it is $4/$20, with cache reads at $0.20), and
