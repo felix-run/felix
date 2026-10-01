@@ -269,9 +269,10 @@ surfacing at the first model call.
 Every system-role message a model sees is written by the operator or the harness: the
 manifest's prompt, skills catalogue, handoff and session notes. Text a caller, a tool or a
 model produced reaches the model as a user turn at most, labelled for what it is — a
-conversation summary (reference material), a recalled memory, or a `POST /chat/sessions/custom`
-entry. That last one takes its `role` from the caller and is stored as written, but a
-`system`-role entry with `in_context: true` is sent as a user turn marked as added by the
+conversation summary (reference material), the summary of the earlier steps of a turn a
+compaction cut through (also reference material), a recalled memory, or a
+`POST /chat/sessions/custom` entry. That last one takes its `role` from the caller and is
+stored as written, but a `system`-role entry with `in_context: true` is sent as a user turn marked as added by the
 client, on live history and on a compaction checkpoint alike (`session/types.py`,
 `_model_role_and_content`).
 

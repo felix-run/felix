@@ -768,9 +768,19 @@ comment explaining exactly that. It is conditional, not inert.
       is flagged only when no reached tool takes it, so `github__*` with `when_args: [force]`
       is fine; a tool whose schema lists no properties is never grounds. Not a parse-time check,
       which would reject stored manifests on read.
-- [ ] **Split-turn compaction** — when one turn alone exceeds `keep_recent_tokens` the cut lands
-      mid-turn and one summary covers both sides. Two summaries with different prompts and budgets
-      is the fix. Narrow: only bites on very long single turns.
+- [x] **Split-turn compaction** — when the kept window starts mid-turn, the history before the
+      turn is summarised as before, the turn's opening user message is kept verbatim (capped at
+      `OPENING_MESSAGE_MAX_CHARS`, 16,000), and the steps between it and the kept window get their
+      own prompt and a 2,048-token budget (`TURN_PREFIX_PROMPT`, rendered by `turn_prefix_message`:
+      user tier, labelled, fenced). Both lead the checkpoint's `retainedTail`
+      (`metadata.split_turn.lead_items`), a second cut through the same turn folds the earlier
+      progress in, and a cut past the turn moves both into the history summary. Not narrow, as
+      this entry used to claim: `contributor` and `triage` keep 20,000 tokens and a turn of theirs
+      is ~38k, so every prior turn was split and its ticket survived only as a paraphrase.
+      Remaining: no live-model run has judged the turn-prefix prompt's output yet (the tests use a
+      scripted summariser), the history summary still has no output budget of its own, and a
+      pinned event older than a checkpoint's cut is in neither its `retainedTail` nor the re-walk,
+      so a replay drops it (pre-existing; it now matters for a pinned request).
 - [x] **Tools carry their own prompt copy** — `Tool.prompt_guidance` for tools defined in code,
       and `spec.tool_guidance` (tool name or glob → one line) for everything a manifest binds,
       MCP included; `builder.tool_guidance_section` appends a "Tool guidance" section built from

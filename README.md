@@ -561,7 +561,9 @@ Sessions and skills:
   `felix-architecture`, `felix-conventions`, `felix-testing`, `felix-contributing`
 - **Session strategies**: `compacting` (token-threshold), `windowed:N`, `semantic:N`, `full_replay`
   — `compacting` sizes itself to the model's context window unless `spec.session.context_window_tokens` says otherwise, and compacts once more if the provider
-  rejects a request for length anyway
+  rejects a request for length anyway. When the kept window starts mid-turn, that turn's opening
+  user message is kept verbatim (up to 16,000 characters) and its earlier steps get a separate,
+  smaller summary, so the request a long turn is working on is never reduced to a paraphrase
 
 A tool declares whether it may be re-run after a crash. A run that dies mid-tool leaves a call
 with no result, and the harness cannot tell from the outside whether the effect happened, so the
