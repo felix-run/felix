@@ -319,3 +319,33 @@ def test_the_llm_deciders_schema_fits_the_native_subset() -> None:
     )
     assert anthropic_native_misfit(schema) is None
     assert schema["properties"]["grade"]["enum"] == [0, 1, 2]
+
+
+@pytest.mark.parametrize(
+    "model_id", ["claude-3-5-sonnet-latest", "claude-3-7-sonnet-20250219", "claude-3-haiku-20240307"]
+)
+def test_a_claude_3_id_keeps_the_forced_route(model_id: str) -> None:
+    # Only the bare `claude` key matched these, and it neither forces nor goes native, so a route
+    # pinned to a 3.x model quietly lost its structured-output guarantee.
+    from felix_ai.catalog import entry_for
+
+    quirks = entry_for(model_id).quirks
+    assert quirks.forced_tool_choice is True
+    assert quirks.structured_outputs is False
+
+
+@pytest.mark.parametrize("value", [3, -1, 7, 2.01])
+def test_a_score_outside_the_offered_levels_is_refused(value: float) -> None:
+    from felix_ai.decide.llm import _answer
+    from felix_ai.decide.types import Score
+
+    with pytest.raises(ValueError, match="offered levels"):
+        _answer(Score(instructions="rate", levels=("low", "mid", "high")), value)
+
+
+@pytest.mark.parametrize("value", [0, 1.5, 2])
+def test_a_score_inside_the_range_is_kept_fractional_included(value: float) -> None:
+    from felix_ai.decide.llm import _answer
+    from felix_ai.decide.types import Score
+
+    assert _answer(Score(instructions="rate", levels=("low", "mid", "high")), value).score == value

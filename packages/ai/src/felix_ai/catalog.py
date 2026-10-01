@@ -235,6 +235,10 @@ _CATALOG: dict[str, ModelCatalogEntry] = {
     "claude-fable": replace(_FAMILY, pricing=_FABLE_PRICE),
     "claude-mythos": replace(_FAMILY, pricing=_FABLE_PRICE),
     "claude": _FAMILY,
+    # Every 3.x id (`claude-3-5-sonnet-latest`, `claude-3-7-sonnet-…`, `claude-3-haiku-…`) matched
+    # only `claude` above, which neither forces nor goes native. They all accept a forced choice
+    # and none has native structured outputs, so they keep the forced route.
+    "claude-3": replace(_FAMILY, quirks=replace(_FAMILY.quirks, forced_tool_choice=True)),
     # `claude-sonnet-4-20250514`, `claude-opus-4-1`, `claude-opus-4-20250514`: the family entry
     # in every field but one. All of them accept a forced choice. An unreleased 4.x would land
     # here too and be forced; the 5.x line, which is where forcing was withdrawn, cannot.

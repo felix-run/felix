@@ -65,7 +65,14 @@ def _answer(q: Question, value: Any) -> Answer:
             raise ValueError(f"choice {choice!r} is not one of the offered options")
         return ChoiceAnswer(choice=choice, probabilities={choice: 1.0}, confidence=None)
     if isinstance(q, Score):
-        return ScoreAnswer(score=float(value), confidence=None)
+        # The schema's enum enforces the range only where the provider enforces the schema; a
+        # model that is only *offered* it can answer 7 for three levels. Refused, like an
+        # unoffered choice, so the consumer falls back rather than acting on a level that is not.
+        score = float(value)
+        # Fractional is fine - `Score` allows an answer between levels - outside the range is not.
+        if not (0 <= score <= len(q.levels) - 1):
+            raise ValueError(f"score {value!r} is not one of the {len(q.levels)} offered levels")
+        return ScoreAnswer(score=score, confidence=None)
     return NoulAnswer(p=min(1.0, max(0.0, float(value))))
 
 
