@@ -13,6 +13,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   check meant "screening already replaced this text" and was written as a test of the text's
   prefix, which the caller controls — so typing that prefix left a turn to the marker scan
   alone. Screening now tracks whether it replaced the text itself.
+- **A client-written custom entry no longer reaches the model in the system tier.**
+  `POST /chat/sessions/custom` takes its `role` from the caller — the agent's end user, anonymous on
+  some manifests — and defaults it to `system`. With `in_context: true`, that entry was sent as a
+  system message beside the operator's prompt, so a caller could write instructions that outranked
+  their own turns. It is still stored as written; it now reaches the model as a user turn labelled
+  as coming from the client, on live history and on a compaction checkpoint's replay alike.
+  `assistant`-role entries are unchanged, since `/v1` already accepts caller-supplied assistant
+  history.
+
 
 ### Fixed
 
