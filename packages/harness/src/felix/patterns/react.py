@@ -870,6 +870,9 @@ class _ReactAgent:
         fatal = False
         any_denied = False
         last_stop: StopReason = "end_turn"
+        # The newest model call's usage block, for `done`. The last call's prompt is the
+        # whole branch as the model saw it, so this is also how full the context is.
+        last_usage: dict[str, Any] | None = None
         opts = self._chat_options(input)
 
         user_preview = next(
@@ -973,6 +976,7 @@ class _ReactAgent:
                     result = await model.chat([*messages, *transient], active_tools, opts)
 
                 usage_block = record_model_usage(result, model, manifest_id=self.manifest_id) or None
+                last_usage = usage_block or last_usage
                 # Guidance for the request, read once: repeating "load the skill" after the model
                 # has acted on it invites a second activation, and trailing user text after every
                 # tool result ends the assistant turn, which drops the reasoning chain when
@@ -1138,7 +1142,8 @@ class _ReactAgent:
                     result = await model.chat(
                         [*messages, *transient], await self._active_tools(messages), opts
                     )
-                    record_model_usage(result, model, manifest_id=self.manifest_id)
+                    follow_usage = record_model_usage(result, model, manifest_id=self.manifest_id) or None
+                    last_usage = follow_usage or last_usage
                     assistant = result.message
                     messages.append(assistant)
                     produced.append(assistant)
@@ -1151,7 +1156,7 @@ class _ReactAgent:
                                 "delta": assistant.content,
                             },
                         )
-                    await self._append_produced(input.thread_id, [assistant])
+                    await self._append_produced(input.thread_id, [assistant], usage=follow_usage)
         finally:
             if input.thread_id:
                 await release_run_queue(tenant_id, input.thread_id)
@@ -1177,6 +1182,11 @@ class _ReactAgent:
                     "final": final.model_dump(),
                     "messages": [m.model_dump() for m in produced],
                     "stop_reason": last_stop,
+                    # Same block the session log stores on the final message: `input` is
+                    # the uncached part of the prompt, so the prompt is `input + cacheRead +
+                    # cacheWrite`, and `totalTokens` adds the reply. Absent when the
+                    # provider reported nothing.
+                    **({"usage": last_usage} if last_usage else {}),
                 },
             )
         yield output
