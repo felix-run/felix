@@ -337,3 +337,134 @@ async def test_a_compaction_that_does_not_split_a_turn_is_unchanged() -> None:
     assert checkpoint.metadata["retainedTail"] == [retained_turn(e) for e in kept]
     assert [m.content for m in out[2:-1]] == [e.content for e in kept]
     assert "note 0 " in (model.history[0][-1].content or "")
+
+
+async def test_a_pinned_request_is_not_mistaken_for_the_turn_before_it() -> None:
+    # The opening is searched in `older`, which excludes pinned events. Turn N's pinned request
+    # used to leave turn N-1's request as the "opening", with N-1's tail in N's prefix.
+    session = InMemorySessionStore(tenant_id="acme").open("acme:split-pinned")
+    await annotate_and_append(
+        session,
+        [
+            AppendableEvent(kind="message", role="user", content=EARLIER),
+            AppendableEvent(kind="message", role="assistant", content="It writes CSV."),
+            AppendableEvent(kind="message", role="user", content=OPENING, metadata={"pinned": True}),
+            *_steps(0, 12),
+        ],
+    )
+    model = _Summarizer()
+
+    out = await _render(_tight(), session, model)
+
+    assert [m.role for m in out if m.content == OPENING] == ["user"], "the pinned request is said once"
+    assert [m.role for m in out if m.content == EARLIER] == [], (
+        "the previous turn's request was kept as this one's"
+    )
+    (prefix_call,) = model.prefix
+    assert OPENING in (prefix_call[-1].content or "")
+    assert EARLIER not in (prefix_call[-1].content or "") and "It writes CSV." not in (
+        prefix_call[-1].content or ""
+    )
+    (prefix,) = [m for m in out if (m.content or "").startswith(TURN_PREFIX_LABEL)]
+    assert prefix.role == "user"
+    split = (await _checkpoint(session)).metadata["split_turn"]
+    assert split == {"opening_kept": False, "prefix_summarized": True, "lead_items": 1}
+
+
+async def test_a_turn_with_no_user_message_does_not_borrow_the_previous_request() -> None:
+    # A scheduled or injected run starts on an assistant step. The turn before it ended on an
+    # assistant answer, which is a turn boundary: its request is history, not this turn's.
+    session = InMemorySessionStore(tenant_id="acme").open("acme:split-no-user")
+    await annotate_and_append(
+        session,
+        [
+            AppendableEvent(kind="message", role="user", content=EARLIER),
+            AppendableEvent(kind="message", role="assistant", content="It writes CSV."),
+            *_steps(0, 12),
+        ],
+    )
+    model = _Summarizer()
+
+    out = await _render(_tight(), session, model)
+
+    assert not model.prefix, "a turn-prefix summary was made for a turn with no request in view"
+    assert not [m for m in out if m.content == EARLIER]
+    assert EARLIER in (model.history[0][-1].content or "")
+    assert "split_turn" not in (await _checkpoint(session)).metadata
+
+
+async def test_a_rewind_past_the_cut_turn_does_not_resurrect_it() -> None:
+    from felix.session.tree import get_event_id, rewind_to
+
+    session = await _split_session("acme:split-rewind")
+    model = _Summarizer()
+    await _render(_tight(), session, model)
+    events = await session.get_events()
+    (answer,) = [e for e in events if e.content == "It writes CSV."]
+    assert (await rewind_to(session, str(get_event_id(answer))))["ok"]
+    await annotate_and_append(session, [AppendableEvent(kind="message", role="user", content="OTHER-TICKET")])
+
+    out = await _render(_roomy(), session, model)
+
+    assert not [m for m in out if OPENING in (m.content or "")], "the abandoned turn's request came back"
+    assert not [m for m in out if HISTORY_MARK in (m.content or "") or PREFIX_MARK in (m.content or "")], (
+        "a summary of the abandoned branch was replayed"
+    )
+    assert [m.content for m in out[1:-1]] == [EARLIER, "It writes CSV.", "OTHER-TICKET"]
+
+
+async def test_the_lead_counts_against_the_keep_budget() -> None:
+    # The lead replays with the kept turns. Left out of the keep budget, a split render sat over
+    # the threshold, so the next render compacted again with nothing new to summarise.
+    big_opening = OPENING + " detail" * 1430  # ~2,500 tokens
+    session = await _split_session("acme:split-budget", opening=big_opening, steps=40)
+    strategy = CompactingSessionStrategy(
+        reserve_tokens=10, keep_recent_tokens=3_000, context_window_tokens=5_000
+    )
+    model = _Summarizer()
+
+    made = await _render(strategy, session, model)
+    again = await _render(strategy, session, model)
+
+    from felix.session.compaction import estimate_messages_tokens
+
+    threshold = strategy.context_window_tokens - strategy.reserve_tokens
+    assert estimate_messages_tokens(made) <= threshold, (
+        "the split render is over the threshold it compacted to"
+    )
+    assert [e.kind for e in await session.get_events()].count("compaction") == 1, "it re-summarised"
+    assert [(m.role, m.content) for m in again] == [(m.role, m.content) for m in made]
+    assert (len(model.history), len(model.prefix)) == (1, 1)
+    assert [m.role for m in again if m.content == big_opening] == ["user"]
+
+
+async def test_a_hook_on_a_second_cut_keeps_the_progress_already_summarised() -> None:
+    session = await _split_session("acme:split-hook-twice")
+    model = _Summarizer()
+    await _render(_tight(), session, model)
+    await annotate_and_append(session, _steps(100, 12))
+    reset_agent_hooks()
+    get_agent_hooks().register_before_compact(lambda prep, ctx: {"summary": HISTORY_MARK})
+    try:
+        out = await _render(_tight(), session, model)
+    finally:
+        reset_agent_hooks()
+
+    assert (len(model.history), len(model.prefix)) == (1, 1), "the hook's compaction made a model call"
+    assert [e.kind for e in await session.get_events()].count("compaction") == 2
+    _assert_split_shape(out, "a hook-supplied second cut")
+
+
+def test_images_on_a_kept_request_are_charged_to_the_keep_budget() -> None:
+    # The estimators count text only; an opening message carrying images is not text-sized.
+    from felix.session.compaction import _ATTACHMENT_TOKENS, _SplitPlan
+
+    image = {"url": "https://x/a.png", "media_type": "image/png"}
+    plain = _SplitPlan(history=[], opening={"role": "user", "content": "x" * 400}, opening_text="x")
+    with_images = _SplitPlan(
+        history=[],
+        opening={"role": "user", "content": "x" * 400, "metadata": {"attachments": [image, image]}},
+        opening_text="x",
+    )
+
+    assert with_images.lead_reservation() - plain.lead_reservation() == 2 * _ATTACHMENT_TOKENS

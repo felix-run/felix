@@ -294,25 +294,31 @@ class _TurnLead:
 
     Both parts are stored as checkpoint items (the `retained_turn` shape), so the replay runs
     them through `chat_message_from_parts` like any kept turn. `opening` is the turn's user
-    message verbatim (capped); `prefix` is the user-role, labelled, fenced summary of the
-    steps between it and the kept window, or None when there were none or it could not be made.
+    message verbatim (capped), or None when it is pinned and so rendered already; `prefix` is
+    the user-role, labelled, fenced summary of the steps between it and the kept window, or
+    None when there were none or it could not be made.
     """
 
-    opening: dict[str, Any]
+    opening: dict[str, Any] | None = None
     prefix: dict[str, Any] | None = None
 
     def items(self) -> list[dict[str, Any]]:
-        return [self.opening, *([self.prefix] if self.prefix else [])]
+        return [item for item in (self.opening, self.prefix) if item]
 
     def messages(self) -> list[ChatMessage]:
         return [chat_message_from_parts(**item) for item in self.items()]
 
     def transcript(self) -> str:
         """How the lead reads to a summariser once the cut moves past its turn."""
-        lines = [f"[User]: {self.opening.get('content') or ''}"]
+        lines = [f"[User]: {self.opening.get('content') or ''}"] if self.opening else []
         if self.prefix:
             lines.append(f"[Earlier in this turn, summarised]: {self.prefix.get('content') or ''}")
         return "\n".join(lines)
+
+
+# The estimators count text only. An image on a kept opening message is not free, so the keep
+# budget charges each one roughly what a ~1 megapixel image costs on the major providers.
+_ATTACHMENT_TOKENS = 1_600
 
 
 def _opening_item(event: SessionEvent) -> dict[str, Any]:
@@ -338,10 +344,47 @@ def _stored_lead(summary: SessionEvent | None, tail: list[dict[str, Any]] | None
     if summary is None or tail is None:
         return None
     split = (summary.metadata or {}).get("split_turn")
-    n = int(split.get("lead_items") or 0) if isinstance(split, dict) else 0
+    if not isinstance(split, dict):
+        return None
+    n = int(split.get("lead_items") or 0)
     if n < 1 or len(tail) < n or not all(isinstance(item, dict) for item in tail[:n]):
         return None
-    return _TurnLead(opening=tail[0], prefix=tail[1] if n > 1 else None)
+    if split.get("opening_kept", True):
+        return _TurnLead(opening=tail[0], prefix=tail[1] if n > 1 else None)
+    return _TurnLead(prefix=tail[0])
+
+
+def _summary_on_branch(summary: SessionEvent, seqs: set[int], ids: set[str]) -> bool:
+    """Whether a summary describes the active branch rather than one rewound away from.
+
+    Summaries are appended without tree linkage, so a summary written on a branch that a
+    rewind abandoned is still the newest in the log. It belongs to the branch only if the
+    last event it covers, and the kept window it recorded, are on the branch.
+    """
+    md = summary.metadata or {}
+    covers = md.get("covers_to_seq")
+    if covers is None:
+        covers = md.get("first_kept_seq")
+    if covers is not None and int(covers) >= 0 and int(covers) not in seqs:
+        return False
+    return all(not md.get(key) or md[key] in ids for key in ("first_kept_entry_id", "last_kept_entry_id"))
+
+
+def _turn_opener(events: list[SessionEvent], before_seq: int) -> tuple[SessionEvent | None, bool]:
+    """The user message opening the turn that is in progress at `before_seq`.
+
+    Walks back from the cut. A user message opens a turn; an assistant message with no tool
+    calls ends one (the loop stops there, as `analyze_wake` reads it), so meeting that first
+    means the turn has no user message in view -- an injected or scheduled assistant entry --
+    and no opener. Returns `(opener, reached_start)`; `reached_start` is True when neither
+    was found, so the turn began before these events.
+    """
+    for e in sorted((e for e in events if e.seq < before_seq), key=lambda e: e.seq, reverse=True):
+        if e.kind == "message" and e.role == "user":
+            return e, False
+        if e.role == "assistant" and not e.tool_calls:
+            return None, False
+    return None, True
 
 
 @dataclass(slots=True)
@@ -349,16 +392,32 @@ class _SplitPlan:
     """How `older` divides once the cut is known.
 
     `history` (plus `history_lead`, a previous checkpoint's lead whose turn the cut has now
-    moved past) is summarised as always. When the cut lands mid-turn, `opening` is that
-    turn's user message and `prefix` the steps after it; `prior_prefix` is the earlier
-    summary of the same turn when a previous compaction already cut through it.
+    moved past) is summarised as always. When the cut lands mid-turn, `opening_text` is that
+    turn's user message, `opening` its checkpoint item (None when the message is pinned and so
+    rendered already), and `prefix` the steps after it; `prior_prefix` is the earlier summary
+    of the same turn when a previous compaction already cut through it.
     """
 
     history: list[SessionEvent]
     history_lead: _TurnLead | None = None
     opening: dict[str, Any] | None = None
+    opening_text: str | None = None
     prefix: list[SessionEvent] = field(default_factory=list)
     prior_prefix: dict[str, Any] | None = None
+
+    @property
+    def splits(self) -> bool:
+        return self.opening_text is not None
+
+    def lead_reservation(self) -> int:
+        """Tokens the lead may take, charged against the keep budget before the cut is final."""
+        n = 0
+        if self.opening is not None:
+            attachments = (self.opening.get("metadata") or {}).get("attachments") or []
+            n += estimate_tokens(self.opening.get("content")) + _ATTACHMENT_TOKENS * len(attachments)
+        if self.prefix or self.prior_prefix:
+            n += TURN_PREFIX_MAX_TOKENS
+        return n
 
     def history_transcript(self) -> str:
         parts = [self.history_lead.transcript()] if self.history_lead else []
@@ -367,33 +426,46 @@ class _SplitPlan:
         return "\n".join(parts)
 
     def prefix_transcript(self) -> str:
-        lines = [f"[User]: {(self.opening or {}).get('content') or ''}"]
+        lines = [f"[User]: {self.opening_text or ''}"]
         if self.prior_prefix:
             lines.append(f"[Earlier in this turn, summarised]: {self.prior_prefix.get('content') or ''}")
         lines.append(serialize_conversation(self.prefix))
         return "\n".join(lines)
 
 
-def _plan_split(older: list[SessionEvent], *, is_split: bool, carried: _TurnLead | None) -> _SplitPlan:
+def _plan_split(
+    older: list[SessionEvent],
+    kept: list[SessionEvent],
+    *,
+    is_split: bool,
+    carried: _TurnLead | None,
+    pinned: list[SessionEvent],
+) -> _SplitPlan:
     if not is_split:
         return _SplitPlan(history=older, history_lead=carried)
-    idx = next(
-        (i for i in range(len(older) - 1, -1, -1) if older[i].kind == "message" and older[i].role == "user"),
-        None,
-    )
-    if idx is not None:
+    opener, reached_start = _turn_opener([*older, *pinned], kept[0].seq)
+    if opener is not None:
+        text = _cap_opening(opener.content or "")
         return _SplitPlan(
-            history=older[:idx],
+            history=[e for e in older if e.seq < opener.seq],
             history_lead=carried,
-            opening=_opening_item(older[idx]),
-            prefix=older[idx + 1 :],
+            # A pinned opener is rendered with the pinned events; keeping it too would say it twice.
+            opening=None if is_pinned(opener) else _opening_item(opener),
+            opening_text=text,
+            prefix=[e for e in older if e.seq > opener.seq],
         )
-    if carried is not None:
+    if reached_start and carried is not None:
         # The cut is still inside the turn a previous compaction cut through: same opening,
         # and the earlier progress summary is folded into this one.
-        return _SplitPlan(history=[], opening=carried.opening, prefix=older, prior_prefix=carried.prefix)
-    # The turn does not open on a user message in view; summarise everything as before.
-    return _SplitPlan(history=older)
+        return _SplitPlan(
+            history=[],
+            opening=carried.opening,
+            opening_text=(carried.opening or {}).get("content") or "",
+            prefix=older,
+            prior_prefix=carried.prefix,
+        )
+    # No user message opens this turn in view: summarise everything as before.
+    return _SplitPlan(history=older, history_lead=carried)
 
 
 def meter_summarizer(result: Any, model: Any, *, kind: str, reason: str) -> dict[str, Any]:
@@ -455,6 +527,37 @@ class CompactingSessionStrategy:
         )
         return {"ok": True, "messages": len(msgs), "reason": reason}
 
+    def _cut(
+        self, compactable: list[SessionEvent], pinned: list[SessionEvent], carried: _TurnLead | None
+    ) -> tuple[list[SessionEvent], list[SessionEvent], bool, _SplitPlan]:
+        """Cut, then cut again leaving room for the lead a split puts ahead of the kept window.
+
+        The lead replays with the kept turns, so it spends the same budget: without the second
+        pass a split render could sit over the threshold and re-summarise on the next render
+        with nothing new to say. Floored at a quarter of the budget so a large opening message
+        cannot squeeze the kept window to nothing.
+        """
+        older, kept, is_split = _find_cut(
+            compactable,
+            keep_recent_tokens=self.keep_recent_tokens,
+            keep_turns=self.keep_turns,
+        )
+        plan = _plan_split(older, kept, is_split=is_split, carried=carried, pinned=pinned)
+        reserve = plan.lead_reservation() if older and plan.splits else 0
+        if reserve:
+            budget = max(self.keep_recent_tokens // 4, self.keep_recent_tokens - reserve)
+            again = _find_cut(
+                compactable,
+                keep_recent_tokens=budget,
+                keep_turns=self.keep_turns,
+            )
+            # A budget smaller than the last step keeps only tool results, which `_find_cut`
+            # cannot start on, and so keeps nothing; the unreserved cut is better than none.
+            if again[0] and again[1]:
+                older, kept, is_split = again
+                plan = _plan_split(older, kept, is_split=is_split, carried=carried, pinned=pinned)
+        return older, kept, is_split, plan
+
     async def render(
         self,
         session: Session,
@@ -489,6 +592,14 @@ class CompactingSessionStrategy:
             )
         ]
         summaries.sort(key=lambda e: e.seq, reverse=True)
+        from felix.session.tree import active_branch_events, get_event_id
+
+        branch = active_branch_events(all_events, session_id=getattr(session, "id", ""))
+        # The newest summary *of this branch*: after a rewind the newest in the log can describe
+        # turns the branch no longer has, and replaying its summary and kept turns resurrects them.
+        branch_seqs = {e.seq for e in branch}
+        branch_ids = {i for i in (get_event_id(e) for e in branch) if i}
+        summaries = [e for e in summaries if _summary_on_branch(e, branch_seqs, branch_ids)]
         covered = -1
         first_kept_id: str | None = None
         retained_tail: list[dict[str, Any]] | None = None
@@ -503,10 +614,6 @@ class CompactingSessionStrategy:
             raw_tail = latest_summary.metadata.get("retainedTail")
             if isinstance(raw_tail, list):
                 retained_tail = raw_tail
-
-        from felix.session.tree import active_branch_events
-
-        branch = active_branch_events(all_events, session_id=getattr(session, "id", ""))
 
         # retainedTail checkpoint: rebuild from summary + materialized tail + post-compaction.
         if retained_tail is not None and latest_summary is not None:
@@ -575,16 +682,11 @@ class CompactingSessionStrategy:
         if not needs_compact:
             return _frame(system_prompt, summary_msg, lead_msgs, [*pinned, *compactable], incoming)
 
-        older, kept, is_split = _find_cut(
-            compactable,
-            keep_recent_tokens=self.keep_recent_tokens,
-            keep_turns=self.keep_turns,
-        )
+        older, kept, is_split, plan = self._cut(compactable, pinned, carried)
 
         if not older:
             return _frame(system_prompt, summary_msg, lead_msgs, [*pinned, *compactable], incoming)
 
-        plan = _plan_split(older, is_split=is_split, carried=carried)
         file_ops = extract_file_ops_from_events(older)
         custom = await run_before_compact(
             {
@@ -667,8 +769,10 @@ class CompactingSessionStrategy:
         lead: _TurnLead | None = None
         notes: list[ChatMessage] = []
         prefix_usage: dict[str, Any] | None = None
-        if plan.opening is not None:
-            lead = _TurnLead(opening=plan.opening, prefix=None if hooked else plan.prior_prefix)
+        if plan.splits:
+            # A hook's summary replaces the history summary and the new prefix call, never the
+            # progress an earlier compaction already summarised for this same turn.
+            lead = _TurnLead(opening=plan.opening, prefix=plan.prior_prefix)
             if plan.prefix and not hooked:
                 try:
                     if model is None:
@@ -691,6 +795,9 @@ class CompactingSessionStrategy:
                         )
                     )
 
+        if lead is not None and not lead.items():
+            lead = None  # a pinned opening and no steps to summarise: nothing to lead with
+
         # An empty history summary stores nothing, as it always has: a checkpoint holding only
         # the lead would mark the history covered with nothing standing in for it.
         if summary_text or (lead is not None and not history_called):
@@ -701,6 +808,7 @@ class CompactingSessionStrategy:
                 "covers_to_seq": older[-1].seq,
                 "first_kept_seq": first_kept.seq if first_kept else None,
                 "first_kept_entry_id": (first_kept.metadata or {}).get("event_id") if first_kept else None,
+                "last_kept_entry_id": (kept[-1].metadata or {}).get("event_id") if kept else None,
                 "tokens_before": context_tokens,
                 "retainedTail": retained,
                 "details": file_ops,
@@ -711,7 +819,7 @@ class CompactingSessionStrategy:
                 # `lead_items` is how many leading tail entries are the lead rather than kept
                 # events; a re-walk reads it back (`_stored_lead`).
                 md["split_turn"] = {
-                    "opening_kept": True,
+                    "opening_kept": lead.opening is not None,
                     "prefix_summarized": lead.prefix is not None,
                     "lead_items": len(lead.items()),
                 }

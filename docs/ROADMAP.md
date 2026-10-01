@@ -778,7 +778,9 @@ comment explaining exactly that. It is conditional, not inert.
       this entry used to claim: `contributor` and `triage` keep 20,000 tokens and a turn of theirs
       is ~38k, so every prior turn was split and its ticket survived only as a paraphrase.
       Remaining: no live-model run has judged the turn-prefix prompt's output yet (the tests use a
-      scripted summariser), and the history summary still has no output budget of its own.
+      scripted summariser), the history summary still has no output budget of its own, and a
+      pinned event older than a checkpoint's cut is in neither its `retainedTail` nor the re-walk,
+      so a replay drops it (pre-existing; it now matters for a pinned request).
 - [x] **Tools carry their own prompt copy** — `Tool.prompt_guidance` for tools defined in code,
       and `spec.tool_guidance` (tool name or glob → one line) for everything a manifest binds,
       MCP included; `builder.tool_guidance_section` appends a "Tool guidance" section built from
