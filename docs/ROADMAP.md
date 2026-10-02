@@ -1363,12 +1363,14 @@ cycle's, and the route contracts below are the next capability-adjacent step.
 
 ### Product (`felix-run/web`)
 
-- [ ] **Rails before toast.** The last several PRs were all one toast component; `PRODUCT.md` says
+- [x] **Rails before toast.** The last several PRs were all one toast component; `PRODUCT.md` says
       failure looks like "the rails are wallpaper". Cost view and eval instrumentation (C) are the
       two panels that make the right rail answer its own brief.
       (2026-09-29: the rail was redesigned so spend is read on the Ledger (`/harness`), which shows
       cost as a floor; still open: #345's per-eval-item cost and judge-fallback are not rendered by
-      `eval-sheet.tsx`.)
+      `eval-sheet.tsx`.) Done 2026-10-02 (web #310): the eval sheet shows a run's tokens and cost
+      (a floor when an item was unpriced) and "judge fell back on N items", and each item its own
+      duration, tokens and cost with a `heuristic` marker where the judge did not run.
 - [ ] **Session-control UX gaps** — export JSONL from the UI, clearer lease-contention copy,
       reconnect-to-snapshot after a hard refresh, empty/search states.
       (2026-09-29: done — export JSONL (web #66), reconnect-to-snapshot after refresh (web #156,
