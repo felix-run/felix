@@ -352,7 +352,7 @@ async def chat_completions(body: ChatCompletionsRequest, request: Request) -> An
             # On the same path the user turn just took. This text reaches the model on every
             # turn of the loop, and it arrived on `model_options` rather than in `messages`,
             # which is the one place `apply_inbound_screening` does not look.
-            from felix.governance.inbound import screen_output_schema
+            from felix.governance.tool_screening import screen_output_schema
 
             await screen_output_schema(resolved.manifest, output_schema, settings)
     except InboundScreeningError as exc:

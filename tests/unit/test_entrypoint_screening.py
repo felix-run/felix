@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import felix.governance.screening as screening
 import pytest
 from felix.config import Settings
 from felix.context import AuthContext, RequestContext, async_run_with_context
@@ -343,7 +344,7 @@ async def test_the_model_screener_sees_every_argument_not_a_truncated_join(
         seen.append(text)
         return ScreenResult(score=0.99 if "PAYLOAD" in text else 0.0)
 
-    monkeypatch.setattr(inbound, "screen_for_injection", _screen)
+    monkeypatch.setattr(screening, "screen_for_injection", _screen)
     padding = "benign " * (inbound.SCREEN_CHARS // 7 + 10)
     with pytest.raises(InboundScreeningError) as exc:
         await screen_tool_arguments(
@@ -358,12 +359,11 @@ async def test_the_model_screener_sees_every_argument_not_a_truncated_join(
 async def test_an_unavailable_model_screener_refuses_under_block_and_stands_aside_under_quarantine(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import felix.governance.inbound as inbound
 
     async def _down(settings: Any, text: str, model_id: str, decider: Any = None) -> ScreenResult:
         return ScreenResult(available=False, reason="no_key")
 
-    monkeypatch.setattr(inbound, "screen_for_injection", _down)
+    monkeypatch.setattr(screening, "screen_for_injection", _down)
     with pytest.raises(InboundScreeningError) as exc:
         await screen_tool_arguments(_manifest("block", model="judge"), {"text": "fine"}, _settings())
     assert exc.value.status_code == 503
@@ -544,7 +544,7 @@ async def test_the_model_screener_sees_the_whole_turn_not_its_first_window(
         seen.append(text)
         return ScreenResult(score=0.99 if "PAYLOAD" in text else 0.0)
 
-    monkeypatch.setattr(inbound, "screen_for_injection", _screen)
+    monkeypatch.setattr(screening, "screen_for_injection", _screen)
     turn = "benign " * (inbound.SCREEN_CHARS // 7 + 10) + "PAYLOAD"
     with pytest.raises(InboundScreeningError) as exc:
         await inbound.apply_inbound_screening(
@@ -575,7 +575,7 @@ async def test_an_oversize_turn_is_not_screened_one_window_at_a_time(monkeypatch
         calls += 1
         return ScreenResult(score=0.0)
 
-    monkeypatch.setattr(inbound, "screen_for_injection", _screen)
+    monkeypatch.setattr(screening, "screen_for_injection", _screen)
     huge = ChatMessage(role="user", content="x" * (inbound.MAX_SCREEN_CHUNKS * inbound.SCREEN_CHARS + 1))
     with pytest.raises(InboundScreeningError) as exc:
         await inbound.apply_inbound_screening(_manifest("block", model="judge"), [huge], _settings())

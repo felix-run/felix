@@ -112,7 +112,8 @@ async def handle_rpc(
                 tool = by_name[name]
                 # A user turn is screened at every HTTP ingress; a tool call made directly
                 # over MCP has no turn, so the arguments are what gets screened.
-                from felix.governance.inbound import InboundScreeningError, screen_tool_arguments
+                from felix.governance.screening import InboundScreeningError
+                from felix.governance.tool_screening import screen_tool_arguments
 
                 try:
                     args = await screen_tool_arguments(
