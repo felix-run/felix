@@ -1,7 +1,8 @@
 """Experimental Python client for a Felix harness over HTTP.
 
 Covers chat (prompt, stream, steer, follow-up, durable runs and their polling), approvals, and
-GitHub login (`github_device_login`, with the token kept by `save_token`/`load_token`); the
+GitHub login (`github_device_login`, or `github_actions_login` in CI, with the token kept by
+`save_token`/`load_token`); the
 OpenAPI document attached to each release is the full contract. Depends on httpx and nothing in
 Felix, so installing it does not install the server. Experimental: the surface may change between
 releases without a deprecation period.
@@ -21,6 +22,7 @@ from felix_client.login import (
     TokenFileError,
     bearer_for,
     check_url,
+    github_actions_login,
     github_device_login,
     load_token,
     save_token,
@@ -39,6 +41,7 @@ __all__ = [
     "TokenFileError",
     "bearer_for",
     "check_url",
+    "github_actions_login",
     "github_device_login",
     "load_token",
     "save_token",

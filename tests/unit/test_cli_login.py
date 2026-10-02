@@ -1,8 +1,9 @@
 """`felix login`: what reaches stdout, what reaches stderr, the exit codes, and `--save`.
 
-The flow itself is `felix_client.github_device_login`, covered against the real routes in
-`tests/e2e/test_github_login_client.py`; here it is replaced so the command's own wiring is the
-thing under test.
+The flows themselves are `felix_client.github_device_login` and `github_actions_login`, covered
+against the real routes in `tests/e2e/test_github_login_client.py` and
+`tests/e2e/test_github_actions_login_client.py`; here they are replaced so the command's own
+wiring is the thing under test.
 """
 
 from __future__ import annotations
@@ -133,3 +134,99 @@ def test_a_token_directory_others_can_reach_is_refused(
     assert result.exit_code == 1
     assert "not saved" in result.stderr
     assert not (tmp_path / "felix" / "token").exists()
+
+
+# --- --github-actions ---------------------------------------------------------------------
+
+
+@pytest.fixture
+def actions_calls(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    seen: list[dict[str, Any]] = []
+
+    async def fake_actions(url: str, **kwargs: Any) -> LoginToken:
+        seen.append({"url": url, **kwargs})
+        return _token()
+
+    async def no_device(url: str, **kwargs: Any) -> LoginToken:
+        raise AssertionError("--github-actions must not start a device flow")
+
+    monkeypatch.setattr(client_login, "github_actions_login", fake_actions)
+    monkeypatch.setattr(client_login, "github_device_login", no_device)
+    return seen
+
+
+def test_github_actions_trades_the_job_token_and_prints_only_the_token(
+    actions_calls: list[dict[str, Any]],
+) -> None:
+    result = _run(
+        "--github-actions", "--url", "https://felix.example", "--tenant", "ops", "--audience", "aud"
+    )
+    assert result.exit_code == 0, result.output
+    assert result.stdout == "eyJ.token.sig\n"
+    assert actions_calls == [
+        {"url": "https://felix.example", "audience": "aud", "tenant": "ops", "allow_insecure": False}
+    ]
+
+
+def test_github_actions_audience_defaults_to_none_so_the_client_uses_the_url(
+    actions_calls: list[dict[str, Any]],
+) -> None:
+    assert _run("--github-actions").exit_code == 0
+    assert actions_calls[0]["audience"] is None
+
+
+def test_audience_without_github_actions_is_a_usage_error(calls: list[dict[str, Any]]) -> None:
+    result = _run("--audience", "x")
+    assert result.exit_code == 2
+    assert "--github-actions" in result.stderr
+    assert calls == []
+
+
+def test_an_ambiguous_workflow_is_told_it_is_the_workflow(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def ambiguous(url: str, **kwargs: Any) -> LoginToken:
+        raise LoginError("tenant_ambiguous", "m", status=409, tenants=("acme", "ops"))
+
+    monkeypatch.setattr(client_login, "github_actions_login", ambiguous)
+    result = _run("--github-actions")
+    assert result.exit_code == 2
+    assert "This workflow is granted more than one tenant (acme, ops)" in result.stderr
+
+
+def test_github_actions_passes_insecure_through(actions_calls: list[dict[str, Any]]) -> None:
+    assert _run("--github-actions", "--insecure").exit_code == 0
+    assert actions_calls[0]["allow_insecure"] is True
+
+
+def test_github_actions_outside_a_job_exits_1_with_its_code(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def outside(url: str, **kwargs: Any) -> LoginToken:
+        raise LoginError("not_in_github_actions", "ACTIONS_ID_TOKEN_REQUEST_URL is not set", status=0)
+
+    monkeypatch.setattr(client_login, "github_actions_login", outside)
+    result = _run("--github-actions")
+    assert result.exit_code == 1
+    assert "login failed (not_in_github_actions)" in result.stderr
+    assert result.stdout == ""
+
+
+def test_in_a_job_the_token_is_masked_on_stderr_before_it_is_printed(
+    actions_calls: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    result = _run("--github-actions")
+    assert "::add-mask::eyJ.token.sig" in result.stderr
+    # stdout stays the token alone, so `TOKEN=$(felix login --github-actions)` captures just it.
+    assert result.stdout == "eyJ.token.sig\n"
+
+
+def test_outside_a_job_nothing_is_masked(
+    actions_calls: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    assert "::add-mask::" not in _run("--github-actions").stderr
+
+
+def test_an_audience_naming_another_server_is_called_out(actions_calls: list[dict[str, Any]]) -> None:
+    other = _run("--github-actions", "--url", "https://felix.example", "--audience", "https://prod.example")
+    same = _run("--github-actions", "--url", "https://felix.example", "--audience", "https://felix.example/")
+    assert "is being sent to https://felix.example" in other.stderr
+    assert "warning" not in same.stderr

@@ -970,7 +970,7 @@ rather than from re-reading a file. The wave itself is written up in [HISTORY.md
       `FELIX_AUTH_API_KEYS` JSON and restarting. Manifest CRUD, canary and rollback are real and
       API-driven; onboarding tenant #2 is a config edit and a process restart. Decide whether that
       is the product (single-operator self-host) or a gap, and write the answer down either way.
-- [ ] **GitHub login** (plan: device flow → self-issued JWT, org → tenant via
+- [x] **GitHub login** (plan: device flow → self-issued JWT, org → tenant via
       `FELIX_GITHUB_ORG_TENANTS`). Partly answers the item above: a GitHub org is how a person
       reaches a tenant without a key edit and a restart. Three PRs, in order:
       - [x] 1. `felix/auth/github.py` (device flow, active-membership check, mint), settings,
@@ -990,9 +990,9 @@ rather than from re-reading a file. The wave itself is written up in [HISTORY.md
         the repo allowlist became required (an org `actions` block names repositories, optional
         refs, and its own scopes), since an outside collaborator can run a workflow in a repo
         without being an org member.
-      - [ ] Client side of the Actions exchange: `felix_client.github_actions_login()` reading
+      - [x] Client side of the Actions exchange: `felix_client.github_actions_login()` reading
         `ACTIONS_ID_TOKEN_REQUEST_URL`/`_TOKEN`, `felix login --github-actions`, and a felix-web
-        CI recipe. Until then a workflow calls the route with `curl`.
+        CI recipe (`curl` first, since the CLI pulls in the harness).
       - [x] 3. `felix_client.github_device_login`, `felix login [--save]`, the REPL reads the saved
         token; felix-web auth guide (OAuth app setup, org approval, consent phishing).
 - [x] **Manifest version listing** — `GET /manifests/{name}/versions`: newest first, metadata
