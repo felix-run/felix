@@ -66,10 +66,17 @@ _PUBLIC_PREFIX = ("/.well-known/",)
 DOCS_PATHS = frozenset({"/docs", "/openapi.json"})
 
 
-def _is_public_path(path: str, *, docs_public: bool = False) -> bool:
+# GitHub login is how a caller *gets* a credential, so it cannot require one — but only while
+# it is configured. Off, the prefix is as closed as any other path.
+GITHUB_LOGIN_PREFIX = "/auth/github/"
+
+
+def _is_public_path(path: str, *, docs_public: bool = False, github_login: bool = False) -> bool:
     if path in _PUBLIC_EXACT:
         return True
     if docs_public and path in DOCS_PATHS:
+        return True
+    if github_login and path.startswith(GITHUB_LOGIN_PREFIX):
         return True
     return any(path.startswith(p) for p in _PUBLIC_PREFIX)
 
@@ -120,7 +127,9 @@ async def authenticate_request(
     if mode == "none":
         return ANONYMOUS
 
-    if _is_public_path(path, docs_public=settings.docs_public):
+    from felix.auth.github import is_enabled as github_login_enabled
+
+    if _is_public_path(path, docs_public=settings.docs_public, github_login=github_login_enabled(settings)):
         return ANONYMOUS
 
     # A plugin-registered mode wins over the built-ins, so an optional package can

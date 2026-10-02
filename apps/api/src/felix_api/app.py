@@ -36,6 +36,7 @@ from felix_api.routes import (
     approvals,
     artifacts,
     audit,
+    auth_github,
     chat,
     documents,
     files,
@@ -200,6 +201,9 @@ def create_app(
     app.state.settings = cfg
     app.state.tools = tool_provider
     app.state.plugins = plugin_list
+    # Routes with a bucket of their own (GitHub device-flow starts) spend from the same
+    # backend the middleware does, so the limit holds across replicas when Redis is set.
+    app.state.rate_limit_config = rate_config
     # Per app, not per process: two apps in one process (tests) must not share claims.
     app.state.idempotency_store = build_idempotency_store(cfg)
 
@@ -305,6 +309,7 @@ def create_app(
     app.include_router(a2a.router, prefix="/a2a")
     app.include_router(mcp.router, prefix="/mcp")
     app.include_router(well_known.router)
+    app.include_router(auth_github.router, prefix="/auth/github")
 
     for plugin in plugin_list:
         routes_fn = getattr(plugin, "routes", None)

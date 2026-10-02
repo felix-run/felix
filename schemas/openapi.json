@@ -356,6 +356,40 @@
         "title": "DecideRequest",
         "type": "object"
       },
+      "DeviceStart": {
+        "description": "Show `user_code` and `verification_uri` to the person; poll `/token` every `interval` s.",
+        "properties": {
+          "device_code": {
+            "title": "Device Code",
+            "type": "string"
+          },
+          "expires_in": {
+            "title": "Expires In",
+            "type": "integer"
+          },
+          "interval": {
+            "title": "Interval",
+            "type": "integer"
+          },
+          "user_code": {
+            "title": "User Code",
+            "type": "string"
+          },
+          "verification_uri": {
+            "title": "Verification Uri",
+            "type": "string"
+          }
+        },
+        "required": [
+          "device_code",
+          "user_code",
+          "verification_uri",
+          "expires_in",
+          "interval"
+        ],
+        "title": "DeviceStart",
+        "type": "object"
+      },
       "DocumentIngestRequest": {
         "additionalProperties": false,
         "properties": {
@@ -719,6 +753,104 @@
           "holder_id"
         ],
         "title": "LeaseRequest",
+        "type": "object"
+      },
+      "LoginErrorCode": {
+        "description": "Every `code` a login can fail with \u2014 closed, so the API's error vocabulary is ours.\n\nGitHub's own error strings never become a code: one it adds tomorrow would otherwise be a\nnew public Felix code nobody reviewed. An unlisted one is `github_config_error`, with\nGitHub's string kept in the message.",
+        "enum": [
+          "authorization_pending",
+          "slow_down",
+          "expired_token",
+          "invalid_device_code",
+          "access_denied",
+          "not_a_member",
+          "org_access_restricted",
+          "tenant_ambiguous",
+          "tenant_not_granted",
+          "github_unavailable",
+          "github_config_error"
+        ],
+        "title": "LoginErrorCode",
+        "type": "string"
+      },
+      "LoginErrorOut": {
+        "description": "Every refusal. `interval` accompanies 428; `tenants` accompanies 409.",
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/LoginErrorCode"
+          },
+          "interval": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Interval"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "tenants": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tenants"
+          }
+        },
+        "required": [
+          "error",
+          "message"
+        ],
+        "title": "LoginErrorOut",
+        "type": "object"
+      },
+      "LoginTokenOut": {
+        "properties": {
+          "access_token": {
+            "title": "Access Token",
+            "type": "string"
+          },
+          "expires_in": {
+            "title": "Expires In",
+            "type": "integer"
+          },
+          "scopes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Scopes",
+            "type": "array"
+          },
+          "tenant": {
+            "title": "Tenant",
+            "type": "string"
+          },
+          "token_type": {
+            "const": "Bearer",
+            "default": "Bearer",
+            "title": "Token Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "access_token",
+          "expires_in",
+          "tenant",
+          "scopes"
+        ],
+        "title": "LoginTokenOut",
         "type": "object"
       },
       "ManifestUpsert": {
@@ -1100,6 +1232,35 @@
           "thinking_level"
         ],
         "title": "ThinkingRequest",
+        "type": "object"
+      },
+      "TokenRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "device_code": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Device Code",
+            "type": "string"
+          },
+          "tenant": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tenant"
+          }
+        },
+        "required": [
+          "device_code"
+        ],
+        "title": "TokenRequest",
         "type": "object"
       },
       "ToolResultRequest": {
@@ -2186,6 +2347,191 @@
         "summary": "Audit Metrics",
         "tags": [
           "Audit"
+        ]
+      }
+    },
+    "/auth/github/device": {
+      "post": {
+        "operationId": "start_github_login_auth_github_device_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceStart"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginErrorOut"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginErrorOut"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "428": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginErrorOut"
+                }
+              }
+            },
+            "description": "Precondition Required"
+          },
+          "429": {
+            "description": "Too Many Requests"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginErrorOut"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginErrorOut"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Start Github Login",
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/auth/github/token": {
+      "post": {
+        "operationId": "redeem_github_login_auth_github_token_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TokenRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginTokenOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginErrorOut"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginErrorOut"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "428": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginErrorOut"
+                }
+              }
+            },
+            "description": "Precondition Required"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginErrorOut"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginErrorOut"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Redeem Github Login",
+        "tags": [
+          "Auth"
         ]
       }
     },

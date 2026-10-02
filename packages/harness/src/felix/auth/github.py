@@ -80,6 +80,7 @@ class LoginToken:
     tenant: str
     scopes: tuple[str, ...]
     subject: str
+    github_login: str
 
 
 class LoginErrorCode(StrEnum):
@@ -420,7 +421,12 @@ def mint_login_token(settings: Settings, user: GitHubUser, grant: OrgGrant) -> L
         extra_claims=extra,
     )
     return LoginToken(
-        access_token=token, expires_in=ttl, tenant=grant.tenant, scopes=grant.scopes, subject=subject
+        access_token=token,
+        expires_in=ttl,
+        tenant=grant.tenant,
+        scopes=grant.scopes,
+        subject=subject,
+        github_login=user.login,
     )
 
 
