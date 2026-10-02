@@ -12,6 +12,11 @@ deployment (`..._TOTAL`), because a quota every client shares is not protected b
 key. `/token` is polled every few seconds by design and stays under the global limit only.
 
 A `device_code` is a bearer secret until it is redeemed: it is never logged or audited here.
+
+`/actions` is the headless path, public only while `FELIX_GITHUB_OIDC_AUDIENCE` is set: a
+workflow posts its GitHub Actions ID token and gets a Felix token back. Verifying it is a local
+signature check, so it stays under the global limit only. The ID token is never logged or
+audited either; the run it speaks for (repository, ref, workflow file, event, run) is.
 """
 
 from __future__ import annotations
@@ -24,6 +29,7 @@ from fastapi.responses import JSONResponse
 from felix.auth.github import (
     GitHubLoginError,
     LoginErrorCode,
+    actions_enabled,
     exchange_device_code,
     is_enabled,
     start_device_flow,
@@ -56,6 +62,15 @@ class TokenRequest(BaseModel):
     tenant: str | None = Field(default=None, min_length=1, max_length=128)
 
 
+class ActionsTokenRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    # The workflow's ID token, requested with `audience` = FELIX_GITHUB_OIDC_AUDIENCE.
+    id_token: str = Field(min_length=1, max_length=8192)
+    # Required only when the workflow is granted more than one tenant (409 `tenant_ambiguous`).
+    tenant: str | None = Field(default=None, min_length=1, max_length=128)
+
+
 class LoginTokenOut(BaseModel):
     access_token: str
     token_type: Literal["Bearer"] = "Bearer"
@@ -75,6 +90,9 @@ class LoginErrorOut(BaseModel):
 
 _ERRORS: dict[int | str, dict[str, Any]] = {
     status: {"model": LoginErrorOut} for status in (400, 403, 409, 428, 429, 502, 503)
+}
+_ACTIONS_ERRORS: dict[int | str, dict[str, Any]] = {
+    status: {"model": LoginErrorOut} for status in (401, 403, 409, 502)
 }
 
 
@@ -154,6 +172,35 @@ async def redeem_github_login(body: TokenRequest, request: Request) -> Any:
             "scopes": list(minted.scopes),
             "expires_in": minted.expires_in,
         },
+    )
+    return LoginTokenOut(
+        access_token=minted.access_token,
+        expires_in=minted.expires_in,
+        tenant=minted.tenant,
+        scopes=list(minted.scopes),
+    )
+
+
+@router.post("/actions", response_model=LoginTokenOut, responses=_ACTIONS_ERRORS)
+async def redeem_github_actions_login(body: ActionsTokenRequest, request: Request) -> Any:
+    from felix.audit import store as audit_store
+    from felix.auth.github_actions import exchange_actions_token
+
+    settings = request.app.state.settings
+    if not actions_enabled(settings):
+        raise HTTPException(status_code=404, detail="not_found")
+    try:
+        login = await exchange_actions_token(settings, body.id_token, tenant=body.tenant)
+    except GitHubLoginError as exc:
+        return _refusal(exc)
+    minted = login.token
+    audit_store.record_event(
+        settings,
+        minted.tenant,
+        "github_actions_login",
+        principal_subj=minted.subject,
+        status="minted",
+        payload={**login.run.audit(), "scopes": list(minted.scopes), "expires_in": minted.expires_in},
     )
     return LoginTokenOut(
         access_token=minted.access_token,

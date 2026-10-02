@@ -985,8 +985,14 @@ rather than from re-reading a file. The wave itself is written up in [HISTORY.md
         caps the deployment, and the device bucket keys IPv6 by /64 through an opt-in
         `client_key(..., ipv6_prefix=64)`. The global limiter still keys full addresses —
         throttling every user behind one /64 together there is a separate call, not made.
-      - [ ] Headless: a GitHub Actions OIDC exchange (`repository_owner_id` through the same
-        org map, optional repo allowlist) so CI gets short-lived tokens with no stored secret.
+      - [x] Headless: a GitHub Actions OIDC exchange (`repository_owner_id` through the same
+        org map) so CI gets short-lived tokens with no stored secret. `POST /auth/github/actions`;
+        the repo allowlist became required (an org `actions` block names repositories, optional
+        refs, and its own scopes), since an outside collaborator can run a workflow in a repo
+        without being an org member.
+      - [ ] Client side of the Actions exchange: `felix_client.github_actions_login()` reading
+        `ACTIONS_ID_TOKEN_REQUEST_URL`/`_TOKEN`, `felix login --github-actions`, and a felix-web
+        CI recipe. Until then a workflow calls the route with `curl`.
       - [x] 3. `felix_client.github_device_login`, `felix login [--save]`, the REPL reads the saved
         token; felix-web auth guide (OAuth app setup, org approval, consent phishing).
 - [x] **Manifest version listing** — `GET /manifests/{name}/versions`: newest first, metadata

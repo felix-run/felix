@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **GitHub Actions login.** A workflow can now get a Felix token without a stored secret.
+  `POST /auth/github/actions` takes the workflow's OIDC ID token (`permissions: id-token:
+  write`), checks GitHub's signature, and mints a short-lived Felix token
+  (`FELIX_GITHUB_OIDC_TTL_SECONDS`, default 15 minutes) for the tenant the repository's owner
+  maps to in `FELIX_GITHUB_ORG_TENANTS`. The owner and the repository are both matched by
+  numeric id, as the device flow matches orgs. The exchange is off until
+  `FELIX_GITHUB_OIDC_AUDIENCE` is set, and it needs no OAuth app. Each org opts in with an
+  `actions` block, because neither the org nor a repository alone says which run is asking. An
+  outside collaborator with write access can run a workflow, and a `pull_request_target` run
+  sits on `main` while executing a fork's code. The block names repositories by id, at least one
+  of `refs`, `workflows` (the `job_workflow_ref` that ran) or `environments`, and its own
+  scopes. `pull_request_target`, `issue_comment` and `workflow_run` are refused unless the block
+  lists them in `events`. Boot requires the audience to be the server's own https URL, so it
+  refuses GitHub's default audience, which tokens meant for other services carry. Every exchange
+  is audited as `github_actions_login`, with the repository, ref, workflow file, event, run and
+  actors. The token carries `github_actor`, not `github_login`, since the actor did not
+  authenticate. See `deploy/GOVERNANCE.md#github-login`.
+
 - **Workers AI is priced, with four built-in routes.** `kimi-k2-cf` (Kimi K2.6, 262K window,
   vision), `gpt-oss-120b-cf`, `gpt-oss-20b-cf` and `glm-flash-cf` resolve with one `workers_ai`
   entry in `FELIX_MODEL_PROVIDER_OPTIONS`, and every one supports tool calling. The catalog now
