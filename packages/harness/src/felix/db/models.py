@@ -471,6 +471,27 @@ class ArtifactRow(Base):
     created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
 
+class PushSubscriptionRow(Base):
+    """A browser that asked to be told when a run is waiting on a person.
+
+    `id` is the sha256 of `endpoint`, so a browser re-subscribing replaces its own row and
+    never another tenant's. `p256dh` and `auth` are what `PushSubscription.toJSON()` hands
+    over: the browser's key and secret, which let the harness encrypt *to* it.
+    """
+
+    __tablename__ = "push_subscriptions"
+
+    tenant_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    endpoint: Mapped[str] = mapped_column(Text, nullable=False)
+    p256dh: Mapped[str] = mapped_column(Text, nullable=False)
+    auth: Mapped[str] = mapped_column(Text, nullable=False)
+    principal_subj: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    last_ok_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    failures: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+
+
 __all__ = [
     "A2ATask",
     "Approval",
@@ -489,6 +510,7 @@ __all__ = [
     "ManifestRow",
     "MemoryVector",
     "Plan",
+    "PushSubscriptionRow",
     "SessionEventRow",
     "SkillActivation",
     "ThreadState",

@@ -12,6 +12,8 @@ import asyncio
 import logging
 import random
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 import httpx
@@ -44,6 +46,39 @@ class ModelGatewayError(Exception):
         self.label = label
         self.body = (body or "")[:2000]
         self.name = "ModelGatewayError"
+
+
+class ModelUnreachableError(ModelGatewayError):
+    """The provider never answered: refused connection, DNS failure, or a timeout.
+
+    A `ModelGatewayError` rather than the bare `httpx` exception, because the routes relay
+    only typed errors to the client: an Ollama that is not running reached the chat UI as
+    `internal error (request …)`, which reads as a Felix bug rather than a dead endpoint.
+    The status is the one a gateway would answer with, which also lets a fallback chain
+    advance past it — `_is_provider_error` treats 5xx as the provider's fault.
+
+    The message names the exception class only. `str(exc)` can carry the endpoint URL, and
+    a self-hosted endpoint is internal topology; it goes to `.body` for the log.
+    """
+
+    def __init__(self, label: str, exc: httpx.TransportError) -> None:
+        status = 504 if isinstance(exc, httpx.TimeoutException) else 503
+        super().__init__(label, status, f"{type(exc).__name__}: {exc}")
+        self.args = (f"{label} provider unreachable ({type(exc).__name__})",)
+
+
+@contextmanager
+def typed_transport_errors(label: str) -> Iterator[None]:
+    """Raise a transport failure inside the block as `ModelUnreachableError`.
+
+    Public for the same reason `post_with_retry` is: a provider that does not subclass
+    `HttpModelClient` would otherwise leak the bare `httpx` exception, which the routes
+    answer as `internal error` and a fallback chain does not advance past.
+    """
+    try:
+        yield
+    except httpx.TransportError as exc:
+        raise ModelUnreachableError(label, exc) from exc
 
 
 # Retried statuses: rate limiting and transient upstream failures. 4xx other than these
@@ -179,5 +214,7 @@ __all__ = [
     "DEFAULT_CONNECT_TIMEOUT_S",
     "MODEL_MAX_RETRIES",
     "ModelGatewayError",
+    "ModelUnreachableError",
     "post_with_retry",
+    "typed_transport_errors",
 ]

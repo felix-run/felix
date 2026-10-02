@@ -24,6 +24,7 @@ from felix.patterns.types import ChatMessage, InvokeInput
 from felix.runtime import build_tenant_agent, prepare_tenant_invoke, resolve_tenant_manifest
 from felix.thread_ids import effective_thread_id
 from felix_ai.output_schema import InvalidOutputSchema, validate_output_schema
+from felix_ai.providers.base import ProviderConfigError
 from felix_ai.types import ModelChatOptions
 from felix_ai.wire.openai_completions import finish_reason_for
 from pydantic import BaseModel, Field
@@ -388,6 +389,9 @@ async def chat_completions(body: ChatCompletionsRequest, request: Request) -> An
         except ModelGatewayError as exc:
             log_gateway_error(logger, exc)
             return _error_json(client_safe_message(exc), "model_gateway_error", "model_unavailable", 502)
+        except ProviderConfigError as exc:
+            # The same 503 `/chat` answers: the deployment has not configured the provider.
+            return _error_json(client_safe_message(exc), "model_gateway_error", "provider_unconfigured", 503)
 
     content = result.final.content if result.final else ""
     return completion.response(content, finish_reason_for(result.stop_reason), _usage_payload(req_ctx))

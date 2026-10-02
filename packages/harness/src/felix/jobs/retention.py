@@ -7,8 +7,10 @@ Each TTL was a module constant. They are settings now — `FELIX_*_RETENTION_DAY
 meaning keep forever — and the tables in `TABLES` are swept here, on both backends,
 under one rule per table. (Not swept, because each is bounded by something else or is the
 record itself: `job_runs` goes with its job, eval tables with their dataset, *active*
-`memory_vectors` are the memory, and session retention does not reach the facts memory
-capture extracted from a thread.)
+`memory_vectors` are the memory, session retention does not reach the facts memory
+capture extracted from a thread, and `push_subscriptions` is capped per tenant and loses a
+row the moment a push service reports that browser gone -- age says nothing about whether a
+phone still wants to be woken.)
 
 `approvals` used to be listed in that parenthesis as "bounded by its run". It is not: there
 is no foreign key, no cascade, and nothing anywhere issues a delete against it, so every

@@ -323,30 +323,52 @@ async def create_pending(
             "tool_call_id": tool_call_id,
         }
         _memory_approvals[(tenant_id, approval_id)] = row
-        return _approval_dict(row)
+        created = _approval_dict(row)
+    else:
+        created = await _insert_pending(
+            settings,
+            Approval(
+                tenant_id=tenant_id,
+                id=approval_id,
+                manifest_id=manifest_id,
+                tool_name=tool_name,
+                call_signature=call_signature,
+                args_json=args or {},
+                principal_subj=principal_subj,
+                status="pending",
+                created_at=ts,
+                ttl_seconds=ttl_seconds,
+                expires_at=expires_at,
+                rule_id=rule_id,
+                reason=reason,
+                thread_id=thread_id,
+                tool_call_id=tool_call_id,
+            ),
+        )
+    # Once, after both arms: this is the only place that knows the row is new.
+    _announce_pending_approval(settings, created)
+    return created
 
+
+async def _insert_pending(settings: Settings, row: Approval) -> dict[str, Any]:
     factory = get_session_factory(settings=settings)
     async with factory() as db:
-        row = Approval(
-            tenant_id=tenant_id,
-            id=approval_id,
-            manifest_id=manifest_id,
-            tool_name=tool_name,
-            call_signature=call_signature,
-            args_json=args or {},
-            principal_subj=principal_subj,
-            status="pending",
-            created_at=ts,
-            ttl_seconds=ttl_seconds,
-            expires_at=expires_at,
-            rule_id=rule_id,
-            reason=reason,
-            thread_id=thread_id,
-            tool_call_id=tool_call_id,
-        )
         db.add(row)
         await db.commit()
         return _approval_dict(row)
+
+
+def _announce_pending_approval(settings: Settings, row: dict[str, Any]) -> None:
+    """Push the new row to the tenant's subscribed browsers -- on creation only.
+
+    Here rather than in the callers because only this function knows the row is new: a reused
+    row is a call already announced, and pushing again for every byte-identical retry would
+    buzz a phone once per attempt. Scheduled, never awaited, so the frame the caller emits
+    next is not behind a push service.
+    """
+    from felix.push.notify import approval_pending
+
+    approval_pending(settings, row)
 
 
 async def decide(

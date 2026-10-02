@@ -341,12 +341,12 @@ class OpenAICompletionsClient(HttpModelClient):
             resp = await post_with_retry(
                 client,
                 f"{self.base_url.rstrip('/')}/chat/completions",
-                label="openai",
+                label=self.route.provider,
                 json=body,
                 headers=headers,
             )
             if resp.status_code >= 400:
-                raise ModelGatewayError("openai", resp.status_code, resp.text)
+                raise ModelGatewayError(self.route.provider, resp.status_code, resp.text)
             data = resp.json()
         choice = (data.get("choices") or [{}])[0]
         msg = choice.get("message") or {}
@@ -403,7 +403,9 @@ class OpenAICompletionsClient(HttpModelClient):
         ):
             if resp.status_code >= 400:
                 raw = await resp.aread()
-                raise ModelGatewayError("openai", resp.status_code, raw.decode("utf-8", errors="replace"))
+                raise ModelGatewayError(
+                    self.route.provider, resp.status_code, raw.decode("utf-8", errors="replace")
+                )
             async for data in iter_sse_json(resp):
                 if data.get("usage"):
                     usage = _openai_usage(data["usage"])
