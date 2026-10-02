@@ -1287,6 +1287,40 @@ for the rest, and each takes an RLS bypass for the enumeration only — the per-
 work that follows runs scoped. `felix-scheduler` must be running alongside
 `felix-worker` or none of them fire at all.
 
+## GitHub login
+
+Two public routes hand out self-issued tokens (`iss: felix-self`), verified by the
+`self:felix-self` verifier like any other. Nothing revokes one before it expires, so its TTL is
+the window a leaked token stays good. Both log in through `FELIX_GITHUB_ORG_TENANTS`, which maps
+a GitHub org, pinned by numeric id, to a tenant and scopes.
+
+| Path | On while | Who gets a token | TTL |
+|---|---|---|---|
+| `POST /auth/github/device` + `/token` | `FELIX_GITHUB_CLIENT_ID` | An *active member* of a mapped org, after the device flow | `FELIX_GITHUB_LOGIN_TTL_SECONDS` (8 h, max 1 d) |
+| `POST /auth/github/actions` | `FELIX_GITHUB_OIDC_AUDIENCE` | A GitHub Actions run its org's `actions` block admits | `FELIX_GITHUB_OIDC_TTL_SECONDS` (15 m, max 1 h) |
+
+- **Device flow.** Anyone can start a flow and ask a member to approve its code (consent
+  phishing), so name the OAuth app plainly. Starts are capped per client and per deployment
+  (`FELIX_GITHUB_DEVICE_STARTS_PER_HOUR[_TOTAL]`). Reaching the deployment cap refuses every new
+  login until the hour turns, and issued tokens are unaffected.
+- **Actions exchange.** A valid ID token proves only that *some* workflow ran in a repository,
+  so the grant has to say which:
+  - **Repositories** are pinned by id. The org alone is not enough, because an outside
+    collaborator with write access to one repository can run a workflow there.
+  - **Narrowing is required:** `refs`, `workflows` (`job_workflow_ref`, the file that ran) or
+    `environments`.
+  - **`pull_request_target`, `issue_comment` and `workflow_run`** run on the base branch while
+    acting on outside input, so they are refused unless the block lists them in `events`.
+  - **A protected environment** with required reviewers is the strongest narrowing GitHub offers.
+  - **The audience** must be this deployment's own https URL. A shared one lets a token captured
+    by a weaker deployment be replayed to a stronger one. Boot refuses GitHub's default audience,
+    the owner's `https://github.com/...` URL, which tokens meant for other services carry.
+  - **ID tokens are not single-use.** A replay within their few minutes mints another token for
+    the same run.
+- **Audit:** `github_login` (the GitHub user) and `github_actions_login` (repository, ref,
+  workflow file, event, run and actors), each recorded in the tenant the token is for. Neither
+  a device code nor an ID token is logged or audited.
+
 ## Management API scopes
 
 When `FELIX_AUTH_MODE` is `jwt` or `api_key`, management routes require scopes

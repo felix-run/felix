@@ -6,7 +6,8 @@ user is an *active* member of, and mints its own token for that org's tenant. Th
 access token is used for two reads and dropped; it never reaches the caller.
 
 `FELIX_GITHUB_ORG_TENANTS` is the whole user model: `{"<org>": {"tenant": "<id>",
-"scopes": [...]}}`. There is no user table.
+"scopes": [...]}}`. There is no user table. An org entry's optional `actions` block lets that
+org's GitHub Actions workflows trade their OIDC token for one too (`felix.auth.github_actions`).
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from enum import StrEnum
@@ -25,6 +26,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 if TYPE_CHECKING:
+    from felix.auth.github_actions import ActionsGrant
     from felix.auth.jwt import VerifierConfig
     from felix.config import Settings
 
@@ -56,6 +58,7 @@ class OrgGrant:
     org_id: int
     tenant: str
     scopes: tuple[str, ...]
+    actions: ActionsGrant | None = None  # `felix.auth.github_actions`
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,7 +83,8 @@ class LoginToken:
     tenant: str
     scopes: tuple[str, ...]
     subject: str
-    github_login: str
+    # The GitHub user who authenticated; empty for a workflow, which is not one.
+    github_login: str = ""
 
 
 class LoginErrorCode(StrEnum):
@@ -100,6 +104,8 @@ class LoginErrorCode(StrEnum):
     ORG_ACCESS_RESTRICTED = "org_access_restricted"
     TENANT_AMBIGUOUS = "tenant_ambiguous"
     TENANT_NOT_GRANTED = "tenant_not_granted"
+    INVALID_ID_TOKEN = "invalid_id_token"
+    WORKFLOW_NOT_GRANTED = "workflow_not_granted"
     GITHUB_UNAVAILABLE = "github_unavailable"
     GITHUB_CONFIG_ERROR = "github_config_error"
     RATE_LIMITED = "rate_limited"
@@ -117,6 +123,8 @@ LOGIN_ERROR_STATUS: dict[LoginErrorCode, int] = {
     LoginErrorCode.ORG_ACCESS_RESTRICTED: 403,
     LoginErrorCode.TENANT_NOT_GRANTED: 403,
     LoginErrorCode.TENANT_AMBIGUOUS: 409,
+    LoginErrorCode.INVALID_ID_TOKEN: 401,
+    LoginErrorCode.WORKFLOW_NOT_GRANTED: 403,
     LoginErrorCode.GITHUB_UNAVAILABLE: 502,
     # The operator's to fix in the OAuth app (wrong client id, device flow disabled).
     LoginErrorCode.GITHUB_CONFIG_ERROR: 503,
@@ -159,7 +167,7 @@ UNAVAILABLE_MESSAGE = "GitHub could not be reached or answered unexpectedly; try
 CONFIG_ERROR_MESSAGE = "GitHub login is misconfigured on this server; the cause is in its log"
 
 
-def _unavailable(detail: str) -> GitHubLoginError:
+def unavailable(detail: str) -> GitHubLoginError:
     logger.warning("github login: %s", detail)
     return GitHubLoginError(LoginErrorCode.GITHUB_UNAVAILABLE, UNAVAILABLE_MESSAGE)
 
@@ -179,9 +187,20 @@ def is_enabled(settings: Settings) -> bool:
     return bool(settings.github_client_id.strip())
 
 
+GITHUB_ACTIONS_LOGIN_PATH = f"{GITHUB_LOGIN_PREFIX}/actions"
+
+
+def actions_enabled(settings: Settings) -> bool:
+    """The Actions OIDC exchange is on while its audience is set; it needs no OAuth app."""
+    return bool(settings.github_oidc_audience.strip())
+
+
 def public_login_paths(settings: Settings) -> frozenset[str]:
     """The paths that need no credential because they are how a caller gets one."""
-    return GITHUB_LOGIN_PATHS if is_enabled(settings) else frozenset()
+    paths = GITHUB_LOGIN_PATHS if is_enabled(settings) else frozenset()
+    if actions_enabled(settings):
+        paths |= {GITHUB_ACTIONS_LOGIN_PATH}
+    return paths
 
 
 @lru_cache(maxsize=4)
@@ -205,7 +224,7 @@ def parse_org_tenants(raw: str) -> Mapping[str, OrgGrant]:
             raise ValueError(f"org {org!r} is listed twice (org names are case-insensitive)")
         if not isinstance(entry, dict):
             raise ValueError(f"{org}: expected an object with `id`, `tenant` and `scopes`")
-        if unknown := set(entry) - {"id", "tenant", "scopes"}:
+        if unknown := set(entry) - {"id", "tenant", "scopes", "actions"}:
             raise ValueError(f"{org}: unknown keys {sorted(unknown)}")
         org_id = entry.get("id")
         if not isinstance(org_id, int) or isinstance(org_id, bool) or org_id <= 0:
@@ -216,18 +235,25 @@ def parse_org_tenants(raw: str) -> Mapping[str, OrgGrant]:
         tenant = entry.get("tenant")
         if not isinstance(tenant, str) or not tenant:
             raise ValueError(f"{org}: `tenant` must be a non-empty string")
-        scopes = entry.get("scopes", [])
-        if not isinstance(scopes, list) or not all(isinstance(s, str) and s for s in scopes):
-            raise ValueError(f"{org}: `scopes` must be a list of non-empty strings")
-        # Scopes are joined with spaces into the token's `scope` claim and split on
-        # whitespace when verified, so a space inside one becomes two scopes.
-        if bad := [s for s in scopes if s.split() != [s]]:
-            raise ValueError(f"{org}: scopes may not contain whitespace: {bad}")
-        grants[org.lower()] = OrgGrant(
-            org=org, org_id=org_id, tenant=tenant, scopes=tuple(dict.fromkeys(scopes))
-        )
+        scopes = scope_list(entry.get("scopes", []), org)
+        actions = None
+        if "actions" in entry:
+            from felix.auth.github_actions import parse_actions_grant
+
+            actions = parse_actions_grant(entry["actions"], org)
+        grants[org.lower()] = OrgGrant(org=org, org_id=org_id, tenant=tenant, scopes=scopes, actions=actions)
     # Cached and shared, so read-only: a caller mutating it would change every later lookup.
     return MappingProxyType(grants)
+
+
+def scope_list(scopes: Any, where: str) -> tuple[str, ...]:
+    if not isinstance(scopes, list) or not all(isinstance(s, str) and s for s in scopes):
+        raise ValueError(f"{where}: `scopes` must be a list of non-empty strings")
+    # Scopes are joined with spaces into the token's `scope` claim and split on
+    # whitespace when verified, so a space inside one becomes two scopes.
+    if bad := [s for s in scopes if s.split() != [s]]:
+        raise ValueError(f"{where}: scopes may not contain whitespace: {bad}")
+    return tuple(dict.fromkeys(scopes))
 
 
 def github_http_client(settings: Settings) -> httpx.AsyncClient:
@@ -238,7 +264,9 @@ def github_http_client(settings: Settings) -> httpx.AsyncClient:
 
 
 @asynccontextmanager
-async def _client(client: httpx.AsyncClient | None, settings: Settings) -> AsyncIterator[httpx.AsyncClient]:
+async def client_scope(
+    client: httpx.AsyncClient | None, settings: Settings
+) -> AsyncIterator[httpx.AsyncClient]:
     """The caller's client as-is, or the default one, opened and closed here."""
     if client is not None:
         yield client
@@ -253,7 +281,7 @@ def _json_object(resp: httpx.Response, what: str) -> dict[str, Any]:
     except ValueError:
         body = None
     if not isinstance(body, dict):
-        raise _unavailable(f"{what} answered with non-object JSON")
+        raise unavailable(f"{what} answered with non-object JSON")
     return body
 
 
@@ -261,15 +289,15 @@ async def _post_form(client: httpx.AsyncClient, url: str, data: dict[str, str]) 
     try:
         resp = await client.post(url, data=data, headers={"accept": "application/json"})
     except httpx.HTTPError as exc:
-        raise _unavailable(f"GitHub unreachable: {exc}") from exc
+        raise unavailable(f"GitHub unreachable: {exc}") from exc
     if resp.status_code >= 500:
-        raise _unavailable(f"GitHub answered {resp.status_code}")
+        raise unavailable(f"GitHub answered {resp.status_code}")
     return _json_object(resp, url)
 
 
 async def start_device_flow(settings: Settings, *, client: httpx.AsyncClient | None = None) -> DeviceCode:
     """Ask GitHub for a device code. The user enters `user_code` at `verification_uri`."""
-    async with _client(client, settings) as http:
+    async with client_scope(client, settings) as http:
         body = await _post_form(
             http,
             f"{GITHUB_URL}/login/device/code",
@@ -288,7 +316,7 @@ async def start_device_flow(settings: Settings, *, client: httpx.AsyncClient | N
             interval=int(body["interval"]),
         )
     except (KeyError, TypeError, ValueError) as exc:
-        raise _unavailable("GitHub's device code was incomplete") from exc
+        raise unavailable("GitHub's device code was incomplete") from exc
 
 
 def _github_error_text(body: dict[str, Any]) -> str:
@@ -302,7 +330,7 @@ async def poll_device_flow(
     settings: Settings, device_code: str, *, client: httpx.AsyncClient | None = None
 ) -> str:
     """One poll. Returns GitHub's access token, or raises — `authorization_pending` included."""
-    async with _client(client, settings) as http:
+    async with client_scope(client, settings) as http:
         body = await _post_form(
             http,
             f"{GITHUB_URL}/login/oauth/access_token",
@@ -324,7 +352,7 @@ async def poll_device_flow(
         )
     token = body.get("access_token")
     if not isinstance(token, str) or not token:
-        raise _unavailable("GitHub returned no access token")
+        raise unavailable("GitHub returned no access token")
     return token
 
 
@@ -334,18 +362,18 @@ async def _api_get(client: httpx.AsyncClient, path: str, gh_token: str) -> httpx
             f"{GITHUB_API_URL}{path}", headers={**_API_HEADERS, "authorization": f"Bearer {gh_token}"}
         )
     except httpx.HTTPError as exc:
-        raise _unavailable(f"GitHub unreachable: {exc}") from exc
+        raise unavailable(f"GitHub unreachable: {exc}") from exc
 
 
 async def fetch_user(gh_token: str, *, client: httpx.AsyncClient) -> GitHubUser:
     resp = await _api_get(client, "/user", gh_token)
     if resp.status_code != 200:
-        raise _unavailable(f"GET /user answered {resp.status_code}")
+        raise unavailable(f"GET /user answered {resp.status_code}")
     body = _json_object(resp, "GET /user")
     user_id, login = body.get("id"), body.get("login")
     # `bool` is an `int`; a `true` id would otherwise mint `github:True`.
     if not isinstance(user_id, int) or isinstance(user_id, bool) or not isinstance(login, str):
-        raise _unavailable("GET /user returned no id")
+        raise unavailable("GET /user returned no id")
     return GitHubUser(id=user_id, login=login)
 
 
@@ -369,7 +397,7 @@ async def active_grants(
             # The org has OAuth app access restrictions and has not approved this app.
             restricted.append(grant.org)
         elif resp.status_code != 404:
-            raise _unavailable(f"membership read answered {resp.status_code}")
+            raise unavailable(f"membership read answered {resp.status_code}")
     return grants, restricted
 
 
@@ -391,22 +419,25 @@ def _is_active_member_of(membership: dict[str, Any], grant: OrgGrant) -> bool:
     return True
 
 
-def choose_grant(grants: list[OrgGrant], restricted: list[str], tenant: str | None) -> OrgGrant:
-    """The one tenant this login lands in, with the scopes of every matching org merged.
+def merge_by_tenant(grants: list[OrgGrant]) -> dict[str, OrgGrant]:
+    """One grant per tenant, the scopes of every grant landing there unioned in first-seen order.
 
-    Two orgs mapped to one tenant are one tenant: their scopes are unioned rather than
-    making the user pick between two halves of the same grant.
+    Two orgs (or two Actions grants) mapped to one tenant are one tenant: the caller is not made
+    to pick between two halves of the same grant. The merged grant keeps the first org, and no
+    `actions` block — its scopes are already the ones being granted.
     """
     by_tenant: dict[str, OrgGrant] = {}
     for g in grants:
         prior = by_tenant.get(g.tenant)
         scopes = tuple(dict.fromkeys((*prior.scopes, *g.scopes))) if prior else g.scopes
-        by_tenant[g.tenant] = OrgGrant(
-            org=prior.org if prior else g.org,
-            org_id=prior.org_id if prior else g.org_id,
-            tenant=g.tenant,
-            scopes=scopes,
-        )
+        first = prior or g
+        by_tenant[g.tenant] = OrgGrant(org=first.org, org_id=first.org_id, tenant=g.tenant, scopes=scopes)
+    return by_tenant
+
+
+def choose_grant(grants: list[OrgGrant], restricted: list[str], tenant: str | None) -> OrgGrant:
+    """The one tenant this login lands in, with the scopes of every matching org merged."""
+    by_tenant = merge_by_tenant(grants)
     if not by_tenant:
         if restricted:
             # Named in the log, not the answer: GitHub may 403 a non-member too, and the
@@ -436,21 +467,32 @@ def choose_grant(grants: list[OrgGrant], restricted: list[str], tenant: str | No
     return next(iter(by_tenant.values()))
 
 
-def mint_login_token(settings: Settings, user: GitHubUser, grant: OrgGrant) -> LoginToken:
+def mint_self_token(
+    settings: Settings,
+    *,
+    subject: str,
+    grant: OrgGrant,
+    ttl: int,
+    extra: Mapping[str, Any],
+    github_login: str = "",
+) -> LoginToken:
+    """The one way a GitHub login — device flow or Actions — becomes a Felix token.
+
+    One function so that a rule about self-issued tokens (a claim, the verifier's `aud`) is made
+    once, and so the boot probe, which mints through here, checks it for both paths.
+    """
     from felix.auth.jwt import mint_token
 
-    subject = f"github:{user.id}"
-    extra: dict[str, Any] = {"idp": "github", "github_login": user.login}
+    claims = dict(extra)
     if (verifier := self_verifier(settings)) is not None and verifier.audience:
-        extra["aud"] = verifier.audience
-    ttl = settings.github_login_ttl_seconds
+        claims["aud"] = verifier.audience
     token = mint_token(
         settings,
         sub=subject,
         tenant_id=grant.tenant,
         scopes=list(grant.scopes),
         ttl_seconds=ttl,
-        extra_claims=extra,
+        extra_claims=claims,
     )
     return LoginToken(
         access_token=token,
@@ -458,6 +500,17 @@ def mint_login_token(settings: Settings, user: GitHubUser, grant: OrgGrant) -> L
         tenant=grant.tenant,
         scopes=grant.scopes,
         subject=subject,
+        github_login=github_login,
+    )
+
+
+def mint_login_token(settings: Settings, user: GitHubUser, grant: OrgGrant) -> LoginToken:
+    return mint_self_token(
+        settings,
+        subject=f"github:{user.id}",
+        grant=grant,
+        ttl=settings.github_login_ttl_seconds,
+        extra={"idp": "github", "github_login": user.login},
         github_login=user.login,
     )
 
@@ -480,7 +533,7 @@ async def exchange_device_code(
     client: httpx.AsyncClient | None = None,
 ) -> LoginToken:
     """Poll once and, when GitHub has approved, turn the approval into a Felix token."""
-    async with _client(client, settings) as http:
+    async with client_scope(client, settings) as http:
         gh_token = await poll_device_flow(settings, device_code, client=http)
         user = await fetch_user(gh_token, client=http)
         grants, restricted = await active_grants(settings, gh_token, client=http)
@@ -508,10 +561,12 @@ def validate_login_config(settings: Settings) -> None:
     a `fixed:` verifier that would override the minted tenant, FELIX_ALLOWED_TENANTS — is
     one more way to ship the failure `felix mint-jwt` already guards its own output against.
     """
-    if not is_enabled(settings):
+    device, actions = is_enabled(settings), actions_enabled(settings)
+    if not (device or actions):
         if settings.github_org_tenants.strip():
             logger.warning(
-                "FELIX_GITHUB_ORG_TENANTS is set but FELIX_GITHUB_CLIENT_ID is empty; login is off"
+                "FELIX_GITHUB_ORG_TENANTS is set but neither FELIX_GITHUB_CLIENT_ID nor "
+                "FELIX_GITHUB_OIDC_AUDIENCE is; GitHub login is off"
             )
         return
     try:
@@ -519,34 +574,55 @@ def validate_login_config(settings: Settings) -> None:
     except ValueError as exc:
         raise RuntimeError(f"FELIX_GITHUB_ORG_TENANTS: {exc}") from exc
     if not grants:
-        raise RuntimeError(
-            "FELIX_GITHUB_CLIENT_ID is set, so FELIX_GITHUB_ORG_TENANTS must map at least one org."
+        raise RuntimeError("GitHub login is on, so FELIX_GITHUB_ORG_TENANTS must map at least one org.")
+    if actions:
+        from felix.auth.github_actions import validate_actions_config
+
+        validate_actions_config(settings, grants)
+    elif any(g.actions for g in grants.values()):
+        logger.warning(
+            "FELIX_GITHUB_ORG_TENANTS has `actions` blocks but FELIX_GITHUB_OIDC_AUDIENCE is empty"
         )
     for grant in grants.values():
-        if {"admin", "*"} & set(grant.scopes):
-            logger.warning("FELIX_GITHUB_ORG_TENANTS gives every member of %s admin scope", grant.org)
-    for grant in {g.tenant: g for g in grants.values()}.values():
-        _probe_tenant(settings, grant)
+        scopes = set(grant.scopes) | set(grant.actions.scopes if grant.actions else ())
+        if {"admin", "*"} & scopes:
+            logger.warning("FELIX_GITHUB_ORG_TENANTS gives %s admin scope", grant.org)
+    for tenant, merged in merge_by_tenant(list(grants.values())).items():
+        _probe_tenant(settings, merged)
+        actions_grants = [g for g in grants.values() if g.tenant == tenant and g.actions]
+        if actions and actions_grants:
+            from felix.auth.github_actions import mint_probe
+
+            _verify_probe(settings, tenant, lambda found=actions_grants: mint_probe(settings, found))
 
 
 def _probe_tenant(settings: Settings, grant: OrgGrant) -> None:
     """Mint through `mint_login_token` — the real login path, every claim and the real TTL —
     so a rule added to either the minting or the verifiers is checked here too."""
-    from felix.auth.jwt import SELF_ISSUER, parse_verifiers, uses_jwt_verifiers, verify_jwt
+    from felix.auth.jwt import SELF_ISSUER, uses_jwt_verifiers
 
     if not uses_jwt_verifiers(settings):
         raise RuntimeError(
-            "FELIX_GITHUB_CLIENT_ID is set but no JWT verifier is in play, so a minted token would "
+            "GitHub login is on but no JWT verifier is in play, so a minted token would "
             f"never be checked. Set FELIX_AUTH_MODE=jwt and FELIX_JWT_VERIFIERS=self:{SELF_ISSUER}."
         )
     if self_verifier(settings) is None:
         raise RuntimeError(
-            f"FELIX_GITHUB_CLIENT_ID is set, so FELIX_JWT_VERIFIERS needs self:{SELF_ISSUER} "
+            f"GitHub login is on, so FELIX_JWT_VERIFIERS needs self:{SELF_ISSUER} "
             "to accept the tokens GitHub login mints."
         )
-    tenant = grant.tenant
+    _verify_probe(settings, grant.tenant, lambda: mint_login_token(settings, _PROBE_USER, grant))
+
+
+_PROBE_USER = GitHubUser(id=0, login="felix-boot-probe")
+
+
+def _verify_probe(settings: Settings, tenant: str, mint: Callable[[], LoginToken]) -> None:
+    """Mint one token the way a login would and run it through the middleware's verifiers."""
+    from felix.auth.jwt import SELF_ISSUER, parse_verifiers, verify_jwt
+
     try:
-        probe = mint_login_token(settings, GitHubUser(id=0, login="felix-boot-probe"), grant)
+        probe = mint()
     except Exception as exc:
         raise RuntimeError(f"GitHub login cannot mint with FELIX_JWKS_PRIVATE: {exc}") from exc
     verifiers = parse_verifiers(settings.jwt_verifiers)

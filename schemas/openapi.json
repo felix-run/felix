@@ -16,6 +16,35 @@
         "title": "AbortRequest",
         "type": "object"
       },
+      "ActionsTokenRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "id_token": {
+            "maxLength": 8192,
+            "minLength": 1,
+            "title": "Id Token",
+            "type": "string"
+          },
+          "tenant": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tenant"
+          }
+        },
+        "required": [
+          "id_token"
+        ],
+        "title": "ActionsTokenRequest",
+        "type": "object"
+      },
       "CanaryRequest": {
         "additionalProperties": false,
         "properties": {
@@ -767,6 +796,8 @@
           "org_access_restricted",
           "tenant_ambiguous",
           "tenant_not_granted",
+          "invalid_id_token",
+          "workflow_not_granted",
           "github_unavailable",
           "github_config_error",
           "rate_limited"
@@ -2407,6 +2438,87 @@
         "summary": "Audit Metrics",
         "tags": [
           "Audit"
+        ]
+      }
+    },
+    "/auth/github/actions": {
+      "post": {
+        "operationId": "redeem_github_actions_login_auth_github_actions_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ActionsTokenRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginTokenOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginErrorOut"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginErrorOut"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginErrorOut"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          }
+        },
+        "summary": "Redeem Github Actions Login",
+        "tags": [
+          "Auth"
         ]
       }
     },
