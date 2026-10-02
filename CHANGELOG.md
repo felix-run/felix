@@ -284,6 +284,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **GitHub login starts have a deployment-wide cap, and an IPv6 client is its /64.** Each
+  `POST /auth/github/device` spends from the OAuth app's GitHub quota, which every caller
+  shares, but the only limit was per client address. A botnet is many clients, and one IPv6
+  subscriber holding a /64 was 2^64 of them. Starts are now keyed by /64 for IPv6, and
+  `FELIX_GITHUB_DEVICE_STARTS_PER_HOUR_TOTAL` (default 300) caps the whole deployment. A start
+  refused by its client's bucket does not count toward the total. The global rate limiter
+  still keys full addresses.
 - **Images replayed from a thread's history are screened.** `content_screening.image_model`
   screened only the incoming turn, and threads are scoped to the tenant rather than the
   manifest — so an image sent through a manifest that screens nothing, or sent before

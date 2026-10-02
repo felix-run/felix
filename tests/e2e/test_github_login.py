@@ -189,6 +189,43 @@ async def test_starting_flows_has_a_bucket_per_client(boot: Any, fake_github: Fa
     assert other.status_code == 200
 
 
+async def test_one_ipv6_subscriber_is_one_client(boot: Any, fake_github: FakeGitHub) -> None:
+    """Rotating through a /64 used to buy a fresh bucket per address."""
+    async with boot([], env=_env(**_BEHIND_PROXY)) as app:
+        statuses = [
+            (await app.client.post("/auth/github/device", headers=_from(f"2001:db8:1:2::{n}"))).status_code
+            for n in range(1, 4)
+        ]
+        neighbour = await app.client.post("/auth/github/device", headers=_from("2001:db8:1:3::1"))
+    assert statuses == [200, 200, 429]
+    assert neighbour.status_code == 200
+
+
+async def test_the_deployment_cap_holds_across_clients(
+    boot: Any, fake_github: FakeGitHub, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A per-client key cannot protect a quota every client shares: a botnet is many clients."""
+    env = _env(**_BEHIND_PROXY, FELIX_GITHUB_DEVICE_STARTS_PER_HOUR_TOTAL="3")
+    async with boot([], env=env) as app:
+        # 203.0.113.7 spends its own bucket; its refused third start must not count toward
+        # the total, or one noisy address could run the deployment cap down alone.
+        own = [
+            (await app.client.post("/auth/github/device", headers=_from("203.0.113.7"))).status_code
+            for _ in range(3)
+        ]
+        third_client = await app.client.post("/auth/github/device", headers=_from("198.51.100.9"))
+        capped = await app.client.post("/auth/github/device", headers=_from("192.0.2.44"))
+    assert own == [200, 200, 429]
+    assert third_client.status_code == 200
+    assert capped.status_code == 429
+    assert capped.json()["error"] == "rate_limited"
+    assert "this server" in capped.json()["message"]
+    assert capped.headers["retry-after"] == "3600"
+    assert "deployment cap" in caplog.text
+    # Only the starts that were allowed reached GitHub.
+    assert fake_github.issued == 3
+
+
 async def test_polling_does_not_spend_the_start_bucket(boot: Any, fake_github: FakeGitHub) -> None:
     fake_github.polls = [{"error": "authorization_pending", "interval": 5}] * 5
     async with boot([], env=_env(**_BEHIND_PROXY)) as app:

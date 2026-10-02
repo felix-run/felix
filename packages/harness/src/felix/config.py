@@ -100,6 +100,10 @@ class Settings(BaseSettings):
     # Device flows one client may start per hour. Each start spends from the OAuth app's own
     # GitHub quota, so an unthrottled public start would let one caller stall every login.
     github_device_starts_per_hour: int = Field(default=10, ge=1, le=1000)
+    # Device flows the whole deployment may start per hour. The per-client bucket cannot protect
+    # a quota every client shares: a botnet is many clients. Spent only by starts the per-client
+    # bucket let through, so one noisy address cannot run it down alone.
+    github_device_starts_per_hour_total: int = Field(default=300, ge=1, le=100_000)
 
     # --- HTTP posture ---
     # `/docs` and `/openapi.json` describe every route and are behind auth in `api_key`

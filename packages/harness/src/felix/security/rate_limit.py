@@ -290,24 +290,46 @@ def _joined_header(headers: Any, name: str) -> str:
     return ",".join(v for v in values if v)
 
 
-def client_key(request: Any, settings: Any) -> str:
+def client_key(request: Any, settings: Any, *, ipv6_prefix: int = 128) -> str:
     """Rate-limit key for one request.
 
     Keyed by client address, not tenant: this middleware now runs *outside* auth so that
     failed authentication is throttled, and at that point there is no principal. The
     previous per-tenant key also meant that under `auth_mode=none` every caller shared
     one `tenant:default` bucket, so a single client could 429 the whole deployment.
+
+    ``ipv6_prefix`` folds an IPv6 address into its network. One subscriber is routinely handed
+    a whole /64, so per-address keying gives them 2**64 buckets; a caller guarding a scarce
+    resource passes 64. The global limiter keeps full addresses — that is a separate decision
+    about how many users behind one prefix it may throttle together.
     """
     header = trusted_proxy_header(settings)
+    host = ""
     if header:
-        candidate = forwarded_client(
-            _joined_header(request.headers, header), hops=settings.trusted_proxy_hops
-        )
-        if candidate:
-            return f"ip:{candidate}"
-    client = getattr(request, "client", None)
-    host = getattr(client, "host", None) if client is not None else None
-    return f"ip:{host or 'unknown'}"
+        host = forwarded_client(_joined_header(request.headers, header), hops=settings.trusted_proxy_hops)
+    if not host:
+        client = getattr(request, "client", None)
+        host = (getattr(client, "host", None) if client is not None else None) or "unknown"
+    return f"ip:{_fold_ipv6(host, ipv6_prefix)}"
+
+
+def _fold_ipv6(host: str, prefix: int) -> str:
+    """``host`` as its ``/prefix`` network when it is IPv6, else unchanged.
+
+    An IPv4-mapped address (`::ffff:203.0.113.7`, a dual-stack socket's view of a v4 peer)
+    is the v4 client it names, not a member of `::ffff:0:0/64` with every other v4 client.
+    """
+    if prefix >= 128:
+        return host
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return host
+    if not isinstance(address, ipaddress.IPv6Address):
+        return host
+    if address.ipv4_mapped is not None:
+        return str(address.ipv4_mapped)
+    return str(ipaddress.IPv6Network((address, prefix), strict=False))
 
 
 __all__ = [

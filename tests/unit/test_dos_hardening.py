@@ -63,6 +63,32 @@ def test_trusted_proxy_header_is_used_when_configured() -> None:
     assert key == "ip:9.9.9.9"
 
 
+def test_an_ipv6_prefix_folds_one_subscribers_addresses_into_one_key() -> None:
+    """A /64 is routinely one subscriber: per-address keys gave them 2**64 buckets."""
+    s = _settings()
+    one = client_key(_Req("2001:db8:1:2::1"), s, ipv6_prefix=64)
+    assert one == "ip:2001:db8:1:2::/64"
+    assert client_key(_Req("2001:db8:1:2:ffff:ffff:ffff:ffff"), s, ipv6_prefix=64) == one
+    assert client_key(_Req("2001:db8:1:3::1"), s, ipv6_prefix=64) != one
+
+
+def test_ipv6_folding_is_opt_in_and_leaves_ipv4_alone() -> None:
+    """The global limiter keeps full addresses; v4 (and a v4-mapped v6 peer) is never folded."""
+    s = _settings()
+    assert client_key(_Req("2001:db8:1:2::1"), s) == "ip:2001:db8:1:2::1"
+    assert client_key(_Req("203.0.113.7"), s, ipv6_prefix=64) == "ip:203.0.113.7"
+    # A dual-stack socket's view of a v4 client is that client, not `::ffff:0:0/64`, which
+    # would put every v4 caller in one bucket.
+    assert client_key(_Req("::ffff:203.0.113.7"), s, ipv6_prefix=64) == "ip:203.0.113.7"
+    assert client_key(_Req("not-an-ip"), s, ipv6_prefix=64) == "ip:not-an-ip"
+
+
+def test_ipv6_folding_applies_to_a_trusted_proxy_address() -> None:
+    s = _settings(trusted_client_ip_header="x-forwarded-for")
+    key = client_key(_Req("10.0.0.1", {"x-forwarded-for": "2001:db8:1:2::9"}), s, ipv6_prefix=64)
+    assert key == "ip:2001:db8:1:2::/64"
+
+
 def test_metrics_is_no_longer_exempt() -> None:
     """It is a scrape target with unbounded label cardinality."""
     assert should_skip_rate_limit("/metrics") is False

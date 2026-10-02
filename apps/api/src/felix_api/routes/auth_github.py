@@ -5,10 +5,11 @@ only while `FELIX_GITHUB_CLIENT_ID` is set (`felix.auth.github.public_login_path
 these two paths). With login off they answer 404, and under `jwt`/`api_key` the middleware
 401s them first.
 
-Starting a flow spends from the OAuth app's own GitHub quota, so `/device` has a per-client
-hourly bucket (`FELIX_GITHUB_DEVICE_STARTS_PER_HOUR`) in a limiter store of its own, on top of
-the global limit; `/token` is polled every few seconds by design and stays under the global
-limit only.
+Starting a flow spends from the OAuth app's own GitHub quota, so `/device` has two hourly
+buckets in a limiter store of its own, on top of the global limit: one per client
+(`FELIX_GITHUB_DEVICE_STARTS_PER_HOUR`, an IPv6 client keyed by its /64) and one for the whole
+deployment (`..._TOTAL`), because a quota every client shares is not protected by a per-client
+key. `/token` is polled every few seconds by design and stays under the global limit only.
 
 A `device_code` is a bearer secret until it is redeemed: it is never logged or audited here.
 """
@@ -95,24 +96,34 @@ def _refusal(exc: GitHubLoginError) -> JSONResponse:
     return JSONResponse(body.model_dump(exclude_none=True), status_code=exc.status, headers=headers)
 
 
+def _start_refused(message: str) -> JSONResponse:
+    return _refusal(GitHubLoginError(LoginErrorCode.RATE_LIMITED, message, interval=DEVICE_START_WINDOW_S))
+
+
 @router.post("/device", response_model=DeviceStart, responses=_ERRORS)
 async def start_github_login(request: Request) -> Any:
     from felix.security.rate_limit import client_key
 
     settings = _settings_if_enabled(request)
-    allowed = await request.app.state.github_device_limiter.hit(
-        f"github-device:{client_key(request, settings)}",
+    limiter = request.app.state.github_device_limiter
+    # Per client first, so a start refused there never spends from the deployment's total.
+    if not await limiter.hit(
+        f"github-device:{client_key(request, settings, ipv6_prefix=64)}",
         limit=settings.github_device_starts_per_hour,
         window_seconds=DEVICE_START_WINDOW_S,
-    )
-    if not allowed:
-        return _refusal(
-            GitHubLoginError(
-                LoginErrorCode.RATE_LIMITED,
-                "too many logins started from this address; try again later",
-                interval=DEVICE_START_WINDOW_S,
-            )
+    ):
+        return _start_refused("too many logins started from this address; try again later")
+    if not await limiter.hit(
+        "github-device:*",
+        limit=settings.github_device_starts_per_hour_total,
+        window_seconds=DEVICE_START_WINDOW_S,
+    ):
+        logger.warning(
+            "github device-flow starts hit the deployment cap (%d/h); logins are refused until "
+            "the window turns. Many clients are starting flows, or the cap is too low",
+            settings.github_device_starts_per_hour_total,
         )
+        return _start_refused("too many logins are being started on this server; try again later")
     try:
         code = await start_device_flow(settings)
     except GitHubLoginError as exc:
