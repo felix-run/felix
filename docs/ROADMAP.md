@@ -980,10 +980,11 @@ rather than from re-reading a file. The wave itself is written up in [HISTORY.md
         per-IP rate limit on both (a `slow_down` throttles the whole client id, so one abuser
         stalls every login); never log or audit a `device_code`; name the OAuth app plainly and
         document consent phishing (anyone can start a flow and ask a member to approve it).
-      - [ ] Device-start limiting protects a *shared* quota with a per-client key: one IPv6 /64
-        or a botnet is many clients. Add a deployment-wide cap beside the per-client bucket, or
-        key IPv6 by /64 (`client_key` is shared with the global limiter, so decide there).
-        From the PR 2 security review, rated low.
+      - [x] Device-start limiting protects a *shared* quota with a per-client key: one IPv6 /64
+        or a botnet is many clients. Both done: `FELIX_GITHUB_DEVICE_STARTS_PER_HOUR_TOTAL`
+        caps the deployment, and the device bucket keys IPv6 by /64 through an opt-in
+        `client_key(..., ipv6_prefix=64)`. The global limiter still keys full addresses —
+        throttling every user behind one /64 together there is a separate call, not made.
       - [ ] Headless: a GitHub Actions OIDC exchange (`repository_owner_id` through the same
         org map, optional repo allowlist) so CI gets short-lived tokens with no stored secret.
       - [x] 3. `felix_client.github_device_login`, `felix login [--save]`, the REPL reads the saved
