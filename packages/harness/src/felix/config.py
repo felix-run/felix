@@ -97,6 +97,9 @@ class Settings(BaseSettings):
     github_org_tenants: str = ""
     github_login_ttl_seconds: int = Field(default=28_800, ge=60, le=86_400)  # 8h; max 1d (no revocation)
     github_timeout_seconds: float = Field(default=10.0, gt=0, le=120.0)
+    # Device flows one client may start per hour. Each start spends from the OAuth app's own
+    # GitHub quota, so an unthrottled public start would let one caller stall every login.
+    github_device_starts_per_hour: int = Field(default=10, ge=1, le=1000)
 
     # --- HTTP posture ---
     # `/docs` and `/openapi.json` describe every route and are behind auth in `api_key`
