@@ -1258,13 +1258,16 @@ comma-separated. What is enforced:
 
 ## Tenant resolution
 
-**Tenants and API keys are configuration, by decision (2026-10-02).** There is no tenant table
-and no key table. A tenant is the string a credential carries, and an API key is an entry in
-`FELIX_AUTH_API_KEYS`, so adding or revoking one is a config edit and a restart. That fits the
-deployment Felix is built for, a single operator self-hosting for themselves or a team. People
-reach a tenant without either step through [GitHub login](#github-login), and an external IdP
-under `jwt` does the same. A key-management API would make sense for a multi-operator service;
-it is not planned.
+**Tenants are the orgs sharing one install; tenants and API keys are configuration, by decision
+(2026-10-02).** Tenancy exists so that several organisations can use the same Felix install, each
+isolated from the others: their sessions, memory, manifests, audit and usage are kept apart by
+`tenant_id`. There is no tenant table and no key table. A tenant is the string a credential
+carries, and an API key is an entry in `FELIX_AUTH_API_KEYS`, so adding an org or issuing or
+revoking a key is the install operator's config edit and a restart. An org's people do not need
+the operator for each login: `FELIX_GITHUB_ORG_TENANTS` maps their GitHub org to its tenant, so
+[GitHub login](#github-login) lets any active member in, and an external IdP under `jwt` does the
+same. What an org cannot do is administer its own tenant — mint its own API keys, or be created
+without the operator. A tenant or key API for that is not planned.
 
 `tenant_id` is the isolation boundary and, in the default `claim` mode, it arrives in a
 token claim. Constrain it:

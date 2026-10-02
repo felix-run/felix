@@ -970,9 +970,11 @@ rather than from re-reading a file. The wave itself is written up in [HISTORY.md
 - [x] **`Idempotency-Key` on `POST /chat`** (readiness pass, 2026-09-04) — one turn per key per
       tenant, Redis-backed claims across replicas, replay with `Idempotent-Replayed: true`,
       `FELIX_IDEMPOTENCY_TTL_SECONDS`.
-- [x] **A tenant is a string.** Decided 2026-10-02: **that is the product** — tenants and keys
-      stay configuration for the single-operator self-host; written into
-      `deploy/GOVERNANCE.md#tenant-resolution`. The original note follows. There is no `Tenant` table and no `ApiKey` table; `tenant_id` is a
+- [x] **A tenant is a string.** Decided 2026-10-02: **that is the product.** Tenants are the orgs
+      sharing one install, and tenants and keys stay the install operator's configuration; an
+      org's members get in through GitHub login or an IdP, but an org cannot self-administer its
+      tenant or keys. Written into `deploy/GOVERNANCE.md#tenant-resolution`. The original note
+      follows. There is no `Tenant` table and no `ApiKey` table; `tenant_id` is a
       column on every row and never a foreign key. Minting a key means editing
       `FELIX_AUTH_API_KEYS` JSON and restarting. Manifest CRUD, canary and rollback are real and
       API-driven; onboarding tenant #2 is a config edit and a process restart. Decide whether that
