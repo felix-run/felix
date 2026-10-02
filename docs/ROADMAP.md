@@ -817,7 +817,9 @@ comment explaining exactly that. It is conditional, not inert.
       the write path for every session event, the multi-row sequence allocation has to move into
       SQL, and the in-memory twin allocates differently. Conformance against real Postgres is
       mandatory, not optional.
-- [ ] **Decide on a JWT verification cache** — `verify_jwt` verifies signatures on the event loop
+- [x] **Decide on a JWT verification cache** — decided 2026-10-02: **no cache**; written into
+      `deploy/GOVERNANCE.md#jwt-verification`. Revisit only with a measured cost. The original
+      note follows. `verify_jwt` verifies signatures on the event loop
       for every request in `jwt` mode. A TTL cache keyed on the token digest removes the repeat
       cost, but a cached "valid" survives a revocation for as long as it lives. That is a posture
       call about how stale an authorisation may be, and it wants an owner rather than a default.
@@ -968,7 +970,9 @@ rather than from re-reading a file. The wave itself is written up in [HISTORY.md
 - [x] **`Idempotency-Key` on `POST /chat`** (readiness pass, 2026-09-04) — one turn per key per
       tenant, Redis-backed claims across replicas, replay with `Idempotent-Replayed: true`,
       `FELIX_IDEMPOTENCY_TTL_SECONDS`.
-- [ ] **A tenant is a string.** There is no `Tenant` table and no `ApiKey` table; `tenant_id` is a
+- [x] **A tenant is a string.** Decided 2026-10-02: **that is the product** — tenants and keys
+      stay configuration for the single-operator self-host; written into
+      `deploy/GOVERNANCE.md#tenant-resolution`. The original note follows. There is no `Tenant` table and no `ApiKey` table; `tenant_id` is a
       column on every row and never a foreign key. Minting a key means editing
       `FELIX_AUTH_API_KEYS` JSON and restarting. Manifest CRUD, canary and rollback are real and
       API-driven; onboarding tenant #2 is a config edit and a process restart. Decide whether that
@@ -1379,8 +1383,9 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       suspension, so a completion takes seconds (3s on the first run). The old `noop smoke` prompt
       also left a pending `write_file` approval in production after every run; the prompt now asks
       for no tools.
-- [ ] **Governed demo path (decide)** — either enable on GCE (RBAC scopes for chat keys) **or**
-      keep the demo anonymous and document that choice in `deploy/GOVERNANCE.md`.
+- [x] **Governed demo path (decide)** — either enable on GCE (RBAC scopes for chat keys) **or**
+      keep the demo anonymous and document that choice in `deploy/GOVERNANCE.md`. Decided
+      2026-10-02: **anonymous**; written into `deploy/GOVERNANCE.md#example-agent`.
 - [ ] **GKE dogfood** — Helm + ESO → one known-good install note under `deploy/gcp/`.
 - [ ] **AWS smoke checklist** — mirror the GCP path (Secrets Manager / S3) in `deploy/aws/`.
 - [ ] **Postgres RLS dogfood** — migration `0006` + `FELIX_DATABASE_RLS=true` on a non-prod
