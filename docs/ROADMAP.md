@@ -917,13 +917,16 @@ rather than from re-reading a file. The wave itself is written up in [HISTORY.md
       being true. An AST/file check over `apps/api` for `StaticFiles`, `Jinja2Templates` and
       `app.mount`, plus a tracked-file check for asset extensions, is ~20 lines in the existing
       idiom. Cheapest item here.
-- [ ] **No-CORS contract undocumented** — the stack is body-limit → rate-limit → auth with no CORS
+- [x] **No-CORS contract undocumented** — the stack is body-limit → rate-limit → auth with no CORS
       layer, so a browser on another origin cannot call Felix directly. Deliberate, written down
       nowhere; the requirement survives only inside felix-web's `worker/index.ts`. A self-hoster
       pointing a browser app at `:8080` hits an opaque wall.
       (2026-09-29: still undocumented harness-side; the middleware stack is now request-id →
       security-headers → body-limit → rate-limit → auth, and the only statement is an aside in web
-      `guide/terminal.mdx`.)
+      `guide/terminal.mdx`.) Done 2026-10-02: README "API surfaces" states it with what a
+      preflight actually gets (401, or 405 under `none`, no `Access-Control-*` headers, checked
+      against the app) and the same-origin proxy pattern; CLAUDE.md's stack corrected; web
+      `guide/deploy.mdx` says the same.
 - [ ] **`POST /chat/ui` sub-protocol unspecified** — the route exists and the harness can block on
       a waiter for `DEFAULT_TIMEOUT_SECONDS = 300`. Document the frames and move the timeout to a
       `FELIX_` setting. Related: `request_ui` / `request_confirm` / `request_select` have **zero
