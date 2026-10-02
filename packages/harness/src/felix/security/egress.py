@@ -216,4 +216,28 @@ def safe_async_client(
     )
 
 
-__all__ = ["GuardedAsyncTransport", "approved_addresses", "safe_async_client"]
+async def post_for_status(
+    client: httpx.AsyncClient,
+    url: str,
+    *,
+    content: bytes,
+    headers: dict[str, str],
+    deadline_s: float,
+) -> int:
+    """POST `content` and return the status, never reading the body.
+
+    For a notifier whose only question is "did it land": a completion webhook, a Web Push.
+    The client's own timeout bounds each read; `deadline_s` bounds the whole attempt, so a
+    receiver dripping bytes cannot hold the caller. The client is the caller's, and is closed
+    here, so each call site still decides which client it trusts (`safe_async_client`, or an
+    operator-approved private one).
+    """
+    async with (
+        asyncio.timeout(deadline_s),
+        client,
+        client.stream("POST", url, content=content, headers=headers) as resp,
+    ):
+        return resp.status_code
+
+
+__all__ = ["GuardedAsyncTransport", "approved_addresses", "post_for_status", "safe_async_client"]

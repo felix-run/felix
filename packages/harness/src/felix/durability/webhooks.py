@@ -22,7 +22,6 @@ library. The id is stable across retries, which is what a receiver dedupes on.
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import binascii
 import hashlib
@@ -197,14 +196,16 @@ async def _post(settings: Settings, endpoint: WebhookEndpoint, headers: dict[str
 
         allow_http = settings.environment == "development" and settings.allow_insecure
         client = safe_async_client(timeout=timeout, allow_http=allow_http)
-    # `timeout` bounds each read; this bounds the whole attempt, so a receiver dripping bytes
-    # cannot hold the sweep. The body is never read: the status is the whole answer.
-    async with (
-        asyncio.timeout(float(settings.webhook_timeout_seconds)),
+    from felix.security.egress import post_for_status
+
+    # Bounded as a whole as well as per read, so a receiver dripping bytes cannot hold the sweep.
+    return await post_for_status(
         client,
-        client.stream("POST", endpoint.url, content=body, headers=headers) as resp,
-    ):
-        return resp.status_code
+        endpoint.url,
+        content=body,
+        headers=headers,
+        deadline_s=float(settings.webhook_timeout_seconds),
+    )
 
 
 async def _deliver_row(

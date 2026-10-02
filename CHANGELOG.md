@@ -20,6 +20,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when it and its directory are this user's alone. A saved token is only handed back for the
   server that minted it, and only while unexpired. `FelixClient.from_login(base_url)` and
   `clients/cli.py` use it when no explicit token is given.
+- **Web Push when a run is waiting on a person.** A browser subscribes at
+  `POST /push/subscriptions` (the body is `PushSubscription.toJSON()`; idempotent on the
+  endpoint) after reading the server key from `GET /push/vapid-public-key`, and leaves at
+  `DELETE /push/subscriptions`. A new approval row and an agent's question (`ui_request`) are
+  then pushed to every browser subscribed in the tenant: what kind of wait, which thread, and for
+  an approval its id, tool and deadline -- never arguments, a reason or the question's text. All
+  three routes need `approvals:read`, the scope the `approval_required` frame needs; a reused
+  approval row pushes nothing. Off until `FELIX_PUSH_VAPID_PRIVATE_KEY` and
+  `FELIX_PUSH_VAPID_SUBJECT` are set (the routes answer 503 meanwhile); endpoints must be https
+  on `FELIX_PUSH_ALLOWED_HOSTS` (Apple, Google, Mozilla and Microsoft by default). Encryption
+  (RFC 8291) and VAPID (RFC 8292) are built on `cryptography`, held to RFC 8291's test vector,
+  and sent through the egress guard, at most eight at a time. A 404/410 from a push service deletes that subscription, as do five failed sends in a row; subscribe refuses a key off P-256 and any endpoint a browser would not produce (userinfo, a port, an uppercase host).
+  New table `push_subscriptions` (migration `0021`). Metric `felix_push_delivery`.
 
 - **GitHub login routes.** `POST /auth/github/device` starts a device flow (`user_code`,
   `verification_uri`, `device_code`, `interval`) and `POST /auth/github/token` trades the
