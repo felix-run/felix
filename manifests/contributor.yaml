@@ -307,7 +307,6 @@ spec:
     strategy: compacting
     reserve_tokens: 16384
     keep_recent_tokens: 20000
-    context_window_tokens: 128000
     compaction_enabled: true
 
   # A tool result over 8000 characters is stored rather than inlined; the model gets a preview

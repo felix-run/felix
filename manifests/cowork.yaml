@@ -116,7 +116,6 @@ spec:
     strategy: compacting
     reserve_tokens: 16384
     keep_recent_tokens: 20000
-    context_window_tokens: 128000
     compaction_enabled: true
 
   memory:

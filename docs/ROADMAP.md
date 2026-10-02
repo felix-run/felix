@@ -241,7 +241,7 @@ First, because everything else governs it.
       on, which is what keeps the unscreened-tools warning silent on what we ship. A tool no
       manifest declares is inert by this repo's own definition, and none of these are now.
 
-- [~] **Governed shell tool.** The decision gate that sat here — the `read`/`edit`/`bash` coding
+- [x] **Governed shell tool.** The decision gate that sat here — the `read`/`edit`/`bash` coding
       toolset, deferred as "only worth starting if coding-agent use cases are actually on the
       roadmap" — is decided: [SELF.md](SELF.md) puts Felix building Felix on the roadmap,
       and rung 2 of it cannot exist without a way to run `./scripts/test.sh`. Landing as
@@ -249,8 +249,11 @@ First, because everything else governs it.
       scrubbed env, cwd pinned under the workspace root), not as a `ShellBackend` registry — one
       implementation does not earn a registry. The local child could read the API's environment
       through `/proc`; `FELIX_SHELL_RUNNER_URL` now sends the exec to `felix-shell-runner`, which
-      the builder stack runs as a `shell` container holding no secrets. Local exec is still the
-      default everywhere else.
+      the builder stack runs as a `shell` container holding no secrets. Shipped: the tool, the
+      allowlist, and the runner (#397); `contributor` declares it.
+      Open, and a deployment choice rather than unfinished work: local exec is still the default
+      everywhere but the builder stack, so a shell tool there runs beside the API's environment
+      unless `FELIX_SHELL_RUNNER_URL` is set.
 
 - [x] **Decision models (Jev).** Plan: `~/.claude/plans/we-want-to-use-sprightly-sprout.md`.
       Some calls decide rather than write, and each one asked a chat model for prose and

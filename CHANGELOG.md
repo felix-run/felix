@@ -7,17 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- **A manifest that names no model compacts against its model's real window.** With no
-  `spec.model.id` and no `session.context_window_tokens`, the window fell to a fixed 128000
-  rather than to `FELIX_DEFAULT_MODEL_ID`, the model the run actually uses. That is every bundled
-  manifest: `quick`, `cowork`, `deep` and the rest compacted at 128K on a 200K default, and
-  `/v1/models` listed `contextWindow: 128000` for all of them. That last part was a second
-  path: the listing asked for the window only when a manifest had a `model` block. Both now
-  resolve the default route the way the model client does. 128000 remains only for a deployment
-  with no default model at all.
-
 ### Added
 
 - **`felix login`.** Logs in to a Felix server with GitHub: prints a code to enter on github.com
@@ -85,68 +74,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   leaf. Stored in the thread metadata the labels already use, so there is no migration.
   `FelixClient.feedback()` exposes it to the SDK.
 
-### Security
+- **`spec.memory.consolidate` merges duplicate memories.** The block was declared and read by
+  nothing; the worker only ran an exact-hash dedupe. With `enabled: true`, the
+  `consolidate_memory` cron (every 15 minutes) shows the `consolidate.model` route the newest
+  `max_facts` agent-written facts of each pool holding more than `after_facts`, fenced as
+  untrusted data, and asks which say the same thing. The model returns groups of ids only; the
+  store keeps the oldest fact of each group, never one the model picks, and supersedes the rest
+  by it (`superseded_seq` at the duplicate's own turn, `retired_by: consolidation`). No memory
+  text is written. Operator-written facts are never shown or retired, facts of different kinds
+  or `topic_key`s (absent included) are never merged, and an answer
+  naming an id it was not shown, an id twice, or malformed JSON applies nothing for that group
+  (or at all), counted in `felix_memory_consolidation_rejected`. The call is metered to the
+  pool's tenant and manifest. A merged duplicate an agent restates comes back, as any agent
+  retirement does. A pool whose batch is unchanged since its last clean pass in the worker
+  process is not re-sent, and at most 50 pools reach the model per tick
+  (`felix_memory_consolidation_skipped`).
 
-- **Images replayed from a thread's history are screened.** `content_screening.image_model`
-  screened only the incoming turn, and threads are scoped to the tenant rather than the
-  manifest — so an image sent through a manifest that screens nothing, or sent before
-  `image_model` was set, replayed to a governed manifest's model on every later turn. Every
-  render of a session's history is now screened — including the re-renders compaction and
-  context-overflow recovery send straight to the model — and a router's screen holds for the
-  children it forwards the thread to. A replayed image is quarantined, never refused, since
-  refusing would refuse every later turn of the thread. Verdicts are cached beside
-  transcripts, so a replayed image is scored once rather than every turn.
+- **`content_screening.image_model`: screen the text inside user images.** Inbound screening
+  read only a turn's text blocks, so an image of the words "ignore previous instructions" went
+  past every screener, and a turn with no text at all was never screened. With a vision model
+  named here, each user image is transcribed and the transcript screened like typed text;
+  `on_flag` then quarantines or refuses per image. Uploaded files are resolved under the
+  caller's tenant first, so the screener reads the bytes the model gets. Remote image URLs are
+  treated as unscreenable, since the provider fetches them separately, and so is any transcript
+  that was refused, filtered, truncated or empty. At most eight uncached transcriptions per
+  request; transcripts are cached per tenant by content, so resent history costs nothing
+  further.
+  Off by default; see `deploy/GOVERNANCE.md`.
+- **`publish_commits`: publish the commits an agent made, from the harness, with a diff on the
+  approval.** `spec.github_publish` (`repo`, `auth: secret:NAME`, `base`, `branch_prefix`) binds a
+  tool that takes a branch and a local commit sha and writes them to GitHub through the Git Data
+  API — blobs, one tree on the remote tip, one commit, a created or fast-forwarded ref. Felix
+  never passes the token to git or to the workspace's environment — but on the single-container
+  builder the shell tool runs as the API's user and can read the API's environment, so code the
+  agent runs can still reach it (deploy/GOVERNANCE.md, "Publishing commits"). The
+  approval row and the `approval_required` frame carry a `preview` the harness computes from the
+  sha (`git diff --stat` and the unified diff, capped at 32 KiB), while the call signature is
+  still the arguments alone — so an approval binds the exact content, and the same branch with a
+  new sha asks again. A preview that fails or times out refuses the call
+  (`[approval preview failed]`, `felix_approval_preview_failed`) instead of writing a row nobody
+  can read. `contributor` gates the tool with its own `one_shot`, `bind_principal` rule and
+  publishes this way and no longer binds GitHub's
+  `push_files` / `create_or_update_file`, which put every changed file into the model's context
+  and the approval row: 196 KiB for a one-line CHANGELOG entry (#307). Any tool can now offer an
+  approval preview through `Tool.approval_preview`.
 
-- **On the Compose builder stack, shell tools no longer run beside the API's secrets.** A shell
-  tool's command ran as a child of the API, as the API's user, so code the agent wrote and ran
-  through an allowlisted `make test` could read `/proc/<api pid>/environ` — `GITHUB_MCP_TOKEN`,
-  model keys, database and Valkey credentials. `FELIX_SHELL_RUNNER_URL` and
-  `FELIX_SHELL_RUNNER_TOKEN` now send each call to `felix-shell-runner`, a new console script,
-  after the API's own checks. The runner requires the bearer, re-checks argv and `cwd` against its
-  own allowlist and workspace, and execs through the same code as the local path. A runner that
-  is down, errors or hangs fails the call; nothing falls back to a local exec. `compose.self.yml`
-  runs it as a `shell` service that mounts only the workspace volume, holds no secret, and sits on
-  a network without Postgres, Valkey or MinIO. That service now owns the workspace clone, fetch
-  and venv sync, so api and worker run no git against the agent-writable checkout. It runs as the
-  same uid as the API; the container provides the isolation. `make up-self` generates the token
-  into `.env`, and api and worker no longer take the builder's 3 GiB memory limit, which moved to
-  `shell` with the test suite. With the URL unset (`make dev`, the base stack, Helm) shell tools
-  exec locally as before, and `deploy/GOVERNANCE.md` "Shell tools" says what that still exposes.
-- **The workspace file tools no longer follow a symlink anywhere in a path.** With shell tools in
-  another container, code there can keep swapping a workspace directory for a link to
-  `/proc/self` or `/data`; the tools checked a path and then opened it by name, so a swap between
-  the two had the API read its own `environ` — in pieces, through `offset`/`limit`. `read_file`,
-  `write_file`, `edit_file`, `list_dir`, `search_files`, context-file loading and the shell tool's
-  `cwd` check now walk each path by descriptor with `O_NOFOLLOW` and refuse a symlink component
-  with the usual path-refusal error; `list_dir` shows a link as `symlink`, and `search_files`
-  neither descends into nor reads through one. The builder overlay now publishes no host port
-  for Postgres, Valkey or MinIO (Docker Desktop's `host.docker.internal` reached them from
-  `shell`), caps `shell` at 512 processes, and documents that a builder host must hold no cloud
-  instance credentials, since `shell` can reach the metadata address. The API's call to the runner
-  is bounded end to end, so a runner trickling bytes fails closed at `timeout_ms` plus 30 seconds,
-  and an out-of-range `exit_code` or `duration_ms` in its answer is a malformed result.
-- **A workspace the agent's code writes can no longer make a file tool exhaust the API.**
-  `read_file` reads only its `offset`/`limit` window (at most 512 KB) off the event loop, where it
-  read the whole file and sliced it — a sparse 50 GiB file was a 50 GiB allocation. A local context
-  file over 256 KB is ignored with a warning instead of read whole into every agent build.
-  `search_files` walks with an explicit stack at most 64 directories deep, and it and `list_dir`
-  read at most 10,000 entries of one directory. `edit_file`'s temporary file has a random, short
-  name, so a directory planted at the old predictable name no longer blocks edits and a leaf near
-  255 bytes can be edited. `FELIX_WORKSPACE_ROOT` may not itself be a symlink; it is opened with
-  `O_NOFOLLOW`.
-- **A user turn beginning with `[quarantined]` skipped the model and decider screeners.** The
-  check meant "screening already replaced this text" and was written as a test of the text's
-  prefix, which the caller controls — so typing that prefix left a turn to the marker scan
-  alone. Screening now tracks whether it replaced the text itself.
-- **A client-written custom entry no longer reaches the model in the system tier.**
-  `POST /chat/sessions/custom` takes its `role` from the caller — the agent's end user, anonymous on
-  some manifests — and defaults it to `system`. With `in_context: true`, that entry was sent as a
-  system message beside the operator's prompt, so a caller could write instructions that outranked
-  their own turns. It is still stored as written; it now reaches the model as a user turn labelled
-  as coming from the client, on live history and on a compaction checkpoint's replay alike.
-  `assistant`-role entries are unchanged, since `/v1` already accepts caller-supplied assistant
-  history.
+- **`GET /audit/export`: the audit log over a time range, as JSONL.** An auditor's second
+  question after "who was refused" is "give me everything from last quarter", and the only
+  answer was paging `GET /audit` by hand, 500 rows at a time. The export streams every matching
+  event, one per line and newest first, with no row cap, under the same `audit:read` scope.
+  `since` (inclusive) and `until` (exclusive) are epoch milliseconds, so consecutive windows
+  tile a history without sharing a row; `event_type`, `status` and `manifest_id` narrow it. The
+  range is applied in the store rather than after a page, and `GET /audit` accepts it too,
+  along with `manifest_id`. An empty or reversed range is a `400` on both, not an empty answer. A store failure after the first row ends the
+  file with an `{"error": "export_incomplete"}` line: raising instead left Granian holding the
+  connection open, so the client hung rather than seeing a truncated body.
 
+- **`deploy/gcp/roll.sh --yes`: roll without a terminal.** The confirmations read `/dev/tty`, so
+  run from CI, an agent's shell or Claude Code's `!` prefix the script reached its first question
+  only after writing the production backup, then died on `/dev/tty: Device not configured` (the
+  0.5.1 roll). Without a terminal it now refuses before the preflight, naming `--yes`; with `--yes`
+  every confirmation is answered yes and printed. Durable runs in flight still stop it, since
+  restarting the worker under them is a decision rather than a formality. Options may come in any
+  order, and an unknown one is refused.
 
 ### Changed
 
@@ -160,6 +150,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `message.content` is the JSON document and `stop_reason` is `end_turn` on either route.
 
 ### Fixed
+
+- **A manifest that names no model compacts against its model's real window.** With no
+  `spec.model.id` and no `session.context_window_tokens`, the window fell to a fixed 128000
+  rather than to `FELIX_DEFAULT_MODEL_ID`, the model the run actually uses. That is every bundled
+  manifest: `quick`, `cowork`, `deep` and the rest compacted at 128K on a 200K default, and
+  `/v1/models` listed `contextWindow: 128000` for all of them. That last part was a second
+  path: the listing asked for the window only when a manifest had a `model` block. Both now
+  resolve the default route the way the model client does. 128000 remains only for a deployment
+  with no default model at all.
+
+- **`quick`, `cowork`, `contributor`, `governed` and `triage` compact against their model's real
+  window.** Each declared `session.context_window_tokens: 128000`, written in when 128000 was the
+  field's default, beside `reserve_tokens` and `keep_recent_tokens` as a list of defaults. The
+  default has since become the model's own window, so those lines capped five bundled manifests
+  at 128K on a 200K model. A declared value always wins, which is why the default-route fix
+  alone did not reach them. The lines are removed. A manifest that wants a cap still declares
+  one.
 
 - **Thinking levels now send distinct efforts to models that take one.** On adaptive Claude
   models and OpenAI reasoning models, a level's effort was derived from its budget through
@@ -232,9 +239,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to before a compaction the abandoned branch's summary and kept turns were replayed into the new
   one. The summary used is now the newest whose covered and kept events are on the active branch.
 
-
-### Fixed
-
 - **A `one_shot` approval now authorizes exactly one call.** The grant was spent only when a
   later call found it already approved; the call that waited for the decision ran without
   spending it, so one replay of the same arguments ran again on the same approval. The waiting
@@ -248,71 +252,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `bind_principal` a call that would join another principal's pending request is now refused at
   once.
 
-### Added
+### Security
 
-- **`spec.memory.consolidate` merges duplicate memories.** The block was declared and read by
-  nothing; the worker only ran an exact-hash dedupe. With `enabled: true`, the
-  `consolidate_memory` cron (every 15 minutes) shows the `consolidate.model` route the newest
-  `max_facts` agent-written facts of each pool holding more than `after_facts`, fenced as
-  untrusted data, and asks which say the same thing. The model returns groups of ids only; the
-  store keeps the oldest fact of each group, never one the model picks, and supersedes the rest
-  by it (`superseded_seq` at the duplicate's own turn, `retired_by: consolidation`). No memory
-  text is written. Operator-written facts are never shown or retired, facts of different kinds
-  or `topic_key`s (absent included) are never merged, and an answer
-  naming an id it was not shown, an id twice, or malformed JSON applies nothing for that group
-  (or at all), counted in `felix_memory_consolidation_rejected`. The call is metered to the
-  pool's tenant and manifest. A merged duplicate an agent restates comes back, as any agent
-  retirement does. A pool whose batch is unchanged since its last clean pass in the worker
-  process is not re-sent, and at most 50 pools reach the model per tick
-  (`felix_memory_consolidation_skipped`).
+- **Images replayed from a thread's history are screened.** `content_screening.image_model`
+  screened only the incoming turn, and threads are scoped to the tenant rather than the
+  manifest — so an image sent through a manifest that screens nothing, or sent before
+  `image_model` was set, replayed to a governed manifest's model on every later turn. Every
+  render of a session's history is now screened — including the re-renders compaction and
+  context-overflow recovery send straight to the model — and a router's screen holds for the
+  children it forwards the thread to. A replayed image is quarantined, never refused, since
+  refusing would refuse every later turn of the thread. Verdicts are cached beside
+  transcripts, so a replayed image is scored once rather than every turn.
 
-- **`content_screening.image_model`: screen the text inside user images.** Inbound screening
-  read only a turn's text blocks, so an image of the words "ignore previous instructions" went
-  past every screener, and a turn with no text at all was never screened. With a vision model
-  named here, each user image is transcribed and the transcript screened like typed text;
-  `on_flag` then quarantines or refuses per image. Uploaded files are resolved under the
-  caller's tenant first, so the screener reads the bytes the model gets. Remote image URLs are
-  treated as unscreenable, since the provider fetches them separately, and so is any transcript
-  that was refused, filtered, truncated or empty. At most eight uncached transcriptions per
-  request; transcripts are cached per tenant by content, so resent history costs nothing
-  further.
-  Off by default; see `deploy/GOVERNANCE.md`.
-- **`publish_commits`: publish the commits an agent made, from the harness, with a diff on the
-  approval.** `spec.github_publish` (`repo`, `auth: secret:NAME`, `base`, `branch_prefix`) binds a
-  tool that takes a branch and a local commit sha and writes them to GitHub through the Git Data
-  API — blobs, one tree on the remote tip, one commit, a created or fast-forwarded ref. Felix
-  never passes the token to git or to the workspace's environment — but on the single-container
-  builder the shell tool runs as the API's user and can read the API's environment, so code the
-  agent runs can still reach it (deploy/GOVERNANCE.md, "Publishing commits"). The
-  approval row and the `approval_required` frame carry a `preview` the harness computes from the
-  sha (`git diff --stat` and the unified diff, capped at 32 KiB), while the call signature is
-  still the arguments alone — so an approval binds the exact content, and the same branch with a
-  new sha asks again. A preview that fails or times out refuses the call
-  (`[approval preview failed]`, `felix_approval_preview_failed`) instead of writing a row nobody
-  can read. `contributor` gates the tool with its own `one_shot`, `bind_principal` rule and
-  publishes this way and no longer binds GitHub's
-  `push_files` / `create_or_update_file`, which put every changed file into the model's context
-  and the approval row: 196 KiB for a one-line CHANGELOG entry (#307). Any tool can now offer an
-  approval preview through `Tool.approval_preview`.
-
-- **`GET /audit/export`: the audit log over a time range, as JSONL.** An auditor's second
-  question after "who was refused" is "give me everything from last quarter", and the only
-  answer was paging `GET /audit` by hand, 500 rows at a time. The export streams every matching
-  event, one per line and newest first, with no row cap, under the same `audit:read` scope.
-  `since` (inclusive) and `until` (exclusive) are epoch milliseconds, so consecutive windows
-  tile a history without sharing a row; `event_type`, `status` and `manifest_id` narrow it. The
-  range is applied in the store rather than after a page, and `GET /audit` accepts it too,
-  along with `manifest_id`. An empty or reversed range is a `400` on both, not an empty answer. A store failure after the first row ends the
-  file with an `{"error": "export_incomplete"}` line: raising instead left Granian holding the
-  connection open, so the client hung rather than seeing a truncated body.
-
-- **`deploy/gcp/roll.sh --yes`: roll without a terminal.** The confirmations read `/dev/tty`, so
-  run from CI, an agent's shell or Claude Code's `!` prefix the script reached its first question
-  only after writing the production backup, then died on `/dev/tty: Device not configured` (the
-  0.5.1 roll). Without a terminal it now refuses before the preflight, naming `--yes`; with `--yes`
-  every confirmation is answered yes and printed. Durable runs in flight still stop it, since
-  restarting the worker under them is a decision rather than a formality. Options may come in any
-  order, and an unknown one is refused.
+- **On the Compose builder stack, shell tools no longer run beside the API's secrets.** A shell
+  tool's command ran as a child of the API, as the API's user, so code the agent wrote and ran
+  through an allowlisted `make test` could read `/proc/<api pid>/environ` — `GITHUB_MCP_TOKEN`,
+  model keys, database and Valkey credentials. `FELIX_SHELL_RUNNER_URL` and
+  `FELIX_SHELL_RUNNER_TOKEN` now send each call to `felix-shell-runner`, a new console script,
+  after the API's own checks. The runner requires the bearer, re-checks argv and `cwd` against its
+  own allowlist and workspace, and execs through the same code as the local path. A runner that
+  is down, errors or hangs fails the call; nothing falls back to a local exec. `compose.self.yml`
+  runs it as a `shell` service that mounts only the workspace volume, holds no secret, and sits on
+  a network without Postgres, Valkey or MinIO. That service now owns the workspace clone, fetch
+  and venv sync, so api and worker run no git against the agent-writable checkout. It runs as the
+  same uid as the API; the container provides the isolation. `make up-self` generates the token
+  into `.env`, and api and worker no longer take the builder's 3 GiB memory limit, which moved to
+  `shell` with the test suite. With the URL unset (`make dev`, the base stack, Helm) shell tools
+  exec locally as before, and `deploy/GOVERNANCE.md` "Shell tools" says what that still exposes.
+- **The workspace file tools no longer follow a symlink anywhere in a path.** With shell tools in
+  another container, code there can keep swapping a workspace directory for a link to
+  `/proc/self` or `/data`; the tools checked a path and then opened it by name, so a swap between
+  the two had the API read its own `environ` — in pieces, through `offset`/`limit`. `read_file`,
+  `write_file`, `edit_file`, `list_dir`, `search_files`, context-file loading and the shell tool's
+  `cwd` check now walk each path by descriptor with `O_NOFOLLOW` and refuse a symlink component
+  with the usual path-refusal error; `list_dir` shows a link as `symlink`, and `search_files`
+  neither descends into nor reads through one. The builder overlay now publishes no host port
+  for Postgres, Valkey or MinIO (Docker Desktop's `host.docker.internal` reached them from
+  `shell`), caps `shell` at 512 processes, and documents that a builder host must hold no cloud
+  instance credentials, since `shell` can reach the metadata address. The API's call to the runner
+  is bounded end to end, so a runner trickling bytes fails closed at `timeout_ms` plus 30 seconds,
+  and an out-of-range `exit_code` or `duration_ms` in its answer is a malformed result.
+- **A workspace the agent's code writes can no longer make a file tool exhaust the API.**
+  `read_file` reads only its `offset`/`limit` window (at most 512 KB) off the event loop, where it
+  read the whole file and sliced it — a sparse 50 GiB file was a 50 GiB allocation. A local context
+  file over 256 KB is ignored with a warning instead of read whole into every agent build.
+  `search_files` walks with an explicit stack at most 64 directories deep, and it and `list_dir`
+  read at most 10,000 entries of one directory. `edit_file`'s temporary file has a random, short
+  name, so a directory planted at the old predictable name no longer blocks edits and a leaf near
+  255 bytes can be edited. `FELIX_WORKSPACE_ROOT` may not itself be a symlink; it is opened with
+  `O_NOFOLLOW`.
+- **A user turn beginning with `[quarantined]` skipped the model and decider screeners.** The
+  check meant "screening already replaced this text" and was written as a test of the text's
+  prefix, which the caller controls — so typing that prefix left a turn to the marker scan
+  alone. Screening now tracks whether it replaced the text itself.
+- **A client-written custom entry no longer reaches the model in the system tier.**
+  `POST /chat/sessions/custom` takes its `role` from the caller — the agent's end user, anonymous on
+  some manifests — and defaults it to `system`. With `in_context: true`, that entry was sent as a
+  system message beside the operator's prompt, so a caller could write instructions that outranked
+  their own turns. It is still stored as written; it now reaches the model as a user turn labelled
+  as coming from the client, on live history and on a compaction checkpoint's replay alike.
+  `assistant`-role entries are unchanged, since `/v1` already accepts caller-supplied assistant
+  history.
 
 ## [0.5.1] — 2026-09-30
 
