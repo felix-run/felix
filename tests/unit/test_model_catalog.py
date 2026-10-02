@@ -132,8 +132,10 @@ def test_a_hosted_llama_is_not_free_just_because_it_says_llama() -> None:
     """`entry_for` matches by substring, and Llama is served for money by Workers AI, Groq,
     Together and Fireworks. Pricing the `llama` entry at zero would have made all of them
     free to `limits.max_cost_usd`."""
-    assert not is_priced("@cf/meta/llama-3.3-70b-instruct-fp8-fast")
-    assert entry_for("@cf/meta/llama-3.3-70b-instruct-fp8-fast").pricing is None
+    hosted = entry_for("@cf/meta/llama-3.3-70b-instruct-fp8-fast").pricing
+    assert hosted is not None and hosted.input > 0 and hosted.output > 0
+    # ...and pricing the hosted id did not price the local one.
+    assert not is_priced("llama3.3:70b")
 
 
 def test_gpt_4_1_family_is_priced() -> None:

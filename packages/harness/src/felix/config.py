@@ -860,6 +860,13 @@ DEFAULT_MODEL_ROUTES: dict[str, dict[str, str]] = {
     "gpt-4.1-mini": {"provider": "openai", "model": "gpt-4.1-mini"},
     "llama-3-pro": {"provider": "ollama", "model": "llama3.3:70b"},
     "llama-3-fast": {"provider": "ollama", "model": "llama3.2"},
+    # Open models on Cloudflare Workers AI, one token and an account id under "workers_ai" in
+    # FELIX_MODEL_PROVIDER_OPTIONS. Each is priced in the catalog and supports tool calling.
+    # Kimi is the agent tier (262K window); GLM Flash the cheap one for side requests.
+    "kimi-k2-cf": {"provider": "workers_ai", "model": "@cf/moonshotai/kimi-k2.6"},
+    "gpt-oss-120b-cf": {"provider": "workers_ai", "model": "@cf/openai/gpt-oss-120b"},
+    "gpt-oss-20b-cf": {"provider": "workers_ai", "model": "@cf/openai/gpt-oss-20b"},
+    "glm-flash-cf": {"provider": "workers_ai", "model": "@cf/zai-org/glm-4.7-flash"},
 }
 
 
