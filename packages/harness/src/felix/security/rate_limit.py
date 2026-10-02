@@ -196,6 +196,25 @@ class ResilientRateLimiter:
         return allowed
 
 
+def build_rate_limiter_backend(settings: Any) -> RateLimiterBackend:
+    """A limiter store: Redis when one is configured, degrading to in-process.
+
+    One store per window length. `InMemoryRateLimiter` expires keys from the front using the
+    *calling* request's window, which is only sound when every key shares it: an hourly
+    bucket kept beside the 60 s per-client one was evicted by the next unrelated request
+    after a minute of idleness, so "10 an hour" was 10 a minute.
+    """
+    url = (getattr(settings, "redis_url", "") or "").strip()
+    if url:
+        try:
+            from redis.asyncio import Redis
+
+            return ResilientRateLimiter(primary=RedisRateLimiter(redis=Redis.from_url(url)))
+        except Exception:
+            logger.warning("redis rate limiter unavailable; using in-process limits", exc_info=True)
+    return InMemoryRateLimiter()
+
+
 def build_rate_limit_config(settings: Any) -> RateLimitConfig:
     """Rate-limit config from settings, using Redis when one is configured.
 
@@ -204,19 +223,10 @@ def build_rate_limit_config(settings: Any) -> RateLimitConfig:
     never wired, meaning limits were per-process and the effective ceiling was
     N_replicas x 120.
     """
-    backend: RateLimiterBackend = InMemoryRateLimiter()
-    url = (getattr(settings, "redis_url", "") or "").strip()
-    if url:
-        try:
-            from redis.asyncio import Redis
-
-            backend = ResilientRateLimiter(primary=RedisRateLimiter(redis=Redis.from_url(url)))
-        except Exception:
-            logger.warning("redis rate limiter unavailable; using in-process limits", exc_info=True)
     return RateLimitConfig(
         limit=int(getattr(settings, "rate_limit", 120) or 120),
         window_seconds=int(getattr(settings, "rate_limit_window_seconds", 60) or 60),
-        backend=backend,
+        backend=build_rate_limiter_backend(settings),
     )
 
 
@@ -308,6 +318,7 @@ __all__ = [
     "RedisRateLimiter",
     "ResilientRateLimiter",
     "build_rate_limit_config",
+    "build_rate_limiter_backend",
     "check_rate_limit",
     "client_key",
     "forwarded_client",

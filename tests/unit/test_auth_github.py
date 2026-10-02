@@ -157,11 +157,19 @@ async def test_a_failed_start_says_whose_problem_it_is(body: dict[str, Any], cod
         ("a_code_github_adds_later", "github_config_error", 503),
     ],
 )
-async def test_an_unapproved_poll_says_what_to_do_next(error: str, code: str, status: int) -> None:
+async def test_an_unapproved_poll_says_what_to_do_next(
+    error: str, code: str, status: int, caplog: pytest.LogCaptureFixture
+) -> None:
     fake = FakeGitHub(polls=[{"error": error, "interval": 10}])
     exc = await _refused(_settings(), fake)
-    assert (exc.code, exc.status, exc.interval) == (code, status, 10)
-    assert error in str(exc)  # GitHub's own string survives, in the message
+    assert (exc.code, exc.status) == (code, status)
+    if code == "github_config_error":
+        # The caller is anonymous: GitHub's account of the OAuth app's settings goes to the log.
+        assert str(exc) == github.CONFIG_ERROR_MESSAGE
+        assert error in caplog.text
+    else:
+        assert exc.interval == 10
+        assert error in str(exc)
     # Nothing past the poll is attempted until GitHub has approved.
     assert [r.url.host for r in fake.requests] == ["github.com"]
 
@@ -290,7 +298,9 @@ async def test_an_approval_without_a_token_is_a_502() -> None:
     assert (exc.code, exc.status) == ("github_unavailable", 502)
 
 
-async def test_an_unreachable_github_is_a_502() -> None:
+async def test_an_unreachable_github_is_a_502_that_names_nothing_upstream(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     def down(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("refused", request=request)
 
@@ -298,6 +308,19 @@ async def test_an_unreachable_github_is_a_502() -> None:
         with pytest.raises(GitHubLoginError) as info:
             await exchange_device_code(_settings(), "dev-1", client=client)
     assert (info.value.code, info.value.status) == ("github_unavailable", 502)
+    assert str(info.value) == github.UNAVAILABLE_MESSAGE
+    assert "refused" in caplog.text  # the transport's own error, for the operator
+
+
+async def test_a_redeemed_device_code_cannot_be_redeemed_again() -> None:
+    """GitHub's device codes are single-use, so a 409 `tenant_ambiguous` spends the flow."""
+    settings = _settings(github_org_tenants=json.dumps(_TWO_TENANTS))
+    fake = FakeGitHub(memberships=_BOTH)
+    ambiguous = await _refused(settings, fake)
+    assert ambiguous.code == "tenant_ambiguous"
+    assert "start a new one" in str(ambiguous)
+    again = await _refused(settings, fake, tenant="globex")
+    assert (again.code, again.status) == ("invalid_device_code", 400)
 
 
 async def test_the_default_client_is_the_one_production_uses(monkeypatch: pytest.MonkeyPatch) -> None:

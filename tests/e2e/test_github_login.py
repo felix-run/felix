@@ -96,20 +96,49 @@ async def test_a_github_member_logs_in_and_the_token_opens_their_tenant(
     assert device_code not in caplog.text
 
 
-async def test_ambiguous_membership_names_the_tenants_and_a_choice_resolves_it(
+async def test_ambiguous_membership_spends_the_flow_and_a_new_one_with_a_tenant_lands_there(
     boot: Any, fake_github: FakeGitHub
 ) -> None:
+    """GitHub device codes are single-use: the 409 is the end of that flow, not a question."""
+    from felix.audit import store as audit_store
+    from felix.flush import flush_all
+
     orgs = {"acme": org("acme", "acme", ["jobs:read"]), "globex": org("globex", "globex", ["jobs:read"])}
     fake_github.memberships = {"acme": (200, "active"), "globex": (200, "active")}
     fake_github.polls = [{"access_token": "gho_x"}, {"access_token": "gho_x"}]
     async with boot([], env=_env(FELIX_GITHUB_ORG_TENANTS=json.dumps(orgs))) as app:
-        ambiguous = await _login(app.client)
+        started = await app.client.post("/auth/github/device")
+        device_code = started.json()["device_code"]
+        ambiguous = await app.client.post("/auth/github/token", json={"device_code": device_code})
         assert ambiguous.status_code == 409
+        assert ambiguous.json()["error"] == "tenant_ambiguous"
         assert ambiguous.json()["tenants"] == ["acme", "globex"]
+
+        retried = await app.client.post(
+            "/auth/github/token", json={"device_code": device_code, "tenant": "globex"}
+        )
+        assert retried.status_code == 400
+        assert retried.json()["error"] == "invalid_device_code"
 
         chosen = await _login(app.client, tenant="globex")
         assert chosen.status_code == 200, chosen.text
         assert chosen.json()["tenant"] == "globex"
+
+        await flush_all(app.settings)
+        in_globex, _ = await audit_store.list_events(app.settings, "globex", event_type="github_login")
+        in_acme, _ = await audit_store.list_events(app.settings, "acme", event_type="github_login")
+    assert len(in_globex) == 1
+    assert in_acme == []
+
+
+async def test_choosing_a_tenant_membership_does_not_grant_is_refused(
+    boot: Any, fake_github: FakeGitHub
+) -> None:
+    fake_github.polls = [{"access_token": "gho_x"}]
+    async with boot([], env=_env()) as app:
+        refused = await _login(app.client, tenant="globex")
+    assert refused.status_code == 403
+    assert refused.json()["error"] == "tenant_not_granted"
 
 
 async def test_a_non_member_gets_no_token(boot: Any, fake_github: FakeGitHub) -> None:
@@ -122,10 +151,74 @@ async def test_a_non_member_gets_no_token(boot: Any, fake_github: FakeGitHub) ->
     assert "access_token" not in refused.json()
 
 
-async def test_starting_flows_has_a_bucket_of_its_own(boot: Any, fake_github: FakeGitHub) -> None:
-    async with boot([], env=_env(FELIX_GITHUB_DEVICE_STARTS_PER_HOUR="2")) as app:
-        statuses = [(await app.client.post("/auth/github/device")).status_code for _ in range(3)]
-    assert statuses == [200, 200, 429]
+async def test_a_github_outage_is_a_502_naming_nothing_upstream(boot: Any, fake_github: FakeGitHub) -> None:
+    from felix.auth.github import UNAVAILABLE_MESSAGE
+
+    fake_github.api_status = 500
+    fake_github.polls = [{"access_token": "gho_x"}]
+    async with boot([], env=_env()) as app:
+        failed = await _login(app.client)
+    assert failed.status_code == 502
+    assert failed.json() == {"error": "github_unavailable", "message": UNAVAILABLE_MESSAGE}
+    assert "retry-after" not in failed.headers
+
+
+def _from(address: str) -> dict[str, str]:
+    return {"x-forwarded-for": address}
+
+
+_BEHIND_PROXY = {
+    "FELIX_TRUSTED_CLIENT_IP_HEADER": "x-forwarded-for",
+    "FELIX_GITHUB_DEVICE_STARTS_PER_HOUR": "2",
+}
+
+
+async def test_starting_flows_has_a_bucket_per_client(boot: Any, fake_github: FakeGitHub) -> None:
+    async with boot([], env=_env(**_BEHIND_PROXY)) as app:
+        statuses = [
+            (await app.client.post("/auth/github/device", headers=_from("203.0.113.7"))).status_code
+            for _ in range(2)
+        ]
+        limited = await app.client.post("/auth/github/device", headers=_from("203.0.113.7"))
+        # Another address is not locked out by the first one spending its bucket.
+        other = await app.client.post("/auth/github/device", headers=_from("198.51.100.9"))
+    assert statuses == [200, 200]
+    assert limited.status_code == 429
+    assert limited.json()["error"] == "rate_limited"
+    assert limited.headers["retry-after"] == "3600"
+    assert other.status_code == 200
+
+
+async def test_polling_does_not_spend_the_start_bucket(boot: Any, fake_github: FakeGitHub) -> None:
+    fake_github.polls = [{"error": "authorization_pending", "interval": 5}] * 5
+    async with boot([], env=_env(**_BEHIND_PROXY)) as app:
+        started = await app.client.post("/auth/github/device", headers=_from("203.0.113.7"))
+        for _ in range(5):
+            body = {"device_code": started.json()["device_code"]}
+            await app.client.post("/auth/github/token", json=body, headers=_from("203.0.113.7"))
+        second = await app.client.post("/auth/github/device", headers=_from("203.0.113.7"))
+    assert second.status_code == 200
+
+
+async def test_the_hourly_bucket_outlives_the_global_minute(
+    boot: Any, fake_github: FakeGitHub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The in-memory limiter expires keys using the calling request's window; sharing one store
+    with the 60 s global bucket let any request a minute later reset the hourly one."""
+    import time
+
+    from felix.security import rate_limit
+
+    clock = {"now": time.monotonic()}
+    monkeypatch.setattr(rate_limit.time, "monotonic", lambda: clock["now"])
+    async with boot([], env=_env(**_BEHIND_PROXY)) as app:
+        for _ in range(2):
+            await app.client.post("/auth/github/device", headers=_from("203.0.113.7"))
+        clock["now"] += 61
+        # Any request through the global limiter, from anyone.
+        await app.client.get("/jobs", headers=_from("198.51.100.9"))
+        again = await app.client.post("/auth/github/device", headers=_from("203.0.113.7"))
+    assert again.status_code == 429
 
 
 async def test_with_login_off_the_routes_are_not_public(boot: Any) -> None:
@@ -137,12 +230,12 @@ async def test_with_login_off_the_routes_are_not_public(boot: Any) -> None:
 async def test_with_login_off_and_no_auth_the_routes_are_absent(boot: Any) -> None:
     async with boot([]) as app:
         assert (await app.client.post("/auth/github/device")).status_code == 404
+        assert (await app.client.post("/auth/github/token", json={"device_code": "x"})).status_code == 404
 
 
-async def test_the_public_prefix_opens_nothing_beside_the_login_routes(
-    boot: Any, fake_github: FakeGitHub
-) -> None:
-    """`/auth/github/` is public while login is on; a sibling path is still behind auth."""
+async def test_only_the_two_login_paths_are_public(boot: Any, fake_github: FakeGitHub) -> None:
+    """Exact paths, not a prefix: a plugin route mounted beside them stays behind auth."""
     async with boot([], env=_env()) as app:
+        assert (await app.client.get("/auth/github/other")).status_code == 401
+        assert (await app.client.post("/auth/github/device/")).status_code == 401
         assert (await app.client.get("/auth/githubx/device")).status_code == 401
-        assert (await app.client.get("/auth/other")).status_code == 401

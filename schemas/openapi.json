@@ -768,7 +768,8 @@
           "tenant_ambiguous",
           "tenant_not_granted",
           "github_unavailable",
-          "github_config_error"
+          "github_config_error",
+          "rate_limited"
         ],
         "title": "LoginErrorCode",
         "type": "string"
@@ -2405,6 +2406,13 @@
             "description": "Precondition Required"
           },
           "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginErrorOut"
+                }
+              }
+            },
             "description": "Too Many Requests"
           },
           "502": {
@@ -2507,6 +2515,16 @@
               }
             },
             "description": "Precondition Required"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginErrorOut"
+                }
+              }
+            },
+            "description": "Too Many Requests"
           },
           "502": {
             "content": {
