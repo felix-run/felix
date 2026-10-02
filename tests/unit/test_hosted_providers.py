@@ -197,16 +197,29 @@ def test_a_provider_header_can_remove_one_the_wire_format_sets() -> None:
 # --- honesty about what we do not know ---------------------------------------------------
 
 
-@pytest.mark.parametrize("name", [*HOSTED, "workers_ai"])
+@pytest.mark.parametrize("name", HOSTED)
 def test_a_hosted_provider_ships_unpriced(name: str) -> None:
     """Deliberate. Inventing per-token rates is exactly the bug that made every unknown
-    model bill at Claude Sonnet's — and Workers AI bills in neurons, not tokens, so a
-    per-token rate for it would be fiction. `spec.model.price` is the supported answer,
-    and a declared `max_cost_usd` on one of these is refused at compile rather than
-    enforced against a number nobody chose."""
+    model bill at Claude Sonnet's. `spec.model.price` is the supported answer, and a declared
+    `max_cost_usd` on one of these is refused at compile rather than enforced against a
+    number nobody chose."""
     from felix.model_catalog import is_priced
 
     assert not is_priced(REPRESENTATIVE_MODEL[name]), name
+
+
+def test_every_workers_ai_default_route_is_priced() -> None:
+    """Workers AI is the exception, because Cloudflare publishes a per-token rate for each
+    model. It used to ship unpriced on the reading that neurons have no token rate, which
+    refused every manifest declaring `max_cost_usd` — `contributor` among them — at compile
+    on Workers AI. A default route that is unpriced would bring that back for that route."""
+    from felix.config import DEFAULT_MODEL_ROUTES
+    from felix.model_catalog import is_priced
+
+    cf = {name: r["model"] for name, r in DEFAULT_MODEL_ROUTES.items() if r["provider"] == "workers_ai"}
+    assert cf, "no default route reaches Workers AI"
+    assert [name for name, model in cf.items() if not is_priced(model)] == []
+    assert is_priced(REPRESENTATIVE_MODEL["workers_ai"])
 
 
 def test_only_providers_that_serve_embeddings_are_selectable_as_one() -> None:
@@ -365,3 +378,17 @@ def test_a_non_string_option_is_masked_on_the_form_that_goes_on_the_wire(options
 
     masked = _provider_option_secrets(_settings(model_provider_options=options))
     assert any(expected in m for m in masked), masked
+
+
+@pytest.mark.parametrize("route", ["kimi-k2-cf", "gpt-oss-120b-cf", "gpt-oss-20b-cf", "glm-flash-cf"])
+def test_a_workers_ai_route_does_not_clamp_output_below_its_window(route: str) -> None:
+    """A catalog match turns on `max_tokens` clamping, at an 8,192 default. Before these ids
+    were in the catalog nothing clamped them, and a gpt-oss reasoning turn spends its
+    reasoning out of the same budget — so a default clamp would have stopped it at `length`."""
+    from felix.config import DEFAULT_MODEL_ROUTES
+    from felix_ai.wire.openai_completions import apply_openai_thinking_cache
+
+    model = DEFAULT_MODEL_ROUTES[route]["model"]
+    body: dict[str, object] = {"model": model, "max_tokens": 32_000}
+    apply_openai_thinking_cache(body, None, model)
+    assert body["max_tokens"] == 32_000

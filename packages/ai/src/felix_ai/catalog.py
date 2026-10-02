@@ -306,6 +306,62 @@ _CATALOG: dict[str, ModelCatalogEntry] = {
         supports_thinking=True,
         quirks=ModelQuirks(sampling=False, max_completion_tokens=True),
     ),
+    # --- Cloudflare Workers AI ---
+    # USD per MTok from https://developers.cloudflare.com/workers-ai/platform/pricing/ and each
+    # model's page, read 2026-10-01. Cloudflare meters in neurons and publishes these per-token
+    # rates as the conversion; the 10,000 free neurons a day are not subtracted, so spend reads
+    # high rather than low. Every key carries the `@cf/` prefix, so the same weights served by
+    # Ollama, Groq or Together never match one of these rates. The OpenAI wire counts cached
+    # tokens as plain input, so Kimi's cache rate is recorded and not yet applied.
+    # Cloudflare states no output limit separate from the window, and `apply_request_shaping`
+    # clamps `max_tokens` to `max_output_tokens` — so each entry sets it to its window. The
+    # 8,192 default would have cut a gpt-oss reasoning turn short where nothing clamped before.
+    "@cf/moonshotai/kimi-k2.6": ModelCatalogEntry(
+        context_window=262_144,
+        max_output_tokens=262_144,
+        pricing=ModelPricing(input=0.95, output=4.0, cache_read=0.16, cache_write=0.95),
+        input_modalities=_TEXT_AND_IMAGE,
+        quirks=ModelQuirks(**_UNVOUCHED),
+    ),
+    "@cf/openai/gpt-oss-120b": ModelCatalogEntry(
+        context_window=128_000,
+        max_output_tokens=128_000,
+        pricing=ModelPricing(input=0.35, output=0.75, cache_read=0.35, cache_write=0.35),
+        quirks=ModelQuirks(**_UNVOUCHED),
+    ),
+    "@cf/openai/gpt-oss-20b": ModelCatalogEntry(
+        context_window=128_000,
+        max_output_tokens=128_000,
+        pricing=ModelPricing(input=0.2, output=0.3, cache_read=0.2, cache_write=0.2),
+        quirks=ModelQuirks(**_UNVOUCHED),
+    ),
+    "@cf/zai-org/glm-4.7-flash": ModelCatalogEntry(
+        context_window=131_072,
+        max_output_tokens=131_072,
+        pricing=ModelPricing(input=0.0605, output=0.4, cache_read=0.0605, cache_write=0.0605),
+        quirks=ModelQuirks(**_UNVOUCHED),
+    ),
+    "@cf/meta/llama-4-scout-17b-16e-instruct": ModelCatalogEntry(
+        context_window=131_000,
+        max_output_tokens=131_000,
+        pricing=ModelPricing(input=0.27, output=0.85, cache_read=0.27, cache_write=0.27),
+        input_modalities=_TEXT_AND_IMAGE,
+        quirks=ModelQuirks(**_UNVOUCHED),
+    ),
+    # 24K on Workers AI, not Llama 3.3's native 128K: too small for an agent whose prompt
+    # carries a skill catalogue, which is why no default route points here.
+    "@cf/meta/llama-3.3-70b-instruct-fp8-fast": ModelCatalogEntry(
+        context_window=24_000,
+        max_output_tokens=24_000,
+        pricing=ModelPricing(input=0.293, output=2.253, cache_read=0.293, cache_write=0.293),
+        quirks=ModelQuirks(**_UNVOUCHED),
+    ),
+    "@cf/qwen/qwen3-30b-a3b-fp8": ModelCatalogEntry(
+        context_window=32_768,
+        max_output_tokens=32_768,
+        pricing=ModelPricing(input=0.0509, output=0.335, cache_read=0.0509, cache_write=0.0509),
+        quirks=ModelQuirks(**_UNVOUCHED),
+    ),
     # --- Decision models ---
     # TypeSafe Jev answers typed questions and generates no text; output is not billed.
     # One key covers `jev-latest`, `jev-1.13.0` and Workers AI's `typesafe/jev`.

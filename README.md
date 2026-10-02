@@ -364,13 +364,16 @@ Everything past the first three is configured through `FELIX_MODEL_PROVIDER_OPTI
 than a settings field per vendor. Each is also selectable as `FELIX_MEMORY_EMBEDDER`, since
 `/embeddings` is part of the same wire format.
 
-**None of the hosted tier ships with per-token rates, deliberately.** Felix does not invent
-prices: an unpriced model contributes zero to spend and a manifest that *declares*
-`limits.max_cost_usd` on one is refused at compile, pointing at `spec.model.price`. Guessing
-is how every unrecognised model came to be billed at Claude Sonnet's $3/$15 per Mtok.
-Cloudflare bills Workers AI in neurons rather than tokens, so a per-token rate for it would
-be fiction. `ollama` is exempt because a local runtime genuinely costs nothing — that is a
-property of the provider, not of the model's name.
+**The hosted tier ships without per-token rates, deliberately, except Workers AI.** Felix
+does not invent prices: an unpriced model contributes zero to spend and a manifest that
+*declares* `limits.max_cost_usd` on one is refused at compile, pointing at `spec.model.price`.
+Guessing is how every unrecognised model came to be billed at Claude Sonnet's $3/$15 per Mtok.
+Workers AI is the exception because Cloudflare publishes a per-token rate for each model (it
+meters in neurons and states the conversion), so the catalog carries those rates for the
+models behind the `-cf` routes below and a few more, under `@cf/` keys, and a spend cap holds on
+them. Any other `@cf/` id stays unpriced. The 10,000 free neurons a day are not subtracted, so
+spend reads high rather than low. `ollama` is exempt because a local runtime genuinely costs
+nothing — that is a property of the provider, not of the model's name.
 
 A provider is a descriptor — a wire format, an endpoint, and where its credential lives —
 so adding one is a row rather than a module. Both wire formats and the HTTP transport are
@@ -408,6 +411,13 @@ override) or by the built-in defaults:
 | `claude-fable` | anthropic | `claude-fable-5` |
 | `gpt-4.1` / `gpt-4.1-mini` | openai | same |
 | `llama-3-pro` / `llama-3-fast` | ollama | `llama3.3:70b` / `llama3.2` |
+| `kimi-k2-cf` | workers_ai | `@cf/moonshotai/kimi-k2.6` (262K, vision) |
+| `gpt-oss-120b-cf` / `gpt-oss-20b-cf` | workers_ai | `@cf/openai/gpt-oss-120b` / `@cf/openai/gpt-oss-20b` |
+| `glm-flash-cf` | workers_ai | `@cf/zai-org/glm-4.7-flash` |
+
+Every `-cf` route supports tool calling and is priced, so `limits.max_cost_usd` is enforced on
+it. `@cf/meta/llama-3.3-70b-instruct-fp8-fast` is priced too but has no default route: Workers
+AI serves it with a 24K window, smaller than an agent's prompt with a skill catalogue.
 
 A streaming turn is one model call. `POST /chat/stream` emits deltas from the same request that
 produces the turn's tool calls, usage and stop reason, so the text a client watches arrive is the

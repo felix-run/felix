@@ -19,7 +19,7 @@ from felix.manifests.governance import GovernanceError, assert_cost_limit_is_mea
 from felix.manifests.loader import parse_manifest
 from felix.patterns.model import record_usage, wire_model_id
 from felix.usage.pricing import estimate_cost
-from felix_ai.catalog import is_priced
+from felix_ai.catalog import entry_for, is_priced
 from felix_ai.types import ChatMessage, ModelChatResult, ModelRoute, TokenUsage
 
 
@@ -55,7 +55,8 @@ def test_free_is_a_property_of_the_provider_not_the_model_name() -> None:
     from felix_ai.providers import builtin_provider_specs
 
     assert not is_priced("llama3.2")
-    assert not is_priced("@cf/meta/llama-3.3-70b-instruct-fp8-fast")
+    # The hosted one carries Cloudflare's own rate under an `@cf/` key, not a zero.
+    assert entry_for("@cf/meta/llama-3.3-70b-instruct-fp8-fast").pricing.input > 0
     by_name = {s.name: s for s in builtin_provider_specs()}
     assert by_name["ollama"].bills_per_token is False
     assert by_name["workers_ai"].bills_per_token is True
@@ -171,6 +172,13 @@ def test_a_manifest_price_override_makes_an_unknown_model_cappable() -> None:
         _manifest("mystery", limits={"max_cost_usd": 5.0}, price={"input": 1.0, "output": 2.0}),
         settings,
     )
+
+
+@pytest.mark.parametrize("route", ["kimi-k2-cf", "gpt-oss-120b-cf", "gpt-oss-20b-cf", "glm-flash-cf"])
+def test_a_declared_cost_cap_compiles_on_a_workers_ai_default_route(route: str) -> None:
+    """The built-in routes, with no FELIX_MODEL_ROUTES at all: `contributor` declares
+    `max_cost_usd: 20`, and while Workers AI shipped unpriced it could not run there."""
+    assert_cost_limit_is_measurable(_manifest(route, limits={"max_cost_usd": 20.0}), _settings())
 
 
 def test_an_undeclared_cap_is_not_refused() -> None:

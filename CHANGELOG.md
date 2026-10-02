@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Workers AI is priced, with four built-in routes.** `kimi-k2-cf` (Kimi K2.6, 262K window,
+  vision), `gpt-oss-120b-cf`, `gpt-oss-20b-cf` and `glm-flash-cf` resolve with one `workers_ai`
+  entry in `FELIX_MODEL_PROVIDER_OPTIONS`, and every one supports tool calling. The catalog now
+  carries Cloudflare's published per-token rates for these and three more `@cf/` models, so
+  `limits.max_cost_usd` holds on Workers AI. A manifest declaring it, `contributor` among them,
+  used to be refused at compile there, because Workers AI shipped unpriced on the reading that
+  neurons have no token rate. `.env.example` shows how to run every manifest that names no
+  model, plus the Ollama ids and the memory embedder, on Workers AI.
+
 - **`felix login`.** Logs in to a Felix server with GitHub: prints a code to enter on github.com
   (from any device, so it works over SSH), waits for the approval, and writes the token to
   stdout, or with `--save` to `~/.config/felix/token`. `--tenant` picks one when the person's orgs
