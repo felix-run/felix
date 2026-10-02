@@ -1,12 +1,14 @@
 """GitHub login: start a device flow, then trade the approved device code for a Felix token.
 
 Both routes are unauthenticated — they are how a caller gets a credential — and are public
-only while `FELIX_GITHUB_CLIENT_ID` is set (`felix.auth.middleware._is_public_path`). With
-login off they answer 404, and under `jwt`/`api_key` the middleware 401s them first.
+only while `FELIX_GITHUB_CLIENT_ID` is set (`felix.auth.github.public_login_paths`, exactly
+these two paths). With login off they answer 404, and under `jwt`/`api_key` the middleware
+401s them first.
 
 Starting a flow spends from the OAuth app's own GitHub quota, so `/device` has a per-client
-bucket of its own (`FELIX_GITHUB_DEVICE_STARTS_PER_HOUR`) on top of the global limit; `/token`
-is polled every few seconds by design and stays under the global limit only.
+hourly bucket (`FELIX_GITHUB_DEVICE_STARTS_PER_HOUR`) in a limiter store of its own, on top of
+the global limit; `/token` is polled every few seconds by design and stays under the global
+limit only.
 
 A `device_code` is a bearer secret until it is redeemed: it is never logged or audited here.
 """
@@ -25,6 +27,7 @@ from felix.auth.github import (
     is_enabled,
     start_device_flow,
 )
+from felix.config import Settings
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger("felix_api.auth_github")
@@ -70,11 +73,11 @@ class LoginErrorOut(BaseModel):
 
 
 _ERRORS: dict[int | str, dict[str, Any]] = {
-    status: {"model": LoginErrorOut} for status in (400, 403, 409, 428, 502, 503)
+    status: {"model": LoginErrorOut} for status in (400, 403, 409, 428, 429, 502, 503)
 }
 
 
-def _settings_if_enabled(request: Request) -> Any:
+def _settings_if_enabled(request: Request) -> Settings:
     settings = request.app.state.settings
     if not is_enabled(settings):
         raise HTTPException(status_code=404, detail="not_found")
@@ -92,35 +95,30 @@ def _refusal(exc: GitHubLoginError) -> JSONResponse:
     return JSONResponse(body.model_dump(exclude_none=True), status_code=exc.status, headers=headers)
 
 
-@router.post("/device", response_model=DeviceStart, responses={429: {}, **_ERRORS})
+@router.post("/device", response_model=DeviceStart, responses=_ERRORS)
 async def start_github_login(request: Request) -> Any:
     from felix.security.rate_limit import client_key
 
     settings = _settings_if_enabled(request)
-    limiter = request.app.state.rate_limit_config.backend
-    allowed = await limiter.hit(
+    allowed = await request.app.state.github_device_limiter.hit(
         f"github-device:{client_key(request, settings)}",
         limit=settings.github_device_starts_per_hour,
         window_seconds=DEVICE_START_WINDOW_S,
     )
     if not allowed:
-        return JSONResponse(
-            {"error": "rate_limited"},
-            status_code=429,
-            headers={"retry-after": str(DEVICE_START_WINDOW_S)},
+        return _refusal(
+            GitHubLoginError(
+                LoginErrorCode.RATE_LIMITED,
+                "too many logins started from this address; try again later",
+                interval=DEVICE_START_WINDOW_S,
+            )
         )
     try:
         code = await start_device_flow(settings)
     except GitHubLoginError as exc:
         logger.warning("github device flow start failed: %s", exc.code)
         return _refusal(exc)
-    return DeviceStart(
-        device_code=code.device_code,
-        user_code=code.user_code,
-        verification_uri=code.verification_uri,
-        expires_in=code.expires_in,
-        interval=code.interval,
-    )
+    return DeviceStart.model_validate(code, from_attributes=True)
 
 
 @router.post("/token", response_model=LoginTokenOut, responses=_ERRORS)

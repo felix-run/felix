@@ -102,6 +102,7 @@ class LoginErrorCode(StrEnum):
     TENANT_NOT_GRANTED = "tenant_not_granted"
     GITHUB_UNAVAILABLE = "github_unavailable"
     GITHUB_CONFIG_ERROR = "github_config_error"
+    RATE_LIMITED = "rate_limited"
 
 
 # The one code -> HTTP status table. `authorization_pending`/`slow_down` are not failures —
@@ -119,6 +120,7 @@ LOGIN_ERROR_STATUS: dict[LoginErrorCode, int] = {
     LoginErrorCode.GITHUB_UNAVAILABLE: 502,
     # The operator's to fix in the OAuth app (wrong client id, device flow disabled).
     LoginErrorCode.GITHUB_CONFIG_ERROR: 503,
+    LoginErrorCode.RATE_LIMITED: 429,
 }
 
 # GitHub's device-flow token errors that mean something to the caller. Anything else is
@@ -150,12 +152,36 @@ class GitHubLoginError(Exception):
         self.tenants = tenants
 
 
-def _unavailable(message: str) -> GitHubLoginError:
-    return GitHubLoginError(LoginErrorCode.GITHUB_UNAVAILABLE, message)
+# The callers of these are anonymous, so what went wrong upstream — an egress proxy's name, a
+# DNS error, GitHub's description of the OAuth app's settings — goes to the log, and the answer
+# says only whose problem it is.
+UNAVAILABLE_MESSAGE = "GitHub could not be reached or answered unexpectedly; try again shortly"
+CONFIG_ERROR_MESSAGE = "GitHub login is misconfigured on this server; the cause is in its log"
+
+
+def _unavailable(detail: str) -> GitHubLoginError:
+    logger.warning("github login: %s", detail)
+    return GitHubLoginError(LoginErrorCode.GITHUB_UNAVAILABLE, UNAVAILABLE_MESSAGE)
+
+
+def _config_error(body: dict[str, Any]) -> GitHubLoginError:
+    logger.error("github login: GitHub refused the OAuth app: %s", _github_error_text(body))
+    return GitHubLoginError(LoginErrorCode.GITHUB_CONFIG_ERROR, CONFIG_ERROR_MESSAGE)
+
+
+# Mounted here, and public only at these two paths while login is configured: an exact set
+# rather than the prefix, so a plugin router that happens to mount under it stays behind auth.
+GITHUB_LOGIN_PREFIX = "/auth/github"
+GITHUB_LOGIN_PATHS = frozenset({f"{GITHUB_LOGIN_PREFIX}/device", f"{GITHUB_LOGIN_PREFIX}/token"})
 
 
 def is_enabled(settings: Settings) -> bool:
     return bool(settings.github_client_id.strip())
+
+
+def public_login_paths(settings: Settings) -> frozenset[str]:
+    """The paths that need no credential because they are how a caller gets one."""
+    return GITHUB_LOGIN_PATHS if is_enabled(settings) else frozenset()
 
 
 @lru_cache(maxsize=4)
@@ -252,7 +278,7 @@ async def start_device_flow(settings: Settings, *, client: httpx.AsyncClient | N
     if "error" in body:
         # `device_flow_disabled` and `unauthorized_client` are the operator's to fix, in
         # the OAuth app's settings; the caller can do nothing about them.
-        raise GitHubLoginError(LoginErrorCode.GITHUB_CONFIG_ERROR, _github_error_text(body))
+        raise _config_error(body)
     try:
         return DeviceCode(
             device_code=str(body["device_code"]),
@@ -287,9 +313,12 @@ async def poll_device_flow(
             },
         )
     if "error" in body:
+        code = _GITHUB_POLL_ERRORS.get(str(body["error"]))
+        if code is None:
+            raise _config_error(body)
         interval = body.get("interval")
         raise GitHubLoginError(
-            _GITHUB_POLL_ERRORS.get(str(body["error"]), LoginErrorCode.GITHUB_CONFIG_ERROR),
+            code,
             _github_error_text(body),
             interval=interval if isinstance(interval, int) and not isinstance(interval, bool) else None,
         )
@@ -398,7 +427,10 @@ def choose_grant(grants: list[OrgGrant], restricted: list[str], tenant: str | No
     if len(by_tenant) > 1:
         raise GitHubLoginError(
             LoginErrorCode.TENANT_AMBIGUOUS,
-            "membership grants more than one tenant; pass `tenant`",
+            # GitHub has already exchanged this device code, and it is single-use: the
+            # caller's only way forward is a new flow that names its tenant up front.
+            "membership grants more than one tenant; this login is spent, so start a new one "
+            "passing `tenant`",
             tenants=tuple(sorted(by_tenant)),
         )
     return next(iter(by_tenant.values()))
