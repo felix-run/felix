@@ -321,6 +321,17 @@ recorded in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 | Liveness / readiness | `GET /live` (also `/health`), `GET /ready` |
 | Metrics | `GET /metrics` — **authenticated**, see below |
 
+**Browsers on another origin cannot call Felix directly, by design.** There is no CORS layer.
+A preflight `OPTIONS` gets a 401 (or a 405 under `auth_mode=none`) with no
+`Access-Control-Allow-*` headers, so the browser blocks the request before it is sent. A plain
+`GET` does reach Felix, but the page is not allowed to read the answer. Felix has no browser
+login of its own (no cookies), so a page could only call it by holding a bearer token or API key,
+where any script on that page can read it. Put a server-side proxy on the page's own origin in
+front of Felix instead: it holds the credential and forwards `/api/*` to the API.
+felix-web's chat UI does this from a Worker (`FELIX_ORIGIN`, with an optional `x-chat-key` gate
+for its own clients), and any reverse proxy that adds the `Authorization` header works the same
+way. Non-browser clients — the CLI, `felix-client`, curl, other services — are unaffected.
+
 A dropped stream is recoverable: structural SSE frames carry an `id:` cursor (token-level frames do not, which per the SSE spec leaves the client's `lastEventId` on the last one it saw), and `GET /chat/stream/{thread_id}` replays what was missed (or opens with a `snapshot` frame) and then tails the thread. The run itself is still torn down on disconnect, so what you get back is the thread, not the abandoned turn.
 
 Management surfaces: `/audit`, `/approvals`, `/plans`, `/jobs`, `/manifests`, `/eval`, `/usage`, `/memory`. `POST /jobs/{name}/run` runs a job now instead of waiting for cron; `GET /manifests/{name}/versions` lists what a rollback can go back to. `/memory` lists, searches (the same hybrid ranking the agent sees), time-travels (`/memory/as-of/{turn_seq}`), writes and forgets long-term memories — an agent that remembers across sessions otherwise accumulates a store nobody can inspect.
