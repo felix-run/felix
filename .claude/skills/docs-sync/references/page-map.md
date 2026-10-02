@@ -17,7 +17,7 @@ together — `scripts/validate-toolkit.py` fails when a route module is missing 
 | `patterns/{react,registry,types}.py` | `$DOCS/internals/patterns.mdx` |
 | `patterns/model*.py` (client, registry, composites), `decisions.py`, `packages/ai/**` | `$DOCS/internals/model-client.mdx` |
 | `plugins.py`, `apps/api/.../composition.py` | `$DOCS/internals/plugins.mdx` |
-| `auth/*`, `manifests/inbound_auth.py` | `$DOCS/internals/auth.mdx` |
+| `auth/*`, `manifests/inbound_auth.py`, `apps/api/.../routes/auth_github.py` | `$DOCS/internals/auth.mdx` |
 | `governance/*`, `security/*`, `manifests/governance.py` | `$DOCS/internals/governance.mdx` |
 | `db/*`, `session/store.py`, `migrations/versions/*` | `$DOCS/internals/persistence.mdx` |
 | `observability/*`, `audit/*`, `usage/*` | `$DOCS/internals/observability.mdx` |
