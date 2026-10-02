@@ -9,16 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`felix login`.** Logs in to a Felix server with GitHub: prints a code to enter on github.com
+  (from any device, so it works over SSH), waits for the approval, and writes the token to
+  stdout, or with `--save` to `~/.config/felix/token`. `--tenant` picks one when the person's orgs
+  map to several; without it that case exits 2 and names them. Plain `http://` is refused except
+  to loopback unless `--insecure` is given, since the token comes back over that connection. The
+  same flow is `felix_client.github_device_login` (honouring `interval` and `slow_down`, bounded
+  to 1–60 s and a 30-minute deadline), with `save_token`/`load_token` for the file: versioned,
+  one token per server, written to a fresh 0600 file and renamed into place, and trusted only
+  when it and its directory are this user's alone. A saved token is only handed back for the
+  server that minted it, and only while unexpired. `FelixClient.from_login(base_url)` and
+  `clients/cli.py` use it when no explicit token is given.
+
 - **GitHub login routes.** `POST /auth/github/device` starts a device flow (`user_code`,
   `verification_uri`, `device_code`, `interval`) and `POST /auth/github/token` trades the
   approved `device_code` (plus `tenant` when membership grants several) for a Felix bearer
   token. Refusals are `{error, message, interval?, tenants?}` with `error` from the closed
-  `LoginErrorCode` set; an unapproved poll is 428 with `Retry-After`. Both are public only while
-  `FELIX_GITHUB_CLIENT_ID` is set, and otherwise sit behind auth like any path (404 under
-  `auth_mode=none`). Starting a flow has its own per-client bucket,
-  `FELIX_GITHUB_DEVICE_STARTS_PER_HOUR` (default 10), because each start spends the OAuth app's
-  GitHub quota. Every mint is audited in its tenant as `github_login`; a device code is never
-  logged or audited.
+  `LoginErrorCode` set; an unapproved poll is 428 with `Retry-After`. Device codes are
+  single-use, so a 409 `tenant_ambiguous` ends that flow: start a new one passing `tenant`.
+  Exactly these two paths are public, and only while `FELIX_GITHUB_CLIENT_ID` is set; otherwise
+  they sit behind auth like any path (404 under `auth_mode=none`). Starting a flow has its own
+  per-client hourly bucket, `FELIX_GITHUB_DEVICE_STARTS_PER_HOUR` (default 10, answered as 429
+  `rate_limited`), in a limiter store of its own, because each start spends the OAuth app's
+  GitHub quota. Upstream and OAuth-app failures answer with a fixed message and log the cause.
+  Every mint is audited in its tenant as `github_login`; a device code is never logged or
+  audited.
 
 - **GitHub login, server side.** `felix.auth.github` runs GitHub's OAuth device flow, checks
   which configured org the user is an *active* member of (a pending invitation does not count),

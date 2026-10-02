@@ -10,6 +10,7 @@ from typing import Any
 
 from fastapi import FastAPI
 from felix import __version__ as harness_version
+from felix.auth.github import GITHUB_LOGIN_PREFIX
 from felix.auth.middleware import AuthMiddleware
 from felix.config import Settings, get_settings
 from felix.idempotency import build_idempotency_store
@@ -19,6 +20,7 @@ from felix.logging_setup import (
 from felix.plugins import get_registry
 from felix.security.rate_limit import (
     build_rate_limit_config,
+    build_rate_limiter_backend,
 )
 from felix.tools.provider import ToolProvider
 from starlette.responses import Response
@@ -201,9 +203,9 @@ def create_app(
     app.state.settings = cfg
     app.state.tools = tool_provider
     app.state.plugins = plugin_list
-    # Routes with a bucket of their own (GitHub device-flow starts) spend from the same
-    # backend the middleware does, so the limit holds across replicas when Redis is set.
-    app.state.rate_limit_config = rate_config
+    # GitHub device-flow starts have an hourly bucket, so a store of their own: sharing the
+    # middleware's 60 s store let its eviction drop the hourly key (`build_rate_limiter_backend`).
+    app.state.github_device_limiter = build_rate_limiter_backend(cfg)
     # Per app, not per process: two apps in one process (tests) must not share claims.
     app.state.idempotency_store = build_idempotency_store(cfg)
 
@@ -309,7 +311,7 @@ def create_app(
     app.include_router(a2a.router, prefix="/a2a")
     app.include_router(mcp.router, prefix="/mcp")
     app.include_router(well_known.router)
-    app.include_router(auth_github.router, prefix="/auth/github")
+    app.include_router(auth_github.router, prefix=GITHUB_LOGIN_PREFIX)
 
     for plugin in plugin_list:
         routes_fn = getattr(plugin, "routes", None)

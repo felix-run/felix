@@ -7,6 +7,7 @@ import json
 import time
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -34,6 +35,17 @@ class FelixClient:
     _thread_id: str | None = None
     _manifest: str = "quick"
     _listeners: list[Callable[[dict[str, Any]], Any]] = field(default_factory=list)
+
+    @classmethod
+    def from_login(
+        cls, base_url: str, *, api_key: str | None = None, token_file: Path | None = None, **kwargs: Any
+    ) -> FelixClient:
+        """A client for `base_url` carrying `api_key`, or else the token `felix login --save` kept
+        for that server (`login.bearer_for`). No tenant header is set from the saved login: a
+        GitHub login's tenant is in its token."""
+        from felix_client.login import bearer_for
+
+        return cls(base_url=base_url, api_key=bearer_for(base_url, api_key, token_file), **kwargs)
 
     def _headers(self) -> dict[str, str]:
         headers = {"content-type": "application/json"}

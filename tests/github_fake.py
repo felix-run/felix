@@ -34,6 +34,10 @@ class FakeGitHub:
     org_ids: dict[str, int] = field(default_factory=lambda: dict(ORG_IDS))
     device_code_body: dict[str, Any] | None = None
     requests: list[httpx.Request] = field(default_factory=list)
+    # Device codes are issued `dev-1`, `dev-2`, … and are single-use, as GitHub's are: once a
+    # poll has returned a token for one, every later poll for it is `incorrect_device_code`.
+    issued: int = 0
+    redeemed: set[str] = field(default_factory=set)
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
@@ -41,10 +45,11 @@ class FakeGitHub:
         if request.url.host == "github.com" and path == "/login/device/code":
             if self.device_code_body is not None:
                 return httpx.Response(200, json=self.device_code_body)
+            self.issued += 1
             return httpx.Response(
                 200,
                 json={
-                    "device_code": "dev-1",
+                    "device_code": f"dev-{self.issued}",
                     "user_code": "ABCD-1234",
                     "verification_uri": "https://github.com/login/device",
                     "expires_in": 900,
@@ -52,7 +57,16 @@ class FakeGitHub:
                 },
             )
         if request.url.host == "github.com" and path == "/login/oauth/access_token":
-            return httpx.Response(200, json=self.polls.pop(0))
+            device_code = dict(httpx.QueryParams(request.content.decode()))["device_code"]
+            if device_code in self.redeemed:
+                return httpx.Response(200, json={"error": "incorrect_device_code"})
+            if not self.polls:
+                # Not an assert: raised inside a route it would surface as a bare 500.
+                return httpx.Response(200, json={"error": "fake_github_ran_out_of_polls"})
+            answer = self.polls.pop(0)
+            if "access_token" in answer:
+                self.redeemed.add(device_code)
+            return httpx.Response(200, json=answer)
         assert request.url.host == "api.github.com", request.url
         assert request.headers["authorization"] == "Bearer gho_x"
         if self.api_status != 200:

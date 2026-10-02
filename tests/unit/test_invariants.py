@@ -1307,6 +1307,7 @@ def test_outbound_clients_go_through_the_egress_guard() -> None:
         "auth/jwt.py": "JWKS URL comes from FELIX_JWT_VERIFIERS, never from a token claim",
         "memory/embedder.py": "embedding base_url is operator config",
         "felix_client/client.py": "client library — dials the caller's own base_url",
+        "felix_client/login.py": "client library — dials the caller's own base_url; cannot import felix",
         "security/egress.py": "this is the guarded client",
         # The model layer may not import the harness — that is what makes Felix
         # model-agnostic — so it cannot reach `safe_async_client`. Safe because a provider

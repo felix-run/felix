@@ -1,4 +1,4 @@
-"""Felix CLI — migrate, eval, mint-jwt, bundle-manifests, version."""
+"""Felix CLI — migrate, eval, mint-jwt, login, bundle-manifests, version."""
 
 from __future__ import annotations
 
@@ -245,6 +245,65 @@ def mint_jwt(
     # newlines through the middle and every request with it was rejected as invalid_token.
     # The token is the entire output of this command and exists to be piped.
     typer.echo(token)
+
+
+@app.command("login")
+def login(
+    url: str = typer.Option("http://localhost:8080", "--url", help="The Felix server to log in to."),
+    tenant: str | None = typer.Option(
+        None, "--tenant", "-t", help="Required when your GitHub orgs map to more than one tenant."
+    ),
+    save: bool = typer.Option(
+        False, "--save", help="Keep the token in ~/.config/felix/token (0600) instead of printing it."
+    ),
+    insecure: bool = typer.Option(
+        False,
+        "--insecure",
+        help="Allow plain http:// to a non-loopback server (the token crosses in cleartext).",
+    ),
+) -> None:
+    """Log in to a Felix server with GitHub and print (or --save) a bearer token.
+
+    Shows a code to enter on github.com — from any device, so this works over SSH — and waits
+    for the approval. Needs the server to have FELIX_GITHUB_CLIENT_ID set.
+    """
+    import asyncio
+    from urllib.parse import urlsplit
+
+    from felix_client.login import DeviceCode, LoginError, TokenFileError, github_device_login, save_token
+
+    def show(code: DeviceCode) -> None:
+        # stderr, so `TOKEN=$(felix login)` captures the token and nothing else. The server
+        # relays GitHub's URL; one pointing elsewhere is the server's word against GitHub's.
+        if urlsplit(code.verification_uri).hostname != "github.com":
+            typer.echo(f"warning: {url} sent a verification URL that is not on github.com", err=True)
+        typer.echo(f"Open {code.verification_uri} and enter {code.user_code}", err=True)
+        typer.echo(f"Waiting for approval (the code expires in {code.expires_in // 60} min)…", err=True)
+
+    try:
+        token = asyncio.run(github_device_login(url, tenant=tenant, on_code=show, allow_insecure=insecure))
+    except LoginError as exc:
+        if exc.code == "tenant_ambiguous":
+            typer.echo(
+                f"Your GitHub orgs map to more than one tenant ({', '.join(exc.tenants)}). "
+                "Run again with --tenant <one of them>.",
+                err=True,
+            )
+            raise typer.Exit(2) from exc
+        typer.echo(f"login failed ({exc.code}): {exc}", err=True)
+        raise typer.Exit(1) from exc
+
+    if save:
+        try:
+            path = save_token(token)
+        except TokenFileError as exc:
+            typer.echo(f"not saved: {exc}", err=True)
+            raise typer.Exit(1) from exc
+        typer.echo(f"Logged in to tenant {token.tenant}; token saved to {path}.", err=True)
+        return
+    typer.echo(f"Logged in to tenant {token.tenant}.", err=True)
+    # The token is the whole of stdout, unwrapped, for the same reason as `mint-jwt`.
+    typer.echo(token.access_token)
 
 
 @app.command("bundle-manifests")
