@@ -17,6 +17,7 @@ A `device_code` is a bearer secret until it is redeemed: it is never logged or a
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request
@@ -36,6 +37,8 @@ logger = logging.getLogger("felix_api.auth_github")
 router = APIRouter(tags=["Auth"])
 
 DEVICE_START_WINDOW_S = 3600
+# One IPv6 subscriber is routinely handed a /64; keyed per address they would be 2**64 clients.
+DEVICE_START_IPV6_PREFIX = 64
 
 
 class DeviceStart(BaseModel):
@@ -100,6 +103,21 @@ def _start_refused(message: str) -> JSONResponse:
     return _refusal(GitHubLoginError(LoginErrorCode.RATE_LIMITED, message, interval=DEVICE_START_WINDOW_S))
 
 
+def _warn_cap_reached(request: Request, settings: Settings) -> None:
+    """Once per window, not per refusal: under the attack the cap exists for, every refused start
+    would otherwise be a WARNING line, and the attacker chooses how many there are."""
+    now = time.monotonic()
+    last = getattr(request.app.state, "github_device_cap_warned_at", None)
+    if last is not None and now - last < DEVICE_START_WINDOW_S:
+        return
+    request.app.state.github_device_cap_warned_at = now
+    logger.warning(
+        "github device-flow starts hit the deployment cap (%d/h); every new login is refused until "
+        "the window turns. Many clients are starting flows, or the cap is too low",
+        settings.github_device_starts_per_hour_total,
+    )
+
+
 @router.post("/device", response_model=DeviceStart, responses=_ERRORS)
 async def start_github_login(request: Request) -> Any:
     from felix.security.rate_limit import client_key
@@ -108,7 +126,7 @@ async def start_github_login(request: Request) -> Any:
     limiter = request.app.state.github_device_limiter
     # Per client first, so a start refused there never spends from the deployment's total.
     if not await limiter.hit(
-        f"github-device:{client_key(request, settings, ipv6_prefix=64)}",
+        f"github-device:{client_key(request, settings, ipv6_prefix=DEVICE_START_IPV6_PREFIX)}",
         limit=settings.github_device_starts_per_hour,
         window_seconds=DEVICE_START_WINDOW_S,
     ):
@@ -118,11 +136,7 @@ async def start_github_login(request: Request) -> Any:
         limit=settings.github_device_starts_per_hour_total,
         window_seconds=DEVICE_START_WINDOW_S,
     ):
-        logger.warning(
-            "github device-flow starts hit the deployment cap (%d/h); logins are refused until "
-            "the window turns. Many clients are starting flows, or the cap is too low",
-            settings.github_device_starts_per_hour_total,
-        )
+        _warn_cap_reached(request, settings)
         return _start_refused("too many logins are being started on this server; try again later")
     try:
         code = await start_device_flow(settings)
