@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`felix ingest-docs`: sync a docs site into the document corpus.** It turns a directory of
+  Markdown/MDX pages into one document per page, each sourced at the page's public URL
+  (`--site-url`). A `search_docs` hit can then be read in full with `fetch_docs`, which is how
+  the `support` agent is wired. The command is safe to repeat, since a page sent again replaces
+  itself. `--prune` removes documents under the site URL that no page produced any more, and
+  never touches anything outside it. Prune deletes, so it is fenced:
+  - `--site-url` must be an http(s) URL with a host, so `https://$UNSET` cannot widen the prefix
+    to every URL;
+  - it is skipped when any page failed, or when the listing is too full to see the whole corpus;
+  - it deletes nothing when more than `--max-prune` documents (default 10) would go.
+
+  `--dry-run` lists what would change. Code fences are matched as CommonMark does, `.md` pages
+  keep lines MDX would read as code, paths are slugified as Starlight routes them (a frontmatter
+  `slug:` wins), and two files that land on one page are reported rather than overwriting each
+  other. The same calls are
+  on `FelixClient` (`ingest_document`, `list_documents`, `delete_document`), with
+  `felix_client.docs_sync` for the sync itself.
+
 - **`felix login --github-actions` and `felix_client.github_actions_login`.** A GitHub Actions job
   with `id-token: write` can log in without a stored secret and without hand-written HTTP. The
   client asks the runner for the job's OIDC token and trades it at `POST /auth/github/actions`.

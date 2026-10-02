@@ -9,6 +9,7 @@ from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -608,6 +609,50 @@ class FelixClient:
                     "cancelled": cancelled,
                     "note": note,
                 },
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+    # --- the document corpus (`documents:read` / `documents:write`) ----------------------
+
+    async def ingest_document(
+        self,
+        title: str,
+        text: str,
+        *,
+        source: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Ingest or replace one document; `{doc_id, chunks}`.
+
+        Idempotent on `(source, title)`: sending the same pair again replaces the document
+        rather than adding a second copy, which is what makes a re-sync safe to repeat.
+        """
+        body: dict[str, Any] = {"title": title, "text": text, "source": source}
+        if metadata:
+            body["metadata"] = metadata
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.post(
+                f"{self.base_url.rstrip('/')}/documents", headers=self._headers(), json=body
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+    async def list_documents(self, *, limit: int = 100) -> dict[str, Any]:
+        """The corpus, newest first: `{items: [{doc_id, title, source, chunks, created_at}], count}`.
+        At most 500 per call, and there is no cursor."""
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.get(
+                f"{self.base_url.rstrip('/')}/documents", headers=self._headers(), params={"limit": limit}
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+    async def delete_document(self, doc_id: str) -> dict[str, Any]:
+        """Remove a document and every chunk of it."""
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.delete(
+                f"{self.base_url.rstrip('/')}/documents/{quote(doc_id, safe='')}", headers=self._headers()
             )
             resp.raise_for_status()
             return resp.json()
