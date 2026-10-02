@@ -20,6 +20,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`felix login`.** Logs in to a Felix server with GitHub: prints a code to enter on github.com
+  (from any device, so it works over SSH), waits for the approval, and writes the token to
+  stdout, or with `--save` to `~/.config/felix/token` (created 0600). `--tenant` picks one when
+  the person's orgs map to several; without it that case exits 2 and names them. The same flow is
+  `felix_client.github_device_login` (honouring `interval` and `slow_down`), with
+  `save_token`/`load_token` for the file. `load_token` returns a token only for the server that
+  minted it, and only while unexpired. `clients/cli.py` uses a saved token when `--token` is not
+  given.
+
 - **GitHub login routes.** `POST /auth/github/device` starts a device flow (`user_code`,
   `verification_uri`, `device_code`, `interval`) and `POST /auth/github/token` trades the
   approved `device_code` (plus `tenant` when membership grants several) for a Felix bearer
