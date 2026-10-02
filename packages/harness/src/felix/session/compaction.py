@@ -486,6 +486,74 @@ def meter_summarizer(result: Any, model: Any, *, kind: str, reason: str) -> dict
         return {}
 
 
+@dataclass(slots=True)
+class _RenderRequest:
+    """One `render()` call's inputs, read once from either options shape."""
+
+    system_prompt: str
+    model: Any
+    incoming: list[ChatMessage]
+    force: bool = False
+    instructions: str | None = None
+    reason: str = "threshold"
+    will_retry: bool = False
+
+    @classmethod
+    def read(cls, opts: SessionRenderOpts | dict[str, Any], incoming: list[ChatMessage]) -> _RenderRequest:
+        if isinstance(opts, dict):
+            return cls(
+                system_prompt=str(opts.get("system_prompt") or ""),
+                model=opts.get("model"),
+                incoming=incoming,
+                force=bool(opts.get("force_compact")),
+                instructions=opts.get("compact_instructions"),
+                reason=str(opts.get("compact_reason") or "threshold"),
+                will_retry=bool(opts.get("will_retry")),
+            )
+        return cls(system_prompt=opts.system_prompt, model=opts.model, incoming=incoming)
+
+
+@dataclass(slots=True)
+class _LatestSummary:
+    """The newest summary on the active branch, and what its metadata says about the log."""
+
+    event: SessionEvent | None = None
+    covered: int = -1
+    first_kept_id: str | None = None
+    tail: list[dict[str, Any]] | None = None
+
+    @classmethod
+    def of(cls, event: SessionEvent | None) -> _LatestSummary:
+        latest = cls(event=event)
+        if event and event.metadata:
+            md = event.metadata
+            latest.covered = int(md.get("covers_to_seq") or md.get("first_kept_seq", -1) or -1)
+            latest.first_kept_id = md.get("first_kept_entry_id")
+            raw_tail = md.get("retainedTail")
+            if isinstance(raw_tail, list):
+                latest.tail = raw_tail
+        return latest
+
+    @property
+    def content(self) -> str | None:
+        return self.event.content if self.event else None
+
+    def message(self) -> ChatMessage | None:
+        return summary_message(self.content) if self.content else None
+
+    def rewalk_events(self, branch: list[SessionEvent]) -> list[SessionEvent]:
+        """The branch's context events past what the summary covers: what a re-walk renders."""
+        raw = [e for e in branch if include_in_llm_context(e) and e.seq > self.covered]
+        if self.first_kept_id and self.tail is None:
+            kept_from = next(
+                (e for e in raw if (e.metadata or {}).get("event_id") == self.first_kept_id),
+                None,
+            )
+            if kept_from is not None:
+                raw = [e for e in raw if e.seq >= kept_from.seq]
+        return raw
+
+
 class CompactingSessionStrategy:
     """Auto-compact when context exceeds ``context_window - reserve_tokens``."""
 
@@ -564,281 +632,359 @@ class CompactingSessionStrategy:
         incoming: list[ChatMessage],
         opts: SessionRenderOpts | dict[str, Any],
     ) -> list[ChatMessage]:
-        if isinstance(opts, dict):
-            system_prompt = str(opts.get("system_prompt") or "")
-            model = opts.get("model")
-            force = bool(opts.get("force_compact"))
-            instructions = opts.get("compact_instructions")
-            reason = str(opts.get("compact_reason") or "threshold")
-            will_retry = bool(opts.get("will_retry"))
-        else:
-            system_prompt = opts.system_prompt
-            model = opts.model
-            force = False
-            instructions = None
-            reason = "threshold"
-            will_retry = False
-
-        all_events = await session.get_events()
-        summaries = [
-            e
-            for e in all_events
-            if (
-                e.kind == "compaction"
-                or (
-                    e.kind == "audit"
-                    and (e.metadata or {}).get("type") in {COMPACTION_METADATA_TYPE, SUMMARY_METADATA_TYPE}
-                )
-            )
-        ]
-        summaries.sort(key=lambda e: e.seq, reverse=True)
-        from felix.session.tree import active_branch_events, get_event_id
-
-        branch = active_branch_events(all_events, session_id=getattr(session, "id", ""))
-        # The newest summary *of this branch*: after a rewind the newest in the log can describe
-        # turns the branch no longer has, and replaying its summary and kept turns resurrects them.
-        branch_seqs = {e.seq for e in branch}
-        branch_ids = {i for i in (get_event_id(e) for e in branch) if i}
-        summaries = [e for e in summaries if _summary_on_branch(e, branch_seqs, branch_ids)]
-        covered = -1
-        first_kept_id: str | None = None
-        retained_tail: list[dict[str, Any]] | None = None
-        latest_summary = summaries[0] if summaries else None
-        if latest_summary and latest_summary.metadata:
-            covered = int(
-                latest_summary.metadata.get("covers_to_seq")
-                or latest_summary.metadata.get("first_kept_seq", -1)
-                or -1
-            )
-            first_kept_id = latest_summary.metadata.get("first_kept_entry_id")
-            raw_tail = latest_summary.metadata.get("retainedTail")
-            if isinstance(raw_tail, list):
-                retained_tail = raw_tail
-
-        # retainedTail checkpoint: rebuild from summary + materialized tail + post-compaction.
-        if retained_tail is not None and latest_summary is not None:
-            post = [e for e in branch if e.seq > latest_summary.seq]
-            out = [ChatMessage(role="system", content=system_prompt)]
-            # Empty when a split compaction had nothing before the cut turn to summarise.
-            if latest_summary.content:
-                out.append(summary_message(latest_summary.content))
-            for item in retained_tail:
-                if isinstance(item, dict):
-                    # The same conversion history uses. Checkpoints written before `metadata`
-                    # was recorded still carry `tool_calls`, which is the part a provider needs.
-                    out.append(
-                        chat_message_from_parts(
-                            role=item.get("role"),
-                            content=item.get("content"),
-                            tool_call_id=item.get("tool_call_id"),
-                            name=item.get("name"),
-                            tool_calls=item.get("tool_calls"),
-                            metadata=item.get("metadata"),
-                        )
-                    )
-            out.extend(event_to_chat_message(e) for e in post if include_in_llm_context(e))
-            out.extend(incoming)
-            # Still may need another compaction if over budget — fall through only if force.
-            if not force:
-                hist_tokens = estimate_messages_tokens(out) + estimate_messages_tokens(incoming)
-                if hist_tokens <= max(0, self.context_window_tokens - self.reserve_tokens):
-                    return out
-                # Over budget with retainedTail: fall through to the re-walk below.
+        request = _RenderRequest.read(opts, incoming)
+        branch, latest = await _load_branch(session)
+        replayed = self._replay(request, latest, branch)
+        if replayed is not None:
+            return replayed
 
         # A split checkpoint's lead -- the cut turn's opening message and progress summary --
         # lives in its tail and nowhere in the log past `covered`, so the re-walk carries it.
-        carried = _stored_lead(latest_summary, retained_tail)
+        carried = _stored_lead(latest.event, latest.tail)
         lead_msgs = carried.messages() if carried else []
-
-        raw = [e for e in branch if include_in_llm_context(e) and e.seq > covered]
-        if first_kept_id and retained_tail is None:
-            kept_from = next(
-                (e for e in raw if (e.metadata or {}).get("event_id") == first_kept_id),
-                None,
-            )
-            if kept_from is not None:
-                raw = [e for e in raw if e.seq >= kept_from.seq]
-
+        raw = latest.rewalk_events(branch)
         pinned = [e for e in raw if is_pinned(e)]
         compactable = [e for e in raw if not is_pinned(e)]
+        summary_msg = latest.message()
+        uncut = [*pinned, *compactable]
 
-        summary_msg: ChatMessage | None = None
-        if latest_summary and latest_summary.content:
-            summary_msg = summary_message(latest_summary.content)
-
-        history_msgs = [event_to_chat_message(e) for e in compactable]
-        context_tokens = (
-            estimate_tokens(system_prompt)
-            + (estimate_tokens(summary_msg.content) if summary_msg else 0)
-            + estimate_messages_tokens(lead_msgs)
-            + estimate_messages_tokens(history_msgs)
-            + estimate_messages_tokens(incoming)
-        )
-        threshold = max(0, self.context_window_tokens - self.reserve_tokens)
-        needs_compact = force or (self.enabled and context_tokens > threshold)
-        if self.keep_turns is not None and len(compactable) > self.keep_turns:
-            needs_compact = True
-
-        if not needs_compact:
-            return _frame(system_prompt, summary_msg, lead_msgs, [*pinned, *compactable], incoming)
+        context_tokens = _context_tokens(request, summary_msg, lead_msgs, compactable)
+        if not self._needs_compact(request, context_tokens, compactable):
+            return _frame(request.system_prompt, summary_msg, lead_msgs, uncut, request.incoming)
 
         older, kept, is_split, plan = self._cut(compactable, pinned, carried)
-
         if not older:
-            return _frame(system_prompt, summary_msg, lead_msgs, [*pinned, *compactable], incoming)
+            return _frame(request.system_prompt, summary_msg, lead_msgs, uncut, request.incoming)
 
-        file_ops = extract_file_ops_from_events(older)
-        custom = await run_before_compact(
-            {
-                "messages_to_summarize": older,
-                "previous_summary": latest_summary.content if latest_summary else None,
-                "tokens_before": context_tokens,
-                "first_kept_entry_id": (kept[0].metadata or {}).get("event_id") if kept else None,
-                "first_kept_seq": kept[0].seq if kept else None,
-                "is_split_turn": is_split,
-                "file_ops": file_ops,
-                "reason": reason,
-                "will_retry": will_retry,
-                "custom_instructions": instructions,
-            },
-            context={"session_id": getattr(session, "id", None)},
+        cut = _Pass(
+            request=request,
+            latest=latest,
+            pinned=pinned,
+            older=older,
+            kept=kept,
+            is_split=is_split,
+            plan=plan,
+            tokens_before=context_tokens,
+            file_ops=extract_file_ops_from_events(older),
         )
+        custom = await _run_before_compact(session, cut)
         if custom and custom.get("cancel"):
-            return _frame(system_prompt, None, lead_msgs, [*pinned, *compactable], incoming)
+            return _frame(request.system_prompt, None, lead_msgs, uncut, request.incoming)
+        return await _compact(session, cut, custom, summary_msg)
 
-        summary_text: str | None = None
-        usage_meta: dict[str, Any] | None = None
-        if custom:
-            compaction = custom.get("compaction") if "compaction" in custom else custom
-            if isinstance(compaction, dict) and compaction.get("summary"):
-                summary_text = str(compaction["summary"])
-                if isinstance(compaction.get("usage"), dict):
-                    usage_meta = compaction["usage"]
-        # A hook's summary stands for all of `older`, the cut turn's early steps included, so
-        # it skips the turn-prefix call; the opening message is still kept verbatim.
-        hooked = summary_text is not None
-        if summary_text is None and not plan.history and plan.history_lead is None:
-            # Nothing new before the cut turn: the previous summary stands, with no call.
-            summary_text = latest_summary.content if latest_summary and latest_summary.content else ""
-        opening_msgs = [chat_message_from_parts(**plan.opening)] if plan.opening else []
+    def _budget(self) -> int:
+        return max(0, self.context_window_tokens - self.reserve_tokens)
 
-        if summary_text is None and model is None:
-            await run_compact_failed(
-                {
-                    "reason": reason,
-                    "errorMessage": "no_model",
-                    "aborted": False,
-                    "willRetry": will_retry,
-                }
-            )
-            note = ChatMessage(
-                role="system",
-                content=(
-                    f"[session] compaction unavailable (no model); "
-                    f"kept ~{sum(estimate_event_tokens(e) for e in kept)} recent tokens "
-                    f"(dropped {len(older)} older events)."
-                ),
-            )
-            return _frame(system_prompt, summary_msg, opening_msgs, [*pinned, *kept], incoming, notes=[note])
+    def _replay(
+        self, request: _RenderRequest, latest: _LatestSummary, branch: list[SessionEvent]
+    ) -> list[ChatMessage] | None:
+        """The retainedTail checkpoint, rebuilt: summary + materialized tail + post-compaction.
 
-        history_called = summary_text is None and model is not None
-        if summary_text is None and model is not None:
-            try:
-                previous = latest_summary.content if latest_summary else None
-                summary_text, usage_meta = await _summarize_history(
-                    model, plan, previous=previous, instructions=instructions, reason=reason
+        None when there is no checkpoint, when the render is forced, or when the rebuilt context
+        is over budget -- each of which falls through to the re-walk.
+        """
+        if latest.tail is None or latest.event is None or request.force:
+            return None
+        post = [e for e in branch if e.seq > latest.event.seq]
+        out = [ChatMessage(role="system", content=request.system_prompt)]
+        # Empty when a split compaction had nothing before the cut turn to summarise.
+        summary = latest.message()
+        if summary:
+            out.append(summary)
+        for item in latest.tail:
+            if isinstance(item, dict):
+                # The same conversion history uses. Checkpoints written before `metadata`
+                # was recorded still carry `tool_calls`, which is the part a provider needs.
+                out.append(
+                    chat_message_from_parts(
+                        role=item.get("role"),
+                        content=item.get("content"),
+                        tool_call_id=item.get("tool_call_id"),
+                        name=item.get("name"),
+                        tool_calls=item.get("tool_calls"),
+                        metadata=item.get("metadata"),
+                    )
                 )
-            except Exception as exc:
-                logger.debug("compaction summarization failed", exc_info=True)
-                await run_compact_failed(
-                    {
-                        "reason": reason,
-                        "errorMessage": str(exc),
-                        "aborted": False,
-                        "willRetry": will_retry,
-                    }
-                )
-                note = ChatMessage(
+        out.extend(event_to_chat_message(e) for e in post if include_in_llm_context(e))
+        out.extend(request.incoming)
+        # `out` already ends with the incoming turn, so it is counted twice, as it always was.
+        hist_tokens = estimate_messages_tokens(out) + estimate_messages_tokens(request.incoming)
+        return out if hist_tokens <= self._budget() else None
+
+    def _needs_compact(
+        self, request: _RenderRequest, context_tokens: int, compactable: list[SessionEvent]
+    ) -> bool:
+        if request.force or (self.enabled and context_tokens > self._budget()):
+            return True
+        return self.keep_turns is not None and len(compactable) > self.keep_turns
+
+
+@dataclass(slots=True)
+class _Pass:
+    """One compaction pass once the cut is known: what it keeps, what it summarises, and why."""
+
+    request: _RenderRequest
+    latest: _LatestSummary
+    pinned: list[SessionEvent]
+    older: list[SessionEvent]
+    kept: list[SessionEvent]
+    is_split: bool
+    plan: _SplitPlan
+    tokens_before: int
+    file_ops: dict[str, list[str]]
+
+    def frame(
+        self, summary: ChatMessage | None, lead: list[ChatMessage], *, notes: list[ChatMessage] | None = None
+    ) -> list[ChatMessage]:
+        """The pass's output: the pinned events and the kept window, behind `summary` and `lead`."""
+        return _frame(
+            self.request.system_prompt,
+            summary,
+            lead,
+            [*self.pinned, *self.kept],
+            self.request.incoming,
+            notes=notes,
+        )
+
+
+async def _load_branch(session: Session) -> tuple[list[SessionEvent], _LatestSummary]:
+    """The active branch, and the newest summary that describes it."""
+    all_events = await session.get_events()
+    summaries = [
+        e
+        for e in all_events
+        if (
+            e.kind == "compaction"
+            or (
+                e.kind == "audit"
+                and (e.metadata or {}).get("type") in {COMPACTION_METADATA_TYPE, SUMMARY_METADATA_TYPE}
+            )
+        )
+    ]
+    summaries.sort(key=lambda e: e.seq, reverse=True)
+    from felix.session.tree import active_branch_events, get_event_id
+
+    branch = active_branch_events(all_events, session_id=getattr(session, "id", ""))
+    # The newest summary *of this branch*: after a rewind the newest in the log can describe
+    # turns the branch no longer has, and replaying its summary and kept turns resurrects them.
+    branch_seqs = {e.seq for e in branch}
+    branch_ids = {i for i in (get_event_id(e) for e in branch) if i}
+    summaries = [e for e in summaries if _summary_on_branch(e, branch_seqs, branch_ids)]
+    return branch, _LatestSummary.of(summaries[0] if summaries else None)
+
+
+def _context_tokens(
+    request: _RenderRequest,
+    summary: ChatMessage | None,
+    lead: list[ChatMessage],
+    compactable: list[SessionEvent],
+) -> int:
+    return (
+        estimate_tokens(request.system_prompt)
+        + (estimate_tokens(summary.content) if summary else 0)
+        + estimate_messages_tokens(lead)
+        + estimate_messages_tokens([event_to_chat_message(e) for e in compactable])
+        + estimate_messages_tokens(request.incoming)
+    )
+
+
+async def _run_before_compact(session: Session, cut: _Pass) -> dict[str, Any] | None:
+    first_kept = cut.kept[0] if cut.kept else None
+    return await run_before_compact(
+        {
+            "messages_to_summarize": cut.older,
+            "previous_summary": cut.latest.content,
+            "tokens_before": cut.tokens_before,
+            "first_kept_entry_id": (first_kept.metadata or {}).get("event_id") if first_kept else None,
+            "first_kept_seq": first_kept.seq if first_kept else None,
+            "is_split_turn": cut.is_split,
+            "file_ops": cut.file_ops,
+            "reason": cut.request.reason,
+            "will_retry": cut.request.will_retry,
+            "custom_instructions": cut.request.instructions,
+        },
+        context={"session_id": getattr(session, "id", None)},
+    )
+
+
+def _hook_summary(custom: dict[str, Any] | None) -> tuple[str | None, dict[str, Any] | None]:
+    """The summary a before_compact hook supplied, and its usage; `(None, None)` when it gave none."""
+    if not custom:
+        return None, None
+    compaction = custom.get("compaction") if "compaction" in custom else custom
+    if not (isinstance(compaction, dict) and compaction.get("summary")):
+        return None, None
+    usage = compaction["usage"] if isinstance(compaction.get("usage"), dict) else None
+    return str(compaction["summary"]), usage
+
+
+async def _compact(
+    session: Session, cut: _Pass, custom: dict[str, Any] | None, summary_msg: ChatMessage | None
+) -> list[ChatMessage]:
+    """Summarise a cut -- by the hook, the previous summary, or the model -- and store the result."""
+    plan, request = cut.plan, cut.request
+    summary_text, usage_meta = _hook_summary(custom)
+    # A hook's summary stands for all of `older`, the cut turn's early steps included, so
+    # it skips the turn-prefix call; the opening message is still kept verbatim.
+    hooked = summary_text is not None
+    if summary_text is None and not plan.history and plan.history_lead is None:
+        # Nothing new before the cut turn: the previous summary stands, with no call.
+        summary_text = cut.latest.content or ""
+    opening_msgs = [chat_message_from_parts(**plan.opening)] if plan.opening else []
+
+    if summary_text is None and request.model is None:
+        return await _no_model_frame(cut, summary_msg, opening_msgs)
+
+    history_called = summary_text is None  # and so a model is set: the no-model case returned
+    if summary_text is None:
+        try:
+            summary_text, usage_meta = await _summarize_history(
+                request.model,
+                plan,
+                previous=cut.latest.content,
+                instructions=request.instructions,
+                reason=request.reason,
+            )
+        except Exception as exc:
+            logger.debug("compaction summarization failed", exc_info=True)
+            return await _failed_frame(cut, str(exc), opening_msgs)
+
+    lead, notes, prefix_usage = await _summarize_lead(cut, hooked=hooked)
+
+    # An empty history summary stores nothing, as it always has: a checkpoint holding only
+    # the lead would mark the history covered with nothing standing in for it.
+    if summary_text or (lead is not None and not history_called):
+        await _persist_checkpoint(session, cut, summary_text, lead, usage_meta, prefix_usage)
+        if summary_text:
+            summary_msg = summary_message(summary_text)
+
+    return cut.frame(summary_msg, lead.messages() if lead else [], notes=notes)
+
+
+async def _report_compact_failed(request: _RenderRequest, error: str) -> None:
+    await run_compact_failed(
+        {
+            "reason": request.reason,
+            "errorMessage": error,
+            "aborted": False,
+            "willRetry": request.will_retry,
+        }
+    )
+
+
+async def _no_model_frame(
+    cut: _Pass, summary_msg: ChatMessage | None, opening_msgs: list[ChatMessage]
+) -> list[ChatMessage]:
+    """No summariser to call: keep the window, drop the rest, and say so. The previous summary stays."""
+    await _report_compact_failed(cut.request, "no_model")
+    note = ChatMessage(
+        role="system",
+        content=(
+            f"[session] compaction unavailable (no model); "
+            f"kept ~{sum(estimate_event_tokens(e) for e in cut.kept)} recent tokens "
+            f"(dropped {len(cut.older)} older events)."
+        ),
+    )
+    return cut.frame(summary_msg, opening_msgs, notes=[note])
+
+
+async def _failed_frame(cut: _Pass, error: str, opening_msgs: list[ChatMessage]) -> list[ChatMessage]:
+    """The summariser raised: keep the window, drop the rest, and say so. No summary is rendered."""
+    await _report_compact_failed(cut.request, error)
+    note = ChatMessage(
+        role="system",
+        content=(
+            f"[session] compaction failed; kept {len(cut.kept)} recent events (dropped {len(cut.older)})."
+        ),
+    )
+    return cut.frame(None, opening_msgs, notes=[note])
+
+
+async def _summarize_lead(
+    cut: _Pass, *, hooked: bool
+) -> tuple[_TurnLead | None, list[ChatMessage], dict[str, Any] | None]:
+    """A split turn's lead: its opening message and a summary of its early steps, if it was split.
+
+    Returns `(lead, notes, prefix_usage)`; the lead is None when the cut is not mid-turn or
+    there is nothing to lead with.
+    """
+    plan, request = cut.plan, cut.request
+    if not plan.splits:
+        return None, [], None
+    notes: list[ChatMessage] = []
+    prefix_usage: dict[str, Any] | None = None
+    # A hook's summary replaces the history summary and the new prefix call, never the
+    # progress an earlier compaction already summarised for this same turn.
+    lead = _TurnLead(opening=plan.opening, prefix=plan.prior_prefix)
+    if plan.prefix and not hooked:
+        try:
+            if request.model is None:
+                raise RuntimeError("no_model")
+            prefix_text, prefix_usage = await _summarize_turn_prefix(
+                request.model, plan, instructions=request.instructions, reason=request.reason
+            )
+            lead.prefix = _prefix_item(prefix_text)
+        except Exception:
+            # The turn-prefix summary is the lesser half: lose it, keep the request
+            # verbatim, and carry on with the compaction rather than failing it.
+            logger.warning("turn-prefix summarization failed", exc_info=True)
+            notes.append(
+                ChatMessage(
                     role="system",
                     content=(
-                        f"[session] compaction failed; kept {len(kept)} recent events (dropped {len(older)})."
+                        "[session] summarising the earlier steps of this turn failed; "
+                        f"kept its opening message, dropped {len(plan.prefix)} events."
                     ),
                 )
-                return _frame(system_prompt, None, opening_msgs, [*pinned, *kept], incoming, notes=[note])
-
-        lead: _TurnLead | None = None
-        notes: list[ChatMessage] = []
-        prefix_usage: dict[str, Any] | None = None
-        if plan.splits:
-            # A hook's summary replaces the history summary and the new prefix call, never the
-            # progress an earlier compaction already summarised for this same turn.
-            lead = _TurnLead(opening=plan.opening, prefix=plan.prior_prefix)
-            if plan.prefix and not hooked:
-                try:
-                    if model is None:
-                        raise RuntimeError("no_model")
-                    prefix_text, prefix_usage = await _summarize_turn_prefix(
-                        model, plan, instructions=instructions, reason=reason
-                    )
-                    lead.prefix = _prefix_item(prefix_text)
-                except Exception:
-                    # The turn-prefix summary is the lesser half: lose it, keep the request
-                    # verbatim, and carry on with the compaction rather than failing it.
-                    logger.warning("turn-prefix summarization failed", exc_info=True)
-                    notes.append(
-                        ChatMessage(
-                            role="system",
-                            content=(
-                                "[session] summarising the earlier steps of this turn failed; "
-                                f"kept its opening message, dropped {len(plan.prefix)} events."
-                            ),
-                        )
-                    )
-
-        if lead is not None and not lead.items():
-            lead = None  # a pinned opening and no steps to summarise: nothing to lead with
-
-        # An empty history summary stores nothing, as it always has: a checkpoint holding only
-        # the lead would mark the history covered with nothing standing in for it.
-        if summary_text or (lead is not None and not history_called):
-            first_kept = kept[0] if kept else None
-            retained = [*(lead.items() if lead else []), *(retained_turn(e) for e in kept)]
-            md: dict[str, Any] = {
-                "type": COMPACTION_METADATA_TYPE,
-                "covers_to_seq": older[-1].seq,
-                "first_kept_seq": first_kept.seq if first_kept else None,
-                "first_kept_entry_id": (first_kept.metadata or {}).get("event_id") if first_kept else None,
-                "last_kept_entry_id": (kept[-1].metadata or {}).get("event_id") if kept else None,
-                "tokens_before": context_tokens,
-                "retainedTail": retained,
-                "details": file_ops,
-                "is_split_turn": is_split,
-                "reason": reason,
-            }
-            if lead is not None:
-                # `lead_items` is how many leading tail entries are the lead rather than kept
-                # events; a re-walk reads it back (`_stored_lead`).
-                md["split_turn"] = {
-                    "opening_kept": lead.opening is not None,
-                    "prefix_summarized": lead.prefix is not None,
-                    "lead_items": len(lead.items()),
-                }
-            if usage_meta:
-                md["usage"] = usage_meta
-            if prefix_usage:
-                md["turn_prefix_usage"] = prefix_usage
-            await session.append(
-                AppendableEvent(
-                    kind="compaction",
-                    content=summary_text or "",
-                    metadata=md,
-                )
             )
-            if summary_text:
-                summary_msg = summary_message(summary_text)
+    if not lead.items():
+        return None, notes, prefix_usage  # a pinned opening and no steps to summarise: nothing to lead with
+    return lead, notes, prefix_usage
 
-        lead_out = lead.messages() if lead else []
-        return _frame(system_prompt, summary_msg, lead_out, [*pinned, *kept], incoming, notes=notes)
+
+async def _persist_checkpoint(
+    session: Session,
+    cut: _Pass,
+    summary_text: str | None,
+    lead: _TurnLead | None,
+    usage_meta: dict[str, Any] | None,
+    prefix_usage: dict[str, Any] | None,
+) -> None:
+    """Append the compaction event a later render replays (`_replay`) or re-walks from."""
+    kept = cut.kept
+    first_kept = kept[0] if kept else None
+    retained = [*(lead.items() if lead else []), *(retained_turn(e) for e in kept)]
+    md: dict[str, Any] = {
+        "type": COMPACTION_METADATA_TYPE,
+        "covers_to_seq": cut.older[-1].seq,
+        "first_kept_seq": first_kept.seq if first_kept else None,
+        "first_kept_entry_id": (first_kept.metadata or {}).get("event_id") if first_kept else None,
+        "last_kept_entry_id": (kept[-1].metadata or {}).get("event_id") if kept else None,
+        "tokens_before": cut.tokens_before,
+        "retainedTail": retained,
+        "details": cut.file_ops,
+        "is_split_turn": cut.is_split,
+        "reason": cut.request.reason,
+    }
+    if lead is not None:
+        # `lead_items` is how many leading tail entries are the lead rather than kept
+        # events; a re-walk reads it back (`_stored_lead`).
+        md["split_turn"] = {
+            "opening_kept": lead.opening is not None,
+            "prefix_summarized": lead.prefix is not None,
+            "lead_items": len(lead.items()),
+        }
+    if usage_meta:
+        md["usage"] = usage_meta
+    if prefix_usage:
+        md["turn_prefix_usage"] = prefix_usage
+    await session.append(
+        AppendableEvent(
+            kind="compaction",
+            content=summary_text or "",
+            metadata=md,
+        )
+    )
 
 
 def _frame(
