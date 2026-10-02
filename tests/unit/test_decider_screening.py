@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import felix.governance.screening as screening
 import pytest
 from felix.governance import inbound
 from felix.governance.inbound import SCREEN_CHARS, InboundScreeningError, ScreenResult, screen_for_injection
@@ -79,7 +80,8 @@ async def test_the_battery_is_one_call_and_the_worst_answer_is_the_score() -> No
 async def test_the_stricter_screener_wins(
     model: ScreenResult, decider: _Decider, expect: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(inbound, "_model_screen", _model(model))
+
+    monkeypatch.setattr(screening, "_model_screen", _model(model))
     result = await screen_for_injection(SETTINGS, "text", "claude-haiku", decider)
     assert {
         "flagged": result.flagged,
