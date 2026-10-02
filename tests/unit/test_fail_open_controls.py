@@ -52,7 +52,7 @@ def test_high_score_flags() -> None:
 @pytest.mark.asyncio
 async def test_screener_outage_reports_unavailable(caplog: pytest.LogCaptureFixture) -> None:
     """A missing key, an expired credential, or a 429 must not read as clean."""
-    with caplog.at_level(logging.ERROR, logger="felix.governance.inbound"):
+    with caplog.at_level(logging.ERROR, logger="felix.governance.screening"):
         result = await screen_for_injection(_settings(), "hello", "no-such-model-id")
     assert result.unavailable is True
     assert result.flagged is False
@@ -62,7 +62,6 @@ async def test_screener_outage_reports_unavailable(caplog: pytest.LogCaptureFixt
 @pytest.mark.asyncio
 async def test_unparseable_reply_is_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
     """A reply we cannot parse is not evidence the text is clean."""
-    from felix.governance import inbound
     from felix.patterns.types import ChatMessage
 
     class _Model:
@@ -74,7 +73,6 @@ async def test_unparseable_reply_is_unavailable(monkeypatch: pytest.MonkeyPatch)
 
             return _R()
 
-    monkeypatch.setattr(inbound, "build_model", lambda *a, **k: _Model(), raising=False)
     import felix.patterns.model as model_mod
 
     monkeypatch.setattr(model_mod, "build_model", lambda *a, **k: _Model())

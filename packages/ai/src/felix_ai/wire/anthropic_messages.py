@@ -289,7 +289,7 @@ def apply_anthropic_output_schema(body: dict[str, Any], schema: dict[str, Any]) 
     price of the request-supplied case working at all — leaving the choice unset there would
     make the feature advisory for every caller who is not also the operator. Two things bound
     it: the schema's text is screened like the turn it rides with
-    (`governance.inbound.screen_output_schema`), and `any` is satisfiable without touching a
+    (`governance.tool_screening.screen_output_schema`), and `any` is satisfiable without touching a
     real tool, since the structured-output tool is always the way to finish. A manifest that
     declares its own `spec.output_schema` overrides the caller's outright.
     """

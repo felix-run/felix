@@ -49,6 +49,7 @@ from felix_api.routes import (
     memory,
     openai_compat,
     plans,
+    push,
     skills,
     usage,
     well_known,
@@ -296,6 +297,7 @@ def create_app(
     app.include_router(artifacts.router, prefix="/artifacts")
     app.include_router(files.router, prefix="/files")
     app.include_router(approvals.router, prefix="/approvals")
+    app.include_router(push.router, prefix="/push")
     app.include_router(plans.router, prefix="/plans")
     app.include_router(jobs.router, prefix="/jobs")
     app.include_router(manifests.router, prefix="/manifests")

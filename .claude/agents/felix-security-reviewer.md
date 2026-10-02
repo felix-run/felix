@@ -24,8 +24,10 @@ egress**, **auth bypass on management surfaces**, **sandbox escape**.
   `require_mgmt_scopes` is a **no-op when `auth_mode=none`**; verify no production path relies on
   that being safe. `admin`/`*` bypass; `x:write` satisfies `x:read`.
 - `manifests/inbound_auth.py` — per-manifest inbound schemes, `allow_anonymous`, required scopes.
-- `governance/{inbound,content_screening,pii}.py` — injection screening on inbound turns, output
-  screening, Presidio PII (optional extra).
+- `governance/{inbound,screening,tool_screening,image_screening,content_screening,pii}.py` —
+  injection screening: the turn and its images (`inbound`, `image_screening`), the scorers and
+  the verdict rules (`screening`), MCP arguments, output schemas and tool output
+  (`tool_screening`), marker scan, Presidio PII (optional extra).
 - `security/{ssrf,expr,rate_limit,constant_time}.py` — egress guards, safe expression
   evaluation, limiter, comparisons.
 - `manifests/secret_refs.py` + `secrets.py` — `secret:NAME` resolution and the masking list.

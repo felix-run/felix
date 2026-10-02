@@ -661,6 +661,10 @@ Storage and execution:
   `FELIX_WEBHOOK_MAX_ATTEMPTS` (8) with each attempt bounded by `FELIX_WEBHOOK_TIMEOUT_SECONDS`
   (10), and reports each endpoint's state on `GET /chat/runs/{token}`.
   A manifest names ids, never URLs; an id not registered for the caller's tenant is `422`
+- Web Push wakes a subscribed browser -- an installed phone app, a backgrounded tab -- when a new
+  approval or an agent's question is waiting on a person (`/push/*`, `approvals:read`). Off until
+  `FELIX_PUSH_VAPID_PRIVATE_KEY` and `FELIX_PUSH_VAPID_SUBJECT` are set; endpoints are limited to
+  `FELIX_PUSH_ALLOWED_HOSTS`, and a push carries the kind of wait and the thread, never the call
 - `POST /chat/stream` on a durable manifest streams the run instead: `run_accepted` → `run_status`
   → `final`, interleaved with `session_event` frames tailed from the thread's session log, so tool
   calls and assistant turns arrive as they land, across replicas, with a resumable `id:` cursor.

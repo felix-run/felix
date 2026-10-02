@@ -10,7 +10,7 @@ together — `scripts/validate-toolkit.py` fails when a route module is missing 
 | Felix surface | Page |
 |---|---|
 | `apps/api/.../routes/chat.py`, `openai_compat.py`, `a2a.py`, `mcp.py`, `well_known.py` (and the `_sse.py` / `_streaming.py` helpers) | `$DOCS/guide/rest-api.mdx` |
-| `apps/api/.../routes/{audit,approvals,plans,jobs,manifests,eval,usage,internal}.py` | `$DOCS/guide/management-api.mdx` |
+| `apps/api/.../routes/{audit,approvals,push,plans,jobs,manifests,eval,usage,internal}.py` | `$DOCS/guide/management-api.mdx` |
 | `apps/api/.../routes/{artifacts,documents,files,memory,skills}.py` | `$DOCS/guide/management-api.mdx` |
 | `packages/harness/src/felix/manifests/schema.py`, `manifests/*.yaml` | `$DOCS/guide/manifest-reference.mdx` |
 | `manifests/{builder,resolver,pin}.py` | `$DOCS/internals/manifest-pipeline.mdx` |

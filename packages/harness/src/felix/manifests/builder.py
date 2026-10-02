@@ -518,7 +518,7 @@ def apply_content_screening(
             unavailable = False
             if not flagged and paid and (model_id or decider is not None):
                 from felix.config import get_settings
-                from felix.governance.inbound import screen_tool_output
+                from felix.governance.tool_screening import screen_tool_output
 
                 # Every window of the output, not the first: a benign prefix longer than one
                 # screener window used to carry the payload past both the model and the decider.
