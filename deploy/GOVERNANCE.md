@@ -24,6 +24,13 @@ felix mint-jwt --sub ops --tenant default --scopes chat:write,tools:calc
 fork) for JWT / API-key production. Outbound MCP in `governed` is commented
 out until `FELIX_MCP_AUTH_TOKEN` exists — scoped chat works without it.
 
+**The public demo stays anonymous, by decision (2026-10-02).** Visitors reach it through the
+chat-ui Worker, which holds the one Felix credential, so nobody has an identity or scopes of
+their own there. That means it cannot show `governed`'s per-caller controls: a scope check would
+pass or fail the same way for every visitor. Those controls are shown by running `governed`
+yourself, with the token minted above, not on the demo. Issuing visitors scoped chat keys would
+turn the demo into an account system, and that is not what it is for.
+
 ## Secret injection
 
 | Layer | Mechanism |
@@ -1229,6 +1236,12 @@ comma-separated. What is enforced:
   cached (15 min TTL), refreshed by the API on a timer. `FELIX_JWKS_PUBLIC` is used for
   the `self` scheme only — it must never verify a token that claims a remote issuer.
 - **Algorithms are asymmetric-only**; there is no HS256 or `none` path.
+- **Every request verifies its token; there is no verification cache, by decision
+  (2026-10-02).** A cache keyed on the token would save the signature check, but a "valid"
+  cached before a key rotation would outlive the rotation for as long as the entry lives. Without
+  one, restarting with a rotated `FELIX_JWKS_PRIVATE`/`_PUBLIC` (settings are read at startup)
+  revokes every self-issued token from the first request, and no cached verdict lingers past it.
+  A remote issuer's rotation still waits for its key-set refresh (below).
 - **Clock skew of sixty seconds is tolerated** on `exp`, `nbf` and `iat` (`JWT_LEEWAY_S`);
   a token past that is `expired`.
 - **An unusable verifier is visible on `/ready`.** A cached `access`/`cognito` key set past
@@ -1244,6 +1257,17 @@ comma-separated. What is enforced:
   deployment stays up for the others.
 
 ## Tenant resolution
+
+**Tenants are the orgs sharing one install; tenants and API keys are configuration, by decision
+(2026-10-02).** Tenancy exists so that several organisations can use the same Felix install, each
+isolated from the others: their sessions, memory, manifests, audit and usage are kept apart by
+`tenant_id`. There is no tenant table and no key table. A tenant is the string a credential
+carries, and an API key is an entry in `FELIX_AUTH_API_KEYS`, so adding an org or issuing or
+revoking a key is the install operator's config edit and a restart. An org's people do not need
+the operator for each login: `FELIX_GITHUB_ORG_TENANTS` maps their GitHub org to its tenant, so
+[GitHub login](#github-login) lets any active member in, and an external IdP under `jwt` does the
+same. What an org cannot do is administer its own tenant — mint its own API keys, or be created
+without the operator. A tenant or key API for that is not planned.
 
 `tenant_id` is the isolation boundary and, in the default `claim` mode, it arrives in a
 token claim. Constrain it:
