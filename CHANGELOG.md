@@ -307,8 +307,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shares, but the only limit was per client address. A botnet is many clients, and one IPv6
   subscriber holding a /64 was 2^64 of them. Starts are now keyed by /64 for IPv6, and
   `FELIX_GITHUB_DEVICE_STARTS_PER_HOUR_TOTAL` (default 300) caps the whole deployment. A start
-  refused by its client's bucket does not count toward the total. The global rate limiter
-  still keys full addresses.
+  refused by its client's bucket does not count toward the total. Reaching the cap refuses
+  every new login until the hour turns, which keeps the OAuth app inside GitHub's limits at
+  the price of a lockout an attacker can cause; issued tokens are unaffected, and the warning
+  is logged once per window. The global rate limiter still keys full addresses.
 - **Images replayed from a thread's history are screened.** `content_screening.image_model`
   screened only the incoming turn, and threads are scoped to the tenant rather than the
   manifest — so an image sent through a manifest that screens nothing, or sent before

@@ -107,7 +107,9 @@ class Settings(BaseSettings):
     github_oidc_ttl_seconds: int = Field(default=900, ge=60, le=3600)  # 15m; max 1h (no revocation)
     # Device flows the whole deployment may start per hour. The per-client bucket cannot protect
     # a quota every client shares: a botnet is many clients. Spent only by starts the per-client
-    # bucket let through, so one noisy address cannot run it down alone.
+    # bucket let through, so one noisy address cannot run it down alone. The trade: reaching it
+    # refuses every new login until the hour turns (issued tokens are unaffected). Per process
+    # without Redis.
     github_device_starts_per_hour_total: int = Field(default=300, ge=1, le=100_000)
 
     # --- HTTP posture ---

@@ -215,13 +215,18 @@ async def test_the_deployment_cap_holds_across_clients(
         ]
         third_client = await app.client.post("/auth/github/device", headers=_from("198.51.100.9"))
         capped = await app.client.post("/auth/github/device", headers=_from("192.0.2.44"))
+        capped_again = await app.client.post("/auth/github/device", headers=_from("192.0.2.45"))
     assert own == [200, 200, 429]
     assert third_client.status_code == 200
-    assert capped.status_code == 429
+    assert capped.status_code == capped_again.status_code == 429
     assert capped.json()["error"] == "rate_limited"
-    assert "this server" in capped.json()["message"]
     assert capped.headers["retry-after"] == "3600"
-    assert "deployment cap" in caplog.text
+    # The operator hears about it once per window, not once per refused start: under attack the
+    # attacker would choose the number of WARNING lines.
+    warnings = [
+        r for r in caplog.records if r.name == "felix_api.auth_github" and r.levelno == logging.WARNING
+    ]
+    assert len(warnings) == 1
     # Only the starts that were allowed reached GitHub.
     assert fake_github.issued == 3
 

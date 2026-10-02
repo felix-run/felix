@@ -80,6 +80,9 @@ def test_ipv6_folding_is_opt_in_and_leaves_ipv4_alone() -> None:
     # A dual-stack socket's view of a v4 client is that client, not `::ffff:0:0/64`, which
     # would put every v4 caller in one bucket.
     assert client_key(_Req("::ffff:203.0.113.7"), s, ipv6_prefix=64) == "ip:203.0.113.7"
+    # The same for NAT64's well-known prefix, as an IPv6-only cluster behind a translator sees v4.
+    assert client_key(_Req("64:ff9b::203.0.113.7"), s, ipv6_prefix=64) == "ip:203.0.113.7"
+    assert client_key(_Req("64:ff9b::198.51.100.9"), s, ipv6_prefix=64) == "ip:198.51.100.9"
     assert client_key(_Req("not-an-ip"), s, ipv6_prefix=64) == "ip:not-an-ip"
 
 
