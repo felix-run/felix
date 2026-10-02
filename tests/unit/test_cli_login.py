@@ -97,3 +97,39 @@ def test_any_other_refusal_exits_1_with_its_code(monkeypatch: pytest.MonkeyPatch
     assert result.exit_code == 1
     assert "not_a_member" in result.stderr
     assert result.stdout == ""
+
+
+def test_insecure_is_passed_through_and_off_by_default(calls: list[dict[str, Any]]) -> None:
+    assert _run().exit_code == 0
+    assert _run("--insecure").exit_code == 0
+    assert [c["allow_insecure"] for c in calls] == [False, True]
+
+
+def test_a_verification_url_off_github_is_called_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_login(url: str, **kwargs: Any) -> LoginToken:
+        kwargs["on_code"](
+            DeviceCode(
+                user_code="X", verification_uri="https://github.evil.example/x", expires_in=900, interval=5
+            )
+        )
+        return _token()
+
+    monkeypatch.setattr(client_login, "github_device_login", fake_login)
+    result = _run()
+    assert "not on github.com" in result.stderr
+
+
+def test_the_real_github_url_draws_no_warning(calls: list[dict[str, Any]]) -> None:
+    assert "warning" not in _run().stderr
+
+
+def test_a_token_directory_others_can_reach_is_refused(
+    calls: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    (tmp_path / "felix").mkdir(mode=0o700)
+    (tmp_path / "felix").chmod(0o777)
+    result = _run("--save")
+    assert result.exit_code == 1
+    assert "not saved" in result.stderr
+    assert not (tmp_path / "felix" / "token").exists()

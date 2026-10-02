@@ -256,6 +256,11 @@ def login(
     save: bool = typer.Option(
         False, "--save", help="Keep the token in ~/.config/felix/token (0600) instead of printing it."
     ),
+    insecure: bool = typer.Option(
+        False,
+        "--insecure",
+        help="Allow plain http:// to a non-loopback server (the token crosses in cleartext).",
+    ),
 ) -> None:
     """Log in to a Felix server with GitHub and print (or --save) a bearer token.
 
@@ -263,16 +268,20 @@ def login(
     for the approval. Needs the server to have FELIX_GITHUB_CLIENT_ID set.
     """
     import asyncio
+    from urllib.parse import urlsplit
 
-    from felix_client.login import DeviceCode, LoginError, github_device_login, save_token
+    from felix_client.login import DeviceCode, LoginError, TokenFileError, github_device_login, save_token
 
     def show(code: DeviceCode) -> None:
-        # stderr, so `TOKEN=$(felix login)` captures the token and nothing else.
+        # stderr, so `TOKEN=$(felix login)` captures the token and nothing else. The server
+        # relays GitHub's URL; one pointing elsewhere is the server's word against GitHub's.
+        if urlsplit(code.verification_uri).hostname != "github.com":
+            typer.echo(f"warning: {url} sent a verification URL that is not on github.com", err=True)
         typer.echo(f"Open {code.verification_uri} and enter {code.user_code}", err=True)
         typer.echo(f"Waiting for approval (the code expires in {code.expires_in // 60} min)…", err=True)
 
     try:
-        token = asyncio.run(github_device_login(url, tenant=tenant, on_code=show))
+        token = asyncio.run(github_device_login(url, tenant=tenant, on_code=show, allow_insecure=insecure))
     except LoginError as exc:
         if exc.code == "tenant_ambiguous":
             typer.echo(
@@ -285,7 +294,11 @@ def login(
         raise typer.Exit(1) from exc
 
     if save:
-        path = save_token(token)
+        try:
+            path = save_token(token)
+        except TokenFileError as exc:
+            typer.echo(f"not saved: {exc}", err=True)
+            raise typer.Exit(1) from exc
         typer.echo(f"Logged in to tenant {token.tenant}; token saved to {path}.", err=True)
         return
     typer.echo(f"Logged in to tenant {token.tenant}.", err=True)

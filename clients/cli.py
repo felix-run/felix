@@ -31,15 +31,12 @@ def main() -> None:
     args = parser.parse_args()
 
     headers: dict[str, str] = {"content-type": "application/json"}
-    token = args.token
-    if not token:
-        from felix_client.login import load_token
+    from felix_client.login import bearer_for
 
-        # Only a token minted by this --base: a saved credential is never sent to another server.
-        saved = load_token(args.base)
-        if saved is not None:
-            token = saved.access_token
-            print(f"using saved GitHub login (tenant {saved.tenant})")
+    # An explicit --token wins; otherwise the login saved for this --base, and never another's.
+    token = bearer_for(args.base, args.token or None)
+    if token and not args.token:
+        print("using saved GitHub login")
     if token:
         headers["authorization"] = f"Bearer {token}"
 
