@@ -147,7 +147,7 @@ same pair locally. Neither fixture means anything without the other.
   rule, so installing the client never installs the server. `felix.sdk` is a re-export of it.
 - `packages/harness` (`felix`) — all the logic: manifests, patterns, tools, session,
   governance, auth, memory, eval, durability, storage, plugins.
-- `packages/cli` (`felix`) — `migrate | eval | mint-jwt | bundle-manifests | validate-manifest | doctor | version | temporal-worker`.
+- `packages/cli` (`felix`) — `migrate | eval | mint-jwt | login | bundle-manifests | validate-manifest | doctor | version | temporal-worker`.
 - `apps/api` (`felix-api`) — FastAPI routes, one module per surface in `routes/`, plus two
   underscore-prefixed modules that carry no route: `_sse.py` knows the SSE *envelope* (frame
   spelling, `[DONE]`, heartbeats — never spell a frame by hand elsewhere) and `_streaming.py`

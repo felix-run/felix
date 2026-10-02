@@ -4,6 +4,9 @@
 Usage:
     uv run python clients/cli.py [--base http://localhost:8080] [--manifest quick]
     uv run python clients/cli.py --thread demo --model claude-haiku-4 --stream
+
+Without --token it uses the token `felix login --save` kept for this --base, if one is saved
+and unexpired.
 """
 
 from __future__ import annotations
@@ -19,15 +22,23 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Felix HTTP chat client")
     parser.add_argument("--base", default="http://localhost:8080")
     parser.add_argument("--manifest", default="quick")
-    parser.add_argument("--token", default="", help="Bearer token (optional)")
+    parser.add_argument(
+        "--token", default="", help="Bearer token (optional; defaults to a `felix login --save` token)"
+    )
     parser.add_argument("--thread", default="", help="Thread id suffix (optional)")
     parser.add_argument("--model", default="", help="Model override (allowlisted)")
     parser.add_argument("--stream", action="store_true")
     args = parser.parse_args()
 
     headers: dict[str, str] = {"content-type": "application/json"}
-    if args.token:
-        headers["authorization"] = f"Bearer {args.token}"
+    from felix_client.login import bearer_for
+
+    # An explicit --token wins; otherwise the login saved for this --base, and never another's.
+    token = bearer_for(args.base, args.token or None)
+    if token and not args.token:
+        print("using saved GitHub login")
+    if token:
+        headers["authorization"] = f"Bearer {token}"
 
     print(f"felix chat → {args.base}  manifest={args.manifest}")
     if args.thread:
