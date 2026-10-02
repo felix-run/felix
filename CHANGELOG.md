@@ -145,6 +145,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   resolve the default route the way the model client does. 128000 remains only for a deployment
   with no default model at all.
 
+- **`quick`, `cowork`, `contributor`, `governed` and `triage` compact against their model's real
+  window.** Each declared `session.context_window_tokens: 128000`, written in when 128000 was the
+  field's default, beside `reserve_tokens` and `keep_recent_tokens` as a list of defaults. The
+  default has since become the model's own window, so those lines capped five bundled manifests
+  at 128K on a 200K model. A declared value always wins, which is why the default-route fix
+  alone did not reach them. The lines are removed. A manifest that wants a cap still declares
+  one.
+
 - **Thinking levels now send distinct efforts to models that take one.** On adaptive Claude
   models and OpenAI reasoning models, a level's effort was derived from its budget through
   thresholds at 4,096 / 16,384 / 32,768 that none of the level budgets were chosen against:
