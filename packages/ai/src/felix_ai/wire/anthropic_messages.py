@@ -502,12 +502,12 @@ class AnthropicMessagesClient(HttpModelClient):
             resp = await post_with_retry(
                 client,
                 f"{self.base_url.rstrip('/')}/v1/messages",
-                label="anthropic",
+                label=self.route.provider,
                 json=body,
                 headers=headers,
             )
             if resp.status_code >= 400:
-                raise ModelGatewayError("anthropic", resp.status_code, resp.text)
+                raise ModelGatewayError(self.route.provider, resp.status_code, resp.text)
             data = resp.json()
         content_blocks = data.get("content") or []
         text_parts: list[str] = []
@@ -591,7 +591,9 @@ class AnthropicMessagesClient(HttpModelClient):
         ):
             if resp.status_code >= 400:
                 raw = await resp.aread()
-                raise ModelGatewayError("anthropic", resp.status_code, raw.decode("utf-8", errors="replace"))
+                raise ModelGatewayError(
+                    self.route.provider, resp.status_code, raw.decode("utf-8", errors="replace")
+                )
             async for data in iter_sse_json(resp):
                 kind = data.get("type")
 

@@ -70,6 +70,12 @@ def _http_from_invoke_prep(exc: Exception) -> HTTPException | None:
         return HTTPException(status_code=exc.status_code, detail=client_safe_message(exc))
     if isinstance(exc, ManifestDriftError):
         return HTTPException(status_code=409, detail=client_safe_message(exc))
+    from felix_ai.providers.base import ProviderConfigError
+
+    if isinstance(exc, ProviderConfigError):
+        # The manifest is fine; the deployment has not configured the provider its model
+        # routes to. Unavailable, like a missing secret, not a server fault.
+        return HTTPException(status_code=503, detail=client_safe_message(exc))
     if isinstance(exc, ValueError) and str(exc).startswith("secret not found"):
         # Ours, and written to tell an operator which secret is missing.
         return HTTPException(status_code=503, detail=client_safe_message(exc, authored_for_clients=True))
