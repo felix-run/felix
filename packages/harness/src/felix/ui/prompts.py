@@ -37,6 +37,21 @@ def _waiter_name(thread_id: str | None, request_id: str) -> str:
     return waiter_name("ui", thread_id or "", request_id)
 
 
+def _announce_question(thread_id: str | None) -> None:
+    """Push "a question is waiting" to the tenant's subscribed browsers, without the question.
+
+    The frame above reaches a page that is open; this reaches one a phone suspended. The
+    tenant comes from the request context, since this function is not handed one.
+    """
+    from felix.context import try_get_context
+    from felix.push.notify import question_asked
+
+    ctx = try_get_context()
+    if ctx is None:
+        return
+    question_asked(ctx.settings, ctx.auth.tenant_id, thread_id=thread_id)
+
+
 async def request_ui(
     thread_id: str | None,
     kind: UiKind,
@@ -59,6 +74,7 @@ async def request_ui(
         "metadata": metadata or {},
     }
     await emit_side_event(thread_id, "ui_request", payload)
+    _announce_question(thread_id)
     limit = DEFAULT_TIMEOUT_SECONDS if timeout is None else float(timeout)
     raw = await waiter_wait(_waiter_name(thread_id, request_id), timeout=limit)
     if raw is None:

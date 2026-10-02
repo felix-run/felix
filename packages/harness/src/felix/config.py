@@ -243,6 +243,24 @@ class Settings(BaseSettings):
     webhook_max_attempts: int = Field(default=8, ge=1)
     webhook_timeout_seconds: float = Field(default=10.0, gt=0)
 
+    # Web Push: wake a browser that subscribed (`/push/subscriptions`) when a run is waiting on
+    # a person -- an approval going pending, or an agent's question. Off until both of the
+    # first two are set; the `/push` routes answer 503 meanwhile. The private key is the
+    # base64url P-256 scalar VAPID tools print (or `secret:NAME`); the public key a browser
+    # subscribes with is derived from it. The subject is how a push service reaches the
+    # operator about this key: `mailto:` or `https:`.
+    push_vapid_private_key: str = Field(default="", repr=False)
+    push_vapid_subject: str = ""
+    # Where a subscription's endpoint may point, comma-separated; `*.` matches any subdomain.
+    # The endpoint is a URL a browser hands the harness, so without this anyone allowed to
+    # subscribe could aim its POSTs anywhere the egress guard permits. The defaults are the
+    # push services of Safari, Chrome, Firefox and Edge.
+    push_allowed_hosts: str = (
+        "web.push.apple.com,*.push.apple.com,fcm.googleapis.com,"
+        "updates.push.services.mozilla.com,*.notify.windows.com"
+    )
+    push_timeout_seconds: float = Field(default=10.0, gt=0)
+
     # --- retention (worker `retention_sweep`, nightly) ---
     # Days a row is kept; 0 keeps forever. Every table the harness appends to has one of
     # these — a table with no bound grows for the life of the deployment. A manifest's
@@ -555,6 +573,31 @@ class Settings(BaseSettings):
         self._validate_model_route_providers()
         self._validate_decision_route_providers()
         self._validate_webhook_endpoints()
+        self._validate_push()
+
+    def push_configured(self) -> bool:
+        """Whether Web Push is on: a VAPID key and a subject, both set."""
+        return bool(self.push_vapid_private_key.strip() and self.push_vapid_subject.strip())
+
+    def _validate_push(self) -> None:
+        """Half-configured push, or a key that does not parse, fails the boot, not the first send."""
+        key, subject = self.push_vapid_private_key.strip(), self.push_vapid_subject.strip()
+        if not key and not subject:
+            return
+        if not self.push_configured():
+            raise RuntimeError(
+                "FELIX_PUSH_VAPID_PRIVATE_KEY and FELIX_PUSH_VAPID_SUBJECT are set together or not at all"
+            )
+        if not subject.startswith(("mailto:", "https://")):
+            raise RuntimeError("FELIX_PUSH_VAPID_SUBJECT: must be a mailto: or https: URL")
+        if key.startswith("secret:"):
+            return  # resolved at send time, like every other secret ref
+        from felix.push.webpush import private_key_from_b64
+
+        try:
+            private_key_from_b64(key)
+        except ValueError as exc:
+            raise RuntimeError(f"FELIX_PUSH_VAPID_PRIVATE_KEY: {exc}") from exc
 
     def _validate_search_url(self) -> None:
         """A search backend that needs a URL must have a usable one, checked at boot.
