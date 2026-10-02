@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`felix login --github-actions` and `felix_client.github_actions_login`.** A GitHub Actions job
+  with `id-token: write` can log in without a stored secret and without hand-written HTTP. The
+  client asks the runner for the job's OIDC token and trades it at `POST /auth/github/actions`.
+  The audience defaults to the server URL, and `--audience` / `audience=` override it. A refusal
+  is a `LoginError` with the server's code. Outside a job granted `id-token: write`, the error is
+  `not_in_github_actions`, which says what is missing. The runner URL must be https. Neither
+  login follows a redirect, even on a caller's client that would: a 307 resends the body, and
+  the body here is a credential. In a job, `felix login --github-actions` writes `::add-mask::`
+  for the token on stderr before printing it. It warns when `--audience` names a server other
+  than `--url`'s, since the ID token is good there for a few minutes.
+
 - **GitHub Actions login.** A workflow can now get a Felix token without a stored secret.
   `POST /auth/github/actions` takes the workflow's OIDC ID token (`permissions: id-token:
   write`), checks GitHub's signature, and mints a short-lived Felix token

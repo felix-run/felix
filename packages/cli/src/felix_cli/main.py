@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -261,16 +262,44 @@ def login(
         "--insecure",
         help="Allow plain http:// to a non-loopback server (the token crosses in cleartext).",
     ),
+    github_actions: bool = typer.Option(
+        False,
+        "--github-actions",
+        help="In a GitHub Actions job (permissions: id-token: write): trade the job's OIDC token "
+        "instead of asking a person to approve a code.",
+    ),
+    audience: str | None = typer.Option(
+        None,
+        "--audience",
+        help="With --github-actions: the server's FELIX_GITHUB_OIDC_AUDIENCE, if it is not --url.",
+    ),
 ) -> None:
     """Log in to a Felix server with GitHub and print (or --save) a bearer token.
 
     Shows a code to enter on github.com — from any device, so this works over SSH — and waits
-    for the approval. Needs the server to have FELIX_GITHUB_CLIENT_ID set.
+    for the approval. Needs the server to have FELIX_GITHUB_CLIENT_ID set. With
+    --github-actions it asks no one: the job's OIDC token is the credential, and the server
+    needs FELIX_GITHUB_OIDC_AUDIENCE instead.
     """
     import asyncio
     from urllib.parse import urlsplit
 
-    from felix_client.login import DeviceCode, LoginError, TokenFileError, github_device_login, save_token
+    from felix_client.login import (
+        DeviceCode,
+        LoginError,
+        TokenFileError,
+        github_actions_login,
+        github_device_login,
+        save_token,
+    )
+
+    if audience and not github_actions:
+        typer.echo("--audience only applies with --github-actions", err=True)
+        raise typer.Exit(2)
+    if audience and urlsplit(audience).netloc != urlsplit(url).netloc:
+        # The ID token is good at the audience's server for its few minutes of life, and it is
+        # about to be handed to --url's. That is fine when both name one server; check it.
+        typer.echo(f"warning: the ID token for {audience} is being sent to {url}", err=True)
 
     def show(code: DeviceCode) -> None:
         # stderr, so `TOKEN=$(felix login)` captures the token and nothing else. The server
@@ -281,11 +310,16 @@ def login(
         typer.echo(f"Waiting for approval (the code expires in {code.expires_in // 60} min)…", err=True)
 
     try:
-        token = asyncio.run(github_device_login(url, tenant=tenant, on_code=show, allow_insecure=insecure))
+        if github_actions:
+            flow = github_actions_login(url, audience=audience, tenant=tenant, allow_insecure=insecure)
+        else:
+            flow = github_device_login(url, tenant=tenant, on_code=show, allow_insecure=insecure)
+        token = asyncio.run(flow)
     except LoginError as exc:
         if exc.code == "tenant_ambiguous":
+            who = "This workflow is granted" if github_actions else "Your GitHub orgs map to"
             typer.echo(
-                f"Your GitHub orgs map to more than one tenant ({', '.join(exc.tenants)}). "
+                f"{who} more than one tenant ({', '.join(exc.tenants)}). "
                 "Run again with --tenant <one of them>.",
                 err=True,
             )
@@ -302,6 +336,11 @@ def login(
         typer.echo(f"Logged in to tenant {token.tenant}; token saved to {path}.", err=True)
         return
     typer.echo(f"Logged in to tenant {token.tenant}.", err=True)
+    if github_actions and os.environ.get("GITHUB_ACTIONS") == "true":
+        # Registered with the job log's masking before it is printed, in case stdout is not
+        # captured. On stderr, so `TOKEN=$(felix login --github-actions)` still gets the token
+        # alone; capture it and `::add-mask::` it yourself too.
+        typer.echo(f"::add-mask::{token.access_token}", err=True)
     # The token is the whole of stdout, unwrapped, for the same reason as `mint-jwt`.
     typer.echo(token.access_token)
 

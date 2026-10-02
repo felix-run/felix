@@ -8,6 +8,14 @@ the server holds the OAuth app and checks org membership.
 A device code is single-use. If the server answers `tenant_ambiguous` (the person's orgs map to
 more than one tenant), that flow is spent: start a new one passing `tenant`.
 
+`github_actions_login` is the headless path, for a GitHub Actions job with `permissions:
+id-token: write`: it asks the runner for the job's OIDC ID token and trades it at
+`POST /auth/github/actions`. No secret is stored anywhere. An ID token is not spent by a
+refusal, so after `tenant_ambiguous` the caller may call again passing `tenant`.
+
+No request here follows a redirect, even on a caller's client that would: a 307 would resend a
+bearer credential to wherever `Location` points.
+
 Saved tokens live in one file, one per server, and a token is only ever handed back for the
 server that minted it (`bearer_for`, which `FelixClient.from_login` and `clients/cli.py` use).
 """
@@ -23,7 +31,7 @@ import os
 import secrets
 import stat
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -222,6 +230,83 @@ async def github_device_login(
                 raise refused
 
 
+# Set by the runner in a job granted `id-token: write`, and only then.
+ACTIONS_REQUEST_URL_ENV = "ACTIONS_ID_TOKEN_REQUEST_URL"
+ACTIONS_REQUEST_TOKEN_ENV = "ACTIONS_ID_TOKEN_REQUEST_TOKEN"
+
+
+async def github_actions_login(
+    base_url: str,
+    *,
+    audience: str | None = None,
+    tenant: str | None = None,
+    timeout: float = 30.0,
+    allow_insecure: bool = False,
+    client: httpx.AsyncClient | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> LoginToken:
+    """Trade this GitHub Actions job's OIDC ID token for a Felix token.
+
+    `audience` is the server's `FELIX_GITHUB_OIDC_AUDIENCE`; it defaults to `base_url`, which is
+    what that setting is documented to be. Raises `LoginError` on every way this can fail:
+    `not_in_github_actions` outside a job granted `id-token: write`, `id_token_unavailable` when
+    the runner will not issue one, else the server's own refusal.
+    """
+    base = check_url(base_url, allow_insecure=allow_insecure)
+    env = os.environ if environ is None else environ
+    request_url = env.get(ACTIONS_REQUEST_URL_ENV, "")
+    request_token = env.get(ACTIONS_REQUEST_TOKEN_ENV, "")
+    if not (request_url and request_token):
+        raise LoginError(
+            "not_in_github_actions",
+            f"{ACTIONS_REQUEST_URL_ENV} and {ACTIONS_REQUEST_TOKEN_ENV} are not both set: run "
+            "this in a GitHub Actions job with `permissions: id-token: write`",
+            status=0,
+        )
+    async with contextlib.AsyncExitStack() as stack:
+        http = client or await stack.enter_async_context(httpx.AsyncClient(timeout=timeout))
+        id_token = await _actions_id_token(http, request_url, request_token, audience or base)
+        body: dict[str, Any] = {"id_token": id_token}
+        if tenant:
+            body["tenant"] = tenant
+        resp = await _post(http, f"{base}/auth/github/actions", json=body)
+        if resp.status_code != 200:
+            raise _refusal(resp)
+        return _token_from(_ok_body(resp), base)
+
+
+async def _actions_id_token(
+    http: httpx.AsyncClient, request_url: str, request_token: str, audience: str
+) -> str:
+    try:
+        url = httpx.URL(request_url).copy_merge_params({"audience": audience})
+    except httpx.InvalidURL as exc:
+        raise LoginError("id_token_unavailable", f"{ACTIONS_REQUEST_URL_ENV} is not a URL", status=0) from exc
+    # The runner's endpoint is always https; the bearer sent there is a credential.
+    if url.scheme != "https":
+        raise LoginError("id_token_unavailable", f"{ACTIONS_REQUEST_URL_ENV} is not https", status=0)
+    try:
+        resp = await http.get(
+            url, headers={"authorization": f"bearer {request_token}"}, follow_redirects=False
+        )
+    except httpx.RequestError as exc:
+        raise LoginError(
+            "id_token_unavailable", f"the Actions runner could not be reached: {exc}", status=0
+        ) from exc
+    value = None
+    if resp.status_code == 200:
+        with contextlib.suppress(ValueError):
+            body = resp.json()
+            value = body.get("value") if isinstance(body, dict) else None
+    if not isinstance(value, str) or not value:
+        raise LoginError(
+            "id_token_unavailable",
+            f"the Actions runner did not issue an ID token (HTTP {resp.status_code})",
+            status=resp.status_code,
+        )
+    return value
+
+
 def _token_from(out: dict[str, Any], base: str) -> LoginToken:
     try:
         return LoginToken.from_json(
@@ -234,8 +319,8 @@ def _token_from(out: dict[str, Any], base: str) -> LoginToken:
 async def _post(http: httpx.AsyncClient, url: str, **kwargs: Any) -> httpx.Response:
     """One exception type for every way a login can fail, network included."""
     try:
-        return await http.post(url, **kwargs)
-    except httpx.TransportError as exc:
+        return await http.post(url, follow_redirects=False, **kwargs)
+    except httpx.RequestError as exc:
         raise LoginError("server_unreachable", f"could not reach {url}: {exc}", status=0) from exc
 
 
