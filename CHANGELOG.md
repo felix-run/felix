@@ -151,6 +151,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A model provider that is down or unconfigured says so instead of `internal error`.** An
+  unreachable endpoint (Ollama not running for `oss-only`, a connect failure or timeout anywhere)
+  is now a model-gateway error, `ollama provider unreachable (ConnectError)`, with status 503, or
+  504 on a timeout, so a `spec.model.fallbacks` chain moves past it. A provider missing a required
+  option, such as `workers_ai` without `account_id`, relays its message naming the option, and
+  plain `/chat` answers 503 rather than 500. Gateway errors now name the routed provider, so a
+  Workers AI failure no longer reads `openai provider returned HTTP 404`. The endpoint URL stays in
+  the log only.
 - **A manifest that names no model compacts against its model's real window.** With no
   `spec.model.id` and no `session.context_window_tokens`, the window fell to a fixed 128000
   rather than to `FELIX_DEFAULT_MODEL_ID`, the model the run actually uses. That is every bundled

@@ -33,7 +33,7 @@ from felix_ai.types import (
     ToolSchema,
     split_file_ref,
 )
-from felix_ai.wire.transport import DEFAULT_CONNECT_TIMEOUT_S
+from felix_ai.wire.transport import DEFAULT_CONNECT_TIMEOUT_S, typed_transport_errors
 
 logger = logging.getLogger("felix_ai.wire.base")
 
@@ -340,14 +340,15 @@ class HttpModelClient(ABC):
         opts: ModelChatOptions | None = None,
     ) -> ModelChatResult:
         opts, temperature, max_tokens = self._resolve(opts)
-        return await self._chat(
-            messages,
-            tools,
-            temperature,
-            max_tokens,
-            isolate_cache=opts.isolate_cache,
-            output_schema=opts.output_schema,
-        )
+        with typed_transport_errors(self.route.provider):
+            return await self._chat(
+                messages,
+                tools,
+                temperature,
+                max_tokens,
+                isolate_cache=opts.isolate_cache,
+                output_schema=opts.output_schema,
+            )
 
     async def stream_turn(
         self,
@@ -369,15 +370,16 @@ class HttpModelClient(ABC):
         would have returned. Callers distinguish the final item by type.
         """
         opts, temperature, max_tokens = self._resolve(opts)
-        async for item in self._stream_turn(
-            messages,
-            tools,
-            temperature,
-            max_tokens,
-            isolate_cache=opts.isolate_cache,
-            output_schema=opts.output_schema,
-        ):
-            yield item
+        with typed_transport_errors(self.route.provider):
+            async for item in self._stream_turn(
+                messages,
+                tools,
+                temperature,
+                max_tokens,
+                isolate_cache=opts.isolate_cache,
+                output_schema=opts.output_schema,
+            ):
+                yield item
 
     async def stream(
         self,
@@ -389,15 +391,16 @@ class HttpModelClient(ABC):
         # `isolate_cache` was dropped here, so a side request on the text-stream path still
         # wrote the conversation's prompt-cache key — churning the cached prefix the next
         # real turn would have hit, which is the exact thing the option exists to prevent.
-        async for chunk in self._stream(
-            messages,
-            tools,
-            temperature,
-            max_tokens,
-            isolate_cache=opts.isolate_cache,
-            output_schema=opts.output_schema,
-        ):
-            yield chunk
+        with typed_transport_errors(self.route.provider):
+            async for chunk in self._stream(
+                messages,
+                tools,
+                temperature,
+                max_tokens,
+                isolate_cache=opts.isolate_cache,
+                output_schema=opts.output_schema,
+            ):
+                yield chunk
 
     # --- what a wire format must provide -------------------------------------------
     #
