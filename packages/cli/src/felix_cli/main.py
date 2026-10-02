@@ -1,4 +1,4 @@
-"""Felix CLI — migrate, eval, mint-jwt, login, bundle-manifests, version."""
+"""Felix CLI — migrate, eval, mint-jwt, login, ingest-docs, bundle-manifests, version."""
 
 from __future__ import annotations
 
@@ -343,6 +343,70 @@ def login(
         typer.echo(f"::add-mask::{token.access_token}", err=True)
     # The token is the whole of stdout, unwrapped, for the same reason as `mint-jwt`.
     typer.echo(token.access_token)
+
+
+@app.command("ingest-docs")
+def ingest_docs(
+    root: Path = typer.Argument(..., exists=True, file_okay=False, help="Directory of .md/.mdx pages."),
+    site_url: str = typer.Option(
+        ...,
+        "--site-url",
+        help="The site those pages are published at; each document's source is its page URL there.",
+    ),
+    url: str = typer.Option("http://localhost:8080", "--url", help="The Felix server to ingest into."),
+    api_key: str | None = typer.Option(
+        None,
+        "--api-key",
+        envvar="FELIX_API_KEY",
+        help="A key or token with documents:write. Defaults to the token `felix login --save` kept.",
+    ),
+    prune: bool = typer.Option(
+        False, "--prune", help="Delete documents under --site-url that no page produced any more."
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="List what would change; change nothing."),
+    max_prune: int = typer.Option(
+        10,
+        "--max-prune",
+        min=0,
+        help="With --prune: delete nothing if more than this many documents would go.",
+    ),
+) -> None:
+    """Sync a directory of Markdown/MDX pages into the server's document corpus.
+
+    One document per page, sourced at its public URL, so an agent can quote a hit and fetch the
+    page. Safe to repeat: a page sent again replaces itself.
+    """
+    import asyncio
+
+    from felix_client import FelixClient
+    from felix_client.docs_sync import SiteUrlError, read_pages, sync_pages
+
+    try:
+        pages, skipped = read_pages(root, site_url=site_url)
+    except SiteUrlError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(2) from exc
+    for path, why in skipped:
+        typer.echo(f"skip {path}: {why}", err=True)
+    if not pages:
+        typer.echo(f"no .md/.mdx pages under {root}", err=True)
+        raise typer.Exit(1)
+    client = FelixClient.from_login(url, api_key=api_key)
+    result = asyncio.run(
+        sync_pages(client, pages, site_url=site_url, prune=prune, dry_run=dry_run, max_prune=max_prune)
+    )
+    verb = "would ingest" if dry_run else "ingested"
+    for source, chunks in result.ingested:
+        typer.echo(f"{verb} {source}" + ("" if dry_run else f" ({chunks} chunks)"))
+    for source in result.pruned:
+        typer.echo(f"{'would prune' if dry_run else 'pruned'} {source}")
+    for source, error in result.failed:
+        typer.echo(f"failed {source}: {error}", err=True)
+    typer.echo(
+        f"{len(result.ingested)} pages, {len(result.pruned)} pruned, {len(result.failed)} failed", err=True
+    )
+    if result.failed:
+        raise typer.Exit(1)
 
 
 @app.command("bundle-manifests")

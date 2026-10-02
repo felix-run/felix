@@ -111,7 +111,11 @@ First, because everything else governs it.
       workstream each drew ~7 review findings. The follow-up landed: `spec.document_tools`
       binds a retrieval tool and `support` declares it as `search_docs`. What remains of this
       item is ingesting the Felix docs themselves into a deployment's corpus, which is an
-      operations task rather than a harness one.
+      operations task rather than a harness one. The tool for it landed 2026-10-02:
+      `felix ingest-docs <dir> --site-url https://docs.felix.run [--prune]` syncs the felix-web
+      pages, one document per page sourced at its public URL so `search_docs` hits can be
+      followed with `fetch_docs`. Still to do: run it against the reference deployment (needs a
+      `documents:write` key there), and decide whether CI re-syncs on a felix-web docs merge.
       Reuses the `Embedder` seam and `FELIX_MEMORY_EMBEDDER` rather than adding a second
       embedder setting — one embedder per deployment, one vector dimension.
 - [x] **Structured output** — `spec.output_schema` is a JSON Schema the answer must match, and
