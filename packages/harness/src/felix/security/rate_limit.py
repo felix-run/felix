@@ -316,8 +316,10 @@ def client_key(request: Any, settings: Any, *, ipv6_prefix: int = 128) -> str:
 def _fold_ipv6(host: str, prefix: int) -> str:
     """``host`` as its ``/prefix`` network when it is IPv6, else unchanged.
 
-    An IPv4-mapped address (`::ffff:203.0.113.7`, a dual-stack socket's view of a v4 peer)
-    is the v4 client it names, not a member of `::ffff:0:0/64` with every other v4 client.
+    An address that embeds a v4 client is that client, not a member of one /64 with every
+    other v4 client: IPv4-mapped (`::ffff:203.0.113.7`, a dual-stack socket's view of a v4
+    peer) and NAT64's well-known prefix (`64:ff9b::203.0.113.7`, an IPv6-only cluster
+    behind a translator).
     """
     if prefix >= 128:
         return host
@@ -329,7 +331,13 @@ def _fold_ipv6(host: str, prefix: int) -> str:
         return host
     if address.ipv4_mapped is not None:
         return str(address.ipv4_mapped)
+    if address in _NAT64_WELL_KNOWN:
+        return str(ipaddress.IPv4Address(int(address) & 0xFFFFFFFF))
     return str(ipaddress.IPv6Network((address, prefix), strict=False))
+
+
+# RFC 6052: the low 32 bits are the IPv4 client.
+_NAT64_WELL_KNOWN = ipaddress.IPv6Network("64:ff9b::/96")
 
 
 __all__ = [
