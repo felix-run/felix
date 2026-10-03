@@ -40,6 +40,7 @@ from felix_ai.types import (
 from felix_ai.wire import ModelGatewayError
 
 from felix.observability.metrics import record_counter
+from felix.patterns.model_vision import carries_images
 
 logger = logging.getLogger("felix.patterns.model_composites")
 
@@ -345,3 +346,73 @@ def _is_provider_error(err: object) -> bool:
         return err.status >= 500 or err.status == 429
     status = getattr(err, "status", None) or getattr(err, "status_code", None)
     return bool(isinstance(status, int) and (status >= 500 or status == 429))
+
+
+@dataclass
+class _VisionRoutingClient:
+    """The primary for text, the vision route for any call that carries an image.
+
+    Not resilience, but the same shape: one call to the client it picks, its result handed
+    back. `model_id` and `route` stay the primary's, like the other composites; the route
+    that answered rides on the result (`served_model_id` / `served_route`), which is what
+    `record_model_usage` prices. Read off this client instead, it would be whichever call
+    finished last -- right only while nothing calls one built model concurrently.
+
+    Once an image is in the history every later call carries it, so a thread that was shown
+    a picture stays on the vision route until compaction or a window drops it.
+    """
+
+    primary: ModelClient
+    vision: ModelClient
+    model_id: str
+    route: ModelRoute
+    price_override: dict[str, float] | None = None
+
+    def _pick(self, messages: Sequence[ChatMessage]) -> ModelClient:
+        if not carries_images(messages):
+            return self.primary
+        # Per call, not per image: a thread shown one picture counts here on every turn after.
+        record_counter(
+            "felix_model_switch",
+            {"from": self.primary.model_id, "to": self.vision.model_id, "reason": "vision"},
+        )
+        return self.vision
+
+    def _served(self, client: ModelClient, result: ModelChatResult) -> ModelChatResult:
+        if client is self.primary or result.served_route is not None:
+            return result
+        return replace(result, served_model_id=client.model_id, served_route=client.route)
+
+    async def chat(
+        self,
+        messages: list[ChatMessage],
+        tools: Sequence[ToolSchema],
+        opts: ModelChatOptions | None = None,
+    ) -> ModelChatResult:
+        client = self._pick(messages)
+        return self._served(client, await client.chat(messages, tools, opts))
+
+    async def stream(
+        self,
+        messages: list[ChatMessage],
+        tools: Sequence[ToolSchema],
+        opts: ModelChatOptions | None = None,
+    ) -> AsyncIterator[str]:
+        async for chunk in self._pick(messages).stream(messages, tools, opts):
+            yield chunk
+
+    async def stream_turn(
+        self,
+        messages: list[ChatMessage],
+        tools: Sequence[ToolSchema],
+        opts: ModelChatOptions | None = None,
+    ) -> AsyncIterator[StreamDelta | ModelChatResult]:
+        # Defined unconditionally, like the composites above, so a client that cannot stream
+        # a turn is settled here with `chat` rather than leaving the caller to notice.
+        client = self._pick(messages)
+        if supports_stream_turn(client):
+            async for item in client.stream_turn(messages, tools, opts):
+                yield self._served(client, item) if isinstance(item, ModelChatResult) else item
+            return
+        for item in _settled_stream(self._served(client, await client.chat(messages, tools, opts))):
+            yield item

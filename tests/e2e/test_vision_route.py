@@ -55,6 +55,7 @@ async def test_v1_refuses_an_image_no_route_can_see(boot: Any) -> None:
             "/v1/chat/completions", json={"model": "blind", "messages": [_image_turn()]}
         )
         assert resp.status_code == 422, resp.text
+        assert resp.json()["error"]["code"] == "model_not_vision_capable"
         assert DEFAULT_ROUTE in resp.json()["error"]["message"]
         assert app.spy.calls == [], "a refused turn must not reach any model"
 
@@ -78,6 +79,8 @@ async def test_a_text_turn_to_a_text_only_route_is_untouched(boot: Any) -> None:
             json={"model": "blind", "messages": [{"role": "user", "content": "hello"}]},
         )
         assert resp.status_code == 200, resp.text
+        assert [c.model_id for c in app.spy.clients if c.calls] == [DEFAULT_ROUTE]
+        assert [m.content for call in app.spy.prompts for m in call if m.role == "user"] == ["hello"]
 
 
 async def test_the_default_vision_route_answers_the_image(boot: Any) -> None:
@@ -108,3 +111,25 @@ async def test_the_manifest_vision_model_beats_the_default(boot: Any) -> None:
         )
         assert resp.status_code == 200, resp.text
         assert [c.model_id for c in app.spy.clients if c.calls] == ["e2e-vision-2"]
+
+
+async def test_chat_stream_refuses_before_the_stream_opens(boot: Any) -> None:
+    """The route the check exists for: past this point a raise holds the connection open."""
+    env = {"FELIX_MODEL_ROUTES": _routes_with_text_only_default(), "FELIX_DEFAULT_VISION_MODEL_ID": ""}
+    async with boot(
+        [ScriptedTurn(content="unseen")], env=env, manifests={"blind": _manifest("blind")}
+    ) as app:
+        resp = await app.client.post("/chat/stream", json={"manifest": "blind", "messages": [_image_turn()]})
+        assert resp.status_code == 422, resp.text
+        assert DEFAULT_ROUTE in resp.json()["detail"]
+        assert app.spy.calls == []
+
+
+async def test_the_manifest_vision_model_alone_satisfies_the_check(boot: Any) -> None:
+    """No deployment default: only the manifest's own route can let the turn through."""
+    env = {"FELIX_MODEL_ROUTES": _routes_with_text_only_default(), "FELIX_DEFAULT_VISION_MODEL_ID": ""}
+    seer = _manifest("seer", vision_model="e2e-vision")
+    async with boot([ScriptedTurn(content="a logo")], env=env, manifests={"seer": seer}) as app:
+        resp = await app.client.post("/chat", json={"manifest": "seer", "messages": [_image_turn()]})
+        assert resp.status_code == 200, resp.text
+        assert [c.model_id for c in app.spy.clients if c.calls] == ["e2e-vision"]

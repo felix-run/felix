@@ -2,221 +2,174 @@
 
 A route whose model is vouched text-only (`felix_ai.catalog.accepts_images` is False) used to
 be sent every image a conversation carried, and answered that it could not see one -- which
-reads as the client's fault. Two things replace that here:
+reads as the client's fault. What replaces that is decided once, by `vision_plan`, from the
+route table alone:
 
-- `_VisionRoutingClient` sends a call that carries an image to `spec.model.vision_model`
-  (or `FELIX_DEFAULT_VISION_MODEL_ID`) and every other call to the primary, so a cheap text
-  route can stay the default for an agent that is sometimes shown a picture.
-- `without_images` is the floor under that: the leaf client in `patterns/model.py` swaps each
-  image for a line saying it was omitted, so a text-only route that has no vision route --
-  a fallback, a planner, an image a tool returned mid-run -- says so in the transcript
-  instead of being handed bytes it ignores.
+- With a vision route (`spec.model.vision_model`, else `FELIX_DEFAULT_VISION_MODEL_ID`),
+  `build_model` composes `_VisionRoutingClient` (in `model_composites.py`, beside the other
+  composites) so a call carrying an image goes there and every other call to the primary.
+- Without one, a request route refuses a user turn carrying an image before it streams
+  (`unseeable_image_problem`), because a person who attached a picture should hear that it
+  cannot be read rather than get an answer about something else.
+- Under both, `without_images` is the floor: the leaf client in `patterns/model.py` swaps each
+  image for a line saying it was omitted, so a text-only route reached anyway -- a fallback, an
+  image a tool returned mid-run -- says so instead of being handed bytes it ignores.
 
-A user turn that would reach that floor is refused before streaming starts instead
-(`image_route_problem`), because a person who attached a picture should hear that it cannot
-be read, not get an answer about something else.
+The 422 and the build read the same plan, so they cannot disagree about a route: a vision id
+that is not routed is a problem for both, not a pass for one and a build error for the other.
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from felix_ai.catalog import accepts_images
-from felix_ai.types import (
-    ChatMessage,
-    ContentBlock,
-    ModelChatOptions,
-    ModelChatResult,
-    ModelClient,
-    ModelRoute,
-    StreamDelta,
-    ToolSchema,
-    supports_stream_turn,
-)
+from felix_ai.types import ChatMessage, ContentBlock, ModelRoute
 
 from felix.observability.metrics import record_counter
-from felix.patterns.model_composites import _settled_stream
+
+if TYPE_CHECKING:
+    from felix.config import Settings
 
 logger = logging.getLogger("felix.patterns.model_vision")
+
+_IMAGE_BLOCKS = ("image", "image_url")
 
 
 def route_accepts_images(route: ModelRoute | None) -> bool | None:
     """`accepts_images` for a route: its own `modalities` first, then the catalog."""
     if route is None:
         return None
-    return accepts_images(route.model, getattr(route, "modalities", None))
+    return accepts_images(route.model, route.modalities)
 
 
 def message_has_images(m: ChatMessage) -> bool:
     if m.attachments:
         return True
-    return any(b.type != "text" for b in m.content_blocks or ())
+    # Named rather than "not text": the next block type (a document, audio) is not an image,
+    # and must not be rerouted or replaced as one.
+    return any(b.type in _IMAGE_BLOCKS for b in m.content_blocks or ())
 
 
 def carries_images(messages: Sequence[ChatMessage]) -> bool:
     return any(message_has_images(m) for m in messages)
 
 
+def _image_count(m: ChatMessage) -> int:
+    if m.content_blocks:
+        return sum(b.type in _IMAGE_BLOCKS for b in m.content_blocks)
+    return len(m.attachments or ())
+
+
 def without_images(messages: list[ChatMessage], route_name: str) -> list[ChatMessage]:
     """`messages` with every image replaced by a line naming the route that could not see it.
 
     Returns the list untouched when nothing carries an image, which is nearly every call.
+    Every call strips the whole history again, but only images that arrived since the last
+    assistant turn are counted and logged: an image stays in the history for the rest of the
+    run, and counting it per call would report one picture as many.
     """
     if not carries_images(messages):
         return messages
     note = f"[image omitted: model route '{route_name}' does not accept images]"
+    last_reply = max((i for i, m in enumerate(messages) if m.role == "assistant"), default=-1)
     out: list[ChatMessage] = []
-    stripped = 0
-    for m in messages:
+    new = 0
+    for i, m in enumerate(messages):
         if not message_has_images(m):
             out.append(m)
             continue
+        if i > last_reply:
+            new += _image_count(m)
         if m.content_blocks:
-            blocks: list[ContentBlock] = []
-            for b in m.content_blocks:
-                if b.type == "text":
-                    blocks.append(b)
-                else:
-                    stripped += 1
-                    blocks.append(ContentBlock(type="text", text=note))
+            blocks = [
+                ContentBlock(type="text", text=note) if b.type in _IMAGE_BLOCKS else b
+                for b in m.content_blocks
+            ]
+            # `inline_parts` renders `content_blocks` and ignores `attachments` when both are
+            # set, so the attachments carried nothing to the wire and need no note of their own.
             out.append(replace(m, content_blocks=blocks, attachments=None))
         else:
             count = len(m.attachments or ())
-            stripped += count
-            text = "\n".join([m.content, *([note] * count)]) if m.content else "\n".join([note] * count)
+            text = "\n".join([*([m.content] if m.content else []), *([note] * count)])
             out.append(replace(m, content=text, attachments=None))
-    record_counter("felix_model_images_omitted", {"model": route_name}, stripped)
-    logger.warning("omitted %d image(s) for text-only model route %s", stripped, route_name)
+    if new:
+        record_counter("felix_model_images_omitted", {"model": route_name}, new)
+        logger.warning("omitted %d image(s) for text-only model route %s", new, route_name)
     return out
 
 
-@dataclass
-class _VisionRoutingClient:
-    """The primary for text, the vision route for any call that carries an image.
+@dataclass(frozen=True, slots=True)
+class VisionPlan:
+    """Which route answers an image for one model spec, decided from the route table.
 
-    `model_id`, `route` and `price_override` follow whichever client answered the most
-    recent call, because `record_model_usage` reads them off the client *after* the call:
-    left fixed at the primary's, a vision turn would be metered and priced as the cheap
-    text model it never reached. Within one run that is stable -- once an image is in the
-    history, every later call carries it and goes to the vision route.
+    `vision_id` is set only when it should be composed: the primary is vouched text-only and
+    a routed, image-capable vision route was named. `problem` says why an image cannot be
+    seen. `misconfigured` marks a vision route that was named and cannot serve -- a build
+    error, like an unroutable fallback -- as against no vision route at all, which only a
+    turn carrying an image needs to hear about.
     """
 
-    primary: ModelClient
-    vision: ModelClient
-    _served: ModelClient | None = None
-
-    @property
-    def model_id(self) -> str:
-        return (self._served or self.primary).model_id
-
-    @property
-    def route(self) -> ModelRoute:
-        return (self._served or self.primary).route
-
-    @property
-    def price_override(self) -> dict[str, float] | None:
-        return getattr(self._served or self.primary, "price_override", None)
-
-    def _pick(self, messages: Sequence[ChatMessage]) -> ModelClient:
-        client = self.vision if carries_images(messages) else self.primary
-        if client is self.vision:
-            record_counter(
-                "felix_model_switch",
-                {"from": self.primary.model_id, "to": self.vision.model_id, "reason": "vision"},
-            )
-        self._served = client
-        return client
-
-    async def chat(
-        self,
-        messages: list[ChatMessage],
-        tools: Sequence[ToolSchema],
-        opts: ModelChatOptions | None = None,
-    ) -> ModelChatResult:
-        return await self._pick(messages).chat(messages, tools, opts)
-
-    async def stream(
-        self,
-        messages: list[ChatMessage],
-        tools: Sequence[ToolSchema],
-        opts: ModelChatOptions | None = None,
-    ) -> AsyncIterator[str]:
-        async for chunk in self._pick(messages).stream(messages, tools, opts):
-            yield chunk
-
-    async def stream_turn(
-        self,
-        messages: list[ChatMessage],
-        tools: Sequence[ToolSchema],
-        opts: ModelChatOptions | None = None,
-    ) -> AsyncIterator[StreamDelta | ModelChatResult]:
-        # Defined unconditionally, like the resilience composites, so a client that cannot
-        # stream a turn is settled here with `chat` rather than leaving the caller to notice.
-        client = self._pick(messages)
-        if supports_stream_turn(client):
-            async for item in client.stream_turn(messages, tools, opts):
-                yield item
-            return
-        for item in _settled_stream(await client.chat(messages, tools, opts)):
-            yield item
+    primary_id: str
+    vision_id: str | None = None
+    problem: str | None = None
+    misconfigured: bool = False
 
 
-def vision_route_id(settings: Any, spec: Any) -> str:
-    """The logical route images go to when the primary cannot take them, or ''."""
-    return str(getattr(spec, "vision_model", None) or getattr(settings, "default_vision_model_id", "") or "")
-
-
-def with_vision_route(client: ModelClient, settings: Any, spec: Any, build_one: Any) -> ModelClient:
-    """`client` composed with a vision route, when the primary is text-only and one is set.
-
-    A primary the catalog cannot vouch for either way is left alone: rerouting it would move
-    traffic off a route that may well see images, on the strength of a guess.
-    """
-    if route_accepts_images(client.route) is not False:
-        return client
-    vision_id = vision_route_id(settings, spec)
-    if not vision_id:
-        return client
-    vision = build_one(settings, spec, vision_id)
-    if route_accepts_images(vision.route) is False:
-        raise ValueError(
-            f"vision model route '{vision_id}' ({vision.route.model}) does not accept images either"
-        )
-    return _VisionRoutingClient(primary=client, vision=vision)
-
-
-def image_route_problem(settings: Any, spec: Any, model_id: str | None = None) -> str | None:
-    """Why a turn carrying an image cannot be answered by this model spec, or None.
-
-    Resolved from routes and the catalog alone, without building a client, so a request
-    route can refuse before it starts streaming -- a raise mid-stream holds the connection.
-    `model_id` is a per-request override of `spec.id` (the allowlisted `model` on `/chat`).
-    """
+def vision_plan(settings: Settings, spec: Any, model_id: str | None = None) -> VisionPlan:
+    """The one place the image routing is decided. `model_id` overrides `spec.id` per request."""
     from felix.patterns.model import parse_model_routes
 
     routes = parse_model_routes(settings)
     primary_id = model_id or getattr(spec, "id", None) or settings.default_model_id
-    if route_accepts_images(routes.get(primary_id)) is not False:
+    primary = routes.get(primary_id)
+    if primary is None or route_accepts_images(primary) is not False:
+        # Can see, or cannot be vouched for either way -- rerouting the latter would move
+        # traffic off a route that may well see images, on the strength of a guess. An
+        # unrouted primary is `build_one_model`'s error to raise, not this one's.
+        return VisionPlan(primary_id)
+    vision_id = getattr(spec, "vision_model", None) or settings.default_vision_model_id
+    if not vision_id:
+        return VisionPlan(
+            primary_id,
+            problem=(
+                f"model route '{primary_id}' ({primary.model}) does not accept images; set "
+                "spec.model.vision_model or FELIX_DEFAULT_VISION_MODEL_ID to a route that does"
+            ),
+        )
+    vision = routes.get(vision_id)
+    if vision is None:
+        problem = f"vision model route '{vision_id}' is not in FELIX_MODEL_ROUTES"
+    elif route_accepts_images(vision) is False:
+        problem = f"vision model route '{vision_id}' ({vision.model}) does not accept images either"
+    else:
+        return VisionPlan(primary_id, vision_id=vision_id)
+    return VisionPlan(primary_id, problem=problem, misconfigured=True)
+
+
+def unseeable_image_problem(
+    manifest: Any, messages: Sequence[ChatMessage], settings: Settings, model_id: str | None = None
+) -> str | None:
+    """Why this turn's images cannot be seen by the agent `manifest` compiles to, or None.
+
+    For request routes, before the agent is built and before a stream opens -- a raise
+    mid-stream holds the connection. Each route wraps the answer in its own error envelope.
+    """
+    if not carries_images(messages):
         return None
-    vision_id = vision_route_id(settings, spec)
-    if vision_id and route_accepts_images(routes.get(vision_id)) is not False:
-        return None
-    wire = routes[primary_id].model
-    return (
-        f"model route '{primary_id}' ({wire}) does not accept images; set spec.model.vision_model "
-        "or FELIX_DEFAULT_VISION_MODEL_ID to a route that does"
-    )
+    spec = getattr(getattr(manifest, "spec", None), "model", None)
+    return vision_plan(settings, spec, model_id).problem
 
 
 __all__ = [
+    "VisionPlan",
     "carries_images",
-    "image_route_problem",
     "message_has_images",
     "route_accepts_images",
-    "vision_route_id",
-    "with_vision_route",
+    "unseeable_image_problem",
+    "vision_plan",
     "without_images",
 ]

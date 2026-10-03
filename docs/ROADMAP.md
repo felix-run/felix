@@ -241,6 +241,10 @@ First, because everything else governs it.
         can't see images". The catalog gained `text_only` (vouched, not the `("text",)` default every
         entry inherits), a route can declare `modalities`, and a turn carrying an image goes to
         `spec.model.vision_model` / `FELIX_DEFAULT_VISION_MODEL_ID` or is a 422 naming the route.
+        Open from its review: compaction sizes the window from `spec.model.id`, so a vision route
+        with a smaller window than the primary is compacted against the wrong one; the vision
+        route has no fallbacks of its own; and `_FallbackClient` could set `served_route` the
+        way the vision client now does, so a fallback's turn stops being metered as the primary's.
       - Next, in order, one PR live at a time: **images in tool results** (Anthropic `tool_result`
         image blocks, a follow-up user part on the OpenAI wire, screened as untrusted; the browser
         screenshot stops arriving as base64 text), **Pillow image tools** behind an `image` extra,

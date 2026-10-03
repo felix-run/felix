@@ -64,13 +64,14 @@ from felix.observability.tracing import timed_span
 from felix.patterns.model_composites import (
     _EscalationClient,
     _FallbackClient,
+    _VisionRoutingClient,
 )
 from felix.patterns.model_registry import (
     get_model_provider,
     list_model_providers,
     register_model_provider,
 )
-from felix.patterns.model_vision import route_accepts_images, with_vision_route, without_images
+from felix.patterns.model_vision import route_accepts_images, vision_plan, without_images
 
 logger = logging.getLogger("felix.patterns.model")
 
@@ -284,11 +285,13 @@ def record_model_usage(
     if manifest_id is None:
         ctx = try_get_context()
         manifest_id = (ctx.manifest_id if ctx is not None else "") or ""
+    # `getattr`: a plugin provider's result may predate these fields.
+    served = getattr(result, "served_route", None)
     return record_usage(
         result,
         manifest_id=manifest_id,
-        model_id=getattr(model, "model_id", "") or "",
-        wire_model_id=wire_model_id(model),
+        model_id=getattr(result, "served_model_id", None) or getattr(model, "model_id", "") or "",
+        wire_model_id=served.model if served is not None else wire_model_id(model),
         meta=meta,
         price_override=getattr(model, "price_override", None),
     )
@@ -683,8 +686,20 @@ def build_model(settings: Settings | None, spec: Any, *, decider: Any = None) ->
             decider=decider if getattr(esc, "decider", False) else None,
         )
     # Outermost, so it decides per call which whole chain answers: the primary's, with its
-    # fallbacks and escalation, or the vision route's.
-    return with_vision_route(client, settings, spec, build_one_model)
+    # fallbacks and escalation, or the vision route's. Decided by the same plan the request
+    # routes' 422 reads, so the two cannot disagree about a route.
+    plan = vision_plan(settings, spec)
+    if plan.misconfigured:
+        raise ValueError(plan.problem)
+    if plan.vision_id:
+        client = _VisionRoutingClient(
+            primary=client,
+            vision=build_one_model(settings, spec, plan.vision_id),
+            model_id=client.model_id,
+            route=client.route,
+            price_override=price_override,
+        )
+    return client
 
 
 __all__ = [

@@ -68,8 +68,8 @@ not served and every token from that issuer would 401 while everything else stay
 | `felix_model_unmetered` | `manifest_id`, `model` | **Watch this.** A turn reported no usage, so it counted against no budget — `limits.max_cost_usd` and the token limits fail *open* for it. Usually a streamed response missing `stream_options.include_usage`. |
 | `felix_model_unpriced` | `manifest_id`, `model` | **Watch this.** A turn reported usage but Felix has no rate for the wire model and the manifest sets no `spec.model.price`, so it was metered at `$0` — the token limits hold, `limits.max_cost_usd` fails *open* for it. Add the rate to the catalog or the manifest. |
 | `felix_model_call_seconds` | `model`, `status` | Provider call latency, one observation per attempt. |
-| `felix_model_switch` | `from`, `to`, `reason` | A fallback or escalation changed model mid-run, or a call carrying an image went to the vision route (`reason=vision`). |
-| `felix_model_images_omitted` | `model` | Images replaced by an "omitted" line because the route is vouched text-only and no vision route took the call — a fallback or a tool image reaching a cheap route. Set `spec.model.vision_model` or `FELIX_DEFAULT_VISION_MODEL_ID`. |
+| `felix_model_switch` | `from`, `to`, `reason` | A fallback or escalation changed model mid-run, or a call carrying an image went to the vision route (`reason=vision`, counted per call: a thread shown one picture counts on every later turn). |
+| `felix_model_images_omitted` | `model` | Images, counted once each when they arrive, replaced by an "omitted" line because the route is vouched text-only and no vision route took the call — a fallback or a tool image reaching a cheap route. Set `spec.model.vision_model` or `FELIX_DEFAULT_VISION_MODEL_ID`. |
 | `felix_model_retry` | `provider`, `status` | An upstream call was retried. |
 | `felix_model_retry_skipped` | `provider`, `reason` | A retry was declined (`reason=quota`). |
 | `felix_model_timeout` | `provider` | `FELIX_MODEL_TIMEOUT_SECONDS` elapsed. |

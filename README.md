@@ -434,7 +434,9 @@ override) or by the built-in defaults:
 
 A turn that carries an image and is bound for a model the catalog marks text-only goes to
 `spec.model.vision_model`, or `FELIX_DEFAULT_VISION_MODEL_ID` when the manifest names none — so a
-cheap text route can stay the default and a picture still gets looked at. With neither set, the
+cheap text route can stay the default and a picture still gets looked at. The image stays in the
+thread's history, so every later turn of that thread also goes to the vision route, until compaction
+or a window drops it. The vision route is a single route: it has no fallbacks or escalation of its own. With neither set, the
 request is refused with a 422 naming the route instead of reaching a model that would answer that
 it cannot see. A custom route declares what it accepts with a `modalities` key, which the catalog
 cannot know for an arbitrary model:

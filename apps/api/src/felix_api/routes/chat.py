@@ -268,12 +268,9 @@ def _refuse_unseeable_images(
     Before the agent is built and before a stream opens, so the person who attached the
     picture hears that it cannot be read rather than getting an answer about something else.
     """
-    from felix.patterns.model_vision import carries_images, image_route_problem
+    from felix.patterns.model_vision import unseeable_image_problem
 
-    if not carries_images(messages):
-        return
-    spec = getattr(getattr(manifest, "spec", None), "model", None)
-    problem = image_route_problem(settings, spec, model_id)
+    problem = unseeable_image_problem(manifest, messages, settings, model_id)
     if problem:
         raise HTTPException(status_code=422, detail=problem)
 

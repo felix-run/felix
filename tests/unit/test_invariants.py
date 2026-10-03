@@ -952,10 +952,7 @@ def test_governance_wrappers_declare_their_config_type() -> None:
 # thing that can see it — see `_with_usage_of` in `model_composites.py`.
 #
 # So the exemption is "this module holds clients", not "nothing here needs to meter".
-# `model_vision.py` is the fallback's case: `_VisionRoutingClient` makes one call to the client
-# it picked and returns that result, and reports the picked client's route for the caller to
-# meter under.
-_UNMETERED_BY_DESIGN = {"model.py", "model_composites.py", "model_vision.py"}
+_UNMETERED_BY_DESIGN = {"model.py", "model_composites.py"}
 
 
 def test_a_pattern_that_reaches_a_model_records_the_usage() -> None:

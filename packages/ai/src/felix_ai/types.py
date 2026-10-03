@@ -374,6 +374,12 @@ class ModelChatResult:
     message: ChatMessage
     stop_reason: StopReason = "end_turn"
     usage: TokenUsage | None = None
+    # The route that produced this result, when a composite chose among several. Metering
+    # reads it in preference to the client it called: a client's own `model_id` names the
+    # route it was built for, which for a composite is not always the one that answered --
+    # and reading the answering route off a shared client after the call is a race.
+    served_model_id: str | None = None
+    served_route: ModelRoute | None = None
 
 
 @runtime_checkable
