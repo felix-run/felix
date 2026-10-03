@@ -518,6 +518,38 @@ async def test_overlapping_sweeps_run_one_at_a_time(settings: Settings, routes: 
     assert (await run_jobs(settings))["skipped"] == 0, "the lock is released after a sweep"
 
 
+async def test_a_sweep_whose_lease_was_taken_over_stops_before_its_next_job(
+    settings: Settings, routes: ScriptedRoutes
+) -> None:
+    """A sweep that outlived its lease finds out at its next renewal and claims nothing more:
+    carrying on would run two sweeps at once, which is what the lease is for."""
+    from felix.skills.quality_store import get_sweep_lease_store, now_ms
+
+    files = bundle(**{"evals/scenarios.json": json.dumps(TWO[:1])})
+    queued = {}
+    for tenant in ("acme", "globex"):
+        version = await published(settings, files, tenant=tenant)
+        queued[tenant] = await evaluate.queue_eval(settings, tenant, NAME, version, requested_by="ops")
+
+    async def a_peer_takes_the_lapsed_lease() -> None:
+        later = now_ms() + 10 * 24 * 3600 * 1000
+        assert await get_sweep_lease_store(settings).acquire("peer", now=later, lease_ms=1000)
+
+    routes.before(ANSWERER, 1, a_peer_takes_the_lapsed_lease)
+    _script(routes, [(0.4, 0.8), (0.4, 0.8)])
+
+    assert await run_jobs(settings) == {"improvements": 0, "evals": 1, "failed": 0, "skipped": 0}
+
+    statuses = sorted(
+        [
+            (await get_skill_eval_store(settings).get(t, q["id"]) or {}).get("status")
+            for t, q in queued.items()
+        ],
+        key=str,
+    )
+    assert statuses == ["queued", "succeeded"]
+
+
 async def test_one_sweep_lands_each_tenants_jobs_in_that_tenant(
     settings: Settings, routes: ScriptedRoutes
 ) -> None:

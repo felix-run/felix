@@ -36,9 +36,11 @@ BYPASS_PREDICATE = "current_setting('app.rls_bypass', true) = 'on'"
 # Tables allowed to exist without a tenant column — a written decision that their rows
 # belong to no tenant. `memory_vector_config` is one deployment-wide row recording the
 # dimension the vector column was built at (`0009`); it has no model, is read by raw
-# SQL, and never has RLS enabled. `oauth_token_cache` was the other, never read or
-# written, and is dropped in `0013`.
-TENANTLESS_TABLES: frozenset[str] = frozenset({"memory_vector_config"})
+# SQL, and never has RLS enabled. `skill_job_lease` (`0024`) is the one row that keeps the
+# cross-tenant `skill_jobs` sweep to one worker at a time: a name, a random token and a time,
+# read by raw SQL, no RLS. `oauth_token_cache` was the other, never read or written, and is
+# dropped in `0013`.
+TENANTLESS_TABLES: frozenset[str] = frozenset({"memory_vector_config", "skill_job_lease"})
 
 # An optionally schema-qualified, optionally quoted identifier; group 1 is the bare name.
 _IDENT = r'(?:"?[A-Za-z_][A-Za-z0-9_]*"?\.)?"?([A-Za-z_][A-Za-z0-9_]*)"?'

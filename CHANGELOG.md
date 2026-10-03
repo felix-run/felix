@@ -210,7 +210,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `FELIX_SKILL_JOB_DEADLINE_SECONDS` (1200). Per tenant, `FELIX_SKILL_JOBS_MAX_QUEUED` (20)
     jobs may be queued or running and `FELIX_SKILL_JOBS_DAILY_LIMIT` (200) created per UTC day;
     past either, 429 `skill_jobs_cap_reached`. Claims are fair across tenants. One `skill_jobs`
-    sweep runs at a time across workers, using a Postgres advisory lock. Each call is capped by
+    sweep runs at a time across workers, holding a lease row (`skill_job_lease`). Each call is capped by
     `FELIX_SKILL_EVAL_MAX_TOKENS` (2048) or `FELIX_SKILL_IMPROVE_MAX_TOKENS` (8192).
   - **Publish and rollback can name the live version they expect.** An optional body
     `{expected_live_version}` (null meaning "nothing live") is checked under the skill row's lock;
@@ -506,6 +506,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A Felix-to-Felix A2A peer call answered with a Python dict repr.** The peer client read the
   answer only from `status.message`, and Felix's own A2A server puts it in `artifacts`. The client
   now reads `artifacts`, falling back to the status message, and never says the answer twice.
+- **One skill-job sweep at a time now holds behind PgBouncer.** The `skill_jobs` sweep guarded
+  itself with a session advisory lock. Under transaction pooling (`compose.pgbouncer.yml`) the
+  lock stayed on whichever server session took it, and the unlock usually ran on another session
+  and released nothing. Workers handed the leaked session took the lock again, because advisory
+  locks are reentrant per session, so two sweeps ran at once. Every other worker skipped until
+  PgBouncer recycled the connection. The sweep now takes a `skill_job_lease` row (migration
+  `0024`, no tenant and no RLS). It takes, renews and releases the row by token, one statement
+  per transaction. The lease lasts `FELIX_SKILL_JOB_DEADLINE_SECONDS` plus five minutes and is
+  renewed before every job. A sweep whose lease was taken over stops before its next job. The
+  fair claim also orders tenants by last claim *before* cutting the scan to 500, so a tenant
+  whose id sorts late is no longer left out of every scan.
 
 - **A plan's steps keep their titles whatever key the model used.** `plan_create` declared `steps`
   as a bare array, so models guessed a step's shape, and one sent `{"description": …}` for every
