@@ -154,8 +154,9 @@ spends real money — it needs a model key and refuses to run without one.
 - `packages/harness` (`felix`) — all the logic: manifests, patterns, tools, session,
   governance, auth, memory, eval, durability, storage, plugins.
 - `packages/cli` (`felix`) — `migrate | eval | mint-jwt | login | ingest-docs | bundle-manifests | validate-manifest | doctor | version`.
-- `apps/api` (`felix-api`) — FastAPI routes, one module per surface in `routes/`, plus two
-  underscore-prefixed modules that carry no route: `_sse.py` knows the SSE *envelope* (frame
+- `apps/api` (`felix-api`) — FastAPI routes, one module per surface in `routes/`, plus three
+  underscore-prefixed modules that carry no route: `_skill_library_models.py` holds the
+  `/skill-library` request and response models, `_sse.py` knows the SSE *envelope* (frame
   spelling, `[DONE]`, heartbeats — never spell a frame by hand elsewhere) and `_streaming.py`
   knows the *source* (session-log tailing, cursors, poll backoff, and **both** stream loops —
   `resume_stream_gen` for a reattach and `durable_run_gen` for a durable run, which are the
