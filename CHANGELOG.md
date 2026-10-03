@@ -10,12 +10,16 @@ Each release section is written from the `## Changelog` sections of the pull req
 
 ## [Unreleased]
 
+## [0.6.1] — 2026-10-03
+
 ### Changed
 
 - **The vision route fails over.** It was built alone, so one provider error on a turn carrying an
   image failed the turn, while the same manifest's text turns had `spec.model.fallbacks` to fall
   back on. The vision route now tries those fallbacks, skipping any the catalog vouches text-only,
   since a text-only model would be handed an "image omitted" line in place of the picture.
+
+- **A pull request's changelog entry goes in its description, not in `CHANGELOG.md`.** It goes under `## Changelog` and a Keep a Changelog heading (Added, Changed, Deprecated, Removed, Fixed, Security), or `none: <reason>` when nothing is user-visible. The `changelog` workflow fails a description with neither. At release, `python3 scripts/changelog.py cut X.Y.Z` writes the version section from every pull request merged since the last tag, each entry citing its `(#N)`, and keeps entries still written by hand under `[Unreleased]`. Pull requests no longer conflict on `CHANGELOG.md`. (#456)
 
 ### Fixed
 
@@ -30,11 +34,13 @@ Each release section is written from the `## Changelog` sections of the pull req
   screening cache keys differently. Every image a tool returned under `image_model` therefore
   cost two vision calls. The stored reference now reuses the transcript and verdict its bytes
   were screened under.
+
 - **A fallback that answered was metered as the primary.** `_FallbackClient` returned the
   fallback's result unmarked, so its tokens were priced at the primary's rates and reported under
   its route. That cost could be zero for an unpriced primary, or many times too much for a cheap
   one. The result now carries the route that answered, on `chat` and on `stream_turn`, which is
   how the vision client already reported its own.
+
 - **`FELIX_MODEL_PROVIDER_OPTIONS` now reaches the Compose stack.** It was missing from
   `x-felix-env`, so a Compose deployment dropped it silently. A `workers_ai` or `typesafe`
   route then failed to compile with "needs api_key" even though `.env` set the key. Every
@@ -54,11 +60,13 @@ Each release section is written from the `## Changelog` sections of the pull req
   the missing secret or option, and `/v1/chat/completions` answers 503 like `/chat` does. They
   are typed (`SecretNotFoundError`, `ProviderConfigError`), so they no longer depend on
   matching the message text.
+
 - **`felix migrate <revision>` no longer reports success for a revision the database has
   passed.** Alembic's upgrade to an older revision is a silent no-op, so `felix migrate 0021` on
   a database at 0023 printed "migrated to 0021" and changed nothing — and the documented
   "prove the downgrade works" step proved nothing. It now refuses (exit 2), naming the
   database's revision, and `felix migrate <revision> --down` performs the downgrade.
+
 - **`/v1/chat/completions` dropped tool-call history.** The request model declared no
   `tool_calls`, and pydantic ignores an undeclared field, so an assistant turn's calls were
   dropped without a word, and the `tool` messages after them answered ids the model was never
@@ -76,6 +84,7 @@ Each release section is written from the `## Changelog` sections of the pull req
   renewed before every job. A sweep whose lease was taken over stops before its next job. The
   fair claim also orders tenants by last claim *before* cutting the scan to 500, so a tenant
   whose id sorts late is no longer left out of every scan.
+
 - **The skill job caps and pending caps are exact.** Requests racing at a cap could all get in.
   This affected `FELIX_SKILL_JOBS_MAX_QUEUED`, `FELIX_SKILL_JOBS_DAILY_LIMIT` and an agent's
   `skill_authoring.max_pending` feedback cap, because each counted in one transaction and inserted
@@ -4173,3 +4182,4 @@ A hotfix on 0.4.0, branched from its tag, carrying one fix. Everything else unde
 [0.5.0]: https://github.com/felix-run/felix/releases/tag/v0.5.0
 [0.5.1]: https://github.com/felix-run/felix/releases/tag/v0.5.1
 [0.6.0]: https://github.com/felix-run/felix/releases/tag/v0.6.0
+[0.6.1]: https://github.com/felix-run/felix/releases/tag/v0.6.1
