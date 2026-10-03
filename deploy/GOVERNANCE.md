@@ -283,6 +283,20 @@ stored as written, but a `system`-role entry with `in_context: true` is sent as 
 client, on live history and on a compaction checkpoint alike (`session/types.py`,
 `_model_role_and_content`).
 
+**Skill bodies are the one place model-written text can become instructions**, so they are held
+to a review step. The catalogue names skills in the system tier and `activate_skill` returns a
+body as instructions. A body from the bundled directory, `FELIX_SKILLS_DIR` or an uploaded
+object-store key is operator-written. A body from the tenant skill library reaches a catalogue
+only as a *published* version, and an agent's save (`create_skill`, `update_skill`) is a draft
+that no catalogue loads. Publishing is done by an operator, or — with
+`spec.skill_authoring.mode: publish` — by the agent itself, which the schema allows only behind an
+approvals rule that gates every `create_skill` and `update_skill` call. So every library body in
+a catalogue was either reviewed by an operator or approved by a person before it was saved. An
+agent's edit of a skill whose live version an operator wrote is never published automatically.
+Every publish also passes a gate that re-reads the bytes against their saved digests and
+re-scans them, and a failing security scan blocks whoever asks. Library bytes are kept under
+their own object-store prefix (`skill-library/`), never under the operator's `skills/` keys.
+
 ## Outbound egress
 
 ### Per-integration timeouts
@@ -919,6 +933,11 @@ runs over turns that carried untrusted tool output, so a payload quarantined on 
 otherwise come back as a remembered "fact". Naming a trusted local tool extends screening to it;
 it does not narrow screening away from anything.
 
+`create_skill` and `update_skill` are trusted local tools and are not screened by default; their
+output is the library's own JSON. What they *save* is checked by the skill security scan on save
+and again on publish, and their approval preview is the SKILL.md the harness renders from the
+arguments, so an approver reads the instructions rather than the model's summary of them.
+
 There is deliberately no way to turn screening off for an untrusted tool while leaving it on
 elsewhere. The two used to be alternatives, so a non-empty `tools` list *replaced* the
 untrusted-tool default: naming one local tool silently unscreened every MCP, peer, browser,
@@ -1041,6 +1060,11 @@ gated before, and never displaces a stricter literal rule.
 | `bind_principal` | Only the principal who was approved may use the grant. Without it, any principal in the tenant can reuse it. |
 | `allow_unattended` | EU AI Act high-risk manifests must set this to `false`. |
 | `when_args` | Gate only the calls that carry these arguments (non-empty); empty gates every call. Each name must be an argument some tool the rule reaches takes, or the rule never fires. For tools whose schemas ship with the harness — built-ins, plugin tools, the memory tools — a rule naming them literally is **refused** at `PUT /manifests` and by `felix validate-manifest` when a name is not one of their arguments. For everything else (MCP tools, globs) it is a compile-time warning and `felix_approval_when_args_unknown`, not a refusal: an MCP schema can change under a stored manifest, and that must not become an outage. A glob such as `github__*` with `when_args: [force]` is flagged only if *no* tool it reaches takes `force`. |
+
+**Skill authoring.** `spec.skill_authoring.mode: publish` is refused at validation unless the
+approval rule this precedence selects for `create_skill`, and the one it selects for
+`update_skill`, both exist and carry no `when_args` — a conditional rule would let the calls
+without those arguments publish ungated. `governed.yaml` gates both tools even in draft mode.
 
 `spec.policies` and `spec.approvals` are capped at 64 rules each: matching is O(rules × tools)
 and a manifest is compiled per request.

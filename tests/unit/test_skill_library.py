@@ -7,13 +7,14 @@ test_skill_library_store.py`; what is here is the policy above them.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
 from felix.config import Settings
 from felix.skills import library
 from felix.skills.format import serialize_skill_md
-from felix.skills.library_store import get_skill_library_store
+from felix.skills.library_store import get_skill_library_store, library_object_key
 from felix.storage import MemoryObjectStore
 
 BODY = """
@@ -47,17 +48,23 @@ def store() -> MemoryObjectStore:
     return MemoryObjectStore()
 
 
+_PROVENANCE = {"source", "author", "reason", "origin_manifest_id", "session_id", "principal"}
+
+
 async def _draft(settings: Settings, store: MemoryObjectStore, **kw: Any) -> dict[str, Any]:
-    args: dict[str, Any] = {
-        "files": _bundle(),
+    who: dict[str, Any] = {
         "source": "agent",
         "author": "contributor",
         "reason": "routed three invoices by hand",
         "origin_manifest_id": "contributor",
-        "object_store": store,
     }
-    args.update(kw)
-    return await library.save_draft(settings, "acme", **args)
+    who.update({k: kw.pop(k) for k in list(kw) if k in _PROVENANCE})
+    args: dict[str, Any] = {"files": _bundle(), "object_store": store, **kw}
+    return await library.save_draft(settings, "acme", provenance=library.DraftProvenance(**who), **args)
+
+
+def _key(version: str, path: str = "SKILL.md", *, tenant: str = "acme", name: str = "invoice-triage") -> str:
+    return library_object_key(tenant, name, version, path)
 
 
 async def _events(settings: Settings, tenant: str = "acme") -> list[dict[str, Any]]:
@@ -80,8 +87,8 @@ async def test_a_first_draft_is_0_1_0_and_its_files_are_in_the_store(
         "agent",
     )
     assert row["security_status"] == "pass" and row["quality_score"] > 0
-    assert await store.get("skills/acme/invoice-triage/0.1.0/references/guide.md") == b"# Guide\n"
-    skill_md = await store.get("skills/acme/invoice-triage/0.1.0/SKILL.md")
+    assert await store.get(_key("0.1.0", "references/guide.md")) == b"# Guide\n"
+    skill_md = await store.get(_key("0.1.0"))
     assert skill_md is not None and b"Invoice triage" in skill_md
     lib = get_skill_library_store(settings)
     assert [f["path"] for f in await lib.list_files("acme", "invoice-triage", "0.1.0")] == [
@@ -142,7 +149,7 @@ async def test_a_save_that_loses_the_race_takes_the_next_version(
     monkeypatch.setattr(lib, "version_ids", stale)
     row = await _draft(settings, store)
     assert row["version"] == "0.1.2"
-    assert await store.get("skills/acme/invoice-triage/0.1.1/SKILL.md") is None, "the loser wrote no bytes"
+    assert await store.get(_key("0.1.1")) is None, "the loser wrote no bytes"
 
 
 async def test_an_invalid_bundle_is_refused_with_its_issues(
@@ -213,7 +220,7 @@ async def test_a_failing_security_scan_always_blocks(settings: Settings, store: 
 async def test_the_settings_policy_adds_a_quality_floor_and_an_advisory_block(
     store: MemoryObjectStore,
 ) -> None:
-    strict = Settings(database_url="memory://skills", skill_publish_min_quality=101 - 1)
+    strict = Settings(database_url="memory://skills", skill_publish_min_quality=100)
     row = await _draft(strict, store)
     assert row["quality_score"] < 100
     with pytest.raises(library.SkillPublishBlocked) as caught:
@@ -229,13 +236,16 @@ async def test_the_settings_policy_adds_a_quality_floor_and_an_advisory_block(
             blocking, "acme", "invoice-triage", row["version"], by="ops", object_store=store
         )
     lenient = Settings(database_url="memory://skills")
-    await library.publish(lenient, "acme", "invoice-triage", row["version"], by="ops", object_store=store)
+    published = await library.publish(
+        lenient, "acme", "invoice-triage", row["version"], by="ops", object_store=store
+    )
+    assert published["status"] == "published"
 
 
 async def test_the_gate_rereads_the_bytes_it_publishes(settings: Settings, store: MemoryObjectStore) -> None:
     row = await _draft(settings, store)
     # Rewritten in the object store after review: the digest no longer matches the row.
-    await store.put("skills/acme/invoice-triage/0.1.0/SKILL.md", _bundle(body=BAD_BODY)["SKILL.md"].encode())
+    await store.put(_key("0.1.0"), _bundle(body=BAD_BODY)["SKILL.md"].encode())
     with pytest.raises(library.SkillPublishBlocked) as caught:
         await library.publish(
             settings, "acme", "invoice-triage", row["version"], by="ops", object_store=store
@@ -293,10 +303,14 @@ async def test_the_library_is_per_tenant(settings: Settings, store: MemoryObject
         await library.publish(settings, "globex", "invoice-triage", "0.1.0", by="ops", object_store=store)
     # Globex's first save of the same name is its own 0.1.0, under its own keys.
     row = await library.save_draft(
-        settings, "globex", files=_bundle(), source="operator", author="ops", reason="", object_store=store
+        settings,
+        "globex",
+        files=_bundle(),
+        provenance=library.DraftProvenance(source="operator", author="ops"),
+        object_store=store,
     )
     assert row["version"] == "0.1.0"
-    assert await store.get("skills/globex/invoice-triage/0.1.0/SKILL.md") is not None
+    assert await store.get(_key("0.1.0", tenant="globex")) is not None
 
 
 async def test_every_state_change_is_audited(
@@ -354,3 +368,149 @@ async def test_review_and_scan_run_off_the_event_loop(
     monkeypatch.setattr(library, "_assess", spy)
     await _draft(settings, store)
     assert seen == [False]
+
+
+# -- review fixes -----------------------------------------------------------------------------
+
+
+def _twin_files(settings: Settings) -> dict[Any, list[dict[str, Any]]]:
+    return get_skill_library_store(settings)._files  # type: ignore[attr-defined]
+
+
+async def test_library_bytes_live_under_their_own_prefix(
+    settings: Settings, store: MemoryObjectStore
+) -> None:
+    await _draft(settings, store)
+    assert _key("0.1.0").startswith("skill-library/acme/invoice-triage/0.1.0/")
+    assert [k for k in store._data if k.startswith("skills/")] == []
+
+
+async def test_a_skill_holds_at_most_the_version_cap(
+    settings: Settings, store: MemoryObjectStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(library, "MAX_VERSIONS_PER_SKILL", 2)
+    await _draft(settings, store, source="operator")
+    await _draft(settings, store, source="operator")
+    with pytest.raises(library.SkillVersionCapReached):
+        await _draft(settings, store, source="operator")
+
+
+async def test_concurrent_agent_saves_cannot_pass_the_pending_cap(
+    settings: Settings, store: MemoryObjectStore
+) -> None:
+    results = await asyncio.gather(
+        *(_draft(settings, store, max_pending=1) for _ in range(3)), return_exceptions=True
+    )
+    refused = [r for r in results if isinstance(r, library.SkillPendingCapReached)]
+    assert refused and all(isinstance(r, dict | library.SkillPendingCapReached) for r in results)
+    assert await get_skill_library_store(settings).count_pending("acme", "contributor") <= 1
+
+
+async def test_a_failed_write_leaves_no_row_and_no_bytes(settings: Settings) -> None:
+    class SecondPutFails(MemoryObjectStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.puts = 0
+
+        async def put(self, key: str, data: bytes, *, content_type: str = "application/octet-stream") -> None:
+            self.puts += 1
+            if self.puts == 2:
+                raise OSError("disk full")
+            await super().put(key, data, content_type=content_type)
+
+    store = SecondPutFails()
+    with pytest.raises(OSError):
+        await _draft(settings, store, files=_bundle(**{"references/a.md": "a", "references/b.md": "b"}))
+    lib = get_skill_library_store(settings)
+    assert await lib.get_skill("acme", "invoice-triage") is None
+    assert await lib.version_ids("acme", "invoice-triage") == []
+    assert await lib.count_pending("acme", "contributor") == 0
+    assert [k for k in store._data if k.startswith("skill-library/")] == []
+
+
+async def test_the_gate_rescans_bytes_whose_digest_was_updated(
+    settings: Settings, store: MemoryObjectStore
+) -> None:
+    import hashlib
+
+    row = await _draft(settings, store)
+    assert row["security_status"] == "pass"
+    bad = _bundle(body=BAD_BODY)["SKILL.md"].encode()
+    await store.put(_key("0.1.0"), bad)
+    for meta in _twin_files(settings)[("acme", "invoice-triage", "0.1.0")]:
+        if meta["path"] == "SKILL.md":
+            meta["sha256"] = hashlib.sha256(bad).hexdigest()
+
+    with pytest.raises(library.SkillPublishBlocked) as caught:
+        await library.publish(settings, "acme", "invoice-triage", "0.1.0", by="ops", object_store=store)
+    assert any("security scan failed" in r for r in caught.value.reasons)
+
+
+async def test_a_tampered_rollback_target_is_blocked_and_audited(
+    settings: Settings, store: MemoryObjectStore
+) -> None:
+    await _draft(settings, store)
+    await _draft(settings, store)
+    await library.publish(settings, "acme", "invoice-triage", "0.1.0", by="ops", object_store=store)
+    await library.publish(settings, "acme", "invoice-triage", "0.1.1", by="ops", object_store=store)
+    await store.put(_key("0.1.0"), b"tampered")
+
+    with pytest.raises(library.SkillPublishBlocked):
+        await library.rollback(settings, "acme", "invoice-triage", "0.1.0", by="ops", object_store=store)
+    skill = await get_skill_library_store(settings).get_skill("acme", "invoice-triage")
+    assert skill is not None and skill["live_version"] == "0.1.1"
+    blocked = [e for e in await _events(settings) if e["event_type"] == "skill_rolled_back"]
+    assert [e["status"] for e in blocked] == ["blocked"]
+
+
+async def test_a_reject_landing_mid_publish_wins_cleanly(
+    settings: Settings, store: MemoryObjectStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _draft(settings, store)
+
+    async def rejected_meanwhile(*_a: Any, **_k: Any) -> None:
+        await library.reject(settings, "acme", "invoice-triage", "0.1.0", by="other-op", note="no")
+
+    monkeypatch.setattr(library, "_gate", rejected_meanwhile)
+    with pytest.raises(library.SkillVersionConflict):
+        await library.publish(settings, "acme", "invoice-triage", "0.1.0", by="ops", object_store=store)
+    lib = get_skill_library_store(settings)
+    row = await lib.get_version("acme", "invoice-triage", "0.1.0")
+    assert row is not None and (row["status"], row["decision_note"]) == ("archived", "no")
+    assert (await lib.get_skill("acme", "invoice-triage") or {})["live_version"] is None
+
+
+async def test_reading_a_version_checks_paths_and_digests(
+    settings: Settings, store: MemoryObjectStore
+) -> None:
+    await _draft(settings, store, files=_bundle(**{"references/a.md": "a"}))
+    assert (
+        await library.read_version_file(
+            settings, "acme", "invoice-triage", "0.1.0", "references/a.md", object_store=store
+        )
+        == "a"
+    )
+    # An object the save did not write is not part of the version, whatever its key.
+    await store.put(_key("0.1.0", "references/planted.md"), b"x")
+    assert (
+        await library.read_version_file(
+            settings, "acme", "invoice-triage", "0.1.0", "references/planted.md", object_store=store
+        )
+        is None
+    )
+    await store.put(_key("0.1.0", "references/a.md"), b"changed")
+    with pytest.raises(library.SkillVersionCorrupt):
+        await library.read_version_file(
+            settings, "acme", "invoice-triage", "0.1.0", "references/a.md", object_store=store
+        )
+    with pytest.raises(library.SkillVersionCorrupt):
+        await library.read_version_files(settings, "acme", "invoice-triage", "0.1.0", object_store=store)
+
+
+async def test_the_draft_audit_redacts_the_reason_and_names_the_principal(store: MemoryObjectStore) -> None:
+    secret = "-".join(["plain", "marker", "value", "zz"])
+    settings = Settings(database_url="memory://skills", **{"anthropic_api_key": secret})
+    await _draft(settings, store, reason=f"copied from {secret}", principal="alice")
+    (event,) = [e for e in await _events(settings) if e["event_type"] == "skill_draft_saved"]
+    assert secret not in event["payload_json"]["reason"]
+    assert event["payload_json"]["principal"] == "alice"

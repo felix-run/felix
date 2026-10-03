@@ -149,7 +149,7 @@ class SkillRow(Base):
 
 class SkillVersionRow(Base):
     """One immutable version of a library skill. Content lives in the object store at
-    `skills/{tenant}/{name}/{version}/{path}`; this row is its review record."""
+    `skill-library/{tenant}/{name}/{version}/{path}`; this row is its review record."""
 
     __tablename__ = "skill_version"
 
