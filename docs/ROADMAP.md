@@ -310,16 +310,18 @@ First, because everything else governs it.
 - [~] **Skill authoring & library** — Felix can list and activate Agent Skills but nothing
       can write one. Agents draft, operators review and publish, and chat-ui gets a library,
       editor, diff and review queue; Skillist's skill-format, review, security scan, versioning
-      and improvement loop are ported rather than rebuilt (same owner; provenance in `NOTICE`).
+      and improvement loop are ported rather than rebuilt (same owner).
       Agent drafts are never live by default: `activate_skill` returns a body as
       *instructions*, so an agent that absorbed injected tool output could otherwise persist it
       into every future session in the tenant. One live PR at a time:
-      1. [~] `felix/skills/{format,binary,plugin,semver,review,security}.py` and the catalog
-         loader reading frontmatter as YAML (line-reader fallback for anything YAML refuses),
-         with Skillist's tests and `examples/skills/` as `fixtures/skills/`.
-      2. [ ] Data model, migration, stores with conformance, `felix/skills/library.py`
+      1. [x] (#433) `felix/skills/{format,binary,plugin,semver,review,security}.py` and the
+         catalog loader reading frontmatter as YAML (line-reader fallback for anything YAML
+         refuses), with Skillist's tests and `examples/skills/` as `fixtures/skills/`.
+      2. [~] Data model, migration, stores with conformance, `felix/skills/library.py`
          (draft / publish / rollback, publish policy), `create_skill` / `update_skill` tools,
-         `spec.skill_authoring`.
+         `spec.skill_authoring`. The publish policy is two settings
+         (`FELIX_SKILL_PUBLISH_MIN_QUALITY`, `FELIX_SKILL_PUBLISH_BLOCK_ON_ADVISORY`), not yet a
+         per-tenant row; `submit_skill_feedback` and the feedback / eval tables come with 4.
       3. [ ] `/skill-library` routes, `skills:write` scope, wire contract, e2e.
       4. [ ] Worker tasks: improvement from feedback, baseline-vs-with-skill evals.
       5. [ ] felix-web: client, vendored skill-format, library / editor / diff / review queue /

@@ -1,8 +1,7 @@
 """`major.minor.patch` bumping and comparison for skill versions.
 
-Deliberately lenient, matching Skillist's `skill-format`: a non-numeric segment counts as
-0 and a prerelease or build suffix is ignored, because versions are regex-gated before they
-get here. Ported from Skillist's `skill-format` package (MIT); see NOTICE.
+Deliberately lenient: a non-numeric segment counts as 0 and a prerelease or build suffix is
+ignored, because versions are regex-gated before they get here.
 """
 
 from __future__ import annotations

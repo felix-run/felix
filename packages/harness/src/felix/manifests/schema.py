@@ -773,6 +773,23 @@ class SkillSuggestionSpec(_Strict):
     min_fit: float = Field(default=0.3, ge=0.0, le=1.0)
 
 
+class SkillAuthoringSpec(_Strict):
+    """Let the agent write skills: binds `create_skill` and `update_skill`.
+
+    Drafts by default. `activate_skill` hands a skill body to the model as instructions, so a
+    skill an agent wrote from a turn that carried injected tool output would steer every later
+    session in the tenant. A draft enters no catalog until an operator publishes it. `publish`
+    publishes at once, through the same gate an operator's publish runs (a failing security
+    scan always blocks); a blocked publish leaves the draft for review.
+    """
+
+    enabled: bool = False
+    mode: Literal["draft", "publish"] = "draft"
+    #: Undecided agent drafts this manifest may hold in the tenant's library before
+    #: `create_skill` and `update_skill` refuse, so a looping agent cannot flood the review queue.
+    max_pending: int = Field(default=20, ge=1, le=200)
+
+
 class DeciderSpec(_Strict):
     """A decision model — one that answers typed questions (choose one, score, true/false)
     with calibrated probabilities instead of generating text. Off unless `id` is set.
@@ -1087,6 +1104,7 @@ class Spec(_Strict):
     tools_retrieval: ToolsRetrievalSpec = Field(default_factory=ToolsRetrievalSpec)
     decider: DeciderSpec = Field(default_factory=DeciderSpec)
     skill_suggestion: SkillSuggestionSpec = Field(default_factory=SkillSuggestionSpec)
+    skill_authoring: SkillAuthoringSpec = Field(default_factory=SkillAuthoringSpec)
     artifacts: ArtifactsSpec = Field(default_factory=ArtifactsSpec)
     reflect: ReflectSpec = Field(default_factory=ReflectSpec)
     plan_execute: PlanExecuteSpec = Field(default_factory=PlanExecuteSpec)

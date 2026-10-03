@@ -9,9 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Agents can write skills, into a per-tenant skill library.** `spec.skill_authoring:
+  {enabled: true}` binds `create_skill` and `update_skill`. A save is an immutable semver
+  version (`0.1.0` first, a patch bump after), validated, quality-scored and security-scanned
+  off the event loop, its files in the object store at `skills/{tenant}/{name}/{version}/` and
+  its review record in three new tables (`skill`, `skill_version`, `skill_file`; migration
+  `0022`, tenant RLS like every other tenant table).
+  - **Drafts by default.** `activate_skill` hands a skill body to the model as instructions,
+    so a skill written from a turn that carried injected tool output would steer every later
+    session in the tenant. A draft enters no catalog until it is published. `mode: publish`
+    publishes at once if the gate passes and otherwise leaves the draft and says why.
+  - **The publish gate** re-reads the bytes against the digests saved with them, re-validates
+    and re-scans. A failing security scan always blocks; `FELIX_SKILL_PUBLISH_MIN_QUALITY`
+    (0 = off) and `FELIX_SKILL_PUBLISH_BLOCK_ON_ADVISORY` (false) raise the bar. Rollback goes
+    back only to a version that was once live, through the same gate.
+  - A library skill may not take a host skill's name (bundled, `FELIX_SKILLS_DIR`, or an
+    uploaded object-store skill), and `spec.skill_authoring.max_pending` (20) caps one
+    manifest's undecided drafts. Every save, publish, block, rejection, rollback and archive is
+    an audit event (`skill_draft_saved`, `skill_published`, `skill_rejected`,
+    `skill_rolled_back`, `skill_archived`).
+  - Published library skills join every catalog in the tenant after the host's own, and
+    `skills_declared_only` manifests resolve declared names against them. `list_skills` and
+    `GET /skills/{manifest}` report each skill's `source` (`bundled`, `store` or `library`).
+  - `read_skill_file(name, path)` reads a file from a skill's bundle (`references/`,
+    `scripts/`, `assets/`, `evals/`), and `activate_skill` lists those files.
+  - `contributor` drafts skills; `governed` puts `create_skill` and `update_skill` behind an
+    approval whose preview is the SKILL.md that would be saved. The management routes for
+    reviewing and publishing come next; until then publishing is `felix.skills.library.publish`.
+
 - **Skill format, bundle validation, quality review and security scan.** These are the
   groundwork for skill authoring and are not yet wired to a route or a tool. They are ported
-  from Skillist's `skill-format` package (MIT, same author; see `NOTICE`):
+  from Skillist's `skill-format` package:
   - `felix.skills.format` parses and serialises SKILL.md, with stable key order and no
     line folding. Its strict `validate_skill_bundle` checks the frontmatter schema, the name
     rule and every file path. Paths are an allowlist, stricter than Skillist's: `plugin.json`

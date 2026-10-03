@@ -3,8 +3,6 @@
 A skill bundle is a `Mapping[str, str]` everywhere — validator, review, security scan —
 so a binary asset travels as base64 text, symmetric on upload and download. Only the
 encode/decode here needs to know bytes exist.
-
-Ported from Skillist's `skill-format` package (MIT); see NOTICE.
 """
 
 from __future__ import annotations

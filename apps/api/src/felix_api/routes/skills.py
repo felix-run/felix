@@ -72,6 +72,8 @@ async def _catalog_for(
         object_store=get_object_store(settings),
         # The same flag the compile passes, or this reports a catalogue no turn will build.
         declared_only=declared_only,
+        # And the same settings, so the tenant's published library skills are listed too.
+        settings=settings,
     )
     if declared_only:
         # Nothing reached the catalogue except through a ref, so asking the catalogue is
@@ -124,6 +126,9 @@ async def list_skills(manifest_name: str, request: Request) -> dict[str, object]
             # False means "reachable but never asked for": present because it is on the
             # host, not because this manifest named it. The model is offered it either way.
             "declared": skill.name in declared,
+            # `bundled` (the host's directories), `store` (an uploaded object-store key) or
+            # `library` (the tenant's published skill library).
+            "source": skill.source,
         }
         for skill in sorted(catalog.skills.values(), key=lambda s: s.name)
     ]
@@ -179,6 +184,7 @@ async def get_skill(manifest_name: str, skill_name: str, request: Request) -> di
         "active": skill.name in active,
         "model_invocable": not skill.disable_model_invocation,
         "declared": skill.name in declared,
+        "source": skill.source,
         "body": redact_text(skill.body, secrets),
     }
 

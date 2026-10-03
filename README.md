@@ -289,7 +289,11 @@ A plugin carries its own manifest config under `spec.extensions.<name>` — the 
 from the schema's `extra="forbid"` — and reads it from the pattern build context.
 
 Agent Skills need no code at all: drop a `SKILL.md` under the directory named by
-`FELIX_SKILLS_DIR`, or upload one per tenant to the object store.
+`FELIX_SKILLS_DIR`, or upload one per tenant to the object store. A manifest with
+`spec.skill_authoring.enabled` lets its agent draft skills into the tenant's library; a draft
+enters no catalog until it is published, and publishing is gated — a failing security scan always
+blocks, `FELIX_SKILL_PUBLISH_MIN_QUALITY` (0 = off) sets a floor on the 0-100 review score, and
+`FELIX_SKILL_PUBLISH_BLOCK_ON_ADVISORY` (false) also refuses an advisory scan.
 
 **[`examples/felix-plugin-example/`](examples/felix-plugin-example/)** is a working package that
 exercises every seam above.

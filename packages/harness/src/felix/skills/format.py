@@ -5,17 +5,16 @@
 saved. The catalog loader (`skills/loader.py`) reads leniently on top of the parser and
 never applies the strict check — a skill already on disk keeps loading.
 
-Pure: no I/O and no settings. Ported from Skillist's `skill-format` package (MIT); see
-NOTICE. Where it deliberately differs from the TypeScript:
+Pure: no I/O and no settings. Rules a permissive validator would not apply:
 
 - Bundle paths are an allowlist: every segment is `[A-Za-z0-9._-]{1,128}`, and the first is
-  `scripts`, `references`, `assets` or `evals` unless the path is exactly `plugin.json`. The
-  TypeScript accepts a file in any subdirectory, and a root file named `scripts`.
+  `scripts`, `references`, `assets` or `evals` unless the path is exactly `plugin.json`. A
+  file in any other subdirectory, or a root file named `scripts`, is refused.
 - A bundle is capped in SKILL.md size, file count and total size, and frontmatter in size
   and nesting depth. YAML anchors and aliases are refused, and an unknown frontmatter key
   must hold a scalar or a flat list or map of scalars.
 - A fence line may carry trailing spaces or tabs.
-- Lengths are counted in code points, where the TypeScript counts UTF-16 units.
+- Lengths are counted in code points, not UTF-16 units.
 """
 
 from __future__ import annotations
@@ -309,6 +308,12 @@ def _path_issue(path: str) -> str | None:
     return None
 
 
+def bundle_path_issue(path: str) -> str | None:
+    """Why ``path`` may not name a file in a bundle, or None — the same allowlist a save
+    applies, for a reader that is handed a path rather than a bundle."""
+    return _path_issue(path)
+
+
 def _file_issues(path: str, content: str) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
     if is_binary_asset_path(path) and not path.startswith("assets/"):
@@ -411,6 +416,7 @@ __all__ = [
     "SkillFrontmatter",
     "ValidationIssue",
     "ValidationResult",
+    "bundle_path_issue",
     "create_skill_template",
     "extract_discovery_meta",
     "is_valid_skill_name",

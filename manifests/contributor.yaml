@@ -126,6 +126,14 @@ spec:
     - name: felix-contributing
     - name: felix-self
 
+  # create_skill / update_skill, as drafts: a skill this agent writes enters no catalog until an
+  # operator publishes it, so a turn that carried injected tool output cannot teach every later
+  # session. The cap bounds how far a looping run can fill the review queue.
+  skill_authoring:
+    enabled: true
+    mode: draft
+    max_pending: 20
+
   # The governed shell: argv prefixes, no interpreter, execs in FELIX_WORKSPACE_ROOT with a
   # five-variable environment, killed as a process group at the timeout — on the builder stack
   # in the `shell` container, which re-checks every argv against its own allowlist. Every prefix here must

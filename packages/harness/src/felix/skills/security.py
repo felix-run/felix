@@ -12,9 +12,9 @@ where `system prompt:` is an attack — in a skill about prompts it is a heading
 
 The scan's cost is bounded by construction: a file over `MAX_FILE_CHARS` is reported for
 its size and not pattern-matched, and no pattern has an unbounded wildcard, so a long line
-cannot make one backtrack quadratically. The original's `curl .* | sh` became
-`curl [^\\n]{0,500} | sh`: a pipe further than 500 characters along the line is missed.
-Ported from Skillist's `skill-format` package (MIT); see NOTICE.
+cannot make one backtrack quadratically. So `curl` piped to a shell is
+`curl [^\\n]{0,500} | sh`, not `curl .* | sh`: a pipe further than 500 characters along the
+line is missed.
 """
 
 from __future__ import annotations

@@ -134,6 +134,69 @@ class SkillActivation(Base):
     updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
 
+class SkillRow(Base):
+    """A skill in a tenant's library. `live_version` is what catalogs load; null is archived."""
+
+    __tablename__ = "skill"
+
+    tenant_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    name: Mapped[str] = mapped_column(Text, primary_key=True)
+    live_version: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+
+class SkillVersionRow(Base):
+    """One immutable version of a library skill. Content lives in the object store at
+    `skills/{tenant}/{name}/{version}/{path}`; this row is its review record."""
+
+    __tablename__ = "skill_version"
+
+    tenant_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    name: Mapped[str] = mapped_column(Text, primary_key=True)
+    version: Mapped[str] = mapped_column(Text, primary_key=True)
+    parent_version: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    source: Mapped[str] = mapped_column(Text, nullable=False)
+    author: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    origin_manifest_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    session_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reason: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    description: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    quality_score: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    security_status: Mapped[str] = mapped_column(Text, nullable=False)
+    security_issues: Mapped[list[Any]] = mapped_column(
+        JSONB, server_default=text("'[]'::jsonb"), default=list
+    )
+    review_checks: Mapped[list[Any]] = mapped_column(JSONB, server_default=text("'[]'::jsonb"), default=list)
+    decided_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+    decision_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    decided_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # Set the first time this version goes live, and never cleared. What separates a version
+    # a rollback may return to from a draft that was rejected: both are `archived`.
+    published_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint("status IN ('draft', 'published', 'archived')", name="ck_skill_version_status"),
+        CheckConstraint("source IN ('agent', 'operator')", name="ck_skill_version_source"),
+    )
+
+
+class SkillFileRow(Base):
+    """One file of a skill version: its digest and size. The bytes are in the object store."""
+
+    __tablename__ = "skill_file"
+
+    tenant_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    name: Mapped[str] = mapped_column(Text, primary_key=True)
+    version: Mapped[str] = mapped_column(Text, primary_key=True)
+    path: Mapped[str] = mapped_column(Text, primary_key=True)
+    sha256: Mapped[str] = mapped_column(Text, nullable=False)
+    size: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+
 class ManifestRow(Base):
     __tablename__ = "manifests"
 
@@ -513,6 +576,9 @@ __all__ = [
     "PushSubscriptionRow",
     "SessionEventRow",
     "SkillActivation",
+    "SkillFileRow",
+    "SkillRow",
+    "SkillVersionRow",
     "ThreadState",
     "UsageEvent",
 ]

@@ -1,7 +1,4 @@
-"""`plugin.json` at a skill bundle's root, and its per-skill egress allowlist.
-
-Ported from Skillist's `skill-format` package (MIT); see NOTICE.
-"""
+"""`plugin.json` at a skill bundle's root, and its per-skill egress allowlist."""
 
 from __future__ import annotations
 

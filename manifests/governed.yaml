@@ -93,6 +93,13 @@ spec:
       tools: [activate_skill]
       ttl_seconds: 600
       allow_unattended: false
+    # A saved skill is instructions every later session in the tenant may load, so a person
+    # reads the SKILL.md (the approval preview) before it is even saved as a draft.
+    - id: skill-author
+      description: Confirm saving a skill to the library
+      tools: [create_skill, update_skill]
+      ttl_seconds: 600
+      allow_unattended: false
     # `list_memories` prints every row id and `forget` retires one, so an injected
     # turn could enumerate and retire the store within one tool budget. Recoverable
     # -- rows are hidden, not deleted -- but silent, and nothing distinguishes a

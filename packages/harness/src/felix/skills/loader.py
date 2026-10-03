@@ -6,6 +6,7 @@ import asyncio
 import logging
 import re
 import time
+from collections.abc import Callable
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -249,8 +250,77 @@ async def load_skill_from_store(
             # something else would enter the catalog under a name nobody declared.
             logger.warning("skill %s names itself %r, not %r; skipped", key, skill.name, name)
             return None
+        if skill is not None:
+            skill.source = "store"
         return skill
     return None
+
+
+# Object-store reads one catalog load runs at once. A library of a few hundred live skills is
+# a few hundred GETs; unbounded, they would open that many connections to S3 for one request.
+_LIBRARY_FETCH_CONCURRENCY = 16
+
+
+async def _library_skill(store: Any, *, tenant_id: str, name: str, version: str) -> Skill | None:
+    """The live version of one library skill, or None when its SKILL.md cannot be read."""
+    key = f"skills/{tenant_id}/{name}/{version}/SKILL.md"
+    try:
+        data = await store.get(key)
+    except Exception:
+        logger.warning("library skill %s could not be fetched; skipped", key, exc_info=True)
+        return None
+    if not data:
+        logger.warning("library skill %s is live but has no SKILL.md; skipped", key)
+        return None
+    try:
+        skill = parse_skill_md(data.decode("utf-8"), fallback_name=name, path=key)
+    except Exception:
+        logger.warning("library skill %s could not be read; skipped", key, exc_info=True)
+        return None
+    if skill is None or skill.name != name:
+        return None
+    skill.source = "library"
+    skill.version = version
+    return skill
+
+
+async def _library_catalog(
+    settings: Any, *, tenant_id: str, object_store: Any, wanted: Callable[[str], bool]
+) -> tuple[dict[str, Skill], set[str]]:
+    """(live library skills `wanted` keeps, every name the library owns).
+
+    One query for the tenant's library rows, then the live SKILL.md of each skill `wanted`
+    keeps, fetched concurrently. Only `live_version` is ever followed: a draft, a rejected
+    draft and a superseded version have rows and objects, and none of them reaches a catalog.
+
+    The owned names come back as well, live or not, so a declared ref naming an archived
+    library skill does not fall through to the raw object-store keys -- where it would find
+    whatever version directory a manifest pinned, draft or not.
+    """
+    if settings is None:
+        return {}, set()
+    from felix.skills.library_store import get_skill_library_store
+
+    try:
+        rows = await get_skill_library_store(settings).list_skills(tenant_id)
+    except Exception:
+        # The library is an addition to the catalog, never a precondition for one.
+        logger.warning("skill library unavailable; catalog built without it", exc_info=True)
+        return {}, set()
+    owned = {str(r["name"]) for r in rows}
+    live = [r for r in rows if r.get("live_version") and wanted(str(r["name"]))]
+    if object_store is None or not live:
+        return {}, owned
+    gate = asyncio.Semaphore(_LIBRARY_FETCH_CONCURRENCY)
+
+    async def fetch(row: dict[str, Any]) -> Skill | None:
+        async with gate:
+            return await _library_skill(
+                object_store, tenant_id=tenant_id, name=str(row["name"]), version=str(row["live_version"])
+            )
+
+    skills = await asyncio.gather(*(fetch(r) for r in live))
+    return {s.name: s for s in skills if s is not None}, owned
 
 
 def _read_skill_file(path: Path, *, fallback_name: str) -> Skill | None:
@@ -359,6 +429,39 @@ async def _bundled_catalog(root: Path) -> SkillCatalog:
     return catalog
 
 
+async def host_catalog(bundled_dir: Path | None = None) -> SkillCatalog:
+    """The host's skills: the bundled directory, then `FELIX_SKILLS_DIR` (or ``bundled_dir``).
+
+    A fresh catalog over the cached per-directory ones, so a caller may mutate it. The skill
+    library refuses these names, so a tenant's skill can never shadow one the host ships.
+    """
+    roots: list[Path] = []
+    if bundled_dir is None:
+        default_dir = _default_bundled_dir()
+        if default_dir is not None:
+            roots.append(default_dir)
+        # FELIX_SKILLS_DIR is searched after the bundled dir, so an operator (or a
+        # package that ships skills) can add to the catalog without a repo checkout.
+        configured = _configured_skills_dir()
+        if configured is not None:
+            roots.append(configured)
+    else:
+        roots.append(bundled_dir)
+
+    host = SkillCatalog()
+    for root in roots:
+        bundled = await _bundled_catalog(root)
+        # A copy: the cached catalog is shared between requests, and callers mutate theirs.
+        host.skills.update(bundled.skills)
+    return host
+
+
+def _ref_name_and_version(ref: Any) -> tuple[str | None, Any]:
+    if isinstance(ref, dict):
+        return ref.get("name"), ref.get("version")
+    return getattr(ref, "name", None), getattr(ref, "version", None)
+
+
 async def load_manifest_skills(
     refs: list[Any],
     *,
@@ -366,6 +469,7 @@ async def load_manifest_skills(
     object_store: Any | None = None,
     bundled_dir: Path | None = None,
     declared_only: bool = False,
+    settings: Any | None = None,
 ) -> SkillCatalog:
     """Resolve a SkillRef list into a SkillCatalog.
 
@@ -386,41 +490,44 @@ async def load_manifest_skills(
     object store second -- so this narrows *which names* reach the catalogue and never
     *where a body comes from*. `load_skill_from_store` carries the reasoning for that order;
     do not reorder one without the other.
+
+    With ``settings``, the tenant's skill library is the third source: the live version of
+    each library skill, after the host directories (the host wins on a name, though the
+    library refuses to save one) and ahead of the raw object-store keys. Under `declared_only`
+    only declared library names are fetched. A library name never falls through to the raw
+    keys, live or not: those hold every version the library wrote, drafts included.
     """
     catalog = SkillCatalog()
-    roots: list[Path] = []
-    if bundled_dir is None:
-        default_dir = _default_bundled_dir()
-        if default_dir is not None:
-            roots.append(default_dir)
-        # FELIX_SKILLS_DIR is searched after the bundled dir, so an operator (or a
-        # package that ships skills) can add to the catalog without a repo checkout.
-        configured = _configured_skills_dir()
-        if configured is not None:
-            roots.append(configured)
-    else:
-        roots.append(bundled_dir)
-
-    host: SkillCatalog = SkillCatalog()
-    for root in roots:
-        bundled = await _bundled_catalog(root)
-        # A copy: the cached catalog is shared between requests, and the loop below
-        # mutates `catalog.skills` with tenant-resolved and placeholder entries.
-        host.skills.update(bundled.skills)
+    host = await host_catalog(bundled_dir)
     if not declared_only:
         catalog.skills.update(host.skills)
 
+    declared = {str(n) for n, _ in map(_ref_name_and_version, refs or []) if n}
+    library, library_owned = await _library_catalog(
+        settings,
+        tenant_id=tenant_id,
+        object_store=object_store,
+        wanted=lambda n: n not in host.skills and (not declared_only or n in declared),
+    )
+    if not declared_only:
+        for name, skill in library.items():
+            catalog.skills.setdefault(name, skill)
+
     for ref in refs or []:
-        name = getattr(ref, "name", None) or (ref.get("name") if isinstance(ref, dict) else None)
+        name, version = _ref_name_and_version(ref)
         if not name:
             continue
-        version = getattr(ref, "version", None)
-        if isinstance(ref, dict):
-            version = ref.get("version")
         # `host` rather than `catalog` so a declared name still resolves against the
         # bundled directory when `declared_only` kept it out of the catalogue.
-        skill: Skill | None = catalog.get(str(name)) or host.get(str(name))
-        if skill is None and object_store is not None:
+        skill: Skill | None = catalog.get(str(name)) or host.get(str(name)) or library.get(str(name))
+        if skill is not None and skill.source == "library" and version and str(version) != skill.version:
+            logger.warning(
+                "skill %s pins version %s; the library serves its live version %s",
+                name,
+                version,
+                skill.version,
+            )
+        if skill is None and object_store is not None and str(name) not in library_owned:
             skill = await load_skill_from_store(
                 object_store, tenant_id=tenant_id, name=str(name), version=version
             )
@@ -437,6 +544,7 @@ async def load_manifest_skills(
 
 
 __all__ = [
+    "host_catalog",
     "load_manifest_skills",
     "load_skill_from_store",
     "load_skills_from_dir",

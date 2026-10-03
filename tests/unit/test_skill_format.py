@@ -1,9 +1,6 @@
-"""`felix.skills.format`, `binary`, `plugin` and `semver` — ported from Skillist's `skill-format`.
+"""`felix.skills.format`, `binary`, `plugin` and `semver`.
 
-Every case in the TypeScript package's `index.test.ts`, `binary.test.ts`,
-`network-allowlist.test.ts`, `semver.test.ts` and `readme-example.test.ts` has a counterpart
-here (bar the registry/agent discovery helpers, which were not ported), and every bundle in
-`fixtures/skills/` — Skillist's `examples/skills/` — must validate.
+Every bundle in `fixtures/skills/` must validate.
 """
 
 from __future__ import annotations
@@ -112,7 +109,7 @@ def test_a_minimal_template_validates() -> None:
 
 
 def test_a_description_containing_a_colon_survives_the_template() -> None:
-    """Regression in Skillist: the API's default "Agent skill: <name>" was interpolated raw."""
+    """A default description such as "Agent skill: <name>" must not be interpolated raw."""
     result = validate_skill_bundle(create_skill_template("my-skill", "Agent skill: my skill"), "my-skill")
     assert result.valid, result.errors
     assert result.frontmatter is not None and result.frontmatter.description == "Agent skill: my skill"
@@ -243,7 +240,7 @@ _ESCAPE = "file path must be relative and must not contain '..' or a leading sla
     [
         ("notes.md", _UNEXPECTED),
         ("README.md", _UNEXPECTED),
-        # Stricter than Skillist, which passes both of these.
+        # Stricter than a validator that accepts any subdirectory or root file.
         ("scripts", _UNEXPECTED),
         ("docs/guide.md", _UNEXPECTED),
         ("Scripts/run.sh", _UNEXPECTED),  # case-sensitive
@@ -294,7 +291,7 @@ def test_invalid_base64_for_a_binary_asset_is_rejected() -> None:
 
 def test_a_binary_asset_over_the_size_limit_is_rejected() -> None:
     bundle = create_skill_template("my-skill", "A skill with an oversized asset.")
-    # One byte over: Skillist's 6 MiB case is now caught first by the 8 MiB bundle cap.
+    # Just over the asset cap and under the 8 MiB bundle cap, so the asset rule is what fires.
     bundle["assets/huge.png"] = encode_base64(bytes(MAX_BINARY_ASSET_BYTES + 3))
     assert any("exceeds the 5MB limit" in m for m in _messages(bundle, "my-skill"))
 
@@ -340,7 +337,7 @@ def test_bundle_size_caps() -> None:
 
 
 @pytest.mark.parametrize("bundle_dir", _bundle_dirs(), ids=lambda p: p.name)
-def test_every_skillist_example_bundle_validates(bundle_dir: Path) -> None:
+def test_every_example_bundle_validates(bundle_dir: Path) -> None:
     result = validate_skill_bundle(_read_bundle(bundle_dir), bundle_dir.name)
     assert result.valid, result.errors
 
@@ -392,12 +389,12 @@ def test_serialize_round_trips_with_stable_key_order() -> None:
     fm = {
         "allowed-tools": "Bash Read",
         "description": "Roll dice.",
-        "metadata": {"author": "skillist"},
+        "metadata": {"author": "felix"},
         "name": "roll-dice",
     }
     content = serialize_skill_md(fm, "# Body\n")
     assert content == (
-        "---\nname: roll-dice\ndescription: Roll dice.\nmetadata:\n  author: skillist\n"
+        "---\nname: roll-dice\ndescription: Roll dice.\nmetadata:\n  author: felix\n"
         "allowed-tools: Bash Read\n---\n# Body\n"
     )
     parsed = parse_skill_md(content)
