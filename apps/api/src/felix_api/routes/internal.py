@@ -54,6 +54,26 @@ def _require_consumer_secret(request: Request) -> None:
         )
 
 
+def _images_on_user_events_only(event_type: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """`payload` without image attachments unless it lands as a user message.
+
+    Queue output is untrusted. A `tool_result` written back here with `metadata.attachments`
+    replays as a tool message carrying that image, and the wires render a tool message's
+    images: past `store_tool_images` (type, size, caps, quota) and past screening for any
+    manifest without `image_model`. The same rule as the chat doors, which keep a caller's
+    images on user turns only.
+    """
+    metadata = payload.get("metadata")
+    if not isinstance(metadata, dict) or "attachments" not in metadata:
+        return payload
+    if payload.get("role") == "user" and event_type != "tool_result":
+        return payload
+    logger.warning(
+        "internal write: image attachments removed from a %s event", loggable(event_type, limit=32)
+    )
+    return {**payload, "metadata": {k: v for k, v in metadata.items() if k != "attachments"}}
+
+
 @router.post("/sessions/{session_id}/events")
 async def append_session_event(session_id: str, body: SessionEventWrite, request: Request) -> dict[str, Any]:
     """Append a queue write-back event after content screening."""
@@ -79,15 +99,17 @@ async def append_session_event(session_id: str, body: SessionEventWrite, request
         )
         raise HTTPException(status_code=403, detail="thread_not_in_tenant")
 
+    payload = _images_on_user_events_only(body.type, body.payload)
+
     # Always screen on the landing path. `text` is what gets normalised onto the event's
     # `content`; the screened string is wider than that on purpose.
     text = body.content
-    if text is None and isinstance(body.payload.get("content"), str):
-        text = body.payload["content"]
+    if text is None and isinstance(payload.get("content"), str):
+        text = payload["content"]
     # Also accept the common nested text fields used by queue transports.
     if text is None:
         for key in ("text", "message", "output"):
-            val = body.payload.get(key)
+            val = payload.get(key)
             if isinstance(val, str) and val:
                 text = val
                 break
@@ -98,7 +120,7 @@ async def append_session_event(session_id: str, body: SessionEventWrite, request
     # `metadata.attachments` as image attachments, `metadata.thinking` as thinking blocks.
     # Deriving the screened text from the lift means a field added there is covered the day
     # it is added, rather than the day someone remembers this list.
-    screened = screenable_text(body.type, {**body.payload, **({"content": text} if text else {})})
+    screened = screenable_text(body.type, {**payload, **({"content": text} if text else {})})
     if screened:
         verdict = await screen_content(screened, settings=settings)
         if getattr(verdict, "denied", False) or (isinstance(verdict, dict) and verdict.get("denied")):
@@ -109,6 +131,6 @@ async def append_session_event(session_id: str, body: SessionEventWrite, request
         tenant_id=tenant,
         session_id=session_id,
         event_type=body.type,
-        payload={**body.payload, **({"content": text} if text else {})},
+        payload={**payload, **({"content": text} if text else {})},
     )
     return {"status": "ok", "event": event}

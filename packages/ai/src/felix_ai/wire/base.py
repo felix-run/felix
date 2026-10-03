@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
@@ -31,6 +32,7 @@ from felix_ai.types import (
     StopReason,
     StreamDelta,
     ToolSchema,
+    is_image_part,
     split_file_ref,
 )
 from felix_ai.wire.transport import DEFAULT_CONNECT_TIMEOUT_S, typed_transport_errors
@@ -225,6 +227,25 @@ def inline_parts(m: ChatMessage) -> list[ContentBlock]:
         )
     _warn_dropped(dropped)
     return parts
+
+
+_TOOL_NAME = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+
+def tool_images(m: ChatMessage) -> list[ContentBlock]:
+    """The images a tool message carries that a wire may render: inline bytes only.
+
+    A tool's own images reach the wire as `data:` URLs -- stored ones are `felix-file://`
+    references expanded just before the call -- so anything else on a tool message did not
+    come from a tool Felix ran: it is a caller's `role: tool` history, or a URL a tool chose
+    for the provider to fetch, which nothing here screened. Neither is sent.
+    """
+    return [p for p in inline_parts(m) if is_image_part(p) and p.url and p.url.startswith("data:")]
+
+
+def tool_label(name: str | None) -> str:
+    """A tool name fit to quote in text the model reads as the user's, or `tool`."""
+    return name if name and _TOOL_NAME.fullmatch(name) else "tool"
 
 
 def _warn_dropped(count: int) -> None:
@@ -488,5 +509,7 @@ __all__ = [
     "map_stop",
     "parse_tool_arguments",
     "split_data_url",
+    "tool_images",
     "tool_json_schema",
+    "tool_label",
 ]

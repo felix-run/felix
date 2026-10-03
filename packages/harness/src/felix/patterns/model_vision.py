@@ -27,7 +27,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 from felix_ai.catalog import accepts_images
-from felix_ai.types import ChatMessage, ContentBlock, ModelRoute
+from felix_ai.types import ChatMessage, ContentBlock, ModelRoute, is_image_part
 
 from felix.observability.metrics import record_counter
 
@@ -35,8 +35,6 @@ if TYPE_CHECKING:
     from felix.config import Settings
 
 logger = logging.getLogger("felix.patterns.model_vision")
-
-_IMAGE_BLOCKS = ("image", "image_url")
 
 
 def route_accepts_images(route: ModelRoute | None) -> bool | None:
@@ -47,11 +45,7 @@ def route_accepts_images(route: ModelRoute | None) -> bool | None:
 
 
 def message_has_images(m: ChatMessage) -> bool:
-    if m.attachments:
-        return True
-    # Named rather than "not text": the next block type (a document, audio) is not an image,
-    # and must not be rerouted or replaced as one.
-    return any(b.type in _IMAGE_BLOCKS for b in m.content_blocks or ())
+    return any(is_image_part(p) for p in (*(m.content_blocks or ()), *(m.attachments or ())))
 
 
 def carries_images(messages: Sequence[ChatMessage]) -> bool:
@@ -60,8 +54,8 @@ def carries_images(messages: Sequence[ChatMessage]) -> bool:
 
 def _image_count(m: ChatMessage) -> int:
     if m.content_blocks:
-        return sum(b.type in _IMAGE_BLOCKS for b in m.content_blocks)
-    return len(m.attachments or ())
+        return sum(is_image_part(b) for b in m.content_blocks)
+    return sum(is_image_part(a) for a in m.attachments or ())
 
 
 def without_images(messages: list[ChatMessage], route_name: str) -> list[ChatMessage]:
@@ -86,19 +80,42 @@ def without_images(messages: list[ChatMessage], route_name: str) -> list[ChatMes
             new += _image_count(m)
         if m.content_blocks:
             blocks = [
-                ContentBlock(type="text", text=note) if b.type in _IMAGE_BLOCKS else b
-                for b in m.content_blocks
+                ContentBlock(type="text", text=note) if is_image_part(b) else b for b in m.content_blocks
             ]
             # `inline_parts` renders `content_blocks` and ignores `attachments` when both are
             # set, so the attachments carried nothing to the wire and need no note of their own.
             out.append(replace(m, content_blocks=blocks, attachments=None))
         else:
-            count = len(m.attachments or ())
+            count = sum(is_image_part(a) for a in m.attachments or ())
             text = "\n".join([*([m.content] if m.content else []), *([note] * count)])
             out.append(replace(m, content=text, attachments=None))
     if new:
         record_counter("felix_model_images_omitted", {"model": route_name}, new)
         logger.warning("omitted %d image(s) for text-only model route %s", new, route_name)
+    return out
+
+
+def caller_images_on_user_turns(messages: list[ChatMessage]) -> list[ChatMessage]:
+    """A request's messages with every image off a non-user turn removed.
+
+    Inbound image screening reads user turns, because those are the caller's own words. A
+    caller can also send history -- `role: tool`, `assistant` -- and an image there used to be
+    dropped by both wires. Now the wires render a tool message's images, for the ones a tool
+    Felix ran returned; one a caller wrote into a tool message would reach the model past
+    every screen, `on_flag: block` and the remote-URL rule included. So it is removed here,
+    at the door, where the only images that can be a caller's are on user turns.
+    """
+    out: list[ChatMessage] = []
+    removed = 0
+    for m in messages:
+        if m.role == "user" or not message_has_images(m):
+            out.append(m)
+            continue
+        removed += _image_count(m) or 1
+        blocks = [b for b in m.content_blocks or () if not is_image_part(b)] or None
+        out.append(replace(m, content_blocks=blocks, attachments=None))
+    if removed:
+        logger.warning("removed %d image(s) from caller-supplied non-user messages", removed)
     return out
 
 
@@ -166,6 +183,7 @@ def unseeable_image_problem(
 
 __all__ = [
     "VisionPlan",
+    "caller_images_on_user_turns",
     "carries_images",
     "message_has_images",
     "route_accepts_images",

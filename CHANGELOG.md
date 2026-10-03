@@ -9,6 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Images in tool results.** A tool can return images for the model to see, through
+  `ToolOutputDict.attachments`, rather than as base64 text.
+  - **How each wire sends them:**
+    - Anthropic puts them inside the `tool_result`.
+    - The OpenAI wire sends one user turn after the run of tool messages, which labels them as
+      tool output to treat as data.
+    - Each wire renders only inline bytes on a tool message.
+  - **The browser:** the `screenshot` op now returns its image this way, up to the 600 KiB
+    attachment limit (it was 32 KB, inlined as text).
+  - **Storage and limits:**
+    - A tool's images are stored in the attachment store under the request's tenant, with the
+      same quota and retention as an upload. The session log keeps a `felix-file://`
+      reference.
+    - At most 4 per call and 16 per request (across every agent the request runs) are kept.
+      A tool's own filename for an image is not kept.
+    - An image that is not png, jpeg, gif or webp by its bytes, is over the limit, or is a
+      remote URL is dropped with a note in the tool result.
+  - **Screening:**
+    - When content screening covers the tool, each image is transcribed and screened by
+      `content_screening.image_model`, and a flagged image is quarantined, never refused.
+    - **Without `image_model`, an untrusted tool's images are quarantined** (fail closed), and
+      a screenshot tool bound under screening without `image_model` logs a warning at compile
+      time.
+    - Quarantined tool text, and an after-tool hook that rewrites the text, take the images
+      with it.
+  - **Other changes:**
+    - The artifact spill keeps a tool's images.
+    - A text-only route sees an "image omitted" line in their place.
+
 - **Agents can write skills, into a per-tenant skill library.** `spec.skill_authoring:
   {enabled: true}` binds `create_skill` and `update_skill`. A save is an immutable semver
   version (`0.1.0` first, a patch bump after), validated, quality-scored and security-scanned
@@ -471,6 +500,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   once.
 
 ### Security
+
+- **A caller's images are kept on user turns only.** History a caller sends to `/chat` or `/v1`
+  as `role: tool` or `assistant` has its images removed at the door. So does a queue write-back
+  to `/internal`, unless it is a user message. The wires now render tool
+  images, and an image written into a caller's tool message would otherwise reach the model past
+  inbound screening and the remote-URL rule.
 
 - **Skill library drafts could replace an operator's skill, and be served when the library was
   unreachable.** Library bytes were written under the operator's own object-store layout,

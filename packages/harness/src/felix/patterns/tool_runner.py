@@ -11,17 +11,19 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from felix.audit.emit import emit_agent_audit
 from felix.hooks import run_after_tool, run_before_tool
+from felix.logging_setup import loggable
 from felix.observability.metrics import record_counter
 from felix.observability.tracing import timed_span
-from felix.patterns.types import ChatMessage, ToolCall
+from felix.patterns.types import ChatMessage, ImageAttachment, ToolCall
 from felix.steer import should_cancel_remaining_tools
 from felix.tools.errors import infer_error_code, read_tool_error_code, tool_output_content
-from felix.tools.types import Tool, ToolInvocationCtx, deny_source, is_wrapper_deny
+from felix.tools.images import ImageBudget, store_tool_images
+from felix.tools.types import Tool, ToolInvocationCtx, deny_source, is_wrapper_deny, tool_output_images
 
 logger = logging.getLogger("felix.patterns.tool_runner")
 
@@ -43,6 +45,8 @@ class ToolRunner:
     tool_map: dict[str, Tool]
     manifest_id: str
     tool_execution: str = "sequential"
+    # How many more tool images this run may keep; see `felix.tools.images`.
+    image_budget: ImageBudget = field(default_factory=ImageBudget)
 
     def batch_mode(self, calls: list[ToolCall]) -> str:
         mode = self.tool_execution or "sequential"
@@ -167,9 +171,14 @@ class ToolRunner:
                     False,
                 )
 
-            content, terminate, denied = await self._record_and_postprocess(
+            content, terminate, denied, rewritten = await self._record_and_postprocess(
                 tool, call, result, thread_id=thread_id
             )
+            # A hook that rewrote the text rewrote the output: a redacting or blocking hook means
+            # all of it, so the images go too rather than slipping past beside the new text.
+            images: list[ImageAttachment] | None = None
+            if not rewritten:
+                content, images = await self._stored_images(call.name, result, content)
 
             return (
                 "ok",
@@ -178,6 +187,7 @@ class ToolRunner:
                     tool_call_id=call.id,
                     name=call.name,
                     content=content,
+                    attachments=images,
                 ),
                 terminate,
                 denied,
@@ -202,6 +212,29 @@ class ToolRunner:
         ) as span:
             return await _run(span)
 
+    async def _stored_images(
+        self, tool_name: str, result: Any, content: str
+    ) -> tuple[str, list[ImageAttachment] | None]:
+        """The images a tool returned, stored for the session log, and `content` with a note for
+        each that was not kept.
+
+        After the governance stack, so what reaches here has already been screened. A failure
+        costs the images, never the call: the tool already ran.
+        """
+        try:
+            images = tool_output_images(result)
+            if not images:
+                return content, None
+            kept, notes = await store_tool_images(images, tool_name=tool_name, budget=self.image_budget)
+        except Exception:
+            logger.warning(
+                "images from %s dropped; the tool already ran", loggable(tool_name, limit=64), exc_info=True
+            )
+            return content, None
+        if notes:
+            content = "\n".join([*([content] if content else []), *notes])
+        return content, kept or None
+
     async def _record_and_postprocess(
         self,
         tool: Tool,
@@ -209,7 +242,7 @@ class ToolRunner:
         result: Any,
         *,
         thread_id: str | None,
-    ) -> tuple[str, bool, bool]:
+    ) -> tuple[str, bool, bool, bool]:
         """Metering, audit and the after-tool hook, for a tool that has already run.
 
         Separate from the call itself because none of it can undo the call. It used to share
@@ -223,6 +256,7 @@ class ToolRunner:
         content = ""
         terminate = False
         denied = False
+        rewritten = False
         try:
             content = tool_output_content(result)
             err = read_tool_error_code(result)
@@ -265,13 +299,14 @@ class ToolRunner:
             terminate = bool(after and after.get("terminate"))
             if after and after.get("content") is not None:
                 content = str(after["content"])
+                rewritten = True
         except Exception:
             logger.warning("post-call handling failed for %s; the tool already ran", call.name, exc_info=True)
             record_counter(
                 "felix_control_degraded",
                 {"control": "after_tool", "manifest_id": self.manifest_id},
             )
-        return content, terminate, denied
+        return content, terminate, denied, rewritten
 
     async def run_batch(
         self,
