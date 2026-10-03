@@ -189,7 +189,7 @@ Client → Ingress (Caddy / Traefik / nginx / Cloudflare DNS+CDN)
 | Component | Responsibility |
 |---|---|
 | `apps/api` | HTTP: `/chat`, `/v1`, `/a2a`, `/mcp`, management APIs, OpenAPI |
-| `apps/worker` | Audit flush, scheduled jobs, memory consolidation, retention, anomaly scan, continuous eval, fiber resume |
+| `apps/worker` | Audit flush, scheduled jobs, memory consolidation, retention, anomaly scan, continuous eval, fiber resume, skill improvement and evaluation |
 | `felix-scheduler` | Enqueues labeled Taskiq cron tasks — **required alongside the worker**, or nothing periodic fires |
 | `packages/ai` | Model layer: wire formats, catalog, turn types. Imports nothing from `felix` |
 | `packages/harness` | Manifests, patterns, tools, session, governance, auth, plugins |
@@ -295,7 +295,14 @@ enters no catalog until it is published, and publishing is gated — a failing s
 blocks, `FELIX_SKILL_PUBLISH_MIN_QUALITY` (0 = off) sets a floor on the 0-100 review score, and
 `FELIX_SKILL_PUBLISH_BLOCK_ON_ADVISORY` (false) also refuses an advisory scan. Operators review
 the queue, author, publish, roll back and archive through `/skill-library` (`skills:read` to
-read, `skills:write` to change).
+read, `skills:write` to change). The agent can also file feedback on a library skill
+(`submit_skill_feedback`), as can an operator. A person's accept is the only thing that has the
+worker rewrite the skill from it, with `FELIX_SKILL_IMPROVE_MODEL` (empty = the default route),
+and the rewrite is a draft for review. `POST /skill-library/{name}/versions/{v}/eval` scores a
+version against a baseline without it: `FELIX_SKILL_EVAL_MODEL` answers each scenario with and
+without the skill, `FELIX_SKILL_EVAL_JUDGE_MODEL` scores both answers 0-100, and
+`FELIX_SKILL_EVAL_MAX_SCENARIOS` (10) caps the run. `PATCH /skill-library/-/policy` gives a
+tenant its own gate, which can require an evaluation or a minimum uplift before a publish.
 
 **[`examples/felix-plugin-example/`](examples/felix-plugin-example/)** is a working package that
 exercises every seam above.

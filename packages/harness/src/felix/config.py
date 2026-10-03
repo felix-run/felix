@@ -380,6 +380,17 @@ class Settings(BaseSettings):
     skill_publish_min_quality: int = Field(default=0, ge=0, le=100)
     # Refuse a version whose scan found only medium findings (an `advisory`), not just a `fail`.
     skill_publish_block_on_advisory: bool = False
+    # The `FELIX_MODEL_ROUTES` id that rewrites a skill from accepted feedback
+    # (`felix/skills/improve.py`); empty is `FELIX_DEFAULT_MODEL_ID`. The rewrite is saved as a
+    # draft for review, never published.
+    skill_improve_model: str = ""
+    # The route that answers each evaluation scenario, with and without the skill
+    # (`felix/skills/evaluate.py`), and the one that scores the answers; empty is the default.
+    skill_eval_model: str = ""
+    skill_eval_judge_model: str = ""
+    # Scenarios one evaluation runs at most. Each is four model calls (two answers, two scores),
+    # so this bounds what one queued evaluation can spend.
+    skill_eval_max_scenarios: int = Field(default=10, ge=1, le=10)
     memory_embedding_model: str = "bge-base-en-v1.5"
     memory_recall_limit: int = 8
 

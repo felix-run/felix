@@ -395,7 +395,7 @@ async def test_activate_names_no_files_for_a_bundle_without_any(
 
 def test_skill_authoring_defaults_off_and_bounds_the_cap() -> None:
     spec = SkillAuthoringSpec()
-    assert (spec.enabled, spec.mode, spec.max_pending) == (False, "draft", 20)
+    assert (spec.enabled, spec.mode, spec.max_pending, spec.auto_eval) == (False, "draft", 20, False)
     for bad in ({"max_pending": 0}, {"max_pending": 201}, {"mode": "auto"}, {"unknown": True}):
         with pytest.raises(ValidationError):
             SkillAuthoringSpec.model_validate(bad)
@@ -428,14 +428,76 @@ async def test_authoring_binds_create_update_and_the_skill_tools(settings: Setti
         skill_authoring={"enabled": True},
         approvals=[{"id": "author", "tools": ["create_skill", "update_skill"], "ttl_seconds": 60}],
     )
-    assert {"create_skill", "update_skill", "list_skills", "activate_skill", "read_skill_file"} <= set(tools)
+    assert {
+        "create_skill",
+        "update_skill",
+        "submit_skill_feedback",
+        "list_skills",
+        "activate_skill",
+        "read_skill_file",
+    } <= set(tools)
     # Through the governance stack, the harness-rendered preview is still what approvals reads.
     assert tools["create_skill"].approval_preview is not None
 
 
+async def test_the_bound_feedback_tool_takes_the_compiled_catalogs_library_skills(settings: Settings) -> None:
+    """The builder hands `submit_skill_feedback` the catalog it compiled: the tenant's published
+    library skill takes feedback, a bundled skill in the same catalog does not."""
+    from felix.skills.quality_store import get_skill_feedback_store
+    from felix.tools.provider import InMemoryToolProvider
+
+    store = MemoryObjectStore()
+    version = await _published(settings, store)
+    agent = await build_agent(
+        {
+            "apiVersion": "felix/v1",
+            "kind": "Agent",
+            "metadata": {"name": "author-test"},
+            "spec": {"pattern": "react", "skill_authoring": {"enabled": True}},
+        },
+        deps=BuildDeps(tools=InMemoryToolProvider(), settings=settings, tenant_id="acme", object_store=store),
+        settings=settings,
+    )
+    tool = {t.name: t for t in agent.tools}["submit_skill_feedback"]
+    from felix.context import AuthContext, RequestContext, async_run_with_context
+
+    # The governed tool, so it runs inside a request as it would in a turn.
+    ctx = RequestContext(settings=settings, auth=AuthContext(tenant_id="acme"), manifest_id="author-test")
+    async with async_run_with_context(ctx):
+        filed = await _call(tool, {"name": "invoice-triage", "body": "Say what the limit is."})
+        refused = await _call(tool, {"name": "calculator-help", "body": "x"})
+    assert (filed["status"], filed["target_version"]) == ("pending", version), filed
+    assert refused["error"] == "unknown_skill", refused
+    (row,) = await get_skill_feedback_store(settings).list_by_status("acme", "pending")
+    assert (row["author"], row["source"]) == ("author-test", "agent")
+
+
+async def test_auto_eval_queues_an_evaluation_of_each_saved_draft(
+    settings: Settings, store: MemoryObjectStore
+) -> None:
+    from felix.skills.quality_store import get_skill_eval_store
+
+    create = {"name": "invoice-triage", "description": "Route invoices.", "body": BODY, "reason": "r"}
+    off = await _call(_authoring(settings, store)["create_skill"], create)
+    assert "eval_id" not in off
+    assert await get_skill_eval_store(settings).list_for_skill("acme", "invoice-triage") == []
+
+    update = {
+        "name": "invoice-triage",
+        "body": BODY + "\n3. File it.\n",
+        "reason": "r",
+        "parent_version": "0.1.0",
+    }
+    on = await _call(_authoring(settings, store, auto_eval=True)["update_skill"], update)
+
+    (queued,) = await get_skill_eval_store(settings).list_for_skill("acme", "invoice-triage")
+    assert (on["eval_id"], queued["version"], queued["status"]) == (queued["id"], "0.1.1", "queued")
+    assert queued["requested_by"] == "contributor"
+
+
 async def test_without_authoring_nothing_writes(settings: Settings) -> None:
     tools = await _built_tools(settings, skills=[{"name": "calculator-help"}])
-    assert not {"create_skill", "update_skill"} & set(tools)
+    assert not {"create_skill", "update_skill", "submit_skill_feedback"} & set(tools)
     assert "read_skill_file" in tools, "read_skill_file comes with the skill tools"
     assert not {"create_skill", "update_skill", "read_skill_file"} & set(await _built_tools(settings))
 

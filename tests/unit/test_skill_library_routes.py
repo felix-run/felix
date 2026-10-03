@@ -424,7 +424,11 @@ async def test_the_policy_route_reports_the_settings(tmp_path: Path) -> None:
         "min_quality": 40,
         "block_on_advisory": True,
         "security_fail_blocks": True,
+        "require_eval": False,
+        "min_eval_uplift": None,
         "source": "settings",
+        "updated_at": None,
+        "updated_by": None,
     }
 
 

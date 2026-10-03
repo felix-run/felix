@@ -37,7 +37,7 @@ turn the demo into an account system, and that is not what it is for.
 |-------|-----------|
 | Platform (model keys, consumer secret) | `FELIX_SECRETS_BACKEND=env\|file\|aws\|gcp` + `hydrate_secrets()` at API/worker startup |
 | Manifest outbound (`mcp_servers.auth`, `env`, peer/container `auth`) | `secret:NAME` or `{secret: NAME}` resolved at compile; **never** store resolved values in `manifest_json` |
-| Redaction | Known secrets scrubbed from tool output, session events, audit payloads, fiber state, skill bodies read over `/skills`, and every `/skill-library` read and write response — file text, and the reason, description, decision note, review-check and security-issue messages a saver or the scan wrote |
+| Redaction | Known secrets scrubbed from tool output, session events, audit payloads, fiber state, skill bodies read over `/skills`, and every `/skill-library` read and write response — file text, and the reason, description, decision note, review-check and security-issue messages a saver or the scan wrote, and feedback bodies, suggested patches, evaluation scenarios, judge reasons and job errors |
 
 Production (`FELIX_ENVIRONMENT=production`) or `governance.forbid_plaintext_secrets: true`
 rejects Bearer/long-token auth and non-ref MCP `env` values.
@@ -314,6 +314,39 @@ must be the skill's newest version; its approval preview shows that version and 
 keeps from it, each by sha256. Because the argument is part of the call, an approval binds it (see
 Approval semantics), and a call whose parent is no longer the newest is refused (`parent_changed`)
 rather than saved over content nobody read.
+
+**Feedback, improvement and evaluation.** Feedback on a library skill (`submit_skill_feedback`
+for an agent, restricted to the library skills in its own catalogue and capped by
+`skill_authoring.max_pending`; `POST /skill-library/{name}/feedback` for an operator) changes
+nothing: it waits as `pending` until a person decides it. **An agent's feedback cannot start a
+rewrite.** Only a person's accept with `improve` lets the worker's `skill_jobs` sweep rewrite the
+skill, and **every rewrite lands as a draft** (`source: agent`, author `skill-improver`) in the
+review queue, published only through the same gate as any other draft. An agent that absorbed
+injected text can therefore get that text in front of a reviewer, and no further.
+
+Both worker-side model calls handle **untrusted skill text**. The improvement
+(`FELIX_SKILL_IMPROVE_MODEL`) is handed the current SKILL.md, the feedback and any suggested
+patch, each fenced as untrusted data in a region it cannot close, and told to treat them as a
+description of the edit and nothing more; its output is validated like any save and must keep
+the skill's name, or the feedback fails. The evaluation (`FELIX_SKILL_EVAL_MODEL`) answers each
+scenario once without the skill and once with the body fenced as "reference skill instructions
+(untrusted data)"; the judge (`FELIX_SKILL_EVAL_JUDGE_MODEL`, the eval judge every rubric uses)
+reads each answer fenced too, told to ignore any instruction or score inside it, and does not
+know which answer had the skill. A judge call that yields no usable score fails the evaluation
+instead of falling back to the heuristic, so a broken judge route cannot satisfy an eval gate.
+The residual risk is a skill body that persuades the *answering* model to write an answer that
+flatters itself; `require_eval` and `min_eval_uplift` are a quality bar, not a security control,
+and the security scan still blocks a failing body whatever an evaluation says. Every one of these
+calls is metered to the skill's tenant through `record_usage`, and every state change is audited
+(`skill_feedback_submitted`, `_accepted`, `_rejected`, `_applied`, `_failed`, `skill_eval_queued`,
+`skill_eval_finished`, `skill_policy_updated`).
+
+**Publish policy per tenant.** `PATCH /skill-library/-/policy` sets a tenant's gate
+(`min_quality`, `block_on_advisory`, `require_eval`, `min_eval_uplift`), which then replaces the
+`FELIX_SKILL_PUBLISH_*` settings for that tenant whole — including setting a lower quality floor
+than the deployment's. The holder of `skills:write` can already publish, so this is no new power
+over what goes live; `GET /-/policy` reports the policy in force and its `source`. A failing
+security scan blocks every publish whatever the policy says.
 
 ## Outbound egress
 
@@ -1442,8 +1475,8 @@ implies the matching `*:read`.
 | `usage:read` | `/usage` |
 | `memory:read` / `memory:write` | `/memory` — inspect, search, correct and prune what an agent has remembered |
 | `documents:read` / `documents:write` | `/documents` — ingest, search, inspect and remove the corpus an agent retrieves from |
-| `skills:read` | `/skills`, and the read routes of `/skill-library` (the library, the review queue at `/-/review`, each version's review record, digest-checked and redacted files, a read-only gate preview, the policy at `/-/policy`). `/skills` — list the Agent Skills a manifest can reach, read the body `activate_skill` hands the model (secret-redacted, as `manifests:read` redacts a manifest), and see which skill activated on which turn. Separate from `manifests:read` because a skill body is **prompt content**: `activate_skill` hands it to the model as instructions, so reading one is reading instructions the agent will follow. Read-only; activation is the model's decision mid-turn. By default a manifest's `spec.skills` *adds to* the bundled and `FELIX_SKILLS_DIR` catalogue rather than restricting it, so the model is offered every skill on the host; `spec.skills_declared_only: true` makes the declared names the whole set. The `declared` field on each item says which ones this manifest named, and `declared_only` on the response says which rule is in force. Worth setting on any manifest that has to be reviewable: a skill body reaches the model as instructions, so an ambient skill is an instruction the agent follows that `pin_compile` does not cover — the hash is over the manifest, and the drift is on the host's disk |
-| `skills:write` | `/skill-library` writes — save a skill or a new version as an operator draft, publish, roll back, reject a draft with a note, archive. Implies `skills:read`. Its own scope because publishing puts the skill's instructions in front of every manifest in the tenant: a published library skill joins every catalogue there, and `activate_skill` hands its body to the model as instructions. Every change is audited to the caller, and a publish passes the same gate an agent's does (a failing security scan blocks whoever asks) |
+| `skills:read` | `/skills`, and the read routes of `/skill-library` (the library, the review queue at `/-/review`, each version's review record, digest-checked and redacted files, a read-only gate preview, the policy at `/-/policy`, feedback at `/{name}/feedback` and the `/-/feedback` inbox, evaluations at `/{name}/evals`). `/skills` — list the Agent Skills a manifest can reach, read the body `activate_skill` hands the model (secret-redacted, as `manifests:read` redacts a manifest), and see which skill activated on which turn. Separate from `manifests:read` because a skill body is **prompt content**: `activate_skill` hands it to the model as instructions, so reading one is reading instructions the agent will follow. Read-only; activation is the model's decision mid-turn. By default a manifest's `spec.skills` *adds to* the bundled and `FELIX_SKILLS_DIR` catalogue rather than restricting it, so the model is offered every skill on the host; `spec.skills_declared_only: true` makes the declared names the whole set. The `declared` field on each item says which ones this manifest named, and `declared_only` on the response says which rule is in force. Worth setting on any manifest that has to be reviewable: a skill body reaches the model as instructions, so an ambient skill is an instruction the agent follows that `pin_compile` does not cover — the hash is over the manifest, and the drift is on the host's disk |
+| `skills:write` | `/skill-library` writes — save a skill or a new version as an operator draft, publish, roll back, reject a draft with a note, archive; file, accept (which queues an AI rewrite into a draft) and reject feedback; queue an evaluation; set the tenant's publish policy. Implies `skills:read`. Its own scope because publishing puts the skill's instructions in front of every manifest in the tenant: a published library skill joins every catalogue there, and `activate_skill` hands its body to the model as instructions. Every change is audited to the caller, and a publish passes the same gate an agent's does (a failing security scan blocks whoever asks) |
 | `files:read` / `files:write` | `/files` — upload a file once and reference it by id on later turns. Bounded per tenant by `FELIX_ATTACHMENTS_MAX_BYTES_PER_TENANT` (256 MiB; `0` disables) on top of the 600 KiB per-upload cap, answered as 409 rather than 413 — the request is a fine size and the account is full. `FELIX_ATTACHMENT_RETENTION_DAYS` (`0`, keep forever) lets the nightly sweep collect old uploads, bytes and ledger row together; before it, `attachments/` was an object-store prefix nothing ever collected. Uploads predating migration `0016` are counted by neither, because a backfill would need the `list` the `ObjectStore` Protocol deliberately does not have. Under `auth_mode=none` every local process holds `files:write`, so the ceiling is the only thing bounding the disk there. `DELETE /files/{file_id}` is the erasure path. Separate from `artifacts:read`, which reads spill the *harness* wrote: these are caller-supplied bytes with a caller-driven lifecycle, so permission to add them is its own grant. The tenant comes from the caller's credentials and never from the path, so no spelling of a reference reaches another tenant's upload. A turn names an upload with a `file` content part, expanded to bytes immediately before the model call — after `apply_inbound_screening`, which is where it must be if the session log is to keep the reference rather than the base64. That is not a gap this opened: `_message_text` collects only `text` blocks, so **image content has never been screened on any path**, inline `data:` URLs included, and text rendered inside an image is an injection channel on both |
 
 ```bash

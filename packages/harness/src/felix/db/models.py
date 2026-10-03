@@ -197,6 +197,89 @@ class SkillFileRow(Base):
     size: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
 
+class SkillFeedbackRow(Base):
+    """Feedback on one version of a library skill, from a person or an agent.
+
+    Nothing rewrites a skill from feedback until a person accepts it with `improve`; the
+    worker then claims the row (`claimed_at`) and records the draft it produced
+    (`result_version`) or why it could not (`error`)."""
+
+    __tablename__ = "skill_feedback"
+
+    tenant_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    target_version: Mapped[str] = mapped_column(Text, nullable=False)
+    source: Mapped[str] = mapped_column(Text, nullable=False)
+    author: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    principal: Mapped[str | None] = mapped_column(Text, nullable=True)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    suggested_patch: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    improve: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=false(), default=False)
+    result_version: Mapped[str | None] = mapped_column(Text, nullable=True)
+    model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    claimed_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    decided_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    decided_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+    decision_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'accepted', 'rejected', 'applied', 'failed')",
+            name="ck_skill_feedback_status",
+        ),
+        CheckConstraint("source IN ('human', 'agent')", name="ck_skill_feedback_source"),
+    )
+
+
+class SkillEvalRow(Base):
+    """One baseline-versus-with-skill evaluation of a library skill version."""
+
+    __tablename__ = "skill_eval"
+
+    tenant_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    version: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    scenario_source: Mapped[str | None] = mapped_column(Text, nullable=True)
+    scenarios: Mapped[list[Any]] = mapped_column(JSONB, server_default=text("'[]'::jsonb"), default=list)
+    baseline_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    with_skill_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    uplift: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    results: Mapped[list[Any]] = mapped_column(JSONB, server_default=text("'[]'::jsonb"), default=list)
+    model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    judge_model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    requested_by: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    started_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    finished_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('queued', 'running', 'succeeded', 'failed')", name="ck_skill_eval_status"
+        ),
+    )
+
+
+class SkillPolicyRow(Base):
+    """A tenant's skill publish policy. Absent means `FELIX_SKILL_PUBLISH_*` decides."""
+
+    __tablename__ = "skill_policy"
+
+    tenant_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    min_quality: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    block_on_advisory: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=false())
+    require_eval: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=false())
+    min_eval_uplift: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    updated_by: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+
+
 class ManifestRow(Base):
     __tablename__ = "manifests"
 

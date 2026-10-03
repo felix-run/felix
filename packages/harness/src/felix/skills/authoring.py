@@ -1,8 +1,10 @@
-"""`create_skill` and `update_skill`: an agent writing to its tenant's skill library.
+"""`create_skill`, `update_skill` and `submit_skill_feedback`: an agent writing to its tenant's
+skill library.
 
 Bound by `manifests/builder.py` for a manifest with `spec.skill_authoring.enabled`, before the
 governance stack, so an approvals rule holds the save until a person has read the SKILL.md the
-harness renders as the approval preview.
+harness renders as the approval preview. Feedback changes no skill: a person decides it, and only
+a person's accept lets the worker rewrite the skill from it (`skills/feedback.py`).
 """
 
 from __future__ import annotations
@@ -13,11 +15,12 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from felix.skills.types import SkillCatalog
 from felix.tools.types import Tool, ToolInput, ToolInvocationCtx, define_tool
 
 logger = logging.getLogger("felix.skills.authoring")
 
-SKILL_AUTHORING_TOOL_NAMES = frozenset({"create_skill", "update_skill"})
+SKILL_AUTHORING_TOOL_NAMES = frozenset({"create_skill", "update_skill", "submit_skill_feedback"})
 
 
 class _CreateSkillArgs(BaseModel):
@@ -141,12 +144,30 @@ class _SkillAuthor:
         mode: Literal["draft", "publish"],
         max_pending: int,
         object_store: Any | None,
+        auto_eval: bool = False,
     ) -> None:
         from felix.skills.library_store import get_skill_library_store
 
         self.settings, self.tenant_id, self.manifest_id = settings, tenant_id, manifest_id
         self.mode, self.max_pending, self.object_store = mode, max_pending, object_store
+        self.auto_eval = auto_eval
         self.lib = get_skill_library_store(settings)
+
+    async def queue_eval(self, row: dict[str, Any]) -> str | None:
+        """`skill_authoring.auto_eval`: queue an evaluation of the draft just saved. A failure to
+        queue never fails the save; the result just carries no `eval_id`."""
+        if not self.auto_eval:
+            return None
+        from felix.skills.evaluate import queue_eval
+
+        try:
+            queued = await queue_eval(
+                self.settings, self.tenant_id, row["name"], row["version"], requested_by=self.manifest_id
+            )
+        except Exception:
+            logger.warning("auto_eval could not queue %s@%s", row["name"], row["version"], exc_info=True)
+            return None
+        return str(queued["id"])
 
     async def compose(self, args: ToolInput, *, update: bool) -> _Composed:
         """The bundle a call would save, and what it was edited from."""
@@ -262,9 +283,11 @@ class _SkillAuthor:
         except Exception:
             logger.warning("skill save failed for %s", args.get("name"), exc_info=True)
             return json.dumps({"error": "save_failed", "name": args.get("name")})
-        if self.mode != "publish":
-            return json.dumps(_draft_result(row, "draft"))
-        return json.dumps(await self.publish(row, composed))
+        eval_id = await self.queue_eval(row)
+        result = _draft_result(row, "draft") if self.mode != "publish" else await self.publish(row, composed)
+        if eval_id is not None:
+            result["eval_id"] = eval_id
+        return json.dumps(result)
 
     async def preview(self, args: ToolInput, *, update: bool) -> str:
         """What an approver reads: the SKILL.md, and for an edit, the version it builds on and
@@ -288,6 +311,7 @@ def make_skill_authoring_tools(
     mode: Literal["draft", "publish"] = "draft",
     max_pending: int = 20,
     object_store: Any | None = None,
+    auto_eval: bool = False,
 ) -> list[Tool]:
     """`create_skill` and `update_skill`, writing drafts to the tenant's skill library.
 
@@ -305,6 +329,7 @@ def make_skill_authoring_tools(
         mode=mode,
         max_pending=max_pending,
         object_store=object_store,
+        auto_eval=auto_eval,
     )
 
     async def _create(args: _CreateSkillArgs, ctx: ToolInvocationCtx | None = None) -> str:
@@ -346,4 +371,104 @@ def make_skill_authoring_tools(
     return [create, update]
 
 
-__all__ = ["SKILL_AUTHORING_TOOL_NAMES", "make_skill_authoring_tools"]
+class _FeedbackArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=64, description="A library skill, as list_skills shows it.")
+    body: str = Field(
+        min_length=1,
+        max_length=4000,
+        description="What the skill got wrong or left out, and what it should say instead.",
+    )
+    suggested_patch: str | None = Field(
+        default=None, max_length=16000, description="Optional: replacement text for the part that is wrong."
+    )
+
+
+def _feedback_preview(name: str, version: str | None, args: ToolInput) -> str:
+    lines = [f"submit_skill_feedback {name}@{version or '?'}", "", str(args.get("body") or "")]
+    if args.get("suggested_patch"):
+        lines += ["", "--- suggested patch ---", str(args["suggested_patch"])]
+    return "\n".join(lines)
+
+
+def make_skill_feedback_tool(
+    settings: Any,
+    *,
+    tenant_id: str,
+    manifest_id: str,
+    catalog: SkillCatalog,
+    max_pending: int = 20,
+) -> Tool:
+    """`submit_skill_feedback`: file feedback on a library skill in this agent's catalog.
+
+    Only the library skills ``catalog`` holds -- the live versions this agent was given -- take
+    feedback, and it is filed against the version the agent read. A host skill has no library
+    record to improve. ``max_pending`` caps this manifest's undecided feedback, as it caps its
+    drafts. Filing changes nothing: a person accepts or rejects the feedback, and only an accept
+    lets the worker rewrite the skill, into a draft for review.
+    """
+    from felix.logging_setup import loggable
+
+    library_skills = {s.name: s for s in catalog.skills.values() if s.source == "library"}
+
+    async def _submit(args: _FeedbackArgs, ctx: ToolInvocationCtx | None = None) -> str:
+        from felix.skills import feedback, library
+
+        skill = library_skills.get(args.name)
+        if skill is None:
+            return json.dumps(
+                {
+                    "error": "unknown_skill",
+                    "name": loggable(args.name, limit=64),
+                    "detail": "only library skills in your catalog take feedback",
+                }
+            )
+        try:
+            row = await feedback.submit_feedback(
+                settings,
+                tenant_id,
+                name=skill.name,
+                body=args.body,
+                source="agent",
+                author=manifest_id,
+                principal=_principal(),
+                suggested_patch=args.suggested_patch,
+                target_version=skill.version,
+                max_pending=max_pending,
+            )
+        except library.SkillLibraryError as exc:
+            return json.dumps({"error": exc.code, "detail": str(exc)})
+        except Exception:
+            logger.warning("skill feedback failed for %s", skill.name, exc_info=True)
+            return json.dumps({"error": "feedback_failed", "name": skill.name})
+        return json.dumps(
+            {
+                "status": "pending",
+                "feedback_id": row["id"],
+                "name": row["name"],
+                "target_version": row["target_version"],
+                "detail": "An operator reads feedback; the skill is unchanged until a person accepts it.",
+            }
+        )
+
+    tool = define_tool(
+        name="submit_skill_feedback",
+        description=(
+            "Report that a skill from this tenant's library (source `library` in list_skills) is "
+            "wrong, unclear or missing something, and what it should say instead. An operator "
+            "reviews it; the skill does not change until a person accepts the feedback."
+        ),
+        args=_FeedbackArgs,
+        handler=_submit,
+    )
+
+    async def _preview(args: ToolInput) -> str:
+        skill = library_skills.get(str(args.get("name") or ""))
+        return _feedback_preview(str(args.get("name") or ""), skill.version if skill else None, args)
+
+    tool.approval_preview = _preview
+    return tool
+
+
+__all__ = ["SKILL_AUTHORING_TOOL_NAMES", "make_skill_authoring_tools", "make_skill_feedback_tool"]

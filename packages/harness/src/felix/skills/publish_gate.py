@@ -6,7 +6,9 @@ management preview all reach the same `evaluate_files`, so the verdict a reviewe
 the verdict a publish is decided on.
 
 A failing security scan blocks always, whatever the policy says. The policy only raises the
-bar from there: a quality floor, and refusing an advisory scan.
+bar from there: a quality floor, refusing an advisory scan, requiring a succeeded evaluation of
+the version, and a floor on that evaluation's uplift. The policy is a tenant's `skill_policy`
+row when it has one, else `FELIX_SKILL_PUBLISH_*`; the caller reads both and hands them here.
 """
 
 from __future__ import annotations
@@ -24,21 +26,44 @@ from felix.skills.security import ScanStatus, scan_skill_security
 SecurityStatus = ScanStatus
 
 
+PolicySource = Literal["settings", "tenant"]
+
+
 @dataclass(slots=True, frozen=True)
 class PublishPolicy:
-    """The gate a publish passes, as configured. Settings-wide for now; per tenant later."""
+    """The gate a publish passes: a tenant's `skill_policy` row, or the settings without one."""
 
     min_quality: int = 0
     block_on_advisory: bool = False
     # Not configurable: a failing scan blocks every publish, whoever asks.
     security_fail_blocks: bool = True
-    source: Literal["settings"] = "settings"
+    # Block unless the version has a succeeded evaluation.
+    require_eval: bool = False
+    # Block unless the version's latest succeeded evaluation has at least this uplift (with-skill
+    # score minus baseline, -100..100). Set without `require_eval`, a version with no evaluation
+    # is blocked too: there is no uplift to compare.
+    min_eval_uplift: int | None = None
+    source: PolicySource = "settings"
+
+    @property
+    def needs_eval(self) -> bool:
+        """Whether a verdict under this policy depends on the version's evaluation."""
+        return self.require_eval or self.min_eval_uplift is not None
 
 
-def publish_policy(settings: Settings, tenant_id: str) -> PublishPolicy:
-    """The policy in force for ``tenant_id``. The tenant is unused until policy rows exist;
-    it is a parameter now so no caller has to learn it later."""
-    del tenant_id
+def publish_policy(settings: Settings, row: Mapping[str, Any] | None) -> PublishPolicy:
+    """The policy in force: ``row`` -- the tenant's `skill_policy` row -- when there is one,
+    whole, else the settings. A row replaces the settings rather than overlaying them, so what
+    `GET /skill-library/-/policy` reports is every field the gate reads, from one source."""
+    if row is not None:
+        uplift = row.get("min_eval_uplift")
+        return PublishPolicy(
+            min_quality=int(row.get("min_quality") or 0),
+            block_on_advisory=bool(row.get("block_on_advisory")),
+            require_eval=bool(row.get("require_eval")),
+            min_eval_uplift=None if uplift is None else int(uplift),
+            source="tenant",
+        )
     return PublishPolicy(
         min_quality=int(settings.skill_publish_min_quality or 0),
         block_on_advisory=bool(settings.skill_publish_block_on_advisory),
@@ -86,20 +111,42 @@ def assess(files: Mapping[str, str], name: str) -> Assessment:
     )
 
 
-def policy_reasons(policy: PublishPolicy, assessment: Assessment) -> list[str]:
-    """Why ``policy`` refuses ``assessment``; empty when it does not."""
+def _eval_reasons(policy: PublishPolicy, latest_eval: Mapping[str, Any] | None) -> list[str]:
+    if not policy.needs_eval:
+        return []
+    if latest_eval is None:
+        return ["the publish policy requires a succeeded evaluation of this version, and it has none"]
+    uplift = latest_eval.get("uplift")
+    if policy.min_eval_uplift is not None and (uplift is None or int(uplift) < policy.min_eval_uplift):
+        return [
+            f"evaluation {latest_eval.get('id')} has uplift {uplift}, below the minimum "
+            f"{policy.min_eval_uplift}"
+        ]
+    return []
+
+
+def policy_reasons(
+    policy: PublishPolicy, assessment: Assessment, latest_eval: Mapping[str, Any] | None = None
+) -> list[str]:
+    """Why ``policy`` refuses ``assessment``; empty when it does not. ``latest_eval`` is the
+    version's latest succeeded evaluation, which only a policy that `needs_eval` reads."""
     reasons: list[str] = []
     if assessment.security_status == "fail":
         found = [i["message"] for i in assessment.security_issues if i["severity"] in {"critical", "high"}]
         reasons.append("security scan failed: " + "; ".join(found[:5]))
     elif assessment.security_status == "advisory" and policy.block_on_advisory:
-        reasons.append("security scan is advisory and FELIX_SKILL_PUBLISH_BLOCK_ON_ADVISORY is set")
+        reasons.append("security scan is advisory and the publish policy blocks advisory scans")
     if assessment.quality_score < policy.min_quality:
         reasons.append(f"quality score {assessment.quality_score} is below the minimum {policy.min_quality}")
-    return reasons
+    return reasons + _eval_reasons(policy, latest_eval)
 
 
-def evaluate_files(files: Mapping[str, str], name: str, policy: PublishPolicy) -> Verdict:
+def evaluate_files(
+    files: Mapping[str, str],
+    name: str,
+    policy: PublishPolicy,
+    latest_eval: Mapping[str, Any] | None = None,
+) -> Verdict:
     """Validate, review, scan and apply the policy. Blocking: call it off the event loop."""
     validation = validate_skill_bundle(files, name)
     assessment = assess(files, name)
@@ -107,12 +154,13 @@ def evaluate_files(files: Mapping[str, str], name: str, policy: PublishPolicy) -
     if not validation.valid:
         reasons = [f"bundle no longer validates: {i['path']}: {i['message']}" for i in issues]
     else:
-        reasons = policy_reasons(policy, assessment)
+        reasons = policy_reasons(policy, assessment, latest_eval)
     return Verdict(valid=validation.valid, assessment=assessment, validation_issues=issues, reasons=reasons)
 
 
 __all__ = [
     "Assessment",
+    "PolicySource",
     "PublishPolicy",
     "SecurityStatus",
     "Verdict",

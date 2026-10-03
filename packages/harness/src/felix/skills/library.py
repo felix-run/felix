@@ -3,8 +3,9 @@
 A skill body is returned by `activate_skill` as *instructions* -- a higher-trust surface than
 recalled memory, which is fenced as reference. So an agent's skill is a draft until something
 publishes it, and publishing runs a gate no setting can open past: a failing security scan
-blocks, always. `FELIX_SKILL_PUBLISH_MIN_QUALITY` and `FELIX_SKILL_PUBLISH_BLOCK_ON_ADVISORY`
-raise the bar from there. Every state change is an audit event.
+blocks, always. The publish policy raises the bar from there (`load_publish_policy`: the
+tenant's `skill_policy` row, else `FELIX_SKILL_PUBLISH_*`), including requiring a succeeded
+evaluation of the version. Every state change is an audit event.
 
 Versions are immutable semver. A save reserves its version row first and writes the bytes
 after, so the primary key is the lock: two saves racing to `0.1.1` collide on the row rather
@@ -494,6 +495,50 @@ async def read_version_file(
     return _checked(path, await store.get(library_object_key(tenant_id, name, version, path)), meta["sha256"])
 
 
+async def load_publish_policy(settings: Settings, tenant_id: str) -> PublishPolicy:
+    """The publish policy in force for ``tenant_id``: its `skill_policy` row, else the settings.
+
+    Not caught: a gate that cannot read the tenant's policy must not quietly fall back to the
+    settings, which may be the lower bar.
+    """
+    from felix.skills.quality_store import get_skill_policy_store
+
+    return publish_policy(settings, await get_skill_policy_store(settings).get(tenant_id))
+
+
+_POLICY_FIELDS = ("min_quality", "block_on_advisory", "require_eval", "min_eval_uplift")
+
+
+async def set_publish_policy(
+    settings: Settings, tenant_id: str, changes: Mapping[str, Any], *, by: str
+) -> PublishPolicy:
+    """Change ``tenant_id``'s publish policy and return the one now in force.
+
+    ``changes`` names only the fields to change; the rest keep their effective value, so the
+    first change copies the settings' values into the tenant's row. Ranges are the caller's to
+    validate (the route's request model). Audited as `skill_policy_updated`, before and after.
+    """
+    from dataclasses import asdict
+
+    from felix.skills.quality_store import get_skill_policy_store
+
+    store = get_skill_policy_store(settings)
+    current = publish_policy(settings, await store.get(tenant_id))
+    row = {f: changes[f] if f in changes else getattr(current, f) for f in _POLICY_FIELDS}
+    stored = await store.put(tenant_id, {**row, "updated_at": now_ms(), "updated_by": by})
+    after = publish_policy(settings, stored)
+    _audit(
+        settings,
+        tenant_id,
+        "skill_policy_updated",
+        {},
+        by=by,
+        before={k: v for k, v in asdict(current).items() if k in (*_POLICY_FIELDS, "source")},
+        after={k: v for k, v in asdict(after).items() if k in _POLICY_FIELDS},
+    )
+    return after
+
+
 async def evaluate_version(
     settings: Settings,
     tenant_id: str,
@@ -509,12 +554,18 @@ async def evaluate_version(
     without causing one. Changes nothing. Bytes that no longer match their digests are a
     verdict too: invalid, with the mismatch as its reason.
     """
-    policy = policy or publish_policy(settings, tenant_id)
+    policy = policy or await load_publish_policy(settings, tenant_id)
+    latest_eval = None
+    if policy.needs_eval:
+        # Only a policy that reads the evaluation pays for the lookup.
+        from felix.skills.quality_store import get_skill_eval_store
+
+        latest_eval = await get_skill_eval_store(settings).latest_succeeded(tenant_id, name, version)
     try:
         files = await read_version_files(settings, tenant_id, name, version, object_store=object_store)
     except SkillVersionCorrupt as exc:
         return Verdict(valid=False, reasons=[str(exc)])
-    return await asyncio.to_thread(evaluate_files, files, name, policy)
+    return await asyncio.to_thread(evaluate_files, files, name, policy, latest_eval)
 
 
 async def _gate(settings: Settings, tenant_id: str, row: Mapping[str, Any], object_store: Any) -> None:
@@ -649,6 +700,7 @@ __all__ = [
     "archive_skill",
     "evaluate_version",
     "host_owns",
+    "load_publish_policy",
     "newest_version",
     "publish",
     "read_version_file",
@@ -656,5 +708,6 @@ __all__ = [
     "reject",
     "rollback",
     "save_draft",
+    "set_publish_policy",
     "shadows_operator_upload",
 ]

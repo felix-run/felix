@@ -38,6 +38,8 @@ EXPECTED_SCHEDULES = {
     # Every minute, like the fiber sweep it follows: a finished run should be announced within
     # about a minute, and a slower cadence would be the latency a caller polls to avoid.
     "webhook_delivery": "* * * * *",
+    # Every minute: an operator who accepts feedback or queues an evaluation is waiting on it.
+    "skill_jobs": "* * * * *",
 }
 
 TENANT = "cron-tenant"
@@ -113,7 +115,7 @@ def test_the_set_of_scheduled_tasks_does_not_change_silently() -> None:
     """
     declared = _declared_schedules()
 
-    assert len(declared) == 9, declared
+    assert len(declared) == 10, declared
     for name in EXPECTED_SCHEDULES:
         assert callable(getattr(worker_tasks, name, None)), f"{name} is not exported"
 
@@ -244,3 +246,38 @@ async def test_every_task_body_is_callable_without_arguments() -> None:
         task = getattr(worker_tasks, name)
         assert hasattr(task, "original_func"), f"{name} is not a registered task"
         await task.original_func()
+
+
+@pytest.mark.asyncio
+async def test_skill_jobs_runs_a_queued_evaluation_and_records_its_failure_on_the_row() -> None:
+    """The sweep claims a queued evaluation and finishes it, with the settings bound at import.
+
+    The version's SKILL.md is gone from the object store, so the run fails before any model call
+    -- which is the point: a job's failure lands on its row, and the task itself returns.
+    """
+    from felix.skills import evaluate, library
+    from felix.skills.format import serialize_skill_md
+    from felix.skills.library_store import library_object_key
+    from felix.skills.quality_store import get_skill_eval_store
+    from felix.storage import get_object_store
+
+    settings = _settings()
+    store = get_object_store(settings)
+    skill_md = serialize_skill_md(
+        {"name": "cron-skill", "description": "Route invoices."}, "\n# Cron skill\n\nDo the thing.\n"
+    )
+    row = await library.save_draft(
+        settings,
+        TENANT,
+        files={"SKILL.md": skill_md},
+        provenance=library.DraftProvenance(source="operator", author="ops"),
+        object_store=store,
+    )
+    await store.delete(library_object_key(TENANT, "cron-skill", row["version"], "SKILL.md"))
+    queued = await evaluate.queue_eval(settings, TENANT, "cron-skill", row["version"], requested_by="ops")
+
+    assert await worker_tasks.skill_jobs.original_func() is None
+
+    done = await get_skill_eval_store(settings).get(TENANT, queued["id"])
+    assert done is not None and done["status"] == "failed", done
+    assert done["error"].startswith("version_corrupt:"), done["error"]
