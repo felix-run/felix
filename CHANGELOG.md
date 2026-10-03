@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A screened tool image was transcribed twice.** It was read as inline bytes when the tool
+  returned it, then stored and replayed on later turns as a `felix-file://` reference, which the
+  screening cache keys differently. Every image a tool returned under `image_model` therefore
+  cost two vision calls. The stored reference now reuses the transcript and verdict its bytes
+  were screened under.
+
 - **A thread with a vision route was compacted for the wrong model.** The compaction window
   was sized from the primary route alone. Once an image is in a thread, every call goes to the
   vision route (`spec.model.vision_model` or `FELIX_DEFAULT_VISION_MODEL_ID`), so a vision model

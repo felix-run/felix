@@ -105,7 +105,12 @@ async def store_tool_images(
             # tenant's totals, which the model, and whoever is injecting it, need not see.
             notes.append(f"[image dropped: {name} returned an image that could not be stored]")
             continue
-        kept.append(replace(image, url=file_ref_url(stored), media_type=media_type, filename=None))
+        ref = file_ref_url(stored)
+        # The screener read these bytes inline a moment ago; the replay will name them by `ref`.
+        from felix.governance.image_screening import alias_stored_image
+
+        alias_stored_image(image.url, ref)
+        kept.append(replace(image, url=ref, media_type=media_type, filename=None))
     return kept, notes
 
 
