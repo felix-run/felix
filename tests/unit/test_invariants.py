@@ -42,6 +42,7 @@ OPTIONAL_DISTRIBUTIONS = {
     "google",
     "mcp",
     "opentelemetry",
+    "PIL",
     "playwright",
     "polars",
     "presidio_analyzer",

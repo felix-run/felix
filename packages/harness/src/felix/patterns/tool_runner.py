@@ -22,7 +22,7 @@ from felix.observability.tracing import timed_span
 from felix.patterns.types import ChatMessage, ImageAttachment, ToolCall
 from felix.steer import should_cancel_remaining_tools
 from felix.tools.errors import infer_error_code, read_tool_error_code, tool_output_content
-from felix.tools.images import ImageBudget, store_tool_images
+from felix.tools.tool_images import ImageBudget, store_tool_images
 from felix.tools.types import Tool, ToolInvocationCtx, deny_source, is_wrapper_deny, tool_output_images
 
 logger = logging.getLogger("felix.patterns.tool_runner")
@@ -45,7 +45,7 @@ class ToolRunner:
     tool_map: dict[str, Tool]
     manifest_id: str
     tool_execution: str = "sequential"
-    # How many more tool images this run may keep; see `felix.tools.images`.
+    # How many more tool images this run may keep; see `felix.tools.tool_images`.
     image_budget: ImageBudget = field(default_factory=ImageBudget)
 
     def batch_mode(self, calls: list[ToolCall]) -> str:

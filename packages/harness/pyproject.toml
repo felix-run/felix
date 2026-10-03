@@ -47,6 +47,8 @@ felix-shell-runner = "felix.shell_runner:main"
 [project.optional-dependencies]
 sandbox = ["docker>=7.1"]
 browser = ["playwright>=1.57"]
+# Image tools (`spec.image_tools`): resize, crop, rotate, convert, thumbnail.
+image = ["pillow>=11"]
 mcp = ["mcp>=1.26"]
 a2a = ["httpx>=0.28.1"]
 otel = [
