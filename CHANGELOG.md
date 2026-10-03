@@ -21,6 +21,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   GitHub user the token was minted for (already in the `github_login` audit row), so a client
   can show it without decoding the token. `POST /auth/github/actions` sends it empty: a workflow
   is not a person.
+- **Images in tool results.** A tool can return images for the model to see, through
+  `ToolOutputDict.attachments`, rather than as base64 text.
+  - **How each wire sends them:**
+    - Anthropic puts them inside the `tool_result`.
+    - The OpenAI wire sends one user turn after the run of tool messages, which labels them as
+      tool output to treat as data.
+    - Each wire renders only inline bytes on a tool message.
+  - **The browser:** the `screenshot` op now returns its image this way, up to the 600 KiB
+    attachment limit (it was 32 KB, inlined as text).
+  - **Storage and limits:**
+    - A tool's images are stored in the attachment store under the request's tenant, with the
+      same quota and retention as an upload. The session log keeps a `felix-file://`
+      reference.
+    - At most 4 per call and 16 per request (across every agent the request runs) are kept.
+      A tool's own filename for an image is not kept.
+    - An image that is not png, jpeg, gif or webp by its bytes, is over the limit, or is a
+      remote URL is dropped with a note in the tool result.
+  - **Screening:**
+    - When content screening covers the tool, each image is transcribed and screened by
+      `content_screening.image_model`, and a flagged image is quarantined, never refused.
+    - **Without `image_model`, an untrusted tool's images are quarantined** (fail closed), and
+      a screenshot tool bound under screening without `image_model` logs a warning at compile
+      time.
+    - Quarantined tool text, and an after-tool hook that rewrites the text, take the images
+      with it.
+  - **Other changes:**
+    - The artifact spill keeps a tool's images.
+    - A text-only route sees an "image omitted" line in their place.
 
 - **Agents can write skills, into a per-tenant skill library.** `spec.skill_authoring:
   {enabled: true}` binds `create_skill` and `update_skill`. A save is an immutable semver
@@ -60,6 +88,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   was omitted. A `FELIX_MODEL_ROUTES` entry can declare `"modalities": ["text", "image"]` for
   a model the catalog does not know. A model the catalog cannot vouch for either way is sent
   the image as before. `felix doctor` notes a text-only default with no vision route.
+    approval whose preview is the SKILL.md that would be saved.
+
+- **`/skill-library`: review, author and publish the tenant skill library over HTTP**, under a
+  new `skills:write` scope (which implies `skills:read`, as every `x:write` does).
+  - Reads (`skills:read`): `GET /skill-library` lists skills with their live and newest
+    version, pending-draft count and source, filtered by `status` (`live`, `draft`,
+    `archived`) and `source`, paged by name. `GET /skill-library/-/review` is the review queue:
+    every draft in the tenant, oldest first, with the live version to diff it against.
+    `GET /{name}` lists a skill's versions; `GET /{name}/versions/{v}` gives one version's
+    review checks, security findings and file digests; `.../files/{path}` reads one file,
+    digest-checked and secret-redacted (binary assets as base64); `.../preview` re-runs review
+    and the scan on the stored bytes and says whether the publish policy would pass them,
+    changing nothing. `GET /skill-library/-/policy` reports the policy in force. Collection
+    routes sit under `/-/`, which no skill name can take, so every skill is reachable by name.
+    Reasons, descriptions, decision notes and review and scan messages are secret-redacted in
+    every response, as file text is.
+  - Writes (`skills:write`): `POST /skill-library` saves a new skill as an operator draft,
+    `PUT /{name}/versions` a new version, either one optionally publishing in the same request.
+    `PUT` takes the `parent_version` the editor loaded and answers 409 `parent_changed` when
+    anything newer was saved since, so two editors cannot overwrite each other.
+    `POST /{name}/versions/{v}/publish`, `/rollback` and `/reject` (with a note), and
+    `DELETE /{name}` to archive. Every change is audited to the calling principal. A publish
+    asked for in the same request that does not happen comes back as `publish_blocked`, the
+    same error object a refused `POST .../publish` returns; the draft is saved either way.
+  - Refusals carry the library's stable code: 422 for an invalid bundle (with its issues), a
+    publish the gate blocks (with its reasons) or a malformed review cursor; 409 for a name the
+    host owns, a skill that already exists, or a version or state conflict; 404 for anything not
+    in the tenant's library; 500 `version_corrupt` when the stored bytes no longer match their
+    digests.
+  - Every listing, detail and save reports `shadows_operator_upload` when an operator upload
+    exists under the same name, at the unversioned key or at the version in question.
 
 - **Skill format, bundle validation, quality review and security scan.** These are the
   groundwork for skill authoring and are not yet wired to a route or a tool. They are ported
@@ -454,6 +513,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **A caller's images are kept on user turns only.** History a caller sends to `/chat` or `/v1`
+  as `role: tool` or `assistant` has its images removed at the door. So does a queue write-back
+  to `/internal`, unless it is a user message. The wires now render tool
+  images, and an image written into a caller's tool message would otherwise reach the model past
+  inbound screening and the remote-URL rule.
+
 - **Skill library drafts could replace an operator's skill, and be served when the library was
   unreachable.** Library bytes were written under the operator's own object-store layout,
   `skills/{tenant}/{name}/{version}/`, so an agent's `create_skill` at `0.1.0` overwrote an
@@ -464,6 +529,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   version's SKILL.md and every `read_skill_file` read are checked against the digests saved with
   them, and only paths the version saved are served. An unreachable library now means no library
   skills, never a fallback.
+- **An explicit pin to an operator's skill upload wins over a library skill of the same name.**
+  A published library skill took over every ref to its name, so a manifest pinning
+  `{name: runbook, version: 0.1.0}` to an operator's reviewed upload at
+  `skills/{tenant}/runbook/0.1.0/SKILL.md` was served whatever an agent had published as
+  `runbook`. A pinned ref is now served the upload at that version (tenant, then shared) when
+  one exists; an unpinned ref, or a pin no upload holds, still gets the library's live version.
+- **`update_skill` approvals show what the edit inherits, and execute only on what was shown.**
+  The approval preview listed the SKILL.md alone, though the save keeps every other file of the
+  version it edits, and nothing tied the approved call to the version it was previewed against.
+  `update_skill` now takes a required `parent_version`, which must be the skill's newest version;
+  the approval signature hashes the arguments, so a grant — however it is found later — binds
+  that version, and a call whose parent has moved is refused with `parent_changed`. The preview
+  names the version and each inherited file with its sha256. `list_skills` and `activate_skill`
+  report a library skill's `newest_version` for the model to cite. An edit of any version an
+  operator wrote, live or not, is never auto-published, and the draft's audit event names the
+  person a durable fiber was acting for rather than `fiber`.
 - **`spec.skill_authoring.mode: publish` now requires an approval.** The manifest is refused
   unless the approval rule selected for `create_skill` and for `update_skill` exists and has no
   `when_args`, so a person reads every skill an agent publishes. In any mode, an agent's edit of

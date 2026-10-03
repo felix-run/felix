@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 from felix.config import Settings
 from felix.governance.content_screening import screen_content
-from felix.governance.image_screening import INGEST, REPLAY, ImageScreener, ImageSurface, has_images
+from felix.governance.image_screening import INGEST, REPLAY, TOOL, ImageScreener, ImageSurface, has_images
 from felix.governance.pii import redact_pii
 from felix.governance.screening import (
     INJECTION_THRESHOLD,
@@ -187,6 +187,11 @@ def _image_screener(
     )
 
 
+def tool_image_screener(manifest: Manifest, settings: Settings | None) -> Callable[[], ImageScreener] | None:
+    """`replay_screener`'s factory for images a tool returns: same verdicts, the TOOL surface."""
+    return _screener_factory(manifest, settings, TOOL)
+
+
 def replay_screener(manifest: Manifest, settings: Settings | None) -> Callable[[], ImageScreener] | None:
     """A factory of replay screeners for one compile, or `None` when it screens no images.
 
@@ -195,6 +200,12 @@ def replay_screener(manifest: Manifest, settings: Settings | None) -> Callable[[
     has its images screened. A factory because each render is its own pass with its own
     budget, and the decider is bound per pass the way the inbound screen binds it.
     """
+    return _screener_factory(manifest, settings, REPLAY)
+
+
+def _screener_factory(
+    manifest: Manifest, settings: Settings | None, surface: ImageSurface
+) -> Callable[[], ImageScreener] | None:
     if not images_screened(manifest):
         return None
     if settings is None:
@@ -208,7 +219,7 @@ def replay_screener(manifest: Manifest, settings: Settings | None) -> Callable[[
             decider, down = screening_decider(manifest, bound), False
         except Exception:
             decider, down = None, True
-        return _image_screener(manifest, bound, REPLAY, decider, down)
+        return _image_screener(manifest, bound, surface, decider, down)
 
     return make
 

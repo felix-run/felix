@@ -46,6 +46,18 @@ class _UpdateSkillArgs(BaseModel):
     description: str | None = Field(
         default=None, min_length=1, max_length=1024, description="A new description; omit to keep it."
     )
+    # Required, so an approval binds it: the approvals wrapper hashes a call's arguments into the
+    # grant, and an argument naming the parent is the only thing that makes "the edit a person
+    # approved" and "the edit that runs" the same edit, whichever process or retry runs it.
+    parent_version: str = Field(
+        min_length=1,
+        max_length=32,
+        description=(
+            "The skill's newest version, which this edits: `newest_version` from list_skills or "
+            "activate_skill, or `version` from your last create_skill / update_skill result. "
+            "Refused if the skill has a newer version."
+        ),
+    )
 
 
 class _ComposeError(Exception):
@@ -59,9 +71,12 @@ class _ComposeError(Exception):
 class _Composed(BaseModel):
     files: dict[str, str]
     parent: str | None = None
-    # Whether the parent is the live version and an operator wrote it. An agent's edit of an
-    # operator's skill is review material in any mode (`make_skill_authoring_tools`).
+    # Whether an operator wrote the parent, live or not. An agent's edit of an operator's
+    # skill is review material in any mode (`make_skill_authoring_tools`).
     edits_operator_skill: bool = False
+    # The parent's files the save keeps unchanged, as `{path, sha256}`: what an approver is
+    # shown beside the SKILL.md, since the agent's arguments never name them.
+    inherited: list[dict[str, str]] = []
 
 
 def _review_hint(row: dict[str, Any]) -> str:
@@ -91,12 +106,27 @@ def _draft_result(row: dict[str, Any], status: str) -> dict[str, Any]:
 
 
 def _principal() -> str | None:
-    """The caller behind this turn, for the audit trail; None outside a request."""
+    """The caller behind this turn, for the audit trail; None outside a request.
+
+    `on_behalf_of` first, as the approvals wrapper reads it: a resumed durable fiber runs as
+    principal `fiber`, and the person whose work it is is the one the trail should name.
+    """
     from felix.context import try_get_context
 
     ctx = try_get_context()
-    sub = getattr(getattr(ctx, "auth", None), "principal_sub", None) if ctx is not None else None
+    auth = getattr(ctx, "auth", None) if ctx is not None else None
+    sub = (getattr(auth, "on_behalf_of", None) or getattr(auth, "principal_sub", None)) if auth else None
     return str(sub) if sub else None
+
+
+def _preview_header(name: str, composed: _Composed, source: str) -> str:
+    lines = [f"update_skill {name}: edited from {composed.parent} (written by {source or 'unknown'})"]
+    if composed.inherited:
+        lines.append(f"Kept unchanged from {composed.parent}:")
+        lines += [f"  {f['path']}  sha256:{f['sha256']}" for f in composed.inherited]
+    else:
+        lines.append("No other files are kept from the parent.")
+    return "\n".join(lines) + "\n\n--- SKILL.md ---\n"
 
 
 class _SkillAuthor:
@@ -134,20 +164,24 @@ class _SkillAuthor:
             raise _ComposeError(
                 {"error": "unknown_skill", "name": name, "detail": "not in the skill library"}
             )
-        return await self._edit(name, skill.get("live_version"), args, body)
+        return await self._edit(name, args, body)
 
-    async def _edit(self, name: str, live: str | None, args: ToolInput, body: str) -> _Composed:
+    async def _edit(self, name: str, args: ToolInput, body: str) -> _Composed:
+        """An edit of ``parent_version``, which must be the newest version. Checked here for the
+        preview and again, atomically with the save, by `save_draft(expect_newest=...)`."""
         from felix.skills import library
         from felix.skills.format import parse_skill_md, serialize_skill_md
 
-        if live:
-            parent = str(live)
-        else:
-            newest = await self.lib.list_versions(self.tenant_id, name, limit=1)
-            if not newest:
-                raise _ComposeError({"error": "unknown_skill", "name": name})
-            parent = str(newest[0]["version"])
+        parent = str(args.get("parent_version") or "")
+        newest = library.newest_version(await self.lib.version_ids(self.tenant_id, name))
+        if newest is None:
+            raise _ComposeError({"error": "unknown_skill", "name": name})
+        if parent != newest:
+            raise _ComposeError(
+                {"error": "parent_changed", "name": name, "expected": parent, "current": newest}
+            )
         parent_row = await self.lib.get_version(self.tenant_id, name, parent) or {}
+        file_rows = await self.lib.list_files(self.tenant_id, name, parent)
         files = await library.read_version_files(
             self.settings, self.tenant_id, name, parent, object_store=self.object_store
         )
@@ -157,8 +191,15 @@ class _SkillAuthor:
         if args.get("description"):
             frontmatter["description"] = str(args["description"])
         files["SKILL.md"] = serialize_skill_md(frontmatter, body)
-        operator = bool(live) and parent_row.get("source") == "operator"
-        return _Composed(files=files, parent=parent, edits_operator_skill=operator)
+        inherited = [
+            {"path": str(r["path"]), "sha256": str(r["sha256"])} for r in file_rows if r["path"] != "SKILL.md"
+        ]
+        return _Composed(
+            files=files,
+            parent=parent,
+            edits_operator_skill=parent_row.get("source") == "operator",
+            inherited=inherited,
+        )
 
     async def publish(self, row: dict[str, Any], composed: _Composed) -> dict[str, Any]:
         from felix.skills import library
@@ -166,7 +207,9 @@ class _SkillAuthor:
         if composed.edits_operator_skill:
             return {
                 **_draft_result(row, "draft"),
-                "review_required": "the live version was written by an operator; a person must publish this",
+                "review_required": (
+                    "the version this edits was written by an operator; a person must publish this"
+                ),
             }
         try:
             published = await library.publish(
@@ -202,6 +245,7 @@ class _SkillAuthor:
                     principal=_principal(),
                 ),
                 parent=composed.parent,
+                expect_newest=composed.parent if update else library.MUST_NOT_EXIST,
                 max_pending=self.max_pending,
                 object_store=self.object_store,
             )
@@ -210,6 +254,9 @@ class _SkillAuthor:
         except library.SkillBundleInvalid as exc:
             issues = [{"path": i.path, "message": i.message} for i in exc.issues[:20]]
             return json.dumps({"error": exc.code, "issues": issues})
+        except library.SkillParentChanged as exc:
+            # Lost a race between the check in `_edit` and the save: same answer as the check.
+            return json.dumps({"error": exc.code, "name": args.get("name"), "detail": str(exc)})
         except library.SkillLibraryError as exc:
             return json.dumps({"error": exc.code, "detail": str(exc)})
         except Exception:
@@ -220,10 +267,17 @@ class _SkillAuthor:
         return json.dumps(await self.publish(row, composed))
 
     async def preview(self, args: ToolInput, *, update: bool) -> str:
+        """What an approver reads: the SKILL.md, and for an edit, the version it builds on and
+        every file it keeps from that version by digest."""
         try:
-            return (await self.compose(args, update=update)).files["SKILL.md"]
+            composed = await self.compose(args, update=update)
         except _ComposeError as exc:
             return json.dumps(exc.result)
+        if not update or composed.parent is None:
+            return composed.files["SKILL.md"]
+        parent_row = await self.lib.get_version(self.tenant_id, str(args.get("name")), composed.parent) or {}
+        header = _preview_header(str(args.get("name")), composed, str(parent_row.get("source") or ""))
+        return header + composed.files["SKILL.md"]
 
 
 def make_skill_authoring_tools(
@@ -238,9 +292,11 @@ def make_skill_authoring_tools(
     """`create_skill` and `update_skill`, writing drafts to the tenant's skill library.
 
     A draft enters no catalog. With ``mode="publish"`` the draft is published at once if the
-    publish gate passes -- except an edit of a skill whose live version an operator wrote,
-    which always waits for review. If the gate refuses, the draft stays and the result says
-    why. Every refusal comes back as `{"error": ...}`, never as a raise into the loop.
+    publish gate passes -- except an edit of a version an operator wrote, which always waits
+    for review. `update_skill` edits the version its required `parent_version` names, which
+    must be the newest; that argument is what an approval of the call binds. If the gate
+    refuses, the draft stays and the result says why. Every refusal comes back as
+    `{"error": ...}`, never as a raise into the loop.
     """
     author = _SkillAuthor(
         settings,
@@ -275,7 +331,10 @@ def make_skill_authoring_tools(
         name="update_skill",
         description=(
             "Save a new version of a skill in this tenant's library with a new body (and "
-            f"optionally a new description); its other files are kept. {outcome}"
+            "optionally a new description); its other files are kept. Pass the skill's newest "
+            "version as parent_version (`newest_version` from list_skills or activate_skill, or "
+            "the `version` your last save returned); a stale one is refused with parent_changed "
+            f"and the current version. {outcome}"
         ),
         args=_UpdateSkillArgs,
         handler=_update,

@@ -260,6 +260,13 @@ def _auth_from_request(request: Request) -> AuthContext:
     return AuthContext()
 
 
+def _caller_messages(raw: list[dict[str, Any]]) -> list[ChatMessage]:
+    """The request's messages, parsed, with images only where a caller's own can be: user turns."""
+    from felix.patterns.model_vision import caller_images_on_user_turns
+
+    return caller_images_on_user_turns([ChatMessage.model_validate(m) for m in raw])
+
+
 def _refuse_unseeable_images(
     manifest: Any, model_id: str | None, messages: list[ChatMessage], settings: Any
 ) -> None:
@@ -401,7 +408,7 @@ async def _chat_turn(body: ChatRequest, request: Request) -> tuple[int, dict[str
             raise HTTPException(status_code=404, detail=f"unknown_manifest:{body.manifest}") from exc
         raise
     model_id = _allowlisted_model(resolved.manifest, body.model, settings)
-    messages = [ChatMessage.model_validate(m) for m in body.messages]
+    messages = _caller_messages(body.messages)
     messages = await _apply_template(
         messages,
         manifest=resolved.manifest,
@@ -618,7 +625,7 @@ async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
             raise HTTPException(status_code=404, detail=f"unknown_manifest:{body.manifest}") from exc
         raise
     model_id = _allowlisted_model(resolved.manifest, body.model, settings)
-    messages = [ChatMessage.model_validate(m) for m in body.messages]
+    messages = _caller_messages(body.messages)
     messages = await _apply_template(
         messages,
         manifest=resolved.manifest,

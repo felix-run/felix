@@ -144,8 +144,8 @@ async def list_skills(manifest_name: str, request: Request) -> dict[str, object]
 async def get_skill(manifest_name: str, skill_name: str, request: Request) -> dict[str, object]:
     """One skill, including the instructions `activate_skill` would return.
 
-    The body is the thing worth inspecting: it is appended to the system prompt on
-    activation, so it is prompt content an operator is accountable for and could not read
+    The body is the thing worth inspecting: `activate_skill` returns it to the model as
+    instructions, so it is prompt content an operator is accountable for and could not read
     without unpacking the object store or the bundled directory by hand.
 
     A skill named in `spec.skills` whose body was never found still resolves here, carrying

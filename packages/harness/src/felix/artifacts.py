@@ -36,7 +36,14 @@ from felix.logging_setup import loggable
 from felix.manifests.schema import ArtifactsSpec
 from felix.tools.errors import tool_error_output
 from felix.tools.executor import wrap_tool
-from felix.tools.types import Tool, ToolInvocationCtx, ToolOutput, define_tool, tool_output_content
+from felix.tools.types import (
+    Tool,
+    ToolInvocationCtx,
+    ToolOutput,
+    define_tool,
+    replace_tool_output,
+    tool_output_content,
+)
 
 logger = logging.getLogger("felix.artifacts")
 
@@ -325,16 +332,18 @@ def apply_artifact_spill(
             except Exception:
                 logger.debug("artifact spill failed; returning truncated output", exc_info=True)
                 head = content[:preview]
-                return f"{head}\n\n…[truncated {len(content) - preview} chars; artifact store write failed]"
+                dropped = len(content) - preview
+                note = f"…[truncated {dropped} chars; artifact store write failed]"
+                return replace_tool_output(result, content=f"{head}\n\n{note}")
             head = content[:preview]
             # The marker must stay the last thing in the output, in exactly this shape:
             # clients (`felix-protocol`'s `parseArtifactMarker`, the terminal's `/artifact`)
             # anchor it to the end and take everything before it as the preview. How to
             # read on is in `read_artifact`'s description, not appended here.
-            return (
-                f"{head}\n\n…[artifact:{artifact_id} key={key} "
-                f"chars={len(content)} spilled_at={int(time.time())}]"
-            )
+            marker = f"[artifact:{artifact_id} key={key} chars={len(content)} spilled_at={int(time.time())}]"
+            # The tool's images, if any, stay beside the preview: spilling is about text the
+            # model cannot afford to read in full, and an image is not part of that text.
+            return replace_tool_output(result, content=f"{head}\n\n…{marker}")
 
         return wrap_tool(tool, execute)
 

@@ -300,3 +300,111 @@ async def test_concurrent_agent_saves_stay_within_the_pending_cap(store_settings
     assert any(isinstance(r, library.SkillPendingCapReached) for r in results), results
     assert all(isinstance(r, dict | library.SkillLibraryError) for r in results), results
     assert await get_skill_library_store(store_settings).count_pending("acme", "m") <= 1
+
+
+async def _named(store: Any, name: str, version: str, *, at: int, tenant: str = "acme") -> None:
+    await store.insert_version(tenant, {**_row(version, at=at), "name": name}, [], created_by="ops", at=at)
+
+
+@parametrized
+async def test_skills_page_after_a_name_in_codepoint_order(store_settings: Any) -> None:
+    store = get_skill_library_store(store_settings)
+    for i, name in enumerate(["ab", "a-c", "b"]):
+        await _named(store, name, "0.1.0", at=i)
+    assert [s["name"] for s in await store.list_skills("acme", after="a-c")] == ["ab", "b"]
+    assert [s["name"] for s in await store.list_skills("acme", limit=1, after="ab")] == ["b"]
+    assert await store.list_skills("acme", after="b") == []
+
+
+@parametrized
+async def test_the_review_queue_is_every_draft_oldest_first_and_pages(store_settings: Any) -> None:
+    store = get_skill_library_store(store_settings)
+    # Two drafts in one millisecond across skills, a tie on name broken by version, a
+    # published version that must not appear, and another tenant's draft.
+    await _named(store, "b-skill", "0.1.0", at=5)
+    await _named(store, "a-skill", "0.1.0", at=5)
+    await _named(store, "a-skill", "0.1.1", at=5)
+    await _named(store, "c-skill", "0.1.0", at=1)
+    await _named(store, "c-skill", "0.1.1", at=9)
+    await store.publish("acme", "c-skill", "0.1.0", from_statuses={"draft"}, by="ops", at=10)
+    await _named(store, "a-skill", "0.1.0", at=0, tenant="globex")
+
+    queue = await store.list_drafts("acme")
+    keys = [(d["created_at"], d["name"], d["version"]) for d in queue]
+    assert keys == [
+        (5, "a-skill", "0.1.0"),
+        (5, "a-skill", "0.1.1"),
+        (5, "b-skill", "0.1.0"),
+        (9, "c-skill", "0.1.1"),
+    ]
+    page = await store.list_drafts("acme", limit=2)
+    rest = await store.list_drafts(
+        "acme", after=(page[-1]["created_at"], page[-1]["name"], page[-1]["version"])
+    )
+    assert [(d["name"], d["version"]) for d in page + rest] == [(k[1], k[2]) for k in keys]
+    assert all(d["tenant_id"] == "acme" and d["status"] == "draft" for d in queue)
+
+
+@parametrized
+async def test_summaries_name_the_newest_version_and_count_drafts(store_settings: Any) -> None:
+    store = get_skill_library_store(store_settings)
+    await _named(store, "a-skill", "0.1.0", at=1)
+    await _named(store, "a-skill", "0.1.1", at=2)
+    await _named(store, "a-skill", "0.1.2", at=2)  # a tie: the higher version is the newer
+    await store.publish("acme", "a-skill", "0.1.0", from_statuses={"draft"}, by="ops", at=3)
+    await _named(store, "b-skill", "0.1.0", at=1)
+    await _named(store, "b-skill", "0.1.0", at=1, tenant="globex")
+
+    summary = await store.summarize("acme", ["a-skill", "b-skill", "missing"])
+    assert set(summary) == {"a-skill", "b-skill"}
+    assert summary["a-skill"]["pending"] == 2
+    assert summary["a-skill"]["latest"] == {
+        "version": "0.1.2",
+        "status": "draft",
+        "source": "agent",
+        "quality_score": 70,
+        "security_status": "pass",
+        "created_at": 2,
+    }
+    assert summary["b-skill"]["pending"] == 1
+    assert await store.summarize("acme", []) == {}
+    assert await store.summarize("initech", ["a-skill"]) == {}
+
+
+@parametrized
+async def test_skills_are_fetched_by_name_in_one_call_and_tenant_scoped(store_settings: Any) -> None:
+    store = get_skill_library_store(store_settings)
+    await _named(store, "a-skill", "0.1.0", at=1)
+    await _named(store, "b-skill", "0.1.0", at=1)
+    await _named(store, "c-skill", "0.1.0", at=1, tenant="globex")
+    await store.publish("acme", "b-skill", "0.1.0", from_statuses={"draft"}, by="ops", at=2)
+
+    found = await store.get_skills("acme", ["a-skill", "b-skill", "c-skill", "missing", "a-skill"])
+    assert sorted(found) == ["a-skill", "b-skill"]
+    assert found["b-skill"]["live_version"] == "0.1.0" and found["a-skill"]["live_version"] is None
+    assert found["a-skill"] == await store.get_skill("acme", "a-skill")
+    assert await store.get_skills("acme", []) == {}
+
+
+@parametrized
+async def test_the_review_queue_pages_one_at_a_time_across_a_millisecond(store_settings: Any) -> None:
+    store = get_skill_library_store(store_settings)
+    await _named(store, "a-skill", "0.1.1", at=5)
+    await _named(store, "b-skill", "0.1.0", at=5)
+    await _named(store, "a-skill", "0.1.0", at=5)
+    # Rows the queue must skip, placed after the cursor's position rather than before it.
+    await _named(store, "c-skill", "0.1.0", at=7)
+    await store.publish("acme", "c-skill", "0.1.0", from_statuses={"draft"}, by="ops", at=8)
+    await _named(store, "a-skill", "0.1.0", at=7, tenant="globex")
+    await _named(store, "d-skill", "0.1.0", at=9)
+
+    seen: list[tuple[str, str]] = []
+    after = None
+    for _ in range(10):
+        page = await store.list_drafts("acme", limit=1, after=after)
+        if not page:
+            break
+        (row,) = page
+        seen.append((row["name"], row["version"]))
+        after = (row["created_at"], row["name"], row["version"])
+    assert seen == [("a-skill", "0.1.0"), ("a-skill", "0.1.1"), ("b-skill", "0.1.0"), ("d-skill", "0.1.0")]

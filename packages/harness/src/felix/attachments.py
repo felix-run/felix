@@ -126,6 +126,29 @@ class AttachmentError(ValueError):
     """A refusal the caller can act on: too large, or a type nothing can read."""
 
 
+def _check_size(raw: bytes) -> None:
+    if not raw:
+        raise AttachmentError("data is empty")
+    if len(raw) > MAX_ATTACHMENT_BYTES:
+        raise AttachmentError(
+            f"attachment is {len(raw)} bytes; the limit is {MAX_ATTACHMENT_BYTES} "
+            "(the request body limit is 1 MiB and base64 inflates by a third)"
+        )
+
+
+def image_media_type(raw: bytes) -> str:
+    """The media type of bytes a caller could have uploaded, or `AttachmentError` saying why not.
+
+    `decode_upload`'s rules for bytes that arrive without a trustworthy label -- an image a tool
+    produced: the same size limit, and a type the wires encode, decided by the bytes alone.
+    """
+    _check_size(raw)
+    media_type = sniff_media_type(raw)
+    if media_type is None:
+        raise AttachmentError(f"the bytes are not one of {', '.join(sorted(ALLOWED_MEDIA_TYPES))}")
+    return media_type
+
+
 def decode_upload(data_b64: str, media_type: str) -> bytes:
     """Validate and decode an upload, or say why not.
 
@@ -145,13 +168,7 @@ def decode_upload(data_b64: str, media_type: str) -> bytes:
         raw = base64.b64decode(data_b64, validate=True)
     except Exception as exc:
         raise AttachmentError("data is not valid base64") from exc
-    if not raw:
-        raise AttachmentError("data is empty")
-    if len(raw) > MAX_ATTACHMENT_BYTES:
-        raise AttachmentError(
-            f"attachment is {len(raw)} bytes; the limit is {MAX_ATTACHMENT_BYTES} "
-            "(the request body limit is 1 MiB and base64 inflates by a third)"
-        )
+    _check_size(raw)
     if not raw.startswith(_MAGIC[media_type]):
         # The bytes decide, not the label. A caller may only be wrong about their own file
         # here; the value is that nothing else downstream has to wonder.
@@ -604,6 +621,7 @@ __all__ = [
     "delete_attachment",
     "expired_attachments",
     "forget_attachment",
+    "image_media_type",
     "put_attachment",
     "read_attachment",
     "record_attachment",

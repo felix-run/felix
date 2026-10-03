@@ -26,6 +26,7 @@ from felix_ai.types import (
     TokenUsage,
     ToolCall,
     ToolSchema,
+    is_image_part,
 )
 from felix_ai.wire.base import (
     HttpModelClient,
@@ -34,6 +35,7 @@ from felix_ai.wire.base import (
     map_stop,
     parse_tool_arguments,
     split_data_url,
+    tool_images,
     tool_json_schema,
 )
 from felix_ai.wire.transport import ModelGatewayError, post_with_retry
@@ -189,6 +191,20 @@ def _anthropic_image_block(url: str, media_type: str | None) -> dict[str, Any] |
     }
 
 
+def _tool_result_content(m: ChatMessage) -> str | list[dict[str, Any]]:
+    """A tool result's content: its text, plus any image the tool returned as an image block.
+
+    `tool_result` takes text and image blocks, so a screenshot is seen in place, attached to
+    the call that produced it. A result without one stays a plain string, which is what every
+    other tool result sends and what the prompt cache keys on.
+    """
+    images = [b for p in tool_images(m) if p.url and (b := _anthropic_image_block(p.url, p.media_type))]
+    if not images:
+        return m.content
+    # The tool's text, never empty: an empty text block is a 400 on this API.
+    return [*([{"type": "text", "text": m.content}] if m.content else []), *images]
+
+
 def _anthropic_user_or_plain(m: ChatMessage) -> dict[str, Any]:
     """Convert a non-tool message for Anthropic, including image blocks.
 
@@ -199,7 +215,7 @@ def _anthropic_user_or_plain(m: ChatMessage) -> dict[str, Any]:
     where the text lives only in the blocks — `content: ""` is itself an Anthropic 400.
     """
     parts = inline_parts(m)
-    images = [p for p in parts if p.type != "text" and p.url]
+    images = [p for p in parts if is_image_part(p)]
     if not images:
         # A plain string, which is what every text turn sends and what the provider's prompt
         # cache keys on. Normalising unconditionally turned each of those into a one-element
@@ -214,7 +230,7 @@ def _anthropic_user_or_plain(m: ChatMessage) -> dict[str, Any]:
     for part in parts:
         if part.type == "text" and part.text:
             blocks.append({"type": "text", "text": part.text})
-        elif part.url:
+        elif is_image_part(part) and part.url:
             image = _anthropic_image_block(part.url, part.media_type)
             if image is not None:
                 blocks.append(image)
@@ -428,7 +444,7 @@ class AnthropicMessagesClient(HttpModelClient):
                             {
                                 "type": "tool_result",
                                 "tool_use_id": m.tool_call_id,
-                                "content": m.content,
+                                "content": _tool_result_content(m),
                             }
                         ],
                     }

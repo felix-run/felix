@@ -10,6 +10,7 @@ import re
 from typing import Any
 from urllib.parse import urlparse
 
+from felix_ai.types import ImageAttachment
 from pydantic import BaseModel, ConfigDict, Field
 
 from felix.manifests.schema import BrowserToolRef
@@ -21,11 +22,13 @@ from felix.tools.types import (
     ToolInput,
     ToolInvocationCtx,
     ToolOutput,
+    ToolOutputDict,
     define_tool_with_executor,
 )
 
 logger = logging.getLogger("felix.tools.browser")
 
+# A PDF is not an image either wire can show, so it is still returned inline as text.
 _MAX_INLINE = 32_000
 
 
@@ -173,7 +176,7 @@ class _BrowserExecutor:
         addresses = await approved_addresses(host, allow_http=self._allow_http)
         return [f"--host-resolver-rules={_resolver_rule(host, addresses[0])}"]
 
-    async def _extract(self, page: Any, url: str) -> str:
+    async def _extract(self, page: Any, url: str) -> ToolOutput:
         op = self._op
         if op == "content":
             text = await page.inner_text("body")
@@ -195,10 +198,22 @@ class _BrowserExecutor:
             html = await page.content()
             return json.dumps({"url": url, "title": title, "html": html[:15_000]})
         if op == "screenshot":
+            from felix.attachments import MAX_ATTACHMENT_BYTES
+
             png = await page.screenshot(full_page=False)
-            if len(png) > _MAX_INLINE:
-                return f"[screenshot {len(png)} bytes; too large to inline]"
-            return "data:image/png;base64," + base64.b64encode(png).decode("ascii")
+            if len(png) > MAX_ATTACHMENT_BYTES:
+                return f"[screenshot of {url}: {len(png)} bytes, over the {MAX_ATTACHMENT_BYTES}-byte limit]"
+            # An image the model sees, not base64 it reads: returned as text, a screenshot was
+            # 40 KB of noise in the transcript and nothing a model could look at.
+            return ToolOutputDict(
+                content=f"Screenshot of {url} ({len(png)} bytes, viewport only).",
+                attachments=[
+                    ImageAttachment(
+                        url="data:image/png;base64," + base64.b64encode(png).decode("ascii"),
+                        media_type="image/png",
+                    )
+                ],
+            )
         if op == "pdf":
             pdf = await page.pdf()
             if len(pdf) > _MAX_INLINE:

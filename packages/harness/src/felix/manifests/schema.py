@@ -1059,8 +1059,8 @@ class Spec(_Strict):
     # what every stored manifest was written against -- which is why narrowing it silently
     # would be a behaviour change to rows already in Postgres rather than a fix.
     #
-    # True: only the names in `skills` are loaded. Worth having because a skill body is
-    # appended to the system prompt, so an ambient skill is a prompt fragment the manifest
+    # True: only the names in `skills` are loaded. Worth having because a skill body reaches
+    # the model as instructions (`activate_skill`), so an ambient skill is a prompt fragment the manifest
     # never named -- the one prompt-shaping input `pin_compile` cannot cover, since the
     # hash is over the manifest and the drift is on the host's disk. A manifest that has to
     # be reviewable sets this; one using the host as a library does not.
