@@ -20,7 +20,7 @@ import hashlib
 import logging
 import re
 import time
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass
 from functools import cmp_to_key
 from typing import Any, Literal
@@ -54,6 +54,12 @@ VERSION_RE = re.compile(r"^\d{1,6}\.\d{1,6}\.\d{1,6}\Z")
 # caller is told; each retry re-reads the versions and bumps past the winner.
 _SAVE_ATTEMPTS = 3
 _REASON_LIMIT = 2000
+# Path segments under `/skill-library` that are not skill names. Refused as names so every
+# skill stays addressable as `/skill-library/{name}`.
+RESERVED_NAMES = frozenset({"policy", "review"})
+# `expect_newest` when a save does not care what it builds on (the agent tools, which check
+# their own parent). Not a version: `VERSION_RE` never matches it.
+ANY_NEWEST = "*"
 
 
 class SkillLibraryError(Exception):
@@ -84,6 +90,26 @@ class SkillVersionConflict(SkillLibraryError):
     """The version exists, is not newer than every existing one, or changed state underneath."""
 
     code = "version_conflict"
+
+
+class SkillNameReserved(SkillLibraryError):
+    """The name is one the management API spells as a path (`/skill-library/policy`), so a
+    skill under it could never be read or archived by name over HTTP."""
+
+    code = "name_reserved"
+
+
+class SkillExists(SkillLibraryError):
+    """A create named a skill the library already holds; a new version names its parent."""
+
+    code = "skill_exists"
+
+
+class SkillParentChanged(SkillLibraryError):
+    """The skill moved past the version a save was edited from -- another version was saved,
+    or the one a reviewer was shown is no longer the one it would build on."""
+
+    code = "parent_changed"
 
 
 class SkillPendingCapReached(SkillLibraryError):
@@ -182,12 +208,12 @@ async def host_owns(settings: Settings, tenant_id: str, name: str, object_store:
     or after the host drops the skill, a tenant's text would start answering to a name an
     operator chose and reviewed.
     """
-    from felix.skills.loader import host_catalog
+    from felix.skills.loader import host_catalog, operator_skill_keys
 
     if (await host_catalog()).get(name) is not None:
         return True
     store = _object_store(settings, object_store)
-    for key in (f"skills/{tenant_id}/{name}/SKILL.md", f"skills/{name}/SKILL.md"):
+    for key in operator_skill_keys(tenant_id, name):
         try:
             if await store.exists(key):
                 return True
@@ -196,9 +222,49 @@ async def host_owns(settings: Settings, tenant_id: str, name: str, object_store:
     return False
 
 
-def _next_version(existing: list[str], *, explicit: str | None, bump: SemverBump) -> str:
-    # By semver rather than by string, where `0.10.0` sorts before `0.9.0`.
-    newest = max(existing, key=cmp_to_key(compare_semver), default=None)
+async def shadows_operator_upload(
+    settings: Settings,
+    tenant_id: str,
+    name: str,
+    versions: Iterable[str | None] = (),
+    *,
+    object_store: Any | None = None,
+) -> bool:
+    """True when an operator upload exists under ``name`` at a key the loader reads for a ref.
+
+    Probes the unversioned keys and, for each of ``versions``, the pinned ones
+    (`loader.operator_skill_keys`). Under the loader's precedence such an upload splits the
+    name: an unpinned ref gets the library's live version, a ref pinning the upload's version
+    gets the upload. A reviewer should know before publishing into that.
+
+    Limited to the versions passed in -- the one being saved, or a skill's live and newest --
+    because the object store has no listing: an upload at a version the library never held
+    is not found here, though a ref pinning it is still served the upload.
+    """
+    from felix.skills.loader import operator_skill_keys, safe_skill_key_parts
+
+    if not safe_skill_key_parts(name):
+        return False
+    keys = operator_skill_keys(tenant_id, name)
+    for version in {v for v in versions if v}:
+        if safe_skill_key_parts(name, version):
+            keys += operator_skill_keys(tenant_id, name, version, pinned_only=True)
+    store = _object_store(settings, object_store)
+    for key in keys:
+        try:
+            if await store.exists(key):
+                return True
+        except Exception:
+            logger.warning("object store probe failed for %s", key, exc_info=True)
+    return False
+
+
+def newest_version(existing: Iterable[str]) -> str | None:
+    """The highest of ``existing`` by semver, where `0.10.0` is above `0.9.0`."""
+    return max(existing, key=cmp_to_key(compare_semver), default=None)
+
+
+def _next_version(newest: str | None, *, explicit: str | None, bump: SemverBump) -> str:
     if explicit is not None:
         if not VERSION_RE.match(explicit):
             raise SkillVersionConflict(f"version {explicit!r} is not major.minor.patch")
@@ -246,15 +312,27 @@ async def _reserve(
     *,
     explicit: str | None,
     bump: SemverBump,
+    expect_newest: str | None,
 ) -> dict[str, Any]:
-    """Insert the version row under the next free version; the primary key settles a race."""
+    """Insert the version row under the next free version; the primary key settles a race.
+
+    ``expect_newest`` is checked on every attempt, so a save that loses a race to the version
+    after its parent is refused as `parent_changed` rather than bumped past the winner.
+    """
     for _ in range(_SAVE_ATTEMPTS):
         existing = await lib.version_ids(tenant_id, row["name"])
         if len(existing) >= MAX_VERSIONS_PER_SKILL:
             raise SkillVersionCapReached(
                 f"{row['name']} already has {len(existing)} versions (limit {MAX_VERSIONS_PER_SKILL})"
             )
-        row = {**row, "version": _next_version(existing, explicit=explicit, bump=bump)}
+        newest = newest_version(existing)
+        if expect_newest != ANY_NEWEST and newest != expect_newest:
+            if expect_newest is None:
+                raise SkillExists(f"{row['name']} is already in the library")
+            raise SkillParentChanged(
+                f"{row['name']} is at {newest or 'no version'}, not {expect_newest}; reload and edit that"
+            )
+        row = {**row, "version": _next_version(newest, explicit=explicit, bump=bump)}
         try:
             await lib.insert_version(tenant_id, row, files, created_by=row["author"], at=row["created_at"])
             return row
@@ -301,6 +379,7 @@ async def save_draft(
     version: str | None = None,
     bump: SemverBump = "patch",
     max_pending: int | None = None,
+    expect_newest: str | None = ANY_NEWEST,
     object_store: Any | None = None,
 ) -> dict[str, Any]:
     """Validate, review and scan a bundle, then save it as a new immutable draft.
@@ -309,11 +388,21 @@ async def save_draft(
     was edited from (lineage, not the bump base: the bump is from the newest version, so a
     save is always newer than everything saved before it). ``max_pending`` caps how many
     undecided agent drafts one origin manifest may hold (`_check_pending`).
+
+    ``expect_newest`` is optimistic concurrency for an editor: the newest version the caller
+    saw, or None for "this skill must not exist yet". A save made against anything else is
+    refused (`SkillParentChanged`, `SkillExists`). `ANY_NEWEST` skips the check.
+
+    The returned row carries ``shadows_operator_upload`` (`shadows_operator_upload`), which
+    the audit event records too. It is a warning, not a refusal: the loader decides who
+    answers each ref, and that decision is the reviewer's to know about.
     """
     validation = await asyncio.to_thread(validate_skill_bundle, files, name)
     if not validation.valid or validation.frontmatter is None:
         raise SkillBundleInvalid(validation.errors)
     skill_name = validation.frontmatter.name
+    if skill_name in RESERVED_NAMES:
+        raise SkillNameReserved(f"{skill_name!r} is reserved by the skill-library API; choose another name")
     store = _object_store(settings, object_store)
     if await host_owns(settings, tenant_id, skill_name, store):
         raise SkillNameShadowed(f"{skill_name!r} is a host skill; the library cannot replace it")
@@ -336,7 +425,9 @@ async def save_draft(
         **await asyncio.to_thread(_assess, files, skill_name),
         "created_at": now_ms(),
     }
-    row = await _reserve(lib, tenant_id, row, _file_rows(files), explicit=version, bump=bump)
+    row = await _reserve(
+        lib, tenant_id, row, _file_rows(files), explicit=version, bump=bump, expect_newest=expect_newest
+    )
     try:
         await _check_pending(lib, tenant_id, provenance, max_pending, after=True)
         await _write_files(store, tenant_id, skill_name, row["version"], files)
@@ -345,6 +436,9 @@ async def save_draft(
         # already written back out.
         await _discard(lib, store, tenant_id, row, files)
         raise
+    shadows = await shadows_operator_upload(
+        settings, tenant_id, skill_name, [row["version"]], object_store=store
+    )
     _audit(
         settings,
         tenant_id,
@@ -353,9 +447,10 @@ async def save_draft(
         by=provenance.author,
         parent=parent,
         reason=_redacted(settings, row["reason"][:200]),
+        shadows_operator_upload=shadows,
         **({"principal": provenance.principal} if provenance.principal else {}),
     )
-    return {**row, "tenant_id": tenant_id}
+    return {**row, "tenant_id": tenant_id, "shadows_operator_upload": shadows}
 
 
 async def _discard(
@@ -430,25 +525,56 @@ def _policy_reasons(settings: Settings, assessment: Mapping[str, Any]) -> list[s
     return reasons
 
 
+def publish_policy(settings: Settings) -> dict[str, Any]:
+    """The gate a publish passes, as configured. Settings-wide for now; per tenant later."""
+    return {
+        "min_quality": int(settings.skill_publish_min_quality or 0),
+        "block_on_advisory": bool(settings.skill_publish_block_on_advisory),
+        # Not a setting: a failing scan blocks every publish, whoever asks.
+        "security_fail_blocks": True,
+        "source": "settings",
+    }
+
+
+async def evaluate_version(
+    settings: Settings, tenant_id: str, name: str, version: str, *, object_store: Any | None = None
+) -> dict[str, Any]:
+    """Re-read a saved version, re-validate, re-review and re-scan it, and apply the policy.
+
+    What `_gate` decides a publish on, returned rather than raised, so a reviewer can see the
+    verdict without causing one. Changes nothing. ``reasons`` empty means a publish of these
+    bytes would pass the gate today -- not that the version is in a state to be published.
+    """
+    try:
+        files = await read_version_files(settings, tenant_id, name, version, object_store=object_store)
+    except SkillVersionCorrupt as exc:
+        return {"valid": False, "validation_issues": [], "assessment": None, "reasons": [str(exc)]}
+    validation = await asyncio.to_thread(validate_skill_bundle, files, name)
+    assessment = await asyncio.to_thread(_assess, files, name)
+    issues = [{"path": i.path, "message": i.message} for i in validation.errors]
+    if not validation.valid:
+        reasons = [f"bundle no longer validates: {i['path']}: {i['message']}" for i in issues]
+    else:
+        reasons = _policy_reasons(settings, assessment)
+    return {
+        "valid": validation.valid,
+        "validation_issues": issues,
+        "assessment": assessment,
+        "reasons": reasons,
+    }
+
+
 async def _gate(settings: Settings, tenant_id: str, row: Mapping[str, Any], object_store: Any) -> None:
     """Re-read, re-validate and re-scan what is about to go live, then apply the policy.
 
     Re-run rather than trusting the row: the bytes are in a store an operator can write
     directly, and the scanner's rules may have grown since the draft was saved.
     """
-    name, version = str(row["name"]), str(row["version"])
-    try:
-        files = await read_version_files(settings, tenant_id, name, version, object_store=object_store)
-    except SkillVersionCorrupt as exc:
-        raise SkillPublishBlocked([str(exc)]) from exc
-    validation = await asyncio.to_thread(validate_skill_bundle, files, name)
-    if not validation.valid:
-        raise SkillPublishBlocked(
-            [f"bundle no longer validates: {i.path}: {i.message}" for i in validation.errors]
-        )
-    reasons = _policy_reasons(settings, await asyncio.to_thread(_assess, files, name))
-    if reasons:
-        raise SkillPublishBlocked(reasons)
+    verdict = await evaluate_version(
+        settings, tenant_id, str(row["name"]), str(row["version"]), object_store=object_store
+    )
+    if verdict["reasons"]:
+        raise SkillPublishBlocked(verdict["reasons"])
 
 
 # What each way of going live may start from. A publish takes a draft; a rollback takes a
@@ -553,23 +679,32 @@ async def archive_skill(settings: Settings, tenant_id: str, name: str, *, by: st
 
 
 __all__ = [
+    "ANY_NEWEST",
+    "RESERVED_NAMES",
     "VERSION_RE",
     "DraftProvenance",
     "SkillBundleInvalid",
+    "SkillExists",
     "SkillLibraryError",
+    "SkillNameReserved",
     "SkillNameShadowed",
     "SkillNotFound",
+    "SkillParentChanged",
     "SkillPendingCapReached",
     "SkillPublishBlocked",
     "SkillVersionCapReached",
     "SkillVersionConflict",
     "SkillVersionCorrupt",
     "archive_skill",
+    "evaluate_version",
     "host_owns",
+    "newest_version",
     "publish",
+    "publish_policy",
     "read_version_file",
     "read_version_files",
     "reject",
     "rollback",
     "save_draft",
+    "shadows_operator_upload",
 ]

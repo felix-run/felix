@@ -643,3 +643,152 @@ async def test_an_approval_rule_holds_the_built_create_skill(settings: Settings)
     )
     assert "[approval required]" in tool_output_content(out)
     assert await get_skill_library_store(settings).list_skills("acme") == []
+
+
+# -- an explicit pin, inherited files, and the principal --------------------------------------
+
+
+async def test_an_explicit_pin_to_an_operator_upload_beats_a_live_library_skill(
+    settings: Settings, store: MemoryObjectStore
+) -> None:
+    # The verify review's PoC: an operator's pinned upload, then an agent's draft of the same
+    # name published at the same version. The pin is the operator's; the bare name is the library's.
+    await store.put("skills/acme/runbook/0.1.0/SKILL.md", OPERATOR_RUNBOOK)
+    tools = _authoring(settings, store)
+    saved = await _call(
+        tools["create_skill"], {"name": "runbook", "description": "d", "body": "Agent text.", "reason": "r"}
+    )
+    assert saved["version"] == "0.1.0"
+    await library.publish(settings, "acme", "runbook", "0.1.0", by="ops", object_store=store)
+
+    for declared_only in (False, True):
+        pinned = (
+            await _catalog(
+                settings, store, [{"name": "runbook", "version": "0.1.0"}], declared_only=declared_only
+            )
+        ).get("runbook")
+        assert pinned is not None and (pinned.source, pinned.body) == ("store", "Operator-reviewed steps.")
+        bare = (await _catalog(settings, store, [{"name": "runbook"}], declared_only=declared_only)).get(
+            "runbook"
+        )
+        assert bare is not None and (bare.source, bare.body) == ("library", "Agent text.")
+    # A pin no upload holds is still answered by the library's live version.
+    other = (await _catalog(settings, store, [{"name": "runbook", "version": "9.9.9"}])).get("runbook")
+    assert other is not None and other.source == "library"
+
+
+async def test_saving_over_an_operators_pinned_upload_is_flagged(
+    settings: Settings, store: MemoryObjectStore
+) -> None:
+    await store.put("skills/runbook/0.1.0/SKILL.md", OPERATOR_RUNBOOK)  # the shared layer
+    row = await library.save_draft(
+        settings,
+        "acme",
+        files=_bundle("runbook"),
+        provenance=library.DraftProvenance(source="operator", author="ops"),
+        object_store=store,
+    )
+    assert row["shadows_operator_upload"] is True
+    clean = await library.save_draft(
+        settings,
+        "acme",
+        files=_bundle("other-skill"),
+        provenance=library.DraftProvenance(source="operator", author="ops"),
+        object_store=store,
+    )
+    assert clean["shadows_operator_upload"] is False
+
+
+async def test_publish_mode_holds_an_edit_of_an_operator_draft_that_never_went_live(
+    settings: Settings, store: MemoryObjectStore
+) -> None:
+    await library.save_draft(
+        settings,
+        "acme",
+        files=_bundle(),
+        provenance=library.DraftProvenance(source="operator", author="ops"),
+        object_store=store,
+    )
+    tools = _authoring(settings, store, mode="publish")
+    result = await _call(
+        tools["update_skill"], {"name": "invoice-triage", "body": BODY + "\n3. More.\n", "reason": "r"}
+    )
+    assert result["status"] == "draft" and "review_required" in result
+    skill = await get_skill_library_store(settings).get_skill("acme", "invoice-triage")
+    assert skill is not None and skill["live_version"] is None
+
+
+async def test_the_update_preview_names_the_parent_and_each_inherited_file_by_digest(
+    settings: Settings, store: MemoryObjectStore
+) -> None:
+    import hashlib
+
+    await _published(settings, store, **{"references/notes.md": "Keep me.\n"})
+    preview_fn = _authoring(settings, store)["update_skill"].approval_preview
+    assert preview_fn is not None
+    rendered = await preview_fn({"name": "invoice-triage", "body": "New body.", "reason": "r"})
+    digest = hashlib.sha256(b"Keep me.\n").hexdigest()
+    assert "edited from 0.1.0 (written by operator)" in rendered
+    assert f"references/notes.md  sha256:{digest}" in rendered
+    assert rendered.rstrip().endswith("New body.")
+
+
+async def test_an_update_whose_parent_moved_after_its_preview_is_refused(
+    settings: Settings, store: MemoryObjectStore
+) -> None:
+    await _published(settings, store)
+    tools = _authoring(settings, store)
+    args = {"name": "invoice-triage", "body": "New body.", "reason": "r"}
+    preview_fn = tools["update_skill"].approval_preview
+    assert preview_fn is not None
+    await preview_fn(dict(args))  # what the approver read: built on 0.1.0
+
+    moved = await library.save_draft(
+        settings,
+        "acme",
+        files=_bundle(body=BODY + "\nOperator edit.\n"),
+        provenance=library.DraftProvenance(source="operator", author="ops"),
+        parent="0.1.0",
+        object_store=store,
+    )
+    await library.publish(settings, "acme", "invoice-triage", moved["version"], by="ops", object_store=store)
+
+    result = await _call(tools["update_skill"], args)
+    assert result.get("error") == "parent_changed", result
+    assert (result["expected"], result["current"]) == ("0.1.0", "0.1.1")
+    assert await get_skill_library_store(settings).version_ids("acme", "invoice-triage") == ["0.1.0", "0.1.1"]
+
+
+async def test_an_update_naming_a_stale_parent_version_is_refused(
+    settings: Settings, store: MemoryObjectStore
+) -> None:
+    await _published(settings, store)
+    tools = _authoring(settings, store)
+    stale = await _call(
+        tools["update_skill"],
+        {"name": "invoice-triage", "body": "B.", "reason": "r", "parent_version": "0.0.9"},
+    )
+    assert stale.get("error") == "parent_changed" and stale["current"] == "0.1.0", stale
+    ok = await _call(
+        tools["update_skill"],
+        {"name": "invoice-triage", "body": "B.", "reason": "r", "parent_version": "0.1.0"},
+    )
+    assert ok["status"] == "draft" and ok["version"] == "0.1.1"
+
+
+async def test_the_draft_audit_names_who_a_fiber_acts_for(
+    settings: Settings, store: MemoryObjectStore
+) -> None:
+    from felix.audit import store as audit_store
+    from felix.context import AuthContext, RequestContext, async_run_with_context
+
+    tools = _authoring(settings, store)
+    auth = AuthContext(principal_sub="fiber", tenant_id="acme", anonymous=False, on_behalf_of="alice")
+    async with async_run_with_context(RequestContext(settings=settings, auth=auth)):
+        await _call(
+            tools["create_skill"], {"name": "invoice-triage", "description": "d", "body": BODY, "reason": "r"}
+        )
+    await audit_store.flush_pending(settings)
+    events, _ = await audit_store.list_events(settings, "acme", event_type="skill_draft_saved", limit=10)
+    (event,) = events
+    assert (event.get("payload_json") or {}).get("principal") == "alice"

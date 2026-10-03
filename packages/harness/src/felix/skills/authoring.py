@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import OrderedDict
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -46,6 +47,17 @@ class _UpdateSkillArgs(BaseModel):
     description: str | None = Field(
         default=None, min_length=1, max_length=1024, description="A new description; omit to keep it."
     )
+    parent_version: str | None = Field(
+        default=None,
+        max_length=32,
+        description=(
+            "The version you are editing, if you know it; the save is refused if the skill moved past it."
+        ),
+    )
+
+
+# Previews remembered for the execution they precede (`_SkillAuthor.preview`), at most this many.
+_PREVIEWS_KEPT = 256
 
 
 class _ComposeError(Exception):
@@ -59,9 +71,12 @@ class _ComposeError(Exception):
 class _Composed(BaseModel):
     files: dict[str, str]
     parent: str | None = None
-    # Whether the parent is the live version and an operator wrote it. An agent's edit of an
-    # operator's skill is review material in any mode (`make_skill_authoring_tools`).
+    # Whether an operator wrote the parent, live or not. An agent's edit of an operator's
+    # skill is review material in any mode (`make_skill_authoring_tools`).
     edits_operator_skill: bool = False
+    # The parent's files the save keeps unchanged, as `{path, sha256}`: what an approver is
+    # shown beside the SKILL.md, since the agent's arguments never name them.
+    inherited: list[dict[str, str]] = []
 
 
 def _review_hint(row: dict[str, Any]) -> str:
@@ -91,12 +106,33 @@ def _draft_result(row: dict[str, Any], status: str) -> dict[str, Any]:
 
 
 def _principal() -> str | None:
-    """The caller behind this turn, for the audit trail; None outside a request."""
+    """The caller behind this turn, for the audit trail; None outside a request.
+
+    `on_behalf_of` first, as the approvals wrapper reads it: a resumed durable fiber runs as
+    principal `fiber`, and the person whose work it is is the one the trail should name.
+    """
     from felix.context import try_get_context
 
     ctx = try_get_context()
-    sub = getattr(getattr(ctx, "auth", None), "principal_sub", None) if ctx is not None else None
+    auth = getattr(ctx, "auth", None) if ctx is not None else None
+    sub = (getattr(auth, "on_behalf_of", None) or getattr(auth, "principal_sub", None)) if auth else None
     return str(sub) if sub else None
+
+
+def _call_key(args: ToolInput) -> str:
+    """The content of an `update_skill` call, for matching an execution to its preview."""
+    fields = ("name", "body", "reason", "description", "parent_version")
+    return json.dumps({k: args.get(k) or None for k in fields}, sort_keys=True)
+
+
+def _preview_header(name: str, composed: _Composed, source: str) -> str:
+    lines = [f"update_skill {name}: edited from {composed.parent} (written by {source or 'unknown'})"]
+    if composed.inherited:
+        lines.append(f"Kept unchanged from {composed.parent}:")
+        lines += [f"  {f['path']}  sha256:{f['sha256']}" for f in composed.inherited]
+    else:
+        lines.append("No other files are kept from the parent.")
+    return "\n".join(lines) + "\n\n--- SKILL.md ---\n"
 
 
 class _SkillAuthor:
@@ -117,6 +153,13 @@ class _SkillAuthor:
         self.settings, self.tenant_id, self.manifest_id = settings, tenant_id, manifest_id
         self.mode, self.max_pending, self.object_store = mode, max_pending, object_store
         self.lib = get_skill_library_store(settings)
+        # The parent each `update_skill` preview showed, keyed by the call's content. An
+        # approval binds a call's arguments, and those name no version, so without this an
+        # approver reads a SKILL.md and inherited files built on one version and the save,
+        # minutes later, builds on whichever is newest then. Process-local: a call carrying
+        # `parent_version` is bound by its arguments wherever it runs; one without is checked
+        # when its execution lands in the process that rendered its preview.
+        self.previewed: OrderedDict[str, str] = OrderedDict()
 
     async def compose(self, args: ToolInput, *, update: bool) -> _Composed:
         """The bundle a call would save, and what it was edited from."""
@@ -147,7 +190,13 @@ class _SkillAuthor:
             if not newest:
                 raise _ComposeError({"error": "unknown_skill", "name": name})
             parent = str(newest[0]["version"])
+        expected = args.get("parent_version")
+        if expected and str(expected) != parent:
+            raise _ComposeError(
+                {"error": "parent_changed", "name": name, "expected": str(expected), "current": parent}
+            )
         parent_row = await self.lib.get_version(self.tenant_id, name, parent) or {}
+        file_rows = await self.lib.list_files(self.tenant_id, name, parent)
         files = await library.read_version_files(
             self.settings, self.tenant_id, name, parent, object_store=self.object_store
         )
@@ -157,8 +206,15 @@ class _SkillAuthor:
         if args.get("description"):
             frontmatter["description"] = str(args["description"])
         files["SKILL.md"] = serialize_skill_md(frontmatter, body)
-        operator = bool(live) and parent_row.get("source") == "operator"
-        return _Composed(files=files, parent=parent, edits_operator_skill=operator)
+        inherited = [
+            {"path": str(r["path"]), "sha256": str(r["sha256"])} for r in file_rows if r["path"] != "SKILL.md"
+        ]
+        return _Composed(
+            files=files,
+            parent=parent,
+            edits_operator_skill=parent_row.get("source") == "operator",
+            inherited=inherited,
+        )
 
     async def publish(self, row: dict[str, Any], composed: _Composed) -> dict[str, Any]:
         from felix.skills import library
@@ -166,7 +222,9 @@ class _SkillAuthor:
         if composed.edits_operator_skill:
             return {
                 **_draft_result(row, "draft"),
-                "review_required": "the live version was written by an operator; a person must publish this",
+                "review_required": (
+                    "the version this edits was written by an operator; a person must publish this"
+                ),
             }
         try:
             published = await library.publish(
@@ -188,6 +246,16 @@ class _SkillAuthor:
 
         try:
             composed = await self.compose(args, update=update)
+            shown = self.previewed.pop(_call_key(args), None) if update else None
+            if shown is not None and shown != composed.parent:
+                raise _ComposeError(
+                    {
+                        "error": "parent_changed",
+                        "name": args.get("name"),
+                        "expected": shown,
+                        "current": composed.parent,
+                    }
+                )
             row = await library.save_draft(
                 self.settings,
                 self.tenant_id,
@@ -220,10 +288,20 @@ class _SkillAuthor:
         return json.dumps(await self.publish(row, composed))
 
     async def preview(self, args: ToolInput, *, update: bool) -> str:
+        """What an approver reads: the SKILL.md, and for an edit, the version it builds on and
+        every file it keeps from that version by digest."""
         try:
-            return (await self.compose(args, update=update)).files["SKILL.md"]
+            composed = await self.compose(args, update=update)
         except _ComposeError as exc:
             return json.dumps(exc.result)
+        if not update or composed.parent is None:
+            return composed.files["SKILL.md"]
+        self.previewed[_call_key(args)] = composed.parent
+        while len(self.previewed) > _PREVIEWS_KEPT:
+            self.previewed.popitem(last=False)
+        parent_row = await self.lib.get_version(self.tenant_id, str(args.get("name")), composed.parent) or {}
+        header = _preview_header(str(args.get("name")), composed, str(parent_row.get("source") or ""))
+        return header + composed.files["SKILL.md"]
 
 
 def make_skill_authoring_tools(

@@ -203,35 +203,34 @@ def skill_catalog_xml(catalog: SkillCatalog) -> str:
     return "\n".join(lines)
 
 
-async def load_skill_from_store(
-    store: Any,
-    *,
-    tenant_id: str,
-    name: str,
-    version: str | None = None,
-) -> Skill | None:
-    """Load skills/{tenant}/{name}/SKILL.md or skills/{name}/SKILL.md from an ObjectStore.
+def operator_skill_keys(
+    tenant_id: str, name: str, version: str | None = None, *, pinned_only: bool = False
+) -> list[str]:
+    """The object-store keys an operator's upload of ``name`` may live at, in the order they
+    are read: the tenant's own before any shared one, each pinned version before unversioned.
+    ``pinned_only`` keeps the two versioned keys alone.
 
-    The tenant's own skill wins. Every tenant-scoped key is tried before any shared
-    one, rather than interleaving them by version — interleaved, a shared *versioned*
-    skill beat the tenant's own unversioned skill and the tenant's was never read.
-
-    The shared `skills/{name}/` namespace is an operator layer: no route lets a
-    tenant write a bare object key, so it cannot be planted by another tenant.
+    The only spelling of the operator layout. The skill library probes the same keys to tell
+    a reviewer when a library name collides with an upload (`library.shadows_operator_upload`).
+    Callers validate ``name`` and ``version`` as key segments first (`_safe_segment`).
     """
-    if not _safe_segment(name, _KEY_SEGMENT_RE):
-        logger.warning("skill name %r is not a usable key segment; skipped", name)
-        return None
-    if version is not None and not _safe_segment(version, _VERSION_RE, limit=32):
-        logger.warning("skill version %r is not a usable key segment; ignored", version)
-        version = None
+    pinned = [f"skills/{tenant_id}/{name}/{version}/SKILL.md", f"skills/{name}/{version}/SKILL.md"]
+    if pinned_only:
+        return pinned if version else []
+    if not version:
+        return [f"skills/{tenant_id}/{name}/SKILL.md", f"skills/{name}/SKILL.md"]
+    return [pinned[0], f"skills/{tenant_id}/{name}/SKILL.md", pinned[1], f"skills/{name}/SKILL.md"]
 
-    tenant_keys = [f"skills/{tenant_id}/{name}/SKILL.md"]
-    shared_keys = [f"skills/{name}/SKILL.md"]
-    if version:
-        tenant_keys.insert(0, f"skills/{tenant_id}/{name}/{version}/SKILL.md")
-        shared_keys.insert(0, f"skills/{name}/{version}/SKILL.md")
-    keys = tenant_keys + shared_keys
+
+def safe_skill_key_parts(name: str, version: str | None = None) -> bool:
+    """True when ``name`` (and ``version``, if given) may be interpolated into an object key."""
+    if not _safe_segment(name, _KEY_SEGMENT_RE):
+        return False
+    return version is None or _safe_segment(version, _VERSION_RE, limit=32)
+
+
+async def _first_stored_skill(store: Any, keys: list[str], *, name: str) -> Skill | None:
+    """The skill at the first of ``keys`` that holds one, or None."""
     for key in keys:
         try:
             data = await store.get(key)
@@ -254,6 +253,40 @@ async def load_skill_from_store(
             skill.source = "store"
         return skill
     return None
+
+
+async def load_skill_from_store(
+    store: Any,
+    *,
+    tenant_id: str,
+    name: str,
+    version: str | None = None,
+) -> Skill | None:
+    """Load skills/{tenant}/{name}/SKILL.md or skills/{name}/SKILL.md from an ObjectStore.
+
+    The tenant's own skill wins. Every tenant-scoped key is tried before any shared
+    one, rather than interleaving them by version — interleaved, a shared *versioned*
+    skill beat the tenant's own unversioned skill and the tenant's was never read.
+
+    The shared `skills/{name}/` namespace is an operator layer: no route lets a
+    tenant write a bare object key, so it cannot be planted by another tenant.
+    """
+    if not _safe_segment(name, _KEY_SEGMENT_RE):
+        logger.warning("skill name %r is not a usable key segment; skipped", name)
+        return None
+    if version is not None and not _safe_segment(version, _VERSION_RE, limit=32):
+        logger.warning("skill version %r is not a usable key segment; ignored", version)
+        version = None
+    return await _first_stored_skill(store, operator_skill_keys(tenant_id, name, version), name=name)
+
+
+async def _pinned_upload(store: Any, *, tenant_id: str, name: str, version: str) -> Skill | None:
+    """An operator's upload at exactly this pinned version, or None. Never the unversioned key:
+    that one does not answer a pin, so it cannot outrank a library skill on one."""
+    if not safe_skill_key_parts(name, version):
+        return None
+    keys = operator_skill_keys(tenant_id, name, version, pinned_only=True)
+    return await _first_stored_skill(store, keys, name=name)
 
 
 # Object-store reads one catalog load runs at once. A library of a few hundred live skills is
@@ -502,6 +535,14 @@ async def load_manifest_skills(
     only declared library names are fetched. The raw keys never hold library bytes -- those
     are under their own prefix, and only a live, digest-checked version is read from it --
     so a declared name the library does not serve falls through to operator uploads only.
+
+    One exception to library-before-uploads: **an explicit pin to an operator upload wins.** A
+    ref naming `version: 0.1.0` where `skills/{tenant}/{name}/0.1.0/SKILL.md` (or the shared
+    `skills/{name}/0.1.0/SKILL.md`) exists is served that upload, not the library's live
+    version, whatever version the library happens to be at. A pin is a manifest author
+    choosing reviewed bytes by their key; a tenant's library -- which an agent can draft into
+    -- reusing the name must not answer it. An unpinned ref, and a pin no upload holds, still
+    get the library's live version.
     """
     catalog = SkillCatalog()
     host = await host_catalog(bundled_dir)
@@ -526,13 +567,21 @@ async def load_manifest_skills(
         # `host` rather than `catalog` so a declared name still resolves against the
         # bundled directory when `declared_only` kept it out of the catalogue.
         skill: Skill | None = catalog.get(str(name)) or host.get(str(name)) or library.get(str(name))
-        if skill is not None and skill.source == "library" and version and str(version) != skill.version:
-            logger.warning(
-                "skill %s pins version %s; the library serves its live version %s",
-                name,
-                version,
-                skill.version,
+        if skill is not None and skill.source == "library" and version:
+            pinned = (
+                await _pinned_upload(object_store, tenant_id=tenant_id, name=str(name), version=str(version))
+                if object_store is not None
+                else None
             )
+            if pinned is not None:
+                skill = pinned
+            elif str(version) != skill.version:
+                logger.warning(
+                    "skill %s pins version %s; the library serves its live version %s",
+                    name,
+                    version,
+                    skill.version,
+                )
         if skill is None and object_store is not None:
             skill = await load_skill_from_store(
                 object_store, tenant_id=tenant_id, name=str(name), version=version
@@ -554,6 +603,8 @@ __all__ = [
     "load_manifest_skills",
     "load_skill_from_store",
     "load_skills_from_dir",
+    "operator_skill_keys",
     "parse_skill_md",
+    "safe_skill_key_parts",
     "skill_catalog_xml",
 ]

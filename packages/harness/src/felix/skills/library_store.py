@@ -39,6 +39,14 @@ def library_object_key(tenant_id: str, name: str, version: str, path: str) -> st
     return f"{LIBRARY_PREFIX}/{tenant_id}/{name}/{version}/{path}"
 
 
+# Where the review queue resumes: the `(created_at, name, version)` of the last draft a page held.
+DraftCursor = tuple[int, str, str]
+
+# What `summarize` reports of each skill's newest version: enough to filter and sort a listing
+# by, without the review record a detail page reads.
+SUMMARY_COLUMNS = ("version", "status", "source", "quality_score", "security_status", "created_at")
+
+
 class SkillVersionExists(Exception):
     """The `(tenant, name, version)` row is already there — two saves raced to one version."""
 
@@ -52,7 +60,13 @@ class SkillLibraryStore(Protocol):
     async def get_skill(self, tenant_id: str, name: str) -> dict[str, Any] | None: ...
 
     async def list_skills(
-        self, tenant_id: str, *, limit: int = MAX_LIBRARY_SKILLS
+        self, tenant_id: str, *, limit: int = MAX_LIBRARY_SKILLS, after: str | None = None
+    ) -> list[dict[str, Any]]: ...
+
+    async def summarize(self, tenant_id: str, names: Collection[str]) -> dict[str, dict[str, Any]]: ...
+
+    async def list_drafts(
+        self, tenant_id: str, *, limit: int = MAX_VERSIONS_LISTED, after: DraftCursor | None = None
     ) -> list[dict[str, Any]]: ...
 
     async def list_live(self, tenant_id: str, *, limit: int = MAX_LIBRARY_SKILLS) -> list[dict[str, Any]]: ...
@@ -122,8 +136,43 @@ class InMemorySkillLibraryStore:
         row = self._skills.get((tenant_id, name))
         return copy.deepcopy(row) if row is not None else None
 
-    async def list_skills(self, tenant_id: str, *, limit: int = MAX_LIBRARY_SKILLS) -> list[dict[str, Any]]:
-        rows = sorted((r for (t, _), r in self._skills.items() if t == tenant_id), key=lambda r: r["name"])
+    async def list_skills(
+        self, tenant_id: str, *, limit: int = MAX_LIBRARY_SKILLS, after: str | None = None
+    ) -> list[dict[str, Any]]:
+        rows = sorted(
+            (r for (t, n), r in self._skills.items() if t == tenant_id and (after is None or n > after)),
+            key=lambda r: r["name"],
+        )
+        return copy.deepcopy(rows[:limit])
+
+    async def summarize(self, tenant_id: str, names: Collection[str]) -> dict[str, dict[str, Any]]:
+        wanted = set(names)
+        out: dict[str, dict[str, Any]] = {}
+        for (t, n, _), row in self._versions.items():
+            if t != tenant_id or n not in wanted:
+                continue
+            entry = out.setdefault(n, {"latest": None, "pending": 0})
+            entry["pending"] += row["status"] == "draft"
+            latest = entry["latest"]
+            if latest is None or (row["created_at"], row["version"]) > (
+                latest["created_at"],
+                latest["version"],
+            ):
+                entry["latest"] = {k: row[k] for k in SUMMARY_COLUMNS}
+        return copy.deepcopy(out)
+
+    async def list_drafts(
+        self, tenant_id: str, *, limit: int = MAX_VERSIONS_LISTED, after: DraftCursor | None = None
+    ) -> list[dict[str, Any]]:
+        rows = [
+            r
+            for (t, _, _), r in self._versions.items()
+            if t == tenant_id
+            and r["status"] == "draft"
+            and (after is None or (r["created_at"], r["name"], r["version"]) > after)
+        ]
+        # Oldest first, ending on the primary key so a page boundary falls on one row.
+        rows.sort(key=lambda r: (r["created_at"], r["name"], r["version"]))
         return copy.deepcopy(rows[:limit])
 
     async def list_live(self, tenant_id: str, *, limit: int = MAX_LIBRARY_SKILLS) -> list[dict[str, Any]]:
@@ -256,20 +305,95 @@ class PostgresSkillLibraryStore:
             row = await db.get(SkillRow, (tenant_id, name))
             return self._row(row) if row is not None else None
 
-    async def list_skills(self, tenant_id: str, *, limit: int = MAX_LIBRARY_SKILLS) -> list[dict[str, Any]]:
+    async def list_skills(
+        self, tenant_id: str, *, limit: int = MAX_LIBRARY_SKILLS, after: str | None = None
+    ) -> list[dict[str, Any]]:
         from sqlalchemy import collate, select
 
         from felix.db.models import SkillRow
 
+        stmt = select(SkillRow).where(SkillRow.tenant_id == tenant_id)
+        if after is not None:
+            stmt = stmt.where(collate(SkillRow.name, "C") > after)
         async with self._session(tenant_id) as db:
             rows = (
                 await db.scalars(
-                    select(SkillRow)
-                    .where(SkillRow.tenant_id == tenant_id)
                     # "C" so the order is the memory twin's codepoint order, whatever the
                     # database's default collation.
-                    .order_by(collate(SkillRow.name, "C"))
-                    .limit(limit)
+                    stmt.order_by(collate(SkillRow.name, "C")).limit(limit)
+                )
+            ).all()
+            return [self._row(r) for r in rows]
+
+    async def summarize(self, tenant_id: str, names: Collection[str]) -> dict[str, dict[str, Any]]:
+        """Each named skill's newest version and how many of its versions are drafts: two
+        queries for a page of skills, rather than two per skill."""
+        from sqlalchemy import collate, func, select
+
+        from felix.db.models import SkillVersionRow
+
+        if not names:
+            return {}
+        names = list(names)
+        columns = [getattr(SkillVersionRow, c) for c in SUMMARY_COLUMNS]
+        async with self._session(tenant_id) as db:
+            newest = (
+                await db.execute(
+                    select(SkillVersionRow.name, *columns)
+                    .where(SkillVersionRow.tenant_id == tenant_id, SkillVersionRow.name.in_(names))
+                    .distinct(SkillVersionRow.name)
+                    .order_by(
+                        SkillVersionRow.name,
+                        SkillVersionRow.created_at.desc(),
+                        collate(SkillVersionRow.version, "C").desc(),
+                    )
+                )
+            ).all()
+            pending = (
+                await db.execute(
+                    select(SkillVersionRow.name, func.count())
+                    .where(
+                        SkillVersionRow.tenant_id == tenant_id,
+                        SkillVersionRow.name.in_(names),
+                        SkillVersionRow.status == "draft",
+                    )
+                    .group_by(SkillVersionRow.name)
+                )
+            ).all()
+        out: dict[str, dict[str, Any]] = {
+            r[0]: {"latest": dict(zip(SUMMARY_COLUMNS, r[1:], strict=True)), "pending": 0} for r in newest
+        }
+        for name, count in pending:
+            out.setdefault(name, {"latest": None, "pending": 0})["pending"] = int(count)
+        return out
+
+    async def list_drafts(
+        self, tenant_id: str, *, limit: int = MAX_VERSIONS_LISTED, after: DraftCursor | None = None
+    ) -> list[dict[str, Any]]:
+        """Every draft in the tenant, oldest first: the review queue, read along
+        `idx_skill_version_status_age`."""
+        from sqlalchemy import collate, literal, select, tuple_
+
+        from felix.db.models import SkillVersionRow
+
+        stmt = select(SkillVersionRow).where(
+            SkillVersionRow.tenant_id == tenant_id, SkillVersionRow.status == "draft"
+        )
+        if after is not None:
+            key = tuple_(
+                SkillVersionRow.created_at,
+                collate(SkillVersionRow.name, "C"),
+                collate(SkillVersionRow.version, "C"),
+            )
+            stmt = stmt.where(key > tuple_(literal(after[0]), literal(after[1]), literal(after[2])))
+        async with self._session(tenant_id) as db:
+            rows = (
+                await db.scalars(
+                    stmt.order_by(
+                        SkillVersionRow.created_at,
+                        collate(SkillVersionRow.name, "C"),
+                        collate(SkillVersionRow.version, "C"),
+                    ).limit(limit)
                 )
             ).all()
             return [self._row(r) for r in rows]
@@ -560,6 +684,8 @@ __all__ = [
     "MAX_LIBRARY_SKILLS",
     "MAX_VERSIONS_LISTED",
     "MAX_VERSIONS_PER_SKILL",
+    "SUMMARY_COLUMNS",
+    "DraftCursor",
     "InMemorySkillLibraryStore",
     "PostgresSkillLibraryStore",
     "SkillLibraryStore",

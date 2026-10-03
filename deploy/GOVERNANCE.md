@@ -297,6 +297,22 @@ Every publish also passes a gate that re-reads the bytes against their saved dig
 re-scans them, and a failing security scan blocks whoever asks. Library bytes are kept under
 their own object-store prefix (`skill-library/`), never under the operator's `skills/` keys.
 
+**Precedence, when a library skill and an operator upload share a name.** Host skills (bundled,
+`FELIX_SKILLS_DIR`) always win, and the library refuses their names and the unversioned upload
+keys. Otherwise the library's live version answers an unpinned ref, and **an explicit pin to an
+operator upload wins**: a ref with `version: 0.1.0` is served `skills/{tenant}/{name}/0.1.0/SKILL.md`
+(or the shared `skills/{name}/0.1.0/SKILL.md`) when one exists, whatever the library holds. A pin is
+an author choosing reviewed bytes by their key, and a library an agent can draft into must not
+answer it. A pin no upload holds still gets the library's live version. `/skill-library` reports
+`shadows_operator_upload` on a skill, a version and a save whenever such an upload exists at the
+unversioned key or the version in question, so a reviewer knows the name is split before publishing
+into it. The object store has no listing, so an upload at a version the library never held is not
+flagged — though a ref pinning it is still served the upload.
+
+An `update_skill` approval shows the version the edit builds on and every file it keeps from that
+version, each by sha256. If the skill moves between that preview and the execution, the call is
+refused (`parent_changed`) rather than saved over content nobody read.
+
 ## Outbound egress
 
 ### Per-integration timeouts
@@ -1377,7 +1393,8 @@ implies the matching `*:read`.
 | `usage:read` | `/usage` |
 | `memory:read` / `memory:write` | `/memory` — inspect, search, correct and prune what an agent has remembered |
 | `documents:read` / `documents:write` | `/documents` — ingest, search, inspect and remove the corpus an agent retrieves from |
-| `skills:read` | `/skills` — list the Agent Skills a manifest can reach, read the body `activate_skill` hands the model (secret-redacted, as `manifests:read` redacts a manifest), and see which skill activated on which turn. Separate from `manifests:read` because a skill body is **prompt content**: it is appended to the system prompt on activation, so reading one is reading instructions the agent will follow. Read-only; activation is the model's decision mid-turn. By default a manifest's `spec.skills` *adds to* the bundled and `FELIX_SKILLS_DIR` catalogue rather than restricting it, so the model is offered every skill on the host; `spec.skills_declared_only: true` makes the declared names the whole set. The `declared` field on each item says which ones this manifest named, and `declared_only` on the response says which rule is in force. Worth setting on any manifest that has to be reviewable: a skill body is appended to the system prompt, so an ambient skill is an instruction the agent follows that `pin_compile` does not cover — the hash is over the manifest, and the drift is on the host's disk |
+| `skills:read` | `/skills`, and the read routes of `/skill-library` (the library, the review queue, each version's review record, digest-checked and redacted files, a read-only gate preview, the policy). `/skills` — list the Agent Skills a manifest can reach, read the body `activate_skill` hands the model (secret-redacted, as `manifests:read` redacts a manifest), and see which skill activated on which turn. Separate from `manifests:read` because a skill body is **prompt content**: `activate_skill` hands it to the model as instructions, so reading one is reading instructions the agent will follow. Read-only; activation is the model's decision mid-turn. By default a manifest's `spec.skills` *adds to* the bundled and `FELIX_SKILLS_DIR` catalogue rather than restricting it, so the model is offered every skill on the host; `spec.skills_declared_only: true` makes the declared names the whole set. The `declared` field on each item says which ones this manifest named, and `declared_only` on the response says which rule is in force. Worth setting on any manifest that has to be reviewable: a skill body reaches the model as instructions, so an ambient skill is an instruction the agent follows that `pin_compile` does not cover — the hash is over the manifest, and the drift is on the host's disk |
+| `skills:write` | `/skill-library` writes — save a skill or a new version as an operator draft, publish, roll back, reject a draft with a note, archive. Implies `skills:read`. Its own scope because a publish puts text in front of every manifest in the tenant as instructions; every change is audited to the caller, and a publish passes the same gate an agent's does (a failing security scan blocks whoever asks) |
 | `files:read` / `files:write` | `/files` — upload a file once and reference it by id on later turns. Bounded per tenant by `FELIX_ATTACHMENTS_MAX_BYTES_PER_TENANT` (256 MiB; `0` disables) on top of the 600 KiB per-upload cap, answered as 409 rather than 413 — the request is a fine size and the account is full. `FELIX_ATTACHMENT_RETENTION_DAYS` (`0`, keep forever) lets the nightly sweep collect old uploads, bytes and ledger row together; before it, `attachments/` was an object-store prefix nothing ever collected. Uploads predating migration `0016` are counted by neither, because a backfill would need the `list` the `ObjectStore` Protocol deliberately does not have. Under `auth_mode=none` every local process holds `files:write`, so the ceiling is the only thing bounding the disk there. `DELETE /files/{file_id}` is the erasure path. Separate from `artifacts:read`, which reads spill the *harness* wrote: these are caller-supplied bytes with a caller-driven lifecycle, so permission to add them is its own grant. The tenant comes from the caller's credentials and never from the path, so no spelling of a reference reaches another tenant's upload. A turn names an upload with a `file` content part, expanded to bytes immediately before the model call — after `apply_inbound_screening`, which is where it must be if the session log is to keep the reference rather than the base64. That is not a gap this opened: `_message_text` collects only `text` blocks, so **image content has never been screened on any path**, inline `data:` URLs included, and text rendered inside an image is an injection channel on both |
 
 ```bash
