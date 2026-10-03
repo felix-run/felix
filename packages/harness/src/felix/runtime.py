@@ -96,23 +96,35 @@ def _context_window_for_manifest(manifest: Any, strategy_spec: Any, settings: Se
         return int(declared)
 
     model_spec = getattr(getattr(manifest, "spec", None), "model", None)
-    model_id = str(getattr(model_spec, "id", "") or "")
+    if settings is None:
+        from felix.config import get_settings
+
+        settings = get_settings()
+    model_id = str(getattr(model_spec, "id", "") or "") or str(settings.default_model_id or "")
     if not model_id:
-        if settings is None:
-            from felix.config import get_settings
+        return 128000
+    window = _route_window(model_id, settings)
+    from felix.patterns.model_vision import vision_plan
 
-            settings = get_settings()
-        model_id = str(settings.default_model_id or "")
-    if model_id:
-        from felix.model_catalog import entry_for
-        from felix.patterns.model import parse_model_routes
+    # A composed vision route answers every call that carries an image, and once a thread
+    # holds one, every later call does. Its history has to fit whichever model answers, so a
+    # vision model with the smaller window is the one compacted against -- sized for the
+    # primary alone, it was handed a history it could not take.
+    vision_id = vision_plan(settings, model_spec).vision_id
+    if vision_id:
+        window = min(window, _route_window(vision_id, settings))
+    return window
 
-        # `model_id` here is the logical route name. `claude-sonnet` matched only the loose
-        # family key at 200K, so a manifest on the default route compacted against a fifth of
-        # the window it pays for; an id matching nothing at all fell to the 128K default.
-        route = parse_model_routes().get(model_id)
-        return entry_for(route.model if route is not None else model_id).context_window
-    return 128000
+
+def _route_window(model_id: str, settings: Settings) -> int:
+    from felix.model_catalog import entry_for
+    from felix.patterns.model import parse_model_routes
+
+    # `model_id` here is the logical route name. `claude-sonnet` matched only the loose
+    # family key at 200K, so a manifest on the default route compacted against a fifth of
+    # the window it pays for; an id matching nothing at all fell to the 128K default.
+    route = parse_model_routes(settings).get(model_id)
+    return entry_for(route.model if route is not None else model_id).context_window
 
 
 async def build_tenant_agent(
