@@ -19,6 +19,12 @@ Each release section is written from the `## Changelog` sections of the pull req
 
 ### Fixed
 
+- **Jev on Workers AI (`jev-cf`, or any `workers_ai` decision route) answers.** Cloudflare
+  returns a partner model's reply as a completed run inside its REST envelope, nested one
+  level deeper than the parser read. Every call came back with correct answers and was
+  reported as `decision provider response carries no answers`, so each consumer fell back.
+  A run that has not completed is now refused with its state named.
+
 - **A screened tool image was transcribed twice.** It was read as inline bytes when the tool
   returned it, then stored and replayed on later turns as a `felix-file://` reference, which the
   screening cache keys differently. Every image a tool returned under `image_model` therefore

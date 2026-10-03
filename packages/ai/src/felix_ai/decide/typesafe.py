@@ -127,6 +127,11 @@ def parse_response(data: Any, questions: Mapping[str, Question]) -> DecisionResu
     Cloudflare wraps every REST result as `{result, success, errors, messages}`; TypeSafe
     returns the body bare. Unwrapping only when `answers` is absent at the top keeps one
     parser for both without guessing which endpoint answered.
+
+    A partner model on Workers AI nests once more: the envelope's `result` is a run,
+    `{state, result}`, and the answers are inside *that*. Cloudflare's model page shows the
+    body bare and this parser once unwrapped a single level, so the first live call
+    (2026-10-03) came back with correct answers and was reported as carrying none.
     """
     if not isinstance(data, dict):
         raise ValueError("decision provider returned a non-object body")
@@ -134,6 +139,13 @@ def parse_response(data: Any, questions: Mapping[str, Question]) -> DecisionResu
         if data.get("success") is False:
             raise ValueError(f"decision provider reported failure: {data.get('errors')!r}")
         data = data["result"]
+    if "answers" not in data and "state" in data:
+        # A run that has not finished has no answers to read, and naming its state is
+        # the difference between a bug report and a retry.
+        if data.get("state") != "Completed":
+            raise ValueError(f"decision provider run did not complete: state={data.get('state')!r}")
+        if isinstance(data.get("result"), dict):
+            data = data["result"]
     raw = data.get("answers")
     if not isinstance(raw, dict):
         raise ValueError("decision provider response carries no answers")

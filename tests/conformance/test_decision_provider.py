@@ -94,7 +94,10 @@ class _Arm:
             assert self.transport is not None
             body = _jev_body(pick, missing=missing)
             if self.name == "workers_ai":
-                body = {"result": body, "success": True, "errors": [], "messages": []}
+                # The shape a live call returned (2026-10-03): the envelope's `result` is a
+                # run, and the answers sit one level further in.
+                run = {"state": "Completed", "result": body}
+                body = {"result": run, "success": True, "errors": [], "messages": []}
             self.transport.responses = [_Resp(200, body)]
         elif self.name == "scripted":
             from felix_ai.decide.scripted import register_scripted_decider
@@ -297,6 +300,16 @@ async def test_a_cloudflare_failure_envelope_is_an_error_not_an_empty_answer(arm
     assert arm.transport is not None
     arm.transport.responses = [_Resp(200, {"result": {}, "success": False, "errors": [{"code": 7000}]})]
     with pytest.raises(ValueError):
+        await _decide_in_request(arm.build(), arm.settings)
+
+
+@pytest.mark.parametrize("arm", ["workers_ai"], indirect=True)
+@pytest.mark.asyncio
+async def test_an_unfinished_run_names_its_state(arm: _Arm) -> None:
+    assert arm.transport is not None
+    run = {"state": "Running", "result": {}}
+    arm.transport.responses = [_Resp(200, {"result": run, "success": True, "errors": [], "messages": []})]
+    with pytest.raises(ValueError, match="state='Running'"):
         await _decide_in_request(arm.build(), arm.settings)
 
 
