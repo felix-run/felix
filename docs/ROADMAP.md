@@ -254,8 +254,7 @@ First, because everything else governs it.
         images are quarantined (fail closed); 4 per call, 16 per run; a caller's images are kept on
         user turns only. Open from its review: each tool image is transcribed twice -- by bytes on
         the `tool_image` surface, then by `ref:` on the next turn's replay -- and seeding the
-        transcript cache under the stored ref would halve that. And `/chat` parses an OpenAI-shaped
-        `tool_calls[].function.arguments` (a JSON string) with `dict()`, which is a 500.
+        transcript cache under the stored ref would halve that.
       - Landed: **image tools** (`spec.image_tools`, `image` extra). The model names an image as
         `latest`, `#n` or a stored reference, since it sees pixels and not file ids; results are
         stored and chain.

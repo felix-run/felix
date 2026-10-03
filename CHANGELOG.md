@@ -501,6 +501,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`/chat` answered OpenAI-shaped tool-call history with a 500.** A tool call's
+  `function.arguments` is a JSON string in OpenAI's shape, and history parsing called `dict()`
+  on it. Both shapes now parse: Felix's `{"name", "args"}` and OpenAI's
+  `{"function": {"name", "arguments"}}`. Arguments that are not a JSON object are a 422 naming
+  the call (`messages: tool_calls[1]: arguments are not valid JSON`), on `/chat` and
+  `/chat/stream`, before any model is called.
+
 - **A Felix-to-Felix A2A peer call answered with a Python dict repr.** The peer client read the
   answer only from `status.message`, and Felix's own A2A server puts it in `artifacts`. The client
   now reads `artifacts`, falling back to the status message, and never says the answer twice.

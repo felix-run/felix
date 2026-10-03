@@ -11,6 +11,7 @@ the harness types satisfy structurally, so nothing on either side had to change 
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
@@ -99,6 +100,40 @@ class ToolCall:
     args: dict[str, Any]
 
 
+class MessageFormatError(ValueError):
+    """A message a caller sent that cannot be read, with a reason meant for that caller."""
+
+
+def _tool_call_from(tc: dict[str, Any], index: int) -> ToolCall:
+    """One tool call from history, in Felix's shape (`name`, `args`) or OpenAI's (`function`).
+
+    OpenAI sends `function.arguments` as a JSON *string*; this read it with `dict()`, which
+    raised on any string and turned standard OpenAI history into a 500. The arguments must be
+    a JSON object either way; anything else is the caller's mistake, said as one.
+    """
+    found = tc.get("function")
+    function: dict[str, Any] = found if isinstance(found, dict) else {}
+    raw = tc.get("args")
+    if raw is None:
+        raw = tc.get("arguments")
+    if raw is None:
+        raw = function.get("arguments")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw) if raw.strip() else {}
+        except json.JSONDecodeError as exc:
+            raise MessageFormatError(f"tool_calls[{index}]: arguments are not valid JSON") from exc
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise MessageFormatError(f"tool_calls[{index}]: arguments must be a JSON object")
+    return ToolCall(
+        id=str(tc.get("id") or ""),
+        name=str(tc.get("name") or function.get("name") or ""),
+        args=raw,
+    )
+
+
 @dataclass(slots=True)
 class ChatMessage:
     role: Role
@@ -126,16 +161,8 @@ class ChatMessage:
         tool_calls: list[ToolCall] | None = None
         if tool_calls_raw:
             tool_calls = [
-                ToolCall(
-                    id=str(tc.get("id") or ""),
-                    name=str(tc.get("name") or tc.get("function", {}).get("name") or ""),
-                    args=dict(
-                        tc.get("args") or tc.get("arguments") or tc.get("function", {}).get("arguments") or {}
-                    ),
-                )
-                if isinstance(tc, dict)
-                else tc
-                for tc in tool_calls_raw
+                _tool_call_from(tc, index) if isinstance(tc, dict) else tc
+                for index, tc in enumerate(tool_calls_raw)
             ]
 
         content_raw = data.get("content")
@@ -480,6 +507,7 @@ __all__ = [
     "ChatMessage",
     "ContentBlock",
     "ImageAttachment",
+    "MessageFormatError",
     "ModelChatOptions",
     "ModelChatResult",
     "ModelClient",
