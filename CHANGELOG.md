@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`GET /auth/methods` says how to get in, without spending anything to find out.** It answers
+  `{"github_device": bool, "bearer_required": bool}` to any caller, credential or not, in every
+  auth mode — an exact public path beside the probes, but still counted by the global rate
+  limit. Until now the only way a browser could learn whether GitHub login was on was to
+  `POST /auth/github/device`, which starts a real flow and spends from the hourly start budget.
+  `bearer_required` is `auth_mode != none`: a proxy that accepts a browser's own bearer in place
+  of its shared key should do so only while the harness actually verifies one, since under
+  `none` any bearer would pass.
+- **`POST /auth/github/token` names who logged in.** The response carries `github_login`, the
+  GitHub user the token was minted for (already in the `github_login` audit row), so a client
+  can show it without decoding the token. `POST /auth/github/actions` sends it empty: a workflow
+  is not a person.
 - **Images in tool results.** A tool can return images for the model to see, through
   `ToolOutputDict.attachments`, rather than as base64 text.
   - **How each wire sends them:**

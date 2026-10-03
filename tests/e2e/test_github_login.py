@@ -78,6 +78,8 @@ async def test_a_github_member_logs_in_and_the_token_opens_their_tenant(
         assert granted.status_code == 200, granted.text
         out = granted.json()
         assert (out["token_type"], out["tenant"], out["scopes"]) == ("Bearer", "acme", ["jobs:read"])
+        # Who logged in, so a client can say so without decoding the token.
+        assert out["github_login"] == "octo"
 
         bearer = {"Authorization": f"Bearer {out['access_token']}"}
         assert (await app.client.get("/jobs", headers=bearer)).status_code == 200
@@ -281,3 +283,45 @@ async def test_only_the_two_login_paths_are_public(boot: Any, fake_github: FakeG
         assert (await app.client.get("/auth/github/other")).status_code == 401
         assert (await app.client.post("/auth/github/device/")).status_code == 401
         assert (await app.client.get("/auth/githubx/device")).status_code == 401
+
+
+_API_KEY_MODE = {
+    "FELIX_AUTH_MODE": "api_key",
+    "FELIX_AUTH_API_KEYS": json.dumps({"k-e2e": {"tenant_id": "acme", "scopes": ["admin"]}}),
+}
+_LOGIN_OFF = {"FELIX_GITHUB_CLIENT_ID": "", "FELIX_GITHUB_ORG_TENANTS": ""}
+
+
+# Login on is `jwt` only: under `none` or `api_key` no verifier would check the minted token,
+# so `validate_login_config` refuses to start, and those combinations never answer anything.
+@pytest.mark.parametrize(
+    ("mode", "login_on", "bearer_required"),
+    [
+        pytest.param({"FELIX_AUTH_MODE": "none"}, False, False, id="none-login-off"),
+        pytest.param(_API_KEY_MODE, False, True, id="api_key-login-off"),
+        pytest.param({}, False, True, id="jwt-login-off"),
+        pytest.param({}, True, True, id="jwt-login-on"),
+    ],
+)
+async def test_auth_methods_answers_an_anonymous_caller_in_every_mode(
+    boot: Any, fake_github: FakeGitHub, mode: dict[str, str], login_on: bool, bearer_required: bool
+) -> None:
+    """How a client with no credential learns how to get one, so it cannot itself need one."""
+    async with boot([], env=_env(**mode, **({} if login_on else _LOGIN_OFF))) as app:
+        methods = await app.client.get("/auth/methods")
+        if bearer_required:
+            # The rest of the surface still wants a credential: only this path was opened.
+            assert (await app.client.get("/jobs")).status_code == 401
+    assert methods.status_code == 200, methods.text
+    # Exactly these two keys: a proxy decides whether to honour a browser's bearer on the second.
+    assert methods.json() == {"github_device": login_on, "bearer_required": bearer_required}
+    # Asking never starts a flow, so it spends nothing at GitHub or from the hourly start budget.
+    assert fake_github.issued == 0
+
+
+async def test_auth_methods_is_an_exact_public_path(boot: Any) -> None:
+    """The `/auth` prefix it is mounted under grants nothing else."""
+    async with boot([], env=_env(**_LOGIN_OFF)) as app:
+        assert (await app.client.get("/auth/methods")).status_code == 200
+        assert (await app.client.get("/auth/methods/")).status_code == 401
+        assert (await app.client.get("/auth/other")).status_code == 401
