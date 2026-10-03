@@ -1,0 +1,89 @@
+name: Live eval
+
+# The agents, scored against a real model. Every other eval in CI scores a canned answer
+# (`--mock`): that proves the scorer works and says nothing about the agent. This runs
+# `felix eval` in-process on the checked-out code, so a prompt, manifest or model change that
+# makes an agent worse fails here before it is deployed.
+#
+# Never on a pull request: it spends money and a model's answer is not a deterministic gate.
+# `quick` (fixtures/eval/live.json) runs nightly and costs cents. `contributor`
+# (fixtures/eval/contributor.json) sends a large system prompt every turn, so it runs weekly.
+# Both run on demand from the Actions tab. Each run's summary reports what it actually cost.
+#
+# Requires repo secret FELIX_ANTHROPIC_API_KEY (the default model routes are Anthropic).
+
+on:
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: "Which suite to run"
+        type: choice
+        options: [both, quick, contributor]
+        default: both
+  schedule:
+    - cron: "43 4 * * *" # quick, nightly
+    - cron: "13 5 * * 1" # contributor, Mondays
+
+concurrency:
+  group: eval-live
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  quick:
+    if: >-
+      (github.event_name == 'schedule' && github.event.schedule == '43 4 * * *') ||
+      (github.event_name == 'workflow_dispatch' && inputs.suite != 'contributor')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      FELIX_ANTHROPIC_API_KEY: ${{ secrets.FELIX_ANTHROPIC_API_KEY }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Set up Python
+        run: uv python install 3.14
+      - name: Install dependencies
+        run: uv sync --locked --dev
+      - name: Score quick against a real model
+        run: ./scripts/eval-live.sh fixtures/eval/live.json quick
+      - name: Keep the run record
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: eval-live-quick
+          path: eval-live-*.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+  contributor:
+    if: >-
+      (github.event_name == 'schedule' && github.event.schedule == '13 5 * * 1') ||
+      (github.event_name == 'workflow_dispatch' && inputs.suite != 'quick')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      FELIX_ANTHROPIC_API_KEY: ${{ secrets.FELIX_ANTHROPIC_API_KEY }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Set up Python
+        run: uv python install 3.14
+      - name: Install dependencies
+        run: uv sync --locked --dev
+      # --strict-judge: one item is scored by an LLM judge, and a judge that could not run
+      # falls back to the heuristic and passes quietly. Here that is a failure.
+      - name: Score contributor against a real model, on this checkout
+        run: ./scripts/eval-live.sh fixtures/eval/contributor.json contributor --strict-judge
+      - name: Keep the run record
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: eval-live-contributor
+          path: eval-live-*.json
+          if-no-files-found: ignore
+          retention-days: 30

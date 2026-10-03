@@ -693,11 +693,18 @@ comment explaining exactly that. It is conditional, not inert.
       it as a compatibility shim.
       (2026-09-29: no Temporal code change since #183; the fibers path meanwhile gained #262,
       #336, #339 and a per-worker poll loop in #363 that starts a run within a second.)
-- [ ] **Live-model eval (optional CI)** — the gate is now a pair of mock fixtures: `smoke.json`
+- [x] **Live-model eval (optional CI)** — the gate is now a pair of mock fixtures: `smoke.json`
       passes by construction and `negative.json` must fail, checked by
       `scripts/eval-counter-smoke.sh` in both CI and `make check-ci`. That proves the scorer can
       say no, which it could not before, but both halves still score a canned answer — nothing
       here scores the agent. Optional nightly against `api.felix.run` that does not block PRs.
+      Done 2026-10-02, at HEAD rather than against `api.felix.run` (decided: it catches a
+      regression before deploy, and `contributor` needs the checkout as its workspace):
+      `.github/workflows/eval-live.yml` runs `quick` on the new `fixtures/eval/live.json` nightly
+      and `contributor.json` weekly with `--strict-judge`, via `scripts/eval-live.sh`, which
+      writes a per-item table with cost to the job summary. Needs repo secret
+      `FELIX_ANTHROPIC_API_KEY`. Follow-up worth having: feed its failures to `triage` the way
+      `smoke.yml` failures already are (`scripts/self-scoreboard.py`, `manifests/triage.yaml`).
 - [x] **Validate eval dataset items.** Done: `felix/eval/validation.py`, called by
       `PUT /eval/datasets/{name}` and by `felix eval --fixture`. An item with no `user_input`
       is refused and the near-miss key it used is named back (`input` — the spelling the

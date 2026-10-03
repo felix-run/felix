@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Live-model eval in CI.** Every other eval in CI scores a canned answer, so nothing scored the
+  agents themselves. `.github/workflows/eval-live.yml` runs `felix eval` in-process on the checked-out
+  code against a real model, never on a pull request:
+  - `quick` on the new `fixtures/eval/live.json` nightly: an exact reply, a calculator call with a
+    checkable product, a no-tool answer, and a skill activation;
+  - `contributor` on `fixtures/eval/contributor.json` weekly with `--strict-judge`, reading this
+    checkout as its workspace.
+
+  `scripts/eval-live.sh` runs either one locally, refuses to run without model credentials, and
+  writes a per-item table with the run's real cost to the job summary. Needs repo secret
+  `FELIX_ANTHROPIC_API_KEY`.
+
 - **`felix ingest-docs`: sync a docs site into the document corpus.** It turns a directory of
   Markdown/MDX pages into one document per page, each sourced at the page's public URL
   (`--site-url`). A `search_docs` hit can then be read in full with `fetch_docs`, which is how
