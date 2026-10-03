@@ -1,10 +1,8 @@
-"""`felix.skills.review` and `felix.skills.security` — ported from Skillist's `skill-format`.
+"""`felix.skills.review` and `felix.skills.security`.
 
-The TypeScript tests for these two are thin (a template scores above zero; an AWS key
-fails the scan), so the cases here pin what a port could silently lose: every check's id
-and weight, the half-up rounding, every rule in every scan family, and the
-status/score arithmetic. The fixture scores are the TypeScript's own output over the same
-bundles.
+The cases here pin what a refactor could silently lose: every check's id and weight, the
+half-up rounding, every rule in every scan family, and the status/score arithmetic. The
+fixture scores are fixed expectations over the bundles in `fixtures/skills/`.
 """
 
 from __future__ import annotations

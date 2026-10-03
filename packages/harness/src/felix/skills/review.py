@@ -2,7 +2,7 @@
 
 The score is the weight of the checks that pass over the weight of all of them. An
 invalid bundle scores 0 and is not checked further. A rubric can reweight or disable any
-check by id. Ported from Skillist's `skill-format` package (MIT); see NOTICE.
+check by id.
 """
 
 from __future__ import annotations

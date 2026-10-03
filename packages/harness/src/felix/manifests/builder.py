@@ -1381,6 +1381,25 @@ def _warn_policies_cannot_be_satisfied(m: Manifest, settings: Any) -> None:
     record_counter("felix_policy_unsatisfiable", {"manifest_id": m.metadata.name})
 
 
+def _bind_skill_authoring(resolved: list[Tool], m: Manifest, deps: BuildDeps, tenant_id: str) -> None:
+    """`create_skill` / `update_skill`, bound before the governance block like every tool, so
+    an approvals rule on them holds the save until a person has read the SKILL.md."""
+    from felix.skills.tools import make_skill_authoring_tools
+
+    spec = m.spec.skill_authoring
+    _append_unique_tools(
+        resolved,
+        make_skill_authoring_tools(
+            deps.settings,
+            tenant_id=tenant_id,
+            manifest_id=m.metadata.name,
+            mode=spec.mode,
+            max_pending=spec.max_pending,
+            object_store=deps.object_store,
+        ),
+    )
+
+
 async def build_agent(
     manifest: Manifest | str | dict[str, Any],
     tools: ToolProvider | None = None,
@@ -1693,13 +1712,15 @@ async def build_agent(
             skill_catalog_xml,
         )
 
-        wants_skills = bool(m.spec.skills) or any(t.name in SKILL_TOOL_NAMES for t in resolved)
+        authoring = m.spec.skill_authoring.enabled and deps.settings is not None
+        wants_skills = bool(m.spec.skills) or authoring or any(t.name in SKILL_TOOL_NAMES for t in resolved)
         if wants_skills:
             catalog = await load_manifest_skills(
                 list(m.spec.skills),
                 tenant_id=tenant_id,
                 object_store=deps.object_store,
                 declared_only=m.spec.skills_declared_only,
+                settings=deps.settings,
             )
             skill_tools = {
                 t.name: t
@@ -1708,15 +1729,20 @@ async def build_agent(
                     activation_store=get_skill_activation_store(deps.settings),
                     tenant_id=tenant_id,
                     manifest_id=m.metadata.name,
+                    settings=deps.settings,
+                    object_store=deps.object_store,
                 )
             }
             resolved = [skill_tools.get(t.name, t) for t in resolved]
-            # Ensure skill tools exist when skills are declared but not listed.
-            if m.spec.skills:
-                have = {t.name for t in resolved}
-                for name, tool in skill_tools.items():
-                    if name not in have:
-                        resolved.append(tool)
+            # Ensure skill tools exist when skills are declared (or authored) but not listed;
+            # `read_skill_file` rides along with any of them, since `activate_skill` names files
+            # only it can read.
+            have = {t.name for t in resolved}
+            for name, tool in skill_tools.items():
+                if name not in have and (m.spec.skills or authoring or name == "read_skill_file"):
+                    resolved.append(tool)
+            if authoring:
+                _bind_skill_authoring(resolved, m, deps, tenant_id)
             if m.spec.skill_suggestion.enabled and decider is not None and catalog.list_public():
                 from felix.skills.suggest import SkillSuggester
 

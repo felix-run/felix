@@ -3,6 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Literal
+
+#: Where a catalog entry came from: the host's directories (the bundled `skills/` and
+#: `FELIX_SKILLS_DIR`), an object-store key an operator uploaded, or the tenant's skill library.
+SkillSource = Literal["bundled", "store", "library"]
 
 
 @dataclass(slots=True)
@@ -16,6 +21,7 @@ class Skill:
     version: str | None = None
     metadata: dict[str, str] = field(default_factory=dict)
     disable_model_invocation: bool = False
+    source: SkillSource = "bundled"
 
 
 @dataclass(slots=True)
@@ -34,4 +40,4 @@ class SkillCatalog:
         return sorted(self.skills)
 
 
-__all__ = ["Skill", "SkillCatalog"]
+__all__ = ["Skill", "SkillCatalog", "SkillSource"]

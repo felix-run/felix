@@ -1898,6 +1898,35 @@
       "title": "ShellToolRef",
       "type": "object"
     },
+    "SkillAuthoringSpec": {
+      "additionalProperties": false,
+      "description": "Let the agent write skills: binds `create_skill` and `update_skill`.\n\nDrafts by default. `activate_skill` hands a skill body to the model as instructions, so a\nskill an agent wrote from a turn that carried injected tool output would steer every later\nsession in the tenant. A draft enters no catalog until an operator publishes it. `publish`\npublishes at once, through the same gate an operator's publish runs (a failing security\nscan always blocks); a blocked publish leaves the draft for review.",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "mode": {
+          "default": "draft",
+          "enum": [
+            "draft",
+            "publish"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "max_pending": {
+          "default": 20,
+          "maximum": 200,
+          "minimum": 1,
+          "title": "Max Pending",
+          "type": "integer"
+        }
+      },
+      "title": "SkillAuthoringSpec",
+      "type": "object"
+    },
     "SkillRef": {
       "additionalProperties": false,
       "properties": {
@@ -2163,6 +2192,9 @@
         },
         "skill_suggestion": {
           "$ref": "#/$defs/SkillSuggestionSpec"
+        },
+        "skill_authoring": {
+          "$ref": "#/$defs/SkillAuthoringSpec"
         },
         "artifacts": {
           "$ref": "#/$defs/ArtifactsSpec"

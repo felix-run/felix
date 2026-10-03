@@ -370,6 +370,12 @@ class Settings(BaseSettings):
     # Without this the only paths were derived from __file__ (a repo checkout), so a
     # pip-installed Felix had no bundled skills and no way to point at its own.
     skills_dir: str = ""
+    # The publish gate for the tenant skill library (`felix/skills/library.py`). A version whose
+    # security scan fails never publishes, whatever these say; these add to that floor. The
+    # quality score is the 0-100 heuristic review, so 0 (the default) turns the bar off.
+    skill_publish_min_quality: int = Field(default=0, ge=0, le=100)
+    # Refuse a version whose scan found only medium findings (an `advisory`), not just a `fail`.
+    skill_publish_block_on_advisory: bool = False
     memory_embedding_model: str = "bge-base-en-v1.5"
     memory_recall_limit: int = 8
 
