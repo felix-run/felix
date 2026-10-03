@@ -8,7 +8,13 @@ from felix import __version__
 from felix.config import Settings
 from felix.context import AuthContext, RequestContext, async_run_with_context
 from felix.tools.provider import ToolProvider
-from felix.tools.types import ToolInvocationCtx, is_wrapper_deny, tool_output_content
+from felix.tools.types import (
+    ToolInvocationCtx,
+    ToolOutput,
+    is_wrapper_deny,
+    tool_output_content,
+    tool_output_images,
+)
 
 
 def _tool_descriptor(tool: Any) -> dict[str, Any]:
@@ -49,6 +55,25 @@ async def _compiled_tools(
     )
     agent_tools = list(getattr(agent, "tools", None) or [])
     return agent, agent_tools, resolved.manifest
+
+
+async def _image_blocks(out: ToolOutput) -> list[dict[str, Any]]:
+    """A tool's images as MCP `image` content: base64 bytes, never a reference or a URL.
+
+    `tools/call` runs without the runner, so `outgoing_tool_images` applies what the runner
+    would: the per-call cap, the upload rules on inline bytes, and only stored images this
+    request made -- an MCP client cannot resolve a reference, and one a tool merely names may be
+    any upload in the tenant. The images are the governed output's: the screening wrappers ran
+    in `tool.executor`.
+    """
+    import base64
+
+    from felix.tools.tool_images import outgoing_tool_images
+
+    return [
+        {"type": "image", "data": base64.b64encode(raw).decode("ascii"), "mimeType": media_type}
+        for media_type, raw in await outgoing_tool_images(tool_output_images(out))
+    ]
 
 
 async def handle_rpc(
@@ -127,13 +152,15 @@ async def handle_rpc(
                     }
                 try:
                     out = await tool.executor.execute(args, ToolInvocationCtx(manifest_id=manifest_name))
-                    text = tool_output_content(out)
                     denied = is_wrapper_deny(out)
                     return {
                         "jsonrpc": "2.0",
                         "id": rpc_id,
                         "result": {
-                            "content": [{"type": "text", "text": text}],
+                            "content": [
+                                {"type": "text", "text": tool_output_content(out)},
+                                *await _image_blocks(out),
+                            ],
                             "isError": denied,
                         },
                     }

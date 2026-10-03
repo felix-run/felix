@@ -239,17 +239,12 @@ async def _read_url(url: str) -> bytes:
             return base64.b64decode(inline[1], validate=True)
         except binascii.Error as exc:
             raise ImageToolError("that image is not valid base64") from exc
-    from felix.attachments import read_attachment
-    from felix.storage import get_object_store
+    from felix.tools.tool_images import stored_image
 
-    request = current_tenant()
-    if request is None:
-        raise ImageToolError("stored images can only be read inside a request")
-    settings, tenant = request
-    raw = await read_attachment(get_object_store(settings), tenant_id=tenant, file_id=file_id)
-    if raw is None:
+    stored = await stored_image(file_id)
+    if stored is None:
         raise ImageToolError(f"{url} can no longer be read")
-    return raw
+    return stored[0]
 
 
 def _read_workspace(user_path: str) -> bytes:

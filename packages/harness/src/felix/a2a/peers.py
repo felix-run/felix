@@ -12,7 +12,7 @@ from felix.manifests.schema import A2APeerRef
 from felix.security.egress import safe_async_client
 from felix.security.ssrf import assert_safe_outbound_url
 from felix.timeouts import request_timeout
-from felix.tools.types import Tool, ToolInvocationCtx, define_tool
+from felix.tools.types import Tool, ToolInvocationCtx, ToolOutput, ToolOutputDict, define_tool
 
 logger = logging.getLogger("felix.a2a.peers")
 
@@ -46,23 +46,49 @@ def _auth_headers(auth: str) -> dict[str, str]:
     return headers
 
 
-def _extract_peer_text(body: dict[str, Any]) -> str:
+def _result_parts(result: dict[str, Any]) -> list[Any]:
+    """The parts of a task result's answer: its artifacts, or else its status message.
+
+    A peer answers in either place. A Felix peer puts its answer in `artifacts` and no status
+    message at all, so reading only the status turned a Felix-to-Felix call into the repr of
+    the whole task. Not both: a peer that also echoes the answer in its status would say it
+    twice.
+    """
+    parts: list[Any] = []
+    for artifact in result.get("artifacts") or ():
+        if isinstance(artifact, dict) and isinstance(artifact.get("parts"), list):
+            parts.extend(artifact["parts"])
+    if parts:
+        return parts
+    status = result.get("status") if isinstance(result.get("status"), dict) else {}
+    message = status.get("message") if isinstance(status, dict) else None
+    if isinstance(message, dict) and isinstance(message.get("parts"), list):
+        return list(message["parts"])
+    return []
+
+
+def _peer_output(body: dict[str, Any], *, tool_name: str = "peer") -> ToolOutput:
+    """The peer's answer: its text, and any images it returned for the model to see."""
+    from felix.a2a.parts import returned_images, text_of
+
     if body.get("error"):
         err = body["error"]
         return f"[peer_error] {err.get('message') or err}"
     result = body.get("result") if isinstance(body.get("result"), dict) else body
     if not isinstance(result, dict):
         return str(body)
-    # A2A task status message
-    status = result.get("status") if isinstance(result.get("status"), dict) else {}
-    message = status.get("message") if isinstance(status, dict) else None
-    if isinstance(message, dict):
-        parts = message.get("parts")
-        if isinstance(parts, list):
-            texts = [str(p.get("text") or p.get("content") or "") for p in parts if isinstance(p, dict)]
-            joined = "\n".join(t for t in texts if t)
-            if joined:
-                return joined
+    parts = _result_parts(result)
+    images, notes = returned_images(parts, tool_name=tool_name)
+    text = "\n".join(t for t in (text_of(parts), *notes) if t)
+    if images:
+        return ToolOutputDict(content=text, attachments=images)
+    if text:
+        return text
+    return _legacy_text(result)
+
+
+def _legacy_text(result: dict[str, Any]) -> str:
+    """The non-A2A shapes some peers answer in."""
     if result.get("final"):
         final = result["final"]
         if isinstance(final, dict):
@@ -79,7 +105,7 @@ def make_peer_tool(ref: A2APeerRef, *, allow_http: bool = False) -> Tool:
     # Accept bare host or /a2a path.
     endpoint = url if url.endswith("/a2a") else f"{url}/a2a"
 
-    async def handler(args: PeerArgs, _ctx: ToolInvocationCtx | None = None) -> str:
+    async def handler(args: PeerArgs, _ctx: ToolInvocationCtx | None = None) -> ToolOutput:
         payload = {
             "jsonrpc": "2.0",
             "id": 1,
@@ -99,7 +125,7 @@ def make_peer_tool(ref: A2APeerRef, *, allow_http: bool = False) -> Tool:
             body = resp.json()
         if not isinstance(body, dict):
             return str(body)
-        return _extract_peer_text(body)
+        return _peer_output(body, tool_name=f"peer__{ref.name}")
 
     return define_tool(
         name=f"peer__{ref.name}",

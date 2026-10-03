@@ -12,6 +12,7 @@ there fails open on `limits.max_cost_usd`.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import re
@@ -132,6 +133,12 @@ def _repair_json(text: str) -> str:
             continue
         out.append(ch)
     return "".join(out)
+
+
+def data_url(media_type: str, payload: str | bytes) -> str:
+    """A base64 `data:` URL: `split_data_url`'s inverse. `payload` is raw bytes or base64 text."""
+    text = base64.b64encode(payload).decode("ascii") if isinstance(payload, bytes) else payload
+    return f"data:{media_type};base64,{text}"
 
 
 def split_data_url(url: str) -> tuple[str, str] | None:
@@ -504,6 +511,7 @@ class HttpModelClient(ABC):
 __all__ = [
     "HttpModelClient",
     "canonical_inline_url",
+    "data_url",
     "inline_parts",
     "iter_sse_json",
     "map_stop",
