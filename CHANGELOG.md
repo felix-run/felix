@@ -26,6 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its route. That cost could be zero for an unpriced primary, or many times too much for a cheap
   one. The result now carries the route that answered, on `chat` and on `stream_turn`, which is
   how the vision client already reported its own.
+- **`FELIX_MODEL_PROVIDER_OPTIONS` now reaches the Compose stack.** It was missing from
+  `x-felix-env`, so a Compose deployment dropped it silently. A `workers_ai` or `typesafe`
+  route then failed to compile with "needs api_key" even though `.env` set the key. Every
+  provider with no settings field of its own (Workers AI, TypeSafe, Groq and the other hosted
+  providers) could not be configured under Compose at all.
 
 - **A thread with a vision route was compacted for the wrong model.** The compaction window
   was sized from the primary route alone. Once an image is in a thread, every call goes to the
