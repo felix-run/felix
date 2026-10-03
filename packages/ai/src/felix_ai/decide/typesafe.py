@@ -17,6 +17,7 @@ from typing import Any
 import httpx
 
 from felix_ai.decide.types import DecisionResult, Question, answers_from_wire, question_to_wire
+from felix_ai.providers.base import ProviderConfigError
 from felix_ai.types import TokenUsage
 from felix_ai.wire.transport import DEFAULT_CONNECT_TIMEOUT_S, ModelGatewayError, post_with_retry
 
@@ -78,7 +79,7 @@ class JevDecider:
     ) -> JevDecider:
         template = (base_url or WORKERS_AI_BASE_URL).rstrip("/")
         if "{account_id}" in template and not account_id:
-            raise ValueError(
+            raise ProviderConfigError(
                 "decision provider 'workers_ai' needs account_id — set it in "
                 'FELIX_MODEL_PROVIDER_OPTIONS, e.g. {"workers_ai": {"account_id": "..."}}'
             )

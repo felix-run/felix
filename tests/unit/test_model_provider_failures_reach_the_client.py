@@ -199,3 +199,63 @@ async def test_an_unconfigured_provider_answers_503_naming_the_option() -> None:
     # The same fault is the same status on the OpenAI-compatible surface.
     assert v1.status_code == 503, v1.text
     assert "needs account_id" in v1.json()["error"]["message"]
+
+
+# Production, 0.6.0: `contributor` and `triage` name `secret:GITHUB_MCP_TOKEN`, which the
+# deployment's secrets backend did not hold; `decider-support` routes to `typesafe` with no
+# `api_key`. All three reached the chat UI as `internal error (request …)` — the stream
+# compiles inside its generator, past the 503 mapping `/chat` applies before it opens.
+
+
+def test_a_missing_secret_is_relayed_by_name() -> None:
+    from felix.secrets import SecretNotFoundError
+    from felix_api.errors import client_safe_message
+
+    assert client_safe_message(SecretNotFoundError("secret not found: GITHUB_MCP_TOKEN")) == (
+        "secret not found: GITHUB_MCP_TOKEN"
+    )
+
+
+async def test_a_missing_manifest_secret_names_it_on_every_surface(monkeypatch: pytest.MonkeyPatch) -> None:
+    from felix_api.app import create_app
+
+    monkeypatch.delenv("GITHUB_MCP_TOKEN", raising=False)
+    app = create_app(settings=_settings(secrets_backend="env"), plugins=[])
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", timeout=30) as client:
+        plain = await client.post(
+            "/chat", json={"manifest": "triage", "messages": [{"role": "user", "content": "hi"}]}
+        )
+        streamed = await client.post(
+            "/chat/stream", json={"manifest": "triage", "messages": [{"role": "user", "content": "hi"}]}
+        )
+        v1 = await client.post(
+            "/v1/chat/completions", json={"model": "triage", "messages": [{"role": "user", "content": "hi"}]}
+        )
+    assert plain.status_code == 503, plain.text
+    assert plain.json()["detail"] == "secret not found: GITHUB_MCP_TOKEN"
+    assert "secret not found: GITHUB_MCP_TOKEN" in streamed.text
+    assert "internal error" not in streamed.text
+    assert v1.status_code == 503, v1.text
+    assert "secret not found: GITHUB_MCP_TOKEN" in v1.text
+
+
+def test_an_unconfigured_decision_provider_is_a_provider_config_error() -> None:
+    from felix_ai.decide import get_decision_provider
+
+    factory = get_decision_provider("typesafe")
+    assert factory is not None
+    with pytest.raises(ProviderConfigError, match="needs api_key"):
+        factory("jev", "jev-1", {}, None)
+
+
+async def test_the_stream_names_the_unconfigured_decider() -> None:
+    from felix_api.app import create_app
+
+    app = create_app(settings=_settings(), plugins=[])
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", timeout=30) as client:
+        streamed = await client.post(
+            "/chat/stream",
+            json={"manifest": "decider-support", "messages": [{"role": "user", "content": "hi"}]},
+        )
+    assert "decision provider 'typesafe' needs api_key" in streamed.text
+    assert "internal error" not in streamed.text

@@ -22,6 +22,7 @@ from felix.manifests.pin import ManifestDriftError
 from felix.patterns.model import ModelGatewayError
 from felix.patterns.types import ChatMessage, InvokeInput
 from felix.runtime import build_tenant_agent, prepare_tenant_invoke, resolve_tenant_manifest
+from felix.secrets import SecretNotFoundError
 from felix.thread_ids import effective_thread_id
 from felix_ai.output_schema import InvalidOutputSchema, validate_output_schema
 from felix_ai.providers.base import ProviderConfigError
@@ -406,6 +407,9 @@ async def chat_completions(body: ChatCompletionsRequest, request: Request) -> An
         except ProviderConfigError as exc:
             # The same 503 `/chat` answers: the deployment has not configured the provider.
             return _error_json(client_safe_message(exc), "model_gateway_error", "provider_unconfigured", 503)
+        except SecretNotFoundError as exc:
+            # A manifest's `secret:` ref the deployment has not provisioned: the same 503.
+            return _error_json(client_safe_message(exc), "server_error", "secret_not_found", 503)
 
     content = result.final.content if result.final else ""
     return completion.response(content, finish_reason_for(result.stop_reason), _usage_payload(req_ctx))
