@@ -330,12 +330,16 @@ First, because everything else governs it.
       1. [x] (#433) `felix/skills/{format,binary,plugin,semver,review,security}.py` and the
          catalog loader reading frontmatter as YAML (line-reader fallback for anything YAML
          refuses), with Skillist's tests and `examples/skills/` as `fixtures/skills/`.
-      2. [~] Data model, migration, stores with conformance, `felix/skills/library.py`
+      2. [x] (#434, #436) Data model, migration, stores with conformance, `felix/skills/library.py`
          (draft / publish / rollback, publish policy), `create_skill` / `update_skill` tools,
          `spec.skill_authoring`. The publish policy is two settings
          (`FELIX_SKILL_PUBLISH_MIN_QUALITY`, `FELIX_SKILL_PUBLISH_BLOCK_ON_ADVISORY`), not yet a
          per-tenant row; `submit_skill_feedback` and the feedback / eval tables come with 4.
-      3. [ ] `/skill-library` routes, `skills:write` scope, wire contract, e2e.
+      3. [~] `/skill-library` routes, `skills:write` scope, wire contract, e2e; with the
+         review's carry-overs: an explicit pin to an operator upload wins over a library skill,
+         and `update_skill` takes a required `parent_version` its approval binds, with the preview naming
+         the parent and its inherited files by digest. Open:
+         the 1 MiB core body limit caps an uploaded bundle well under the library's 8 MiB.
       4. [ ] Worker tasks: improvement from feedback, baseline-vs-with-skill evals.
       5. [ ] felix-web: client, vendored skill-format, library / editor / diff / review queue /
          inline chat card.

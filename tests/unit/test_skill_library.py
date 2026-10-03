@@ -359,13 +359,13 @@ async def test_review_and_scan_run_off_the_event_loop(
     import threading
 
     seen: list[bool] = []
-    real = library._assess
+    real = library.assess
 
-    def spy(files: Any, name: str) -> dict[str, Any]:
+    def spy(files: Any, name: str) -> Any:
         seen.append(threading.current_thread() is threading.main_thread())
         return real(files, name)
 
-    monkeypatch.setattr(library, "_assess", spy)
+    monkeypatch.setattr(library, "assess", spy)
     await _draft(settings, store)
     assert seen == [False]
 

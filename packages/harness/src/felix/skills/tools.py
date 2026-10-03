@@ -168,8 +168,27 @@ def make_skill_tools(
             },
         )
 
+    async def _newest(names: list[str]) -> dict[str, str]:
+        """Each library skill's newest version, which `update_skill` must name as its parent.
+
+        Newer than the live version when a draft is waiting. One query for every name; empty
+        when there is no library to ask, and a failed read only drops the field.
+        """
+        if settings is None or not names:
+            return {}
+        from felix.skills.library_store import get_skill_library_store
+
+        try:
+            summary = await get_skill_library_store(settings).summarize(tenant_id, names)
+        except Exception:
+            logger.warning("skill library summary failed", exc_info=True)
+            return {}
+        return {n: str(v["latest"]["version"]) for n, v in summary.items() if v.get("latest")}
+
     async def _list(_args: dict[str, Any] | None = None, _ctx: ToolInvocationCtx | None = None) -> str:
         active = await activation_store.get_active(tenant_id, manifest_id)
+        public = catalog.list_public()
+        newest = await _newest([s.name for s in public if s.source == "library"])
         payload = [
             {
                 "name": s.name,
@@ -177,8 +196,9 @@ def make_skill_tools(
                 "active": s.name in active,
                 "has_body": bool(s.body),
                 "source": s.source,
+                **({"newest_version": newest[s.name]} if s.name in newest else {}),
             }
-            for s in catalog.list_public()
+            for s in public
         ]
         # Also surface disable_model_invocation skills as inactive-only via list? skip per spec.
         return json.dumps(payload)
@@ -203,6 +223,11 @@ def make_skill_tools(
         if files:
             # Named, not inlined: the body says when to read one, and read_skill_file does.
             result["files"] = files
+        if skill.source == "library":
+            result["version"] = skill.version
+            newest = (await _newest([skill.name])).get(skill.name)
+            if newest:
+                result["newest_version"] = newest
         return json.dumps(result)
 
     async def _read_file(args: _ReadFileArgs, _ctx: ToolInvocationCtx | None = None) -> str:
