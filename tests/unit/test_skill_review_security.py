@@ -10,11 +10,11 @@ bundles.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator, Mapping
+import time
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
-from felix.skills import security
 from felix.skills.format import create_skill_template
 from felix.skills.review import (
     ReviewRubric,
@@ -24,12 +24,11 @@ from felix.skills.review import (
 )
 from felix.skills.security import (
     CREDENTIAL_RULES,
+    MAX_FILE_CHARS,
     OBFUSCATION_RULES,
     PROMPT_INJECTION_RULES,
     SCRIPT_RULES,
-    SecurityScanResult,
-    register_security_scorer,
-    run_security_scan,
+    SecurityIssue,
     scan_skill_security,
 )
 
@@ -120,6 +119,20 @@ def test_an_invalid_bundle_scores_zero_with_only_the_validity_check() -> None:
 def test_each_check_can_fail(check: str, files: dict[str, str]) -> None:
     assert _checks(_full_bundle())[check] is True
     assert _checks(files)[check] is False
+
+
+@pytest.mark.parametrize(("length", "passed"), [(19, False), (20, True), (500, True), (501, False)])
+def test_description_length_boundaries(length: int, passed: bool) -> None:
+    assert _checks({"SKILL.md": _skill_md(description="x" * length)})["description-length"] is passed
+
+
+@pytest.mark.parametrize(("length", "passed"), [(99, False), (100, True)])
+def test_body_length_boundary(length: int, passed: bool) -> None:
+    body = "# " + "x" * (length - 2)
+    assert (
+        _checks({"SKILL.md": f"---\nname: roll-dice\ndescription: d\n---\n\n{body}\n\n"})["body-length"]
+        is passed
+    )
 
 
 def test_metadata_alone_satisfies_license_metadata() -> None:
@@ -257,12 +270,19 @@ def test_local_urls_are_not_flagged() -> None:
 def test_declared_egress_is_a_low_non_blocking_signal() -> None:
     files = {
         "SKILL.md": "# ok\nnothing suspicious here",
-        "plugin.json": json.dumps({"name": "x", "network": {"allowedHosts": ["api.stripe.com"]}}),
+        "plugin.json": json.dumps(
+            {"name": "x", "network": {"allowedHosts": ["api.stripe.com", "*.example.com"]}}
+        ),
     }
     result = scan_skill_security(files)
-    (issue,) = result.issues
-    assert (issue.rule_id, issue.severity, issue.path) == ("network-egress-declared", "low", "plugin.json")
-    assert "api.stripe.com" in issue.message
+    assert result.issues == [
+        SecurityIssue(
+            "low",
+            "plugin.json",
+            "Declares outbound network access to: api.stripe.com, *.example.com",
+            "network-egress-declared",
+        )
+    ]
     assert (result.status, result.score) == ("pass", 97)
 
 
@@ -274,25 +294,53 @@ def test_the_score_subtracts_per_severity_and_floors_at_zero() -> None:
     assert scan_skill_security(files).score == 0
 
 
-@pytest.fixture
-def _no_scorer() -> Iterator[None]:
-    yield
-    register_security_scorer(None)
+# Each one just short of its rule's threshold, so a loosened pattern fires on it.
+_NEAR_MISSES: list[tuple[str, str, str]] = [
+    ("cred-aws", "SKILL.md", "AKIA" + "123456789012345"),  # 15 of 16
+    ("cred-stripe", "SKILL.md", "sk_" + "live_ and nothing after"),
+    ("cred-ghp", "SKILL.md", "ghp_" + "a" * 35),  # 35 of 36
+    ("cred-slack", "SKILL.md", "xox" + "c-1234 xoxb"),  # c is not a Slack prefix; no dash after b
+    ("cred-pem", "SKILL.md", "-----BEGIN " + "PUBLIC KEY-----"),
+    ("cred-openai", "SKILL.md", "sk-" + "a" * 19),  # 19 of 20
+    ("script-eval", "scripts/a.js", "evaluate(x); medieval(y)"),
+    ("script-child-process", "scripts/a.js", "a child process"),
+    ("script-exec", "scripts/a.py", "execute(x); subexec(y)"),
+    ("script-rm-rf", "scripts/a.sh", "rm -rf ./build"),
+    ("script-pipe-bash", "scripts/a.sh", "curl https://x.test | grep sh\ncurl " + "a" * 600 + " | sh"),
+    ("script-wget-sh", "scripts/a.sh", "wget https://x.test -O out.sh"),
+    ("script-base64-exec", "scripts/a.sh", "base64 -d < in.b64 > out\n| next line"),
+    ("pi-ignore", "SKILL.md", "ignore the previous instructions' typos"),
+    ("pi-disregard", "SKILL.md", "disregard the user's formatting"),
+    ("pi-roleplay", "SKILL.md", "you are now an expert reviewer"),
+    ("pi-exfil", "SKILL.md", "send the logs to the reviewer"),
+    ("obf-long-hex", "SKILL.md", "\\x41" * 20),  # 20 of 21
+    ("obf-fromcharcode", "SKILL.md", "String.fromCharCode(" + ", ".join(["65"] * 10) + ")"),  # 10 of 11
+    ("url-executable", "SKILL.md", "https://example.com/setup.exe.html"),
+    ("url-remote-pipe-risk", "SKILL.md", "https://raw.githubusercontent.com/o/r/x with no pipe"),
+    ("size-large", "references/big.md", "a" * MAX_FILE_CHARS),
+]
 
 
-async def test_run_security_scan_uses_a_registered_scorer(_no_scorer: None) -> None:
-    files = {"SKILL.md": "fine"}
-    assert (await run_security_scan(files)).status == "pass"
+def test_every_rule_has_a_near_miss() -> None:
+    assert {s[0] for s in _NEAR_MISSES} == _ALL_RULE_IDS
 
-    register_security_scorer(lambda f: SecurityScanResult(status="advisory", issues=[], score=50))
-    assert (await run_security_scan(files)).score == 50
 
-    async def remote(f: Mapping[str, str]) -> SecurityScanResult:
-        return SecurityScanResult(status="fail", issues=[], score=0)
+@pytest.mark.parametrize(("rule_id", "path", "content"), _NEAR_MISSES, ids=[s[0] for s in _NEAR_MISSES])
+def test_a_near_miss_does_not_fire(rule_id: str, path: str, content: str) -> None:
+    assert rule_id not in {i.rule_id for i in scan_skill_security({path: content}).issues}
 
-    register_security_scorer(remote)
-    assert (await run_security_scan(files)).status == "fail"
 
-    register_security_scorer(None)
-    assert security._scorer is None
-    assert (await run_security_scan(files)).score == 100
+@pytest.mark.parametrize("size", [MAX_FILE_CHARS, 1024 * 1024], ids=["at-cap", "over-cap"])
+def test_a_long_pathological_line_scans_quickly(size: int) -> None:
+    """`curl .* | sh` backtracked quadratically on a long line with no pipe."""
+    line = ("curl " * (size // 5 + 1))[:size]
+    start = time.perf_counter()
+    result = scan_skill_security({"scripts/x.sh": line})
+    assert time.perf_counter() - start < 1.0
+    expected = ["size-large"] if size > MAX_FILE_CHARS else []
+    assert [i.rule_id for i in result.issues] == expected
+
+
+def test_an_oversized_file_is_reported_and_not_pattern_matched() -> None:
+    content = "AKIA" + "1234567890ABCDEF\n" + "a" * MAX_FILE_CHARS
+    assert [i.rule_id for i in scan_skill_security({"references/big.md": content}).issues] == ["size-large"]

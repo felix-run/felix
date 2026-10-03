@@ -22,10 +22,15 @@ from felix.skills.binary import (
     is_valid_base64,
 )
 from felix.skills.format import (
+    MAX_BUNDLE_BYTES,
+    MAX_BUNDLE_FILES,
+    MAX_FRONTMATTER_CHARS,
+    MAX_SKILL_MD_CHARS,
     SkillFrontmatter,
     ValidationIssue,
     create_skill_template,
     extract_discovery_meta,
+    is_valid_skill_name,
     parse_skill_md,
     serialize_skill_md,
     update_skill_md_frontmatter,
@@ -60,9 +65,35 @@ def test_skill_name_accepts_a_valid_name() -> None:
     assert validate_skill_name("pdf-processing", "pdf-processing") == []
 
 
-@pytest.mark.parametrize("name", ["PDF-processing", "-lead", "trail-", "dou--ble", "", "x" * 65, "has space"])
-def test_skill_name_rejects(name: str) -> None:
-    assert validate_skill_name(name) != []
+_CHARS = (
+    "name may only contain lowercase letters, numbers, and hyphens; no leading/trailing/consecutive hyphens"
+)
+_LENGTH = "name must be 1-64 characters"
+
+
+@pytest.mark.parametrize(
+    ("name", "message"),
+    [
+        ("PDF-processing", _CHARS),
+        ("-lead", _CHARS),
+        ("trail-", _CHARS),
+        ("dou--ble", _CHARS),
+        ("has space", _CHARS),
+        ("", _LENGTH),
+        ("x" * 65, _LENGTH),
+    ],
+)
+def test_skill_name_rejects(name: str, message: str) -> None:
+    """One issue per bad name, however many ways it is bad."""
+    assert validate_skill_name(name) == [ValidationIssue("name", message)]
+    assert not is_valid_skill_name(name)
+
+
+def test_the_name_rule_has_one_definition() -> None:
+    """The model, `validate_skill_name` and the loader's warning all ask `is_valid_skill_name`."""
+    for name in ["a", "a-b", "x" * 64, "a1-2b"]:
+        assert is_valid_skill_name(name)
+        assert SkillFrontmatter.model_validate({"name": name, "description": "d"}).name == name
 
 
 def test_skill_name_rejects_a_slug_mismatch() -> None:
@@ -91,33 +122,92 @@ def test_skill_md_is_required() -> None:
     assert _messages({}) == ["SKILL.md is required"]
 
 
-def test_missing_frontmatter_is_rejected() -> None:
-    assert _messages({"SKILL.md": "# No frontmatter"}) == [
-        "SKILL.md must contain YAML frontmatter delimited by ---"
-    ]
-
-
-def test_frontmatter_schema_errors_are_reported_by_field() -> None:
-    result = validate_skill_bundle({"SKILL.md": "---\nname: Bad_Name\ndescription: ''\n---\nbody"})
-    paths = {e.path for e in result.errors}
-    assert not result.valid
-    assert {"frontmatter.name", "frontmatter.description", "name"} <= paths
+_NO_FRONTMATTER = (
+    "SKILL.md must contain YAML frontmatter delimited by --- "
+    "(within the size and nesting limits, with no anchors or aliases)"
+)
 
 
 @pytest.mark.parametrize(
-    ("field", "value"),
+    "skill_md",
     [
-        ("description", "x" * 1025),
-        ("compatibility", "x" * 501),
-        ("metadata", {"version": 1.2}),
-        ("allowed-tools", ["Bash", "Read"]),
-        ("license", 3),
+        "# No frontmatter",
+        "---\nname: a\nname: b\ndescription: d\n---\nbody",  # a duplicate key
+        "---\nname: ok\ndescription: &d text\nlicense: *d\n---\nbody",  # an anchor and alias
+        "---\nname: ok\ndescription: d\nx: " + "[" * 1000 + "]" * 1000 + "\n---\nbody",  # depth
+        "---\nname: ok\ndescription: d\nx: " + "y" * MAX_FRONTMATTER_CHARS + "\n---\nbody",  # size
+    ],
+    ids=["missing", "duplicate-key", "alias", "deep", "oversized"],
+)
+def test_frontmatter_yaml_refuses(skill_md: str) -> None:
+    assert parse_skill_md(skill_md) is None
+    assert _messages({"SKILL.md": skill_md}) == [_NO_FRONTMATTER]
+
+
+def test_a_refused_parse_does_not_break_the_next_one() -> None:
+    """ruamel's composer depth never unwinds after a depth error on a reused instance."""
+    for _ in range(3):
+        assert parse_skill_md("---\nx: " + "[" * 100 + "]" * 100 + "\n---\n") is None
+        assert parse_skill_md("---\nname: a\n---\n") is not None
+
+
+def test_frontmatter_schema_errors_are_reported_once_per_field() -> None:
+    result = validate_skill_bundle(
+        {"SKILL.md": "---\nname: Bad_Name\ndescription: ''\n---\nbody"}, "bad-name"
+    )
+    assert not result.valid
+    assert result.frontmatter is None
+    assert [(e.path, e.message) for e in result.errors] == [
+        ("frontmatter.name", _CHARS),
+        ("frontmatter.description", "String should have at least 1 character"),
+        ("frontmatter.name", 'name must match skill slug "bad-name"'),
+    ]
+
+
+def test_the_slug_is_checked_against_the_name_as_written() -> None:
+    """Even when the model refused the frontmatter, the name compared is the one in the file."""
+    files = {"SKILL.md": "---\nname: right\ndescription: ''\n---\nbody"}
+    assert ("frontmatter.name", 'name must match skill slug "right"') not in [
+        (e.path, e.message) for e in validate_skill_bundle(files, "right").errors
+    ]
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "loc"),
+    [
+        ("description", "x" * 1025, ("description",)),
+        ("compatibility", "x" * 501, ("compatibility",)),
+        ("metadata", {"version": 1.2}, ("metadata", "version")),
+        ("allowed-tools", ["Bash", "Read"], ("allowed-tools",)),
+        ("license", 3, ("license",)),
+        ("name", "Upper", ("name",)),
+        ("hooks", {"pre": {"run": "x"}}, ("hooks",)),
+        ("tags", [["a"]], ("tags",)),
     ],
 )
-def test_frontmatter_field_limits(field: str, value: object) -> None:
+def test_frontmatter_field_limits(field: str, value: object, loc: tuple[str, ...]) -> None:
     frontmatter = {"name": "ok", "description": "fine", field: value}
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError) as exc:
         SkillFrontmatter.model_validate(frontmatter)
+    assert [e["loc"] for e in exc.value.errors()] == [loc]
+
+
+def test_unknown_keys_may_hold_flat_values() -> None:
+    fm = SkillFrontmatter.model_validate(
+        {"name": "ok", "description": "d", "tags": ["a", 1], "hooks": {"pre": "x"}, "n": None}
+    )
+    assert fm.model_extra == {"tags": ["a", 1], "hooks": {"pre": "x"}, "n": None}
+
+
+def test_a_trailing_space_on_a_fence_is_still_frontmatter() -> None:
+    parsed = parse_skill_md("---  \nname: a\ndescription: d\n---\t\nbody")
+    assert parsed is not None and parsed.frontmatter == {"name": "a", "description": "d"}
+
+
+def test_valid_is_derived_and_cannot_disagree() -> None:
+    assert not validate_skill_bundle({}).valid
+    result = validate_skill_bundle(create_skill_template("ok", "d"))
+    assert result.valid and result.frontmatter is not None and result.errors == []
 
 
 def test_frontmatter_keeps_unknown_keys() -> None:
@@ -143,17 +233,39 @@ def test_plugin_json_is_allowed_at_the_root() -> None:
     assert validate_skill_bundle(bundle, "my-skill").valid
 
 
-@pytest.mark.parametrize("path", ["notes.md", "README.md"])
-def test_a_stray_root_file_is_rejected(path: str) -> None:
+_UNEXPECTED = "unexpected file path; use scripts/, references/, assets/, or evals/"
+_SEGMENT = "each path segment must be 1-128 characters of A-Z, a-z, 0-9, '.', '_' or '-'"
+_ESCAPE = "file path must be relative and must not contain '..' or a leading slash"
+
+
+@pytest.mark.parametrize(
+    ("path", "message"),
+    [
+        ("notes.md", _UNEXPECTED),
+        ("README.md", _UNEXPECTED),
+        # Stricter than Skillist, which passes both of these.
+        ("scripts", _UNEXPECTED),
+        ("docs/guide.md", _UNEXPECTED),
+        ("Scripts/run.sh", _UNEXPECTED),  # case-sensitive
+        ("PLUGIN.JSON", _UNEXPECTED),
+        ("scripts/SKILL.md", "SKILL.md belongs only at the bundle root"),
+        ("scripts/run me.sh", _SEGMENT),
+        ("scripts/café.sh", _SEGMENT),
+        ("scripts/a\tb.sh", _SEGMENT),
+        ("scripts/" + "a" * 129, _SEGMENT),
+    ],
+)
+def test_a_path_outside_the_allowlist_is_rejected(path: str, message: str) -> None:
     bundle = create_skill_template("my-skill", "A skill.")
     bundle[path] = "x"
-    assert validate_skill_bundle(bundle, "my-skill").errors == [
-        ValidationIssue(path, "unexpected file path; use scripts/, references/, or assets/")
-    ]
+    assert validate_skill_bundle(bundle, "my-skill").errors == [ValidationIssue(path, message)]
 
 
-@pytest.mark.parametrize("path", ["scripts/run.sh", "references/a/b.md", "assets/t.json", "evals/cases.json"])
-def test_files_in_subdirectories_are_accepted(path: str) -> None:
+@pytest.mark.parametrize(
+    "path",
+    ["scripts/run.sh", "references/a/b.md", "assets/t.json", "evals/cases.json", "scripts/" + "a" * 128],
+)
+def test_files_in_the_bundle_directories_are_accepted(path: str) -> None:
     bundle = create_skill_template("my-skill", "A skill.")
     bundle[path] = "x"
     assert validate_skill_bundle(bundle, "my-skill").valid
@@ -182,7 +294,8 @@ def test_invalid_base64_for_a_binary_asset_is_rejected() -> None:
 
 def test_a_binary_asset_over_the_size_limit_is_rejected() -> None:
     bundle = create_skill_template("my-skill", "A skill with an oversized asset.")
-    bundle["assets/huge.png"] = encode_base64(bytes(6 * 1024 * 1024))
+    # One byte over: Skillist's 6 MiB case is now caught first by the 8 MiB bundle cap.
+    bundle["assets/huge.png"] = encode_base64(bytes(MAX_BINARY_ASSET_BYTES + 3))
     assert any("exceeds the 5MB limit" in m for m in _messages(bundle, "my-skill"))
 
 
@@ -193,25 +306,37 @@ def test_a_binary_asset_at_the_size_limit_is_accepted() -> None:
 
 
 @pytest.mark.parametrize(
-    "path",
+    ("path", "message"),
     [
-        "../../etc/cron.d/evil",
-        "scripts/../../x.sh",
-        "/etc/passwd",
-        "\\windows\\system32",
-        "C:/Windows/x",
-        "scripts/a\0b.sh",
+        ("../../etc/cron.d/evil", _ESCAPE),
+        ("scripts/../../x.sh", _ESCAPE),
+        ("scripts/./x.sh", _ESCAPE),
+        ("scripts//x.sh", _ESCAPE),
+        ("/etc/passwd", _ESCAPE),
+        ("\\windows\\system32", _ESCAPE),
+        ("scripts\\..\\x.sh", _ESCAPE),
+        ("C:/Windows/x", _SEGMENT),
+        ("scripts/a\0b.sh", _SEGMENT),
     ],
 )
-def test_an_escaping_path_is_rejected_rather_than_skipped(path: str) -> None:
+def test_an_escaping_path_is_rejected_rather_than_skipped(path: str, message: str) -> None:
     bundle = create_skill_template("my-skill", "A skill that tries to escape its root.")
     bundle[path] = "* * * * * root sh"
     result = validate_skill_bundle(bundle, "my-skill")
     assert not result.valid
-    assert (
-        ValidationIssue(path, "file path must be relative and must not contain '..' or a leading slash")
-        in result.errors
-    )
+    assert ValidationIssue(path, message) in result.errors
+
+
+def test_bundle_size_caps() -> None:
+    base = create_skill_template("my-skill", "A skill.")
+    too_many = base | {f"references/{i}.md": "x" for i in range(MAX_BUNDLE_FILES)}
+    assert _messages(too_many) == [f"a bundle may hold at most {MAX_BUNDLE_FILES} files"]
+    too_big = base | {f"references/{i}.md": "x" * (MAX_BUNDLE_BYTES // 4) for i in range(5)}
+    assert _messages(too_big) == ["a bundle may total at most 8 MiB"]
+    long_md = {"SKILL.md": base["SKILL.md"] + "x" * MAX_SKILL_MD_CHARS}
+    assert _messages(long_md) == ["SKILL.md may be at most 256 KiB"]
+    at_limit = base | {f"references/{i}.md": "x" for i in range(MAX_BUNDLE_FILES - 1)}
+    assert validate_skill_bundle(at_limit).valid
 
 
 @pytest.mark.parametrize("bundle_dir", _bundle_dirs(), ids=lambda p: p.name)

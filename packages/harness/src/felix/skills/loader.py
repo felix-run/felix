@@ -10,14 +10,22 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from felix.skills.format import MAX_FRONTMATTER_CHARS, is_valid_skill_name
 from felix.skills.format import parse_skill_md as parse_skill_md_format
 from felix.skills.types import Skill, SkillCatalog
 
 logger = logging.getLogger("felix.skills.loader")
 
-# Looser than `format.FRONTMATTER_RE`: whitespace may trail a fence.
+# Looser than `format.FRONTMATTER_RE` (any whitespace may trail a fence), so a file the
+# YAML path refuses for its fences still reaches the legacy reader.
 _LEGACY_FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n(.*)$", re.DOTALL)
-_NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
+# Keys a nested `metadata:` map may not supply: they decide which skill this is, what the
+# model is told about it, and whether the model is offered it at all.
+_RESERVED_KEYS = frozenset({"name", "description", "disable-model-invocation"})
+# What may be interpolated into an object key as a skill name. Not the skill-name rule
+# (`format.is_valid_skill_name`), which also refuses `a--b`; this one only has to keep a
+# key to one safe segment.
+_KEY_SEGMENT_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
 # A version may carry dots (`1.2.0`) which a name may not, but is otherwise the same
 # shape: one segment, no separators, not a traversal.
 _VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -36,58 +44,100 @@ def _safe_segment(value: str, pattern: re.Pattern[str], *, limit: int = 64) -> b
     return bool(value) and len(value) <= limit and bool(pattern.match(value)) and value not in {".", ".."}
 
 
-def _legacy_frontmatter(raw: str) -> tuple[dict[str, str], str]:
+def _legacy_frontmatter(yaml_text: str) -> dict[str, str]:
     """The pre-YAML reader: every `key: value` line, split on the first colon.
 
-    Kept as the fallback for frontmatter that is not valid YAML. `description: Use it: daily`
-    read fine here and is a YAML error, so a skill written against this reader must not
-    vanish from the catalog when the YAML parser refuses it. Nested lines flatten into the
-    same map, which is how `metadata:` children always reached `Skill.metadata`.
+    Kept as the fallback for frontmatter YAML refuses. `description: Use it: daily` read
+    fine here and is a YAML error, so a skill written against this reader must not vanish
+    from the catalog. Indented lines are treated as `metadata:` children and merged under
+    the same rule as YAML's.
     """
-    m = _LEGACY_FRONTMATTER_RE.match(raw)
-    if not m:
-        return {}, raw.strip()
-    meta: dict[str, str] = {}
-    for line in m.group(1).splitlines():
+    top: dict[str, str] = {}
+    nested: dict[str, str] = {}
+    for line in yaml_text.splitlines():
         if ":" not in line:
             continue
         key, _, val = line.partition(":")
-        meta[key.strip().lower()] = val.strip().strip("\"'")
-    return meta, m.group(2).strip()
+        (nested if line[:1].isspace() else top)[key.strip().lower()] = val.strip().strip("\"'")
+    if nested and top.get("metadata") == "":
+        del top["metadata"]  # the block's own key, as the YAML path drops it
+    return _merge(top, nested)
 
 
-def _scalar_text(value: object, raw: str | None) -> str:
-    """A YAML scalar as the string the legacy reader would have produced.
+def _merge(top: dict[str, str], nested: dict[str, str]) -> dict[str, str]:
+    """Top-level keys, then nested `metadata:` children that neither override one nor are
+    reserved \u2014 so a metadata block cannot rename a skill, rewrite its description, or hide
+    it from the model."""
+    merged = dict(top)
+    for key, value in nested.items():
+        if key not in _RESERVED_KEYS and key not in merged:
+            merged[key] = value
+    return merged
 
-    A string is taken as YAML parsed it, so quoting and escapes are honoured. Anything
-    else (`1.10`, `true`, `null`, a list) is taken from the line text: YAML would turn
-    the version `1.10` into the float `1.1`.
-    """
-    text = value if isinstance(value, str) else raw or ""
-    return text.strip()
+
+def _top_level_line_values(yaml_text: str) -> dict[str, str]:
+    """`key -> text after the colon` for each unindented line, as the legacy reader saw it."""
+    values: dict[str, str] = {}
+    for line in yaml_text.splitlines():
+        if ":" in line and not line[:1].isspace():
+            key, _, val = line.partition(":")
+            values[key.strip().lower()] = val.strip()
+    return values
 
 
-def _frontmatter(raw: str, *, source: str) -> tuple[dict[str, str], str]:
-    """Flat string frontmatter and the stripped body: YAML first, the legacy reader second.
+def _as_text(value: object) -> str:
+    """A read-path YAML value as one string. Scalars already are (`scalars_as_text`); a
+    list joins its scalar items; a map, other than `metadata:`, keeps only its key."""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        return ", ".join(v.strip() for v in value if isinstance(v, str))
+    return ""
 
-    Top-level keys are lowercased, as the legacy reader did, and the children of a nested
-    `metadata:` map merge in after them, so `metadata: {version: 1.2.0}` still sets the
-    version. A nested map under any other key keeps only its key, with an empty value.
+
+def _yaml_frontmatter(frontmatter: dict[Any, Any], yaml_text: str, *, source: str) -> dict[str, str]:
+    top: dict[str, str] = {}
+    nested: dict[str, str] = {}
+    lines = _top_level_line_values(yaml_text)
+    for raw_key, value in frontmatter.items():
+        key = str(raw_key).strip().lower()
+        if key == "metadata" and isinstance(value, dict):
+            nested = {str(k).strip().lower(): _as_text(v) for k, v in value.items()}
+            continue
+        text = _as_text(value)
+        # ` #` starts a YAML comment, so `description: Ranks issues #1 first` is "Ranks
+        # issues" to YAML and was the whole line to the legacy reader. The whole line wins:
+        # a description that silently loses its end is worse than one read the old way.
+        line = lines.get(key, "")
+        rest = line[len(text) :] if line.startswith(text) else ""
+        if line != text and rest and (re.match(r"\s+#", rest) or (not text and rest.startswith("#"))):
+            logger.warning(
+                "skill %s: %r holds a ' #' YAML reads as a comment; kept the whole line", source, key
+            )
+            text = line
+        top[key] = text
+    return _merge(top, nested)
+
+
+def _frontmatter(raw: str, *, source: str) -> tuple[dict[str, str], str] | None:
+    """Flat string frontmatter and the stripped body, or None when the skill must be skipped.
+
+    YAML first, with every scalar kept as its source text, so the version `1.10` is not the
+    float 1.1. The legacy line reader runs only when YAML refuses the frontmatter. Keys are
+    lowercased, as the legacy reader did.
     """
     text = raw.lstrip("\ufeff")
-    parsed = parse_skill_md_format(text)
-    legacy, legacy_body = _legacy_frontmatter(text)
-    if parsed is None or not isinstance(parsed.frontmatter, dict):
-        if legacy:
-            logger.warning("skill %s: frontmatter is not spec YAML; read line by line instead", source)
-        return legacy, legacy_body
-    flat: dict[str, object] = {str(k).strip().lower(): v for k, v in parsed.frontmatter.items()}
-    nested = flat.get("metadata")
-    if isinstance(nested, dict):
-        del flat["metadata"]
-        flat.update({str(k).strip().lower(): v for k, v in nested.items()})
-    meta = {k: _scalar_text(v, legacy.get(k)) for k, v in flat.items()}
-    return meta, parsed.body.strip()
+    fenced = _LEGACY_FRONTMATTER_RE.match(text)
+    if fenced is None:
+        return {}, text.strip()
+    if len(fenced.group(1)) > MAX_FRONTMATTER_CHARS:
+        logger.warning("skill %s: frontmatter is over %d characters; skipped", source, MAX_FRONTMATTER_CHARS)
+        return None
+    parsed = parse_skill_md_format(text, scalars_as_text=True)
+    if parsed is not None and isinstance(parsed.frontmatter, dict):
+        return _yaml_frontmatter(parsed.frontmatter, parsed.yaml_text, source=source), parsed.body.strip()
+    logger.warning("skill %s: frontmatter is not spec YAML; read line by line instead", source)
+    return _legacy_frontmatter(fenced.group(1)), fenced.group(2).strip()
 
 
 def parse_skill_md(raw: str, *, fallback_name: str, path: str | None = None) -> Skill | None:
@@ -97,13 +147,16 @@ def parse_skill_md(raw: str, *, fallback_name: str, path: str | None = None) -> 
     so a bad name only warns. `felix.skills.format.validate_skill_bundle` is the strict check,
     and it belongs to the authoring path.
     """
-    meta, body = _frontmatter(raw, source=path or fallback_name)
+    read = _frontmatter(raw, source=path or fallback_name)
+    if read is None:
+        return None
+    meta, body = read
     name = (meta.get("name") or fallback_name).strip().lower()
     description = (meta.get("description") or "").strip()
     if not description:
         logger.warning("skill %s missing description; skipping", name)
         return None
-    if len(name) > 64 or not _NAME_RE.match(name):
+    if not is_valid_skill_name(name):
         logger.warning("skill name %r invalid; loading with warnings", name)
     disable = meta.get("disable-model-invocation", "").lower() in {"true", "1", "yes"}
     return Skill(
@@ -165,7 +218,7 @@ async def load_skill_from_store(
     The shared `skills/{name}/` namespace is an operator layer: no route lets a
     tenant write a bare object key, so it cannot be planted by another tenant.
     """
-    if not _safe_segment(name, _NAME_RE):
+    if not _safe_segment(name, _KEY_SEGMENT_RE):
         logger.warning("skill name %r is not a usable key segment; skipped", name)
         return None
     if version is not None and not _safe_segment(version, _VERSION_RE, limit=32):
@@ -186,8 +239,28 @@ async def load_skill_from_store(
             continue
         if not data:
             continue
-        return parse_skill_md(data.decode("utf-8"), fallback_name=name, path=key)
+        try:
+            skill = parse_skill_md(data.decode("utf-8"), fallback_name=name, path=key)
+        except Exception:
+            logger.warning("skill %s could not be read; skipped", key, exc_info=True)
+            return None
+        if skill is not None and skill.name != name:
+            # The key names the skill a manifest asked for; a SKILL.md that calls itself
+            # something else would enter the catalog under a name nobody declared.
+            logger.warning("skill %s names itself %r, not %r; skipped", key, skill.name, name)
+            return None
+        return skill
     return None
+
+
+def _read_skill_file(path: Path, *, fallback_name: str) -> Skill | None:
+    """One file's skill, or None. A file that cannot be read or parsed is logged and
+    skipped; it must not take the rest of the directory's catalog down with it."""
+    try:
+        return parse_skill_md(path.read_text(encoding="utf-8"), fallback_name=fallback_name, path=str(path))
+    except Exception:
+        logger.warning("skill file %s could not be read; skipped", path, exc_info=True)
+        return None
 
 
 def load_skills_from_dir(root: Path) -> SkillCatalog:
@@ -196,21 +269,13 @@ def load_skills_from_dir(root: Path) -> SkillCatalog:
     if not root.is_dir():
         return catalog
     for skill_md in root.rglob("SKILL.md"):
-        try:
-            raw = skill_md.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        skill = parse_skill_md(raw, fallback_name=skill_md.parent.name, path=str(skill_md))
+        skill = _read_skill_file(skill_md, fallback_name=skill_md.parent.name)
         if skill and skill.name not in catalog.skills:
             catalog.skills[skill.name] = skill
     for md in root.glob("*.md"):
         if md.name.upper() == "SKILL.MD":
             continue
-        try:
-            raw = md.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        skill = parse_skill_md(raw, fallback_name=md.stem, path=str(md))
+        skill = _read_skill_file(md, fallback_name=md.stem)
         if skill and skill.name not in catalog.skills:
             catalog.skills[skill.name] = skill
     return catalog

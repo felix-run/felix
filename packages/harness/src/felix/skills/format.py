@@ -6,7 +6,16 @@ saved. The catalog loader (`skills/loader.py`) reads leniently on top of the par
 never applies the strict check — a skill already on disk keeps loading.
 
 Pure: no I/O and no settings. Ported from Skillist's `skill-format` package (MIT); see
-NOTICE. Lengths are counted in code points, where the TypeScript counts UTF-16 units.
+NOTICE. Where it deliberately differs from the TypeScript:
+
+- Bundle paths are an allowlist: every segment is `[A-Za-z0-9._-]{1,128}`, and the first is
+  `scripts`, `references`, `assets` or `evals` unless the path is exactly `plugin.json`. The
+  TypeScript accepts a file in any subdirectory, and a root file named `scripts`.
+- A bundle is capped in SKILL.md size, file count and total size, and frontmatter in size
+  and nesting depth. YAML anchors and aliases are refused, and an unknown frontmatter key
+  must hold a scalar or a flat list or map of scalars.
+- A fence line may carry trailing spaces or tabs.
+- Lengths are counted in code points, where the TypeScript counts UTF-16 units.
 """
 
 from __future__ import annotations
@@ -20,9 +29,11 @@ from typing import Annotated, Any
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationError
 from ruamel.yaml import YAML
+from ruamel.yaml.composer import Composer, ComposerError
 from ruamel.yaml.constructor import SafeConstructor
 from ruamel.yaml.emitter import Emitter
 from ruamel.yaml.error import YAMLError
+from ruamel.yaml.events import AliasEvent
 
 from felix.skills.binary import (
     MAX_BINARY_ASSET_BYTES,
@@ -32,13 +43,24 @@ from felix.skills.binary import (
 )
 
 SKILL_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*\Z")
-_NAME_MESSAGE = "name must be lowercase alphanumeric with hyphens"
+_NAME_LENGTH_MESSAGE = "name must be 1-64 characters"
+_NAME_CHARS_MESSAGE = (
+    "name may only contain lowercase letters, numbers, and hyphens; no leading/trailing/consecutive hyphens"
+)
 
-OPTIONAL_DIRS = ("scripts", "references", "assets")
+BUNDLE_DIRS = ("scripts", "references", "assets", "evals")
 ALLOWED_ROOT_FILES = ("plugin.json",)
+_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}\Z")
 
-FRONTMATTER_RE = re.compile(r"^---\r?\n(.*?)\r?\n---\r?\n(.*)\Z", re.DOTALL)
-_DRIVE_RE = re.compile(r"^[a-zA-Z]:")
+FRONTMATTER_RE = re.compile(r"^---[ \t]*\r?\n(.*?)\r?\n---[ \t]*\r?\n(.*)\Z", re.DOTALL)
+
+# Bounds on what a parse or a validation will take on. The frontmatter cap applies before
+# YAML sees the text; the depth cap stops a `[[[[…]]]]` bomb inside the composer.
+MAX_FRONTMATTER_CHARS = 64 * 1024
+MAX_FRONTMATTER_DEPTH = 32
+MAX_SKILL_MD_CHARS = 256 * 1024
+MAX_BUNDLE_FILES = 200
+MAX_BUNDLE_BYTES = 8 * 1024 * 1024
 
 # Known keys first, in this order; anything else after, in the order given.
 _KEY_ORDER = ("name", "description", "license", "compatibility", "metadata", "allowed-tools")
@@ -55,8 +77,39 @@ class _Constructor(SafeConstructor):
 
 _Constructor.add_constructor("tag:yaml.org,2002:timestamp", _Constructor.construct_yaml_str)
 
-_loader = YAML(typ="safe", pure=True)
-_loader.Constructor = _Constructor
+
+class _TextConstructor(_Constructor):
+    """Every scalar as its source text — the catalog's read path, where a value is a string.
+
+    `version: 1.10` is the float 1.1 to YAML and the version "1.10" to the author.
+    """
+
+
+for _tag in ("null", "bool", "int", "float"):
+    _TextConstructor.add_constructor(f"tag:yaml.org,2002:{_tag}", _TextConstructor.construct_yaml_str)
+
+
+class _Composer(Composer):
+    """No anchors or aliases. Frontmatter has no use for them, and an alias is how a few
+    lines of YAML expand into a very large document."""
+
+    def compose_node(self, parent: Any, index: Any) -> Any:
+        event = self.parser.peek_event()
+        if isinstance(event, AliasEvent) or getattr(event, "anchor", None) is not None:
+            raise ComposerError(None, None, "anchors and aliases are not allowed", event.start_mark)
+        return super().compose_node(parent, index)
+
+
+def _loader(constructor: type[SafeConstructor]) -> YAML:
+    """A fresh loader per parse. A ruamel `YAML` keeps composer state between loads — after
+    a `MaxDepthExceededError` its depth counter never unwinds, so every later load on the
+    same instance fails — and it is not safe to share across the threads the catalog
+    loads in."""
+    yaml = YAML(typ="safe", pure=True)
+    yaml.Constructor = constructor
+    yaml.Composer = _Composer
+    yaml.max_depth = MAX_FRONTMATTER_DEPTH
+    return yaml
 
 
 class _Emitter(Emitter):
@@ -79,24 +132,58 @@ _dumper.width = sys.maxsize
 _dumper.sort_base_mapping_type_on_output = False
 
 
+def _name_problem(name: str) -> str | None:
+    """The one skill-name rule, as the message for whatever it breaks first."""
+    if not 1 <= len(name) <= 64:
+        return _NAME_LENGTH_MESSAGE
+    if not SKILL_NAME_RE.match(name):
+        return _NAME_CHARS_MESSAGE
+    return None
+
+
+def is_valid_skill_name(name: str) -> bool:
+    return _name_problem(name) is None
+
+
 def _skill_name(value: str) -> str:
-    if not SKILL_NAME_RE.match(value):
-        raise ValueError(_NAME_MESSAGE)
+    problem = _name_problem(value)
+    if problem:
+        raise ValueError(problem)
+    return value
+
+
+def _is_scalar(value: object) -> bool:
+    return value is None or isinstance(value, str | int | float | bool)
+
+
+def _flat_value(value: Any) -> Any:
+    if isinstance(value, list):
+        flat = all(_is_scalar(v) for v in value)
+    elif isinstance(value, dict):
+        flat = all(isinstance(k, str) and _is_scalar(v) for k, v in value.items())
+    else:
+        flat = _is_scalar(value)
+    if not flat:
+        raise ValueError("must be a scalar, or a flat list or map of scalars")
     return value
 
 
 class SkillFrontmatter(BaseModel):
     """The agentskills.io frontmatter. Extra keys are kept, so a read-modify-write of a
-    SKILL.md does not drop a field this model does not know about."""
+    SKILL.md does not drop a field this model does not know about — but only scalars and
+    flat lists or maps of them."""
 
     model_config = ConfigDict(extra="allow", validate_by_name=True, validate_by_alias=True)
 
-    name: Annotated[str, Field(min_length=1, max_length=64), AfterValidator(_skill_name)]
+    name: Annotated[str, AfterValidator(_skill_name)]
     description: str = Field(min_length=1, max_length=1024)
     license: str | None = None
     compatibility: str | None = Field(default=None, max_length=500)
     metadata: dict[str, str] | None = None
     allowed_tools: str | None = Field(default=None, alias="allowed-tools")
+
+    # Typing the extras validates each unknown key's value under its own key.
+    __pydantic_extra__: dict[str, Annotated[Any, AfterValidator(_flat_value)]] = Field(init=False)
 
 
 @dataclass(slots=True, frozen=True)
@@ -114,10 +201,13 @@ class ValidationIssue:
 
 @dataclass(slots=True)
 class ValidationResult:
-    valid: bool
     frontmatter: SkillFrontmatter | None = None
     body: str | None = None
     errors: list[ValidationIssue] = field(default_factory=list)
+
+    @property
+    def valid(self) -> bool:
+        return self.frontmatter is not None and not self.errors
 
 
 def split_frontmatter(content: str) -> tuple[str, str] | None:
@@ -128,15 +218,23 @@ def split_frontmatter(content: str) -> tuple[str, str] | None:
     return match.group(1), match.group(2)
 
 
-def parse_skill_md(content: str) -> ParsedSkillMd | None:
-    """Split a SKILL.md; None when the fences are missing or the YAML does not parse."""
+def parse_skill_md(content: str, *, scalars_as_text: bool = False) -> ParsedSkillMd | None:
+    """Split a SKILL.md; None when the fences are missing or the YAML is refused.
+
+    Refused: YAML that does not parse, frontmatter over `MAX_FRONTMATTER_CHARS`, nesting past
+    `MAX_FRONTMATTER_DEPTH`, and any anchor or alias. ``scalars_as_text`` keeps every scalar
+    as the text it was written as (the catalog's read path); the default types them as the
+    YAML 1.2 core schema does, which is what the strict validation checks.
+    """
     parts = split_frontmatter(content)
     if parts is None:
         return None
     yaml_text, body = parts
+    if len(yaml_text) > MAX_FRONTMATTER_CHARS:
+        return None
     try:
-        frontmatter = _loader.load(yaml_text)
-    except YAMLError:
+        frontmatter = _loader(_TextConstructor if scalars_as_text else _Constructor).load(yaml_text)
+    except YAMLError, RecursionError:
         return None
     return ParsedSkillMd(yaml_text=yaml_text, frontmatter=frontmatter, body=body)
 
@@ -173,21 +271,11 @@ def update_skill_md_frontmatter(content: str, frontmatter: SkillFrontmatter | Ma
 
 
 def validate_skill_name(name: str, slug: str | None = None) -> list[ValidationIssue]:
+    """At most one issue for the name's shape, plus one if it differs from ``slug``."""
     errors: list[ValidationIssue] = []
-    if not 1 <= len(name) <= 64:
-        errors.append(ValidationIssue("name", "name must be 1-64 characters"))
-    if not SKILL_NAME_RE.match(name):
-        errors.append(
-            ValidationIssue(
-                "name",
-                "name may only contain lowercase letters, numbers, and hyphens; "
-                "no leading/trailing/consecutive hyphens",
-            )
-        )
-    if name.startswith("-") or name.endswith("-") or "--" in name:
-        errors.append(
-            ValidationIssue("name", "name must not start/end with hyphen or contain consecutive hyphens")
-        )
+    problem = _name_problem(name)
+    if problem:
+        errors.append(ValidationIssue("name", problem))
     if slug and name != slug:
         errors.append(ValidationIssue("name", f'name must match skill slug "{slug}"'))
     return errors
@@ -201,27 +289,34 @@ def _frontmatter_issues(exc: ValidationError) -> list[ValidationIssue]:
     return issues
 
 
-def _unsafe_path(path: str) -> bool:
-    # Rejected outright, never folded into the allowed-root skip: a bundle entry is
-    # eventually written under some root, and `..` or a leading slash escapes it.
-    return ".." in path or path.startswith(("/", "\\")) or "\0" in path or bool(_DRIVE_RE.match(path))
+_ESCAPE_MESSAGE = "file path must be relative and must not contain '..' or a leading slash"
+
+
+def _path_issue(path: str) -> str | None:
+    """Why ``path`` may not be in a bundle, or None. An allowlist: a bundle entry is
+    eventually written under some root, and anything it does not name is refused."""
+    if path in ALLOWED_ROOT_FILES:
+        return None
+    segments = path.split("/")
+    if "\\" in path or any(s in {"", ".", ".."} for s in segments):
+        return _ESCAPE_MESSAGE
+    if not all(_SEGMENT_RE.match(s) for s in segments):
+        return "each path segment must be 1-128 characters of A-Z, a-z, 0-9, '.', '_' or '-'"
+    if len(segments) < 2 or segments[0] not in BUNDLE_DIRS:
+        return "unexpected file path; use scripts/, references/, assets/, or evals/"
+    if segments[-1] == "SKILL.md":
+        return "SKILL.md belongs only at the bundle root"
+    return None
 
 
 def _file_issues(path: str, content: str) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
     if is_binary_asset_path(path) and not path.startswith("assets/"):
         issues.append(ValidationIssue(path, "binary assets (images, PDFs, archives) must live under assets/"))
-    if _unsafe_path(path):
-        issues.append(
-            ValidationIssue(path, "file path must be relative and must not contain '..' or a leading slash")
-        )
+    problem = _path_issue(path)
+    if problem:
+        issues.append(ValidationIssue(path, problem))
         return issues
-    if path in ALLOWED_ROOT_FILES:
-        return issues
-    # Only a root-level file is checked (a bare `scripts` included, as in the original); a
-    # file in an unlisted subdirectory passes.
-    if path and "/" not in path and path not in OPTIONAL_DIRS:
-        issues.append(ValidationIssue(path, "unexpected file path; use scripts/, references/, or assets/"))
     if path.startswith("assets/") and is_binary_asset_path(path):
         if not is_valid_base64(content):
             issues.append(ValidationIssue(path, "binary asset content must be valid base64"))
@@ -231,21 +326,40 @@ def _file_issues(path: str, content: str) -> list[ValidationIssue]:
     return issues
 
 
-def validate_skill_bundle(files: Mapping[str, str], expected_slug: str | None = None) -> ValidationResult:
-    """The strict check: frontmatter schema, name rules, and every path in the bundle.
+def _size_issues(files: Mapping[str, str], skill_md: str) -> list[ValidationIssue]:
+    issues: list[ValidationIssue] = []
+    if len(files) > MAX_BUNDLE_FILES:
+        issues.append(ValidationIssue("bundle", f"a bundle may hold at most {MAX_BUNDLE_FILES} files"))
+    if sum(len(c.encode("utf-8")) for c in files.values()) > MAX_BUNDLE_BYTES:
+        issues.append(
+            ValidationIssue("bundle", f"a bundle may total at most {MAX_BUNDLE_BYTES // (1024 * 1024)} MiB")
+        )
+    if len(skill_md) > MAX_SKILL_MD_CHARS:
+        issues.append(
+            ValidationIssue("SKILL.md", f"SKILL.md may be at most {MAX_SKILL_MD_CHARS // 1024} KiB")
+        )
+    return issues
 
-    A file in a subdirectory other than scripts/, references/ or assets/ is accepted, as
-    in the TypeScript; only a stray file at the root is an error.
-    """
+
+def validate_skill_bundle(files: Mapping[str, str], expected_slug: str | None = None) -> ValidationResult:
+    """The strict check: size caps, frontmatter schema, name rules, and every path."""
     skill_md = files.get("SKILL.md")
     if not skill_md:
-        return ValidationResult(valid=False, errors=[ValidationIssue("SKILL.md", "SKILL.md is required")])
+        return ValidationResult(errors=[ValidationIssue("SKILL.md", "SKILL.md is required")])
+    oversized = _size_issues(files, skill_md)
+    if oversized:
+        return ValidationResult(errors=oversized)
 
     parsed = parse_skill_md(skill_md)
     if parsed is None:
         return ValidationResult(
-            valid=False,
-            errors=[ValidationIssue("SKILL.md", "SKILL.md must contain YAML frontmatter delimited by ---")],
+            errors=[
+                ValidationIssue(
+                    "SKILL.md",
+                    "SKILL.md must contain YAML frontmatter delimited by --- "
+                    "(within the size and nesting limits, with no anchors or aliases)",
+                )
+            ]
         )
 
     errors: list[ValidationIssue] = []
@@ -255,14 +369,20 @@ def validate_skill_bundle(files: Mapping[str, str], expected_slug: str | None = 
     except ValidationError as exc:
         errors.extend(_frontmatter_issues(exc))
 
-    errors.extend(validate_skill_name(frontmatter.name if frontmatter else "", expected_slug))
+    # The name's shape is the model's to report; the slug is checked here, against the
+    # name as written even when the model refused the rest of the frontmatter.
+    raw = parsed.frontmatter if isinstance(parsed.frontmatter, dict) else {}
+    name = frontmatter.name if frontmatter else raw.get("name")
+    if expected_slug and name != expected_slug:
+        errors.append(ValidationIssue("frontmatter.name", f'name must match skill slug "{expected_slug}"'))
+
     for path, content in files.items():
         if path != "SKILL.md":
             errors.extend(_file_issues(path, content))
 
-    if errors or frontmatter is None:
-        return ValidationResult(valid=False, errors=errors)
-    return ValidationResult(valid=True, frontmatter=frontmatter, body=parsed.body)
+    if errors:
+        return ValidationResult(errors=errors)
+    return ValidationResult(frontmatter=frontmatter, body=parsed.body)
 
 
 def create_skill_template(slug: str, description: str) -> dict[str, str]:
@@ -274,15 +394,18 @@ def create_skill_template(slug: str, description: str) -> dict[str, str]:
 
 def extract_discovery_meta(files: Mapping[str, str]) -> tuple[str, str] | None:
     """(name, description) of a valid bundle, else None."""
-    result = validate_skill_bundle(files)
-    if not result.valid or result.frontmatter is None:
-        return None
-    return result.frontmatter.name, result.frontmatter.description
+    frontmatter = validate_skill_bundle(files).frontmatter
+    return (frontmatter.name, frontmatter.description) if frontmatter else None
 
 
 __all__ = [
     "ALLOWED_ROOT_FILES",
-    "OPTIONAL_DIRS",
+    "BUNDLE_DIRS",
+    "MAX_BUNDLE_BYTES",
+    "MAX_BUNDLE_FILES",
+    "MAX_FRONTMATTER_CHARS",
+    "MAX_FRONTMATTER_DEPTH",
+    "MAX_SKILL_MD_CHARS",
     "SKILL_NAME_RE",
     "ParsedSkillMd",
     "SkillFrontmatter",
@@ -290,6 +413,7 @@ __all__ = [
     "ValidationResult",
     "create_skill_template",
     "extract_discovery_meta",
+    "is_valid_skill_name",
     "parse_skill_md",
     "serialize_skill_md",
     "split_frontmatter",

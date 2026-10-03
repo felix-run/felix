@@ -10,15 +10,17 @@ The patterns are this module's own rather than `felix.secrets` or
 literal credential?) rather than searching text, and the second is tuned for tool output,
 where `system prompt:` is an attack — in a skill about prompts it is a heading.
 
-`register_security_scorer` swaps in an external scorer; `run_security_scan` uses it when
-one is registered. Ported from Skillist's `skill-format` package (MIT); see NOTICE.
+The scan's cost is bounded by construction: a file over `MAX_FILE_CHARS` is reported for
+its size and not pattern-matched, and no pattern has an unbounded wildcard, so a long line
+cannot make one backtrack quadratically. The original's `curl .* | sh` became
+`curl [^\\n]{0,500} | sh`: a pipe further than 500 characters along the line is missed.
+Ported from Skillist's `skill-format` package (MIT); see NOTICE.
 """
 
 from __future__ import annotations
 
-import inspect
 import re
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
@@ -76,12 +78,20 @@ SCRIPT_RULES: tuple[_Rule, ...] = (
     _Rule("script-exec", re.compile(r"\bexec\s*\("), "exec() usage", "medium"),
     _Rule("script-rm-rf", re.compile(r"rm\s+-rf\s+/"), "Destructive rm -rf / pattern", "critical"),
     _Rule(
-        "script-pipe-bash", re.compile(r"curl\s+.*\|\s*(ba)?sh"), "Remote script piped to shell", "critical"
+        "script-pipe-bash",
+        re.compile(r"curl\s+[^\n]{0,500}\|\s*(ba)?sh"),
+        "Remote script piped to shell",
+        "critical",
     ),
-    _Rule("script-wget-sh", re.compile(r"wget\s+.*\|\s*(ba)?sh"), "Remote script piped to shell", "critical"),
+    _Rule(
+        "script-wget-sh",
+        re.compile(r"wget\s+[^\n]{0,500}\|\s*(ba)?sh"),
+        "Remote script piped to shell",
+        "critical",
+    ),
     _Rule(
         "script-base64-exec",
-        re.compile(r"base64\s+(-d|--decode).*\|"),
+        re.compile(r"base64\s+(-d|--decode)[^\n]{0,500}\|"),
         "Base64-decoded payload execution",
         "high",
     ),
@@ -168,16 +178,18 @@ def _url_issues(path: str, content: str) -> list[SecurityIssue]:
 
 
 def _file_issues(path: str, content: str) -> list[SecurityIssue]:
+    if len(content) > MAX_FILE_CHARS:
+        # Reported, not pattern-matched: the size is the finding, and bounding the scan's
+        # cost by the file's matters more than what a regex would find in it.
+        return [
+            SecurityIssue("medium", path, "File exceeds 512KB — unusually large for a skill", "size-large")
+        ]
     issues = _matches(CREDENTIAL_RULES, path, content)
     if path.startswith("scripts/") or _SCRIPT_EXT_RE.search(path):
         issues += _matches(SCRIPT_RULES, path, content)
     issues += _matches(PROMPT_INJECTION_RULES, path, content)
     issues += _matches(OBFUSCATION_RULES, path, content)
     issues += _url_issues(path, content)
-    if len(content) > MAX_FILE_CHARS:
-        issues.append(
-            SecurityIssue("medium", path, "File exceeds 512KB — unusually large for a skill", "size-large")
-        )
     return issues
 
 
@@ -212,26 +224,6 @@ def scan_skill_security(files: Mapping[str, str]) -> SecurityScanResult:
     return SecurityScanResult(status=status, issues=issues, score=max(0, min(100, score)))
 
 
-SecurityScorer = Callable[[Mapping[str, str]], SecurityScanResult | Awaitable[SecurityScanResult]]
-
-_scorer: SecurityScorer | None = None
-
-
-def register_security_scorer(scorer: SecurityScorer | None) -> None:
-    """Register an external scorer (a commercial API, say); None restores the heuristic."""
-    global _scorer
-    _scorer = scorer
-
-
-async def run_security_scan(files: Mapping[str, str]) -> SecurityScanResult:
-    if _scorer is None:
-        return scan_skill_security(files)
-    result = _scorer(files)
-    if inspect.isawaitable(result):
-        return await result
-    return result
-
-
 __all__ = [
     "CREDENTIAL_RULES",
     "OBFUSCATION_RULES",
@@ -239,8 +231,5 @@ __all__ = [
     "SCRIPT_RULES",
     "SecurityIssue",
     "SecurityScanResult",
-    "SecurityScorer",
-    "register_security_scorer",
-    "run_security_scan",
     "scan_skill_security",
 ]
