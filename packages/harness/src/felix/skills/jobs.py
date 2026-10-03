@@ -1,8 +1,10 @@
 """The skill quality loop's worker sweep: accepted improvements, then queued evaluations.
 
 `felix_worker.tasks.skill_jobs` calls `run_skill_jobs` every minute. One sweep runs at a time
-across every worker (`quality_store.sweep_lock`); a tick that finds one running skips, so
-overlapping ticks cannot multiply the model calls in flight. Each job is claimed one at a time,
+across every worker (`quality_store.sweep_lock`, a lease row); a tick that finds one running
+skips, so overlapping ticks cannot multiply the model calls in flight. The sweep renews its lease
+before every claim and stops when the renewal is refused -- its lease lapsed and another sweep
+took it, so carrying on would be the overlap the lease exists to prevent. Each job is claimed one at a time,
 just before it runs (`claim_next`, fair across tenants), so nothing sits claimed while the jobs
 ahead of it spend their model calls. Each job records its own failure on its row
 (`run_claimed_*` never raise), so one bad job does not end the sweep.
@@ -10,6 +12,7 @@ ahead of it spend their model calls. Each job records its own failure on its row
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any
 
@@ -19,6 +22,8 @@ from felix.skills.evaluate import run_claimed_eval
 from felix.skills.feedback_store import get_skill_feedback_store
 from felix.skills.improve import run_claimed_improvement
 from felix.skills.quality_store import sweep_lock
+
+logger = logging.getLogger("felix.skills.jobs")
 
 now_ms = lambda: int(time.time() * 1000)
 
@@ -33,12 +38,14 @@ async def run_skill_jobs(
     """Run up to ``limit`` improvements and ``limit`` evaluations. Returns how many of each ran,
     how many of them ended `failed`, and `skipped` 1 when another sweep held the lock."""
     counts = {"improvements": 0, "evals": 0, "failed": 0, "skipped": 0}
-    async with sweep_lock(settings) as held:
-        if not held:
+    async with sweep_lock(settings) as lease:
+        if lease is None:
             counts["skipped"] = 1
             return counts
         feedback = get_skill_feedback_store(settings)
         for _ in range(limit):
+            if not await lease.renew():
+                return _lost(counts)
             row = await feedback.claim_next(now=now_ms())
             if row is None:
                 break
@@ -47,12 +54,19 @@ async def run_skill_jobs(
             counts["failed"] += done.get("status") == "failed"
         evals = get_skill_eval_store(settings)
         for _ in range(limit):
+            if not await lease.renew():
+                return _lost(counts)
             row = await evals.claim_next(now=now_ms())
             if row is None:
                 break
             done = await run_claimed_eval(settings, row, object_store=object_store)
             counts["evals"] += 1
             counts["failed"] += done.get("status") == "failed"
+    return counts
+
+
+def _lost(counts: dict[str, int]) -> dict[str, int]:
+    logger.warning("skill_jobs: the sweep lease was taken over; stopping after %s", counts)
     return counts
 
 

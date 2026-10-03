@@ -1,5 +1,5 @@
 """The skill library's quality loop, at the storage layer: what the feedback and evaluation stores
-share, the `skill_policy` store, and the sweep lock. The feedback rows are `feedback_store.py`;
+share, the `skill_policy` store, and the sweep lease. The feedback rows are `feedback_store.py`;
 the evaluation rows are `eval_store.py`.
 
 Data access only. What feedback may become and who may decide it is `skills/feedback.py`; what an
@@ -16,7 +16,11 @@ enforces the things only storage can:
 - a job is claimed at most `MAX_ATTEMPTS` times. The claim after that fails it
   (`attempts_exhausted`), so a job that kills its worker every time stops being retried;
 - claims are fair across tenants: `claim_next` takes the oldest due job of the tenant whose last
-  claim is oldest, so a tenant with a deep queue cannot starve one with a single job.
+  claim is oldest, so a tenant with a deep queue cannot starve one with a single job. The
+  candidates are cut to `_TENANTS_SCANNED` only after that ordering, so a tenant whose id sorts
+  late is not left out of every scan;
+- one sweep runs at a time: a `skill_job_lease` row taken, renewed and released by token, one
+  statement per transaction, so it holds behind a transaction-mode pooler.
 
 A claim whose heartbeat is older than `CLAIM_LEASE_MS` belonged to a dead worker and is taken
 again. Every listing ends on the primary key (`id`), so the two arms agree on where a page ends.
@@ -25,12 +29,17 @@ again. Every listing ends on the primary key (`id`), so the two arms agree on wh
 from __future__ import annotations
 
 import copy
+import logging
+import time
 import uuid
 from collections.abc import AsyncIterator, Callable, Iterable
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from typing import Any, Literal, Protocol, cast, runtime_checkable
 
 from felix.config import Settings
+
+logger = logging.getLogger("felix.skills.quality_store")
 
 FeedbackStatus = Literal["pending", "accepted", "rejected", "applied", "failed"]
 FeedbackSource = Literal["human", "agent"]
@@ -44,7 +53,8 @@ CLAIM_LEASE_MS = 10 * 60 * 1000
 MAX_ATTEMPTS = 3
 EXHAUSTED = "attempts_exhausted"
 MAX_LISTED = 100
-# Tenants one fair claim compares at most -- each tenant's oldest due job is a candidate.
+# Tenants one fair claim compares at most -- each tenant's oldest due job is a candidate, and
+# the cut is taken after ordering them by last claim.
 _TENANTS_SCANNED = 500
 
 # A claim that failed an exhausted job scans again, at most this many times in one call.
@@ -162,8 +172,8 @@ class Postgres:
         take: Callable[[Any], None],
         exhaust: Callable[[Any], None],
     ) -> dict[str, Any] | None:
-        """`fair_order` in SQL: each tenant's oldest due row (`DISTINCT ON`), then each of
-        those tenants' last claim, then lock the first candidate no other worker holds. A
+        """`fair_order` in SQL: each tenant's oldest due row (`DISTINCT ON`), ordered by that
+        tenant's last claim, then lock the first candidate no other worker holds. A
         candidate out of attempts is failed and the scan starts again, so that tenant's next job
         is a candidate in the same call."""
         for _ in range(MAX_RESCANS):
@@ -182,31 +192,40 @@ class Postgres:
         exhaust: Callable[[Any], None],
     ) -> object:
         from sqlalchemy import collate, func, select
+        from sqlalchemy.orm import aliased
 
         heads = (
+            select(model.tenant_id, model.id, model.created_at)
+            .where(due)
+            .distinct(model.tenant_id)
+            .order_by(model.tenant_id, model.created_at, collate(model.id, "C"))
+            .subquery()
+        )
+        # Each candidate tenant's last claim, across all its rows. Ordered on *before* the cut:
+        # cutting the `DISTINCT ON` (which sorts by tenant id) first would hand every scan to the
+        # same `_TENANTS_SCANNED` tenants and never reach one whose id sorts after them.
+        other = aliased(model)
+        last = (
+            select(func.max(getattr(other, claimed.key)))
+            .where(other.tenant_id == heads.c.tenant_id)
+            .scalar_subquery()
+        )
+        candidates = (
             await db.execute(
-                select(model.tenant_id, model.id, model.created_at)
-                .where(due)
-                .distinct(model.tenant_id)
-                .order_by(model.tenant_id, model.created_at, collate(model.id, "C"))
+                select(heads.c.tenant_id, heads.c.id)
+                .order_by(
+                    func.coalesce(last, -1),
+                    heads.c.created_at,
+                    collate(heads.c.id, "C"),
+                    collate(heads.c.tenant_id, "C"),
+                )
                 .limit(_TENANTS_SCANNED)
             )
         ).all()
-        if not heads:
+        if not candidates:
             await db.commit()
             return None
-        tenants = [h[0] for h in heads]
-        last = {
-            t: at
-            for t, at in (
-                await db.execute(
-                    select(model.tenant_id, func.max(claimed))
-                    .where(model.tenant_id.in_(tenants))
-                    .group_by(model.tenant_id)
-                )
-            ).all()
-        }
-        for tenant_id, row_id, _ in sorted(heads, key=lambda h: (last.get(h[0]) or -1, h[2], h[1])):
+        for tenant_id, row_id in candidates:
             row = await db.scalar(
                 select(model)
                 .where(model.tenant_id == tenant_id, model.id == row_id, due)
@@ -264,10 +283,6 @@ class PostgresSkillPolicyStore(Postgres):
 
 
 _memory_policy = InMemorySkillPolicyStore()
-# The twin's sweep lock: one process, so one flag is the whole lock.
-_memory_sweep = {"held": False}
-# The Postgres advisory lock key every `skill_jobs` sweep contends for.
-_SWEEP_LOCK_KEY = 7_046_211_901
 
 
 def postgres_settings(settings: Settings | None) -> Settings | None:
@@ -284,39 +299,160 @@ def get_skill_policy_store(settings: Settings | None = None) -> SkillPolicyStore
     return _memory_policy if pg is None else PostgresSkillPolicyStore(pg)
 
 
-@asynccontextmanager
-async def sweep_lock(settings: Settings | None) -> AsyncIterator[bool]:
-    """Whether this caller holds the one `skill_jobs` sweep slot, for the duration.
+# -- the sweep lease -------------------------------------------------------------------------
 
-    Yields False, without waiting, when another sweep holds it -- across every worker process on
-    Postgres (a session advisory lock, held on a connection of its own for the sweep and released
-    with it), within this process under `memory://`. The cron fires every minute whether or not
-    the last sweep finished; without this, overlapping sweeps multiply the model calls in flight.
-    """
+# The one `skill_job_lease` row every `skill_jobs` sweep contends for.
+SWEEP_LEASE = "skill_jobs"
+# What a sweep's lease outlasts one job's deadline by. The sweep renews before every claim, so
+# the longest a live holder goes unrenewed is one job: its model calls are cut off at
+# `FELIX_SKILL_JOB_DEADLINE_SECONDS`, and this margin covers the reads and writes around them. A
+# worker that dies holding the lease frees it within one deadline plus this.
+SWEEP_LEASE_MARGIN_MS = 5 * 60 * 1000
+
+now_ms = lambda: int(time.time() * 1000)
+
+
+def sweep_lease_ms(settings: Settings | None) -> int:
+    deadline = (
+        settings.skill_job_deadline_seconds
+        if settings is not None
+        else Settings.model_fields["skill_job_deadline_seconds"].default
+    )
+    return int(deadline) * 1000 + SWEEP_LEASE_MARGIN_MS
+
+
+@runtime_checkable
+class SweepLeaseStore(Protocol):
+    """The sweep's lease. Each call is one statement in a transaction of its own, so it holds
+    behind a transaction-mode pooler, where consecutive statements reach different server
+    sessions and nothing tied to a session (an advisory lock) survives between them."""
+
+    async def acquire(self, token: str, *, now: int, lease_ms: int) -> bool:
+        """Take the lease for ``token`` until ``now + lease_ms``: when nobody holds it, its
+        holder's lease lapsed, or ``token`` already holds it."""
+        ...
+
+    async def renew(self, token: str, *, now: int, lease_ms: int) -> bool:
+        """Extend it to ``now + lease_ms``, only while ``token`` is still the holder."""
+        ...
+
+    async def release(self, token: str) -> bool:
+        """Lapse it at once, only while ``token`` is still the holder."""
+        ...
+
+
+class InMemorySweepLease:
+    """One process, no awaits between the check and the write: each call is atomic."""
+
+    def __init__(self) -> None:
+        self._rows: dict[str, tuple[str, int]] = {}
+
+    def clear(self) -> None:
+        self._rows.clear()
+
+    async def acquire(self, token: str, *, now: int, lease_ms: int) -> bool:
+        row = self._rows.get(SWEEP_LEASE)
+        if row is not None and row[0] != token and row[1] >= now:
+            return False
+        self._rows[SWEEP_LEASE] = (token, now + lease_ms)
+        return True
+
+    async def renew(self, token: str, *, now: int, lease_ms: int) -> bool:
+        return self._set(token, now + lease_ms)
+
+    async def release(self, token: str) -> bool:
+        return self._set(token, 0)
+
+    def _set(self, token: str, until: int) -> bool:
+        row = self._rows.get(SWEEP_LEASE)
+        if row is None or row[0] != token:
+            return False
+        self._rows[SWEEP_LEASE] = (token, until)
+        return True
+
+
+class PostgresSweepLease:
+    """The `skill_job_lease` row (`0024`). No tenant and no RLS: one row is the whole sweep."""
+
+    def __init__(self, settings: Settings) -> None:
+        self._url = settings.database_url
+
+    async def acquire(self, token: str, *, now: int, lease_ms: int) -> bool:
+        # Two acquirers racing on an absent row: one inserts, the other conflicts, waits on that
+        # row's lock, and re-checks the WHERE against the winner's lease -- which refuses it.
+        return await self._one(
+            "INSERT INTO skill_job_lease (name, holder, until_ms) VALUES (:n, :t, :until) "
+            "ON CONFLICT (name) DO UPDATE SET holder = EXCLUDED.holder, until_ms = EXCLUDED.until_ms "
+            "WHERE skill_job_lease.until_ms < :now OR skill_job_lease.holder = :t "
+            "RETURNING holder",
+            {"n": SWEEP_LEASE, "t": token, "until": now + lease_ms, "now": now},
+        )
+
+    async def renew(self, token: str, *, now: int, lease_ms: int) -> bool:
+        return await self._set(token, now + lease_ms)
+
+    async def release(self, token: str) -> bool:
+        return await self._set(token, 0)
+
+    async def _set(self, token: str, until: int) -> bool:
+        return await self._one(
+            "UPDATE skill_job_lease SET until_ms = :until WHERE name = :n AND holder = :t RETURNING holder",
+            {"n": SWEEP_LEASE, "t": token, "until": until},
+        )
+
+    async def _one(self, sql: str, params: dict[str, Any]) -> bool:
+        from sqlalchemy import text
+
+        from felix.db.session import get_engine
+
+        async with get_engine(self._url).begin() as conn:
+            return (await conn.execute(text(sql), params)).first() is not None
+
+
+_memory_lease = InMemorySweepLease()
+
+
+def get_sweep_lease_store(settings: Settings | None = None) -> SweepLeaseStore:
     pg = postgres_settings(settings)
-    if pg is None:
-        if _memory_sweep["held"]:
-            yield False
-            return
-        _memory_sweep["held"] = True
-        try:
-            yield True
-        finally:
-            _memory_sweep["held"] = False
+    return _memory_lease if pg is None else PostgresSweepLease(pg)
+
+
+@dataclass(slots=True)
+class SweepLease:
+    """A held lease: the sweep renews it before every job and stops when a renewal is refused."""
+
+    store: SweepLeaseStore
+    token: str
+    lease_ms: int
+
+    async def renew(self) -> bool:
+        return await self.store.renew(self.token, now=now_ms(), lease_ms=self.lease_ms)
+
+
+@asynccontextmanager
+async def sweep_lock(settings: Settings | None) -> AsyncIterator[SweepLease | None]:
+    """The one `skill_jobs` sweep slot for the duration, or None, without waiting, when another
+    sweep holds it -- across every worker process on Postgres, within this process under
+    `memory://`. The cron fires every minute whether or not the last sweep finished; without
+    this, overlapping sweeps multiply the model calls in flight.
+
+    A lease rather than a lock because it bounds concurrency, not correctness: two sweeps that
+    overlap after a lease lapsed still never run one job twice (`claim_next` hands each job to
+    one claimer), they only run more model calls at once than one sweep would.
+    """
+    store = get_sweep_lease_store(settings)
+    lease = SweepLease(store, new_token(), sweep_lease_ms(settings))
+    if not await store.acquire(lease.token, now=now_ms(), lease_ms=lease.lease_ms):
+        yield None
         return
-    from sqlalchemy import text
-
-    from felix.db.session import get_engine
-
-    async with get_engine(pg.database_url).connect() as conn:
-        held = bool(await conn.scalar(text("SELECT pg_try_advisory_lock(:k)"), {"k": _SWEEP_LOCK_KEY}))
-        await conn.commit()
+    try:
+        yield lease
+    finally:
         try:
-            yield held
-        finally:
-            if held:
-                await conn.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": _SWEEP_LOCK_KEY})
-                await conn.commit()
+            await store.release(lease.token)
+        except Exception:
+            # Not raised over whatever ended the sweep: an unreleased lease lapses on its own.
+            logger.warning("skill_jobs: releasing the sweep lease failed", exc_info=True)
 
 
 def clear_memory() -> None:
@@ -327,7 +463,7 @@ def clear_memory() -> None:
     feedback_store.clear_memory()
     eval_store.clear_memory()
     _memory_policy.clear()
-    _memory_sweep["held"] = False
+    _memory_lease.clear()
 
 
 __all__ = [
@@ -338,23 +474,31 @@ __all__ = [
     "MAX_LISTED",
     "MAX_RESCANS",
     "RESCAN",
+    "SWEEP_LEASE",
+    "SWEEP_LEASE_MARGIN_MS",
     "Cursor",
     "EvalStatus",
     "FeedbackSource",
     "FeedbackStatus",
     "InMemorySkillPolicyStore",
+    "InMemorySweepLease",
     "Postgres",
     "PostgresSkillPolicyStore",
+    "PostgresSweepLease",
     "ScenarioSource",
     "SkillEvalInFlight",
     "SkillFeedbackConflict",
     "SkillPolicyStore",
+    "SweepLease",
+    "SweepLeaseStore",
     "clear_memory",
     "fair_order",
     "get_skill_policy_store",
+    "get_sweep_lease_store",
     "lapsed",
     "new_token",
     "postgres_settings",
     "row_key",
+    "sweep_lease_ms",
     "sweep_lock",
 ]

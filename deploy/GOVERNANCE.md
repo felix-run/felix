@@ -292,7 +292,8 @@ that no catalogue loads. Publishing is done by an operator, or — with
 `spec.skill_authoring.mode: publish` — by the agent itself, which the schema allows only behind an
 approvals rule that gates every `create_skill` and `update_skill` call. So every library body in
 a catalogue was either reviewed by an operator or approved by a person before it was saved. An
-agent's edit of a skill whose live version an operator wrote is never published automatically.
+agent's edit of a version an operator wrote is never published automatically: what is checked is
+the source of the `parent_version` the edit names, live or not.
 Every publish also passes a gate that re-reads the bytes against their saved digests and
 re-scans them, and a failing security scan blocks whoever asks. Library bytes are kept under
 their own object-store prefix (`skill-library/`), never under the operator's `skills/` keys.
@@ -356,6 +357,16 @@ and criteria still come from text someone wrote — an operator's `evals/` for a
 the judge is a model; a skill body that persuades the answering model to write an answer that
 flatters itself is not something fencing can prevent. Treat an eval gate as a quality bar.
 
+**Who the eval gate binds.** `FELIX_SKILL_PUBLISH_REQUIRE_EVAL` and
+`FELIX_SKILL_PUBLISH_MIN_EVAL_UPLIFT` (and a tenant's `require_eval` and `min_eval_uplift`) are a
+**hard floor against agents**: an agent's version counts only evaluations on the bundle's own
+`evals/` scenarios, and an agent cannot write those. They are a **soft floor against the
+tenant's own operators**. An operator writes the `evals/` scenarios a counting evaluation runs,
+and can queue another evaluation of a version after one that scored badly. The gate reads the
+version's *latest* succeeded evaluation that counts, not its best or its first. So the floor
+records that someone with `skills:write` chose to clear it. It does not stop that person. Hold
+operators to a bar by reviewing their `evals/` changes, not by this setting alone.
+
 **Publish policy per tenant: tighten only.** `PATCH /skill-library/-/policy` sets a tenant's
 `min_quality`, `block_on_advisory`, `require_eval` and `min_eval_uplift`. The policy in force is
 the deployment's `FELIX_SKILL_PUBLISH_*` settings (including `FELIX_SKILL_PUBLISH_REQUIRE_EVAL` and
@@ -383,6 +394,12 @@ draft (archived without ever having gone live); `list_skills` and `activate_skil
 version as `newest_version`. Naming a rejected draft is refused `parent_rejected`. So a rejected
 draft's files — a bad `scripts/` file, say — cannot ride into the next agent draft. An operator's
 save keeps building on the absolute newest version, consciously.
+
+Rejecting a draft does **not** cascade to drafts already built on it: a draft saved on top of
+one that is later rejected keeps its files and stays reviewable. The impact is low, because a
+non-SKILL.md file only ever originates from an operator's save. An agent's draft can carry such a
+file only unchanged from its parent, so the descendant's extra files are ones an operator wrote.
+Reject the descendants too when the rejected file must not come back.
 
 ## Outbound egress
 
@@ -895,8 +912,10 @@ apply; every call is still metered to the skill's tenant through `record_usage`.
 of wall clock per job, after which it is `failed`; three claims per job, after which it is failed
 `attempts_exhausted`; `FELIX_SKILL_JOBS_MAX_QUEUED` jobs queued or running and
 `FELIX_SKILL_JOBS_DAILY_LIMIT` created per tenant per UTC day (429 `skill_jobs_cap_reached`);
-and one sweep at a time across every worker (a Postgres advisory lock), at most five jobs of each
-kind per sweep.
+and one sweep at a time across every worker, at most five jobs of each kind per sweep. The sweep
+holds a `skill_job_lease` row rather than an advisory lock, so it holds behind a
+transaction-mode pooler. The lease lasts one job deadline plus five minutes and is renewed before
+every job. A sweep whose lease lapsed and was taken over stops before its next job.
 
 ## Policy semantics
 
@@ -1228,7 +1247,9 @@ gated before, and never displaces a stricter literal rule.
 **Skill authoring.** `spec.skill_authoring.mode: publish` is refused at validation unless the
 approval rule this precedence selects for `create_skill`, and the one it selects for
 `update_skill`, both exist and carry no `when_args` — a conditional rule would let the calls
-without those arguments publish ungated. `governed.yaml` gates both tools even in draft mode.
+without those arguments publish ungated. `governed.yaml` carries such a rule (`skill-author`,
+both tools, no `when_args`) but does not enable `spec.skill_authoring`, so it binds neither tool;
+the rule applies to any manifest that enables authoring, in draft mode as well as publish.
 An `update_skill` grant binds the version it edits: `parent_version` is a required argument and the
 call signature is a hash of the arguments, so a grant found later — by a retry, another replica or
 a resumed fiber — authorizes an edit of that version only, and the call is refused with
