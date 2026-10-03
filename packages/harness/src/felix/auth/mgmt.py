@@ -127,12 +127,17 @@ SCOPE_DOCUMENTS_WRITE = "documents:write"
 # write them is its own grant rather than a side effect of being able to read spill.
 SCOPE_FILES_READ = "files:read"
 SCOPE_FILES_WRITE = "files:write"
-# Read-only, and separate from `manifests:read` rather than folded into it. A skill *body*
-# is prompt content -- it is appended to the system prompt on activation -- so reading one
-# is reading instructions the agent will follow, which is a different question from reading
-# the manifest that names it. An operator auditing prompts should be able to hold this
-# without also holding the scope that lists every manifest.
+# Separate from `manifests:read` rather than folded into it. A skill *body* is prompt
+# content -- `activate_skill` hands it to the model as instructions to follow -- so reading
+# one is reading instructions the agent will follow, which is a different question from
+# reading the manifest that names it. An operator auditing prompts should be able to hold
+# this without also holding the scope that lists every manifest.
 SCOPE_SKILLS_READ = "skills:read"
+# Writing the tenant skill library (`/skill-library`): save, publish, roll back, reject and
+# archive. Publishing puts text in front of every manifest in the tenant as instructions, so
+# it is a grant of its own rather than a side effect of `manifests:write`. Implies
+# `skills:read` through the usual rule.
+SCOPE_SKILLS_WRITE = "skills:write"
 
 __all__ = [
     "SCOPE_APPROVALS_READ",
@@ -154,6 +159,7 @@ __all__ = [
     "SCOPE_PLANS_READ",
     "SCOPE_PLANS_WRITE",
     "SCOPE_SKILLS_READ",
+    "SCOPE_SKILLS_WRITE",
     "SCOPE_USAGE_READ",
     "auth_from_request",
     "holds_mgmt_scopes",

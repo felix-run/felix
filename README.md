@@ -293,7 +293,9 @@ Agent Skills need no code at all: drop a `SKILL.md` under the directory named by
 `spec.skill_authoring.enabled` lets its agent draft skills into the tenant's library; a draft
 enters no catalog until it is published, and publishing is gated — a failing security scan always
 blocks, `FELIX_SKILL_PUBLISH_MIN_QUALITY` (0 = off) sets a floor on the 0-100 review score, and
-`FELIX_SKILL_PUBLISH_BLOCK_ON_ADVISORY` (false) also refuses an advisory scan.
+`FELIX_SKILL_PUBLISH_BLOCK_ON_ADVISORY` (false) also refuses an advisory scan. Operators review
+the queue, author, publish, roll back and archive through `/skill-library` (`skills:read` to
+read, `skills:write` to change).
 
 **[`examples/felix-plugin-example/`](examples/felix-plugin-example/)** is a working package that
 exercises every seam above.
@@ -340,7 +342,7 @@ way. Non-browser clients — the CLI, `felix-client`, curl, other services — a
 
 A dropped stream is recoverable: structural SSE frames carry an `id:` cursor (token-level frames do not, which per the SSE spec leaves the client's `lastEventId` on the last one it saw), and `GET /chat/stream/{thread_id}` replays what was missed (or opens with a `snapshot` frame) and then tails the thread. The run itself is still torn down on disconnect, so what you get back is the thread, not the abandoned turn.
 
-Management surfaces: `/audit`, `/approvals`, `/plans`, `/jobs`, `/manifests`, `/eval`, `/usage`, `/memory`. `POST /jobs/{name}/run` runs a job now instead of waiting for cron; `GET /manifests/{name}/versions` lists what a rollback can go back to. `/memory` lists, searches (the same hybrid ranking the agent sees), time-travels (`/memory/as-of/{turn_seq}`), writes and forgets long-term memories — an agent that remembers across sessions otherwise accumulates a store nobody can inspect.
+Management surfaces: `/audit`, `/approvals`, `/plans`, `/jobs`, `/manifests`, `/eval`, `/usage`, `/memory`, `/skill-library`. `POST /jobs/{name}/run` runs a job now instead of waiting for cron; `GET /manifests/{name}/versions` lists what a rollback can go back to. `/memory` lists, searches (the same hybrid ranking the agent sees), time-travels (`/memory/as-of/{turn_seq}`), writes and forgets long-term memories — an agent that remembers across sessions otherwise accumulates a store nobody can inspect.
 
 Python client (**experimental**): the `felix-client` package — `from felix_client import
 FelixClient` — covering chat (`prompt`, `stream`, `steer`, `follow_up`, `fork`, `rewind`,
