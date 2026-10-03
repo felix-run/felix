@@ -8,6 +8,7 @@ it was decided against, and that one tenant's library is invisible to another.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
@@ -169,3 +170,133 @@ async def test_deleting_a_draft_removes_an_otherwise_empty_skill(store_settings:
     # Only a draft may be taken back; a published version is history.
     await store.delete_draft("acme", "invoice-triage", "0.1.0")
     assert await store.get_version("acme", "invoice-triage", "0.1.0") is not None
+
+
+def _columns(model: Any) -> set[str]:
+    return {c.key for c in model.__table__.columns}
+
+
+@parametrized
+async def test_rows_carry_exactly_the_table_columns(store_settings: Any) -> None:
+    from felix.db.models import SkillFileRow, SkillRow, SkillVersionRow
+
+    store = get_skill_library_store(store_settings)
+    await _save(store, "0.1.0", at=1)
+    assert set(await store.get_version("acme", "invoice-triage", "0.1.0") or {}) == _columns(SkillVersionRow)
+    assert set(await store.get_skill("acme", "invoice-triage") or {}) == _columns(SkillRow)
+    for row in await store.list_files("acme", "invoice-triage", "0.1.0"):
+        assert set(row) == _columns(SkillFileRow)
+
+
+@parametrized
+async def test_republishing_an_archived_version_keeps_its_first_publish_time(store_settings: Any) -> None:
+    store = get_skill_library_store(store_settings)
+    await _save(store, "0.1.0", at=1)
+    await _save(store, "0.1.1", at=2)
+    await store.publish("acme", "invoice-triage", "0.1.0", from_statuses={"draft"}, by="ops", at=10)
+    await store.publish("acme", "invoice-triage", "0.1.1", from_statuses={"draft"}, by="ops", at=20)
+
+    previous = await store.publish(
+        "acme", "invoice-triage", "0.1.0", from_statuses={"archived", "published"}, by="ops", at=30
+    )
+    assert previous == "0.1.1"
+    row = await store.get_version("acme", "invoice-triage", "0.1.0")
+    assert row is not None and (row["status"], row["published_at"], row["decided_at"]) == (
+        "published",
+        10,
+        30,
+    )
+    assert [r["version"] for r in await store.list_live("acme")] == ["0.1.0"]
+
+
+@parametrized
+async def test_list_live_carries_the_skill_md_digest(store_settings: Any) -> None:
+    store = get_skill_library_store(store_settings)
+    await _save(store, "0.1.0", at=1)
+    assert await store.list_live("acme") == []
+    await store.publish("acme", "invoice-triage", "0.1.0", from_statuses={"draft"}, by="ops", at=2)
+    assert await store.list_live("acme") == [
+        {"name": "invoice-triage", "version": "0.1.0", "sha256": "a" * 64}
+    ]
+    assert await store.list_live("globex") == []
+
+
+@parametrized
+async def test_deleting_a_draft_keeps_a_skill_with_other_versions(store_settings: Any) -> None:
+    store = get_skill_library_store(store_settings)
+    await _save(store, "0.1.0", at=1)
+    await _save(store, "0.1.1", at=2)
+    await store.delete_draft("acme", "invoice-triage", "0.1.1")
+    assert await store.get_skill("acme", "invoice-triage") is not None
+    assert await store.version_ids("acme", "invoice-triage") == ["0.1.0"]
+
+
+@parametrized
+async def test_skills_list_in_codepoint_order_and_honour_the_limit(store_settings: Any) -> None:
+    store = get_skill_library_store(store_settings)
+    for i, name in enumerate(["ab", "a-c", "b"]):
+        row = {**_row("0.1.0", at=i), "name": name}
+        await store.insert_version("acme", row, [], created_by="ops", at=i)
+    # "-" (0x2d) sorts before "b" (0x62) by codepoint, whatever the database's collation.
+    assert [s["name"] for s in await store.list_skills("acme")] == ["a-c", "ab", "b"]
+    assert [s["name"] for s in await store.list_skills("acme", limit=2)] == ["a-c", "ab"]
+
+
+@parametrized
+async def test_a_publish_racing_a_reject_has_one_winner(store_settings: Any) -> None:
+    store = get_skill_library_store(store_settings)
+    await _save(store, "0.1.0", at=1)
+    results = await asyncio.gather(
+        store.publish("acme", "invoice-triage", "0.1.0", from_statuses={"draft"}, by="ops", at=5),
+        store.reject("acme", "invoice-triage", "0.1.0", by="ops", note="no", at=5),
+        return_exceptions=True,
+    )
+    conflicts = [r for r in results if isinstance(r, SkillStateConflict)]
+    assert len(conflicts) == 1, results
+    row = await store.get_version("acme", "invoice-triage", "0.1.0")
+    skill = await store.get_skill("acme", "invoice-triage")
+    assert row is not None and skill is not None
+    if row["status"] == "published":
+        assert skill["live_version"] == "0.1.0"
+    else:
+        assert row["status"] == "archived" and skill["live_version"] is None
+
+
+@parametrized
+async def test_two_publishes_leave_exactly_one_published_version(store_settings: Any) -> None:
+    store = get_skill_library_store(store_settings)
+    await _save(store, "0.1.0", at=1)
+    await _save(store, "0.1.1", at=2)
+    await asyncio.gather(
+        store.publish("acme", "invoice-triage", "0.1.0", from_statuses={"draft"}, by="ops", at=5),
+        store.publish("acme", "invoice-triage", "0.1.1", from_statuses={"draft"}, by="ops", at=6),
+    )
+    versions = await store.list_versions("acme", "invoice-triage")
+    published = [v["version"] for v in versions if v["status"] == "published"]
+    skill = await store.get_skill("acme", "invoice-triage")
+    assert len(published) == 1 and skill is not None and skill["live_version"] == published[0]
+
+
+@parametrized
+async def test_concurrent_agent_saves_stay_within_the_pending_cap(store_settings: Any) -> None:
+    from felix.skills import library
+    from felix.skills.format import serialize_skill_md
+    from felix.storage import MemoryObjectStore
+
+    files = {
+        "SKILL.md": serialize_skill_md({"name": "race-skill", "description": "d"}, "\n# Race\n\nSteps.\n")
+    }
+    who = library.DraftProvenance(source="agent", author="m", origin_manifest_id="m")
+    objects = MemoryObjectStore()
+    results = await asyncio.gather(
+        *(
+            library.save_draft(
+                store_settings, "acme", files=files, provenance=who, max_pending=1, object_store=objects
+            )
+            for _ in range(3)
+        ),
+        return_exceptions=True,
+    )
+    assert any(isinstance(r, library.SkillPendingCapReached) for r in results), results
+    assert all(isinstance(r, dict | library.SkillLibraryError) for r in results), results
+    assert await get_skill_library_store(store_settings).count_pending("acme", "m") <= 1

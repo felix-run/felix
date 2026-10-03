@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Agents can write skills, into a per-tenant skill library.** `spec.skill_authoring:
   {enabled: true}` binds `create_skill` and `update_skill`. A save is an immutable semver
   version (`0.1.0` first, a patch bump after), validated, quality-scored and security-scanned
-  off the event loop, its files in the object store at `skills/{tenant}/{name}/{version}/` and
+  off the event loop, its files in the object store at `skill-library/{tenant}/{name}/{version}/` and
   its review record in three new tables (`skill`, `skill_version`, `skill_file`; migration
   `0022`, tenant RLS like every other tenant table).
   - **Drafts by default.** `activate_skill` hands a skill body to the model as instructions,
@@ -20,12 +20,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     session in the tenant. A draft enters no catalog until it is published. `mode: publish`
     publishes at once if the gate passes and otherwise leaves the draft and says why.
   - **The publish gate** re-reads the bytes against the digests saved with them, re-validates
-    and re-scans. A failing security scan always blocks; `FELIX_SKILL_PUBLISH_MIN_QUALITY`
+    and re-scans. `mode: publish` requires an approvals rule on both tools (see Security). A failing security scan always blocks; `FELIX_SKILL_PUBLISH_MIN_QUALITY`
     (0 = off) and `FELIX_SKILL_PUBLISH_BLOCK_ON_ADVISORY` (false) raise the bar. Rollback goes
     back only to a version that was once live, through the same gate.
   - A library skill may not take a host skill's name (bundled, `FELIX_SKILLS_DIR`, or an
     uploaded object-store skill), and `spec.skill_authoring.max_pending` (20) caps one
-    manifest's undecided drafts. Every save, publish, block, rejection, rollback and archive is
+    manifest's undecided drafts (re-counted after the save, so concurrent saves cannot pass it);
+    one skill holds at most 200 versions. Every save, publish, block, rejection, rollback and archive is
     an audit event (`skill_draft_saved`, `skill_published`, `skill_rejected`,
     `skill_rolled_back`, `skill_archived`).
   - Published library skills join every catalog in the tenant after the host's own, and
@@ -439,6 +440,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   once.
 
 ### Security
+
+- **Skill library drafts could replace an operator's skill, and be served when the library was
+  unreachable.** Library bytes were written under the operator's own object-store layout,
+  `skills/{tenant}/{name}/{version}/`, so an agent's `create_skill` at `0.1.0` overwrote an
+  operator's uploaded skill pinned at that version; and when the library store raised during a
+  catalog load, a declared ref fell through to those raw keys and loaded whatever version it
+  pinned, unreviewed drafts included. Library bytes now live under their own prefix,
+  `skill-library/{tenant}/{name}/{version}/`, which nothing but the library reads; a live
+  version's SKILL.md and every `read_skill_file` read are checked against the digests saved with
+  them, and only paths the version saved are served. An unreachable library now means no library
+  skills, never a fallback.
+- **`spec.skill_authoring.mode: publish` now requires an approval.** The manifest is refused
+  unless the approval rule selected for `create_skill` and for `update_skill` exists and has no
+  `when_args`, so a person reads every skill an agent publishes. In any mode, an agent's edit of
+  a skill whose live version an operator wrote is saved as a draft and never auto-published.
 
 - **GitHub login starts have a deployment-wide cap, and an IPv6 client is its /64.** Each
   `POST /auth/github/device` spends from the OAuth app's GitHub quota, which every caller
