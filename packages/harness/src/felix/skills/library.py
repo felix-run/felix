@@ -35,6 +35,7 @@ from felix.skills.library_store import (
     ExpectedLive,
     SkillLibraryStore,
     SkillLiveMismatch,
+    SkillPendingFull,
     SkillStateConflict,
     SkillStatus,
     SkillVersionExists,
@@ -314,8 +315,10 @@ async def _reserve(
     bump: SemverBump,
     expect_newest: str | _MustNotExist | None,
     buildable: bool = False,
+    max_pending: int | None = None,
 ) -> dict[str, Any]:
     """Insert the version row under the next free version; the primary key settles a race.
+    ``max_pending`` is the agent pending cap, checked by the store in the insert's transaction.
 
     ``expect_newest`` is checked on every attempt, so a save that loses a race to the version
     after its parent is refused as `parent_changed` rather than bumped past the winner. With
@@ -338,8 +341,12 @@ async def _reserve(
             )
         row = {**row, "version": _next_version(newest, explicit=explicit, bump=bump)}
         try:
-            await lib.insert_version(tenant_id, row, files, created_by=row["author"], at=row["created_at"])
+            await lib.insert_version(
+                tenant_id, row, files, created_by=row["author"], at=row["created_at"], max_pending=max_pending
+            )
             return row
+        except SkillPendingFull as exc:
+            raise _pending_refused(row.get("origin_manifest_id"), exc.held, exc.limit) from exc
         except SkillVersionExists as exc:
             if explicit is not None:
                 raise SkillVersionConflict(f"version {explicit} already exists") from exc
@@ -380,30 +387,31 @@ async def newest_buildable_versions(
     return {n: v for n, vs in rows.items() if (v := newest_version(vs)) is not None}
 
 
-async def _check_pending(
-    lib: SkillLibraryStore,
-    tenant_id: str,
-    provenance: DraftProvenance,
-    max_pending: int | None,
-    *,
-    after: bool,
-) -> None:
-    """The pending cap, which applies to agent drafts and nothing else (`DraftProvenance`).
+def _pending_cap(provenance: DraftProvenance, max_pending: int | None) -> int | None:
+    """The pending cap, which applies to agent drafts with an origin manifest and nothing else
+    (`DraftProvenance`)."""
+    if provenance.source != "agent" or not provenance.origin_manifest_id:
+        return None
+    return max_pending
 
-    Checked before the save and again after it. Count-then-insert races -- two saves at one
-    under the cap both see room -- so the recount, which includes this draft, catches what
-    the first count missed. Both racers may then back out; refusing one too many is the
-    failure that leaves the queue bounded.
-    """
-    origin = provenance.origin_manifest_id
-    if provenance.source != "agent" or max_pending is None or not origin:
+
+def _pending_refused(origin: str | None, held: int, limit: int) -> SkillPendingCapReached:
+    return SkillPendingCapReached(f"{origin} already has {held} drafts awaiting review (limit {limit})")
+
+
+async def _check_pending(
+    lib: SkillLibraryStore, tenant_id: str, provenance: DraftProvenance, max_pending: int | None
+) -> None:
+    """An early refusal at the pending cap, before the review and scan a save at the cap would
+    waste. Not the cap itself: two saves can both pass this, and the one the store's capped
+    `insert_version` then counts past the cap is refused there, in the transaction that would
+    have written it (`library_store.SkillPendingFull`)."""
+    cap = _pending_cap(provenance, max_pending)
+    if cap is None:
         return
-    pending = await lib.count_pending(tenant_id, origin)
-    if pending > max_pending or (not after and pending >= max_pending):
-        held = pending - 1 if after else pending
-        raise SkillPendingCapReached(
-            f"{origin} already has {held} drafts awaiting review (limit {max_pending})"
-        )
+    held = await lib.count_pending(tenant_id, str(provenance.origin_manifest_id))
+    if held >= cap:
+        raise _pending_refused(provenance.origin_manifest_id, held, cap)
 
 
 async def save_draft(
@@ -425,7 +433,8 @@ async def save_draft(
     ``name``, when given, must be the SKILL.md's own name. ``parent`` is the version this one
     was edited from (lineage, not the bump base: the bump is from the newest version, so a
     save is always newer than everything saved before it). ``max_pending`` caps how many
-    undecided agent drafts one origin manifest may hold (`_check_pending`).
+    undecided agent drafts one origin manifest may hold, exactly: the store counts them and
+    writes this one in a single transaction under a lock per origin manifest.
 
     ``expect_newest`` is optimistic concurrency: the newest version the caller saw, or
     `MUST_NOT_EXIST` for a create. A save made against anything else is refused
@@ -444,7 +453,7 @@ async def save_draft(
         raise SkillNameShadowed(f"{skill_name!r} is a host skill; the library cannot replace it")
 
     lib = get_skill_library_store(settings)
-    await _check_pending(lib, tenant_id, provenance, max_pending, after=False)
+    await _check_pending(lib, tenant_id, provenance, max_pending)
     if parent is not None and await lib.get_version(tenant_id, skill_name, parent) is None:
         raise SkillNotFound(f"parent version {skill_name}@{parent} does not exist")
     if provenance.source == "agent":
@@ -472,9 +481,9 @@ async def save_draft(
         bump=bump,
         expect_newest=expect_newest,
         buildable=provenance.source == "agent",
+        max_pending=_pending_cap(provenance, max_pending),
     )
     try:
-        await _check_pending(lib, tenant_id, provenance, max_pending, after=True)
         await _write_files(store, tenant_id, skill_name, row["version"], files)
     except Exception:
         # The row is a draft, so nothing loaded it in the meantime; take it and any bytes

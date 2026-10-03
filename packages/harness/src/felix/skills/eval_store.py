@@ -19,10 +19,13 @@ from felix.skills.quality_store import (
     MAX_LISTED,
     MAX_RESCANS,
     Cursor,
+    JobCaps,
     Postgres,
     SkillEvalInFlight,
     fair_order,
+    hold_job_caps,
     lapsed,
+    memory_job_caps,
     new_token,
     postgres_settings,
     row_key,
@@ -69,7 +72,13 @@ def _eval_due(row: dict[str, Any], now: int) -> bool:
 
 @runtime_checkable
 class SkillEvalStore(Protocol):
-    async def insert(self, tenant_id: str, row: dict[str, Any]) -> dict[str, Any]: ...
+    async def insert(
+        self, tenant_id: str, row: dict[str, Any], *, caps: JobCaps | None = None
+    ) -> dict[str, Any]:
+        """Queue an evaluation. With ``caps`` it is refused (`SkillJobsAtCap`) unless the
+        tenant has room, counted in the same transaction as the insert
+        (`quality_store.hold_job_caps`)."""
+        ...
 
     async def get(self, tenant_id: str, row_id: str) -> dict[str, Any] | None: ...
 
@@ -111,7 +120,13 @@ class InMemorySkillEvalStore:
     def clear(self) -> None:
         self._rows.clear()
 
-    async def insert(self, tenant_id: str, row: dict[str, Any]) -> dict[str, Any]:
+    async def insert(
+        self, tenant_id: str, row: dict[str, Any], *, caps: JobCaps | None = None
+    ) -> dict[str, Any]:
+        # No await from the count to the write: one event loop cannot interleave another
+        # insert between them.
+        if caps is not None:
+            memory_job_caps(tenant_id, caps, evals=self)
         for (t, _), other in self._rows.items():
             if (
                 t == tenant_id
@@ -178,13 +193,19 @@ class InMemorySkillEvalStore:
             {"scenario_source": rows[0]["scenario_source"], "scenarios": rows[0]["scenarios"]}
         )
 
-    async def count_jobs_in_flight(self, tenant_id: str) -> int:
+    def jobs_in_flight(self, tenant_id: str) -> int:
         return sum(
             1 for (t, _), r in self._rows.items() if t == tenant_id and r["status"] in {"queued", "running"}
         )
 
-    async def count_jobs_since(self, tenant_id: str, since: int) -> int:
+    def jobs_since(self, tenant_id: str, since: int) -> int:
         return sum(1 for (t, _), r in self._rows.items() if t == tenant_id and r["created_at"] >= since)
+
+    async def count_jobs_in_flight(self, tenant_id: str) -> int:
+        return self.jobs_in_flight(tenant_id)
+
+    async def count_jobs_since(self, tenant_id: str, since: int) -> int:
+        return self.jobs_since(tenant_id, since)
 
     async def claim_next(self, *, now: int) -> dict[str, Any] | None:
         for _ in range(MAX_RESCANS):
@@ -226,12 +247,16 @@ class InMemorySkillEvalStore:
 
 
 class PostgresSkillEvalStore(Postgres):
-    async def insert(self, tenant_id: str, row: dict[str, Any]) -> dict[str, Any]:
+    async def insert(
+        self, tenant_id: str, row: dict[str, Any], *, caps: JobCaps | None = None
+    ) -> dict[str, Any]:
         from sqlalchemy.exc import IntegrityError
 
         from felix.db.models import SkillEvalRow
 
         async with self._session(tenant_id) as db:
+            if caps is not None:
+                await hold_job_caps(db, tenant_id, caps)
             obj = SkillEvalRow(**{**_EVAL_DEFAULTS, **row, "tenant_id": tenant_id})
             db.add(obj)
             try:
@@ -400,6 +425,11 @@ def get_skill_eval_store(settings: Settings | None = None) -> SkillEvalStore:
     return _memory if pg is None else PostgresSkillEvalStore(pg)
 
 
+def memory_store() -> InMemorySkillEvalStore:
+    """The twin `get_skill_eval_store` hands out under `memory://`."""
+    return _memory
+
+
 def clear_memory() -> None:
     _memory.clear()
 
@@ -410,4 +440,5 @@ __all__ = [
     "SkillEvalStore",
     "clear_memory",
     "get_skill_eval_store",
+    "memory_store",
 ]

@@ -7,6 +7,8 @@ improvement and an evaluation do is `skills/improve.py` and `skills/evaluate.py`
 enforces the things only storage can:
 
 - a decision lands only on feedback still `pending`, so an accept racing a reject cannot both win;
+- an agent's pending-feedback cap is exact: the count and the insert share one transaction,
+  under an advisory lock per `(tenant, author)` (`feedback_lock_key`);
 - a version has at most one evaluation queued or running (a partial unique index on Postgres);
 - a job is run by one worker at a time. `claim_next` takes one row under `FOR UPDATE SKIP
   LOCKED` on Postgres, and in one step with no await in the twin, and hands the claimer a
@@ -20,7 +22,13 @@ enforces the things only storage can:
   candidates are cut to `_TENANTS_SCANNED` only after that ordering, so a tenant whose id sorts
   late is not left out of every scan;
 - one sweep runs at a time: a `skill_job_lease` row taken, renewed and released by token, one
-  statement per transaction, so it holds behind a transaction-mode pooler.
+  statement per transaction, so it holds behind a transaction-mode pooler;
+- a tenant's job caps are exact (`JobCaps`): queueing an evaluation and accepting feedback with
+  `improve` each count both tables and write their row in one transaction, under one
+  transaction-scoped advisory lock per tenant (`hold_job_caps`), so two requests at the cap
+  cannot both see room. `pg_advisory_xact_lock` is released at commit or rollback, so like the
+  lease it holds behind a transaction-mode pooler. The twins count and write with no await
+  between (`memory_job_caps`), which is the same thing in one event loop.
 
 A claim whose heartbeat is older than `CLAIM_LEASE_MS` belonged to a dead worker and is taken
 again. Every listing ends on the primary key (`id`), so the two arms agree on where a page ends.
@@ -69,8 +77,109 @@ class SkillFeedbackConflict(Exception):
     """The feedback is not in the state the change was decided against, or does not exist."""
 
 
+class SkillFeedbackAtCap(Exception):
+    """An agent's manifest already holds ``held`` pending feedback, and ``limit`` is its cap."""
+
+    def __init__(self, held: int, limit: int) -> None:
+        super().__init__(f"{held} of {limit}")
+        self.held, self.limit = held, limit
+
+
 class SkillEvalInFlight(Exception):
     """The version already has an evaluation queued or running."""
+
+
+class SkillJobsAtCap(Exception):
+    """The tenant already holds as many skill jobs as ``what`` allows: ``queued`` (queued or
+    running now) or ``daily`` (created since the start of the UTC day)."""
+
+    def __init__(self, what: Literal["queued", "daily"], count: int, limit: int) -> None:
+        super().__init__(f"{what}: {count} of {limit}")
+        self.what, self.count, self.limit = what, count, limit
+
+
+@dataclass(slots=True, frozen=True)
+class JobCaps:
+    """A tenant's job caps, handed to the write that adds a job so the store can check them in
+    the same transaction as the insert. Limits rather than a check callable: the count has to
+    run on the store's own session, under its lock, and a callable would need that session
+    handed out to code that does not own it. ``since`` is the start of the UTC day."""
+
+    max_queued: int
+    daily_limit: int
+    since: int
+
+    def refuse_past(self, waiting: int, today: int) -> None:
+        if waiting >= self.max_queued:
+            raise SkillJobsAtCap("queued", waiting, self.max_queued)
+        if today >= self.daily_limit:
+            raise SkillJobsAtCap("daily", today, self.daily_limit)
+
+
+def feedback_lock_key(tenant_id: str, author: str) -> str:
+    """The advisory lock an agent's capped feedback insert takes: one per manifest."""
+    return f"skill_feedback:{tenant_id}:{author}"
+
+
+async def xact_lock(db: Any, key: str) -> None:
+    """A transaction-scoped advisory lock on ``key``, released at commit or rollback -- never a
+    session lock, which a transaction-mode pooler would leave on whichever server session it
+    landed on."""
+    from sqlalchemy import text
+
+    await db.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"), {"k": key})
+
+
+def job_lock_key(tenant_id: str) -> str:
+    """The advisory lock every write that adds a tenant's skill job takes, whichever table."""
+    return f"skill_jobs:{tenant_id}"
+
+
+async def hold_job_caps(db: Any, tenant_id: str, caps: JobCaps) -> None:
+    """Take the tenant's job lock in ``db``'s transaction, then count its jobs in both tables.
+
+    Raises `SkillJobsAtCap` past either cap. The lock lasts until the caller commits or rolls
+    back, so the row the caller then writes is counted by the next writer; the evaluation and
+    the feedback stores both come through here, which is what makes the cap one cap across
+    both tables.
+    """
+    from sqlalchemy import func, select
+
+    from felix.db.models import SkillEvalRow as E
+    from felix.db.models import SkillFeedbackRow as F
+
+    await xact_lock(db, job_lock_key(tenant_id))
+    f_waiting, f_today = (
+        await db.execute(
+            select(
+                func.count().filter(F.status == "accepted", F.improve.is_(True)),
+                func.count().filter(F.improve.is_(True), F.decided_at >= caps.since),
+            ).where(F.tenant_id == tenant_id)
+        )
+    ).one()
+    e_waiting, e_today = (
+        await db.execute(
+            select(
+                func.count().filter(E.status.in_(("queued", "running"))),
+                func.count().filter(E.created_at >= caps.since),
+            ).where(E.tenant_id == tenant_id)
+        )
+    ).one()
+    caps.refuse_past(int(f_waiting) + int(e_waiting), int(f_today) + int(e_today))
+
+
+def memory_job_caps(tenant_id: str, caps: JobCaps, *, feedback: Any = None, evals: Any = None) -> None:
+    """`hold_job_caps` for the twins: synchronous, so a caller that writes its row straight
+    after, with no await between, holds the event loop from the count to the write. A store
+    passes itself for its own table; the other is the module's twin."""
+    from felix.skills import eval_store, feedback_store
+
+    feedback = feedback if feedback is not None else feedback_store.memory_store()
+    evals = evals if evals is not None else eval_store.memory_store()
+    caps.refuse_past(
+        feedback.jobs_in_flight(tenant_id) + evals.jobs_in_flight(tenant_id),
+        feedback.jobs_since(tenant_id, caps.since) + evals.jobs_since(tenant_id, caps.since),
+    )
 
 
 @runtime_checkable
@@ -482,23 +591,31 @@ __all__ = [
     "FeedbackStatus",
     "InMemorySkillPolicyStore",
     "InMemorySweepLease",
+    "JobCaps",
     "Postgres",
     "PostgresSkillPolicyStore",
     "PostgresSweepLease",
     "ScenarioSource",
     "SkillEvalInFlight",
+    "SkillFeedbackAtCap",
     "SkillFeedbackConflict",
+    "SkillJobsAtCap",
     "SkillPolicyStore",
     "SweepLease",
     "SweepLeaseStore",
     "clear_memory",
     "fair_order",
+    "feedback_lock_key",
     "get_skill_policy_store",
     "get_sweep_lease_store",
+    "hold_job_caps",
+    "job_lock_key",
     "lapsed",
+    "memory_job_caps",
     "new_token",
     "postgres_settings",
     "row_key",
     "sweep_lease_ms",
     "sweep_lock",
+    "xact_lock",
 ]

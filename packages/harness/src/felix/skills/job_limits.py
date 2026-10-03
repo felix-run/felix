@@ -7,18 +7,21 @@ bill, and the worker runs them one at a time across every tenant. So a tenant ma
 `skill_jobs_cap_reached` (429), which waiting fixes. A job is an evaluation, or feedback accepted
 with `improve`.
 
-Count, then insert: two requests racing at the cap can both get in. The caps bound a tenant's
-spend and its share of the worker, not an exact count.
+The caps are exact. They are not checked here and then written elsewhere: `job_caps` hands the
+limits to the store write that adds the job, which counts both tables and writes its row in one
+transaction under a per-tenant lock (`quality_store.hold_job_caps`), so requests racing at the
+cap get in one at a time and the one past it is refused.
 """
 
 from __future__ import annotations
 
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 from felix.config import Settings
-from felix.skills.eval_store import get_skill_eval_store
-from felix.skills.feedback_store import get_skill_feedback_store
 from felix.skills.library import SkillLibraryError
+from felix.skills.quality_store import JobCaps, SkillJobsAtCap
 
 _DAY_MS = 86_400_000
 
@@ -31,20 +34,26 @@ def utc_day_start(now_ms: int) -> int:
     return now_ms - now_ms % _DAY_MS
 
 
-async def check_job_caps(settings: Settings, tenant_id: str, *, now_ms: int | None = None) -> None:
-    """Raise `SkillJobsCapReached` when ``tenant_id`` may not queue another job now."""
-    feedback, evals = get_skill_feedback_store(settings), get_skill_eval_store(settings)
-    waiting = await feedback.count_jobs_in_flight(tenant_id) + await evals.count_jobs_in_flight(tenant_id)
-    if waiting >= settings.skill_jobs_max_queued:
-        raise SkillJobsCapReached(
-            f"{waiting} skill jobs are already queued or running (limit {settings.skill_jobs_max_queued})"
-        )
-    since = utc_day_start(now_ms if now_ms is not None else int(time.time() * 1000))
-    today = await feedback.count_jobs_since(tenant_id, since) + await evals.count_jobs_since(tenant_id, since)
-    if today >= settings.skill_jobs_daily_limit:
-        raise SkillJobsCapReached(
-            f"{today} skill jobs were created today (UTC; limit {settings.skill_jobs_daily_limit})"
-        )
+def job_caps(settings: Settings, *, now_ms: int | None = None) -> JobCaps:
+    """The tenant job caps as of ``now_ms`` (now), for the store write that adds a job."""
+    return JobCaps(
+        max_queued=settings.skill_jobs_max_queued,
+        daily_limit=settings.skill_jobs_daily_limit,
+        since=utc_day_start(now_ms if now_ms is not None else int(time.time() * 1000)),
+    )
 
 
-__all__ = ["SkillJobsCapReached", "check_job_caps", "utc_day_start"]
+@contextmanager
+def refused_at_cap() -> Iterator[None]:
+    """Around a capped store write: the store's `SkillJobsAtCap` as `SkillJobsCapReached`."""
+    try:
+        yield
+    except SkillJobsAtCap as exc:
+        if exc.what == "queued":
+            message = f"{exc.count} skill jobs are already queued or running (limit {exc.limit})"
+        else:
+            message = f"{exc.count} skill jobs were created today (UTC; limit {exc.limit})"
+        raise SkillJobsCapReached(message) from exc
+
+
+__all__ = ["SkillJobsCapReached", "job_caps", "refused_at_cap", "utc_day_start"]

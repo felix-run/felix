@@ -1,9 +1,12 @@
 """Rows for the tenant skill library: `skill`, `skill_version`, `skill_file`.
 
 Data access only. What a version may become, and who may make it so, is `skills/library.py`;
-this module stores what it decides and enforces the two things only storage can — that a
-version is written once (its primary key), and that a status change lands only on the state it
-was decided against (`SkillStateConflict`), so a publish racing a reject cannot both win.
+this module stores what it decides and enforces the things only storage can — that a version is
+written once (its primary key), that a status change lands only on the state it was decided
+against (`SkillStateConflict`), so a publish racing a reject cannot both win, and that the
+pending cap is exact: a capped `insert_version` counts the origin manifest's agent drafts and
+writes its own in one transaction, under an advisory lock per `(tenant, origin manifest)`
+(`pending_lock_key`), so saves racing at the cap land one at a time (`SkillPendingFull`).
 
 File bytes are not here. They live in the object store under `library_object_key`, and a
 `skill_file` row records the digest and size of what was written there.
@@ -49,6 +52,19 @@ SUMMARY_COLUMNS = ("version", "status", "source", "quality_score", "security_sta
 
 class SkillVersionExists(Exception):
     """The `(tenant, name, version)` row is already there — two saves raced to one version."""
+
+
+class SkillPendingFull(Exception):
+    """The origin manifest already holds ``held`` agent drafts, and ``limit`` is its cap."""
+
+    def __init__(self, held: int, limit: int) -> None:
+        super().__init__(f"{held} of {limit}")
+        self.held, self.limit = held, limit
+
+
+def pending_lock_key(tenant_id: str, origin_manifest_id: str) -> str:
+    """The advisory lock a capped draft save takes: one per origin manifest."""
+    return f"skill_drafts:{tenant_id}:{origin_manifest_id}"
 
 
 class SkillStateConflict(Exception):
@@ -102,8 +118,19 @@ class SkillLibraryStore(Protocol):
     async def count_pending(self, tenant_id: str, origin_manifest_id: str) -> int: ...
 
     async def insert_version(
-        self, tenant_id: str, row: dict[str, Any], files: list[dict[str, Any]], *, created_by: str, at: int
-    ) -> None: ...
+        self,
+        tenant_id: str,
+        row: dict[str, Any],
+        files: list[dict[str, Any]],
+        *,
+        created_by: str,
+        at: int,
+        max_pending: int | None = None,
+    ) -> None:
+        """Write a version once (`SkillVersionExists`). With ``max_pending``, refused
+        (`SkillPendingFull`) when the row's origin manifest already holds that many agent
+        drafts, counted in the same transaction as the write."""
+        ...
 
     async def delete_draft(self, tenant_id: str, name: str, version: str) -> None: ...
 
@@ -245,6 +272,9 @@ class InMemorySkillLibraryStore:
         return copy.deepcopy(sorted(files, key=lambda f: f["path"]))
 
     async def count_pending(self, tenant_id: str, origin_manifest_id: str) -> int:
+        return self._pending(tenant_id, origin_manifest_id)
+
+    def _pending(self, tenant_id: str, origin_manifest_id: str) -> int:
         return sum(
             1
             for (t, _, _), r in self._versions.items()
@@ -255,9 +285,22 @@ class InMemorySkillLibraryStore:
         )
 
     async def insert_version(
-        self, tenant_id: str, row: dict[str, Any], files: list[dict[str, Any]], *, created_by: str, at: int
+        self,
+        tenant_id: str,
+        row: dict[str, Any],
+        files: list[dict[str, Any]],
+        *,
+        created_by: str,
+        at: int,
+        max_pending: int | None = None,
     ) -> None:
         name, version = row["name"], row["version"]
+        # No await from the count to the write: one event loop cannot interleave another save.
+        if (
+            max_pending is not None
+            and (held := self._pending(tenant_id, str(row.get("origin_manifest_id")))) >= max_pending
+        ):
+            raise SkillPendingFull(held, max_pending)
         if (tenant_id, name, version) in self._versions:
             raise SkillVersionExists(f"{name}@{version}")
         skill = self._skills.get((tenant_id, name))
@@ -556,28 +599,40 @@ class PostgresSkillLibraryStore:
             return [self._row(r) for r in rows]
 
     async def count_pending(self, tenant_id: str, origin_manifest_id: str) -> int:
+        async with self._session(tenant_id) as db:
+            return await self._pending(db, tenant_id, origin_manifest_id)
+
+    @staticmethod
+    async def _pending(db: Any, tenant_id: str, origin_manifest_id: str) -> int:
         from sqlalchemy import func, select
 
         from felix.db.models import SkillVersionRow
 
-        async with self._session(tenant_id) as db:
-            count = await db.scalar(
-                select(func.count())
-                .select_from(SkillVersionRow)
-                .where(
-                    SkillVersionRow.tenant_id == tenant_id,
-                    SkillVersionRow.origin_manifest_id == origin_manifest_id,
-                    SkillVersionRow.status == "draft",
-                    SkillVersionRow.source == "agent",
-                )
+        count = await db.scalar(
+            select(func.count())
+            .select_from(SkillVersionRow)
+            .where(
+                SkillVersionRow.tenant_id == tenant_id,
+                SkillVersionRow.origin_manifest_id == origin_manifest_id,
+                SkillVersionRow.status == "draft",
+                SkillVersionRow.source == "agent",
             )
-            return int(count or 0)
+        )
+        return int(count or 0)
 
     async def insert_version(
-        self, tenant_id: str, row: dict[str, Any], files: list[dict[str, Any]], *, created_by: str, at: int
+        self,
+        tenant_id: str,
+        row: dict[str, Any],
+        files: list[dict[str, Any]],
+        *,
+        created_by: str,
+        at: int,
+        max_pending: int | None = None,
     ) -> None:
         from typing import cast
 
+        from sqlalchemy import text
         from sqlalchemy.dialects.postgresql import insert as pg_insert
         from sqlalchemy.exc import IntegrityError
 
@@ -585,6 +640,16 @@ class PostgresSkillLibraryStore:
 
         name, version = row["name"], row["version"]
         async with self._session(tenant_id) as db:
+            if max_pending is not None:
+                # Transaction-scoped, so it holds behind a transaction-mode pooler and is gone
+                # at the commit or rollback below.
+                origin = str(row.get("origin_manifest_id"))
+                await db.execute(
+                    text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
+                    {"k": pending_lock_key(tenant_id, origin)},
+                )
+                if (held := await self._pending(db, tenant_id, origin)) >= max_pending:
+                    raise SkillPendingFull(held, max_pending)
             skill = pg_insert(cast(Any, SkillRow.__table__)).values(
                 tenant_id=tenant_id,
                 name=name,
@@ -802,6 +867,7 @@ __all__ = [
     "PostgresSkillLibraryStore",
     "SkillLibraryStore",
     "SkillLiveMismatch",
+    "SkillPendingFull",
     "SkillStateConflict",
     "SkillStatus",
     "SkillVersionExists",
@@ -809,4 +875,5 @@ __all__ = [
     "get_skill_library_store",
     "is_rejected",
     "library_object_key",
+    "pending_lock_key",
 ]

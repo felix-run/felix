@@ -37,6 +37,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   renewed before every job. A sweep whose lease was taken over stops before its next job. The
   fair claim also orders tenants by last claim *before* cutting the scan to 500, so a tenant
   whose id sorts late is no longer left out of every scan.
+- **The skill job caps and pending caps are exact.** Requests racing at a cap could all get in.
+  This affected `FELIX_SKILL_JOBS_MAX_QUEUED`, `FELIX_SKILL_JOBS_DAILY_LIMIT` and an agent's
+  `skill_authoring.max_pending` feedback cap, because each counted in one transaction and inserted
+  in another. The agent's pending draft cap re-counted after the insert instead, so two saves at
+  the cap could both be refused. Each now counts and inserts in one transaction, under a
+  transaction-scoped advisory lock: per tenant for the job caps, which span evaluations and
+  improvements together, and per manifest for the pending caps. The lock is released at commit or
+  rollback, so it holds behind PgBouncer in transaction mode. The in-memory stores count and
+  insert with no await between, which gives the same result.
 
 ## [0.6.0] — 2026-10-03
 

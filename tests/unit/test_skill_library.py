@@ -402,8 +402,9 @@ async def test_concurrent_agent_saves_cannot_pass_the_pending_cap(
         *(_draft(settings, store, max_pending=1) for _ in range(3)), return_exceptions=True
     )
     refused = [r for r in results if isinstance(r, library.SkillPendingCapReached)]
-    assert refused and all(isinstance(r, dict | library.SkillPendingCapReached) for r in results)
-    assert await get_skill_library_store(settings).count_pending("acme", "contributor") <= 1
+    assert len(refused) == 2 and all(isinstance(r, dict | library.SkillPendingCapReached) for r in results)
+    # Exact, not conservative: the one that fits lands, rather than every racer backing out.
+    assert await get_skill_library_store(settings).count_pending("acme", "contributor") == 1
 
 
 async def test_a_failed_write_leaves_no_row_and_no_bytes(settings: Settings) -> None:

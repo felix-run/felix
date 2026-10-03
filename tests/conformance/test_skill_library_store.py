@@ -297,9 +297,9 @@ async def test_concurrent_agent_saves_stay_within_the_pending_cap(store_settings
         ),
         return_exceptions=True,
     )
-    assert any(isinstance(r, library.SkillPendingCapReached) for r in results), results
+    assert sum(isinstance(r, library.SkillPendingCapReached) for r in results) == 2, results
     assert all(isinstance(r, dict | library.SkillLibraryError) for r in results), results
-    assert await get_skill_library_store(store_settings).count_pending("acme", "m") <= 1
+    assert await get_skill_library_store(store_settings).count_pending("acme", "m") == 1
 
 
 async def _named(store: Any, name: str, version: str, *, at: int, tenant: str = "acme") -> None:

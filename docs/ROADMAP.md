@@ -362,7 +362,9 @@ First, because everything else governs it.
          session advisory lock, which leaked behind PgBouncer in transaction mode, and the fair
          claim cuts its tenant scan after ordering by last claim. Open: the sweep is a once-a-minute cron (the API does not enqueue to
          the worker); a skill that persuades the answering model to talk up its own answer is a
-         residual risk to an eval-gated publish; the job caps count then insert.
+         residual risk to an eval-gated publish. Fixed since: the job caps, an agent's pending
+         feedback cap and its pending draft cap count and insert in one transaction under a
+         per-tenant (or per-manifest) `pg_advisory_xact_lock`, so they are exact.
       5. [x] (web#327) felix-web: client, vendored skill-format, library / editor / diff / review
          queue / inline chat card, evals, feedback and the policy form; publishes name the live
          version they expect. Open: the inline card was verified against a scripted model only.

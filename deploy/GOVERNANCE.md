@@ -911,11 +911,19 @@ apply; every call is still metered to the skill's tenant through `record_usage`.
 `FELIX_SKILL_EVAL_MAX_SCENARIOS` (four calls each) per evaluation; `FELIX_SKILL_JOB_DEADLINE_SECONDS`
 of wall clock per job, after which it is `failed`; three claims per job, after which it is failed
 `attempts_exhausted`; `FELIX_SKILL_JOBS_MAX_QUEUED` jobs queued or running and
-`FELIX_SKILL_JOBS_DAILY_LIMIT` created per tenant per UTC day (429 `skill_jobs_cap_reached`);
-and one sweep at a time across every worker, at most five jobs of each kind per sweep. The sweep
+`FELIX_SKILL_JOBS_DAILY_LIMIT` created per tenant per UTC day (429 `skill_jobs_cap_reached`),
+across evaluations and improvements together; and one sweep at a time across every worker, at most five jobs of each kind per sweep. The sweep
 holds a `skill_job_lease` row rather than an advisory lock, so it holds behind a
 transaction-mode pooler. The lease lasts one job deadline plus five minutes and is renewed before
 every job. A sweep whose lease lapsed and was taken over stops before its next job.
+
+**The caps are exact.** Requests racing at a cap get in one at a time, and the one past it is
+refused. Each write that adds a job counts the tenant's jobs and writes its row in one
+transaction, under a transaction-scoped advisory lock per tenant. The same holds for an agent's
+pending feedback (`skill_authoring.max_pending`, a lock per manifest) and its pending drafts (a
+lock per origin manifest). A transaction-scoped lock is released at commit or rollback, so it
+holds behind a transaction-mode pooler. A draft save racing another at the cap no longer
+refuses both.
 
 ## Policy semantics
 

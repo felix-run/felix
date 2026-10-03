@@ -19,13 +19,19 @@ from felix.skills.quality_store import (
     MAX_LISTED,
     MAX_RESCANS,
     Cursor,
+    JobCaps,
     Postgres,
+    SkillFeedbackAtCap,
     SkillFeedbackConflict,
     fair_order,
+    feedback_lock_key,
+    hold_job_caps,
     lapsed,
+    memory_job_caps,
     new_token,
     postgres_settings,
     row_key,
+    xact_lock,
 )
 
 _FEEDBACK_DEFAULTS: dict[str, Any] = {
@@ -52,7 +58,13 @@ def _improvement_due(row: dict[str, Any], now: int) -> bool:
 
 @runtime_checkable
 class SkillFeedbackStore(Protocol):
-    async def insert(self, tenant_id: str, row: dict[str, Any]) -> dict[str, Any]: ...
+    async def insert(
+        self, tenant_id: str, row: dict[str, Any], *, max_pending: int | None = None
+    ) -> dict[str, Any]:
+        """File feedback. With ``max_pending`` it is refused (`SkillFeedbackAtCap`) when the
+        row's author already holds that much pending agent feedback, counted in the same
+        transaction as the insert."""
+        ...
 
     async def get(self, tenant_id: str, row_id: str) -> dict[str, Any] | None: ...
 
@@ -82,7 +94,12 @@ class SkillFeedbackStore(Protocol):
         by: str,
         note: str | None,
         at: int,
-    ) -> dict[str, Any]: ...
+        caps: JobCaps | None = None,
+    ) -> dict[str, Any]:
+        """Decide pending feedback. An accept with ``improve`` starts a job, so with ``caps``
+        it is refused (`SkillJobsAtCap`) unless the tenant has room, counted in the same
+        transaction as the decision (`quality_store.hold_job_caps`)."""
+        ...
 
     async def count_jobs_in_flight(self, tenant_id: str) -> int: ...
 
@@ -114,7 +131,12 @@ class InMemorySkillFeedbackStore:
     def clear(self) -> None:
         self._rows.clear()
 
-    async def insert(self, tenant_id: str, row: dict[str, Any]) -> dict[str, Any]:
+    async def insert(
+        self, tenant_id: str, row: dict[str, Any], *, max_pending: int | None = None
+    ) -> dict[str, Any]:
+        # No await from the count to the write, as `decide`.
+        if max_pending is not None and (held := self.pending_agent(tenant_id, row["author"])) >= max_pending:
+            raise SkillFeedbackAtCap(held, max_pending)
         stored = {**_FEEDBACK_DEFAULTS, **copy.deepcopy(row), "tenant_id": tenant_id}
         self._rows[(tenant_id, row["id"])] = stored
         return copy.deepcopy(stored)
@@ -156,6 +178,9 @@ class InMemorySkillFeedbackStore:
         return copy.deepcopy(rows[:limit])
 
     async def count_pending_agent(self, tenant_id: str, author: str) -> int:
+        return self.pending_agent(tenant_id, author)
+
+    def pending_agent(self, tenant_id: str, author: str) -> int:
         return sum(
             1
             for (t, _), r in self._rows.items()
@@ -175,26 +200,37 @@ class InMemorySkillFeedbackStore:
         by: str,
         note: str | None,
         at: int,
+        caps: JobCaps | None = None,
     ) -> dict[str, Any]:
+        # No await from the count to the write: one event loop cannot interleave another
+        # decision between them.
+        if improve and caps is not None:
+            memory_job_caps(tenant_id, caps, feedback=self)
         row = self._rows.get((tenant_id, row_id))
         if row is None or row["status"] != "pending":
             raise SkillFeedbackConflict(row_id)
         row.update(status=status, improve=improve, decided_by=by, decision_note=note, decided_at=at)
         return copy.deepcopy(row)
 
-    async def count_jobs_in_flight(self, tenant_id: str) -> int:
+    def jobs_in_flight(self, tenant_id: str) -> int:
         return sum(
             1
             for (t, _), r in self._rows.items()
             if t == tenant_id and r["status"] == "accepted" and r["improve"]
         )
 
-    async def count_jobs_since(self, tenant_id: str, since: int) -> int:
+    def jobs_since(self, tenant_id: str, since: int) -> int:
         return sum(
             1
             for (t, _), r in self._rows.items()
             if t == tenant_id and r["improve"] and (r.get("decided_at") or 0) >= since
         )
+
+    async def count_jobs_in_flight(self, tenant_id: str) -> int:
+        return self.jobs_in_flight(tenant_id)
+
+    async def count_jobs_since(self, tenant_id: str, since: int) -> int:
+        return self.jobs_since(tenant_id, since)
 
     async def claim_next(self, *, now: int) -> dict[str, Any] | None:
         for _ in range(MAX_RESCANS):
@@ -237,11 +273,17 @@ class InMemorySkillFeedbackStore:
 
 
 class PostgresSkillFeedbackStore(Postgres):
-    async def insert(self, tenant_id: str, row: dict[str, Any]) -> dict[str, Any]:
-        from felix.db.models import SkillFeedbackRow
+    async def insert(
+        self, tenant_id: str, row: dict[str, Any], *, max_pending: int | None = None
+    ) -> dict[str, Any]:
+        from felix.db.models import SkillFeedbackRow as R
 
         async with self._session(tenant_id) as db:
-            obj = SkillFeedbackRow(**{**_FEEDBACK_DEFAULTS, **row, "tenant_id": tenant_id})
+            if max_pending is not None:
+                await xact_lock(db, feedback_lock_key(tenant_id, row["author"]))
+                if (held := await self._pending_agent(db, tenant_id, row["author"])) >= max_pending:
+                    raise SkillFeedbackAtCap(held, max_pending)
+            obj = R(**{**_FEEDBACK_DEFAULTS, **row, "tenant_id": tenant_id})
             db.add(obj)
             await db.commit()
             return self._row(obj)
@@ -322,10 +364,22 @@ class PostgresSkillFeedbackStore(Postgres):
             )
             return int(count or 0)
 
-    async def count_pending_agent(self, tenant_id: str, author: str) -> int:
+    @staticmethod
+    async def _pending_agent(db: Any, tenant_id: str, author: str) -> int:
+        from sqlalchemy import func, select
+
         from felix.db.models import SkillFeedbackRow as R
 
-        return await self._count(tenant_id, R.author == author, R.status == "pending", R.source == "agent")
+        count = await db.scalar(
+            select(func.count())
+            .select_from(R)
+            .where(R.tenant_id == tenant_id, R.author == author, R.status == "pending", R.source == "agent")
+        )
+        return int(count or 0)
+
+    async def count_pending_agent(self, tenant_id: str, author: str) -> int:
+        async with self._session(tenant_id) as db:
+            return await self._pending_agent(db, tenant_id, author)
 
     async def count_jobs_in_flight(self, tenant_id: str) -> int:
         from felix.db.models import SkillFeedbackRow as R
@@ -347,12 +401,17 @@ class PostgresSkillFeedbackStore(Postgres):
         by: str,
         note: str | None,
         at: int,
+        caps: JobCaps | None = None,
     ) -> dict[str, Any]:
         from sqlalchemy import select
 
         from felix.db.models import SkillFeedbackRow
 
         async with self._session(tenant_id) as db:
+            if improve and caps is not None:
+                # The job lock before the row lock, as every caller takes them, so two
+                # decisions cannot each hold one and wait on the other.
+                await hold_job_caps(db, tenant_id, caps)
             row = await db.scalar(
                 select(SkillFeedbackRow)
                 .where(SkillFeedbackRow.tenant_id == tenant_id, SkillFeedbackRow.id == row_id)
@@ -444,6 +503,11 @@ def get_skill_feedback_store(settings: Settings | None = None) -> SkillFeedbackS
     return _memory if pg is None else PostgresSkillFeedbackStore(pg)
 
 
+def memory_store() -> InMemorySkillFeedbackStore:
+    """The twin `get_skill_feedback_store` hands out under `memory://`."""
+    return _memory
+
+
 def clear_memory() -> None:
     _memory.clear()
 
@@ -454,4 +518,5 @@ __all__ = [
     "SkillFeedbackStore",
     "clear_memory",
     "get_skill_feedback_store",
+    "memory_store",
 ]
