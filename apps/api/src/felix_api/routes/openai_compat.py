@@ -323,6 +323,12 @@ async def chat_completions(body: ChatCompletionsRequest, request: Request) -> An
         )
         for m in body.messages
     ]
+    from felix.patterns.model_vision import carries_images, image_route_problem
+
+    if carries_images(messages):
+        problem = image_route_problem(settings, getattr(resolved.manifest.spec, "model", None))
+        if problem:
+            return _error_json(problem, "invalid_request_error", "model_not_vision_capable", 422)
     # Imported here rather than at module scope to keep the governance package off the
     # import path of a lean install, but *before* the try so the handler can name the
     # type it means. The old shape caught everything, tested with `isinstance`, and

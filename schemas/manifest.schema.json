@@ -1409,6 +1409,18 @@
           "title": "Fallbacks",
           "type": "array"
         },
+        "vision_model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Vision Model"
+        },
         "confidence_escalation": {
           "$ref": "#/$defs/ConfidenceEscalation"
         },

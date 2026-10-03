@@ -322,6 +322,9 @@ StopReason = Literal[
 class ModelRoute:
     provider: str
     model: str
+    # What the route accepts, when its `FELIX_MODEL_ROUTES` entry says. `None` defers to the
+    # catalog (`felix_ai.catalog.accepts_images`), which cannot see behind a custom route.
+    modalities: tuple[str, ...] | None = None
 
 
 @dataclass(slots=True)

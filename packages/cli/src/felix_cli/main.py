@@ -702,6 +702,13 @@ def doctor_cmd() -> None:
         f"  [green]ok[/green]  shell tools — {shell_policy.describe_allowlist(settings)}"
         + ("" if shell_policy.allowed_prefixes(settings) else " (safe default)")
     )
+    from felix.patterns.model_vision import image_route_problem
+
+    # A note, not a failure: a text-only default is a legal, cheap choice. What doctor owes the
+    # operator is that every image sent to it will be refused until a vision route is named.
+    image_problem = image_route_problem(settings, None)
+    if image_problem:
+        rprint(f"  [yellow]note[/yellow]  images — {image_problem}; turns carrying one get a 422")
     if settings.auth_mode == "jwt":
         check("jwks_public configured", bool(settings.jwks_public.strip()))
         check("jwt_verifiers configured", bool(settings.jwt_verifiers.strip()))

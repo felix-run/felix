@@ -70,6 +70,7 @@ from felix.patterns.model_registry import (
     list_model_providers,
     register_model_provider,
 )
+from felix.patterns.model_vision import route_accepts_images, with_vision_route, without_images
 
 logger = logging.getLogger("felix.patterns.model")
 
@@ -96,15 +97,27 @@ def parse_route_overlay(
     table is read is made once. Malformed JSON degrades to the defaults with a warning; a
     provider nobody registered is caught at boot by `Settings.validate_runtime`.
     """
-    routes = {k: ModelRoute(provider=v["provider"], model=v["model"]) for k, v in defaults.items()}
+    routes = {k: _route_from(v) for k, v in defaults.items()}
     if raw.strip():
         try:
             override = json.loads(raw)
             for k, v in override.items():
-                routes[k] = ModelRoute(provider=v["provider"], model=v["model"])
+                routes[k] = _route_from(v)
         except Exception:
             logger.warning("invalid %s; using defaults", setting_name)
     return routes
+
+
+def _route_from(v: dict[str, Any]) -> ModelRoute:
+    """One route entry. `modalities` is optional and says what the route accepts, for a model
+    the catalog cannot vouch for: `{"provider": "ollama", "model": "llava", "modalities":
+    ["text", "image"]}`."""
+    modalities = v.get("modalities")
+    return ModelRoute(
+        provider=v["provider"],
+        model=v["model"],
+        modalities=tuple(str(x) for x in modalities) if isinstance(modalities, list) else None,
+    )
 
 
 def parse_model_routes(settings: Settings | None = None) -> dict[str, ModelRoute]:
@@ -362,7 +375,7 @@ class _TracedClient:
         tools: Sequence[ToolSchema],
         opts: ModelChatOptions | None = None,
     ) -> ModelChatResult:
-        messages = await resolve_for_current_request(messages)
+        messages = await self._prepare(messages)
         async with timed_span(
             f"chat {self._wire_model()}",
             self._span_attrs(),
@@ -382,8 +395,15 @@ class _TracedClient:
     ) -> AsyncIterator[str]:
         # An async generator rather than the plain forward this used to be, because the
         # expansion is a coroutine. `async for` over the result is identical either way.
-        async for chunk in self.inner.stream(await resolve_for_current_request(messages), tools, opts):
+        async for chunk in self.inner.stream(await self._prepare(messages), tools, opts):
             yield chunk
+
+    async def _prepare(self, messages: list[ChatMessage]) -> list[ChatMessage]:
+        # Images go before references are expanded, so a route that cannot see them never
+        # pays to fetch their bytes from the object store.
+        if route_accepts_images(self.route) is False:
+            messages = without_images(messages, self.model_id)
+        return await resolve_for_current_request(messages)
 
     def __getattr__(self, name: str) -> Any:
         # Providers carry extra attributes the harness reads by name (`wire_model_id`
@@ -418,7 +438,7 @@ class _TracedStreamingClient(_TracedClient):
         tools: Sequence[ToolSchema],
         opts: ModelChatOptions | None = None,
     ) -> AsyncIterator[StreamDelta | ModelChatResult]:
-        messages = await resolve_for_current_request(messages)
+        messages = await self._prepare(messages)
         async with timed_span(
             f"chat {self._wire_model()}",
             {**self._span_attrs(), "felix.streamed": True},
@@ -662,7 +682,9 @@ def build_model(settings: Settings | None, spec: Any, *, decider: Any = None) ->
             price_override=price_override,
             decider=decider if getattr(esc, "decider", False) else None,
         )
-    return client
+    # Outermost, so it decides per call which whole chain answers: the primary's, with its
+    # fallbacks and escalation, or the vision route's.
+    return with_vision_route(client, settings, spec, build_one_model)
 
 
 __all__ = [
