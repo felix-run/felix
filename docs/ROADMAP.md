@@ -241,9 +241,7 @@ First, because everything else governs it.
         can't see images". The catalog gained `text_only` (vouched, not the `("text",)` default every
         entry inherits), a route can declare `modalities`, and a turn carrying an image goes to
         `spec.model.vision_model` / `FELIX_DEFAULT_VISION_MODEL_ID` or is a 422 naming the route.
-        Open from its review: compaction sizes the window from `spec.model.id`, so a vision route
-        with a smaller window than the primary is compacted against the wrong one; the vision
-        route has no fallbacks of its own; and `_FallbackClient` could set `served_route` the
+        Open from its review: the vision route has no fallbacks of its own; and `_FallbackClient` could set `served_route` the
         way the vision client now does, so a fallback's turn stops being metered as the primary's.
       - Landed: **images in tool results.** `ToolOutputDict.attachments` carries an image for the
         model to see; Anthropic renders it inside the `tool_result`, the OpenAI wire as one user turn
