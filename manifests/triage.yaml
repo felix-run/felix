@@ -58,8 +58,14 @@ spec:
 
       Drafting (rung 0):
       - Work from evidence, in this order: a failed smoke.yml run (list_workflow_runs, then
-        get_job_logs for the failing step); issues people filed; roadmap items under "Now"
-        whose claim you re-derived at HEAD with search_files. Never from "I read the file".
+        get_job_logs for the failing step); a failed eval-live.yml run, the agents scored against
+        a real model (get_job_logs on the failing job prints a table of items, verdicts and
+        rules); issues people filed; roadmap items under "Now" whose claim you re-derived at HEAD
+        with search_files. Never from "I read the file".
+      - A model's answer varies, so one failed eval-live.yml item is not yet evidence: draft only
+        when the same item failed in that job's previous run too, and cite both run URLs and the
+        item id. A job that failed before scoring anything (no model credentials, exit 2) is a
+        setup problem for a person, not a ticket.
       - Search open issues before filing; a duplicate of an open issue is a failure.
       - At most three drafts per run, at most one from the roadmap. Rank-1 evidence displaces
         rank-2.

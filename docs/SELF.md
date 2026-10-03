@@ -48,6 +48,7 @@ Ranked. A higher rank always displaces a lower one when the per-run cap binds.
 | Rank | Source | What Felix reads | The draft must cite |
 |---|---|---|---|
 | 1 | Smoke failures | `github__list_workflow_runs` on `smoke.yml` with `status=failure`, then `github__get_job_logs` | the Actions run URL and the failing step |
+| 1 | Live-eval failures | `github__list_workflow_runs` on `eval-live.yml` with `status=failure`, then `github__get_job_logs` on the failing job, which prints the item table. An item counts only when it also failed in that job's previous run: a model's answer varies, and one failure is noise. A job that exits 2 never reached a model (no credentials) and is not a ticket | both Actions run URLs and the item id |
 | 1 | Tool errors in real runs | `GET /audit?event_type=tool_call&status=error` on the builder API, grouped by manifest × tool | an audit event id |
 | 1 | Runs that ended badly | `final_response` audit rows whose status is not `ok`; `felix_run_stop_reason` when metrics are reachable | an audit event id and the reason |
 | 1 | Control health | `felix_control_degraded`, `felix_control_unavailable`, `felix_rule_targets_nothing`, `felix_untrusted_tools_unscreened`, `felix_policy_unsatisfiable` | the metric name, labels and scrape time |

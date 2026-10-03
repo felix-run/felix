@@ -703,8 +703,11 @@ comment explaining exactly that. It is conditional, not inert.
       `.github/workflows/eval-live.yml` runs `quick` on the new `fixtures/eval/live.json` nightly
       and `contributor.json` weekly with `--strict-judge`, via `scripts/eval-live.sh`, which
       writes a per-item table with cost to the job summary. Needs repo secret
-      `FELIX_ANTHROPIC_API_KEY`. Follow-up worth having: feed its failures to `triage` the way
-      `smoke.yml` failures already are (`scripts/self-scoreboard.py`, `manifests/triage.yaml`).
+      `FELIX_ANTHROPIC_API_KEY`. Its failures now feed `triage` as rank-1 evidence beside
+      `smoke.yml` (`manifests/triage.yaml`, `docs/SELF.md`, the `felix-self` skill), counted only
+      when the same item failed in that job's previous run too. Not counted in the scoreboard's
+      rung-3 "regressions" metric: charging a nondeterministic eval failure to a Felix merge is
+      a separate decision.
 - [x] **Validate eval dataset items.** Done: `felix/eval/validation.py`, called by
       `PUT /eval/datasets/{name}` and by `felix eval --fixture`. An item with no `user_input`
       is refused and the near-miss key it used is named back (`input` — the spelling the
