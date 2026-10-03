@@ -94,8 +94,13 @@ python scripts/bump-version.py 0.3.0          # sets every location, then `uv lo
    git switch -c release/vX.Y.Z
    git commit -am "Release vX.Y.Z"
    git push -u origin release/vX.Y.Z
-   gh pr create --base main --title "Release vX.Y.Z"
+   gh pr create --base main --title "Release vX.Y.Z" \
+     --body $'<what ships>\n\n## Changelog\n\nnone: release vX.Y.Z -- it writes the changelog itself'
    ```
+
+   The description needs that `## Changelog` / `none:` section like any other pull request's,
+   or the `changelog` check fails it: a release has no entry of its own, since its diff *is*
+   the changelog section step 5 wrote.
 
    Once it merges, tag the merge commit — **after** its CI has gone green, not while it is still
    running:
