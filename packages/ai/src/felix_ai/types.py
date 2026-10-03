@@ -73,6 +73,25 @@ class ContentBlock:
     detail: str | None = None
 
 
+# The block types a wire renders as an image. Named rather than "not text", so the next block
+# type -- a document, audio -- is not screened, rerouted and rendered as one by default.
+IMAGE_PART_TYPES: tuple[str, ...] = ("image", "image_url")
+
+
+def is_image_part(part: ContentBlock | ImageAttachment) -> bool:
+    """Whether a wire renders this part as an image: the one test, everywhere.
+
+    The wires, the image screener and vision routing each had their own, and they disagreed
+    on a text block carrying a url -- the screener waved through what a wire then sent. One
+    rule keeps "what is screened" and "what is sent" the same set. An `ImageAttachment` has
+    no type and is an image by construction; either needs a url, or nothing is sent.
+    """
+    if not part.url:
+        return False
+    kind = getattr(part, "type", None)
+    return kind is None or kind in IMAGE_PART_TYPES
+
+
 @dataclass(slots=True)
 class ToolCall:
     id: str
@@ -457,6 +476,7 @@ ModelClient = ModelProvider
 
 
 __all__ = [
+    "IMAGE_PART_TYPES",
     "ChatMessage",
     "ContentBlock",
     "ImageAttachment",
@@ -473,5 +493,6 @@ __all__ = [
     "TokenUsage",
     "ToolCall",
     "ToolSchema",
+    "is_image_part",
     "supports_stream_turn",
 ]

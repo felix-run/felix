@@ -91,12 +91,11 @@ class TranscriptionBudget:
 
 
 def _is_image(part: ContentBlock | ImageAttachment) -> bool:
-    """What a wire renders as an image: a part with a url that is not a text part with text.
+    """What a wire renders as an image -- the wires' own test, so the screened set and the
+    sent set are one set."""
+    from felix_ai.types import is_image_part
 
-    The wires' own test, not `type != "text"` — a text block carrying a url and no text is
-    sent as an image, and would otherwise be one this screen had waved through.
-    """
-    return bool(part.url) and not (getattr(part, "type", None) == "text" and getattr(part, "text", None))
+    return is_image_part(part)
 
 
 def _image_urls(msg: ChatMessage) -> list[str]:
@@ -184,6 +183,9 @@ class ImageSurface:
 INGEST = ImageSurface("image", may_refuse=True)
 # History a session renders: always quarantine. The image leaves that prompt; the log stays.
 REPLAY = ImageSurface("history_image", may_refuse=False)
+# An image a tool returned. Quarantined, never refused: `on_flag: block` denies the *call*,
+# which the content-screening wrapper does itself; a verdict here only decides the image.
+TOOL = ImageSurface("tool_image", may_refuse=False)
 
 # The verdict on a transcript, beside the transcript itself. Without it every turn re-ran the
 # text scorer — up to a call per window, per image — on every image the history replays.
@@ -383,6 +385,7 @@ __all__ = [
     "QUARANTINED_TOO_MANY",
     "QUARANTINED_UNSCREENED",
     "REPLAY",
+    "TOOL",
     "ImageScreener",
     "ImageSurface",
     "ScreenedSessionStrategy",

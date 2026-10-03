@@ -245,10 +245,19 @@ First, because everything else governs it.
         with a smaller window than the primary is compacted against the wrong one; the vision
         route has no fallbacks of its own; and `_FallbackClient` could set `served_route` the
         way the vision client now does, so a fallback's turn stops being metered as the primary's.
-      - Next, in order, one PR live at a time: **images in tool results** (Anthropic `tool_result`
-        image blocks, a follow-up user part on the OpenAI wire, screened as untrusted; the browser
-        screenshot stops arriving as base64 text), **Pillow image tools** behind an `image` extra,
-        then **A2A FileParts and MCP image content**, both dropped silently today.
+      - Landed: **images in tool results.** `ToolOutputDict.attachments` carries an image for the
+        model to see; Anthropic renders it inside the `tool_result`, the OpenAI wire as one user turn
+        after the run of tool messages (that API takes images on user turns only). Stored through
+        the attachment store, so the log keeps a reference; screened on a `tool_image` surface when
+        `image_model` is set; quarantined with the tool's text. The browser screenshot is the first
+        producer, and stops arriving as base64 text. Without `image_model` an untrusted tool's
+        images are quarantined (fail closed); 4 per call, 16 per run; a caller's images are kept on
+        user turns only. Open from its review: each tool image is transcribed twice -- by bytes on
+        the `tool_image` surface, then by `ref:` on the next turn's replay -- and seeding the
+        transcript cache under the stored ref would halve that. And `/chat` parses an OpenAI-shaped
+        `tool_calls[].function.arguments` (a JSON string) with `dict()`, which is a 500.
+      - Next, in order, one PR live at a time: **Pillow image tools** behind an `image` extra, then
+        **A2A FileParts and MCP image content**, both dropped silently today.
       - Open, and a change to a security control rather than a feature: uploads are bounded by the
         single global `BodyLimitMiddleware` limit, so a larger ceiling means per-route limits.
         That middleware has a bypass in its history; it should not be widened as a side effect of

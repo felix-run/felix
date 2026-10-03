@@ -916,6 +916,45 @@ turn, leaving the text and any clean images; `block` refuses the turn with 422.
   most sixteen transcription calls. The caches are per process: after a restart or on another
   replica, a long thread's images are re-screened eight per render, and those past the budget
   are left out of the prompt until they have been.
+- **Images a tool returns are screened too.** A tool can hand the model an image to *see*
+  (`ToolOutputDict.attachments`); the browser's `screenshot` op does. When content screening
+  covers the tool (every untrusted tool, plus any named in `tools`), each image it returns is
+  transcribed and screened like a user's, on its own surface (`tool_image`). That surface
+  **quarantines, never refuses**: under `on_flag: block`, a flagged *text* denies the call,
+  while a flagged image is removed and the call stands. Text that is quarantined takes the
+  tool's images with it.
+- **Without `image_model`, an untrusted tool's images are quarantined.** This fails closed.
+  - Untrusted text is always marker-scanned; pixels have no screener, and a page can draw its
+    payload rather than write it.
+  - The tool result says the image was not shown and how to turn screening on
+    (`felix_content_screening{action="image_unscreened"}`).
+  - A trusted local tool named in `tools` keeps its images.
+  - A manifest that binds `op: screenshot` under screening without `image_model` logs a warning
+    at compile time, because every screenshot it takes will be quarantined.
+- **A tool's images are stored, not logged, and bounded.** They are written to the attachment
+  store under the request's tenant, with the same quota, size limit and retention as an upload.
+  The session log keeps a `felix-file://` reference. Each of these is dropped with a note in the
+  tool result:
+  - an image no caller could have uploaded: not png, jpeg, gif or webp by its bytes, or over
+    600 KiB;
+  - a remote URL;
+  - anything past 4 images per call or 16 per run. Tool images share the tenant's quota with
+    uploads, and the caps keep a page that talks an agent into screenshotting in a loop from
+    filling it.
+- **An after-tool hook that rewrites a tool's text also removes its images**, so a redacting or
+  blocking hook covers the whole output.
+- **A caller's images are kept on user turns only.** History a caller sends (`role: tool` or
+  `assistant` on `/chat` or `/v1`) has its images removed at the door. Inbound screening reads
+  user turns, and an image written into a tool message would otherwise reach the model past
+  every screen. Separately, the wires render a tool message's images only from inline bytes, so
+  a remote URL on a tool message is never fetched.
+- **The OpenAI wire raises a tool's image to a user turn.** That API takes images on user turns
+  only, so a tool's images follow its result as a user message. The message labels them as tool
+  output to be treated as data, but a user turn still carries more weight than a tool result.
+  Anthropic keeps them inside the `tool_result`.
+- **Secrets and PII in a tool's image are not caught.** Secret masking, PII guardrails and
+  judges read text only. A screenshot of a page showing a credential reaches the model and is
+  stored for the attachment retention period.
 - **Injection only.** `guardrails.providers: [pii]` does not read image transcripts; an image of
   an SSN is not caught by the input PII guardrail.
 - **Limit.** The transcriber reads hostile input, and an image can tell it to report no text.

@@ -323,8 +323,9 @@ async def chat_completions(body: ChatCompletionsRequest, request: Request) -> An
         )
         for m in body.messages
     ]
-    from felix.patterns.model_vision import unseeable_image_problem
+    from felix.patterns.model_vision import caller_images_on_user_turns, unseeable_image_problem
 
+    messages = caller_images_on_user_turns(messages)
     if problem := unseeable_image_problem(resolved.manifest, messages, settings):
         return _error_json(problem, "invalid_request_error", "model_not_vision_capable", 422)
     # Imported here rather than at module scope to keep the governance package off the

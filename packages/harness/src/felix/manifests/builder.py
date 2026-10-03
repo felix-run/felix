@@ -12,8 +12,8 @@ from felix.auth.context import AuthContext
 from felix.context import try_get_context
 from felix.decisions import MeteredDecider
 from felix.governance.content_screening import _INJECTION
-from felix.governance.image_screening import screen_session_strategy
-from felix.governance.inbound import replay_screener
+from felix.governance.image_screening import ImageScreener, screen_session_strategy
+from felix.governance.inbound import replay_screener, tool_image_screener
 from felix.governance.judges import judge_score
 from felix.governance.reply import ReplyScreen, screen_session_store
 from felix.limits import EffectiveLimits, effective_limits
@@ -44,7 +44,9 @@ from felix.tools.types import (
     ToolOutput,
     deny_output,
     is_wrapper_deny,
+    replace_tool_output,
     tool_output_content,
+    tool_output_images,
 )
 
 logger = logging.getLogger("felix.manifests.builder")
@@ -201,20 +203,25 @@ def apply_secret_masking(tools: list[Tool], secrets: list[str], manifest_id: str
                         "felix_secret_masking",
                         {"manifest_id": manifest_id, "tool": tool.name},
                     )
-            return _replace_content(out, content)
+            return replace_tool_output(out, content=content)
 
         return _clone_tool(tool, wrap_executor(inner, execute))
 
     return _wrap_tools(tools, wrap_one)
 
 
-def _replace_content(out: ToolOutput, content: str) -> ToolOutput:
-    if isinstance(out, str):
-        return content
-    if isinstance(out, dict):
-        return {**out, "content": content}
-    out.content = content  # type: ignore[union-attr]
-    return out
+async def _screen_tool_images(out: ToolOutput, screener: ImageScreener, tool_name: str) -> ToolOutput:
+    """`out` with each image the screener refuses removed and its note added to the text."""
+    from felix_ai.types import ChatMessage
+
+    images = tool_output_images(out)
+    content = tool_output_content(out)
+    screened = await screener.screen(
+        ChatMessage(role="tool", name=tool_name, content=content, attachments=images)
+    )
+    if screened.attachments == images:
+        return out
+    return replace_tool_output(out, content=screened.content, images=list(screened.attachments or ()))
 
 
 def tool_guidance_section(tools: list[Tool], by_name: dict[str, str]) -> str:
@@ -413,7 +420,7 @@ _DEFAULT_COMMAND_RULES: tuple[tuple[str, Literal["allow", "deny", "require_appro
 #
 # That mattered once `cowork.yaml` enabled screening over its client tools. `"system prompt"`
 # matches any *mention* of the phrase, so `cat CLAUDE.md` on this very repository — 23 of its
-# files contain it — had its entire output replaced by `[quarantined]`; `_replace_content`
+# files contain it — had its entire output replaced by `[quarantined]`; `replace_tool_output`
 # swaps the whole string, it does not redact the match. A control that eats a developer's
 # `git log -p` is a control someone turns off, and turning it off would have removed screening
 # from `local_shell` too.
@@ -481,7 +488,15 @@ def apply_content_screening(
     manifest_id: str,
     *,
     decider: MeteredDecider | None = None,
+    images: Callable[[], ImageScreener] | None = None,
 ) -> list[Tool]:
+    """Screen what a tool returns before the model reads it -- its text, and any image.
+
+    `images` makes the per-call image screener (`inbound.tool_image_screener`), present when
+    `image_model` is set. Without it an *untrusted* tool's images are quarantined: the text
+    screeners cannot read pixels, and a manifest that turned screening on to make a browser
+    safe must not read as covered while a screenshot carries a payload past it.
+    """
     if screening is None or not screening.enabled:
         return tools
     on_flag = screening.on_flag
@@ -506,6 +521,7 @@ def apply_content_screening(
         if not (matches_any(named, tool.name) or _is_untrusted_tool(tool)):
             return tool
         inner = tool.executor
+        untrusted = _is_untrusted_tool(tool)
         # The paid scoring, by `model_tools`; the markers below run regardless.
         paid = not scored_only or matches_any(scored_only, tool.name)
 
@@ -537,7 +553,9 @@ def apply_content_screening(
                         "[screening unavailable] tool output could not be screened",
                         "screening",  # type: ignore[arg-type]
                     )
-                return _replace_content(out, "[quarantined] tool output could not be screened")
+                return replace_tool_output(
+                    out, content="[quarantined] tool output could not be screened", images=[]
+                )
             if flagged:
                 record_counter(
                     "felix_content_screening",
@@ -548,7 +566,25 @@ def apply_content_screening(
                 notice = "[quarantined] tool output flagged as potentially hostile"
                 # ToolOutput includes plain dict; `out.content = ...` raised
                 # AttributeError there, so quarantine silently became "tool crashed".
-                return _replace_content(out, notice)
+                # A quarantined output shows the model nothing: its images go with its text.
+                return replace_tool_output(out, content=notice, images=[])
+            if tool_output_images(out):
+                if images is not None:
+                    out = await _screen_tool_images(out, images(), tool.name)
+                elif untrusted:
+                    # Fail closed. Text from an untrusted tool is always marker-scanned; its
+                    # pixels have no screener without `image_model`, and a page can draw its
+                    # payload rather than write it. A trusted tool named in `tools` keeps its
+                    # images: the bytes are the deployment's own.
+                    record_counter(
+                        "felix_content_screening",
+                        {"manifest_id": manifest_id, "tool": tool.name, "action": "image_unscreened"},
+                    )
+                    out = replace_tool_output(
+                        out,
+                        content=f"{tool_output_content(out)}\n{TOOL_IMAGE_UNSCREENED}",
+                        images=[],
+                    )
             return out
 
         return _clone_tool(tool, wrap_executor(inner, execute))
@@ -731,7 +767,7 @@ def apply_guardrails(tools: list[Tool], guardrails: Guardrails | None, manifest_
             result = redact_pii(content)
             if result.matched and block:
                 return deny_output("[guardrails] PII blocked", "guardrails")
-            return _replace_content(out, result.text)
+            return replace_tool_output(out, content=result.text)
 
         return _clone_tool(tool, wrap_executor(inner, execute))
 
@@ -1298,6 +1334,32 @@ def _warn_max_turns_does_not_bound_this_loop(m: Manifest) -> None:
         )
 
 
+TOOL_IMAGE_UNSCREENED = (
+    "[quarantined] image from an untrusted tool not shown: set content_screening.image_model to screen it"
+)
+
+
+def _warn_screenshots_are_quarantined(m: Manifest) -> None:
+    """Say so at compile time when a browser screenshot can never reach the model.
+
+    Under content screening without `image_model`, an untrusted tool's images are quarantined
+    (`apply_content_screening`). A manifest binding `op: screenshot` then has a tool that always
+    returns a note instead of a picture -- a configuration that works, and does nothing.
+    """
+    screening = m.spec.content_screening
+    if not screening.enabled or screening.image_model.strip():
+        return
+    shots = sorted(ref.name for ref in m.spec.browser_tools if ref.op == "screenshot")
+    if shots:
+        logger.warning(
+            "manifest %r binds screenshot tool(s) %s under content_screening without image_model, "
+            "so every screenshot is quarantined; set content_screening.image_model to screen them",
+            m.metadata.name,
+            _summarise(shots),
+            extra={"manifest_id": m.metadata.name},
+        )
+
+
 def _warn_untrusted_tools_are_unscreened(m: Manifest, untrusted: list[str]) -> None:
     """Say so when untrusted tool output reaches the model with nothing looking at it.
 
@@ -1806,6 +1868,7 @@ async def build_agent(
         _warn_policies_cannot_be_satisfied(m, deps.settings)
         _warn_max_turns_does_not_bound_this_loop(m)
         _warn_untrusted_tools_are_unscreened(m, [t.name for t in resolved if _is_untrusted_tool(t)])
+        _warn_screenshots_are_quarantined(m)
 
         # Governance pipeline (order matters — matches TS builder).
         resolved = apply_secret_masking(resolved, _collect_secrets(deps), m.metadata.name)
@@ -1819,6 +1882,7 @@ async def build_agent(
                 m.spec.content_screening,
                 m.metadata.name,
                 decider=decider if m.spec.content_screening.decider else None,
+                images=tool_image_screener(m, deps.settings),
             )
         # Always installed. Previously gated on any_limit(), so a manifest that declared
         # no limits got no tool-call cap, no wall clock, no token or spend ceiling —

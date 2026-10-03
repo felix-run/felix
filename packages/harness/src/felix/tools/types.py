@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+import copy
 import inspect
+import logging
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol, get_args, runtime_checkable
 
+from felix_ai.types import ImageAttachment
+
 if TYPE_CHECKING:
     pass
+
+_logger = logging.getLogger("felix.tools.types")
 
 
 def accepts_positional(fn: Callable[..., Any], count: int) -> bool:
@@ -65,6 +71,10 @@ _WRAPPER_DENY_MARKER: object = object()
 class ToolOutputDict:
     content: str
     metadata: dict[Any, Any] = field(default_factory=dict)
+    # Images for the model to *see*, not read: the runner puts them on the tool message, the
+    # wire renders them as image blocks, and they never enter `content`. Before this a tool
+    # could only return an image as base64 text, which a model reads as noise.
+    attachments: list[ImageAttachment] = field(default_factory=list)
 
 
 type ToolOutput = str | ToolOutputDict | dict[str, Any]
@@ -187,6 +197,68 @@ def deny_source(output: ToolOutput) -> WrapperSource | None:
         return None
     source = md.get("source")
     return source if source in get_args(WrapperSource) else None
+
+
+def tool_output_images(output: ToolOutput) -> list[ImageAttachment]:
+    """The images a tool returned, from either structured shape. A plain string carries none.
+
+    A dict-shaped output may carry its images as dicts (`{"url": ..., "media_type": ...}`),
+    which is what anything built from JSON produces; each becomes an `ImageAttachment`. An
+    entry that is neither is dropped *with a warning* -- an image a tool meant to show and
+    the model never saw should not be invisible to the operator as well.
+    """
+    if isinstance(output, str):
+        return []
+    raw: Any = output.get("attachments") if isinstance(output, dict) else getattr(output, "attachments", None)
+    images: list[ImageAttachment] = []
+    for item in raw or ():
+        if isinstance(item, ImageAttachment):
+            images.append(item)
+        elif isinstance(item, Mapping) and isinstance(item.get("url"), str) and item["url"]:
+            images.append(
+                ImageAttachment(
+                    url=item["url"],
+                    media_type=str(item.get("media_type") or "image/png"),
+                    filename=item.get("filename") if isinstance(item.get("filename"), str) else None,
+                )
+            )
+        else:
+            _logger.warning("tool output attachment dropped: a %s is not an image", type(item).__name__)
+    return images
+
+
+class _Keep:
+    """Sentinel: leave this part of the output as it is."""
+
+
+_KEEP: Any = _Keep()
+
+
+def replace_tool_output(
+    output: ToolOutput, *, content: str | Any = _KEEP, images: list[ImageAttachment] | Any = _KEEP
+) -> ToolOutput:
+    """`output` with its text and/or images replaced, as a copy -- never edited in place.
+
+    The one way a wrapper rewrites what a tool returned. There were five, and some edited the
+    inner executor's object while others copied it, so after a quarantine the returned copy
+    was clean and the original still carried its images: any wrapper holding the inner result
+    would have seen them. Every shape keeps what it does not replace, `metadata` included (a
+    deny marker lives there). A plain string stays a string unless it gains images.
+    """
+    new_images = tool_output_images(output) if images is _KEEP else list(images)
+    text = tool_output_content(output) if content is _KEEP else content
+    if isinstance(output, str):
+        return ToolOutputDict(content=text, attachments=new_images) if new_images else text
+    if isinstance(output, ToolOutputDict):
+        return ToolOutputDict(content=text, metadata=dict(output.metadata), attachments=new_images)
+    if isinstance(output, dict):
+        out = {**output, "content": text}
+        if new_images or "attachments" in output:
+            out["attachments"] = new_images
+        return out
+    clone = copy.copy(output)
+    clone.content = text  # type: ignore[attr-defined]
+    return clone
 
 
 def tool_output_content(output: ToolOutput) -> str:
@@ -320,5 +392,7 @@ __all__ = [
     "is_wrapper_deny",
     "output_metadata",
     "output_text",
+    "replace_tool_output",
     "tool_output_content",
+    "tool_output_images",
 ]
