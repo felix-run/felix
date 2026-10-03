@@ -1060,6 +1060,9 @@ rather than from re-reading a file. The wave itself is written up in [HISTORY.md
         CI recipe (`curl` first, since the CLI pulls in the harness).
       - [x] 3. `felix_client.github_device_login`, `felix login [--save]`, the REPL reads the saved
         token; felix-web auth guide (OAuth app setup, org approval, consent phishing).
+      - [x] For a browser login in chat-ui: `GET /auth/methods` (public in every mode) reports
+        `github_device` and `bearer_required` without starting a flow, and
+        `POST /auth/github/token` returns `github_login`.
 - [x] **Manifest version listing** — `GET /manifests/{name}/versions`: newest first, metadata
       only, each marked `active` / `canary`, paged by `before=<version>` (`next_before`).
 - [x] **Run a job now** — `POST /jobs/{name}/run` (`jobs:write`), synchronous, returning the

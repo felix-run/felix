@@ -71,6 +71,8 @@ async def test_a_granted_workflow_logs_in_and_the_token_opens_its_tenant(
         out = granted.json()
         assert (out["token_type"], out["tenant"], out["scopes"]) == ("Bearer", "acme", ["jobs:read"])
         assert out["expires_in"] == 900
+        # A workflow is not a person: there is no GitHub login to name.
+        assert out["github_login"] == ""
 
         bearer = {"Authorization": f"Bearer {out['access_token']}"}
         assert (await app.client.get("/jobs", headers=bearer)).status_code == 200

@@ -45,6 +45,25 @@
         "title": "ActionsTokenRequest",
         "type": "object"
       },
+      "AuthMethodsOut": {
+        "description": "How a caller can get a credential here, and whether it needs one.",
+        "properties": {
+          "bearer_required": {
+            "title": "Bearer Required",
+            "type": "boolean"
+          },
+          "github_device": {
+            "title": "Github Device",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "github_device",
+          "bearer_required"
+        ],
+        "title": "AuthMethodsOut",
+        "type": "object"
+      },
       "CanaryRequest": {
         "additionalProperties": false,
         "properties": {
@@ -857,6 +876,11 @@
           "expires_in": {
             "title": "Expires In",
             "type": "integer"
+          },
+          "github_login": {
+            "default": "",
+            "title": "Github Login",
+            "type": "string"
           },
           "scopes": {
             "items": {
@@ -2719,6 +2743,28 @@
           }
         },
         "summary": "Redeem Github Login",
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/auth/methods": {
+      "get": {
+        "description": "Which ways in this deployment offers, for a client that holds no credential yet.\n\nPublic in every auth mode (`felix.auth.middleware`), because it is how an anonymous caller\nlearns how to get a credential. It reads settings only \u2014 no database, no call to GitHub \u2014\nand sits under the global rate limit like any other request; asking it never starts a\ndevice flow or spends from `/device`'s hourly budget.\n\n- `github_device`: `POST /auth/github/device` and `/token` are served (login configured).\n- `bearer_required`: this deployment verifies bearer credentials (`auth_mode` is not\n  `none`). A proxy in front of the harness that would accept a browser's own\n  `Authorization: Bearer` in place of its shared key must accept it only while this is\n  true: under `none` the harness verifies nothing, so any bearer at all would walk past the\n  proxy's only lock.",
+        "operationId": "auth_methods_auth_methods_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthMethodsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Auth Methods",
         "tags": [
           "Auth"
         ]

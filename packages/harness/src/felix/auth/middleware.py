@@ -20,6 +20,7 @@ from felix.auth.context import (
     assert_valid_tenant_id,
     require_scope,
 )
+from felix.auth.github import AUTH_METHODS_PATH
 from felix.auth.jwt import parse_verifiers, verify_jwt
 from felix.config import Settings, get_settings
 from felix.context import AuthContext as CtxAuth
@@ -61,7 +62,10 @@ async def _call_authenticator(
 # manifest and tool names. The API reference is not public either unless the operator
 # says so (`FELIX_DOCS_PUBLIC`): it describes every route, including the management
 # ones, and was the one map of the surface an unauthenticated caller could read.
-_PUBLIC_EXACT = PROBE_PATHS
+# `/auth/methods` is public whatever login is configured: it is how an anonymous client finds
+# out how to get a credential. It is not a probe, so it is not in `PROBE_PATHS` and the rate
+# limiter still counts it.
+_PUBLIC_EXACT = PROBE_PATHS | {AUTH_METHODS_PATH}
 _PUBLIC_PREFIX = ("/.well-known/",)
 DOCS_PATHS = frozenset({"/docs", "/openapi.json"})
 

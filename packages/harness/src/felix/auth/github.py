@@ -181,6 +181,8 @@ def _config_error(body: dict[str, Any]) -> GitHubLoginError:
 # rather than the prefix, so a plugin router that happens to mount under it stays behind auth.
 GITHUB_LOGIN_PREFIX = "/auth/github"
 GITHUB_LOGIN_PATHS = frozenset({f"{GITHUB_LOGIN_PREFIX}/device", f"{GITHUB_LOGIN_PREFIX}/token"})
+# Which ways in are on. Public in every mode, login on or off (`felix.auth.middleware`).
+AUTH_METHODS_PATH = "/auth/methods"
 
 
 def is_enabled(settings: Settings) -> bool:

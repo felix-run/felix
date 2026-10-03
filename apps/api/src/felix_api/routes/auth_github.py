@@ -17,6 +17,9 @@ A `device_code` is a bearer secret until it is redeemed: it is never logged or a
 workflow posts its GitHub Actions ID token and gets a Felix token back. Verifying it is a local
 signature check, so it stays under the global limit only. The ID token is never logged or
 audited either; the run it speaks for (repository, ref, workflow file, event, run) is.
+
+`GET /auth/methods` (`methods_router`, mounted at `/auth`) says which of these a client can use,
+so a browser can decide whether to offer GitHub login without starting a flow to find out.
 """
 
 from __future__ import annotations
@@ -28,6 +31,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 from felix.auth.github import (
+    AUTH_METHODS_PATH,
     GitHubLoginError,
     LoginErrorCode,
     actions_enabled,
@@ -41,6 +45,7 @@ from pydantic import BaseModel, Field
 logger = logging.getLogger("felix_api.auth_github")
 
 router = APIRouter(tags=["Auth"])
+methods_router = APIRouter(tags=["Auth"])
 
 DEVICE_START_WINDOW_S = 3600
 # One IPv6 subscriber is routinely handed a /64; keyed per address they would be 2**64 clients.
@@ -80,6 +85,15 @@ class LoginTokenOut(BaseModel):
     expires_in: int
     tenant: str
     scopes: list[str]
+    # The GitHub user who logged in; empty from `/actions`, because a workflow is not a person.
+    github_login: str = ""
+
+
+class AuthMethodsOut(BaseModel):
+    """How a caller can get a credential here, and whether it needs one."""
+
+    github_device: bool
+    bearer_required: bool
 
 
 class LoginErrorOut(BaseModel):
@@ -192,6 +206,7 @@ async def redeem_github_login(body: TokenRequest, request: Request) -> Any:
         expires_in=minted.expires_in,
         tenant=minted.tenant,
         scopes=list(minted.scopes),
+        github_login=minted.github_login,
     )
 
 
@@ -222,3 +237,23 @@ async def redeem_github_actions_login(body: ActionsTokenRequest, request: Reques
         tenant=minted.tenant,
         scopes=list(minted.scopes),
     )
+
+
+@methods_router.get(AUTH_METHODS_PATH.removeprefix("/auth"), response_model=AuthMethodsOut)
+async def auth_methods(request: Request) -> AuthMethodsOut:
+    """Which ways in this deployment offers, for a client that holds no credential yet.
+
+    Public in every auth mode (`felix.auth.middleware`), because it is how an anonymous caller
+    learns how to get a credential. It reads settings only — no database, no call to GitHub —
+    and sits under the global rate limit like any other request; asking it never starts a
+    device flow or spends from `/device`'s hourly budget.
+
+    - `github_device`: `POST /auth/github/device` and `/token` are served (login configured).
+    - `bearer_required`: this deployment verifies bearer credentials (`auth_mode` is not
+      `none`). A proxy in front of the harness that would accept a browser's own
+      `Authorization: Bearer` in place of its shared key must accept it only while this is
+      true: under `none` the harness verifies nothing, so any bearer at all would walk past the
+      proxy's only lock.
+    """
+    settings: Settings = request.app.state.settings
+    return AuthMethodsOut(github_device=is_enabled(settings), bearer_required=settings.auth_mode != "none")
