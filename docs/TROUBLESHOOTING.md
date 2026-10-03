@@ -58,7 +58,7 @@ the order rather than updating the test, unless the change is deliberate and exp
 
 ## Types and lint
 
-### `ty check` reports unresolved imports for temporalio, boto3, duckdb, playwright…
+### `ty check` reports unresolved imports for boto3, duckdb, playwright…
 
 Your virtualenv is lean. Unresolved imports are errors by design, and `ty` cannot resolve an optional
 extra that is not installed. CI installs `--all-extras` for exactly this reason.

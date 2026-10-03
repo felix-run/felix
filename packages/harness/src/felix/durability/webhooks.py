@@ -9,8 +9,8 @@ shape it:
   tenant-supplied URL on a path carrying run output is an exfiltration channel that SSRF checks
   do not address — the destination is the problem, not its address.
 * **A sweep, not a hook.** The API replica that accepted the run may be gone when it finishes,
-  and Temporal finishes fibers on a path of its own. A worker sweep over "terminal, delivery
-  pending, due" covers both, and is retried by the same schedule that runs it.
+  and a fiber may finish on any worker. A worker sweep over "terminal, delivery pending, due"
+  covers both, and is retried by the same schedule that runs it.
 * **State on the run's own row.** `webhook_status` / `webhook_due_at` / `webhook_state`
   (migration 0019): a dead letter is `webhook_status = 'dead'` beside the run it was about, not a
   second store to reconcile.

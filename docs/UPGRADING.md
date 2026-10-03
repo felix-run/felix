@@ -31,6 +31,28 @@ entries between them. Anything under **Removed** or **Changed** is where an upgr
 
 ---
 
+## The Temporal backend was removed
+
+**Only matters if you set `FELIX_DURABILITY=temporal`.** It drove fibers through Temporal but used
+none of Temporal's durability features, so it gave Felix's guarantees, not Temporal's. Fibers are
+now the one durable path.
+
+- **Unset `FELIX_DURABILITY`** (or set it to `fibers`). With `temporal`, every Felix process now
+  refuses to start, and the error says this.
+- **Stop `felix-temporal-worker`.** The console script, `felix temporal-worker`, the `temporal`
+  extra and `deploy/docker/compose.temporal.yml` (`make up-temporal`) are gone.
+- **In-flight runs carry on.** A durable chat Temporal had started is a fiber row with
+  `backend: temporal`, and its state is all in Postgres. The fiber scheduler in `felix-worker` now
+  claims those rows, which it skipped while Temporal existed. Nothing needs migrating, but keep the
+  Temporal worker stopped before upgrading, so the two never drive the same row. A row older than
+  its run's TTL (at most a day) is marked `expired` rather than run; if it named webhooks, they
+  fire once with that `expired` status.
+- `FELIX_TEMPORAL_HOST` and `FELIX_TEMPORAL_NAMESPACE` are now ignored; remove them when convenient.
+  The Temporal server's own databases (`temporal`, `temporal_visibility`, if you used the overlay's
+  auto-setup) are yours to drop.
+
+---
+
 ## `0020_ordering_indexes` locks tables while it builds
 
 **Six indexes rebuilt, one added — plan a quiet window on a large deployment.**

@@ -91,11 +91,6 @@ def test_optional_overlay_targets_are_file_discovered() -> None:
     jobs = {j["job_name"]: j for j in _load(PROMETHEUS)["scrape_configs"]}
     assert "overlays" in jobs, "no file_sd job for optional overlays"
     assert jobs["overlays"].get("file_sd_configs"), "the overlays job discovers nothing"
-    for name, job in jobs.items():
-        targets = [t for sc in job.get("static_configs", []) for t in sc.get("targets", [])]
-        assert "temporal" not in " ".join(targets), (
-            f"job {name!r} statically targets temporal, which is not in this overlay"
-        )
 
 
 def test_the_api_scrape_carries_a_credential() -> None:

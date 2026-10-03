@@ -76,9 +76,6 @@ EXPECTED_COMMANDS = {
     # The builder image: the same felix-api, behind a shell entrypoint that prepares /workspace.
     "deploy/docker/Dockerfile.builder": ["felix-api"],
     "deploy/docker/compose.yml": ["felix", "felix-api", "felix-worker", "felix-scheduler"],
-    # The Temporal overlay is the only deploy surface that runs the fourth binary. It has
-    # no `felix-api` of its own — it layers onto compose.yml, which supplies the rest.
-    "deploy/docker/compose.temporal.yml": ["felix-temporal-worker"],
     # The builder overlay adds one process the base stack does not run: the shell runner, in a
     # container of its own. api and worker inherit their commands from compose.yml.
     "deploy/docker/compose.self.yml": ["felix-shell-runner"],
@@ -223,7 +220,7 @@ def test_every_console_script_target_resolves() -> None:
 
     Arity is checked here rather than in a worker-specific test, because it is a property of
     *being* a console script: the shell invokes it with nothing, so a required parameter is a
-    `TypeError` at startup. That applies equally to `felix-api` and `felix-temporal-worker`.
+    `TypeError` at startup. That applies equally to `felix-api` and `felix-shell-runner`.
     """
     scripts = _console_scripts()
     assert set(scripts) == {
@@ -231,7 +228,6 @@ def test_every_console_script_target_resolves() -> None:
         "felix-api",
         "felix-scheduler",
         "felix-shell-runner",
-        "felix-temporal-worker",
         "felix-worker",
     }, f"the workspace's console scripts changed: {sorted(scripts)}"
 
@@ -415,16 +411,14 @@ def test_every_process_that_runs_a_turn_hydrates_secrets() -> None:
     sinks — fiber state, audit payloads, session events — redact through
     `collected_secret_values()` with no settings, so they see nothing else.
 
-    The API and the Taskiq worker always called it. `felix temporal-worker` did not, and it
-    registers the `fiber_step` activity, which runs a full agent turn in that process — so a
-    credential echoed into a tool result was persisted verbatim there and served back
-    through session export and fiber resume. An entrypoint that runs turns is the unit that
-    has to hydrate.
+    The API and the Taskiq worker always called it. The Temporal worker (since removed) did
+    not, and it ran full agent turns — so a credential echoed into a tool result was persisted
+    verbatim there and served back through session export and fiber resume. An entrypoint
+    that runs turns is the unit that has to hydrate; add any new one here.
     """
     sources = {
         "apps/api/src/felix_api/app.py": "the API lifespan",
         "apps/worker/src/felix_worker/tasks.py": "the Taskiq worker startup",
-        "packages/harness/src/felix/durability/temporal.py": "the Temporal worker",
     }
     missing = [
         f"{path} ({what})"

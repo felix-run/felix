@@ -64,7 +64,6 @@ def test_every_entrypoint_stamps_its_role() -> None:
     assert 'stamp_process_role("api")' in inspect.getsource(api_app)
     assert 'stamp_process_role("worker")' in inspect.getsource(worker_tasks)
     assert 'stamp_process_role("scheduler")' in inspect.getsource(worker_main)
-    assert 'stamp_process_role("temporal-worker")' in inspect.getsource(worker_main)
     assert 'stamp_process_role("cli")' in inspect.getsource(cli_main._root), "the CLI stamps in its callback"
     assert "stamp_process_role" not in inspect.getsource(cli_main).split("def _root", 1)[0], "never at import"
 

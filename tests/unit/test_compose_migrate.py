@@ -26,7 +26,6 @@ FELIX_SERVICES = [
     ("compose.yml", "api"),
     ("compose.yml", "worker"),
     ("compose.yml", "scheduler"),
-    ("compose.temporal.yml", "temporal-worker"),
 ]
 
 
@@ -48,8 +47,7 @@ def test_migrate_is_a_one_shot_that_only_upgrades() -> None:
 @pytest.mark.parametrize(("file", "service"), FELIX_SERVICES)
 def test_every_felix_process_waits_for_the_migration(file: str, service: str) -> None:
     """`service_started` would not do: it lets the app boot while the schema is still
-    being applied, which is the window `docs/UPGRADING.md` warns about. Includes the
-    Temporal overlay's worker, which opens the same database from a second file."""
+    being applied, which is the window `docs/UPGRADING.md` warns about."""
     deps = _services(file)[service]["depends_on"]
     assert deps.get("migrate", {}).get("condition") == "service_completed_successfully", (
         f"{file}: {service} does not wait for migrate to complete"

@@ -5,16 +5,15 @@ An overlay that brings up a scrapable service drops a `*.yml` file in here; the
 Empty is the normal state — it means no optional overlay is running, which is why those
 services do not appear as permanently-down static targets.
 
-Each file sets its own `job` label. To scrape Temporal when running
-`compose.temporal.yml` alongside the observability overlay, create `temporal.yml` here:
+Each file sets its own `job` label, for example `myservice.yml`:
 
 ```yaml
-- targets: ["temporal:9090"]
+- targets: ["myservice:9090"]
   labels:
-    job: temporal
+    job: myservice
 ```
 
-Why this is not shipped ready-made: a Compose overlay cannot add a volume to a service the
-base file does not define, so `compose.temporal.yml` cannot mount it into Prometheus
-without breaking `make up-temporal` on its own — and a file committed here unconditionally
-would leave anyone running only the observability overlay with a target that never comes up.
+Why an overlay does not ship one ready-made: a Compose overlay cannot add a volume to a service
+the base file does not define, so it cannot mount a file into Prometheus without breaking when
+run on its own — and a file committed here unconditionally would leave anyone running only the
+observability overlay with a target that never comes up.

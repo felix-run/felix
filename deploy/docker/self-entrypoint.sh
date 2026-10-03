@@ -44,7 +44,7 @@ git -C "$ws" config user.email "${FELIX_SELF_GIT_EMAIL:-felix-run-bot@users.nore
 
 if [ "${FELIX_SELF_SYNC:-1}" = "1" ]; then
   echo "self-entrypoint: syncing the workspace venv" >&2
-  (cd "$ws" && uv sync --locked --dev --extra temporal --extra warehouse --extra sandbox --extra otel --quiet)
+  (cd "$ws" && uv sync --locked --dev --extra warehouse --extra sandbox --extra otel --quiet)
 fi
 
 # Released before the exec, not by it: a lock belongs to the open file, and an fd left open

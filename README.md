@@ -21,7 +21,7 @@ operate.
 
 - **Manifests** — `felix/v1` YAML; bundled agents in `manifests/`
 - **Governance** — auth, approvals, audit, usage meters
-- **Durable execution** — fibers (Temporal optional), steer and follow-up
+- **Durable execution** — fibers, steer and follow-up
 - **Session control** — fork, rewind, compacting / windowed / semantic strategies
 - **Memory and skills** — durable facts, procedural memory, Agent Skills
 - **Surfaces** — REST/SSE, OpenAI-compatible `/v1`, A2A, MCP
@@ -124,7 +124,7 @@ make up-gcp    # GCE / public VM: no DB or cache host ports
 Docker packaging lives under [`deploy/docker/`](deploy/docker/). Always run Compose from the repo
 root — `make up` sets `--project-directory .`.
 
-Heavy optional dependencies (Playwright, sentence-transformers, DuckDB, Presidio, Temporal) are
+Heavy optional dependencies (Playwright, sentence-transformers, DuckDB, Presidio) are
 **never** in the default image. Install them through extras only when needed.
 
 ### Observability
@@ -193,7 +193,7 @@ Client → Ingress (Caddy / Traefik / nginx / Cloudflare DNS+CDN)
 | `felix-scheduler` | Enqueues labeled Taskiq cron tasks — **required alongside the worker**, or nothing periodic fires |
 | `packages/ai` | Model layer: wire formats, catalog, turn types. Imports nothing from `felix` |
 | `packages/harness` | Manifests, patterns, tools, session, governance, auth, plugins |
-| `packages/cli` | `felix migrate \| eval \| mint-jwt \| login \| ingest-docs \| bundle-manifests \| validate-manifest \| doctor \| version \| temporal-worker` |
+| `packages/cli` | `felix migrate \| eval \| mint-jwt \| login \| ingest-docs \| bundle-manifests \| validate-manifest \| doctor \| version` |
 | `manifests/` | Bundled agents: `quick`, `assistant`, `deep`, `router`, `oss-only`, `hybrid-router`, `support`, `decider-support`, `cowork`, `governed`, `contributor`, `triage` |
 
 ### Vendor independence
@@ -670,7 +670,7 @@ Storage and execution:
 - Large tool outputs spill via `spec.artifacts`: the model gets a preview and pages through the
   rest with `read_artifact`, sized by `default_window_chars` / `max_window_chars`
 - Durable facts via `spec.memory.capture`; how-tos via `spec.procedural_memory`
-- `spec.execution.mode: durable` enqueues a fiber (Temporal optional) and returns `202` with a
+- `spec.execution.mode: durable` enqueues a fiber and returns `202` with a
   `resume_token`; a step that keeps failing backs off and is `dead` after `FELIX_FIBER_MAX_ATTEMPTS`.
   Each worker polls for due fibers every `FELIX_FIBER_POLL_SECONDS` (1.0; 0 leaves only the
   once-a-minute `fiber_scheduler` sweep) and advances up to `FELIX_FIBER_CONCURRENCY` (8) at once,

@@ -38,7 +38,7 @@ def build() -> None:
         logger.warning("browser tool binding failed", exc_info=True)
 ```
 
-Optional extras (Playwright, DuckDB, Presidio, Temporal, boto3, google-cloud) are **never**
+Optional extras (Playwright, DuckDB, Presidio, boto3, google-cloud) are **never**
 imported at module top level. Degrade with a `logger.warning` when a binding failure should not
 fail the whole build; raise when it must.
 

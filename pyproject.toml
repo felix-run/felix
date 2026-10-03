@@ -35,7 +35,6 @@ embeddings = ["felix-harness[embeddings]"]
 warehouse = ["felix-harness[warehouse]"]
 warehouse-clickhouse = ["felix-harness[warehouse-clickhouse]"]
 warehouse-doris = ["felix-harness[warehouse-doris]"]
-temporal = ["felix-harness[temporal]"]
 sandbox = ["felix-harness[sandbox]"]
 pii = ["felix-harness[pii]"]
 full = [

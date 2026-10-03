@@ -49,7 +49,6 @@ OPTIONAL_DISTRIBUTIONS = {
     "pymysql",
     "sentence_transformers",
     "spacy",
-    "temporalio",
 }
 
 
@@ -68,73 +67,6 @@ def _python_files(base: Path) -> list[Path]:
 
 
 # --------------------------------------------------------------------------
-# Modules that may import an optional dependency at module scope, because the
-# dependency requires it and nothing reaches them without the extra installed.
-#
-# One entry, and it earns it: `@workflow.run` rejects a class declared inside a
-# function -- the Temporal worker re-imports the class by name inside its sandbox --
-# so the definitions cannot be built lazily the way every other optional binding is.
-#
-# The carve-out is enforced rather than trusted. `test_an_extra_only_module_is_never
-# _imported_eagerly` below asserts nothing pulls these in at module scope, which is
-# the property that makes a module-scope `import temporalio` harmless here.
-EXTRA_ONLY_MODULES = {"packages/harness/src/felix/durability/_temporal_workflow.py"}
-
-
-def test_every_extra_only_module_exists() -> None:
-    """So the list cannot outlive the file it excuses."""
-    missing = sorted(rel for rel in EXTRA_ONLY_MODULES if not (ROOT / rel).is_file())
-    assert missing == [], f"EXTRA_ONLY_MODULES names files that no longer exist: {missing}"
-
-
-def test_an_extra_only_module_is_never_imported_eagerly() -> None:
-    """The whole basis of the exception.
-
-    A module-scope `import temporalio` is harmless only while nothing imports the
-    module that does it at *its* module scope. The moment something does, a lean
-    install breaks at import time — which is exactly what the rule below exists to
-    prevent, so the exception has to carry its own guard.
-
-    Every import form is checked, because an earlier version read only `ImportFrom.module`
-    and so saw `from felix.durability._temporal_workflow import X` while missing
-    `from felix.durability import _temporal_workflow` — where the module is named in
-    `names`, not in `module`. That is the more idiomatic of the two, and the relative form
-    a sibling inside `durability/` would naturally write (`from . import _temporal_workflow`)
-    has no `module` at all. Found by mutation-testing this invariant rather than by a
-    failure: it was green against the violation it exists to catch.
-    """
-    targets = {Path(rel).stem for rel in EXTRA_ONLY_MODULES}
-    inspected = 0
-    offenders: list[str] = []
-    for root in SOURCE_ROOTS:
-        for path in _python_files(root):
-            if str(path.relative_to(ROOT)) in EXTRA_ONLY_MODULES:
-                continue
-            tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
-            for node in tree.body:  # module scope only
-                # Every dotted segment the statement names, from wherever it names it.
-                segments: set[str] = set()
-                if isinstance(node, ast.Import):
-                    for alias in node.names:
-                        segments.update(alias.name.split("."))
-                elif isinstance(node, ast.ImportFrom):
-                    segments.update((node.module or "").split("."))
-                    segments.update(alias.name for alias in node.names)
-                inspected += len(segments)
-                hit = sorted(segments & targets)
-                if hit:
-                    rel = path.relative_to(ROOT)
-                    offenders.append(f"{rel}:{node.lineno} imports {', '.join(hit)}")
-    assert inspected >= 200, (
-        f"only {inspected} module-scope import segments inspected (1322 today) — the "
-        "`tree.body` walk has broken, so an eager import here would pass unnoticed"
-    )
-    assert offenders == [], (
-        "An extra-only module must be imported inside the function that needs it, or a "
-        "lean install fails at import:\n  " + "\n  ".join(offenders)
-    )
-
-
 # Lean by default: optional dependencies are imported inside the function that
 # needs them, never at module scope.
 # --------------------------------------------------------------------------
@@ -143,8 +75,6 @@ def test_no_optional_dependency_imported_at_module_scope() -> None:
     offenders: list[str] = []
     for root in SOURCE_ROOTS:
         for path in _python_files(root):
-            if str(path.relative_to(ROOT)) in EXTRA_ONLY_MODULES:
-                continue
             tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
             for node in tree.body:  # module scope only — nested imports are the point
                 names: list[str] = []
@@ -1625,10 +1555,9 @@ def test_every_record_usage_call_prices_by_the_wire_model() -> None:
 
 def test_every_consumer_of_run_status_agrees_on_what_is_terminal() -> None:
     """`FIBER_TERMINAL_STATUSES` is the one list of statuses the scheduler never advances.
-    Three consumers decide "is this run over" from their own copy: the resume stream, the
-    SDK poller (which must not import the store), and the Temporal workflow loop (read by
-    AST — importing it needs `temporalio`). A status missing from any copy is a run a client
-    polls until its own deadline, or a workflow that spins on a row nothing will change."""
+    Two consumers decide "is this run over" from their own copy: the resume stream and the
+    SDK poller (which must not import the store). A status missing from either is a run a
+    client polls until its own deadline."""
     from felix.durability.fibers import FIBER_TERMINAL_STATUSES
     from felix_api.routes._streaming import RUN_TERMINAL as STREAM_RUN_TERMINAL
     from felix_client import RUN_TERMINAL as SDK_RUN_TERMINAL
@@ -1639,19 +1568,6 @@ def test_every_consumer_of_run_status_agrees_on_what_is_terminal() -> None:
     )
     assert FIBER_TERMINAL_STATUSES <= STREAM_RUN_TERMINAL, (
         "the resume stream is missing a fiber terminal status"
-    )
-
-    workflow = ROOT / "packages/harness/src/felix/durability/_temporal_workflow.py"
-    tree = ast.parse(workflow.read_text(encoding="utf-8"))
-    temporal: set[str] | None = None
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign) and any(
-            isinstance(t, ast.Name) and t.id == "_TERMINAL" for t in node.targets
-        ):
-            temporal = {str(c.value) for c in ast.walk(node.value) if isinstance(c, ast.Constant)}
-    assert temporal is not None, "_temporal_workflow._TERMINAL not found"
-    assert temporal >= FIBER_TERMINAL_STATUSES, (
-        "the Temporal workflow loop is missing a fiber terminal status"
     )
 
 

@@ -37,7 +37,7 @@ def _is_loopback_host(host: str) -> bool:
         return False
 
 
-ProcessRole = Literal["api", "worker", "scheduler", "temporal-worker", "cli"]
+ProcessRole = Literal["api", "worker", "scheduler", "cli"]
 
 
 def process_identity() -> str:
@@ -229,9 +229,10 @@ class Settings(BaseSettings):
     process_role: ProcessRole | Literal[""] = ""
 
     # --- durability ---
-    durability: Literal["fibers", "temporal"] = "fibers"
-    temporal_host: str = "localhost:7233"
-    temporal_namespace: str = "default"
+    # Fibers are the one durable path. Kept as a setting, rather than dropped, so a deployment
+    # still setting FELIX_DURABILITY=temporal fails at startup saying what to do instead of
+    # being silently ignored (`extra="ignore"`) while it runs a Temporal server nothing uses.
+    durability: Literal["fibers"] = "fibers"
     # Consecutive step failures (outside the invoke's own handler) before a fiber is
     # marked `dead` instead of retried. Retries back off 1m, 2m, 4m … up to an hour.
     fiber_max_attempts: int = Field(default=5, ge=1)
@@ -515,6 +516,17 @@ class Settings(BaseSettings):
     workspace_root: str = ""
     # When true, auto-discover AGENTS.md from workspace_root / object store.
     load_agents_md: bool = False
+
+    @field_validator("durability", mode="before")
+    @classmethod
+    def _temporal_was_removed(cls, v: Any) -> Any:
+        if isinstance(v, str) and v.strip().lower() == "temporal":
+            raise ValueError(
+                "FELIX_DURABILITY=temporal was removed: the backend gave Felix's guarantees, not "
+                "Temporal's. Unset FELIX_DURABILITY and stop felix-temporal-worker; the fiber "
+                "scheduler in felix-worker runs durable chats, including ones Temporal had started."
+            )
+        return v
 
     @field_validator("auth_api_keys", mode="before")
     @classmethod

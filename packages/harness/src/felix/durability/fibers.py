@@ -60,8 +60,8 @@ FIBER_BATCH = 50
 FIBER_RETRY_BASE_MS = 60_000
 FIBER_RETRY_MAX_MS = 60 * 60 * 1000
 # Statuses a fiber never leaves: the claim never selects them and nothing advances them
-# again. Every consumer that decides "is this run over" — the resume stream, the SDK poller,
-# the Temporal workflow loop — is checked against this set in `tests/unit/test_invariants.py`.
+# again. Every consumer that decides "is this run over" — the resume stream and the SDK
+# poller — is checked against this set in `tests/unit/test_invariants.py`.
 FIBER_TERMINAL_STATUSES = frozenset({"completed", "failed", "expired", "dead"})
 # A backstop on how many ops one claim may run, for a `steps` list long enough that running
 # it whole would hold the worker off the other 49 fibers in the batch. It is deliberately far
@@ -150,8 +150,8 @@ async def create_fiber(
         # dict disagree with the row that was just written: `_save_fiber` reads
         # `int(row.get("version") or 0)` for its compare-and-set, so any caller that keeps
         # this dict rather than re-reading the row wrote against a version the database
-        # never had. The Postgres sweeper always re-reads and so never saw it; the Temporal
-        # backend uses this dict directly, and every one of its writes was discarded.
+        # never had. The Postgres sweeper always re-reads and so never saw it; a caller that
+        # writes through the returned dict (the Temporal backend did) had every write discarded.
         "version": 0,
         "attempts": 0,
         "webhook_status": "pending" if webhooks else None,
@@ -338,12 +338,9 @@ async def _invoke_resume_point(
         if store is None:
             return "fresh", None
         session = store.open(thread)
+        # The claim loop passes the row it read at claim time and saves in place, so the marker
+        # on it is current. (The Temporal backend retried with stale rows and re-read here.)
         marker = state.get("invoke_began")
-        if not isinstance(marker, dict):
-            # Temporal retries an activity with the row it was first handed, which predates
-            # the marker; the stored row is the one that has it.
-            stored = await get_fiber(settings, row["tenant_id"], str(row["id"]))
-            marker = ((stored or {}).get("state_json") or {}).get("invoke_began")
         if isinstance(marker, dict) and marker.get("cursor") == cursor:
             events = await session.get_events(GetEventsOpts(from_seq=int(marker.get("seq") or 0)))
             mine = next(
@@ -613,8 +610,6 @@ async def _run_fiber_step(
 async def _claim_due_memory(settings: Settings, ts: int, limit: int = FIBER_BATCH) -> list[dict[str, Any]]:
     claimed: list[dict[str, Any]] = []
     for row in _memory_fibers.values():
-        if (row.get("state_json") or {}).get("backend") == "temporal":
-            continue
         lease_until = row.get("lease_until")
         if lease_until is not None and lease_until > ts:
             continue  # someone else holds the claim
@@ -660,14 +655,9 @@ async def _claim_due_postgres(settings: Settings, ts: int, limit: int = FIBER_BA
                     (Fiber.status != "sleeping") | (Fiber.wake_at.is_not(None) & (Fiber.wake_at <= ts)),
                     # unclaimed, or the previous claim expired (crashed worker)
                     Fiber.lease_until.is_(None) | (Fiber.lease_until <= ts),
-                    # Temporal drives its own workflows, so those rows are not ours to claim.
-                    # Filtered in SQL rather than after the fetch: `LIMIT` applies to the rows
-                    # the WHERE returns, so dropping them in Python meant a tenant holding a
-                    # batch's worth of Temporal fibers filled the batch with rows that were
-                    # then discarded and claimed nothing at all -- its ordinary fibers never
-                    # ran. The twin skips them while scanning, so it never had that problem,
-                    # and starvation on the system of record is the harder one to notice.
-                    Fiber.state_json["backend"].astext.is_distinct_from("temporal"),
+                    # No `backend` filter. Rows an earlier version handed to Temporal carry
+                    # `backend: temporal`; their state is all here, so this scheduler picks
+                    # them up rather than leaving them stranded with no worker to drive them.
                 )
                 .order_by(Fiber.updated_at)
                 .limit(limit)

@@ -42,17 +42,5 @@ def scheduler_main() -> None:
     asyncio.run(run_scheduler(args))
 
 
-def temporal_main() -> None:
-    """Run a Temporal worker on task queue felix-fibers (durable chats)."""
-    import asyncio
-
-    from felix.config import get_settings
-    from felix.durability.temporal import run_worker
-
-    settings = get_settings()
-    settings.stamp_process_role("temporal-worker")
-    asyncio.run(run_worker(settings))
-
-
 if __name__ == "__main__":
     main()

@@ -692,7 +692,7 @@ before it was logged — and the turn runs as new. There, with a reply that has 
 last, and the turn had finished and only the fiber's save was lost: that reply is the run's
 answer and no model is called. Otherwise the run continues from the log with no new user
 turn: the model sees its own tool calls and results — completed calls are not re-issued —
-and a call in flight is closed out as above. Temporal retries resume the same way.
+and a call in flight is closed out as above.
 
 The turn is re-sent, as before, wherever the log cannot say where the run stands: no log
 (`memory.checkpointer: none`); a composite pattern (`router`, `reflect`, `parallel`, …),
@@ -828,18 +828,8 @@ Four things to know before relying on it:
   | | |
   |---|---|
   | Never wider | Exactly the caller's scope set. A caller with none confers none. |
-  | Never longer than the run | `expires_at`, checked before every step, on both the fiber scheduler and the Temporal activity. `hibernate_after_seconds` (300s) by default, `execution.resume_token_ttl_seconds` if set, capped at `ABSOLUTE_LIMITS["resume_token_ttl_seconds"]` (24h). |
+  | Never longer than the run | `expires_at`, checked before every step by the fiber scheduler. `hibernate_after_seconds` (300s) by default, `execution.resume_token_ttl_seconds` if set, capped at `ABSOLUTE_LIMITS["resume_token_ttl_seconds"]` (24h). |
   | Never longer than the token | Clamped to the token's `exp` when it has one. Felix has no revocation, so `exp` is the only bound on a compromised credential and a durable run must not outlive it. |
-
-  **With `FELIX_DURABILITY=temporal`, Temporal is inside the trust boundary.** The workflow is
-  started with the fiber row as its argument and each activity is handed that row, so Temporal's
-  workflow history holds every run's recorded `principal_sub`, scopes and scheme, alongside the
-  user's message — in one namespace, outside Postgres RLS and outside the run's TTL, for as long
-  as the namespace retains history. And the activity advances the row it is *given*, not one
-  re-read from Postgres: whoever can start a workflow on the `felix-fibers` task queue chooses
-  the run's `tenant_id`, `expires_at` and recorded authority. Treat access to that namespace and
-  task queue like access to the database — restricted, per deployment, with history retention no
-  longer than the runs need.
 
   **A resumed run replays its scheme without a credential.** The run's recorded `scheme` is
   presented at resume, but nothing re-presents the token it came from, so

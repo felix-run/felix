@@ -45,7 +45,7 @@ anything. Its jobs:
 | `pre-commit` | `--dev` | `pre-commit run --all-files` |
 | `lint` | `--all-extras` | `uv lock --check`, dependency age (48h), `ruff check`, `ruff format --check`, Scalar SRI |
 | `typecheck` | `--all-extras` | `ty check packages apps` |
-| `test` | `--dev` + `temporal warehouse sandbox otel` | `felix bundle-manifests`, `make test-cov` with `FELIX_REQUIRE_OPTIONAL_EXTRAS=1` and `FELIX_REQUIRE_HELM=1` |
+| `test` | `--dev` + `warehouse sandbox otel` | `felix bundle-manifests`, `make test-cov` with `FELIX_REQUIRE_OPTIONAL_EXTRAS=1` and `FELIX_REQUIRE_HELM=1` |
 | `conformance` | `--dev` | `tests/conformance` against pgvector Postgres + Valkey services, `REQUIRE_POSTGRES`/`REQUIRE_REDIS` set |
 | `eval` | `--dev` | the `--mock` smoke eval, then `scripts/eval-counter-smoke.sh` (must fail) |
 | `lean` | `--no-dev` | `scripts/lean-import-check.py`, `felix version` |

@@ -677,7 +677,10 @@ comment explaining exactly that. It is conditional, not inert.
       closest thing to evidence in the system), or rename the field so `frameworks: [soc2]` stops
       inviting a reading it cannot support. The schema disclaimer is right and is in the file
       nobody reads.
-- [ ] **Temporal: decide.** (`make up-temporal` now runs it end to end, and the backend's
+- [x] **Temporal: decide.** Decided 2026-10-02: **removed.** Fibers are the one durable path;
+      `FELIX_DURABILITY=temporal` fails startup naming what to do, and the fiber scheduler now
+      claims rows an earlier version handed to Temporal. The original note follows.
+      (`make up-temporal` now runs it end to end, and the backend's
       writes actually persist — see CHANGELOG — so the decision can be made against something
       that works. Still no TLS/API-key on `Client.connect`, so Temporal Cloud is unreachable.)
       Original note: The arm is a ~165-line driver loop (`temporal.py` + `_temporal_workflow.py`)
@@ -841,7 +844,8 @@ rather than from re-reading a file. The wave itself is written up in [HISTORY.md
       `felix_policy_unsatisfiable` and `felix_rule_targets_nothing` — the exact signals
       `deploy/GOVERNANCE.md` now tells operators to watch. The WARNING still fires, so this is
       partial. **Decide:** should governance-gap counters be exempt from the manifest allowlist?
-- [ ] **Keep growing the fiber scheduler, or make Temporal the documented multi-step path.**
+- [x] **Keep growing the fiber scheduler, or make Temporal the documented multi-step path.**
+      Decided 2026-10-02 with the item above: keep growing the fiber scheduler; Temporal is gone.
       Temporal already wraps the same `advance_fiber`; what fibers duplicates is the scheduling
       envelope, and that is where this audit's durability bugs were — a lease that equalled the
       approval timeout (#150), resolution outside the tenant context (#150). The §B item this
@@ -908,8 +912,10 @@ rather than from re-reading a file. The wave itself is written up in [HISTORY.md
       (2026-09-29: web now covers durable-run authority (`internals/governance.mdx`), the claim
       lease (`guide/deploy.mdx`) and RLS basics (`guide/concepts.mdx`); still only in
       `deploy/GOVERNANCE.md`: #150's lease-versus-approval-timeout semantics and RLS ordering.)
-- [ ] **`durability` stays a closed `Literal`.** Fibers-vs-Temporal is not a factory swap, so a
+- [x] **`durability` stays a closed `Literal`.** Fibers-vs-Temporal is not a factory swap, so a
       registry there is a feature, not a refactor. Recorded so it is not "opened" by mistake.
+      Now `Literal["fibers"]`, kept only so `temporal` fails with a message rather than being
+      ignored; a second backend would be a feature with its own design, not a registry entry.
 
 ### Headless / contract
 

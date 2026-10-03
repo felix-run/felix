@@ -20,7 +20,7 @@ backend resolves `secret:NAME` by reading the plain environment variable `NAME`.
 
 ## Optional imports go inside the function
 
-Heavy dependencies — Playwright, sentence-transformers, DuckDB, Presidio, Temporal, docker,
+Heavy dependencies — Playwright, sentence-transformers, DuckDB, Presidio, docker,
 cloud SDKs — live behind extras and are imported lazily inside the function that needs them,
 wrapped in `try/except` with a `logger.warning` when a binding failure should degrade rather than
 fail the build. Never at module top level. The default install and the default image stay lean,

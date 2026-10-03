@@ -30,7 +30,7 @@ calls `apps/api/src/felix_api/app.py:create_app`), `felix-worker` and `felix-sch
   `builder.py` ignores it. `tests/unit/test_inert_manifest_fields.py` is the existing check. The fix
   is to wire it, not to delete it.
 - **An optional-extra code path.** Anything behind `aws`, `gcp`, `mcp`, `browser`, `embeddings`,
-  `warehouse`, `temporal`, `sandbox`, or `pii` is unreachable in a lean install by design. Absence of
+  `warehouse`, `sandbox`, or `pii` is unreachable in a lean install by design. Absence of
   coverage under `memory://ci` is not evidence of deadness.
 - **An in-memory store twin.** Required by `test_postgres_modules_have_an_in_memory_path` and used by
   every CI run.

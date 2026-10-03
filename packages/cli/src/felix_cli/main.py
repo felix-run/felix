@@ -29,20 +29,10 @@ def _root(ctx: typer.Context) -> None:
     from felix.config import get_settings
 
     # One more process against the same database: name its connections. In a callback
-    # rather than at import, so importing this module for a helper stamps nothing.
-    #
-    # Except for the subcommands that are not a CLI invocation at all but a long-lived
-    # process. `stamp_process_role` is first-write-wins, so stamping "cli" here left
-    # `felix temporal-worker` showing up in pg_stat_activity as felix-cli for as long as it
-    # ran — indistinguishable from someone's shell, which is what the stamp exists to avoid.
-    if ctx.invoked_subcommand in _LONG_RUNNING:
-        return
+    # rather than at import, so importing this module for a helper stamps nothing. Every
+    # subcommand does a thing and exits; a long-lived one (there was `temporal-worker`) would
+    # need to skip this and stamp its own role, since `stamp_process_role` is first-write-wins.
     get_settings().stamp_process_role("cli")
-
-
-# Subcommands that run a server rather than doing a thing and exiting. They stamp their own
-# process role, so the root callback must not claim it first.
-_LONG_RUNNING = frozenset({"temporal-worker"})
 
 
 def _load_plugins() -> list[str]:
@@ -727,22 +717,6 @@ def doctor_cmd() -> None:
         settings.object_store in {"fs", "s3", "gcs", "memory"},
         settings.object_store,
     )
-    check(
-        "durability",
-        settings.durability in {"fibers", "temporal"},
-        settings.durability,
-    )
-    if settings.durability == "temporal":
-        try:
-            import temporalio  # noqa: F401
-        except ImportError:
-            check(
-                "temporal extra",
-                False,
-                "uv sync --extra temporal",
-            )
-        else:
-            check("temporal extra", True, settings.temporal_host)
     data = P(settings.data_dir)
     try:
         data.mkdir(parents=True, exist_ok=True)
@@ -891,22 +865,6 @@ def doctor_cmd() -> None:
 
     asyncio.run(_ping())
     raise SystemExit(0 if ok else 1)
-
-
-@app.command("temporal-worker")
-def temporal_worker_cmd() -> None:
-    """Run a Temporal worker for durable fibers (task queue felix-fibers)."""
-    import asyncio
-
-    from felix.config import get_settings
-    from felix.durability.temporal import run_worker
-
-    settings = get_settings()
-    # Named here rather than by the root callback, which skips this subcommand for exactly
-    # this reason. Matches `felix_worker.main:temporal_main`, the console script that runs the
-    # same worker under Compose.
-    settings.stamp_process_role("temporal-worker")
-    asyncio.run(run_worker(settings))
 
 
 if __name__ == "__main__":
