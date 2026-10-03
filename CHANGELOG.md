@@ -402,6 +402,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A plan's steps keep their titles whatever key the model used.** `plan_create` declared `steps`
+  as a bare array, so models guessed a step's shape, and one sent `{"description": …}` for every
+  step: the harness read only `title` or `text`, and the plan was stored with three empty titles.
+  The schema now describes a step (a string, or an object with `title`), and the handler also
+  accepts `description` and `name`.
 - **A model provider that is down or unconfigured says so instead of `internal error`.** An
   unreachable endpoint (Ollama not running for `oss-only`, a connect failure or timeout anywhere)
   is now a model-gateway error, `ollama provider unreachable (ConnectError)`, with status 503, or
