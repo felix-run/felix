@@ -74,6 +74,7 @@ class _FallbackClient:
                             "reason": "provider_error",
                         },
                     )
+                    return _served_by(client, result)
                 return result
             except Exception as exc:
                 if not _is_provider_error(exc):
@@ -105,7 +106,7 @@ class _FallbackClient:
             try:
                 async for item in turn(messages, tools, opts):
                     emitted = True
-                    yield item
+                    yield _served_by(client, item) if i > 0 and isinstance(item, ModelChatResult) else item
                 if i > 0:
                     record_counter(
                         "felix_model_switch",
@@ -341,6 +342,17 @@ class _EscalationClient:
             yield chunk
 
 
+def _served_by(client: ModelClient, result: ModelChatResult) -> ModelChatResult:
+    """`result` stamped with the route that produced it, unless something nearer already did.
+
+    `record_model_usage` prices the stamp in preference to the client it called, so a fallback
+    that answered is metered at its own rates rather than the primary's it stood in for.
+    """
+    if result.served_route is not None:
+        return result
+    return replace(result, served_model_id=client.model_id, served_route=client.route)
+
+
 def _is_provider_error(err: object) -> bool:
     if isinstance(err, ModelGatewayError):
         return err.status >= 500 or err.status == 429
@@ -379,9 +391,7 @@ class _VisionRoutingClient:
         return self.vision
 
     def _served(self, client: ModelClient, result: ModelChatResult) -> ModelChatResult:
-        if client is self.primary or result.served_route is not None:
-            return result
-        return replace(result, served_model_id=client.model_id, served_route=client.route)
+        return result if client is self.primary else _served_by(client, result)
 
     async def chat(
         self,

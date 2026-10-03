@@ -694,12 +694,46 @@ def build_model(settings: Settings | None, spec: Any, *, decider: Any = None) ->
     if plan.vision_id:
         client = _VisionRoutingClient(
             primary=client,
-            vision=build_one_model(settings, spec, plan.vision_id),
+            vision=_vision_chain(settings, spec, plan.vision_id, fallbacks_ids, price_override),
             model_id=client.model_id,
             route=client.route,
             price_override=price_override,
         )
     return client
+
+
+def _vision_chain(
+    settings: Settings,
+    spec: Any,
+    vision_id: str,
+    fallbacks_ids: list[str],
+    price_override: dict[str, float] | None,
+) -> ModelClient:
+    """The vision route, failing over to whichever of `spec.model.fallbacks` can see.
+
+    It was built alone, so one provider error on an image turn failed the turn while the same
+    manifest's text turns had a chain to fall back on. Only fallbacks the catalog does not
+    vouch text-only are used: a text-only one would be handed an image it swaps for an
+    "omitted" line, and answer about a picture it never saw.
+    """
+    from felix.patterns.model_vision import route_accepts_images
+
+    vision = build_one_model(settings, spec, vision_id)
+    routes = parse_model_routes(settings)
+    seeing = [
+        fid
+        for fid in fallbacks_ids
+        if fid != vision_id and route_accepts_images(routes.get(fid)) is not False
+    ]
+    if not seeing:
+        return vision
+    return _FallbackClient(
+        primary=vision,
+        fallbacks=[build_one_model(settings, spec, fid) for fid in seeing],
+        model_id=vision.model_id,
+        route=vision.route,
+        price_override=price_override,
+    )
 
 
 __all__ = [
