@@ -22,7 +22,7 @@ from felix.config import Settings
 from felix.skills.feedback_store import get_skill_feedback_store
 from felix.skills.library import SkillLibraryError, SkillNotFound, newest_version
 from felix.skills.library_store import get_skill_library_store
-from felix.skills.quality_store import FeedbackSource, SkillFeedbackConflict
+from felix.skills.quality_store import FeedbackSource, SkillFeedbackAtCap, SkillFeedbackConflict
 
 now_ms = lambda: int(time.time() * 1000)
 
@@ -106,33 +106,34 @@ async def submit_feedback(
 ) -> dict[str, Any]:
     """File feedback on ``name`` (at ``target_version``, or its live version) as `pending`.
 
-    An agent's `max_pending` is counted, then the row inserted, so two concurrent submits at the
-    cap can both land; the cap bounds a looping agent, not an exact count.
+    An agent's `max_pending` is exact: the store counts the manifest's pending feedback and
+    inserts the row in one transaction, under a lock per manifest, so submits racing at the cap
+    land one at a time and the one past it is refused.
     """
     target = await _target(settings, tenant_id, name, target_version)
     store = get_skill_feedback_store(settings)
-    cap = provenance.max_pending
-    if provenance.source == "agent" and cap is not None:
-        held = await store.count_pending_agent(tenant_id, provenance.author)
-        if held >= cap:
-            raise FeedbackCapReached(
-                f"{provenance.author} already has {held} feedback awaiting review (limit {cap})"
-            )
-    row = await store.insert(
-        tenant_id,
-        {
-            "id": str(uuid.uuid4()),
-            "name": name,
-            "target_version": target,
-            "source": provenance.source,
-            "author": provenance.author,
-            "principal": provenance.principal,
-            "body": body[:MAX_BODY_CHARS],
-            "suggested_patch": suggested_patch[:MAX_PATCH_CHARS] if suggested_patch else None,
-            "status": "pending",
-            "created_at": now_ms(),
-        },
-    )
+    cap = provenance.max_pending if provenance.source == "agent" else None
+    try:
+        row = await store.insert(
+            tenant_id,
+            {
+                "id": str(uuid.uuid4()),
+                "name": name,
+                "target_version": target,
+                "source": provenance.source,
+                "author": provenance.author,
+                "principal": provenance.principal,
+                "body": body[:MAX_BODY_CHARS],
+                "suggested_patch": suggested_patch[:MAX_PATCH_CHARS] if suggested_patch else None,
+                "status": "pending",
+                "created_at": now_ms(),
+            },
+            max_pending=cap,
+        )
+    except SkillFeedbackAtCap as exc:
+        raise FeedbackCapReached(
+            f"{provenance.author} already has {exc.held} feedback awaiting review (limit {exc.limit})"
+        ) from exc
     audit_feedback(
         settings,
         tenant_id,
@@ -158,20 +159,20 @@ async def _decide(
     store = get_skill_feedback_store(settings)
     if await store.get(tenant_id, feedback_id) is None:
         raise SkillNotFound(f"feedback {feedback_id} does not exist")
-    if improve:
-        from felix.skills.job_limits import check_job_caps
+    from felix.skills.job_limits import job_caps, refused_at_cap
 
-        await check_job_caps(settings, tenant_id)
     try:
-        row = await store.decide(
-            tenant_id,
-            feedback_id,
-            status=status,
-            improve=improve,
-            by=by,
-            note=(note or "")[:NOTE_LIMIT] or None,
-            at=now_ms(),
-        )
+        with refused_at_cap():
+            row = await store.decide(
+                tenant_id,
+                feedback_id,
+                status=status,
+                improve=improve,
+                by=by,
+                note=(note or "")[:NOTE_LIMIT] or None,
+                at=now_ms(),
+                caps=job_caps(settings) if improve else None,
+            )
     except SkillFeedbackConflict as exc:
         raise FeedbackStateConflict(f"feedback {feedback_id} was already decided") from exc
     event = "skill_feedback_accepted" if status == "accepted" else "skill_feedback_rejected"

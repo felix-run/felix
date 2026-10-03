@@ -353,23 +353,24 @@ async def queue_eval(
     """Queue an evaluation of ``name@version``. `EvalInProgress` when one is already queued or
     running for that version; `SkillNotFound` when the version does not exist;
     `SkillJobsCapReached` past the tenant's job caps."""
-    from felix.skills.job_limits import check_job_caps
+    from felix.skills.job_limits import job_caps, refused_at_cap
 
     if await get_skill_library_store(settings).get_version(tenant_id, name, version) is None:
         raise SkillNotFound(f"{name}@{version} does not exist")
-    await check_job_caps(settings, tenant_id)
     try:
-        row = await get_skill_eval_store(settings).insert(
-            tenant_id,
-            {
-                "id": str(uuid.uuid4()),
-                "name": name,
-                "version": version,
-                "status": "queued",
-                "requested_by": requested_by,
-                "created_at": now_ms(),
-            },
-        )
+        with refused_at_cap():
+            row = await get_skill_eval_store(settings).insert(
+                tenant_id,
+                {
+                    "id": str(uuid.uuid4()),
+                    "name": name,
+                    "version": version,
+                    "status": "queued",
+                    "requested_by": requested_by,
+                    "created_at": now_ms(),
+                },
+                caps=job_caps(settings),
+            )
     except SkillEvalInFlight as exc:
         raise EvalInProgress(f"{name}@{version} already has an evaluation queued or running") from exc
     _audit(settings, tenant_id, "skill_eval_queued", row, by=requested_by)
