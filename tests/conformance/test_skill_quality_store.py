@@ -6,7 +6,8 @@ never: that a claim is exclusive (two workers asking at once get different rows,
 none) and fair across tenants; that a lapsed claim is taken again and the worker who lost it can
 neither heartbeat nor finish; that a job claimed too often is failed; that a version holds one
 evaluation in flight (a partial unique index on Postgres); that a decision lands only on pending
-feedback; that listings tie-break on the id; and that one sweep runs at a time.
+feedback; that listings tie-break on the id; and that one sweep runs at a time, by a lease that
+lapses, can be taken over, and refuses the holder it was taken from.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ import asyncio
 from typing import Any
 
 import pytest
+from felix.skills import quality_store
 from felix.skills.eval_store import get_skill_eval_store
 from felix.skills.feedback_store import get_skill_feedback_store
 from felix.skills.quality_store import (
@@ -23,6 +25,7 @@ from felix.skills.quality_store import (
     SkillEvalInFlight,
     SkillFeedbackConflict,
     get_skill_policy_store,
+    get_sweep_lease_store,
     sweep_lock,
 )
 
@@ -455,6 +458,64 @@ async def test_the_policy_row_is_replaced_whole_tenant_scoped_and_deletable(stor
 @parametrized
 async def test_one_sweep_holds_the_lock_at_a_time(store_settings: Any) -> None:
     async with sweep_lock(store_settings) as first, sweep_lock(store_settings) as second:
-        assert (first, second) == (True, False)
+        assert first is not None and second is None
+        assert await first.renew(), "the holder renews"
     async with sweep_lock(store_settings) as again:
-        assert again is True, "released when the sweep ends"
+        assert again is not None, "released when the sweep ends"
+
+
+LEASE = 60_000
+
+
+@parametrized
+async def test_two_acquirers_racing_for_the_sweep_lease_get_one_winner(store_settings: Any) -> None:
+    """Racing on an absent row (the first sweep after the upgrade) and on a lapsed one."""
+    lease = get_sweep_lease_store(store_settings)
+    tokens = [f"t{n}" for n in range(4)]
+
+    won = await asyncio.gather(*(lease.acquire(t, now=NOW, lease_ms=LEASE) for t in tokens))
+    assert sum(won) == 1, won
+    assert not await lease.acquire("late", now=NOW + LEASE, lease_ms=LEASE), "held through `until`"
+
+    retaken = await asyncio.gather(*(lease.acquire(t, now=NOW + LEASE + 1, lease_ms=LEASE) for t in tokens))
+    assert sum(retaken) == 1, retaken
+
+
+@parametrized
+async def test_a_lapsed_sweep_lease_is_taken_over_and_the_evicted_holder_is_refused(
+    store_settings: Any,
+) -> None:
+    lease = get_sweep_lease_store(store_settings)
+    assert await lease.acquire("old", now=NOW, lease_ms=LEASE)
+    assert await lease.acquire("old", now=NOW + 1, lease_ms=LEASE), "the holder takes it again"
+    assert await lease.renew("old", now=NOW + 2, lease_ms=LEASE)
+    assert not await lease.acquire("new", now=NOW + 2 + LEASE, lease_ms=LEASE), "renewed, so still held"
+
+    taken = NOW + 3 + LEASE
+    assert await lease.acquire("new", now=taken, lease_ms=LEASE), "lapsed, so taken over"
+    assert not await lease.renew("old", now=taken, lease_ms=LEASE)
+    assert not await lease.release("old"), "an evicted holder cannot free the new holder's lease"
+    assert not await lease.acquire("other", now=taken + 1, lease_ms=LEASE)
+
+    assert await lease.release("new")
+    assert await lease.acquire("other", now=taken + 2, lease_ms=LEASE), "released, so free at once"
+
+
+@parametrized
+async def test_the_tenant_scan_is_cut_after_ordering_by_last_claim(
+    store_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With the scan cut to one tenant, the tenant never claimed from is the one scanned -- not
+    whichever sorts first by id, which would be claimed from every time while `zeta` waits."""
+    monkeypatch.setattr(quality_store, "_TENANTS_SCANNED", 1)
+    store = get_skill_eval_store(store_settings)
+    for n in range(1, 4):
+        await store.insert("acme", _eval(n, at=n, version=f"0.1.{n}"))
+    await store.insert("zeta", _eval(9, at=9))
+
+    first = await store.claim_next(now=NOW)
+    second = await store.claim_next(now=NOW + 1)
+    third = await store.claim_next(now=NOW + 2)
+
+    assert first is not None and second is not None and third is not None
+    assert [first["tenant_id"], second["tenant_id"], third["tenant_id"]] == ["acme", "zeta", "acme"]

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **One skill-job sweep at a time now holds behind PgBouncer.** The `skill_jobs` sweep guarded
+  itself with a session advisory lock. Under transaction pooling (`compose.pgbouncer.yml`) the
+  lock stayed on whichever server session took it, and the unlock usually ran on another session
+  and released nothing. Workers handed the leaked session took the lock again, because advisory
+  locks are reentrant per session, so two sweeps ran at once. Every other worker skipped until
+  PgBouncer recycled the connection. The sweep now takes a `skill_job_lease` row (migration
+  `0024`, no tenant and no RLS). It takes, renews and releases the row by token, one statement
+  per transaction. The lease lasts `FELIX_SKILL_JOB_DEADLINE_SECONDS` plus five minutes and is
+  renewed before every job. A sweep whose lease was taken over stops before its next job. The
+  fair claim also orders tenants by last claim *before* cutting the scan to 500, so a tenant
+  whose id sorts late is no longer left out of every scan.
+
 ## [0.6.0] — 2026-10-03
 
 ### Added

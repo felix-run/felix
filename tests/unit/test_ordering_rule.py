@@ -33,7 +33,7 @@ EXEMPT = {
     "documents/store.py:_channels_in_memory": "`kv[0]` is the chunk id; the lexical sort ends on `r['id']`",
     "documents/store.py:list_documents": "one row per `doc_id` (grouped), and both arms end on it",
     "session/strategies.py:render": "a stable sort over seq-ordered events: ties keep seq order",
-    "skills/quality_store.py:_claim_once": "ends on `model.id`, the primary key of the table passed in (skill_feedback or skill_eval)",
+    "skills/quality_store.py:_claim_once": "ends on the head's `id` then `tenant_id`, the primary key of the table passed in (skill_feedback or skill_eval)",
     "skills/suggest.py:_rank": "ends on the skill's position in the catalogue, unique per skill",
     "tools/decider_retrieval.py:shortlist": "ends on the tool's position in the offered list, unique per tool",
     "tools/workspace.py:_list_dir": "ends on the entry's exact name, unique within one directory",
