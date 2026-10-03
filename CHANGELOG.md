@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A thread with a vision route was compacted for the wrong model.** The compaction window
+  was sized from the primary route alone. Once an image is in a thread, every call goes to the
+  vision route (`spec.model.vision_model` or `FELIX_DEFAULT_VISION_MODEL_ID`), so a vision model
+  with a smaller window was handed history it could not take. With a vision route composed, the
+  window is now the smaller of the two. A declared `context_window_tokens` still wins.
+
 - **`felix migrate <revision>` no longer reports success for a revision the database has
   passed.** Alembic's upgrade to an older revision is a silent no-op, so `felix migrate 0021` on
   a database at 0023 printed "migrated to 0021" and changed nothing — and the documented
