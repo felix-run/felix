@@ -53,6 +53,7 @@ def _relayable() -> tuple[type[BaseException], ...]:
     from felix.manifests.pin import ManifestDriftError
     from felix.patterns.model import ModelGatewayError
     from felix_ai.providers.base import ProviderConfigError
+    from felix_ai.types import MessageFormatError
 
     types: tuple[type[BaseException], ...] = (
         ModelGatewayError,
@@ -65,6 +66,9 @@ def _relayable() -> tuple[type[BaseException], ...]:
         # Rendered by felix.manifests.loader without the offending value, precisely so it
         # can travel: the whole point of the refusal is that an operator can read it.
         ManifestParseError,
+        # Names the offending part of the caller's own message by index
+        # (`tool_calls[1]: arguments are not valid JSON`), never its content.
+        MessageFormatError,
     )
     try:
         # Optional package on a lean install, so its absence must not turn a content

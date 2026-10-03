@@ -263,8 +263,14 @@ def _auth_from_request(request: Request) -> AuthContext:
 def _caller_messages(raw: list[dict[str, Any]]) -> list[ChatMessage]:
     """The request's messages, parsed, with images only where a caller's own can be: user turns."""
     from felix.patterns.model_vision import caller_images_on_user_turns
+    from felix_ai.types import MessageFormatError
 
-    return caller_images_on_user_turns([ChatMessage.model_validate(m) for m in raw])
+    try:
+        parsed = [ChatMessage.model_validate(m) for m in raw]
+    except MessageFormatError as exc:
+        # The caller's mistake, said as one: before, this was a 500 with a stack trace.
+        raise HTTPException(status_code=422, detail=f"messages: {client_safe_message(exc)}") from exc
+    return caller_images_on_user_turns(parsed)
 
 
 def _refuse_unseeable_images(
