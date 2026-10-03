@@ -192,3 +192,36 @@ async def test_an_image_a_caller_writes_into_a_tool_message_never_reaches_the_mo
         from felix.patterns.model_vision import carries_images
 
         assert not carries_images(app.spy.prompts[0])
+
+
+async def test_a_screened_tool_image_is_transcribed_once_across_turns(boot: Any) -> None:
+    """Screened as inline bytes when the tool returns it, then replayed as a stored reference on
+    every later turn: two cache keys for one image, so the replay paid for a second reading."""
+    from felix.governance.image_screening import _TRANSCRIBE
+
+    screened = _manifest(
+        content_screening={"enabled": True, "image_model": "claude-sonnet", "tools": ["snap"]}
+    )
+    script = [
+        ScriptedTurn(tool_calls=[ToolCall(id="c1", name="snap", args={})]),
+        ScriptedTurn(content="NO_TEXT"),  # the one transcription
+        ScriptedTurn(content="a logo"),
+        ScriptedTurn(content="still a logo"),
+        ScriptedTurn(content="spare"),  # consumed only if the replay transcribes again
+    ]
+    async with boot(script, manifests={"snapper": screened}) as app:
+        assert (await _run(app)).status_code == 200
+        again = await app.client.post(
+            "/chat",
+            json={
+                "manifest": "snapper",
+                "thread_id": "snaps",
+                "messages": [{"role": "user", "content": "again?"}],
+            },
+        )
+        assert again.status_code == 200, again.text
+
+        transcriptions = [p for p in app.spy.prompts if p and p[0].content == _TRANSCRIBE]
+        assert len(transcriptions) == 1, f"transcribed {len(transcriptions)} times"
+        (tool_msg,) = [m for m in app.spy.prompts[-1] if m.role == "tool"]
+        assert tool_msg.attachments, "and the replayed image still reached the model"

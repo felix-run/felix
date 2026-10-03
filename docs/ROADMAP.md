@@ -250,9 +250,8 @@ First, because everything else governs it.
         `image_model` is set; quarantined with the tool's text. The browser screenshot is the first
         producer, and stops arriving as base64 text. Without `image_model` an untrusted tool's
         images are quarantined (fail closed); 4 per call, 16 per run; a caller's images are kept on
-        user turns only. Open from its review: each tool image is transcribed twice -- by bytes on
-        the `tool_image` surface, then by `ref:` on the next turn's replay -- and seeding the
-        transcript cache under the stored ref would halve that.
+        user turns only. Since: a stored tool image reuses the transcript its inline bytes were
+        screened under, so it is read once, not again on replay.
       - Landed: **image tools** (`spec.image_tools`, `image` extra). The model names an image as
         `latest`, `#n` or a stored reference, since it sees pixels and not file ids; results are
         stored and chain.

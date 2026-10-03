@@ -274,7 +274,9 @@ class ImageScreener:
             return None
         if not sent.startswith("data:"):
             return ScreenResult(available=False, reason="remote_image")
-        key = key or _cache_key(model_id, sent)
+        if key is None:
+            key = _cache_key(model_id, sent)
+            _remember_inline(sent, model_id, self.verdict_key)
         if (hit := await self._cached(key)) is not None:
             return hit
         if not self.budget.take():
@@ -303,6 +305,46 @@ class ImageScreener:
             if verdict.available:
                 _VERDICTS[verdict_key] = verdict
         return verdict
+
+
+# Request extras: each inline image screened in this request, with what its cache keys were
+# built from, so `alias_stored_image` can find them once the image has been stored.
+_INLINE_SCREENED = "image_screening_inline"
+
+
+def _remember_inline(url: str, model_id: str, verdict_key: str) -> None:
+    from felix.context import try_get_context
+
+    ctx = try_get_context()
+    if ctx is not None:
+        ctx.extras.setdefault(_INLINE_SCREENED, {}).setdefault(url, set()).add((model_id, verdict_key))
+
+
+def alias_stored_image(inline_url: str, ref_url: str) -> None:
+    """Make a stored image's reference hit the cache its inline bytes were screened under.
+
+    A tool's image is screened as inline bytes when the tool returns it, then stored, and every
+    later turn replays it as a `felix-file://` reference -- which keys the cache differently, so
+    the replay paid for a second transcription of the same picture. Called by
+    `store_tool_images` with the bytes it just stored, so the alias names exactly what was read.
+    """
+    from felix_ai.types import split_file_ref
+
+    from felix.context import try_get_context
+
+    file_id = split_file_ref(ref_url)
+    ctx = try_get_context()
+    if not file_id or ctx is None:
+        return
+    for model_id, verdict_key in ctx.extras.get(_INLINE_SCREENED, {}).get(inline_url, ()):
+        source, target = _cache_key(model_id, inline_url), _cache_key(model_id, f"ref:{file_id}")
+        transcript = _TRANSCRIPTS.get(source)
+        if transcript is None:
+            continue
+        _TRANSCRIPTS[target] = transcript
+        verdict = _VERDICTS.get(f"{source}\0{verdict_key}")
+        if verdict is not None:
+            _VERDICTS[f"{target}\0{verdict_key}"] = verdict
 
 
 def _cache_key(model_id: str, image: str) -> str:
@@ -390,6 +432,7 @@ __all__ = [
     "ImageSurface",
     "ScreenedSessionStrategy",
     "TranscriptionBudget",
+    "alias_stored_image",
     "clear_image_screening_caches",
     "has_images",
     "screen_session_strategy",
