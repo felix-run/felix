@@ -938,13 +938,17 @@ turn, leaving the text and any clean images; `block` refuses the turn with 422.
   - an image no caller could have uploaded: not png, jpeg, gif or webp by its bytes, or over
     600 KiB;
   - a remote URL;
-  - anything past 4 images per call or 16 per run. Tool images share the tenant's quota with
-    uploads, and the caps keep a page that talks an agent into screenshotting in a loop from
-    filling it.
+  - anything past 4 images per call or 16 per request, counted across every agent the request
+    runs (a router's children included). Tool images share the tenant's quota with uploads, and
+    the caps keep a page that talks an agent into screenshotting in a loop from filling it.
+
+  A tool's own filename for an image is not kept: secret masking reads text, and a label would
+  otherwise reach the ledger and the log unmasked.
 - **An after-tool hook that rewrites a tool's text also removes its images**, so a redacting or
   blocking hook covers the whole output.
 - **A caller's images are kept on user turns only.** History a caller sends (`role: tool` or
-  `assistant` on `/chat` or `/v1`) has its images removed at the door. Inbound screening reads
+  `assistant` on `/chat` or `/v1`) has its images removed at the door, and so does a queue
+  write-back to `/internal/sessions/{id}/events` that is not a user message. Inbound screening reads
   user turns, and an image written into a tool message would otherwise reach the model past
   every screen. Separately, the wires render a tool message's images only from inline bytes, so
   a remote URL on a tool message is never fetched.

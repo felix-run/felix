@@ -22,7 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - A tool's images are stored in the attachment store under the request's tenant, with the
       same quota and retention as an upload. The session log keeps a `felix-file://`
       reference.
-    - At most 4 per call and 16 per run are kept.
+    - At most 4 per call and 16 per request (across every agent the request runs) are kept.
+      A tool's own filename for an image is not kept.
     - An image that is not png, jpeg, gif or webp by its bytes, is over the limit, or is a
       remote URL is dropped with a note in the tool result.
   - **Screening:**
@@ -470,7 +471,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - **A caller's images are kept on user turns only.** History a caller sends to `/chat` or `/v1`
-  as `role: tool` or `assistant` has its images removed at the door. The wires now render tool
+  as `role: tool` or `assistant` has its images removed at the door. So does a queue write-back
+  to `/internal`, unless it is a user message. The wires now render tool
   images, and an image written into a caller's tool message would otherwise reach the model past
   inbound screening and the remote-URL rule.
 

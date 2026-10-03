@@ -42,9 +42,17 @@ MAX_IMAGES_PER_RUN = 16
 
 @dataclass
 class ImageBudget:
-    """How many more tool images this run may keep. One per `ToolRunner`, so one per run."""
+    """How many more tool images this run may keep.
+
+    One per request, held in the request context, so every agent the request runs -- a
+    router's children, a delegating pattern's sub-agents -- draws from the same sixteen. The
+    `ToolRunner`'s own is only the fallback for a run with no request context.
+    """
 
     remaining: int = MAX_IMAGES_PER_RUN
+
+
+_BUDGET_KEY = "tool_image_budget"
 
 
 async def store_tool_images(
@@ -59,6 +67,8 @@ async def store_tool_images(
     from felix.context import try_get_context
 
     ctx = try_get_context()
+    if ctx is not None:
+        budget = ctx.extras.setdefault(_BUDGET_KEY, budget)
     tenant_id = getattr(getattr(ctx, "auth", None), "tenant_id", None) if ctx else None
     settings = getattr(ctx, "settings", None) if ctx else None
     name = loggable(tool_name, limit=64)
@@ -71,7 +81,7 @@ async def store_tool_images(
             continue
         if split_file_ref(image.url):
             budget.remaining -= 1
-            kept.append(image)
+            kept.append(replace(image, filename=None))
             continue
         raw, media_type, problem = _decoded(image.url)
         if problem:
@@ -80,18 +90,17 @@ async def store_tool_images(
         assert raw is not None and media_type is not None
         budget.remaining -= 1
         if not tenant_id:
-            kept.append(replace(image, media_type=media_type))
+            kept.append(replace(image, media_type=media_type, filename=None))
             continue
-        stored = await _put(
-            raw, media_type, image.filename or "", tenant_id=str(tenant_id), settings=settings
-        )
+        # No filename: a tool's own label would reach the ledger and the log unmasked.
+        stored = await _put(raw, media_type, tenant_id=str(tenant_id), settings=settings)
         if stored is None:
             # Dropped, not kept inline: inline would put the bytes the store just refused into
             # the log anyway. The reason stays in the server log -- a quota message carries the
             # tenant's totals, which the model, and whoever is injecting it, need not see.
             notes.append(f"[image dropped: {name} returned an image that could not be stored]")
             continue
-        kept.append(replace(image, url=file_ref_url(stored), media_type=media_type))
+        kept.append(replace(image, url=file_ref_url(stored), media_type=media_type, filename=None))
     return kept, notes
 
 
@@ -111,9 +120,7 @@ def _decoded(url: str) -> tuple[bytes | None, str | None, str]:
         return None, None, str(exc)
 
 
-async def _put(
-    raw: bytes, media_type: str, filename: str, *, tenant_id: str, settings: object | None
-) -> str | None:
+async def _put(raw: bytes, media_type: str, *, tenant_id: str, settings: object | None) -> str | None:
     from felix.attachments import put_attachment
     from felix.config import Settings, get_settings
     from felix.storage import get_object_store
@@ -125,7 +132,7 @@ async def _put(
             tenant_id=tenant_id,
             data=raw,
             media_type=media_type,
-            filename=filename,
+            filename="",
             settings=bound,
         )
     except Exception as exc:

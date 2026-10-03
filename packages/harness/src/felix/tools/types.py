@@ -207,20 +207,24 @@ def tool_output_images(output: ToolOutput) -> list[ImageAttachment]:
     entry that is neither is dropped *with a warning* -- an image a tool meant to show and
     the model never saw should not be invisible to the operator as well.
     """
-    if isinstance(output, str):
+    # The two shapes the contract names, and only those: an `attachments` attribute on any other
+    # object is not read, because `replace_tool_output` cannot clear it -- a quarantine would
+    # replace the text and the images would go through beside it.
+    if isinstance(output, ToolOutputDict):
+        raw: Any = output.attachments
+    elif isinstance(output, dict):
+        raw = output.get("attachments")
+    else:
         return []
-    raw: Any = output.get("attachments") if isinstance(output, dict) else getattr(output, "attachments", None)
     images: list[ImageAttachment] = []
     for item in raw or ():
         if isinstance(item, ImageAttachment):
             images.append(item)
         elif isinstance(item, Mapping) and isinstance(item.get("url"), str) and item["url"]:
             images.append(
-                ImageAttachment(
-                    url=item["url"],
-                    media_type=str(item.get("media_type") or "image/png"),
-                    filename=item.get("filename") if isinstance(item.get("filename"), str) else None,
-                )
+                # No `filename`: a tool's own label never reaches the log, where secret masking
+                # (which reads `content`) would not see it.
+                ImageAttachment(url=item["url"], media_type=str(item.get("media_type") or "image/png"))
             )
         else:
             _logger.warning("tool output attachment dropped: a %s is not an image", type(item).__name__)
