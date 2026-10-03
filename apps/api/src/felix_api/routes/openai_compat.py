@@ -25,7 +25,7 @@ from felix.runtime import build_tenant_agent, prepare_tenant_invoke, resolve_ten
 from felix.thread_ids import effective_thread_id
 from felix_ai.output_schema import InvalidOutputSchema, validate_output_schema
 from felix_ai.providers.base import ProviderConfigError
-from felix_ai.types import ModelChatOptions
+from felix_ai.types import MessageFormatError, ModelChatOptions
 from felix_ai.wire.openai_completions import finish_reason_for
 from pydantic import BaseModel, Field
 
@@ -51,6 +51,10 @@ class OpenAIMessage(BaseModel):
     content: str | list[dict[str, Any]] | None = None
     name: str | None = None
     tool_call_id: str | None = None
+    # An assistant turn's calls, in OpenAI's shape. Undeclared, pydantic dropped them without a
+    # word, and the `tool` messages after them answered ids the model was never shown. Kept as
+    # dicts and read by `ChatMessage.model_validate`, the one parser of either shape.
+    tool_calls: list[dict[str, Any]] | None = None
 
 
 class ChatCompletionsRequest(BaseModel):
@@ -307,22 +311,27 @@ async def chat_completions(body: ChatCompletionsRequest, request: Request) -> An
     except ManifestDriftError as exc:
         return _error_json(client_safe_message(exc), "manifest_drift", "conflict", 409)
 
-    messages = [
-        # `or ""` keeps a populated list and flattens `None` and `[]` to empty text, which is
-        # what a message with no content means on either shape.
-        # `name` and `tool_call_id` are declared on the request model and were validated and
-        # then thrown away, so an SDK doing the standard tool round-trip lost the id tying a
-        # result back to its call. `ChatMessage.model_validate` reads both keys already.
-        ChatMessage.model_validate(
-            {
-                "role": m.role,
-                "content": m.content or "",
-                "name": m.name,
-                "tool_call_id": m.tool_call_id,
-            }
-        )
-        for m in body.messages
-    ]
+    try:
+        messages = [
+            # `or ""` keeps a populated list and flattens `None` and `[]` to empty text, which
+            # is what a message with no content means on either shape.
+            # `name` and `tool_call_id` are declared on the request model and were validated and
+            # then thrown away, so an SDK doing the standard tool round-trip lost the id tying a
+            # result back to its call. `ChatMessage.model_validate` reads both keys already.
+            ChatMessage.model_validate(
+                {
+                    "role": m.role,
+                    "content": m.content or "",
+                    "name": m.name,
+                    "tool_call_id": m.tool_call_id,
+                    "tool_calls": m.tool_calls,
+                }
+            )
+            for m in body.messages
+        ]
+    except MessageFormatError as exc:
+        # OpenAI answers a malformed request with 400 `invalid_request_error`; an SDK keys on it.
+        return _error_json(client_safe_message(exc), "invalid_request_error", "invalid_tool_call", 400)
     from felix.patterns.model_vision import caller_images_on_user_turns, unseeable_image_problem
 
     messages = caller_images_on_user_turns(messages)
