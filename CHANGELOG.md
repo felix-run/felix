@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-10-03
+
 ### Added
 
 - **Images over A2A and MCP.** Each of these used to drop images without a word.
@@ -450,21 +452,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   restarting the worker under them is a decision rather than a formality. Options may come in any
   order, and an unknown one is refused.
 
-### Removed
-
-- **The Temporal durability backend.** `FELIX_DURABILITY=temporal` drove fibers through Temporal
-  but used none of its durability primitives (signals, queries, retry policies,
-  `continue_as_new`), held all state in the Postgres fiber row, and could not reach Temporal
-  Cloud. So it gave Felix's guarantees under Temporal's name, while the fiber scheduler gained
-  run-to-suspension, crash-resume, completion webhooks and a one-second poll. Gone:
-  - `felix/durability/temporal.py`, `felix temporal-worker`, `felix-temporal-worker`;
-  - the `temporal` extra and `compose.temporal.yml` (`make up-temporal`);
-  - `FELIX_TEMPORAL_HOST` and `FELIX_TEMPORAL_NAMESPACE`.
-
-  `FELIX_DURABILITY=temporal` now fails startup with what to do. The fiber scheduler claims rows
-  an earlier version handed to Temporal (`backend: temporal`), so in-flight durable chats carry
-  on. See `docs/UPGRADING.md`.
-
 ### Changed
 
 - **Anthropic models with native structured outputs get `output_config.format` instead of the
@@ -498,6 +485,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `/skills` metadata no longer carries an empty `metadata` key for a skill with a nested
     block.
   - A list such as `tags: [a, b]` reads as `a, b`.
+
+### Removed
+
+- **The Temporal durability backend.** `FELIX_DURABILITY=temporal` drove fibers through Temporal
+  but used none of its durability primitives (signals, queries, retry policies,
+  `continue_as_new`), held all state in the Postgres fiber row, and could not reach Temporal
+  Cloud. So it gave Felix's guarantees under Temporal's name, while the fiber scheduler gained
+  run-to-suspension, crash-resume, completion webhooks and a one-second poll. Gone:
+  - `felix/durability/temporal.py`, `felix temporal-worker`, `felix-temporal-worker`;
+  - the `temporal` extra and `compose.temporal.yml` (`make up-temporal`);
+  - `FELIX_TEMPORAL_HOST` and `FELIX_TEMPORAL_NAMESPACE`.
+
+  `FELIX_DURABILITY=temporal` now fails startup with what to do. The fiber scheduler claims rows
+  an earlier version handed to Temporal (`backend: temporal`), so in-flight durable chats carry
+  on. See `docs/UPGRADING.md`.
 
 ### Fixed
 
@@ -4084,3 +4086,4 @@ A hotfix on 0.4.0, branched from its tag, carrying one fix. Everything else unde
 [0.4.1]: https://github.com/felix-run/felix/releases/tag/v0.4.1
 [0.5.0]: https://github.com/felix-run/felix/releases/tag/v0.5.0
 [0.5.1]: https://github.com/felix-run/felix/releases/tag/v0.5.1
+[0.6.0]: https://github.com/felix-run/felix/releases/tag/v0.6.0
