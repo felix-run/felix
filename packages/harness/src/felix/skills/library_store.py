@@ -5,15 +5,15 @@ this module stores what it decides and enforces the two things only storage can 
 version is written once (its primary key), and that a status change lands only on the state it
 was decided against (`SkillStateConflict`), so a publish racing a reject cannot both win.
 
-File bytes are not here. They live in the object store at `skills/{tenant}/{name}/{version}/
-{path}`; a `skill_file` row records the digest and size of what was written there.
+File bytes are not here. They live in the object store under `library_object_key`, and a
+`skill_file` row records the digest and size of what was written there.
 """
 
 from __future__ import annotations
 
 import copy
 from collections.abc import Collection
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from felix.config import Settings
 
@@ -21,6 +21,22 @@ from felix.config import Settings
 # the system prompt, so a tenant with more live skills than this has outgrown a flat catalog.
 MAX_LIBRARY_SKILLS = 500
 MAX_VERSIONS_LISTED = 500
+# Versions one skill may hold. Each is rows plus objects that nothing collects, so a loop
+# saving the same skill is bounded per name as well as per manifest (the pending cap).
+MAX_VERSIONS_PER_SKILL = 200
+
+SkillStatus = Literal["draft", "published", "archived"]
+
+# The library's own prefix in the object store, deliberately not `skills/`. The operator's
+# layout there is `skills/{tenant}/{name}[/{version}]/SKILL.md`, which `load_skill_from_store`
+# reads for a declared ref; library bytes under the same keys would let an agent's draft
+# overwrite an operator's pinned skill, and be served by a ref that pinned the draft's version.
+LIBRARY_PREFIX = "skill-library"
+
+
+def library_object_key(tenant_id: str, name: str, version: str, path: str) -> str:
+    """Where one file of one library version lives. The only spelling of that key."""
+    return f"{LIBRARY_PREFIX}/{tenant_id}/{name}/{version}/{path}"
 
 
 class SkillVersionExists(Exception):
@@ -38,6 +54,8 @@ class SkillLibraryStore(Protocol):
     async def list_skills(
         self, tenant_id: str, *, limit: int = MAX_LIBRARY_SKILLS
     ) -> list[dict[str, Any]]: ...
+
+    async def list_live(self, tenant_id: str, *, limit: int = MAX_LIBRARY_SKILLS) -> list[dict[str, Any]]: ...
 
     async def get_version(self, tenant_id: str, name: str, version: str) -> dict[str, Any] | None: ...
 
@@ -107,6 +125,18 @@ class InMemorySkillLibraryStore:
     async def list_skills(self, tenant_id: str, *, limit: int = MAX_LIBRARY_SKILLS) -> list[dict[str, Any]]:
         rows = sorted((r for (t, _), r in self._skills.items() if t == tenant_id), key=lambda r: r["name"])
         return copy.deepcopy(rows[:limit])
+
+    async def list_live(self, tenant_id: str, *, limit: int = MAX_LIBRARY_SKILLS) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for (t, name), skill in self._skills.items():
+            version = skill["live_version"]
+            if t != tenant_id or not version:
+                continue
+            files = self._files.get((t, name, version), [])
+            digest = next((f["sha256"] for f in files if f["path"] == "SKILL.md"), None)
+            rows.append({"name": name, "version": version, "sha256": digest})
+        rows = sorted(rows, key=lambda r: r["name"])
+        return rows[:limit]
 
     async def get_version(self, tenant_id: str, name: str, version: str) -> dict[str, Any] | None:
         row = self._versions.get((tenant_id, name, version))
@@ -243,6 +273,32 @@ class PostgresSkillLibraryStore:
                 )
             ).all()
             return [self._row(r) for r in rows]
+
+    async def list_live(self, tenant_id: str, *, limit: int = MAX_LIBRARY_SKILLS) -> list[dict[str, Any]]:
+        """Each live skill's version and SKILL.md digest, in one query for a catalog load."""
+        from sqlalchemy import and_, collate, select
+
+        from felix.db.models import SkillFileRow, SkillRow
+
+        async with self._session(tenant_id) as db:
+            rows = (
+                await db.execute(
+                    select(SkillRow.name, SkillRow.live_version, SkillFileRow.sha256)
+                    .outerjoin(
+                        SkillFileRow,
+                        and_(
+                            SkillFileRow.tenant_id == SkillRow.tenant_id,
+                            SkillFileRow.name == SkillRow.name,
+                            SkillFileRow.version == SkillRow.live_version,
+                            SkillFileRow.path == "SKILL.md",
+                        ),
+                    )
+                    .where(SkillRow.tenant_id == tenant_id, SkillRow.live_version.is_not(None))
+                    .order_by(collate(SkillRow.name, "C"))
+                    .limit(limit)
+                )
+            ).all()
+            return [{"name": r[0], "version": r[1], "sha256": r[2]} for r in rows]
 
     async def get_version(self, tenant_id: str, name: str, version: str) -> dict[str, Any] | None:
         from felix.db.models import SkillVersionRow
@@ -500,13 +556,17 @@ def clear_memory() -> None:
 
 
 __all__ = [
+    "LIBRARY_PREFIX",
     "MAX_LIBRARY_SKILLS",
     "MAX_VERSIONS_LISTED",
+    "MAX_VERSIONS_PER_SKILL",
     "InMemorySkillLibraryStore",
     "PostgresSkillLibraryStore",
     "SkillLibraryStore",
     "SkillStateConflict",
+    "SkillStatus",
     "SkillVersionExists",
     "clear_memory",
     "get_skill_library_store",
+    "library_object_key",
 ]

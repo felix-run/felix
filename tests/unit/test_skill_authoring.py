@@ -17,11 +17,12 @@ from felix.config import Settings
 from felix.manifests.builder import BuildDeps, build_agent
 from felix.manifests.schema import SkillAuthoringSpec
 from felix.skills import library
+from felix.skills.authoring import make_skill_authoring_tools
 from felix.skills.format import serialize_skill_md
-from felix.skills.library_store import get_skill_library_store
+from felix.skills.library_store import get_skill_library_store, library_object_key
 from felix.skills.loader import load_manifest_skills
 from felix.skills.store import InMemorySkillActivationStore
-from felix.skills.tools import make_skill_authoring_tools, make_skill_tools
+from felix.skills.tools import make_skill_tools
 from felix.storage import MemoryObjectStore
 from felix.tools.types import Tool, ToolInvocationCtx, tool_output_content
 from pydantic import ValidationError
@@ -62,9 +63,7 @@ async def _published(
         settings,
         "acme",
         files=_bundle(name, **extra),
-        source="operator",
-        author="ops",
-        reason="",
+        provenance=library.DraftProvenance(source="operator", author="ops"),
         object_store=store,
     )
     await library.publish(settings, "acme", name, row["version"], by="ops", object_store=store)
@@ -120,7 +119,11 @@ async def test_a_published_library_skill_joins_the_catalog(
 
 async def test_a_draft_never_joins_the_catalog(settings: Settings, store: MemoryObjectStore) -> None:
     row = await library.save_draft(
-        settings, "acme", files=_bundle(), source="agent", author="m", reason="", object_store=store
+        settings,
+        "acme",
+        files=_bundle(),
+        provenance=library.DraftProvenance(source="agent", author="m"),
+        object_store=store,
     )
     assert (await _catalog(settings, store)).get("invoice-triage") is None
     # Not even when a manifest declares it and pins the draft's version: the raw object-store
@@ -144,7 +147,8 @@ async def test_the_host_wins_on_a_name(settings: Settings, store: MemoryObjectSt
     await lib.insert_version("acme", row, [], created_by="ops", at=1)
     await lib.publish("acme", "calculator-help", "0.1.0", from_statuses={"draft"}, by="ops", at=2)
     await store.put(
-        "skills/acme/calculator-help/0.1.0/SKILL.md", _bundle("calculator-help")["SKILL.md"].encode()
+        library_object_key("acme", "calculator-help", "0.1.0", "SKILL.md"),
+        _bundle("calculator-help")["SKILL.md"].encode(),
     )
 
     for refs in ([], [{"name": "calculator-help"}]):
@@ -260,8 +264,11 @@ async def test_update_skill_keeps_the_bundle_and_records_the_parent(
     assert (result["status"], result["version"]) == ("draft", "0.1.1")
     row = await get_skill_library_store(settings).get_version("acme", "invoice-triage", "0.1.1")
     assert row is not None and row["parent_version"] == "0.1.0" and row["description"] == "Route invoices."
-    assert await store.get("skills/acme/invoice-triage/0.1.1/references/limits.md") == b"Limit: 500\n"
-    skill_md = await store.get("skills/acme/invoice-triage/0.1.1/SKILL.md")
+    assert (
+        await store.get(library_object_key("acme", "invoice-triage", "0.1.1", "references/limits.md"))
+        == b"Limit: 500\n"
+    )
+    skill_md = await store.get(library_object_key("acme", "invoice-triage", "0.1.1", "SKILL.md"))
     assert skill_md is not None and b"3. Log it." in skill_md
 
 
@@ -433,3 +440,206 @@ async def test_a_compiled_agent_sees_the_tenants_published_skill(settings: Setti
         settings=settings,
     )
     assert 'name="invoice-triage"' in str(getattr(agent, "system_prompt", "") or "")
+
+
+# -- review fixes -----------------------------------------------------------------------------
+
+OPERATOR_RUNBOOK = (
+    b"---\nname: runbook\ndescription: The operator's runbook.\n---\nOperator-reviewed steps.\n"
+)
+
+
+async def test_an_agent_draft_cannot_overwrite_an_operators_pinned_skill(
+    settings: Settings, store: MemoryObjectStore
+) -> None:
+    # The reviewed PoC: an operator's versioned upload, then an agent saving the same name.
+    await store.put("skills/acme/runbook/0.1.0/SKILL.md", OPERATOR_RUNBOOK)
+    tools = _authoring(settings, store)
+    saved = await _call(
+        tools["create_skill"], {"name": "runbook", "description": "d", "body": "Agent text.", "reason": "r"}
+    )
+    assert (saved["status"], saved["version"]) == ("draft", "0.1.0")
+
+    assert await store.get("skills/acme/runbook/0.1.0/SKILL.md") == OPERATOR_RUNBOOK
+    skill = (await _catalog(settings, store, [{"name": "runbook", "version": "0.1.0"}])).get("runbook")
+    assert skill is not None and skill.source == "store" and skill.body == "Operator-reviewed steps."
+
+
+async def test_an_unreachable_library_serves_nothing_from_it(
+    settings: Settings, store: MemoryObjectStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _published(settings, store)
+    draft = await library.save_draft(
+        settings,
+        "acme",
+        files=_bundle("draft-only"),
+        provenance=library.DraftProvenance(source="agent", author="m"),
+        object_store=store,
+    )
+    lib = get_skill_library_store(settings)
+
+    async def down(*_a: Any, **_k: Any) -> Any:
+        raise ConnectionError("database unreachable")
+
+    monkeypatch.setattr(lib, "list_live", down)
+    refs = [{"name": "invoice-triage"}, {"name": "draft-only", "version": draft["version"]}]
+    catalog = await _catalog(settings, store, refs)
+    assert catalog.get("invoice-triage").body == "" and catalog.get("draft-only").body == ""
+
+
+async def test_a_live_skill_whose_bytes_changed_is_not_served(
+    settings: Settings, store: MemoryObjectStore
+) -> None:
+    version = await _published(settings, store)
+    await store.put(
+        library_object_key("acme", "invoice-triage", version, "SKILL.md"),
+        _bundle(body="Swapped.")["SKILL.md"].encode(),
+    )
+    assert (await _catalog(settings, store)).get("invoice-triage") is None
+
+
+async def test_read_skill_file_serves_only_the_versions_own_files(
+    settings: Settings, store: MemoryObjectStore
+) -> None:
+    version = await _published(settings, store, **{"references/limits.md": "Limit: 500\n"})
+    await store.put(
+        library_object_key("acme", "invoice-triage", version, "references/planted.md"), b"planted"
+    )
+    tools = _skill_tools(await _catalog(settings, store), settings, store)
+    planted = await _call(
+        tools["read_skill_file"], {"name": "invoice-triage", "path": "references/planted.md"}
+    )
+    assert planted["error"] == "file_not_found"
+    await store.put(
+        library_object_key("acme", "invoice-triage", version, "references/limits.md"), b"Limit: 5000\n"
+    )
+    changed = await _call(
+        tools["read_skill_file"], {"name": "invoice-triage", "path": "references/limits.md"}
+    )
+    assert changed["error"] == "file_not_found", "bytes that no longer match their digest are not served"
+
+
+async def test_a_shared_store_skill_cannot_reach_a_tenants_library_bytes(
+    settings: Settings, store: MemoryObjectStore
+) -> None:
+    # A shared skill whose name is a tenant id, and a path shaped like that tenant's library.
+    await store.put("skills/acme/SKILL.md", b"---\nname: acme\ndescription: shared\n---\nbody\n")
+    await library.save_draft(
+        settings,
+        "acme",
+        files=_bundle("references", **{"references/x.md": "tenant secret"}),
+        provenance=library.DraftProvenance(source="operator", author="ops"),
+        object_store=store,
+    )
+    catalog = await load_manifest_skills(
+        [{"name": "acme"}], tenant_id="globex", object_store=store, bundled_dir=REPO_SKILLS
+    )
+    assert catalog.get("acme").source == "store"
+    tools = _skill_tools(catalog, settings, store)
+    read = await _call(tools["read_skill_file"], {"name": "acme", "path": "references/0.1.0/references/x.md"})
+    assert read.get("error") == "file_not_found"
+
+
+async def test_the_catalog_follows_a_rollback(settings: Settings, store: MemoryObjectStore) -> None:
+    await _published(settings, store)  # 0.1.0, body BODY
+    row = await library.save_draft(
+        settings,
+        "acme",
+        files=_bundle(body="Second version."),
+        provenance=library.DraftProvenance(source="operator", author="ops"),
+        object_store=store,
+    )
+    await library.publish(settings, "acme", "invoice-triage", row["version"], by="ops", object_store=store)
+    assert (await _catalog(settings, store)).get("invoice-triage").body == "Second version."
+    await library.rollback(settings, "acme", "invoice-triage", "0.1.0", by="ops", object_store=store)
+    skill = (await _catalog(settings, store)).get("invoice-triage")
+    assert skill.version == "0.1.0" and "Route amounts over the limit" in skill.body
+
+
+async def test_host_names_win_under_declared_only_and_shared_uploads_are_refused(
+    settings: Settings, store: MemoryObjectStore
+) -> None:
+    lib = get_skill_library_store(settings)
+    row = {
+        "name": "calculator-help",
+        "version": "0.1.0",
+        "status": "draft",
+        "source": "operator",
+        "security_status": "pass",
+        "created_at": 1,
+    }
+    await lib.insert_version("acme", row, [], created_by="ops", at=1)
+    await lib.publish("acme", "calculator-help", "0.1.0", from_statuses={"draft"}, by="ops", at=2)
+    catalog = await _catalog(settings, store, [{"name": "calculator-help"}], declared_only=True)
+    assert catalog.get("calculator-help").source == "bundled"
+
+    await store.put("skills/shared-one/SKILL.md", b"---\nname: shared-one\ndescription: d\n---\nb\n")
+    with pytest.raises(library.SkillNameShadowed):
+        await library.save_draft(
+            settings,
+            "acme",
+            files=_bundle("shared-one"),
+            provenance=library.DraftProvenance(source="operator", author="ops"),
+            object_store=store,
+        )
+
+
+async def test_publish_mode_never_auto_publishes_an_edit_of_an_operators_skill(
+    settings: Settings, store: MemoryObjectStore
+) -> None:
+    await _published(settings, store)  # written by an operator
+    tools = _authoring(settings, store, mode="publish")
+    result = await _call(
+        tools["update_skill"], {"name": "invoice-triage", "body": BODY + "\n3. More.\n", "reason": "r"}
+    )
+    assert result["status"] == "draft" and "review_required" in result
+    skill = await get_skill_library_store(settings).get_skill("acme", "invoice-triage")
+    assert skill is not None and skill["live_version"] == "0.1.0"
+
+
+def _spec(**spec: Any) -> dict[str, Any]:
+    return {
+        "apiVersion": "felix/v1",
+        "kind": "Agent",
+        "metadata": {"name": "x"},
+        "spec": {"pattern": "react", **spec},
+    }
+
+
+def test_publish_mode_requires_an_approval_on_both_tools() -> None:
+    from felix.manifests.loader import parse_manifest
+
+    publish = {"enabled": True, "mode": "publish"}
+    both = {"id": "a", "tools": ["create_skill", "update_skill"]}
+    parse_manifest(_spec(skill_authoring=publish, approvals=[both]))
+    parse_manifest(_spec(skill_authoring=publish, approvals=[{"id": "g", "tools": ["*_skill"]}]))
+    parse_manifest(_spec(skill_authoring={"enabled": True}))  # draft mode needs none
+
+    refused = [
+        [],
+        [{"id": "a", "tools": ["create_skill"]}],
+        [{"id": "a", "tools": ["create_skill", "update_skill"], "when_args": ["description"]}],
+        # The literal rule is the one selected, and its `when_args` lets calls through.
+        [
+            {"id": "g", "tools": ["*_skill"]},
+            {"id": "l", "tools": ["update_skill"], "when_args": ["description"]},
+            both | {"tools": ["create_skill"]},
+        ],
+    ]
+    for approvals in refused:
+        with pytest.raises(ValueError, match=r"skill_authoring\.mode: publish"):
+            parse_manifest(_spec(skill_authoring=publish, approvals=approvals))
+
+
+async def test_an_approval_rule_holds_the_built_create_skill(settings: Settings) -> None:
+    tools = await _built_tools(
+        settings,
+        skill_authoring={"enabled": True},
+        approvals=[{"id": "author", "tools": ["create_skill", "update_skill"], "ttl_seconds": 60}],
+    )
+    out = await tools["create_skill"].executor.execute(
+        {"name": "invoice-triage", "description": "d", "body": BODY, "reason": "r"},
+        ToolInvocationCtx(thread_id="acme:t1", tool_call_id="c1"),
+    )
+    assert "[approval required]" in tool_output_content(out)
+    assert await get_skill_library_store(settings).list_skills("acme") == []

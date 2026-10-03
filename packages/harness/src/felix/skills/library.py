@@ -21,7 +21,7 @@ import logging
 import re
 import time
 from collections.abc import Mapping
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from functools import cmp_to_key
 from typing import Any, Literal
 
@@ -29,10 +29,13 @@ from felix.config import Settings
 from felix.skills.binary import decode_base64, encode_base64, is_binary_asset_path
 from felix.skills.format import ValidationIssue, validate_skill_bundle
 from felix.skills.library_store import (
+    MAX_VERSIONS_PER_SKILL,
     SkillLibraryStore,
     SkillStateConflict,
+    SkillStatus,
     SkillVersionExists,
     get_skill_library_store,
+    library_object_key,
 )
 from felix.skills.review import review_skill_bundle
 from felix.skills.security import scan_skill_security
@@ -87,17 +90,40 @@ class SkillPendingCapReached(SkillLibraryError):
     code = "pending_cap_reached"
 
 
+class SkillVersionCapReached(SkillLibraryError):
+    code = "version_cap_reached"
+
+
+class SkillVersionCorrupt(SkillLibraryError):
+    """A saved file is missing from the object store, or its bytes no longer match the digest
+    recorded when it was saved."""
+
+    code = "version_corrupt"
+
+
+@dataclass(slots=True, frozen=True)
+class DraftProvenance:
+    """Who saved a draft, from where, and why.
+
+    ``source="agent"`` is the one thing the pending cap keys on: an agent's drafts wait on a
+    person, so they are what can flood a review queue; an operator's save is already that
+    person. ``principal`` is the caller behind an agent's turn, when there was one.
+    """
+
+    source: SkillSourceKind
+    author: str
+    reason: str = ""
+    origin_manifest_id: str | None = None
+    session_id: str | None = None
+    principal: str | None = None
+
+
 class SkillPublishBlocked(SkillLibraryError):
     code = "publish_blocked"
 
     def __init__(self, reasons: list[str]) -> None:
         self.reasons = reasons
         super().__init__("; ".join(reasons))
-
-
-def _object_key(tenant_id: str, name: str, version: str, path: str) -> str:
-    # The layout `skills/loader.py:load_skill_from_store` and `_library_skill` read.
-    return f"skills/{tenant_id}/{name}/{version}/{path}"
 
 
 def _object_store(settings: Settings, object_store: Any | None) -> Any:
@@ -146,6 +172,10 @@ def _audit(
 
 async def host_owns(settings: Settings, tenant_id: str, name: str, object_store: Any | None = None) -> bool:
     """True when ``name`` is a host skill or an operator-uploaded object-store skill.
+
+    The uploaded check is the unversioned `skills/{tenant}/{name}/SKILL.md` and the shared
+    `skills/{name}/SKILL.md`. Library bytes never land under `skills/` (`library_object_key`),
+    so an operator's versioned upload cannot be overwritten whatever this answers.
 
     The library may not save one. The catalog would keep serving the host's copy (host wins),
     so a shadowing save would be inert at best -- and at worst, under `skills_declared_only`
@@ -197,7 +227,7 @@ def _stored_bytes(path: str, content: str) -> bytes:
 
 async def _write_files(store: Any, tenant_id: str, name: str, version: str, files: Mapping[str, str]) -> None:
     for path, content in files.items():
-        await store.put(_object_key(tenant_id, name, version, path), _stored_bytes(path, content))
+        await store.put(library_object_key(tenant_id, name, version, path), _stored_bytes(path, content))
 
 
 def _file_rows(files: Mapping[str, str]) -> list[dict[str, Any]]:
@@ -220,6 +250,10 @@ async def _reserve(
     """Insert the version row under the next free version; the primary key settles a race."""
     for _ in range(_SAVE_ATTEMPTS):
         existing = await lib.version_ids(tenant_id, row["name"])
+        if len(existing) >= MAX_VERSIONS_PER_SKILL:
+            raise SkillVersionCapReached(
+                f"{row['name']} already has {len(existing)} versions (limit {MAX_VERSIONS_PER_SKILL})"
+            )
         row = {**row, "version": _next_version(existing, explicit=explicit, bump=bump)}
         try:
             await lib.insert_version(tenant_id, row, files, created_by=row["author"], at=row["created_at"])
@@ -230,17 +264,39 @@ async def _reserve(
     raise SkillVersionConflict("concurrent saves kept taking the next version; try again")
 
 
+async def _check_pending(
+    lib: SkillLibraryStore,
+    tenant_id: str,
+    provenance: DraftProvenance,
+    max_pending: int | None,
+    *,
+    after: bool,
+) -> None:
+    """The pending cap, which applies to agent drafts and nothing else (`DraftProvenance`).
+
+    Checked before the save and again after it. Count-then-insert races -- two saves at one
+    under the cap both see room -- so the recount, which includes this draft, catches what
+    the first count missed. Both racers may then back out; refusing one too many is the
+    failure that leaves the queue bounded.
+    """
+    origin = provenance.origin_manifest_id
+    if provenance.source != "agent" or max_pending is None or not origin:
+        return
+    pending = await lib.count_pending(tenant_id, origin)
+    if pending > max_pending or (not after and pending >= max_pending):
+        held = pending - 1 if after else pending
+        raise SkillPendingCapReached(
+            f"{origin} already has {held} drafts awaiting review (limit {max_pending})"
+        )
+
+
 async def save_draft(
     settings: Settings,
     tenant_id: str,
     *,
     files: Mapping[str, str],
-    source: SkillSourceKind,
-    author: str,
-    reason: str,
+    provenance: DraftProvenance,
     name: str | None = None,
-    origin_manifest_id: str | None = None,
-    session_id: str | None = None,
     parent: str | None = None,
     version: str | None = None,
     bump: SemverBump = "patch",
@@ -252,8 +308,7 @@ async def save_draft(
     ``name``, when given, must be the SKILL.md's own name. ``parent`` is the version this one
     was edited from (lineage, not the bump base: the bump is from the newest version, so a
     save is always newer than everything saved before it). ``max_pending`` caps how many
-    undecided agent drafts one origin manifest may hold, so an agent in a loop fills a review
-    queue only so far.
+    undecided agent drafts one origin manifest may hold (`_check_pending`).
     """
     validation = await asyncio.to_thread(validate_skill_bundle, files, name)
     if not validation.valid or validation.frontmatter is None:
@@ -264,12 +319,7 @@ async def save_draft(
         raise SkillNameShadowed(f"{skill_name!r} is a host skill; the library cannot replace it")
 
     lib = get_skill_library_store(settings)
-    if source == "agent" and max_pending is not None and origin_manifest_id:
-        pending = await lib.count_pending(tenant_id, origin_manifest_id)
-        if pending >= max_pending:
-            raise SkillPendingCapReached(
-                f"{origin_manifest_id} already has {pending} drafts awaiting review (limit {max_pending})"
-            )
+    await _check_pending(lib, tenant_id, provenance, max_pending, after=False)
     if parent is not None and await lib.get_version(tenant_id, skill_name, parent) is None:
         raise SkillNotFound(f"parent version {skill_name}@{parent} does not exist")
 
@@ -277,45 +327,93 @@ async def save_draft(
         "name": skill_name,
         "parent_version": parent,
         "status": "draft",
-        "source": source,
-        "author": author,
-        "origin_manifest_id": origin_manifest_id,
-        "session_id": session_id,
-        "reason": (reason or "")[:_REASON_LIMIT],
+        "source": provenance.source,
+        "author": provenance.author,
+        "origin_manifest_id": provenance.origin_manifest_id,
+        "session_id": provenance.session_id,
+        "reason": (provenance.reason or "")[:_REASON_LIMIT],
         "description": validation.frontmatter.description,
         **await asyncio.to_thread(_assess, files, skill_name),
         "created_at": now_ms(),
     }
     row = await _reserve(lib, tenant_id, row, _file_rows(files), explicit=version, bump=bump)
     try:
+        await _check_pending(lib, tenant_id, provenance, max_pending, after=True)
         await _write_files(store, tenant_id, skill_name, row["version"], files)
     except Exception:
-        # The row is a draft, so nothing loaded it in the meantime; take it back out.
-        await lib.delete_draft(tenant_id, skill_name, row["version"])
+        # The row is a draft, so nothing loaded it in the meantime; take it and any bytes
+        # already written back out.
+        await _discard(lib, store, tenant_id, row, files)
         raise
     _audit(
-        settings, tenant_id, "skill_draft_saved", row, by=author, parent=parent, reason=row["reason"][:200]
+        settings,
+        tenant_id,
+        "skill_draft_saved",
+        row,
+        by=provenance.author,
+        parent=parent,
+        reason=_redacted(settings, row["reason"][:200]),
+        **({"principal": provenance.principal} if provenance.principal else {}),
     )
     return {**row, "tenant_id": tenant_id}
+
+
+async def _discard(
+    lib: SkillLibraryStore, store: Any, tenant_id: str, row: Mapping[str, Any], files: Mapping[str, str]
+) -> None:
+    for path in files:
+        try:
+            await store.delete(library_object_key(tenant_id, row["name"], row["version"], path))
+        except Exception:
+            logger.warning("could not remove %s of a failed save", path, exc_info=True)
+    await lib.delete_draft(tenant_id, row["name"], row["version"])
+
+
+def _redacted(settings: Settings, text: str) -> str:
+    from felix.secrets import collected_secret_values, redact_text
+
+    return redact_text(text, collected_secret_values(settings))
+
+
+def _checked(path: str, data: bytes | None, digest: str) -> str:
+    if data is None:
+        raise SkillVersionCorrupt(f"{path} is missing from the object store")
+    if hashlib.sha256(data).hexdigest() != digest:
+        raise SkillVersionCorrupt(f"{path} changed in the object store since it was saved")
+    return encode_base64(data) if is_binary_asset_path(path) else data.decode("utf-8")
 
 
 async def read_version_files(
     settings: Settings, tenant_id: str, name: str, version: str, *, object_store: Any | None = None
 ) -> dict[str, str]:
     """Every file of a saved version as bundle text (binary assets base64), checked against
-    the digests recorded when it was saved. A missing or altered file raises."""
+    the digests recorded when it was saved. A missing or altered file raises
+    `SkillVersionCorrupt`."""
     lib = get_skill_library_store(settings)
     store = _object_store(settings, object_store)
     files: dict[str, str] = {}
     for meta in await lib.list_files(tenant_id, name, version):
         path = str(meta["path"])
-        data = await store.get(_object_key(tenant_id, name, version, path))
-        if data is None:
-            raise SkillPublishBlocked([f"{path} is missing from the object store"])
-        if hashlib.sha256(data).hexdigest() != meta["sha256"]:
-            raise SkillPublishBlocked([f"{path} changed in the object store since it was saved"])
-        files[path] = encode_base64(data) if is_binary_asset_path(path) else data.decode("utf-8")
+        files[path] = _checked(
+            path, await store.get(library_object_key(tenant_id, name, version, path)), meta["sha256"]
+        )
     return files
+
+
+async def read_version_file(
+    settings: Settings, tenant_id: str, name: str, version: str, path: str, *, object_store: Any | None = None
+) -> str | None:
+    """One file of a saved version, or None when the version holds no such path.
+
+    Only a path the version's `skill_file` rows name is read, and its bytes must match the
+    recorded digest, so a reader cannot be steered at an object the save did not write.
+    """
+    rows = await get_skill_library_store(settings).list_files(tenant_id, name, version)
+    meta = next((r for r in rows if r["path"] == path), None)
+    if meta is None:
+        return None
+    store = _object_store(settings, object_store)
+    return _checked(path, await store.get(library_object_key(tenant_id, name, version, path)), meta["sha256"])
 
 
 def _policy_reasons(settings: Settings, assessment: Mapping[str, Any]) -> list[str]:
@@ -339,7 +437,10 @@ async def _gate(settings: Settings, tenant_id: str, row: Mapping[str, Any], obje
     directly, and the scanner's rules may have grown since the draft was saved.
     """
     name, version = str(row["name"]), str(row["version"])
-    files = await read_version_files(settings, tenant_id, name, version, object_store=object_store)
+    try:
+        files = await read_version_files(settings, tenant_id, name, version, object_store=object_store)
+    except SkillVersionCorrupt as exc:
+        raise SkillPublishBlocked([str(exc)]) from exc
     validation = await asyncio.to_thread(validate_skill_bundle, files, name)
     if not validation.valid:
         raise SkillPublishBlocked(
@@ -352,7 +453,7 @@ async def _gate(settings: Settings, tenant_id: str, row: Mapping[str, Any], obje
 
 # What each way of going live may start from. A publish takes a draft; a rollback takes a
 # version that is, or was, live -- and `_make_live` also requires that it once went live.
-_LIVE_FROM = {
+_LIVE_FROM: dict[str, frozenset[SkillStatus]] = {
     "skill_published": frozenset({"draft"}),
     "skill_rolled_back": frozenset({"archived", "published"}),
 }
@@ -453,16 +554,20 @@ async def archive_skill(settings: Settings, tenant_id: str, name: str, *, by: st
 
 __all__ = [
     "VERSION_RE",
+    "DraftProvenance",
     "SkillBundleInvalid",
     "SkillLibraryError",
     "SkillNameShadowed",
     "SkillNotFound",
     "SkillPendingCapReached",
     "SkillPublishBlocked",
+    "SkillVersionCapReached",
     "SkillVersionConflict",
+    "SkillVersionCorrupt",
     "archive_skill",
     "host_owns",
     "publish",
+    "read_version_file",
     "read_version_files",
     "reject",
     "rollback",

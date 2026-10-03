@@ -261,9 +261,15 @@ async def load_skill_from_store(
 _LIBRARY_FETCH_CONCURRENCY = 16
 
 
-async def _library_skill(store: Any, *, tenant_id: str, name: str, version: str) -> Skill | None:
-    """The live version of one library skill, or None when its SKILL.md cannot be read."""
-    key = f"skills/{tenant_id}/{name}/{version}/SKILL.md"
+async def _library_skill(store: Any, *, tenant_id: str, row: dict[str, Any]) -> Skill | None:
+    """The live version of one library skill, or None when its SKILL.md is missing, does not
+    match the digest saved with it, or cannot be read."""
+    import hashlib
+
+    from felix.skills.library_store import library_object_key
+
+    name, version = str(row["name"]), str(row["version"])
+    key = library_object_key(tenant_id, name, version, "SKILL.md")
     try:
         data = await store.get(key)
     except Exception:
@@ -271,6 +277,10 @@ async def _library_skill(store: Any, *, tenant_id: str, name: str, version: str)
         return None
     if not data:
         logger.warning("library skill %s is live but has no SKILL.md; skipped", key)
+        return None
+    if not row.get("sha256") or hashlib.sha256(data).hexdigest() != row["sha256"]:
+        # The bytes are not the ones that were reviewed and published.
+        logger.warning("library skill %s does not match its saved digest; skipped", key)
         return None
     try:
         skill = parse_skill_md(data.decode("utf-8"), fallback_name=name, path=key)
@@ -286,41 +296,36 @@ async def _library_skill(store: Any, *, tenant_id: str, name: str, version: str)
 
 async def _library_catalog(
     settings: Any, *, tenant_id: str, object_store: Any, wanted: Callable[[str], bool]
-) -> tuple[dict[str, Skill], set[str]]:
-    """(live library skills `wanted` keeps, every name the library owns).
+) -> dict[str, Skill]:
+    """The live library skills `wanted` keeps, by name.
 
-    One query for the tenant's library rows, then the live SKILL.md of each skill `wanted`
-    keeps, fetched concurrently. Only `live_version` is ever followed: a draft, a rejected
-    draft and a superseded version have rows and objects, and none of them reaches a catalog.
+    One query for each live skill's version and SKILL.md digest, then those SKILL.md files,
+    fetched concurrently. Only `live_version` is followed: a draft, a rejected draft and a
+    superseded version have rows and objects, and none of them reaches a catalog.
 
-    The owned names come back as well, live or not, so a declared ref naming an archived
-    library skill does not fall through to the raw object-store keys -- where it would find
-    whatever version directory a manifest pinned, draft or not.
+    Fails closed. If the library store cannot be read, the catalog has no library skills --
+    and nothing else can stand in for them, because library bytes live under their own
+    prefix (`library_object_key`) that no other source in this module reads.
     """
-    if settings is None:
-        return {}, set()
+    if settings is None or object_store is None:
+        return {}
     from felix.skills.library_store import get_skill_library_store
 
     try:
-        rows = await get_skill_library_store(settings).list_skills(tenant_id)
+        rows = await get_skill_library_store(settings).list_live(tenant_id)
     except Exception:
         # The library is an addition to the catalog, never a precondition for one.
         logger.warning("skill library unavailable; catalog built without it", exc_info=True)
-        return {}, set()
-    owned = {str(r["name"]) for r in rows}
-    live = [r for r in rows if r.get("live_version") and wanted(str(r["name"]))]
-    if object_store is None or not live:
-        return {}, owned
+        return {}
+    live = [r for r in rows if wanted(str(r["name"]))]
     gate = asyncio.Semaphore(_LIBRARY_FETCH_CONCURRENCY)
 
     async def fetch(row: dict[str, Any]) -> Skill | None:
         async with gate:
-            return await _library_skill(
-                object_store, tenant_id=tenant_id, name=str(row["name"]), version=str(row["live_version"])
-            )
+            return await _library_skill(object_store, tenant_id=tenant_id, row=row)
 
     skills = await asyncio.gather(*(fetch(r) for r in live))
-    return {s.name: s for s in skills if s is not None}, owned
+    return {s.name: s for s in skills if s is not None}
 
 
 def _read_skill_file(path: Path, *, fallback_name: str) -> Skill | None:
@@ -494,8 +499,9 @@ async def load_manifest_skills(
     With ``settings``, the tenant's skill library is the third source: the live version of
     each library skill, after the host directories (the host wins on a name, though the
     library refuses to save one) and ahead of the raw object-store keys. Under `declared_only`
-    only declared library names are fetched. A library name never falls through to the raw
-    keys, live or not: those hold every version the library wrote, drafts included.
+    only declared library names are fetched. The raw keys never hold library bytes -- those
+    are under their own prefix, and only a live, digest-checked version is read from it --
+    so a declared name the library does not serve falls through to operator uploads only.
     """
     catalog = SkillCatalog()
     host = await host_catalog(bundled_dir)
@@ -503,7 +509,7 @@ async def load_manifest_skills(
         catalog.skills.update(host.skills)
 
     declared = {str(n) for n, _ in map(_ref_name_and_version, refs or []) if n}
-    library, library_owned = await _library_catalog(
+    library = await _library_catalog(
         settings,
         tenant_id=tenant_id,
         object_store=object_store,
@@ -527,7 +533,7 @@ async def load_manifest_skills(
                 version,
                 skill.version,
             )
-        if skill is None and object_store is not None and str(name) not in library_owned:
+        if skill is None and object_store is not None:
             skill = await load_skill_from_store(
                 object_store, tenant_id=tenant_id, name=str(name), version=version
             )

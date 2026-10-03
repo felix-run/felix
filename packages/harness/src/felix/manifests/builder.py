@@ -1384,7 +1384,7 @@ def _warn_policies_cannot_be_satisfied(m: Manifest, settings: Any) -> None:
 def _bind_skill_authoring(resolved: list[Tool], m: Manifest, deps: BuildDeps, tenant_id: str) -> None:
     """`create_skill` / `update_skill`, bound before the governance block like every tool, so
     an approvals rule on them holds the save until a person has read the SKILL.md."""
-    from felix.skills.tools import make_skill_authoring_tools
+    from felix.skills.authoring import make_skill_authoring_tools
 
     spec = m.spec.skill_authoring
     _append_unique_tools(

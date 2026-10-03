@@ -1149,6 +1149,36 @@ class Spec(_Strict):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     @model_validator(mode="after")
+    def _publishing_agents_need_an_approval(self) -> Spec:
+        """`skill_authoring.mode: publish` only with a person in front of both writes.
+
+        A published skill is instructions every later session in the tenant may load, and in
+        publish mode nothing but the automated gate stands between an agent's save and the
+        catalog. So the approval rule `apply_approvals` would select for each tool -- literal
+        names over globs, the last match winning -- must exist and gate every call: a
+        `when_args` rule lets the calls without those arguments through ungated.
+        """
+        authoring = self.skill_authoring
+        if not (authoring.enabled and authoring.mode == "publish"):
+            return self
+        from felix.manifests.tool_match import matches_any
+
+        for tool in ("create_skill", "update_skill"):
+            literal = [r for r in self.approvals if tool in r.tools]
+            matched = literal or [r for r in self.approvals if matches_any(r.tools, tool)]
+            if not matched:
+                raise ValueError(
+                    f"skill_authoring.mode: publish needs an approvals rule covering {tool} "
+                    "(create_skill and update_skill), so a person reads a skill before it goes live"
+                )
+            if matched[-1].when_args:
+                raise ValueError(
+                    f"skill_authoring.mode: publish needs approvals rule {matched[-1].id!r} to gate "
+                    f"every {tool} call; when_args lets calls without those arguments through"
+                )
+        return self
+
+    @model_validator(mode="after")
     def _decider_consumers_need_a_decider(self) -> Spec:
         # Checked here rather than at compile: a consumer switched on with nothing to ask
         # is a control that looks present and does nothing.
