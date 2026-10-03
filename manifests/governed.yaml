@@ -31,6 +31,14 @@ spec:
     - activate_skill
     - deactivate_skill
 
+  # Image tools need the `image` extra (Pillow). Each binds one op; the model names an image in
+  # the thread as `latest`, `#n` from a `list` tool, or a felix-file:// reference, and sees the
+  # result. `allow_path: true` lets a tool read workspace files too.
+  # image_tools:
+  #   - { name: list_images, op: list }
+  #   - { name: thumbnail_image, op: thumbnail }
+  #   - { name: crop_image, op: crop }
+
   skills:
     - name: calculator-help
   # The declared list is the whole list. Without this a manifest inherits every skill in the

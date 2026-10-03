@@ -392,6 +392,24 @@ class BrowserToolRef(_Strict):
     fatal: bool = False
 
 
+class ImageToolRef(_Strict):
+    """One image operation, bound as a tool (`felix.tools.image_tools`; needs the `image` extra).
+
+    One op per tool, like the browser: a manifest grants exactly the operations it names. The
+    model picks an image in the thread (`latest`, `#n` from a `list` tool, or a stored
+    `felix-file://` reference in it), or a workspace `path` where `allow_path` grants it, and
+    gets the result back as an image it sees, stored so a later call can work on it.
+    """
+
+    name: str = Field(min_length=1)
+    description: str = ""
+    op: Literal["list", "info", "resize", "crop", "rotate", "convert", "thumbnail"]
+    # Read workspace files through `path`. Off by default: the workspace is one directory for
+    # every tenant on the host, and a manifest grants reading it explicitly, as with `read_file`.
+    allow_path: bool = False
+    fatal: bool = False
+
+
 class HttpFetchToolRef(_Strict):
     """Read a model-supplied URL over HTTP(S).
 
@@ -1087,6 +1105,7 @@ class Spec(_Strict):
     sandboxes: list[SandboxRef] = Field(default_factory=list, max_length=MAX_REFS)
     shell_tools: list[ShellToolRef] = Field(default_factory=list, max_length=MAX_REFS)
     browser_tools: list[BrowserToolRef] = Field(default_factory=list, max_length=MAX_REFS)
+    image_tools: list[ImageToolRef] = Field(default_factory=list, max_length=MAX_REFS)
     http_tools: list[HttpFetchToolRef] = Field(default_factory=list, max_length=MAX_REFS)
     search_tools: list[SearchToolRef] = Field(default_factory=list, max_length=MAX_REFS)
     document_tools: list[DocumentSearchToolRef] = Field(default_factory=list, max_length=MAX_REFS)

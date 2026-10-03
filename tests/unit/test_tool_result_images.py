@@ -10,7 +10,7 @@ import pytest
 from felix.attachments import MAX_ATTACHMENT_BYTES
 from felix.config import Settings
 from felix.manifests.schema import BrowserToolRef, ContentScreening
-from felix.tools.images import MAX_IMAGES_PER_CALL, ImageBudget, store_tool_images
+from felix.tools.tool_images import MAX_IMAGES_PER_CALL, ImageBudget, store_tool_images
 from felix.tools.types import (
     Tool,
     ToolInvocationCtx,
