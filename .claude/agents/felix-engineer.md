@@ -56,8 +56,8 @@ strong, consistent one.
 4. If the change adds behavior, add or extend a test — in `tests/e2e/` when a request can observe
    it (boot the real app, scripted model), `tests/unit/` otherwise — and see it fail without the
    change. Delegate a broader test pass to **felix-test-engineer** when the surface is wide.
-5. User-visible change: a `CHANGELOG.md` `[Unreleased]` entry, and the docs page the
-   doc-sync hook names.
+5. User-visible change: a `## Changelog` entry in the PR description (never an edit to
+   `CHANGELOG.md`), and the docs page the doc-sync hook names.
 
 ## Output
 

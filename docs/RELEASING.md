@@ -62,14 +62,21 @@ python scripts/bump-version.py 0.3.0          # sets every location, then `uv lo
    its own: at 0.5.0 the version string also matched `pgvector>=0.5.0`, and a test that rewrote
    every occurrence of it failed a correct bump in CI.
 
-5. **Close out the changelog.** Rename `## [Unreleased]` to `## [X.Y.Z] — YYYY-MM-DD`, open a
-   fresh empty `## [Unreleased]` above it, and add the comparison link at the foot of the file.
-   Sections go in Keep a Changelog order — `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`,
-   `Security`.
+5. **Write the changelog**: `python3 scripts/changelog.py cut X.Y.Z`. Pull requests no longer
+   edit `CHANGELOG.md`; each carries its entry in its description under `## Changelog`, and this
+   reads every pull request merged into `origin/main` since the last tag (by its merge commit),
+   collects those sections, and replaces `## [Unreleased]` with `## [X.Y.Z] — YYYY-MM-DD`: Keep a
+   Changelog order, each entry ending `(#N)`, a fresh empty `## [Unreleased]` above it and the
+   tag link at the foot. Entries still written by hand under `[Unreleased]` are kept, ahead of the
+   collected ones in each category. It needs `gh` authenticated. `changelog.py collect` prints the
+   same section without writing anything, to preview it first.
 
-   Read the section before committing it. `CHANGELOG.md` merges by union (`.gitattributes`), which
-   never conflicts but can leave two entries interleaved or one under the wrong heading; this is
-   the moment to fix that. Entries describe what changed for the operator, not which files moved.
+   It warns for each merged pull request whose description has no usable section -- the
+   `changelog` workflow makes that rare, and the pull requests merged before the switch (their
+   entries already written by hand) are the expected exception. Read the section before
+   committing it: an entry describes what changed for the operator, not which files moved, and
+   this is the moment to fix one by editing the file, or the pull request's description and
+   cutting again.
 
 6. **Sync the docs before tagging, not after.** Anything user-visible in this release needs its page
    on [docs.felix.run](https://docs.felix.run) updated in the `felix-run/web` repo, plus

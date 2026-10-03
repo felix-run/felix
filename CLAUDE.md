@@ -258,10 +258,11 @@ cron labels). `felix-scheduler` must run alongside `felix-worker` or nothing fir
 - Postgres is the system of record; the warehouse (`FELIX_WAREHOUSE`) is optional
   append-only spill written after the Postgres write.
 - `docs/ROADMAP.md` tracks in-flight work and is expected to be updated in place.
-- User-visible changes add an entry under `## [Unreleased]` in `CHANGELOG.md`, in the Keep a
-  Changelog section it belongs to. `.gitattributes` gives the file a union merge, so two pull
-  requests inserting there at once do not conflict; the release step reads the section before
-  cutting it.
+- A pull request's changelog entry goes in its **description**, under `## Changelog` and a Keep a
+  Changelog heading (Added, Changed, Deprecated, Removed, Fixed, Security), or `none: <reason>`.
+  Do not edit `CHANGELOG.md`: the release step writes it from the merged descriptions
+  (`scripts/changelog.py cut`), and the `changelog` workflow fails a description without a usable
+  section. Every PR inserting at the top of one file conflicted on each merge.
 
 ## Claude Code toolkit
 

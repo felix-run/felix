@@ -95,10 +95,10 @@ Commit or push **only when the user asks**.
 - New `FELIX_` setting → `.env.example`, README, `compose*.yml`, Helm values
 - New governance control → `deploy/GOVERNANCE.md`, `manifests/governed.yaml`
 - Model change → an Alembic revision under `migrations/versions/`
-- User-visible behavior → an entry under `## [Unreleased]` in `CHANGELOG.md` (Keep a Changelog
-  sections: Added, Changed, Deprecated, Removed, Fixed, Security) and a `docs/ROADMAP.md` status
-  flip. The file has a union merge in `.gitattributes`, so two pull requests inserting there at
-  once merge without a conflict; if git ever does ask, keep both entries — a hand-resolved
-  conflict there once dropped six.
+- User-visible behavior → an entry in the PR description under `## Changelog` (Keep a Changelog
+  headings: Added, Changed, Deprecated, Removed, Fixed, Security), and a `docs/ROADMAP.md` status
+  flip. Never edit `CHANGELOG.md` in a PR: the release writes it from merged descriptions
+  (`scripts/changelog.py`). A PR with nothing for an operator says `none: <reason>` there; the
+  `changelog` workflow fails a description with neither.
 - Documented surface → the public MDX pages (docs-sync skill)
 - A new or changed store → a `tests/conformance/` arm (postgres-migrations skill)

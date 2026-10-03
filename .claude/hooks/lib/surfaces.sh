@@ -70,11 +70,12 @@ surface_blocks() {
 }
 
 # A change that counts as "documentation was considered". `.env.example` is on purpose: a
-# new setting's documentation *is* its commented line there.
-SURFACE_DOCS_TEXT="README.md / CLAUDE.md / CHANGELOG.md / .env.example / docs/ / deploy/GOVERNANCE.md / deploy/*/README.md"
+# new setting's documentation *is* its commented line there. `CHANGELOG.md` is not: a pull
+# request's entry lives in its description, and the release writes the file.
+SURFACE_DOCS_TEXT="README.md / CLAUDE.md / .env.example / docs/ / deploy/GOVERNANCE.md / deploy/*/README.md"
 surface_is_doc() {
   case "$1" in
-    README.md|CLAUDE.md|CHANGELOG.md|.env.example|deploy/GOVERNANCE.md|deploy/*/README.md|docs/*) return 0 ;;
+    README.md|CLAUDE.md|.env.example|deploy/GOVERNANCE.md|deploy/*/README.md|docs/*) return 0 ;;
     *) return 1 ;;
   esac
 }

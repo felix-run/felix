@@ -1,0 +1,50 @@
+name: changelog
+
+# Every pull request carries its changelog entry in its description, under `## Changelog`, or
+# says `none: <reason>` there. The release step writes CHANGELOG.md from those sections
+# (`scripts/changelog.py cut`), so a description without one is an entry silently missing from
+# the next release -- this check is what makes forgetting visible while the PR is still open.
+#
+# `pull_request_target`, like felix-boundary: the checker that runs is the BASE branch's
+# `scripts/changelog.py`, so a PR cannot loosen the rule it is judged by, and nothing from the
+# head is checked out or executed. The description reaches the script as a file written from an
+# environment variable, never interpolated into a shell line. `edited` re-runs it when the
+# description changes, which is the only place this check's input lives.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+
+concurrency:
+  group: changelog-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  changelog:
+    # Dependabot writes its own descriptions; a version bump of a dependency is not an entry.
+    if: github.event.pull_request.user.login != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+          sparse-checkout: |
+            scripts/changelog.py
+          sparse-checkout-cone-mode: false
+
+      - name: The description has a usable `## Changelog` section
+        env:
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+          if [ ! -f scripts/changelog.py ]; then
+            # The pull request that introduces the checker is judged before main has it.
+            echo "no scripts/changelog.py on the base branch yet; nothing to check against"
+            exit 0
+          fi
+          printf '%s' "$BODY" > body.md
+          python3 scripts/changelog.py check --body-file body.md

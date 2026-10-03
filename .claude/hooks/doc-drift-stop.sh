@@ -51,6 +51,6 @@ grep -qs "$hash" "$state" 2>/dev/null && exit 0
 echo "$hash" >> "$state"
 
 files=$(printf '%s' "$surfaces" | head -8 | tr '\n' ' ')
-jq -cn --arg r "Doc-drift check: this session changed documented surfaces ($files) but no $SURFACE_DOCS_TEXT change came with it. Either (a) update the in-repo docs (user-visible behaviour also gets a CHANGELOG [Unreleased] entry), and use the docs-sync skill for the public MDX pages in the felix-web repo, or (b) state plainly why no documentation change is needed. Fires once per drift-set per session." \
+jq -cn --arg r "Doc-drift check: this session changed documented surfaces ($files) but no $SURFACE_DOCS_TEXT change came with it. Either (a) update the in-repo docs (user-visible behaviour also gets an entry under ## Changelog in the PR description, not in CHANGELOG.md), and use the docs-sync skill for the public MDX pages in the felix-web repo, or (b) state plainly why no documentation change is needed. Fires once per drift-set per session." \
   '{decision:"block", reason:$r}'
 exit 0

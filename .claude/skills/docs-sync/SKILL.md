@@ -1,6 +1,6 @@
 ---
 name: docs-sync
-description: Keep Felix documentation true to the code across two repos — in-repo docs (README, CLAUDE.md, .env.example, deploy/GOVERNANCE.md, CHANGELOG, roadmap) and the public Starlight MDX site in the separate felix-web repo (apps/docs/src/content). Use after a feature lands, when the doc-drift Stop hook fires, before a release, or when asked to update, audit, or sync documentation.
+description: Keep Felix documentation true to the code across two repos — in-repo docs (README, CLAUDE.md, .env.example, deploy/GOVERNANCE.md, roadmap, and the PR description's changelog section) and the public Starlight MDX site in the separate felix-web repo (apps/docs/src/content). Use after a feature lands, when the doc-drift Stop hook fires, before a release, or when asked to update, audit, or sync documentation.
 compatibility: Public docs edits require a felix-web checkout (default ~/Projects/felix-web, override with FELIX_DOCS_ROOT).
 allowed-tools: Read Grep Glob Bash(git:*) Bash(uv run felix:*)
 ---
@@ -14,8 +14,9 @@ CLI flags, scope names, and defaults get copied from source, never from memory.
 ## Where docs live
 
 **This repo:** `README.md`, `CLAUDE.md`, `CONTRIBUTING.md`, `.env.example`,
-`deploy/GOVERNANCE.md`, `deploy/docker/README.md`, `deploy/helm/README.md`, `CHANGELOG.md`,
-`docs/ROADMAP.md`.
+`deploy/GOVERNANCE.md`, `deploy/docker/README.md`, `deploy/helm/README.md`, `docs/ROADMAP.md`.
+Not `CHANGELOG.md`: a change's entry goes in its pull request's description under `## Changelog`,
+and the release writes the file from those (`scripts/changelog.py`).
 
 **Public site:** the **felix-web** repo — Starlight MDX under `apps/docs/src/content/`
 (`guide/` = operators and integrators, `internals/` = mechanism). Default checkout

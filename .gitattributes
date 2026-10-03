@@ -1,4 +1,5 @@
-# CHANGELOG.md is edited directly by every pull request. Two of them inserting under
-# [Unreleased] at once used to conflict, and one hand-resolved conflict dropped six entries.
-# A union merge keeps both sides instead of asking; read the section before a release.
+# CHANGELOG.md is written at release time from pull-request descriptions
+# (scripts/changelog.py), so pull requests no longer edit it. The union merge stays for the
+# entries still written by hand under [Unreleased] before the switch, and for any release PR
+# rebased across another; read the section before committing a release.
 CHANGELOG.md merge=union

@@ -53,9 +53,8 @@ If the change touches a manifest field or the schema, run `make schema` — the 
 replaces the whole file. Use `edit_file` on anything that already exists — read the lines around
 the edit first so `old_string` matches once — and keep `write_file` for files you are creating.
 
-A user-visible change writes its entry under `## [Unreleased]` in `CHANGELOG.md` directly. There
-is no `changelog.d/` directory: the file carries a union merge, so two pull requests adding an
-entry at once keep both instead of conflicting.
+A user-visible change writes its changelog entry in the pull request's description, under
+`## Changelog`, never in `CHANGELOG.md`: the release writes that file from merged descriptions.
 
 ## Commit messages
 
@@ -65,7 +64,8 @@ restating the diff.
 ## Pull request body
 
 Say why the change exists, not only what it does. State how you tested it, naming the exact
-commands you ran. Call out any `.env.example`, README, or CHANGELOG updates the change required —
+commands you ran. Fill in `## Changelog`: an entry under its Keep a Changelog heading, or
+`none: <reason>`. Call out any `.env.example` or README updates the change required —
 and if a documented surface changed and you did not update its documentation, say that explicitly
 instead of leaving it silent.
 
