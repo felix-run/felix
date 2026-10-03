@@ -1,6 +1,6 @@
 [project]
 name = "felix-client"
-version = "0.5.1"
+version = "0.6.0"
 description = "Experimental Python client for a Felix harness over HTTP. Depends on httpx and nothing in Felix."
 requires-python = ">=3.14"
 license = "Apache-2.0"
