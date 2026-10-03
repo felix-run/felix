@@ -81,7 +81,7 @@ async def test_a_skill_the_agent_drafts_is_used_only_after_it_is_published(boot:
 
         # The operator's side, over the wire: the draft waits in the review queue, and a
         # publish through the management API is what lets a later session see it.
-        queue = await app.client.get("/skill-library/review")
+        queue = await app.client.get("/skill-library/-/review")
         assert queue.status_code == 200, queue.text
         (waiting,) = queue.json()["items"]
         assert (waiting["name"], waiting["version"], waiting["source"]) == (NAME, "0.1.0", "agent")
@@ -91,7 +91,7 @@ async def test_a_skill_the_agent_drafts_is_used_only_after_it_is_published(boot:
         published = await app.client.post(f"/skill-library/{NAME}/versions/0.1.0/publish")
         assert published.status_code == 200, published.text
         assert published.json()["status"] == "published"
-        assert (await app.client.get("/skill-library/review")).json()["items"] == []
+        assert (await app.client.get("/skill-library/-/review")).json()["items"] == []
 
         # A third: the published version is listed, offered in the prompt, and activates.
         await _chat(app, "Triage this invoice: ACME, 900.")
@@ -128,7 +128,7 @@ async def test_publishing_over_http_needs_skills_write(boot: Any) -> None:
         )
         reader = {"Authorization": "Bearer sk-e2e-reader"}
         writer = {"Authorization": "Bearer sk-e2e-writer"}
-        assert len((await app.client.get("/skill-library/review", headers=reader)).json()["items"]) == 1
+        assert len((await app.client.get("/skill-library/-/review", headers=reader)).json()["items"]) == 1
 
         refused = await app.client.post(f"/skill-library/{NAME}/versions/0.1.0/publish", headers=reader)
         assert refused.status_code == 403, refused.text

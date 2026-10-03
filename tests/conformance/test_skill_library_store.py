@@ -369,3 +369,42 @@ async def test_summaries_name_the_newest_version_and_count_drafts(store_settings
     assert summary["b-skill"]["pending"] == 1
     assert await store.summarize("acme", []) == {}
     assert await store.summarize("initech", ["a-skill"]) == {}
+
+
+@parametrized
+async def test_skills_are_fetched_by_name_in_one_call_and_tenant_scoped(store_settings: Any) -> None:
+    store = get_skill_library_store(store_settings)
+    await _named(store, "a-skill", "0.1.0", at=1)
+    await _named(store, "b-skill", "0.1.0", at=1)
+    await _named(store, "c-skill", "0.1.0", at=1, tenant="globex")
+    await store.publish("acme", "b-skill", "0.1.0", from_statuses={"draft"}, by="ops", at=2)
+
+    found = await store.get_skills("acme", ["a-skill", "b-skill", "c-skill", "missing", "a-skill"])
+    assert sorted(found) == ["a-skill", "b-skill"]
+    assert found["b-skill"]["live_version"] == "0.1.0" and found["a-skill"]["live_version"] is None
+    assert found["a-skill"] == await store.get_skill("acme", "a-skill")
+    assert await store.get_skills("acme", []) == {}
+
+
+@parametrized
+async def test_the_review_queue_pages_one_at_a_time_across_a_millisecond(store_settings: Any) -> None:
+    store = get_skill_library_store(store_settings)
+    await _named(store, "a-skill", "0.1.1", at=5)
+    await _named(store, "b-skill", "0.1.0", at=5)
+    await _named(store, "a-skill", "0.1.0", at=5)
+    # Rows the queue must skip, placed after the cursor's position rather than before it.
+    await _named(store, "c-skill", "0.1.0", at=7)
+    await store.publish("acme", "c-skill", "0.1.0", from_statuses={"draft"}, by="ops", at=8)
+    await _named(store, "a-skill", "0.1.0", at=7, tenant="globex")
+    await _named(store, "d-skill", "0.1.0", at=9)
+
+    seen: list[tuple[str, str]] = []
+    after = None
+    for _ in range(10):
+        page = await store.list_drafts("acme", limit=1, after=after)
+        if not page:
+            break
+        (row,) = page
+        seen.append((row["name"], row["version"]))
+        after = (row["created_at"], row["name"], row["version"])
+    assert seen == [("a-skill", "0.1.0"), ("a-skill", "0.1.1"), ("b-skill", "0.1.0"), ("d-skill", "0.1.0")]

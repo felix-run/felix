@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import logging
-from collections import OrderedDict
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -47,17 +46,18 @@ class _UpdateSkillArgs(BaseModel):
     description: str | None = Field(
         default=None, min_length=1, max_length=1024, description="A new description; omit to keep it."
     )
-    parent_version: str | None = Field(
-        default=None,
+    # Required, so an approval binds it: the approvals wrapper hashes a call's arguments into the
+    # grant, and an argument naming the parent is the only thing that makes "the edit a person
+    # approved" and "the edit that runs" the same edit, whichever process or retry runs it.
+    parent_version: str = Field(
+        min_length=1,
         max_length=32,
         description=(
-            "The version you are editing, if you know it; the save is refused if the skill moved past it."
+            "The skill's newest version, which this edits: `newest_version` from list_skills or "
+            "activate_skill, or `version` from your last create_skill / update_skill result. "
+            "Refused if the skill has a newer version."
         ),
     )
-
-
-# Previews remembered for the execution they precede (`_SkillAuthor.preview`), at most this many.
-_PREVIEWS_KEPT = 256
 
 
 class _ComposeError(Exception):
@@ -119,12 +119,6 @@ def _principal() -> str | None:
     return str(sub) if sub else None
 
 
-def _call_key(args: ToolInput) -> str:
-    """The content of an `update_skill` call, for matching an execution to its preview."""
-    fields = ("name", "body", "reason", "description", "parent_version")
-    return json.dumps({k: args.get(k) or None for k in fields}, sort_keys=True)
-
-
 def _preview_header(name: str, composed: _Composed, source: str) -> str:
     lines = [f"update_skill {name}: edited from {composed.parent} (written by {source or 'unknown'})"]
     if composed.inherited:
@@ -153,13 +147,6 @@ class _SkillAuthor:
         self.settings, self.tenant_id, self.manifest_id = settings, tenant_id, manifest_id
         self.mode, self.max_pending, self.object_store = mode, max_pending, object_store
         self.lib = get_skill_library_store(settings)
-        # The parent each `update_skill` preview showed, keyed by the call's content. An
-        # approval binds a call's arguments, and those name no version, so without this an
-        # approver reads a SKILL.md and inherited files built on one version and the save,
-        # minutes later, builds on whichever is newest then. Process-local: a call carrying
-        # `parent_version` is bound by its arguments wherever it runs; one without is checked
-        # when its execution lands in the process that rendered its preview.
-        self.previewed: OrderedDict[str, str] = OrderedDict()
 
     async def compose(self, args: ToolInput, *, update: bool) -> _Composed:
         """The bundle a call would save, and what it was edited from."""
@@ -177,23 +164,21 @@ class _SkillAuthor:
             raise _ComposeError(
                 {"error": "unknown_skill", "name": name, "detail": "not in the skill library"}
             )
-        return await self._edit(name, skill.get("live_version"), args, body)
+        return await self._edit(name, args, body)
 
-    async def _edit(self, name: str, live: str | None, args: ToolInput, body: str) -> _Composed:
+    async def _edit(self, name: str, args: ToolInput, body: str) -> _Composed:
+        """An edit of ``parent_version``, which must be the newest version. Checked here for the
+        preview and again, atomically with the save, by `save_draft(expect_newest=...)`."""
         from felix.skills import library
         from felix.skills.format import parse_skill_md, serialize_skill_md
 
-        if live:
-            parent = str(live)
-        else:
-            newest = await self.lib.list_versions(self.tenant_id, name, limit=1)
-            if not newest:
-                raise _ComposeError({"error": "unknown_skill", "name": name})
-            parent = str(newest[0]["version"])
-        expected = args.get("parent_version")
-        if expected and str(expected) != parent:
+        parent = str(args.get("parent_version") or "")
+        newest = library.newest_version(await self.lib.version_ids(self.tenant_id, name))
+        if newest is None:
+            raise _ComposeError({"error": "unknown_skill", "name": name})
+        if parent != newest:
             raise _ComposeError(
-                {"error": "parent_changed", "name": name, "expected": str(expected), "current": parent}
+                {"error": "parent_changed", "name": name, "expected": parent, "current": newest}
             )
         parent_row = await self.lib.get_version(self.tenant_id, name, parent) or {}
         file_rows = await self.lib.list_files(self.tenant_id, name, parent)
@@ -246,16 +231,6 @@ class _SkillAuthor:
 
         try:
             composed = await self.compose(args, update=update)
-            shown = self.previewed.pop(_call_key(args), None) if update else None
-            if shown is not None and shown != composed.parent:
-                raise _ComposeError(
-                    {
-                        "error": "parent_changed",
-                        "name": args.get("name"),
-                        "expected": shown,
-                        "current": composed.parent,
-                    }
-                )
             row = await library.save_draft(
                 self.settings,
                 self.tenant_id,
@@ -270,6 +245,7 @@ class _SkillAuthor:
                     principal=_principal(),
                 ),
                 parent=composed.parent,
+                expect_newest=composed.parent if update else library.MUST_NOT_EXIST,
                 max_pending=self.max_pending,
                 object_store=self.object_store,
             )
@@ -278,6 +254,9 @@ class _SkillAuthor:
         except library.SkillBundleInvalid as exc:
             issues = [{"path": i.path, "message": i.message} for i in exc.issues[:20]]
             return json.dumps({"error": exc.code, "issues": issues})
+        except library.SkillParentChanged as exc:
+            # Lost a race between the check in `_edit` and the save: same answer as the check.
+            return json.dumps({"error": exc.code, "name": args.get("name"), "detail": str(exc)})
         except library.SkillLibraryError as exc:
             return json.dumps({"error": exc.code, "detail": str(exc)})
         except Exception:
@@ -296,9 +275,6 @@ class _SkillAuthor:
             return json.dumps(exc.result)
         if not update or composed.parent is None:
             return composed.files["SKILL.md"]
-        self.previewed[_call_key(args)] = composed.parent
-        while len(self.previewed) > _PREVIEWS_KEPT:
-            self.previewed.popitem(last=False)
         parent_row = await self.lib.get_version(self.tenant_id, str(args.get("name")), composed.parent) or {}
         header = _preview_header(str(args.get("name")), composed, str(parent_row.get("source") or ""))
         return header + composed.files["SKILL.md"]
@@ -316,9 +292,11 @@ def make_skill_authoring_tools(
     """`create_skill` and `update_skill`, writing drafts to the tenant's skill library.
 
     A draft enters no catalog. With ``mode="publish"`` the draft is published at once if the
-    publish gate passes -- except an edit of a skill whose live version an operator wrote,
-    which always waits for review. If the gate refuses, the draft stays and the result says
-    why. Every refusal comes back as `{"error": ...}`, never as a raise into the loop.
+    publish gate passes -- except an edit of a version an operator wrote, which always waits
+    for review. `update_skill` edits the version its required `parent_version` names, which
+    must be the newest; that argument is what an approval of the call binds. If the gate
+    refuses, the draft stays and the result says why. Every refusal comes back as
+    `{"error": ...}`, never as a raise into the loop.
     """
     author = _SkillAuthor(
         settings,
@@ -353,7 +331,10 @@ def make_skill_authoring_tools(
         name="update_skill",
         description=(
             "Save a new version of a skill in this tenant's library with a new body (and "
-            f"optionally a new description); its other files are kept. {outcome}"
+            "optionally a new description); its other files are kept. Pass the skill's newest "
+            "version as parent_version (`newest_version` from list_skills or activate_skill, or "
+            "the `version` your last save returned); a stale one is refused with parent_changed "
+            f"and the current version. {outcome}"
         ),
         args=_UpdateSkillArgs,
         handler=_update,

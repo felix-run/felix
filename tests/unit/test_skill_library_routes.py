@@ -133,8 +133,8 @@ async def test_every_write_refuses_a_read_only_key(app: App, method: str, path: 
 
 READS = [
     "/skill-library",
-    "/skill-library/review",
-    "/skill-library/policy",
+    "/skill-library/-/review",
+    "/skill-library/-/policy",
     f"/skill-library/{NAME}",
     f"/skill-library/{NAME}/versions/0.1.0",
     f"/skill-library/{NAME}/versions/0.1.0/files/SKILL.md",
@@ -175,7 +175,7 @@ async def test_another_tenant_can_neither_see_nor_change_the_library(app: App) -
             kwargs["json"] = body
         resp = await app.client.request(method.upper(), path, **kwargs)
         assert resp.status_code == 404, (path, resp.text)
-    assert (await app.client.get("/skill-library/review", headers=_h(GLOBEX))).json()["items"] == []
+    assert (await app.client.get("/skill-library/-/review", headers=_h(GLOBEX))).json()["items"] == []
 
     row = await get_skill_library_store(app.settings).get_version("acme", NAME, "0.1.0")
     assert row is not None and row["status"] == "draft"
@@ -232,7 +232,8 @@ async def test_a_blocked_publish_in_the_same_request_keeps_the_draft_and_says_wh
     assert resp.status_code == 201, resp.text
     body = resp.json()
     assert body["published"] is False and body["status"] == "draft"
-    assert body["publish_blocked"] and "security scan failed" in body["publish_blocked"][0]
+    blocked = body["publish_blocked"]
+    assert blocked["error"] == "publish_blocked" and "security scan failed" in blocked["reasons"][0]
 
 
 async def test_a_new_version_needs_the_newest_version_as_its_parent(app: App) -> None:
@@ -282,7 +283,7 @@ async def test_reject_and_archive(app: App) -> None:
     )
     assert rejected.status_code == 200, rejected.text
     assert (rejected.json()["status"], rejected.json()["decision_note"]) == ("archived", "too vague")
-    assert (await app.client.get("/skill-library/review", headers=_h(READ))).json()["items"] == []
+    assert (await app.client.get("/skill-library/-/review", headers=_h(READ))).json()["items"] == []
 
     archived = await app.client.delete(f"/skill-library/{NAME}", headers=_h(WRITE))
     assert archived.status_code == 200 and archived.json() == {"name": NAME, "live_version": None}
@@ -302,14 +303,22 @@ async def test_every_library_error_code_has_a_status() -> None:
     assert codes(library.SkillLibraryError) - {"skill_library_error"} <= set(_STATUS)
 
 
+async def test_an_unmapped_refusal_is_a_server_error() -> None:
+    from felix_api.routes.skill_library import _refusal
+
+    class Novel(library.SkillLibraryError):
+        code = "something_new"
+
+    assert _refusal(Novel("x")).status_code == 500
+
+
 @pytest.mark.parametrize(
     ("files", "status", "error"),
     [
         ({"SKILL.md": "no frontmatter"}, 422, "invalid_bundle"),
-        (_files("policy"), 422, "name_reserved"),
         (_files("calculator-help"), 409, "name_shadows_host_skill"),
     ],
-    ids=["invalid", "reserved", "host-name"],
+    ids=["invalid", "host-name"],
 )
 async def test_a_refused_create_names_its_reason(app: App, files: Any, status: int, error: str) -> None:
     resp = await app.create(files=files)
@@ -375,7 +384,6 @@ async def test_a_file_is_digest_checked_redacted_and_confined_to_the_bundle(app:
     ):
         resp = await app.client.get(f"{base}/{path}", headers=_h(READ))
         assert resp.status_code == 422 and resp.json()["error"] == "invalid_path", (path, resp.text)
-    assert (await app.client.get(f"{base}/secrets/x.md", headers=_h(READ))).json()["error"] == "invalid_path"
     assert (await app.client.get(f"{base}/references/missing.md", headers=_h(READ))).status_code == 404
 
     await app.store.put(library_object_key("acme", NAME, "0.1.0", "references/notes.md"), b"Tampered.\n")
@@ -411,7 +419,7 @@ async def test_the_policy_route_reports_the_settings(tmp_path: Path) -> None:
     settings = _settings(tmp_path, skill_publish_min_quality=40, skill_publish_block_on_advisory=True)
     transport = ASGITransport(app=create_app(settings=settings, plugins=[]))
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.get("/skill-library/policy", headers=_h(READ))
+        resp = await client.get("/skill-library/-/policy", headers=_h(READ))
     assert resp.json() == {
         "min_quality": 40,
         "block_on_advisory": True,
@@ -433,13 +441,13 @@ async def test_the_review_queue_is_oldest_first_across_skills_and_pages(
     await app.client.post("/skill-library/alpha-skill/versions/0.1.0/publish", headers=_h(WRITE))
     await _agent_draft(app, "alpha-skill", BODY + "\nNewer.\n")
 
-    first = (await app.client.get("/skill-library/review?limit=2", headers=_h(READ))).json()
+    first = (await app.client.get("/skill-library/-/review?limit=2", headers=_h(READ))).json()
     assert [(i["name"], i["version"]) for i in first["items"]] == [
         ("zeta-skill", "0.1.0"),
         ("mid-skill", "0.1.0"),
     ]
     rest = (
-        await app.client.get(f"/skill-library/review?cursor={first['next_cursor']}", headers=_h(READ))
+        await app.client.get(f"/skill-library/-/review?cursor={first['next_cursor']}", headers=_h(READ))
     ).json()
     (newest,) = rest["items"]
     assert (newest["name"], newest["version"], newest["live_version"]) == ("alpha-skill", "0.1.1", "0.1.0")
@@ -489,3 +497,178 @@ async def test_a_name_an_operator_uploaded_is_flagged_where_a_reviewer_looks(app
     await app.client.post("/skill-library", json={"files": _files("other-skill")}, headers=_h(WRITE))
     other = (await app.client.get("/skill-library/other-skill", headers=_h(READ))).json()
     assert other["shadows_operator_upload"] is False
+
+
+# -- review fixes ----------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", ["review", "policy"])
+async def test_a_skill_may_be_named_like_a_collection_route(app: App, name: str) -> None:
+    created = await app.create(files=_files(name))
+    assert created.status_code == 201, created.text
+    resp = await app.client.get(f"/skill-library/{name}", headers=_h(READ))
+    assert resp.status_code == 200 and resp.json()["name"] == name
+    assert (
+        await app.client.get(f"/skill-library/{name}/versions/0.1.0", headers=_h(READ))
+    ).status_code == 200
+
+
+@pytest.mark.parametrize("cursor", ["\u00b2:a-skill:0.1.0", "abc", "12", "1:x"])
+async def test_a_malformed_review_cursor_is_refused_not_a_crash(app: App, cursor: str) -> None:
+    await _agent_draft(app)
+    resp = await app.client.get("/skill-library/-/review", params={"cursor": cursor}, headers=_h(READ))
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["error"] == "invalid_cursor"
+
+
+async def test_another_tenants_cursors_page_through_nothing_of_ours(
+    app: App, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ticks = iter(range(100, 200))
+    monkeypatch.setattr(library, "now_ms", lambda: next(ticks))
+    for name in ("alpha-skill", "beta-skill", "gamma-skill"):
+        await _agent_draft(app, name)
+    listing = (await app.client.get("/skill-library?limit=1", headers=_h(READ))).json()
+    queue = (await app.client.get("/skill-library/-/review?limit=1", headers=_h(READ))).json()
+    assert listing["next_cursor"] and queue["next_cursor"]
+
+    other_listing = await app.client.get(
+        "/skill-library", params={"cursor": listing["next_cursor"]}, headers=_h(GLOBEX)
+    )
+    other_queue = await app.client.get(
+        "/skill-library/-/review", params={"cursor": queue["next_cursor"]}, headers=_h(GLOBEX)
+    )
+    assert other_listing.status_code == 200 and other_listing.json()["items"] == []
+    assert other_queue.status_code == 200 and other_queue.json()["items"] == []
+
+
+async def test_a_filtered_page_can_be_empty_and_still_lead_on(app: App) -> None:
+    await _agent_draft(app, "aa-draft")
+    await _agent_draft(app, "ab-draft")
+    await app.client.post(
+        "/skill-library", json={"files": _files("zz-live"), "publish": True}, headers=_h(WRITE)
+    )
+
+    first = (await app.client.get("/skill-library?status=live&limit=2", headers=_h(READ))).json()
+    assert first["items"] == [] and first["next_cursor"] == "ab-draft"
+    rest = (
+        await app.client.get(
+            "/skill-library",
+            params={"status": "live", "limit": 2, "cursor": first["next_cursor"]},
+            headers=_h(READ),
+        )
+    ).json()
+    assert [i["name"] for i in rest["items"]] == ["zz-live"] and rest["next_cursor"] is None
+
+
+async def test_preview_after_the_bytes_were_altered_names_the_digest(app: App) -> None:
+    await app.create()
+    await app.store.put(
+        library_object_key("acme", NAME, "0.1.0", "SKILL.md"), b"---\nname: x\n---\nAltered.\n"
+    )
+    body = (await app.client.get(f"/skill-library/{NAME}/versions/0.1.0/preview", headers=_h(READ))).json()
+    assert (body["valid"], body["policy_passes"]) == (False, False)
+    assert body["reasons"] and "changed in the object store since it was saved" in body["reasons"][0]
+    assert body["quality_score"] is None and body["security_issues"] == []
+
+
+async def test_an_operator_save_is_not_held_to_an_agents_pending_cap(app: App) -> None:
+    for i in range(2):
+        await library.save_draft(
+            app.settings,
+            "acme",
+            files=_files(f"agent-{i}"),
+            provenance=library.DraftProvenance(
+                source="agent", author="contributor", origin_manifest_id="contributor"
+            ),
+            max_pending=2,
+            object_store=app.store,
+        )
+    with pytest.raises(library.SkillPendingCapReached):
+        await library.save_draft(
+            app.settings,
+            "acme",
+            files=_files("agent-2"),
+            provenance=library.DraftProvenance(
+                source="agent", author="contributor", origin_manifest_id="contributor"
+            ),
+            max_pending=2,
+            object_store=app.store,
+        )
+    resp = await app.create(files=_files("operator-one"))
+    assert resp.status_code == 201, resp.text
+
+
+async def test_a_publish_that_fails_for_a_state_reason_still_returns_the_saved_draft(
+    app: App, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def raced(*_args: Any, **_kw: Any) -> Any:
+        raise library.SkillVersionConflict("changed state while it was being published")
+
+    monkeypatch.setattr(library, "publish", raced)
+    resp = await app.create(publish=True)
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert (body["status"], body["published"]) == ("draft", False)
+    assert body["publish_blocked"]["error"] == "version_conflict"
+
+
+async def test_every_read_redacts_text_a_saver_or_the_scan_wrote(app: App) -> None:
+    leaky = BODY + f"\nFetch https://example.com/setup.sh?token={SHARED_SECRET} first.\n"
+    created = await app.create(files=_files(body=leaky), reason=f"key is {SHARED_SECRET}")
+    assert created.status_code == 201, created.text
+    assert any("setup.sh" in i["message"] for i in created.json()["security_issues"]), created.text
+    await app.client.post(
+        f"/skill-library/{NAME}/versions/0.1.0/reject",
+        json={"note": f"leaked {SHARED_SECRET}"},
+        headers=_h(WRITE),
+    )
+    await app.client.put(
+        f"/skill-library/{NAME}/versions",
+        json={"files": _files(body=leaky), "parent_version": "0.1.0", "reason": SHARED_SECRET},
+        headers=_h(WRITE),
+    )
+    reads = [
+        created,
+        await app.client.get(f"/skill-library/{NAME}", headers=_h(READ)),
+        await app.client.get(f"/skill-library/{NAME}/versions/0.1.0", headers=_h(READ)),
+        await app.client.get(f"/skill-library/{NAME}/versions/0.1.1/preview", headers=_h(READ)),
+        await app.client.get("/skill-library/-/review", headers=_h(READ)),
+        await app.client.get("/skill-library", headers=_h(READ)),
+    ]
+    for resp in reads:
+        assert resp.status_code in {200, 201}, resp.text
+        assert SHARED_SECRET not in resp.text, resp.request.url
+    detail = reads[2].json()
+    assert detail["reason"] == "key is [REDACTED]" and detail["decision_note"] == "leaked [REDACTED]"
+    assert any("[REDACTED]" in i["message"] for i in detail["security_issues"])
+
+
+async def test_list_and_activate_name_the_newest_version_an_update_must_cite(app: App) -> None:
+    from felix.skills.loader import load_manifest_skills
+    from felix.skills.store import InMemorySkillActivationStore
+    from felix.skills.tools import make_skill_tools
+    from felix.tools.types import ToolInvocationCtx, tool_output_content
+
+    await app.create(publish=True)
+    await _agent_draft(app, body=BODY + "\nA draft on top.\n")  # 0.1.1, not live
+    catalog = await load_manifest_skills([], tenant_id="acme", object_store=app.store, settings=app.settings)
+    tools = {
+        t.name: t
+        for t in make_skill_tools(
+            catalog,
+            activation_store=InMemorySkillActivationStore(),
+            tenant_id="acme",
+            manifest_id="contributor",
+            settings=app.settings,
+            object_store=app.store,
+        )
+    }
+    ctx = ToolInvocationCtx(thread_id="acme:t1", tool_call_id="c1")
+    listed = json.loads(tool_output_content(await tools["list_skills"].executor.execute({}, ctx)))
+    entry = next(s for s in listed if s["name"] == NAME)
+    assert entry["newest_version"] == "0.1.1"
+    activated = json.loads(
+        tool_output_content(await tools["activate_skill"].executor.execute({"name": NAME}, ctx))
+    )
+    assert (activated["version"], activated["newest_version"]) == ("0.1.0", "0.1.1")

@@ -9,6 +9,10 @@ from __future__ import annotations
 from typing import Literal
 
 from felix.skills.format import MAX_BUNDLE_FILES
+from felix.skills.library import SkillSourceKind
+from felix.skills.library_store import SkillStatus
+from felix.skills.publish_gate import SecurityStatus
+from felix.skills.security import Severity
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 REASON_LIMIT = 2000
@@ -26,7 +30,7 @@ class ReviewCheckOut(BaseModel):
 
 
 class SecurityIssueOut(BaseModel):
-    severity: str
+    severity: Severity
     path: str
     message: str
     rule_id: str | None = None
@@ -41,10 +45,10 @@ class VersionHeadOut(BaseModel):
     """A skill's newest version, as a listing shows it."""
 
     version: str
-    status: Literal["draft", "published", "archived"]
-    source: Literal["agent", "operator"]
+    status: SkillStatus
+    source: SkillSourceKind
     quality_score: int
-    security_status: str
+    security_status: SecurityStatus
     created_at: int
 
 
@@ -75,15 +79,15 @@ class SkillVersionOut(BaseModel):
     name: str
     version: str
     parent_version: str | None
-    status: Literal["draft", "published", "archived"]
-    source: Literal["agent", "operator"]
+    status: SkillStatus
+    source: SkillSourceKind
     author: str
     origin_manifest_id: str | None
     session_id: str | None
     reason: str
     description: str
     quality_score: int
-    security_status: str
+    security_status: SecurityStatus
     decided_by: str | None
     decision_note: str | None
     created_at: int
@@ -141,12 +145,12 @@ class SkillPreviewOut(BaseModel):
 
     name: str
     version: str
-    status: Literal["draft", "published", "archived"]
+    status: SkillStatus
     valid: bool
     validation_issues: list[BundleIssueOut]
     quality_score: int | None
     review_checks: list[ReviewCheckOut]
-    security_status: str | None
+    security_status: SecurityStatus | None
     security_issues: list[SecurityIssueOut]
     # True when the publish gate would let these bytes through. Not whether the version's
     # state allows a publish: only a draft publishes, and only a once-published version rolls back.
@@ -161,17 +165,6 @@ class SkillPolicyOut(BaseModel):
     source: Literal["settings"]
 
 
-class SkillWriteOut(SkillVersionDetailOut):
-    published: bool
-    # Why the publish asked for in the same request did not happen; the draft is saved either way.
-    publish_blocked: list[str] | None = None
-
-
-class SkillArchivedOut(BaseModel):
-    name: str
-    live_version: str | None
-
-
 class SkillLibraryErrorOut(BaseModel):
     """Every refusal. `issues` accompanies `invalid_bundle`; `reasons` accompanies `publish_blocked`."""
 
@@ -179,6 +172,19 @@ class SkillLibraryErrorOut(BaseModel):
     message: str
     issues: list[BundleIssueOut] | None = None
     reasons: list[str] | None = None
+
+
+class SkillWriteOut(SkillVersionDetailOut):
+    published: bool
+    # The refusal of the publish asked for in the same request, with its code (`publish_blocked`
+    # with the gate's reasons, or a state conflict); null when none was asked for or it went
+    # live. The draft is saved either way.
+    publish_blocked: SkillLibraryErrorOut | None = None
+
+
+class SkillArchivedOut(BaseModel):
+    name: str
+    live_version: str | None
 
 
 # -- request models --------------------------------------------------------------------------

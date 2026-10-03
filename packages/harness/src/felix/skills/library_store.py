@@ -59,6 +59,8 @@ class SkillStateConflict(Exception):
 class SkillLibraryStore(Protocol):
     async def get_skill(self, tenant_id: str, name: str) -> dict[str, Any] | None: ...
 
+    async def get_skills(self, tenant_id: str, names: Collection[str]) -> dict[str, dict[str, Any]]: ...
+
     async def list_skills(
         self, tenant_id: str, *, limit: int = MAX_LIBRARY_SKILLS, after: str | None = None
     ) -> list[dict[str, Any]]: ...
@@ -135,6 +137,10 @@ class InMemorySkillLibraryStore:
     async def get_skill(self, tenant_id: str, name: str) -> dict[str, Any] | None:
         row = self._skills.get((tenant_id, name))
         return copy.deepcopy(row) if row is not None else None
+
+    async def get_skills(self, tenant_id: str, names: Collection[str]) -> dict[str, dict[str, Any]]:
+        found = {n: self._skills.get((tenant_id, n)) for n in set(names)}
+        return {n: copy.deepcopy(r) for n, r in found.items() if r is not None}
 
     async def list_skills(
         self, tenant_id: str, *, limit: int = MAX_LIBRARY_SKILLS, after: str | None = None
@@ -304,6 +310,24 @@ class PostgresSkillLibraryStore:
         async with self._session(tenant_id) as db:
             row = await db.get(SkillRow, (tenant_id, name))
             return self._row(row) if row is not None else None
+
+    async def get_skills(self, tenant_id: str, names: Collection[str]) -> dict[str, dict[str, Any]]:
+        """Several skills by name in one query, for a page that names many."""
+        from sqlalchemy import select
+
+        from felix.db.models import SkillRow
+
+        if not names:
+            return {}
+        async with self._session(tenant_id) as db:
+            rows = (
+                await db.scalars(
+                    select(SkillRow).where(
+                        SkillRow.tenant_id == tenant_id, SkillRow.name.in_(list(set(names)))
+                    )
+                )
+            ).all()
+            return {r.name: self._row(r) for r in rows}
 
     async def list_skills(
         self, tenant_id: str, *, limit: int = MAX_LIBRARY_SKILLS, after: str | None = None

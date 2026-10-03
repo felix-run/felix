@@ -1348,6 +1348,11 @@
             "type": "string"
           },
           "security_status": {
+            "enum": [
+              "pass",
+              "advisory",
+              "fail"
+            ],
             "title": "Security Status",
             "type": "string"
           },
@@ -1530,6 +1535,12 @@
             "title": "Rule Id"
           },
           "severity": {
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ],
             "title": "Severity",
             "type": "string"
           }
@@ -1887,6 +1898,11 @@
           "security_status": {
             "anyOf": [
               {
+                "enum": [
+                  "pass",
+                  "advisory",
+                  "fail"
+                ],
                 "type": "string"
               },
               {
@@ -2111,6 +2127,11 @@
             "type": "array"
           },
           "security_status": {
+            "enum": [
+              "pass",
+              "advisory",
+              "fail"
+            ],
             "title": "Security Status",
             "type": "string"
           },
@@ -2271,6 +2292,11 @@
             "type": "string"
           },
           "security_status": {
+            "enum": [
+              "pass",
+              "advisory",
+              "fail"
+            ],
             "title": "Security Status",
             "type": "string"
           },
@@ -2412,16 +2438,12 @@
           "publish_blocked": {
             "anyOf": [
               {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
+                "$ref": "#/components/schemas/SkillLibraryErrorOut"
               },
               {
                 "type": "null"
               }
-            ],
-            "title": "Publish Blocked"
+            ]
           },
           "published": {
             "title": "Published",
@@ -2461,6 +2483,11 @@
             "type": "array"
           },
           "security_status": {
+            "enum": [
+              "pass",
+              "advisory",
+              "fail"
+            ],
             "title": "Security Status",
             "type": "string"
           },
@@ -2834,6 +2861,11 @@
             "type": "integer"
           },
           "security_status": {
+            "enum": [
+              "pass",
+              "advisory",
+              "fail"
+            ],
             "title": "Security Status",
             "type": "string"
           },
@@ -7751,7 +7783,7 @@
     },
     "/skill-library": {
       "get": {
-        "description": "The tenant's library skills by name, each with its live and newest version.\n\nPages by name. The filters apply to a page after it is read, so a filtered page can be\nshort; keep following `next_cursor` until it is null.",
+        "description": "The tenant's library skills by name, each with its live and newest version.\n\nPages by name. The filters apply to a page after it is read, so a filtered page can be\nshort -- even empty -- and still have a next one; keep following `next_cursor` until null.",
         "operationId": "list_library_skill_library_get",
         "parameters": [
           {
@@ -7805,7 +7837,7 @@
             "required": false,
             "schema": {
               "default": 50,
-              "maximum": 200,
+              "maximum": 100,
               "minimum": 1,
               "title": "Limit",
               "type": "integer"
@@ -7977,10 +8009,10 @@
         ]
       }
     },
-    "/skill-library/policy": {
+    "/skill-library/-/policy": {
       "get": {
         "description": "The gate every publish and rollback passes. From settings for now\n(`FELIX_SKILL_PUBLISH_MIN_QUALITY`, `FELIX_SKILL_PUBLISH_BLOCK_ON_ADVISORY`).",
-        "operationId": "publish_policy_skill_library_policy_get",
+        "operationId": "get_publish_policy_skill_library___policy_get",
         "responses": {
           "200": {
             "content": {
@@ -8043,16 +8075,16 @@
             "description": "Internal Server Error"
           }
         },
-        "summary": "Publish Policy",
+        "summary": "Get Publish Policy",
         "tags": [
           "Skill library"
         ]
       }
     },
-    "/skill-library/review": {
+    "/skill-library/-/review": {
       "get": {
         "description": "Every draft in the tenant awaiting a decision, oldest first, across skills.",
-        "operationId": "review_queue_skill_library_review_get",
+        "operationId": "review_queue_skill_library___review_get",
         "parameters": [
           {
             "in": "query",
@@ -8060,7 +8092,7 @@
             "required": false,
             "schema": {
               "default": 50,
-              "maximum": 200,
+              "maximum": 100,
               "minimum": 1,
               "title": "Limit",
               "type": "integer"

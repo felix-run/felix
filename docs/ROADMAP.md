@@ -337,7 +337,8 @@ First, because everything else governs it.
          per-tenant row; `submit_skill_feedback` and the feedback / eval tables come with 4.
       3. [~] `/skill-library` routes, `skills:write` scope, wire contract, e2e; with the
          review's carry-overs: an explicit pin to an operator upload wins over a library skill,
-         and `update_skill` previews name the parent and its inherited files by digest. Open:
+         and `update_skill` takes a required `parent_version` its approval binds, with the preview naming
+         the parent and its inherited files by digest. Open:
          the 1 MiB core body limit caps an uploaded bundle well under the library's 8 MiB.
       4. [ ] Worker tasks: improvement from feedback, baseline-vs-with-skill evals.
       5. [ ] felix-web: client, vendored skill-format, library / editor / diff / review queue /

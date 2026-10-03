@@ -21,7 +21,7 @@ import logging
 import re
 import time
 from collections.abc import Iterable, Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from functools import cmp_to_key
 from typing import Any, Literal
 
@@ -37,8 +37,7 @@ from felix.skills.library_store import (
     get_skill_library_store,
     library_object_key,
 )
-from felix.skills.review import review_skill_bundle
-from felix.skills.security import scan_skill_security
+from felix.skills.publish_gate import PublishPolicy, Verdict, assess, evaluate_files, publish_policy
 from felix.skills.semver import SemverBump, compare_semver, resolve_next_semver
 
 logger = logging.getLogger("felix.skills.library")
@@ -54,12 +53,16 @@ VERSION_RE = re.compile(r"^\d{1,6}\.\d{1,6}\.\d{1,6}\Z")
 # caller is told; each retry re-reads the versions and bumps past the winner.
 _SAVE_ATTEMPTS = 3
 _REASON_LIMIT = 2000
-# Path segments under `/skill-library` that are not skill names. Refused as names so every
-# skill stays addressable as `/skill-library/{name}`.
-RESERVED_NAMES = frozenset({"policy", "review"})
-# `expect_newest` when a save does not care what it builds on (the agent tools, which check
-# their own parent). Not a version: `VERSION_RE` never matches it.
-ANY_NEWEST = "*"
+
+
+class _MustNotExist:
+    """`save_draft(expect_newest=MUST_NOT_EXIST)`: the skill may hold no version yet."""
+
+    def __repr__(self) -> str:
+        return "MUST_NOT_EXIST"
+
+
+MUST_NOT_EXIST = _MustNotExist()
 
 
 class SkillLibraryError(Exception):
@@ -90,13 +93,6 @@ class SkillVersionConflict(SkillLibraryError):
     """The version exists, is not newer than every existing one, or changed state underneath."""
 
     code = "version_conflict"
-
-
-class SkillNameReserved(SkillLibraryError):
-    """The name is one the management API spells as a path (`/skill-library/policy`), so a
-    skill under it could never be read or archived by name over HTTP."""
-
-    code = "name_reserved"
 
 
 class SkillExists(SkillLibraryError):
@@ -232,23 +228,23 @@ async def shadows_operator_upload(
 ) -> bool:
     """True when an operator upload exists under ``name`` at a key the loader reads for a ref.
 
-    Probes the unversioned keys and, for each of ``versions``, the pinned ones
-    (`loader.operator_skill_keys`). Under the loader's precedence such an upload splits the
-    name: an unpinned ref gets the library's live version, a ref pinning the upload's version
+    Probes the unversioned keys and, for each of ``versions``, the pinned ones -- the keys
+    `loader._resolve_ref` reads, from the same helpers. Under that precedence such an upload
+    splits the name: an unpinned ref gets the library's live version, a ref pinning the upload's version
     gets the upload. A reviewer should know before publishing into that.
 
     Limited to the versions passed in -- the one being saved, or a skill's live and newest --
     because the object store has no listing: an upload at a version the library never held
     is not found here, though a ref pinning it is still served the upload.
     """
-    from felix.skills.loader import operator_skill_keys, safe_skill_key_parts
+    from felix.skills.loader import operator_skill_keys, pinned_operator_skill_keys, safe_skill_key_parts
 
     if not safe_skill_key_parts(name):
         return False
     keys = operator_skill_keys(tenant_id, name)
-    for version in {v for v in versions if v}:
+    for version in sorted({v for v in versions if v}):
         if safe_skill_key_parts(name, version):
-            keys += operator_skill_keys(tenant_id, name, version, pinned_only=True)
+            keys += pinned_operator_skill_keys(tenant_id, name, version)
     store = _object_store(settings, object_store)
     for key in keys:
         try:
@@ -272,18 +268,6 @@ def _next_version(newest: str | None, *, explicit: str | None, bump: SemverBump)
             raise SkillVersionConflict(f"version {explicit} must be newer than {newest}")
         return explicit
     return resolve_next_semver(newest, bump=bump)
-
-
-def _assess(files: Mapping[str, str], name: str) -> dict[str, Any]:
-    """Review and scan in one call, so one `to_thread` hop covers both."""
-    review = review_skill_bundle(files, name)
-    scan = scan_skill_security(files)
-    return {
-        "quality_score": review.score,
-        "review_checks": [asdict(c) for c in review.checks],
-        "security_status": scan.status,
-        "security_issues": [asdict(i) for i in scan.issues],
-    }
 
 
 def _stored_bytes(path: str, content: str) -> bytes:
@@ -312,7 +296,7 @@ async def _reserve(
     *,
     explicit: str | None,
     bump: SemverBump,
-    expect_newest: str | None,
+    expect_newest: str | _MustNotExist | None,
 ) -> dict[str, Any]:
     """Insert the version row under the next free version; the primary key settles a race.
 
@@ -326,9 +310,10 @@ async def _reserve(
                 f"{row['name']} already has {len(existing)} versions (limit {MAX_VERSIONS_PER_SKILL})"
             )
         newest = newest_version(existing)
-        if expect_newest != ANY_NEWEST and newest != expect_newest:
-            if expect_newest is None:
+        if expect_newest is MUST_NOT_EXIST:
+            if newest is not None:
                 raise SkillExists(f"{row['name']} is already in the library")
+        elif expect_newest is not None and newest != expect_newest:
             raise SkillParentChanged(
                 f"{row['name']} is at {newest or 'no version'}, not {expect_newest}; reload and edit that"
             )
@@ -379,7 +364,7 @@ async def save_draft(
     version: str | None = None,
     bump: SemverBump = "patch",
     max_pending: int | None = None,
-    expect_newest: str | None = ANY_NEWEST,
+    expect_newest: str | _MustNotExist | None = None,
     object_store: Any | None = None,
 ) -> dict[str, Any]:
     """Validate, review and scan a bundle, then save it as a new immutable draft.
@@ -389,9 +374,9 @@ async def save_draft(
     save is always newer than everything saved before it). ``max_pending`` caps how many
     undecided agent drafts one origin manifest may hold (`_check_pending`).
 
-    ``expect_newest`` is optimistic concurrency for an editor: the newest version the caller
-    saw, or None for "this skill must not exist yet". A save made against anything else is
-    refused (`SkillParentChanged`, `SkillExists`). `ANY_NEWEST` skips the check.
+    ``expect_newest`` is optimistic concurrency: the newest version the caller saw, or
+    `MUST_NOT_EXIST` for a create. A save made against anything else is refused
+    (`SkillParentChanged`, `SkillExists`). None skips the check.
 
     The returned row carries ``shadows_operator_upload`` (`shadows_operator_upload`), which
     the audit event records too. It is a warning, not a refusal: the loader decides who
@@ -401,8 +386,6 @@ async def save_draft(
     if not validation.valid or validation.frontmatter is None:
         raise SkillBundleInvalid(validation.errors)
     skill_name = validation.frontmatter.name
-    if skill_name in RESERVED_NAMES:
-        raise SkillNameReserved(f"{skill_name!r} is reserved by the skill-library API; choose another name")
     store = _object_store(settings, object_store)
     if await host_owns(settings, tenant_id, skill_name, store):
         raise SkillNameShadowed(f"{skill_name!r} is a host skill; the library cannot replace it")
@@ -422,7 +405,7 @@ async def save_draft(
         "session_id": provenance.session_id,
         "reason": (provenance.reason or "")[:_REASON_LIMIT],
         "description": validation.frontmatter.description,
-        **await asyncio.to_thread(_assess, files, skill_name),
+        **(await asyncio.to_thread(assess, files, skill_name)).as_row(),
         "created_at": now_ms(),
     }
     row = await _reserve(
@@ -511,57 +494,27 @@ async def read_version_file(
     return _checked(path, await store.get(library_object_key(tenant_id, name, version, path)), meta["sha256"])
 
 
-def _policy_reasons(settings: Settings, assessment: Mapping[str, Any]) -> list[str]:
-    reasons: list[str] = []
-    status = assessment["security_status"]
-    if status == "fail":
-        found = [i["message"] for i in assessment["security_issues"] if i["severity"] in {"critical", "high"}]
-        reasons.append("security scan failed: " + "; ".join(found[:5]))
-    elif status == "advisory" and settings.skill_publish_block_on_advisory:
-        reasons.append("security scan is advisory and FELIX_SKILL_PUBLISH_BLOCK_ON_ADVISORY is set")
-    floor = int(settings.skill_publish_min_quality or 0)
-    if assessment["quality_score"] < floor:
-        reasons.append(f"quality score {assessment['quality_score']} is below the minimum {floor}")
-    return reasons
-
-
-def publish_policy(settings: Settings) -> dict[str, Any]:
-    """The gate a publish passes, as configured. Settings-wide for now; per tenant later."""
-    return {
-        "min_quality": int(settings.skill_publish_min_quality or 0),
-        "block_on_advisory": bool(settings.skill_publish_block_on_advisory),
-        # Not a setting: a failing scan blocks every publish, whoever asks.
-        "security_fail_blocks": True,
-        "source": "settings",
-    }
-
-
 async def evaluate_version(
-    settings: Settings, tenant_id: str, name: str, version: str, *, object_store: Any | None = None
-) -> dict[str, Any]:
-    """Re-read a saved version, re-validate, re-review and re-scan it, and apply the policy.
+    settings: Settings,
+    tenant_id: str,
+    name: str,
+    version: str,
+    *,
+    policy: PublishPolicy | None = None,
+    object_store: Any | None = None,
+) -> Verdict:
+    """Re-read a saved version against its digests and judge it as a publish would be.
 
-    What `_gate` decides a publish on, returned rather than raised, so a reviewer can see the
-    verdict without causing one. Changes nothing. ``reasons`` empty means a publish of these
-    bytes would pass the gate today -- not that the version is in a state to be published.
+    What `_gate` decides on, returned rather than raised, so a reviewer can see the verdict
+    without causing one. Changes nothing. Bytes that no longer match their digests are a
+    verdict too: invalid, with the mismatch as its reason.
     """
+    policy = policy or publish_policy(settings, tenant_id)
     try:
         files = await read_version_files(settings, tenant_id, name, version, object_store=object_store)
     except SkillVersionCorrupt as exc:
-        return {"valid": False, "validation_issues": [], "assessment": None, "reasons": [str(exc)]}
-    validation = await asyncio.to_thread(validate_skill_bundle, files, name)
-    assessment = await asyncio.to_thread(_assess, files, name)
-    issues = [{"path": i.path, "message": i.message} for i in validation.errors]
-    if not validation.valid:
-        reasons = [f"bundle no longer validates: {i['path']}: {i['message']}" for i in issues]
-    else:
-        reasons = _policy_reasons(settings, assessment)
-    return {
-        "valid": validation.valid,
-        "validation_issues": issues,
-        "assessment": assessment,
-        "reasons": reasons,
-    }
+        return Verdict(valid=False, reasons=[str(exc)])
+    return await asyncio.to_thread(evaluate_files, files, name, policy)
 
 
 async def _gate(settings: Settings, tenant_id: str, row: Mapping[str, Any], object_store: Any) -> None:
@@ -573,8 +526,8 @@ async def _gate(settings: Settings, tenant_id: str, row: Mapping[str, Any], obje
     verdict = await evaluate_version(
         settings, tenant_id, str(row["name"]), str(row["version"]), object_store=object_store
     )
-    if verdict["reasons"]:
-        raise SkillPublishBlocked(verdict["reasons"])
+    if not verdict.passes:
+        raise SkillPublishBlocked(verdict.reasons)
 
 
 # What each way of going live may start from. A publish takes a draft; a rollback takes a
@@ -679,14 +632,12 @@ async def archive_skill(settings: Settings, tenant_id: str, name: str, *, by: st
 
 
 __all__ = [
-    "ANY_NEWEST",
-    "RESERVED_NAMES",
+    "MUST_NOT_EXIST",
     "VERSION_RE",
     "DraftProvenance",
     "SkillBundleInvalid",
     "SkillExists",
     "SkillLibraryError",
-    "SkillNameReserved",
     "SkillNameShadowed",
     "SkillNotFound",
     "SkillParentChanged",
@@ -700,7 +651,6 @@ __all__ = [
     "host_owns",
     "newest_version",
     "publish",
-    "publish_policy",
     "read_version_file",
     "read_version_files",
     "reject",

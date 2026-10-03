@@ -258,7 +258,12 @@ async def test_update_skill_keeps_the_bundle_and_records_the_parent(
     tools = _authoring(settings, store)
     result = await _call(
         tools["update_skill"],
-        {"name": "invoice-triage", "body": BODY + "\n3. Log it.\n", "reason": "missed a step"},
+        {
+            "name": "invoice-triage",
+            "body": BODY + "\n3. Log it.\n",
+            "reason": "missed a step",
+            "parent_version": "0.1.0",
+        },
     )
 
     assert (result["status"], result["version"]) == ("draft", "0.1.1")
@@ -282,13 +287,18 @@ async def test_the_tools_refuse_in_their_result_not_by_raising(
     assert host["error"] == "name_shadows_host_skill"
     invalid = await _call(create, {"name": "Not_A_Name", "description": "d", "body": BODY, "reason": "r"})
     assert invalid["error"] == "invalid_bundle" and invalid["issues"]
-    unknown = await _call(tools["update_skill"], {"name": "nope", "body": BODY, "reason": "r"})
+    unknown = await _call(
+        tools["update_skill"], {"name": "nope", "body": BODY, "reason": "r", "parent_version": "0.1.0"}
+    )
     assert unknown["error"] == "unknown_skill"
 
     await _call(create, {"name": "invoice-triage", "description": "d", "body": BODY, "reason": "r"})
     again = await _call(create, {"name": "invoice-triage", "description": "d", "body": BODY, "reason": "r"})
     assert again["error"] == "skill_exists"
-    capped = await _call(tools["update_skill"], {"name": "invoice-triage", "body": BODY, "reason": "r"})
+    capped = await _call(
+        tools["update_skill"],
+        {"name": "invoice-triage", "body": BODY, "reason": "r", "parent_version": "0.1.0"},
+    )
     assert capped["error"] == "pending_cap_reached"
 
 
@@ -308,7 +318,13 @@ async def test_the_approval_preview_is_the_skill_md_that_would_be_saved(
     update_preview = tools["update_skill"].approval_preview
     assert update_preview is not None
     rendered = await update_preview(
-        {"name": "invoice-triage", "body": "New body.", "reason": "r", "description": "New."}
+        {
+            "name": "invoice-triage",
+            "body": "New body.",
+            "reason": "r",
+            "description": "New.",
+            "parent_version": "0.1.0",
+        }
     )
     assert "description: New." in rendered and rendered.rstrip().endswith("New body.")
     assert await get_skill_library_store(settings).version_ids("acme", "invoice-triage") == ["0.1.0"], (
@@ -590,7 +606,8 @@ async def test_publish_mode_never_auto_publishes_an_edit_of_an_operators_skill(
     await _published(settings, store)  # written by an operator
     tools = _authoring(settings, store, mode="publish")
     result = await _call(
-        tools["update_skill"], {"name": "invoice-triage", "body": BODY + "\n3. More.\n", "reason": "r"}
+        tools["update_skill"],
+        {"name": "invoice-triage", "body": BODY + "\n3. More.\n", "reason": "r", "parent_version": "0.1.0"},
     )
     assert result["status"] == "draft" and "review_required" in result
     skill = await get_skill_library_store(settings).get_skill("acme", "invoice-triage")
@@ -711,7 +728,8 @@ async def test_publish_mode_holds_an_edit_of_an_operator_draft_that_never_went_l
     )
     tools = _authoring(settings, store, mode="publish")
     result = await _call(
-        tools["update_skill"], {"name": "invoice-triage", "body": BODY + "\n3. More.\n", "reason": "r"}
+        tools["update_skill"],
+        {"name": "invoice-triage", "body": BODY + "\n3. More.\n", "reason": "r", "parent_version": "0.1.0"},
     )
     assert result["status"] == "draft" and "review_required" in result
     skill = await get_skill_library_store(settings).get_skill("acme", "invoice-triage")
@@ -726,23 +744,17 @@ async def test_the_update_preview_names_the_parent_and_each_inherited_file_by_di
     await _published(settings, store, **{"references/notes.md": "Keep me.\n"})
     preview_fn = _authoring(settings, store)["update_skill"].approval_preview
     assert preview_fn is not None
-    rendered = await preview_fn({"name": "invoice-triage", "body": "New body.", "reason": "r"})
+    rendered = await preview_fn(
+        {"name": "invoice-triage", "body": "New body.", "reason": "r", "parent_version": "0.1.0"}
+    )
     digest = hashlib.sha256(b"Keep me.\n").hexdigest()
     assert "edited from 0.1.0 (written by operator)" in rendered
     assert f"references/notes.md  sha256:{digest}" in rendered
     assert rendered.rstrip().endswith("New body.")
 
 
-async def test_an_update_whose_parent_moved_after_its_preview_is_refused(
-    settings: Settings, store: MemoryObjectStore
-) -> None:
-    await _published(settings, store)
-    tools = _authoring(settings, store)
-    args = {"name": "invoice-triage", "body": "New body.", "reason": "r"}
-    preview_fn = tools["update_skill"].approval_preview
-    assert preview_fn is not None
-    await preview_fn(dict(args))  # what the approver read: built on 0.1.0
-
+async def _move_parent(settings: Settings, store: MemoryObjectStore) -> None:
+    """An operator saves and publishes 0.1.1 over the 0.1.0 an approver was shown."""
     moved = await library.save_draft(
         settings,
         "acme",
@@ -753,9 +765,67 @@ async def test_an_update_whose_parent_moved_after_its_preview_is_refused(
     )
     await library.publish(settings, "acme", "invoice-triage", moved["version"], by="ops", object_store=store)
 
-    result = await _call(tools["update_skill"], args)
+
+async def test_an_update_whose_parent_moved_after_its_preview_is_refused(
+    settings: Settings, store: MemoryObjectStore
+) -> None:
+    await _published(settings, store)
+    args = {"name": "invoice-triage", "body": "New body.", "reason": "r", "parent_version": "0.1.0"}
+    preview_fn = _authoring(settings, store)["update_skill"].approval_preview
+    assert preview_fn is not None
+    assert "edited from 0.1.0" in await preview_fn(dict(args))  # what the approver read
+
+    await _move_parent(settings, store)
+    # Fresh tools, as a resumed fiber or another replica would build them: nothing carries
+    # over from the preview but the arguments, and they name the parent.
+    result = await _call(_authoring(settings, store)["update_skill"], args)
     assert result.get("error") == "parent_changed", result
     assert (result["expected"], result["current"]) == ("0.1.0", "0.1.1")
+    assert await get_skill_library_store(settings).version_ids("acme", "invoice-triage") == ["0.1.0", "0.1.1"]
+
+
+async def test_an_approved_update_cannot_run_on_a_parent_that_moved(settings: Settings) -> None:
+    """Through the governance stack: a grant found by `find_approved` (the path a resumed
+    fiber or a retry takes, with no preview in between) binds `parent_version`, because the
+    call signature is a hash of the arguments."""
+    import hashlib
+
+    from felix.approvals import store as approvals_store
+    from felix.context import AuthContext, RequestContext, async_run_with_context
+    from felix.tools.provider import InMemoryToolProvider
+
+    store = MemoryObjectStore()
+    await _published(settings, store)
+    agent = await build_agent(
+        _spec(
+            skill_authoring={"enabled": True},
+            approvals=[{"id": "author", "tools": ["create_skill", "update_skill"], "ttl_seconds": 60}],
+        ),
+        deps=BuildDeps(tools=InMemoryToolProvider(), settings=settings, tenant_id="acme", object_store=store),
+        settings=settings,
+    )
+    update = next(t for t in agent.tools if t.name == "update_skill")
+    args = {"name": "invoice-triage", "body": "New body.", "reason": "r", "parent_version": "0.1.0"}
+    sig = hashlib.sha256(json.dumps(args, sort_keys=True, default=str).encode()).hexdigest()[:32]
+    pending = await approvals_store.create_pending(
+        settings,
+        "acme",
+        manifest_id="x",
+        tool_name="update_skill",
+        call_signature=sig,
+        args=args,
+        principal_subj="alice",
+        rule_id="author",
+        ttl_seconds=60,
+    )
+    await approvals_store.decide(settings, "acme", str(pending["id"]), decision="approved", decided_by="ops")
+
+    await _move_parent(settings, store)
+    auth = AuthContext(principal_sub="alice", tenant_id="acme", anonymous=False)
+    async with async_run_with_context(RequestContext(settings=settings, auth=auth, manifest_id="x")):
+        out = await update.executor.execute(args, ToolInvocationCtx(thread_id="acme:t1", tool_call_id="c1"))
+    result = json.loads(tool_output_content(out))
+    assert result.get("error") == "parent_changed", result
     assert await get_skill_library_store(settings).version_ids("acme", "invoice-triage") == ["0.1.0", "0.1.1"]
 
 
@@ -792,3 +862,14 @@ async def test_the_draft_audit_names_who_a_fiber_acts_for(
     events, _ = await audit_store.list_events(settings, "acme", event_type="skill_draft_saved", limit=10)
     (event,) = events
     assert (event.get("payload_json") or {}).get("principal") == "alice"
+
+
+async def test_an_unversioned_upload_does_not_answer_a_pin(
+    settings: Settings, store: MemoryObjectStore
+) -> None:
+    """Only an upload *at* the pinned version beats the library; the unversioned key never
+    does, so an upload made after the library skill went live cannot take a pinned ref."""
+    await _published(settings, store, name="runbook")
+    await store.put("skills/acme/runbook/SKILL.md", OPERATOR_RUNBOOK)
+    pinned = (await _catalog(settings, store, [{"name": "runbook", "version": "0.1.0"}])).get("runbook")
+    assert pinned is not None and pinned.source == "library"
