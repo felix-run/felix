@@ -408,3 +408,62 @@ async def test_the_review_queue_pages_one_at_a_time_across_a_millisecond(store_s
         seen.append((row["name"], row["version"]))
         after = (row["created_at"], row["name"], row["version"])
     assert seen == [("a-skill", "0.1.0"), ("a-skill", "0.1.1"), ("b-skill", "0.1.0"), ("d-skill", "0.1.0")]
+
+
+@parametrized
+async def test_a_publish_can_require_the_live_version_it_saw(store_settings: Any) -> None:
+    from felix.skills.library_store import SkillLiveMismatch
+
+    store = get_skill_library_store(store_settings)
+    for n, version in enumerate(("0.1.0", "0.1.1", "0.1.2"), start=1):
+        await _save(store, version, at=n)
+
+    # Expected "nothing live", and nothing is: it lands.
+    assert (
+        await store.publish(
+            "acme", "invoice-triage", "0.1.0", from_statuses={"draft"}, by="a", at=10, expected_live=None
+        )
+        is None
+    )
+    # Expected nothing live, but 0.1.0 is: refused, and nothing moved.
+    with pytest.raises(SkillLiveMismatch):
+        await store.publish(
+            "acme", "invoice-triage", "0.1.1", from_statuses={"draft"}, by="b", at=11, expected_live=None
+        )
+    with pytest.raises(SkillLiveMismatch):
+        await store.publish(
+            "acme", "invoice-triage", "0.1.1", from_statuses={"draft"}, by="b", at=11, expected_live="0.1.2"
+        )
+    skill = await store.get_skill("acme", "invoice-triage")
+    assert skill is not None and skill["live_version"] == "0.1.0"
+    assert (await store.get_version("acme", "invoice-triage", "0.1.1") or {})["status"] == "draft"
+    # The right expectation lands; saying nothing lands whatever is live.
+    assert (
+        await store.publish(
+            "acme", "invoice-triage", "0.1.1", from_statuses={"draft"}, by="b", at=12, expected_live="0.1.0"
+        )
+        == "0.1.0"
+    )
+    assert (
+        await store.publish("acme", "invoice-triage", "0.1.2", from_statuses={"draft"}, by="c", at=13)
+        == "0.1.1"
+    )
+
+
+@parametrized
+async def test_buildable_versions_leave_out_rejected_drafts_only(store_settings: Any) -> None:
+    store = get_skill_library_store(store_settings)
+    for n, version in enumerate(("0.1.0", "0.1.1", "0.1.2", "0.1.3"), start=1):
+        await _save(store, version, at=n)
+    await store.publish("acme", "invoice-triage", "0.1.0", from_statuses={"draft"}, by="o", at=10)
+    await store.publish(
+        "acme", "invoice-triage", "0.1.1", from_statuses={"draft"}, by="o", at=11
+    )  # 0.1.0 archived, once live
+    await store.reject("acme", "invoice-triage", "0.1.2", by="o", note="bad script", at=12)
+    await _save(store, "0.1.0", at=1, tenant="globex")
+
+    assert await store.buildable_versions("acme", ["invoice-triage", "nope"]) == {
+        "invoice-triage": ["0.1.0", "0.1.1", "0.1.3"]
+    }
+    assert await store.buildable_versions("globex", ["invoice-triage"]) == {"invoice-triage": ["0.1.0"]}
+    assert await store.buildable_versions("acme", []) == {}

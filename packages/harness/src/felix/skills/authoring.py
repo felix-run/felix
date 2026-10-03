@@ -188,19 +188,21 @@ class _SkillAuthor:
         return await self._edit(name, args, body)
 
     async def _edit(self, name: str, args: ToolInput, body: str) -> _Composed:
-        """An edit of ``parent_version``, which must be the newest version. Checked here for the
+        """An edit of ``parent_version``, which must be the newest version that was not
+        rejected: a rejected draft's files must not ride into the next one. Checked here for the
         preview and again, atomically with the save, by `save_draft(expect_newest=...)`."""
         from felix.skills import library
         from felix.skills.format import parse_skill_md, serialize_skill_md
+        from felix.skills.library_store import is_rejected
 
         parent = str(args.get("parent_version") or "")
-        newest = library.newest_version(await self.lib.version_ids(self.tenant_id, name))
+        newest = (await library.newest_buildable_versions(self.settings, self.tenant_id, [name])).get(name)
         if newest is None:
             raise _ComposeError({"error": "unknown_skill", "name": name})
         if parent != newest:
-            raise _ComposeError(
-                {"error": "parent_changed", "name": name, "expected": parent, "current": newest}
-            )
+            named = await self.lib.get_version(self.tenant_id, name, parent) if parent else None
+            error = "parent_rejected" if named is not None and is_rejected(named) else "parent_changed"
+            raise _ComposeError({"error": error, "name": name, "expected": parent, "current": newest})
         parent_row = await self.lib.get_version(self.tenant_id, name, parent) or {}
         file_rows = await self.lib.list_files(self.tenant_id, name, parent)
         files = await library.read_version_files(
@@ -385,6 +387,17 @@ class _FeedbackArgs(BaseModel):
     )
 
 
+def _feedback_result(row: dict[str, Any]) -> dict[str, Any]:
+    """What `submit_skill_feedback` tells the model about the feedback it filed."""
+    return {
+        "status": "pending",
+        "feedback_id": row["id"],
+        "name": row["name"],
+        "target_version": row["target_version"],
+        "detail": "An operator reads feedback; the skill is unchanged until a person accepts it.",
+    }
+
+
 def _feedback_preview(name: str, version: str | None, args: ToolInput) -> str:
     lines = [f"submit_skill_feedback {name}@{version or '?'}", "", str(args.get("body") or "")]
     if args.get("suggested_patch"):
@@ -430,27 +443,18 @@ def make_skill_feedback_tool(
                 tenant_id,
                 name=skill.name,
                 body=args.body,
-                source="agent",
-                author=manifest_id,
-                principal=_principal(),
+                provenance=feedback.FeedbackProvenance(
+                    source="agent", author=manifest_id, principal=_principal(), max_pending=max_pending
+                ),
                 suggested_patch=args.suggested_patch,
                 target_version=skill.version,
-                max_pending=max_pending,
             )
         except library.SkillLibraryError as exc:
             return json.dumps({"error": exc.code, "detail": str(exc)})
         except Exception:
             logger.warning("skill feedback failed for %s", skill.name, exc_info=True)
             return json.dumps({"error": "feedback_failed", "name": skill.name})
-        return json.dumps(
-            {
-                "status": "pending",
-                "feedback_id": row["id"],
-                "name": row["name"],
-                "target_version": row["target_version"],
-                "detail": "An operator reads feedback; the skill is unchanged until a person accepts it.",
-            }
-        )
+        return json.dumps(_feedback_result(row))
 
     tool = define_tool(
         name="submit_skill_feedback",

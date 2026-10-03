@@ -6,13 +6,17 @@ the judge scores that" without caring how the calls interleave. Every call's mes
 which is the only evidence of what a model was *shown* -- the fencing assertions read them.
 
 A route that runs out of turns raises instead of inventing one, as `tests/e2e/conftest.py`
-does: an invented `ok` would read as a plausible answer and a test would pass on it.
+does: an invented `ok` would read as a plausible answer and a test would pass on it. The jobs
+catch every exception and record it on their row, so the raise alone could pass for a job that
+failed on purpose; `exhausted` records each one, and `scripted_routes` fails the test at teardown
+when it is not empty.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
@@ -56,6 +60,17 @@ class ScriptedRoutes:
     queues: dict[str, list[ScriptedTurn]] = field(default_factory=dict)
     #: `(route, messages)` for every call, in order.
     calls: list[tuple[str, list[Any]]] = field(default_factory=list)
+    #: Routes that were called with no turn left, in order.
+    exhausted: list[str] = field(default_factory=list)
+    #: `(route, spec)` for every client built.
+    specs: list[tuple[str, Any]] = field(default_factory=list)
+    #: `(route, n) -> coroutine function`, run just before the route's nth call (1-based).
+    hooks: dict[tuple[str, int], Callable[[], Awaitable[Any]]] = field(default_factory=dict)
+    #: Seconds each call to a route sleeps before answering.
+    delays: dict[str, float] = field(default_factory=dict)
+
+    def before(self, route: str, n: int, hook: Callable[[], Awaitable[Any]]) -> None:
+        self.hooks[(route, n)] = hook
 
     def push(self, route: str, *turns: ScriptedTurn | str) -> None:
         self.queues.setdefault(route, []).extend(
@@ -74,9 +89,17 @@ class ScriptedRoutes:
             queue = self.queues.setdefault(model_id, [])
             client = ScriptedClient(model_id=model_id, route=route, script=queue)
             inner, recorded = client.chat, self.calls
+            self.specs.append((model_id, spec))
 
             async def chat(messages: Any, tools: Any, opts: Any = None) -> Any:
+                n = 1 + sum(1 for r, _ in recorded if r == model_id)
+                hook = self.hooks.pop((model_id, n), None)
+                if hook is not None:
+                    await hook()
+                if self.delays.get(model_id):
+                    await asyncio.sleep(self.delays[model_id])
                 if not queue:
+                    self.exhausted.append(model_id)
                     raise AssertionError(f"route {model_id} ran out of scripted turns")
                 recorded.append((model_id, list(messages)))
                 return await inner(messages, tools, opts)
@@ -101,6 +124,7 @@ def scripted_routes() -> Iterator[ScriptedRoutes]:
     finally:
         registry._providers.clear()
         registry._providers.update(saved)
+    assert not routes.exhausted, f"a model route was called with no scripted turn left: {routes.exhausted}"
 
 
 def routed_settings(tmp_path: Any, **kw: Any) -> Settings:
@@ -123,6 +147,13 @@ def object_store(settings: Settings) -> Any:
     from felix.storage import get_object_store
 
     return get_object_store(settings)
+
+
+async def run_jobs(settings: Settings) -> dict[str, int]:
+    """One worker sweep, the way `skill_jobs` runs it."""
+    from felix.skills.jobs import run_skill_jobs
+
+    return await run_skill_jobs(settings, object_store=object_store(settings))
 
 
 async def published(settings: Settings, files: dict[str, str] | None = None, tenant: str = TENANT) -> str:
@@ -155,6 +186,7 @@ __all__ = [
     "object_store",
     "published",
     "routed_settings",
+    "run_jobs",
     "scripted_routes",
     "skill_md",
 ]

@@ -35,6 +35,7 @@ from felix.observability.metrics import record_counter
 from felix.observability.tracing import manifest_span
 from felix.patterns.registry import get_pattern, honours_output_schema, list_patterns
 from felix.patterns.types import Agent
+from felix.skills.types import SkillCatalog
 from felix.tools.executor import wrap_executor
 from felix.tools.provider import ToolProvider
 from felix.tools.types import (
@@ -1444,7 +1445,7 @@ def _warn_policies_cannot_be_satisfied(m: Manifest, settings: Any) -> None:
 
 
 def _bind_skill_authoring(
-    resolved: list[Tool], m: Manifest, deps: BuildDeps, tenant_id: str, catalog: Any
+    resolved: list[Tool], m: Manifest, deps: BuildDeps, tenant_id: str, catalog: SkillCatalog
 ) -> None:
     """`create_skill` / `update_skill` / `submit_skill_feedback`, bound before the governance
     block like every tool, so an approvals rule on them holds the call until a person has read

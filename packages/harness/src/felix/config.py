@@ -380,6 +380,10 @@ class Settings(BaseSettings):
     skill_publish_min_quality: int = Field(default=0, ge=0, le=100)
     # Refuse a version whose scan found only medium findings (an `advisory`), not just a `fail`.
     skill_publish_block_on_advisory: bool = False
+    # Require a succeeded evaluation before any publish, and optionally a minimum uplift (-100..100;
+    # unset = no floor). A tenant's policy can tighten all four of these and loosen none.
+    skill_publish_require_eval: bool = False
+    skill_publish_min_eval_uplift: int | None = Field(default=None, ge=-100, le=100)
     # The `FELIX_MODEL_ROUTES` id that rewrites a skill from accepted feedback
     # (`felix/skills/improve.py`); empty is `FELIX_DEFAULT_MODEL_ID`. The rewrite is saved as a
     # draft for review, never published.
@@ -391,6 +395,16 @@ class Settings(BaseSettings):
     # Scenarios one evaluation runs at most. Each is four model calls (two answers, two scores),
     # so this bounds what one queued evaluation can spend.
     skill_eval_max_scenarios: int = Field(default=10, ge=1, le=10)
+    # Output-token caps per call: the answers, generated scenarios and judge scores of an evaluation,
+    # and the rewritten SKILL.md of an improvement.
+    skill_eval_max_tokens: int = Field(default=2048, ge=64, le=32000)
+    skill_improve_max_tokens: int = Field(default=8192, ge=256, le=64000)
+    # Wall-clock limit on one improvement or evaluation; a job past it ends `failed`.
+    skill_job_deadline_seconds: int = Field(default=1200, ge=1, le=86400)
+    # Per tenant: evaluations and accepted improvements queued or running at once, and created
+    # per UTC day. Past either, queueing one is refused (429 `skill_jobs_cap_reached`).
+    skill_jobs_max_queued: int = Field(default=20, ge=1, le=10000)
+    skill_jobs_daily_limit: int = Field(default=200, ge=1, le=100000)
     memory_embedding_model: str = "bge-base-en-v1.5"
     memory_recall_limit: int = 8
 

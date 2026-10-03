@@ -341,12 +341,13 @@ async def test_the_audit_export_binds_the_tenant_on_every_read_itself(
 async def test_the_skill_job_sweeps_cross_tenants_and_the_reads_do_not(rls_settings: Any) -> None:
     """The worker's skill sweep claims across every tenant under an enforcing policy.
 
-    `claim_queued` and `claim_improvements` declare `rls_bypass()`, as the fiber sweep does;
-    without it they run with no tenant bound and the policy returns nothing -- every queued
-    evaluation and accepted improvement would wait forever, with the sweep reporting an empty
-    queue. The per-tenant reads stay bound: one tenant's row is invisible to the other.
+    `claim_next` on both stores declares `rls_bypass()`, as the fiber sweep does; without it the
+    claim runs with no tenant bound and the policy returns nothing -- every queued evaluation and
+    accepted improvement would wait forever, with the sweep reporting an empty queue. The
+    per-tenant reads, heartbeats and finishes stay bound: one tenant cannot touch the other's row.
     """
-    from felix.skills.quality_store import get_skill_eval_store, get_skill_feedback_store
+    from felix.skills.eval_store import get_skill_eval_store
+    from felix.skills.feedback_store import get_skill_feedback_store
 
     evals, feedback = get_skill_eval_store(rls_settings), get_skill_feedback_store(rls_settings)
     for n, tenant in enumerate((TENANT, OTHER), start=1):
@@ -359,12 +360,14 @@ async def test_the_skill_job_sweeps_cross_tenants_and_the_reads_do_not(rls_setti
         )
         await feedback.decide(tenant, row_id, status="accepted", improve=True, by="ops", note=None, at=n)
 
-    claimed = await evals.claim_queued(limit=10, now=1_000)
-    taken = await feedback.claim_improvements(limit=10, now=1_000)
+    claimed = [await evals.claim_next(now=1_000), await evals.claim_next(now=1_001)]
+    taken = [await feedback.claim_next(now=1_000), await feedback.claim_next(now=1_001)]
 
-    assert sorted(r["tenant_id"] for r in claimed) == [TENANT, OTHER], claimed
-    assert sorted(r["tenant_id"] for r in taken) == [TENANT, OTHER], taken
-    mine = "00000000-0000-4000-8000-000000000001"
-    assert await evals.get(TENANT, mine) is not None
-    assert await evals.get(OTHER, mine) is None, "a bound tenant read another tenant's evaluation"
-    assert await feedback.get(OTHER, mine) is None, "a bound tenant read another tenant's feedback"
+    assert sorted(r["tenant_id"] for r in claimed if r) == [TENANT, OTHER], claimed
+    assert sorted(r["tenant_id"] for r in taken if r) == [TENANT, OTHER], taken
+    mine = next(r for r in claimed if r and r["tenant_id"] == TENANT)
+    assert await evals.get(TENANT, mine["id"]) is not None
+    assert await evals.get(OTHER, mine["id"]) is None, "a bound tenant read another tenant's evaluation"
+    assert await feedback.get(OTHER, mine["id"]) is None, "a bound tenant read another tenant's feedback"
+    assert not await evals.heartbeat(OTHER, mine["id"], token=mine["claim_token"], now=1_002)
+    assert await evals.heartbeat(TENANT, mine["id"], token=mine["claim_token"], now=1_002)

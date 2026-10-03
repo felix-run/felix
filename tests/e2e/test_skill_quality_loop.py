@@ -4,7 +4,8 @@ The chain over real HTTP, with the model scripted: an operator files feedback an
 the worker's sweep (`run_skill_jobs`, what `felix_worker.tasks.skill_jobs` runs) rewrites the
 skill into a draft in the review queue → a tenant policy with `require_eval` refuses to publish
 that draft → an evaluation is queued and the sweep runs it → the evaluation succeeded with an
-uplift → the same publish now goes through.
+uplift above the tenant's floor, on the bundle's own scenarios (the only kind that counts for an
+agent's version) → the same publish now goes through.
 """
 
 from __future__ import annotations
@@ -67,8 +68,16 @@ async def test_feedback_to_a_reviewed_draft_to_an_eval_gated_publish(boot: Any) 
         assert "over 500 to the finance queue" in improved.json()["content"]
 
         # The tenant requires an evaluation: the draft cannot go live yet.
-        policy = await app.client.patch("/skill-library/-/policy", json={"require_eval": True})
-        assert (policy.json()["source"], policy.json()["require_eval"]) == ("tenant", True), policy.text
+        # The tenant requires an evaluation with a positive uplift: a draft that made the answers
+        # worse would stay blocked even after its evaluation succeeded.
+        policy = await app.client.patch(
+            "/skill-library/-/policy", json={"require_eval": True, "min_eval_uplift": 1}
+        )
+        assert (policy.json()["source"], policy.json()["require_eval"], policy.json()["min_eval_uplift"]) == (
+            "tenant",
+            True,
+            1,
+        ), policy.text
         blocked = await app.client.post(f"/skill-library/{NAME}/versions/0.1.1/publish")
         assert blocked.status_code == 422 and blocked.json()["error"] == "publish_blocked", blocked.text
         assert any("succeeded evaluation" in r for r in blocked.json()["reasons"])
@@ -87,6 +96,8 @@ async def test_feedback_to_a_reviewed_draft_to_an_eval_gated_publish(boot: Any) 
         result = (await app.client.get(f"/skill-library/{NAME}/evals/{queued.json()['id']}")).json()
         assert (result["status"], result["scenario_source"]) == ("succeeded", "bundle"), result["error"]
         assert (result["baseline_score"], result["with_skill_score"], result["uplift"]) == (30, 90, 60)
+        # An agent's version (the improver's draft) on the bundle's own scenarios: it counts.
+        assert (result["counts_for_gate"], result["attempts"]) == (True, 1), result["gate_note"]
 
         published = await app.client.post(f"/skill-library/{NAME}/versions/0.1.1/publish")
         assert (published.status_code, published.json()["status"]) == (200, "published"), published.text

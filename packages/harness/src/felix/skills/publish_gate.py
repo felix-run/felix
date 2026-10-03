@@ -7,14 +7,17 @@ the verdict a publish is decided on.
 
 A failing security scan blocks always, whatever the policy says. The policy only raises the
 bar from there: a quality floor, refusing an advisory scan, requiring a succeeded evaluation of
-the version, and a floor on that evaluation's uplift. The policy is a tenant's `skill_policy`
-row when it has one, else `FELIX_SKILL_PUBLISH_*`; the caller reads both and hands them here.
+the version, and a floor on that evaluation's uplift.
+
+The deployment's `FELIX_SKILL_PUBLISH_*` settings are a floor a tenant cannot go under: a
+tenant's `skill_policy` row can only tighten them (`publish_policy`). Which evaluation counts is
+decided here too (`eval_counts_for_gate`), so the gate and the API report it the same way.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields, replace
 from typing import Any, Literal
 
 from felix.config import Settings
@@ -26,20 +29,23 @@ from felix.skills.security import ScanStatus, scan_skill_security
 SecurityStatus = ScanStatus
 
 
-PolicySource = Literal["settings", "tenant"]
+# Where the policy in force came from: the settings alone (no tenant row); the tenant's row, which
+# is at least as strict as the settings everywhere; or the row, tightened by a setting it was
+# looser than.
+PolicySource = Literal["settings", "tenant", "tenant+settings"]
 
 
 @dataclass(slots=True, frozen=True)
 class PublishPolicy:
-    """The gate a publish passes: a tenant's `skill_policy` row, or the settings without one."""
+    """The gate a publish passes: the settings, tightened by a tenant's `skill_policy` row."""
 
     min_quality: int = 0
     block_on_advisory: bool = False
     # Not configurable: a failing scan blocks every publish, whoever asks.
     security_fail_blocks: bool = True
-    # Block unless the version has a succeeded evaluation.
+    # Block unless the version has a succeeded evaluation that counts (`eval_counts_for_gate`).
     require_eval: bool = False
-    # Block unless the version's latest succeeded evaluation has at least this uplift (with-skill
+    # Block unless the version's latest counting evaluation has at least this uplift (with-skill
     # score minus baseline, -100..100). Set without `require_eval`, a version with no evaluation
     # is blocked too: there is no uplift to compare.
     min_eval_uplift: int | None = None
@@ -50,24 +56,87 @@ class PublishPolicy:
         """Whether a verdict under this policy depends on the version's evaluation."""
         return self.require_eval or self.min_eval_uplift is not None
 
-
-def publish_policy(settings: Settings, row: Mapping[str, Any] | None) -> PublishPolicy:
-    """The policy in force: ``row`` -- the tenant's `skill_policy` row -- when there is one,
-    whole, else the settings. A row replaces the settings rather than overlaying them, so what
-    `GET /skill-library/-/policy` reports is every field the gate reads, from one source."""
-    if row is not None:
+    @classmethod
+    def from_row(cls, row: Mapping[str, Any], *, source: PolicySource = "tenant") -> PublishPolicy:
         uplift = row.get("min_eval_uplift")
-        return PublishPolicy(
+        return cls(
             min_quality=int(row.get("min_quality") or 0),
             block_on_advisory=bool(row.get("block_on_advisory")),
             require_eval=bool(row.get("require_eval")),
             min_eval_uplift=None if uplift is None else int(uplift),
-            source="tenant",
+            source=source,
         )
-    return PublishPolicy(
-        min_quality=int(settings.skill_publish_min_quality or 0),
-        block_on_advisory=bool(settings.skill_publish_block_on_advisory),
-    )
+
+    @classmethod
+    def from_settings(cls, settings: Settings) -> PublishPolicy:
+        uplift = settings.skill_publish_min_eval_uplift
+        return cls(
+            min_quality=int(settings.skill_publish_min_quality or 0),
+            block_on_advisory=bool(settings.skill_publish_block_on_advisory),
+            require_eval=bool(settings.skill_publish_require_eval),
+            min_eval_uplift=None if uplift is None else int(uplift),
+        )
+
+    def to_row(self) -> dict[str, Any]:
+        """The tunable fields, as a `skill_policy` row holds them."""
+        return {f: getattr(self, f) for f in TUNABLE_FIELDS}
+
+    def tightened_by(self, other: PublishPolicy) -> PublishPolicy:
+        """The stricter of the two on every field. A null uplift floor is no floor."""
+        floors = [u for u in (self.min_eval_uplift, other.min_eval_uplift) if u is not None]
+        return replace(
+            self,
+            min_quality=max(self.min_quality, other.min_quality),
+            block_on_advisory=self.block_on_advisory or other.block_on_advisory,
+            require_eval=self.require_eval or other.require_eval,
+            min_eval_uplift=max(floors) if floors else None,
+        )
+
+    def without_eval(self) -> PublishPolicy:
+        """This policy with no evaluation requirement: what a rollback is judged on."""
+        return replace(self, require_eval=False, min_eval_uplift=None)
+
+
+# The fields a tenant may set: everything but the scan rule nobody may turn off and the source.
+TUNABLE_FIELDS: tuple[str, ...] = tuple(
+    f.name for f in fields(PublishPolicy) if f.name not in {"security_fail_blocks", "source"}
+)
+
+
+def publish_policy(settings: Settings, row: Mapping[str, Any] | None) -> PublishPolicy:
+    """The policy in force: the settings, tightened by ``row`` -- the tenant's `skill_policy`
+    row -- when there is one. A tenant can raise the deployment's bar and never lower it."""
+    floor = PublishPolicy.from_settings(settings)
+    if row is None:
+        return floor
+    tenant = PublishPolicy.from_row(row)
+    effective = tenant.tightened_by(floor)
+    return replace(effective, source="tenant" if effective == tenant else "tenant+settings")
+
+
+def eval_counts_for_gate(version_source: str | None, evaluation: Mapping[str, Any]) -> tuple[bool, str]:
+    """Whether ``evaluation`` can satisfy `require_eval` and `min_eval_uplift` for a version
+    written by ``version_source``, and why not when it cannot.
+
+    For an agent's version only an evaluation on the bundle's own scenarios counts. Generated
+    and default scenarios are written from the skill's text -- the text the agent wrote -- so an
+    agent could steer the test it is graded on. A bundle's `evals/` files come only from an
+    operator's save: an agent's save may only carry them unchanged from its parent
+    (`library.save_draft`).
+    """
+    if evaluation.get("status") != "succeeded":
+        return False, f"the evaluation has not succeeded (it is {evaluation.get('status')})"
+    if version_source == "agent" and evaluation.get("scenario_source") != "bundle":
+        return False, (
+            f"an agent wrote this version, and these scenarios were {evaluation.get('scenario_source')}: "
+            "only the bundle's own evals/ scenarios count for an agent's version"
+        )
+    return True, "counts toward the publish policy"
+
+
+def gate_scenario_source(version_source: str | None) -> str | None:
+    """The scenario source an evaluation must have to count for this version, or None for any."""
+    return "bundle" if version_source == "agent" else None
 
 
 @dataclass(slots=True, frozen=True)
@@ -115,7 +184,9 @@ def _eval_reasons(policy: PublishPolicy, latest_eval: Mapping[str, Any] | None) 
     if not policy.needs_eval:
         return []
     if latest_eval is None:
-        return ["the publish policy requires a succeeded evaluation of this version, and it has none"]
+        return [
+            "the publish policy requires a succeeded evaluation of this version that counts, and it has none"
+        ]
     uplift = latest_eval.get("uplift")
     if policy.min_eval_uplift is not None and (uplift is None or int(uplift) < policy.min_eval_uplift):
         return [
@@ -129,7 +200,8 @@ def policy_reasons(
     policy: PublishPolicy, assessment: Assessment, latest_eval: Mapping[str, Any] | None = None
 ) -> list[str]:
     """Why ``policy`` refuses ``assessment``; empty when it does not. ``latest_eval`` is the
-    version's latest succeeded evaluation, which only a policy that `needs_eval` reads."""
+    version's latest evaluation that counts (`eval_counts_for_gate`), which only a policy that
+    `needs_eval` reads."""
     reasons: list[str] = []
     if assessment.security_status == "fail":
         found = [i["message"] for i in assessment.security_issues if i["severity"] in {"critical", "high"}]
@@ -159,13 +231,16 @@ def evaluate_files(
 
 
 __all__ = [
+    "TUNABLE_FIELDS",
     "Assessment",
     "PolicySource",
     "PublishPolicy",
     "SecurityStatus",
     "Verdict",
     "assess",
+    "eval_counts_for_gate",
     "evaluate_files",
+    "gate_scenario_source",
     "policy_reasons",
     "publish_policy",
 ]

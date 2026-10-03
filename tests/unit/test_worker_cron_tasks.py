@@ -256,9 +256,9 @@ async def test_skill_jobs_runs_a_queued_evaluation_and_records_its_failure_on_th
     -- which is the point: a job's failure lands on its row, and the task itself returns.
     """
     from felix.skills import evaluate, library
+    from felix.skills.eval_store import get_skill_eval_store
     from felix.skills.format import serialize_skill_md
     from felix.skills.library_store import library_object_key
-    from felix.skills.quality_store import get_skill_eval_store
     from felix.storage import get_object_store
 
     settings = _settings()

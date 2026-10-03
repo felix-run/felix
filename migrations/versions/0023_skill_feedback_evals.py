@@ -58,8 +58,13 @@ def upgrade() -> None:
         sa.Column("model", sa.Text(), nullable=True),
         sa.Column("error", sa.Text(), nullable=True),
         sa.Column("created_at", sa.BigInteger(), nullable=False),
-        # When a worker took the improvement; a claim older than the lease is taken again.
+        # The worker's claim: when it was last taken (what the fair claim orders tenants by),
+        # the token only the holder knows, its last heartbeat (a claim whose heartbeat is older
+        # than the lease is taken again), and how many times it has been claimed.
         sa.Column("claimed_at", sa.BigInteger(), nullable=True),
+        sa.Column("claim_token", sa.Text(), nullable=True),
+        sa.Column("heartbeat_at", sa.BigInteger(), nullable=True),
+        sa.Column("attempts", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("decided_at", sa.BigInteger(), nullable=True),
         sa.Column("decided_by", sa.Text(), nullable=True),
         sa.Column("decision_note", sa.Text(), nullable=True),
@@ -87,7 +92,12 @@ def upgrade() -> None:
         sa.Column("error", sa.Text(), nullable=True),
         sa.Column("requested_by", sa.Text(), nullable=False, server_default=""),
         sa.Column("created_at", sa.BigInteger(), nullable=False),
+        # When the last claim started it; and, as for feedback, the claim token, heartbeat and
+        # claim count.
         sa.Column("started_at", sa.BigInteger(), nullable=True),
+        sa.Column("claim_token", sa.Text(), nullable=True),
+        sa.Column("heartbeat_at", sa.BigInteger(), nullable=True),
+        sa.Column("attempts", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("finished_at", sa.BigInteger(), nullable=True),
         sa.CheckConstraint(
             "status IN ('queued', 'running', 'succeeded', 'failed')", name="ck_skill_eval_status"
@@ -117,10 +127,15 @@ def upgrade() -> None:
         "CREATE INDEX IF NOT EXISTS idx_skill_feedback_pending_author "
         "ON skill_feedback (tenant_id, author) WHERE status = 'pending' AND source = 'agent'"
     )
-    # The worker's sweep, across tenants: accepted improvements waiting for a claim.
+    # The worker's fair claim (each tenant's oldest due job) and the per-tenant job caps: the
+    # improvements in flight, and the ones accepted since midnight.
     op.execute(
         "CREATE INDEX IF NOT EXISTS idx_skill_feedback_improve "
-        "ON skill_feedback (created_at) WHERE status = 'accepted' AND improve"
+        "ON skill_feedback (tenant_id, created_at) WHERE status = 'accepted' AND improve"
+    )
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS idx_skill_feedback_improve_age "
+        "ON skill_feedback (tenant_id, decided_at) WHERE improve"
     )
     op.execute(
         "CREATE INDEX IF NOT EXISTS idx_skill_eval_version "
@@ -128,8 +143,9 @@ def upgrade() -> None:
     )
     op.execute(
         "CREATE INDEX IF NOT EXISTS idx_skill_eval_due "
-        "ON skill_eval (created_at) WHERE status IN ('queued', 'running')"
+        "ON skill_eval (tenant_id, created_at) WHERE status IN ('queued', 'running')"
     )
+    op.execute("CREATE INDEX IF NOT EXISTS idx_skill_eval_tenant_age ON skill_eval (tenant_id, created_at)")
     # One evaluation in flight per version.
     op.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS uq_skill_eval_in_flight "
@@ -161,8 +177,10 @@ def downgrade() -> None:
         op.execute(f'DROP POLICY IF EXISTS felix_tenant_isolation ON "{table}"')
     for index in (
         "uq_skill_eval_in_flight",
+        "idx_skill_eval_tenant_age",
         "idx_skill_eval_due",
         "idx_skill_eval_version",
+        "idx_skill_feedback_improve_age",
         "idx_skill_feedback_improve",
         "idx_skill_feedback_pending_author",
         "idx_skill_feedback_status_age",

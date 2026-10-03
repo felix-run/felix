@@ -201,7 +201,7 @@ class SkillFeedbackRow(Base):
     """Feedback on one version of a library skill, from a person or an agent.
 
     Nothing rewrites a skill from feedback until a person accepts it with `improve`; the
-    worker then claims the row (`claimed_at`) and records the draft it produced
+    worker then claims the row (`claim_token`, kept alive by `heartbeat_at`) and records the draft it produced
     (`result_version`) or why it could not (`error`)."""
 
     __tablename__ = "skill_feedback"
@@ -222,6 +222,9 @@ class SkillFeedbackRow(Base):
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
     claimed_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    claim_token: Mapped[str | None] = mapped_column(Text, nullable=True)
+    heartbeat_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0", default=0)
     decided_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     decided_by: Mapped[str | None] = mapped_column(Text, nullable=True)
     decision_note: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -257,6 +260,9 @@ class SkillEvalRow(Base):
     requested_by: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
     created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
     started_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    claim_token: Mapped[str | None] = mapped_column(Text, nullable=True)
+    heartbeat_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0", default=0)
     finished_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
     __table_args__ = (

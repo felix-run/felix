@@ -301,8 +301,13 @@ worker rewrite the skill from it, with `FELIX_SKILL_IMPROVE_MODEL` (empty = the 
 and the rewrite is a draft for review. `POST /skill-library/{name}/versions/{v}/eval` scores a
 version against a baseline without it: `FELIX_SKILL_EVAL_MODEL` answers each scenario with and
 without the skill, `FELIX_SKILL_EVAL_JUDGE_MODEL` scores both answers 0-100, and
-`FELIX_SKILL_EVAL_MAX_SCENARIOS` (10) caps the run. `PATCH /skill-library/-/policy` gives a
-tenant its own gate, which can require an evaluation or a minimum uplift before a publish.
+`FELIX_SKILL_EVAL_MAX_SCENARIOS` (10) caps the run. For an agent-written version only an evaluation on
+the bundle's own `evals/` scenarios counts. `FELIX_SKILL_PUBLISH_REQUIRE_EVAL` and
+`FELIX_SKILL_PUBLISH_MIN_EVAL_UPLIFT` add an evaluation requirement for the whole deployment.
+`PATCH /skill-library/-/policy` lets a tenant tighten every bar, never loosen it. Skill jobs are
+bounded per call (`FELIX_SKILL_EVAL_MAX_TOKENS`, `FELIX_SKILL_IMPROVE_MAX_TOKENS`), per job
+(`FELIX_SKILL_JOB_DEADLINE_SECONDS`) and per tenant (`FELIX_SKILL_JOBS_MAX_QUEUED`,
+`FELIX_SKILL_JOBS_DAILY_LIMIT`).
 
 **[`examples/felix-plugin-example/`](examples/felix-plugin-example/)** is a working package that
 exercises every seam above.

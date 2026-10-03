@@ -39,4 +39,33 @@ def emit_agent_audit(
         logger.warning("audit emit failed for %s", event_type, exc_info=True)
 
 
-__all__ = ["emit_agent_audit"]
+def record_offline_event(
+    settings: Any,
+    tenant_id: str,
+    event_type: str,
+    *,
+    principal: str,
+    payload: dict[str, Any],
+    status: str = "ok",
+    manifest_id: str = "",
+) -> None:
+    """An audit event for work done outside a request: a management route acting for an
+    operator, or a worker job. `emit_agent_audit` needs a `RequestContext`, which neither has,
+    so this names the tenant and principal itself. Never raises; a failed write is logged."""
+    try:
+        from felix.audit import store as audit_store
+
+        audit_store.record_event(
+            settings,
+            tenant_id,
+            event_type,
+            manifest_id=manifest_id,
+            principal_subj=principal,
+            status=status,
+            payload=payload,
+        )
+    except Exception:
+        logger.warning("audit write failed for %s", event_type, exc_info=True)
+
+
+__all__ = ["emit_agent_audit", "record_offline_event"]

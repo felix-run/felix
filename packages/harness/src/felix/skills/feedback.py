@@ -12,18 +12,17 @@ Refusals are `library.SkillLibraryError` subclasses, so the management routes ma
 
 from __future__ import annotations
 
-import logging
 import time
 import uuid
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from felix.config import Settings
+from felix.skills.feedback_store import get_skill_feedback_store
 from felix.skills.library import SkillLibraryError, SkillNotFound, newest_version
 from felix.skills.library_store import get_skill_library_store
-from felix.skills.quality_store import FeedbackSource, SkillFeedbackConflict, get_skill_feedback_store
-
-logger = logging.getLogger("felix.skills.feedback")
+from felix.skills.quality_store import FeedbackSource, SkillFeedbackConflict
 
 now_ms = lambda: int(time.time() * 1000)
 
@@ -44,36 +43,43 @@ class FeedbackCapReached(SkillLibraryError):
     code = "feedback_cap_reached"
 
 
+@dataclass(slots=True, frozen=True)
+class FeedbackProvenance:
+    """Who filed feedback. ``author`` is the manifest id for an agent and the principal for a
+    person; ``principal`` is the caller behind an agent's turn, when there was one.
+    ``max_pending`` caps the undecided feedback an agent's manifest may hold."""
+
+    source: FeedbackSource
+    author: str
+    principal: str | None = None
+    max_pending: int | None = None
+
+
 def audit_feedback(
     settings: Settings, tenant_id: str, event_type: str, row: Mapping[str, Any], *, by: str, **extra: Any
 ) -> None:
-    """One event per change to a feedback row, written straight to the audit store (as
-    `library._audit`, and for its reason: the worker and the management routes have no request
-    context). The body is not in the payload -- it is arbitrary text, and the row keeps it."""
-    from felix.audit import store as audit_store
+    """One event per change to a feedback row. The body is not in the payload -- it is
+    arbitrary text, and the row keeps it."""
+    from felix.audit.emit import record_offline_event
 
     status = str(extra.pop("status", "ok"))
-    payload = {
-        "skill": row.get("name"),
-        "target_version": row.get("target_version"),
-        "feedback_id": row.get("id"),
-        "source": row.get("source"),
-        "author": row.get("author"),
-        "feedback_status": row.get("status"),
-        **extra,
-    }
-    try:
-        audit_store.record_event(
-            settings,
-            tenant_id,
-            event_type,
-            manifest_id=str(row.get("author") or "") if row.get("source") == "agent" else "",
-            principal_subj=by,
-            status=status,
-            payload=payload,
-        )
-    except Exception:
-        logger.warning("audit write failed for %s", event_type, exc_info=True)
+    record_offline_event(
+        settings,
+        tenant_id,
+        event_type,
+        principal=by,
+        status=status,
+        manifest_id=str(row.get("author") or "") if row.get("source") == "agent" else "",
+        payload={
+            "skill": row.get("name"),
+            "target_version": row.get("target_version"),
+            "feedback_id": row.get("id"),
+            "source": row.get("source"),
+            "author": row.get("author"),
+            "feedback_status": row.get("status"),
+            **extra,
+        },
+    )
 
 
 async def _target(settings: Settings, tenant_id: str, name: str, version: str | None) -> str:
@@ -94,26 +100,23 @@ async def submit_feedback(
     *,
     name: str,
     body: str,
-    source: FeedbackSource,
-    author: str,
-    principal: str | None = None,
+    provenance: FeedbackProvenance,
     suggested_patch: str | None = None,
     target_version: str | None = None,
-    max_pending: int | None = None,
 ) -> dict[str, Any]:
     """File feedback on ``name`` (at ``target_version``, or its live version) as `pending`.
 
-    ``max_pending`` caps the undecided feedback one agent's manifest (``author``) may hold, as
-    `skill_authoring.max_pending` caps its drafts. Count-then-insert, so two concurrent submits
-    at the cap can both land; the cap bounds a looping agent, not an exact count.
+    An agent's `max_pending` is counted, then the row inserted, so two concurrent submits at the
+    cap can both land; the cap bounds a looping agent, not an exact count.
     """
     target = await _target(settings, tenant_id, name, target_version)
     store = get_skill_feedback_store(settings)
-    if source == "agent" and max_pending is not None:
-        held = await store.count_pending_agent(tenant_id, author)
-        if held >= max_pending:
+    cap = provenance.max_pending
+    if provenance.source == "agent" and cap is not None:
+        held = await store.count_pending_agent(tenant_id, provenance.author)
+        if held >= cap:
             raise FeedbackCapReached(
-                f"{author} already has {held} feedback awaiting review (limit {max_pending})"
+                f"{provenance.author} already has {held} feedback awaiting review (limit {cap})"
             )
     row = await store.insert(
         tenant_id,
@@ -121,9 +124,9 @@ async def submit_feedback(
             "id": str(uuid.uuid4()),
             "name": name,
             "target_version": target,
-            "source": source,
-            "author": author,
-            "principal": principal,
+            "source": provenance.source,
+            "author": provenance.author,
+            "principal": provenance.principal,
             "body": body[:MAX_BODY_CHARS],
             "suggested_patch": suggested_patch[:MAX_PATCH_CHARS] if suggested_patch else None,
             "status": "pending",
@@ -135,7 +138,7 @@ async def submit_feedback(
         tenant_id,
         "skill_feedback_submitted",
         row,
-        by=principal or author,
+        by=provenance.principal or provenance.author,
         body_chars=len(row["body"]),
         has_patch=bool(row["suggested_patch"]),
     )
@@ -155,6 +158,10 @@ async def _decide(
     store = get_skill_feedback_store(settings)
     if await store.get(tenant_id, feedback_id) is None:
         raise SkillNotFound(f"feedback {feedback_id} does not exist")
+    if improve:
+        from felix.skills.job_limits import check_job_caps
+
+        await check_job_caps(settings, tenant_id)
     try:
         row = await store.decide(
             tenant_id,
@@ -182,7 +189,8 @@ async def accept_feedback(
     note: str | None = None,
 ) -> dict[str, Any]:
     """Accept pending feedback. With ``improve`` the worker rewrites the skill from it, into a
-    draft; without, it is recorded as accepted and nothing runs."""
+    draft -- a job, so the tenant's job caps apply (`job_limits`); without, it is recorded as
+    accepted and nothing runs."""
     return await _decide(
         settings, tenant_id, feedback_id, status="accepted", improve=improve, by=by, note=note
     )
@@ -198,7 +206,9 @@ async def reject_feedback(
 __all__ = [
     "MAX_BODY_CHARS",
     "MAX_PATCH_CHARS",
+    "NOTE_LIMIT",
     "FeedbackCapReached",
+    "FeedbackProvenance",
     "FeedbackStateConflict",
     "accept_feedback",
     "audit_feedback",

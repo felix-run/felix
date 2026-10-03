@@ -148,13 +148,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     evaluation rather than counting a heuristic. Read evaluations with `GET /{name}/evals` and
     `GET /{name}/evals/{id}`. `spec.skill_authoring.auto_eval` (off) queues one for every draft
     the agent saves. Every model call is metered to the skill's tenant.
-  - **Publish policy per tenant.** `PATCH /skill-library/-/policy` (`skills:write`, audited
-    `skill_policy_updated`) sets `min_quality`, `block_on_advisory`, `require_eval` and
-    `min_eval_uplift`. Once set, the tenant's policy replaces the `FELIX_SKILL_PUBLISH_*`
-    settings in full. `GET /-/policy` reports which one is in force (`source`). `require_eval`
-    blocks a publish or rollback until the version has a succeeded evaluation, and
-    `min_eval_uplift` blocks one whose latest succeeded evaluation scored below the floor. A
-    failing security scan still blocks whatever the policy says.
+  - **Publish policy per tenant, tighten only.** `PATCH /skill-library/-/policy` (`skills:write`,
+    audited `skill_policy_updated`) sets `min_quality`, `block_on_advisory`, `require_eval` and
+    `min_eval_uplift`. Only `min_eval_uplift` accepts null. The policy in force is the settings
+    tightened by the tenant: the higher floors, and either flag. That includes the new
+    `FELIX_SKILL_PUBLISH_REQUIRE_EVAL` and `FELIX_SKILL_PUBLISH_MIN_EVAL_UPLIFT`. A tenant can never
+    loosen the deployment's bar. `GET /-/policy` reports `source` (`settings`, `tenant` or
+    `tenant+settings`) and the tenant's own `tenant_values`. `DELETE /-/policy` drops them.
+    `require_eval` blocks a publish until the version has a succeeded evaluation that counts.
+    `min_eval_uplift` blocks one whose latest counting evaluation scored below the floor. A
+    rollback skips both, while the scan, validation and quality floor still apply. A failing
+    security scan still blocks whatever the policy says.
+  - **Only evaluations an agent cannot grade count for its versions.** For a version an agent
+    wrote, only an evaluation on the bundle's own `evals/` scenarios satisfies the gate. Generated
+    and default evaluations still run and show `counts_for_gate: false` with a `gate_note`. An
+    agent's save may carry `evals/` files only unchanged from its parent. A version's first
+    evaluation pins its scenarios for every later one. The judge reads the scenario prompt, the
+    criteria and the answer each fenced as data. Default scenarios quote the description fenced.
+  - **Skill jobs are bounded.** Each job heartbeats its claim and stops if another worker took
+    it. A job is failed `attempts_exhausted` after three claims, or `deadline_exceeded` past
+    `FELIX_SKILL_JOB_DEADLINE_SECONDS` (1200). Per tenant, `FELIX_SKILL_JOBS_MAX_QUEUED` (20)
+    jobs may be queued or running and `FELIX_SKILL_JOBS_DAILY_LIMIT` (200) created per UTC day;
+    past either, 429 `skill_jobs_cap_reached`. Claims are fair across tenants. One `skill_jobs`
+    sweep runs at a time across workers, using a Postgres advisory lock. Each call is capped by
+    `FELIX_SKILL_EVAL_MAX_TOKENS` (2048) or `FELIX_SKILL_IMPROVE_MAX_TOKENS` (8192).
+  - **Publish and rollback can name the live version they expect.** An optional body
+    `{expected_live_version}` (null meaning "nothing live") is checked under the skill row's lock;
+    a mismatch is 409 `live_changed`. Without the body, nothing changes.
+  - **Agents never build on a rejected draft.** `update_skill` and the improvement job edit the
+    newest version that was not rejected. `list_skills` and `activate_skill` report that version
+    as `newest_version`, and naming a rejected draft is refused `parent_rejected`. So a rejected
+    draft's files cannot ride into the next one. An operator's save still builds on the absolute
+    newest version.
 
 - **Skill format, bundle validation, quality review and security scan.** These are the
   groundwork for skill authoring and are not yet wired to a route or a tool. They are ported

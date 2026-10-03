@@ -30,15 +30,19 @@ from felix.config import Settings
 from felix.skills.binary import decode_base64, encode_base64, is_binary_asset_path
 from felix.skills.format import ValidationIssue, validate_skill_bundle
 from felix.skills.library_store import (
+    ANY_LIVE,
     MAX_VERSIONS_PER_SKILL,
+    ExpectedLive,
     SkillLibraryStore,
+    SkillLiveMismatch,
     SkillStateConflict,
     SkillStatus,
     SkillVersionExists,
     get_skill_library_store,
+    is_rejected,
     library_object_key,
 )
-from felix.skills.publish_gate import PublishPolicy, Verdict, assess, evaluate_files, publish_policy
+from felix.skills.publish_gate import PublishPolicy, Verdict, assess, evaluate_files, gate_scenario_source
 from felix.skills.semver import SemverBump, compare_semver, resolve_next_semver
 
 logger = logging.getLogger("felix.skills.library")
@@ -109,6 +113,20 @@ class SkillParentChanged(SkillLibraryError):
     code = "parent_changed"
 
 
+class SkillParentRejected(SkillLibraryError):
+    """An agent's save named a rejected draft as its parent. An agent builds on the newest
+    version that was not rejected (`newest_buildable_versions`), so a rejected draft's files
+    never ride into the next one."""
+
+    code = "parent_rejected"
+
+
+class SkillLiveChanged(SkillLibraryError):
+    """A publish or rollback named the live version it expected, and another one is live."""
+
+    code = "live_changed"
+
+
 class SkillPendingCapReached(SkillLibraryError):
     code = "pending_cap_reached"
 
@@ -167,7 +185,7 @@ def _audit(
     scored, so the trail answers "what went live, who let it, and what did the scan say"
     without the version row, which a later rollback rewrites.
     """
-    from felix.audit import store as audit_store
+    from felix.audit.emit import record_offline_event
 
     status = str(extra.pop("status", "ok"))
     payload = {
@@ -179,18 +197,15 @@ def _audit(
         "security_status": row.get("security_status"),
         **extra,
     }
-    try:
-        audit_store.record_event(
-            settings,
-            tenant_id,
-            event_type,
-            manifest_id=row.get("origin_manifest_id") or "",
-            principal_subj=by,
-            status=status,
-            payload=payload,
-        )
-    except Exception:
-        logger.warning("audit write failed for %s", event_type, exc_info=True)
+    record_offline_event(
+        settings,
+        tenant_id,
+        event_type,
+        principal=by,
+        payload=payload,
+        status=status,
+        manifest_id=row.get("origin_manifest_id") or "",
+    )
 
 
 async def host_owns(settings: Settings, tenant_id: str, name: str, object_store: Any | None = None) -> bool:
@@ -298,11 +313,14 @@ async def _reserve(
     explicit: str | None,
     bump: SemverBump,
     expect_newest: str | _MustNotExist | None,
+    buildable: bool = False,
 ) -> dict[str, Any]:
     """Insert the version row under the next free version; the primary key settles a race.
 
     ``expect_newest`` is checked on every attempt, so a save that loses a race to the version
-    after its parent is refused as `parent_changed` rather than bumped past the winner.
+    after its parent is refused as `parent_changed` rather than bumped past the winner. With
+    ``buildable`` (an agent's save) it is checked against the newest version that is not a
+    rejected draft, and naming a rejected one is `parent_rejected`.
     """
     for _ in range(_SAVE_ATTEMPTS):
         existing = await lib.version_ids(tenant_id, row["name"])
@@ -314,9 +332,9 @@ async def _reserve(
         if expect_newest is MUST_NOT_EXIST:
             if newest is not None:
                 raise SkillExists(f"{row['name']} is already in the library")
-        elif expect_newest is not None and newest != expect_newest:
-            raise SkillParentChanged(
-                f"{row['name']} is at {newest or 'no version'}, not {expect_newest}; reload and edit that"
+        elif isinstance(expect_newest, str):
+            await _check_parent(
+                lib, tenant_id, row["name"], expect_newest, newest, existing, buildable=buildable
             )
         row = {**row, "version": _next_version(newest, explicit=explicit, bump=bump)}
         try:
@@ -326,6 +344,40 @@ async def _reserve(
             if explicit is not None:
                 raise SkillVersionConflict(f"version {explicit} already exists") from exc
     raise SkillVersionConflict("concurrent saves kept taking the next version; try again")
+
+
+async def _check_parent(
+    lib: SkillLibraryStore,
+    tenant_id: str,
+    name: str,
+    expected: str,
+    newest: str | None,
+    existing: list[str],
+    *,
+    buildable: bool,
+) -> None:
+    basis = newest
+    if buildable:
+        basis = newest_version((await lib.buildable_versions(tenant_id, [name])).get(name, []))
+        if expected != basis and expected in existing:
+            row = await lib.get_version(tenant_id, name, expected)
+            if row is not None and is_rejected(row):
+                raise SkillParentRejected(
+                    f"{name}@{expected} was rejected; edit {basis or 'nothing'}, the newest not rejected"
+                )
+    if basis != expected:
+        raise SkillParentChanged(
+            f"{name} is at {basis or 'no version'}, not {expected}; reload and edit that"
+        )
+
+
+async def newest_buildable_versions(
+    settings: Settings, tenant_id: str, names: Iterable[str]
+) -> dict[str, str]:
+    """Each named skill's newest version an agent may build on: the newest that is not a
+    rejected draft. One query for every name."""
+    rows = await get_skill_library_store(settings).buildable_versions(tenant_id, list(names))
+    return {n: v for n, vs in rows.items() if (v := newest_version(vs)) is not None}
 
 
 async def _check_pending(
@@ -395,6 +447,8 @@ async def save_draft(
     await _check_pending(lib, tenant_id, provenance, max_pending, after=False)
     if parent is not None and await lib.get_version(tenant_id, skill_name, parent) is None:
         raise SkillNotFound(f"parent version {skill_name}@{parent} does not exist")
+    if provenance.source == "agent":
+        await _evals_only_inherited(lib, tenant_id, skill_name, parent, files)
 
     row = {
         "name": skill_name,
@@ -410,7 +464,14 @@ async def save_draft(
         "created_at": now_ms(),
     }
     row = await _reserve(
-        lib, tenant_id, row, _file_rows(files), explicit=version, bump=bump, expect_newest=expect_newest
+        lib,
+        tenant_id,
+        row,
+        _file_rows(files),
+        explicit=version,
+        bump=bump,
+        expect_newest=expect_newest,
+        buildable=provenance.source == "agent",
     )
     try:
         await _check_pending(lib, tenant_id, provenance, max_pending, after=True)
@@ -435,6 +496,38 @@ async def save_draft(
         **({"principal": provenance.principal} if provenance.principal else {}),
     )
     return {**row, "tenant_id": tenant_id, "shadows_operator_upload": shadows}
+
+
+async def _evals_only_inherited(
+    lib: SkillLibraryStore, tenant_id: str, name: str, parent: str | None, files: Mapping[str, str]
+) -> None:
+    """Refuse an agent's save that adds or changes a file under `evals/`.
+
+    The bundle's own scenarios are the only evaluation an agent's version is graded on
+    (`publish_gate.eval_counts_for_gate`), which is sound only if an agent cannot write them. Its
+    tools carry the parent's files unchanged; this makes that a rule rather than a habit of the
+    callers: every `evals/` file must be the parent's, byte for byte.
+    """
+    evals = {p: c for p, c in files.items() if p.startswith("evals/")}
+    if not evals:
+        return
+    inherited = (
+        {str(r["path"]): str(r["sha256"]) for r in await lib.list_files(tenant_id, name, parent)}
+        if parent is not None
+        else {}
+    )
+    changed = sorted(
+        p for p, c in evals.items() if inherited.get(p) != hashlib.sha256(_stored_bytes(p, c)).hexdigest()
+    )
+    if changed:
+        raise SkillBundleInvalid(
+            [
+                ValidationIssue(
+                    path=p, message="an agent's save may only keep evals/ files unchanged from its parent"
+                )
+                for p in changed
+            ]
+        )
 
 
 async def _discard(
@@ -495,50 +588,6 @@ async def read_version_file(
     return _checked(path, await store.get(library_object_key(tenant_id, name, version, path)), meta["sha256"])
 
 
-async def load_publish_policy(settings: Settings, tenant_id: str) -> PublishPolicy:
-    """The publish policy in force for ``tenant_id``: its `skill_policy` row, else the settings.
-
-    Not caught: a gate that cannot read the tenant's policy must not quietly fall back to the
-    settings, which may be the lower bar.
-    """
-    from felix.skills.quality_store import get_skill_policy_store
-
-    return publish_policy(settings, await get_skill_policy_store(settings).get(tenant_id))
-
-
-_POLICY_FIELDS = ("min_quality", "block_on_advisory", "require_eval", "min_eval_uplift")
-
-
-async def set_publish_policy(
-    settings: Settings, tenant_id: str, changes: Mapping[str, Any], *, by: str
-) -> PublishPolicy:
-    """Change ``tenant_id``'s publish policy and return the one now in force.
-
-    ``changes`` names only the fields to change; the rest keep their effective value, so the
-    first change copies the settings' values into the tenant's row. Ranges are the caller's to
-    validate (the route's request model). Audited as `skill_policy_updated`, before and after.
-    """
-    from dataclasses import asdict
-
-    from felix.skills.quality_store import get_skill_policy_store
-
-    store = get_skill_policy_store(settings)
-    current = publish_policy(settings, await store.get(tenant_id))
-    row = {f: changes[f] if f in changes else getattr(current, f) for f in _POLICY_FIELDS}
-    stored = await store.put(tenant_id, {**row, "updated_at": now_ms(), "updated_by": by})
-    after = publish_policy(settings, stored)
-    _audit(
-        settings,
-        tenant_id,
-        "skill_policy_updated",
-        {},
-        by=by,
-        before={k: v for k, v in asdict(current).items() if k in (*_POLICY_FIELDS, "source")},
-        after={k: v for k, v in asdict(after).items() if k in _POLICY_FIELDS},
-    )
-    return after
-
-
 async def evaluate_version(
     settings: Settings,
     tenant_id: str,
@@ -554,13 +603,20 @@ async def evaluate_version(
     without causing one. Changes nothing. Bytes that no longer match their digests are a
     verdict too: invalid, with the mismatch as its reason.
     """
-    policy = policy or await load_publish_policy(settings, tenant_id)
+    if policy is None:
+        from felix.skills.policy import load_publish_policy
+
+        policy = (await load_publish_policy(settings, tenant_id)).policy
     latest_eval = None
     if policy.needs_eval:
-        # Only a policy that reads the evaluation pays for the lookup.
-        from felix.skills.quality_store import get_skill_eval_store
+        # Only a policy that reads the evaluation pays for the lookup. Which evaluations count
+        # depends on who wrote the version (`publish_gate.eval_counts_for_gate`).
+        from felix.skills.eval_store import get_skill_eval_store
 
-        latest_eval = await get_skill_eval_store(settings).latest_succeeded(tenant_id, name, version)
+        row = await get_skill_library_store(settings).get_version(tenant_id, name, version)
+        latest_eval = await get_skill_eval_store(settings).latest_succeeded(
+            tenant_id, name, version, scenario_source=gate_scenario_source((row or {}).get("source"))
+        )
     try:
         files = await read_version_files(settings, tenant_id, name, version, object_store=object_store)
     except SkillVersionCorrupt as exc:
@@ -568,14 +624,28 @@ async def evaluate_version(
     return await asyncio.to_thread(evaluate_files, files, name, policy, latest_eval)
 
 
-async def _gate(settings: Settings, tenant_id: str, row: Mapping[str, Any], object_store: Any) -> None:
+async def _gate(
+    settings: Settings, tenant_id: str, row: Mapping[str, Any], object_store: Any, *, rollback: bool
+) -> None:
     """Re-read, re-validate and re-scan what is about to go live, then apply the policy.
 
     Re-run rather than trusting the row: the bytes are in a store an operator can write
     directly, and the scanner's rules may have grown since the draft was saved.
+
+    A rollback is judged without the evaluation requirement. It returns to a version that was
+    already live, usually in a hurry, and `require_eval` may have been set after it went live;
+    the security scan, validation and the quality floor still apply to it.
     """
+    from felix.skills.policy import load_publish_policy
+
+    policy = (await load_publish_policy(settings, tenant_id)).policy
     verdict = await evaluate_version(
-        settings, tenant_id, str(row["name"]), str(row["version"]), object_store=object_store
+        settings,
+        tenant_id,
+        str(row["name"]),
+        str(row["version"]),
+        policy=policy.without_eval() if rollback else policy,
+        object_store=object_store,
     )
     if not verdict.passes:
         raise SkillPublishBlocked(verdict.reasons)
@@ -598,6 +668,7 @@ async def _make_live(
     by: str,
     event: str,
     object_store: Any | None,
+    expected_live: ExpectedLive = ANY_LIVE,
 ) -> dict[str, Any]:
     from_statuses = _LIVE_FROM[event]
     lib = get_skill_library_store(settings)
@@ -610,14 +681,28 @@ async def _make_live(
         # A rejected draft is `archived` too; only a version that once went live may return.
         raise SkillVersionConflict(f"{name}@{version} was never published; publish it instead")
     try:
-        await _gate(settings, tenant_id, row, _object_store(settings, object_store))
+        await _gate(
+            settings,
+            tenant_id,
+            row,
+            _object_store(settings, object_store),
+            rollback=event == "skill_rolled_back",
+        )
     except SkillPublishBlocked as exc:
         _audit(settings, tenant_id, event, row, by=by, status="blocked", reasons=exc.reasons)
         raise
     try:
         previous = await lib.publish(
-            tenant_id, name, version, from_statuses=from_statuses, by=by, at=now_ms()
+            tenant_id,
+            name,
+            version,
+            from_statuses=from_statuses,
+            by=by,
+            at=now_ms(),
+            expected_live=expected_live,
         )
+    except SkillLiveMismatch as exc:
+        raise SkillLiveChanged(str(exc)) from exc
     except SkillStateConflict as exc:
         raise SkillVersionConflict(f"{name}@{version} changed state while it was being published") from exc
     _audit(settings, tenant_id, event, row, by=by, previous=previous)
@@ -625,9 +710,20 @@ async def _make_live(
 
 
 async def publish(
-    settings: Settings, tenant_id: str, name: str, version: str, *, by: str, object_store: Any | None = None
+    settings: Settings,
+    tenant_id: str,
+    name: str,
+    version: str,
+    *,
+    by: str,
+    object_store: Any | None = None,
+    expected_live: ExpectedLive = ANY_LIVE,
 ) -> dict[str, Any]:
-    """Publish a draft: it becomes `live_version`, and the version it replaces is archived."""
+    """Publish a draft: it becomes `live_version`, and the version it replaces is archived.
+
+    ``expected_live`` is the live version the caller saw (None: nothing was live). Given, the
+    publish is refused with `SkillLiveChanged` if another version is live by the time it lands --
+    checked under the skill row's lock -- so two reviewers cannot both move the pointer."""
     return await _make_live(
         settings,
         tenant_id,
@@ -636,13 +732,22 @@ async def publish(
         by=by,
         event="skill_published",
         object_store=object_store,
+        expected_live=expected_live,
     )
 
 
 async def rollback(
-    settings: Settings, tenant_id: str, name: str, version: str, *, by: str, object_store: Any | None = None
+    settings: Settings,
+    tenant_id: str,
+    name: str,
+    version: str,
+    *,
+    by: str,
+    object_store: Any | None = None,
+    expected_live: ExpectedLive = ANY_LIVE,
 ) -> dict[str, Any]:
-    """Make a once-published version live again, through the same gate as a publish."""
+    """Make a once-published version live again, through the same gate as a publish
+    (without its evaluation requirement). ``expected_live`` as for `publish`."""
     return await _make_live(
         settings,
         tenant_id,
@@ -651,6 +756,7 @@ async def rollback(
         by=by,
         event="skill_rolled_back",
         object_store=object_store,
+        expected_live=expected_live,
     )
 
 
@@ -689,9 +795,11 @@ __all__ = [
     "SkillBundleInvalid",
     "SkillExists",
     "SkillLibraryError",
+    "SkillLiveChanged",
     "SkillNameShadowed",
     "SkillNotFound",
     "SkillParentChanged",
+    "SkillParentRejected",
     "SkillPendingCapReached",
     "SkillPublishBlocked",
     "SkillVersionCapReached",
@@ -700,7 +808,7 @@ __all__ = [
     "archive_skill",
     "evaluate_version",
     "host_owns",
-    "load_publish_policy",
+    "newest_buildable_versions",
     "newest_version",
     "publish",
     "read_version_file",
@@ -708,6 +816,5 @@ __all__ = [
     "reject",
     "rollback",
     "save_draft",
-    "set_publish_policy",
     "shadows_operator_upload",
 ]

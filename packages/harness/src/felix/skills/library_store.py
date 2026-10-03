@@ -55,6 +55,22 @@ class SkillStateConflict(Exception):
     """The version is not in the state the change was decided against, or does not exist."""
 
 
+class SkillLiveMismatch(Exception):
+    """A publish named the live version it expected, and the skill's live version is another."""
+
+
+class _AnyLive:
+    """`publish(expected_live=ANY_LIVE)`: whatever is live, as before callers could say."""
+
+    def __repr__(self) -> str:
+        return "ANY_LIVE"
+
+
+ANY_LIVE = _AnyLive()
+# What a publish expects to be live: a version, None (nothing), or `ANY_LIVE` (no expectation).
+ExpectedLive = str | None | _AnyLive
+
+
 @runtime_checkable
 class SkillLibraryStore(Protocol):
     async def get_skill(self, tenant_id: str, name: str) -> dict[str, Any] | None: ...
@@ -96,10 +112,26 @@ class SkillLibraryStore(Protocol):
     ) -> None: ...
 
     async def publish(
-        self, tenant_id: str, name: str, version: str, *, from_statuses: Collection[str], by: str, at: int
+        self,
+        tenant_id: str,
+        name: str,
+        version: str,
+        *,
+        from_statuses: Collection[str],
+        by: str,
+        at: int,
+        expected_live: ExpectedLive = ANY_LIVE,
     ) -> str | None: ...
 
+    async def buildable_versions(self, tenant_id: str, names: Collection[str]) -> dict[str, list[str]]: ...
+
     async def archive_skill(self, tenant_id: str, name: str, *, by: str, at: int) -> str | None: ...
+
+
+def is_rejected(row: dict[str, Any]) -> bool:
+    """A draft that was rejected: archived without ever having gone live. A version that was
+    published and later superseded is archived too, and is not rejected."""
+    return row.get("status") == "archived" and row.get("published_at") is None
 
 
 # Every `skill_version` column a caller may leave out, at the value Postgres would give it, so
@@ -263,13 +295,23 @@ class InMemorySkillLibraryStore:
         row.update(status="archived", decided_by=by, decision_note=note, decided_at=at)
 
     async def publish(
-        self, tenant_id: str, name: str, version: str, *, from_statuses: Collection[str], by: str, at: int
+        self,
+        tenant_id: str,
+        name: str,
+        version: str,
+        *,
+        from_statuses: Collection[str],
+        by: str,
+        at: int,
+        expected_live: ExpectedLive = ANY_LIVE,
     ) -> str | None:
         row = self._versions.get((tenant_id, name, version))
         skill = self._skills.get((tenant_id, name))
         if row is None or skill is None or row["status"] not in from_statuses:
             raise SkillStateConflict(f"{name}@{version}")
         previous = skill["live_version"]
+        if expected_live is not ANY_LIVE and previous != expected_live:
+            raise SkillLiveMismatch(f"{name} is live at {previous}, not {expected_live}")
         for (t, n, v), other in self._versions.items():
             if t == tenant_id and n == name and v != version and other["status"] == "published":
                 other["status"] = "archived"
@@ -278,6 +320,14 @@ class InMemorySkillLibraryStore:
             row["published_at"] = at
         skill.update(live_version=version, updated_at=at)
         return previous
+
+    async def buildable_versions(self, tenant_id: str, names: Collection[str]) -> dict[str, list[str]]:
+        wanted = set(names)
+        out: dict[str, list[str]] = {}
+        for (t, n, v), row in self._versions.items():
+            if t == tenant_id and n in wanted and not is_rejected(row):
+                out.setdefault(n, []).append(v)
+        return {n: sorted(vs) for n, vs in out.items()}
 
     async def archive_skill(self, tenant_id: str, name: str, *, by: str, at: int) -> str | None:
         skill = self._skills.get((tenant_id, name))
@@ -626,7 +676,15 @@ class PostgresSkillLibraryStore:
             await db.commit()
 
     async def publish(
-        self, tenant_id: str, name: str, version: str, *, from_statuses: Collection[str], by: str, at: int
+        self,
+        tenant_id: str,
+        name: str,
+        version: str,
+        *,
+        from_statuses: Collection[str],
+        by: str,
+        at: int,
+        expected_live: ExpectedLive = ANY_LIVE,
     ) -> str | None:
         from sqlalchemy import update
 
@@ -639,6 +697,11 @@ class PostgresSkillLibraryStore:
                 await db.rollback()
                 raise SkillStateConflict(f"{name}@{version}")
             previous = skill.live_version
+            # Checked under the skill row's lock: two reviewers who both saw `0.1.0` live cannot
+            # both move it.
+            if expected_live is not ANY_LIVE and previous != expected_live:
+                await db.rollback()
+                raise SkillLiveMismatch(f"{name} is live at {previous}, not {expected_live}")
             await db.execute(
                 update(SkillVersionRow)
                 .where(
@@ -655,6 +718,29 @@ class PostgresSkillLibraryStore:
             skill.live_version, skill.updated_at = version, at
             await db.commit()
             return previous
+
+    async def buildable_versions(self, tenant_id: str, names: Collection[str]) -> dict[str, list[str]]:
+        """Each named skill's versions that are not rejected (`is_rejected`), in one query."""
+        from sqlalchemy import select
+
+        from felix.db.models import SkillVersionRow as V
+
+        if not names:
+            return {}
+        async with self._session(tenant_id) as db:
+            rows = (
+                await db.execute(
+                    select(V.name, V.version).where(
+                        V.tenant_id == tenant_id,
+                        V.name.in_(list(set(names))),
+                        ~((V.status == "archived") & V.published_at.is_(None)),
+                    )
+                )
+            ).all()
+        out: dict[str, list[str]] = {}
+        for name, version in rows:
+            out.setdefault(name, []).append(version)
+        return {n: sorted(vs) for n, vs in out.items()}
 
     async def archive_skill(self, tenant_id: str, name: str, *, by: str, at: int) -> str | None:
         from sqlalchemy import update
@@ -704,19 +790,23 @@ def clear_memory() -> None:
 
 
 __all__ = [
+    "ANY_LIVE",
     "LIBRARY_PREFIX",
     "MAX_LIBRARY_SKILLS",
     "MAX_VERSIONS_LISTED",
     "MAX_VERSIONS_PER_SKILL",
     "SUMMARY_COLUMNS",
     "DraftCursor",
+    "ExpectedLive",
     "InMemorySkillLibraryStore",
     "PostgresSkillLibraryStore",
     "SkillLibraryStore",
+    "SkillLiveMismatch",
     "SkillStateConflict",
     "SkillStatus",
     "SkillVersionExists",
     "clear_memory",
     "get_skill_library_store",
+    "is_rejected",
     "library_object_key",
 ]

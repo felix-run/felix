@@ -352,10 +352,13 @@ First, because everything else governs it.
       4. [~] Feedback (`submit_skill_feedback`, the `/-/feedback` inbox, accept / reject),
          improvement from accepted feedback into a reviewed draft, baseline-vs-with-skill evals,
          and the per-tenant publish policy (`require_eval`, `min_eval_uplift`), run by the
-         worker's `skill_jobs`. Open: the sweep is a once-a-minute cron (the API does not
-         enqueue to the worker); a tenant policy cannot be deleted back to the settings, only
-         set; the judge reads each answer fenced, but a skill that persuades the answering model
-         to talk up its own answer is a residual risk to an eval-gated publish.
+         worker's `skill_jobs`. Review fixes: tighten-only tenant policy with `DELETE`, rollback
+         skips the eval requirement, only bundle-scenario evals count for an agent's version,
+         pinned scenarios, leases with heartbeat / attempts / deadline, per-tenant job caps, fair
+         claims, one sweep at a time, `expected_live_version` on publish, agents never build on
+         a rejected draft. Open: the sweep is a once-a-minute cron (the API does not enqueue to
+         the worker); a skill that persuades the answering model to talk up its own answer is a
+         residual risk to an eval-gated publish; the job caps count then insert.
       5. [ ] felix-web: client, vendored skill-format, library / editor / diff / review queue /
          inline chat card.
       6. [ ] felix-web docs: skill authoring guide, management API reference.
