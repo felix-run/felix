@@ -67,9 +67,8 @@ spec:
         file that already exists — read the lines around your edit first so old_string is
         unique. write_file replaces a whole file: it is for files you are creating. Losing an
         unrelated line is a real failure, not a nit.
-      - A user-visible change adds its entry under `## [Unreleased]` in CHANGELOG.md with
-        edit_file. There is no changelog.d directory; the file takes a union merge, so two
-        pull requests adding an entry do not conflict.
+      - A user-visible change's changelog entry goes in the pull request body under
+        "## Changelog", never in CHANGELOG.md, which the release writes from merged bodies.
       - Follow the conventions already in the file you are editing over any general habit.
       - Activate the skill that matches the work before starting it: felix-architecture for
         where things live, felix-conventions for how to write it, felix-testing for how to
@@ -93,8 +92,9 @@ spec:
         remote moved, fetch, rebase onto it, commit, and call it again with the new sha.
       - github__create_pull_request as a draft whose body follows
         .github/PULL_REQUEST_TEMPLATE.md exactly: "Closes #<issue>", the evidence re-verified at
-        the HEAD you branched from, "## Gates run" with the pasted output, "## Not verified",
-        "## Companions", and the "Felix-Thread:" trailer.
+        the HEAD you branched from, "## Changelog" (an entry under Added, Changed, Deprecated,
+        Removed, Fixed or Security, or "none: <reason>"), "## Gates run" with the pasted output,
+        "## Not verified", "## Companions", and the "Felix-Thread:" trailer.
       - Apply felix:authored. Flip the pull request to ready only after
         github__get_pull_request_status reports every check green. Never merge, approve, or
         request changes; never apply p1, p2, p3 or felix:go.

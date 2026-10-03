@@ -387,13 +387,27 @@ def test_a_second_session_start_keeps_the_first_baseline(tmp_path: pathlib.Path)
 
 
 @needs_jq
-def test_doc_drift_is_satisfied_by_a_changelog_entry(tmp_path: pathlib.Path) -> None:
+def test_doc_drift_is_not_satisfied_by_editing_the_changelog(tmp_path: pathlib.Path) -> None:
+    """A PR's entry belongs in its description now; the release writes CHANGELOG.md, and an
+    edit to it is the habit this hook must not reward."""
     root = _drift_repo(tmp_path)
     state = tmp_path / "state"
     state.mkdir()
     _start(root, "s2", state)
     (root / "packages/harness/src/felix/config.py").write_text("changed\n")
     (root / "CHANGELOG.md").write_text("seed\n- entry\n")
+    reason = _stop(root, "s2", state)
+    assert "config.py" in reason and "## Changelog in the PR description" in reason
+
+
+@needs_jq
+def test_doc_drift_is_satisfied_by_a_docs_change(tmp_path: pathlib.Path) -> None:
+    root = _drift_repo(tmp_path)
+    state = tmp_path / "state"
+    state.mkdir()
+    _start(root, "s2", state)
+    (root / "packages/harness/src/felix/config.py").write_text("changed\n")
+    (root / "README.md").write_text("documented\n")
     assert _stop(root, "s2", state) == ""
 
 

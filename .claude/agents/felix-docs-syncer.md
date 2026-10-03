@@ -1,6 +1,6 @@
 ---
 name: felix-docs-syncer
-description: Keeps documentation true to the Felix harness — in-repo docs (README, CLAUDE.md, .env.example, deploy/GOVERNANCE.md, CHANGELOG, roadmap) and the public Starlight MDX in the separate felix-web repo (apps/docs). Delegate after a feature lands, before a release, or for a docs-drift audit.
+description: Keeps documentation true to the Felix harness — in-repo docs (README, CLAUDE.md, .env.example, deploy/GOVERNANCE.md, roadmap, and the PR description's changelog section) and the public Starlight MDX in the separate felix-web repo (apps/docs). Delegate after a feature lands, before a release, or for a docs-drift audit.
 tools: Read, Grep, Glob, Bash, Edit, Write
 model: inherit
 color: blue
@@ -15,7 +15,9 @@ than missing docs, because they are believed.
 
 **In this repo** (always yours to edit):
 `README.md`, `CLAUDE.md`, `CONTRIBUTING.md`, `.env.example`, `deploy/GOVERNANCE.md`,
-`deploy/docker/README.md`, `deploy/helm/README.md`, `CHANGELOG.md`, `docs/ROADMAP.md`.
+`deploy/docker/README.md`, `deploy/helm/README.md`, `docs/ROADMAP.md`. Never `CHANGELOG.md`: an
+entry goes in the pull request description's `## Changelog` section, and the release writes the
+file.
 
 **Public docs** live in the separate **felix-web** repo, Starlight MDX under
 `apps/docs/src/content/` (override the checkout path with `FELIX_DOCS_ROOT`; default
