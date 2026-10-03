@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The vision route fails over.** It was built alone, so one provider error on a turn carrying an
+  image failed the turn, while the same manifest's text turns had `spec.model.fallbacks` to fall
+  back on. The vision route now tries those fallbacks, skipping any the catalog vouches text-only,
+  since a text-only model would be handed an "image omitted" line in place of the picture.
+
 ### Fixed
 
 - **A screened tool image was transcribed twice.** It was read as inline bytes when the tool
@@ -14,6 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   screening cache keys differently. Every image a tool returned under `image_model` therefore
   cost two vision calls. The stored reference now reuses the transcript and verdict its bytes
   were screened under.
+- **A fallback that answered was metered as the primary.** `_FallbackClient` returned the
+  fallback's result unmarked, so its tokens were priced at the primary's rates and reported under
+  its route. That cost could be zero for an unpriced primary, or many times too much for a cheap
+  one. The result now carries the route that answered, on `chat` and on `stream_turn`, which is
+  how the vision client already reported its own.
 
 - **A thread with a vision route was compacted for the wrong model.** The compaction window
   was sized from the primary route alone. Once an image is in a thread, every call goes to the
