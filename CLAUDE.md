@@ -94,7 +94,7 @@ A test that needs an optional extra gates on `tests/optional_deps.py:require_opt
 extra)`, never a bare `pytest.importorskip` — an invariant enforces this. A module-level
 `importorskip` collapses a whole file into one collect-time skip, so it vanishes from the run
 without touching the skip count; that is how six Temporal tests went unexecuted in CI. CI installs
-`--extra temporal --extra warehouse` and sets `FELIX_REQUIRE_OPTIONAL_EXTRAS=1`, which turns a
+`--extra warehouse --extra sandbox --extra otel` and sets `FELIX_REQUIRE_OPTIONAL_EXTRAS=1`, which turns a
 missing extra into a failure. Locally, without that variable, these still skip as before.
 
 End-to-end (`tests/e2e/`) boots the zero-argument `create_application()` production uses, sends
@@ -147,7 +147,7 @@ same pair locally. Neither fixture means anything without the other.
   rule, so installing the client never installs the server. `felix.sdk` is a re-export of it.
 - `packages/harness` (`felix`) — all the logic: manifests, patterns, tools, session,
   governance, auth, memory, eval, durability, storage, plugins.
-- `packages/cli` (`felix`) — `migrate | eval | mint-jwt | login | ingest-docs | bundle-manifests | validate-manifest | doctor | version | temporal-worker`.
+- `packages/cli` (`felix`) — `migrate | eval | mint-jwt | login | ingest-docs | bundle-manifests | validate-manifest | doctor | version`.
 - `apps/api` (`felix-api`) — FastAPI routes, one module per surface in `routes/`, plus two
   underscore-prefixed modules that carry no route: `_sse.py` knows the SSE *envelope* (frame
   spelling, `[DONE]`, heartbeats — never spell a frame by hand elsewhere) and `_streaming.py`
@@ -204,7 +204,7 @@ physical: `felix.patterns.model` keeps only what needs the harness — route res
 against `Settings`, `record_usage`, and the fallback/escalation composites — while every
 wire format lives in `felix_ai` and reaches back through nothing. AWS and GCP are optional
 extras; the default path is `FELIX_OBJECT_STORE=fs` with zero cloud SDKs. Keep it that way —
-heavy deps (Playwright, sentence-transformers, DuckDB, Presidio, Temporal) live behind
+heavy deps (Playwright, sentence-transformers, DuckDB, Presidio) live behind
 extras and are imported lazily inside functions, never at module top level.
 
 There is deliberately **no** Cloudflare Workers / Durable Objects / Hyperdrive / R2-binding /
@@ -231,7 +231,7 @@ when `auth_mode=none`; `admin`/`*` bypass; `x:write` implies `x:read`).
 
 Chat state is an append-only session event log (`session/store.py`) with strategies
 (`full_replay`, `compacting`, `windowed:N`, `semantic:N`) plus fork/rewind/lease/search/export.
-`spec.execution.mode: durable` enqueues a fiber (`durability/fibers.py`, Temporal optional)
+`spec.execution.mode: durable` enqueues a fiber (`durability/fibers.py`)
 and returns `202` + `resume_token`.
 
 The worker owns everything periodic: audit/usage flush, scheduled jobs, memory consolidation,

@@ -60,7 +60,7 @@ skills, and every path they cite), `make eval`, the Scalar SRI check, and `pre-c
 | CI job | Why local differs | Closest local run |
 |---|---|---|
 | `lint` | also `uv lock --check` and a 48h dependency-age gate | `uv lock --check` |
-| `test` | installs only `temporal warehouse sandbox otel`, sets `FELIX_REQUIRE_OPTIONAL_EXTRAS=1` and `FELIX_REQUIRE_HELM=1` (a missing extra or helm fails instead of skipping) | `FELIX_REQUIRE_OPTIONAL_EXTRAS=1 make test-cov` |
+| `test` | installs only `warehouse sandbox otel`, sets `FELIX_REQUIRE_OPTIONAL_EXTRAS=1` and `FELIX_REQUIRE_HELM=1` (a missing extra or helm fails instead of skipping) | `FELIX_REQUIRE_OPTIONAL_EXTRAS=1 make test-cov` |
 | `conformance` | real Postgres + Valkey services | `make conformance` with both URLs set |
 | `lean` | a `--no-dev` venv with no extras | `uv sync --locked --no-dev && uv run --no-sync python scripts/lean-import-check.py` (then re-sync) |
 | `helm`, `docker` | chart lint, compose render over every overlay, image build, Trivy | `helm lint deploy/helm/felix`; `docker compose -f deploy/docker/compose.yml --project-directory . config --format json \| python3 scripts/check-compose-render.py` |

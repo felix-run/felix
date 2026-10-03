@@ -35,7 +35,7 @@ runtime.py → manifests/resolver.py → manifests/builder.py:build_agent → pa
 | `approvals/` | Human-in-the-loop pause and resume | — |
 | `memory/` | Durable facts, capture, consolidation, procedural memory | `store.py`, `capture.py` |
 | `skills/` | Agent Skills loading and catalogue injection | `loader.py` |
-| `durability/` | Fibers and durable execution (Temporal optional) | `fibers.py` |
+| `durability/` | Fibers and durable execution | `fibers.py` |
 | `db/` | SQLAlchemy models, session factory, the `memory://` switch | `models.py`, `session.py` |
 | `storage/` | Object store Protocol and `fs` / `s3` / `gcs` implementations | `fs.py` |
 | `jobs/` | Scheduled work: retention, anomaly scan, continuous eval | `scheduler.py` |
@@ -65,7 +65,7 @@ These are enforced by tests, not convention — `tests/unit/test_invariants.py` 
 `tests/unit/test_plugin_boundary.py` turn each into a failure.
 
 - **Optional dependencies are imported inside the function that needs them**, never at module scope.
-  Playwright, DuckDB, Presidio, Temporal, and the cloud SDKs must stay out of the lean install.
+  Playwright, DuckDB, Presidio, and the cloud SDKs must stay out of the lean install.
 - **Every Postgres-touching module needs a `memory://` twin.** That is the CI test path, not a mock
   layer — and the twin is a second implementation, not duplication to be factored away.
 - **The governance wrapper order in `builder.py` is load-bearing.** Each wrapper clones the tool with

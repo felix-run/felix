@@ -207,6 +207,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   restarting the worker under them is a decision rather than a formality. Options may come in any
   order, and an unknown one is refused.
 
+### Removed
+
+- **The Temporal durability backend.** `FELIX_DURABILITY=temporal` drove fibers through Temporal
+  but used none of its durability primitives (signals, queries, retry policies,
+  `continue_as_new`), held all state in the Postgres fiber row, and could not reach Temporal
+  Cloud. So it gave Felix's guarantees under Temporal's name, while the fiber scheduler gained
+  run-to-suspension, crash-resume, completion webhooks and a one-second poll. Gone:
+  - `felix/durability/temporal.py`, `felix temporal-worker`, `felix-temporal-worker`;
+  - the `temporal` extra and `compose.temporal.yml` (`make up-temporal`);
+  - `FELIX_TEMPORAL_HOST` and `FELIX_TEMPORAL_NAMESPACE`.
+
+  `FELIX_DURABILITY=temporal` now fails startup with what to do. The fiber scheduler claims rows
+  an earlier version handed to Temporal (`backend: temporal`), so in-flight durable chats carry
+  on. See `docs/UPGRADING.md`.
+
 ### Changed
 
 - **Anthropic models with native structured outputs get `output_config.format` instead of the

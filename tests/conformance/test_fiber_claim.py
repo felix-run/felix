@@ -117,43 +117,24 @@ async def test_the_claim_records_who_holds_it(fiber_settings: Any) -> None:
     assert claimed[0]["lease_owner"], claimed
 
 
-# --- fibers this scheduler does not own -----------------------------------------------------
+# --- fibers an earlier version handed to Temporal -----------------------------------------
 
 
 @parametrized
 @pytest.mark.asyncio
-async def test_a_temporal_backed_fiber_is_never_claimed(fiber_settings: Any) -> None:
-    """Temporal drives its own workflows; claiming one here would run the step twice."""
-    await fibers.create_fiber(fiber_settings, TENANT, status="pending", state={"backend": "temporal"})
+async def test_a_fiber_an_earlier_version_gave_to_temporal_is_claimed(fiber_settings: Any) -> None:
+    """The Temporal backend is gone, so nothing else will ever drive a row it was given.
 
-    assert await _claim(fiber_settings) == []
-
-
-@parametrized
-@pytest.mark.asyncio
-async def test_temporal_fibers_do_not_starve_the_batch(fiber_settings: Any) -> None:
-    """A batch full of Temporal rows must not stop the scheduler seeing real work.
-
-    The two arms filter at different points. The twin skips Temporal rows *before* counting
-    toward `FIBER_BATCH`, so it scans past them. Postgres applies `LIMIT FIBER_BATCH` in SQL and
-    only then drops Temporal rows in Python, so a tenant holding a batch's worth of
-    Temporal-backed fibers claims nothing at all and its ordinary fibers never run.
-
-    That is starvation on the system of record and not on the twin, which is the shape a
-    conformance suite exists to surface.
+    Its state is all in the row, so this scheduler picks it up; skipping it, as both arms did
+    while Temporal existed, would strand every in-flight durable chat across the upgrade.
     """
-    # Comfortably more than one batch, so the real fiber is excluded by the limit rather than
-    # by a tie: at exactly `FIBER_BATCH` the timestamps can collide, and which row falls outside
-    # the window is then Postgres's arbitrary choice among equal sort keys.
-    for _ in range(fibers.FIBER_BATCH + 5):
-        await fibers.create_fiber(fiber_settings, TENANT, status="pending", state={"backend": "temporal"})
-    real = await fibers.create_fiber(fiber_settings, TENANT, status="pending")
+    stranded = await fibers.create_fiber(
+        fiber_settings, TENANT, status="pending", state={"backend": "temporal"}
+    )
 
     claimed = await _claim(fiber_settings)
 
-    assert [row["id"] for row in claimed] == [real["id"]], (
-        "the ordinary fiber is starved behind a batch of Temporal rows"
-    )
+    assert [row["id"] for row in claimed] == [stranded["id"]]
 
 
 # --- batching and order ---------------------------------------------------------------------

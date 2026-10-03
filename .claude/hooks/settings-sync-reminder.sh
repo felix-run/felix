@@ -35,6 +35,6 @@ case "$rel" in
   apps/worker/src/felix_worker/tasks.py)
     emit "Worker tasks changed: cron schedules are Taskiq labels on the task, so a new periodic job only runs when felix-scheduler is running alongside felix-worker. Check deploy/docker/compose.yml and deploy/helm/felix for the scheduler service before assuming it fires in a deployment." ;;
   pyproject.toml|packages/*/pyproject.toml|apps/*/pyproject.toml)
-    emit "Dependency surface changed: keep the DEFAULT install lean — heavy deps (Playwright, sentence-transformers, DuckDB, Presidio, Temporal, cloud SDKs) belong in an optional extra, imported lazily inside the function that needs them. Forward any new extra from the root pyproject [project.optional-dependencies], run 'uv lock', and note it in the README extras table." ;;
+    emit "Dependency surface changed: keep the DEFAULT install lean — heavy deps (Playwright, sentence-transformers, DuckDB, Presidio, cloud SDKs) belong in an optional extra, imported lazily inside the function that needs them. Forward any new extra from the root pyproject [project.optional-dependencies], run 'uv lock', and note it in the README extras table." ;;
 esac
 exit 0

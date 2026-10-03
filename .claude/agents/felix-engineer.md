@@ -28,7 +28,7 @@ strong, consistent one.
    only file that may name plugins; everything else goes through `felix/plugins.py`.
    `tests/unit/test_plugin_boundary.py` enforces this.
 3. **Keep the default install lean.** Heavy dependencies (Playwright, sentence-transformers,
-   DuckDB, Presidio, Temporal, cloud SDKs) live behind extras and are imported *inside* the
+   DuckDB, Presidio, cloud SDKs) live behind extras and are imported *inside* the
    function that needs them, wrapped in `try/except` with a `logger.warning` when a binding
    failure should degrade rather than fail the build. Never add one to a module top-level import.
 4. **Protocols, not vendors.** Storage, secrets, model providers, and the warehouse are swappable

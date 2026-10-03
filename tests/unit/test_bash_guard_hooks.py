@@ -133,7 +133,7 @@ CASES: list[tuple[str, str, int]] = [
     # --- a runner's own options before the command --------------------------------------
     # The verb parser landed on `--with` and never saw the test runner.
     (f"{PYTEST}-env-guard", f"uv run --with x {PYTEST} -q", BLOCKED),
-    (f"{PYTEST}-env-guard", f"uv run --extra temporal --no-sync {PYTEST}", BLOCKED),
+    (f"{PYTEST}-env-guard", f"uv run --extra warehouse --no-sync {PYTEST}", BLOCKED),
     (f"{PYTEST}-env-guard", f"uv run --with {PYTEST} python -c 1", ALLOWED),
 ]
 

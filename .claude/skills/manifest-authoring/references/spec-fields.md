@@ -110,6 +110,5 @@ anonymous, so a manifest with `allow_anonymous: false` is unreachable locally by
 ## Durable execution
 
 `spec.execution.mode: durable` enqueues a fiber and returns `202` with a `resume_token`; poll
-`GET /chat/runs/{resume_token}`. `FELIX_DURABILITY=temporal` swaps the backend (needs the
-`temporal` extra and a running `felix temporal-worker`). Steering (`/chat/steer`) and follow-ups
-work against both.
+`GET /chat/runs/{resume_token}`. The worker's fiber scheduler drives it (Temporal was removed as
+a backend). Steering (`/chat/steer`) and follow-ups work against it.

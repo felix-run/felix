@@ -204,26 +204,3 @@ async def test_a_claim_lost_before_the_invoke_calls_no_model(boot: Any) -> None:
 
     assert calls == 0
     assert row["status"] != "completed" and int(row["state_json"].get("cursor") or 0) == 0
-
-
-async def test_a_temporal_retry_resumes_from_the_stored_marker(boot: Any) -> None:
-    """Temporal retries an activity with the row it was first handed, which predates the
-    marker; the resume point reads the stored row for it."""
-    from felix.durability import fibers as F
-
-    script = [
-        ScriptedTurn(content="", tool_calls=[CALC], stop_reason="tool_use"),
-        ScriptedTurn(error=WorkerDied()),
-        ScriptedTurn(content="It is 4."),
-    ]
-    async with boot(script, manifests={"e2e-durable": _manifest()}) as app:
-        token = await _enqueue(app)
-        handed = {**F._memory_fibers[("default", token)]}
-        handed["state_json"] = dict(handed["state_json"])
-        with pytest.raises(WorkerDied):
-            await F.advance_fiber(app.settings, {**handed, "state_json": dict(handed["state_json"])})
-        assert "invoke_began" in F._memory_fibers[("default", token)]["state_json"]
-        await F.advance_fiber(app.settings, handed)  # the activity's original input, again
-        prompts = app.spy.prompts
-
-    assert _users(prompts[-1]) == [REQUEST], "resumed, not re-sent"

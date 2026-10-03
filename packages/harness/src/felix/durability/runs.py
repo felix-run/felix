@@ -1,4 +1,4 @@
-"""Durable chat runs — fibers by default, Temporal when configured."""
+"""Durable chat runs, enqueued as fibers the worker drives to completion."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from typing import Any
 
 from felix.config import Settings
 from felix.context import try_get_context
-from felix.durability.fibers import create_fiber, get_fiber, now_ms, save_fiber
+from felix.durability.fibers import create_fiber, get_fiber, now_ms
 from felix.manifests.schema import ABSOLUTE_LIMITS, ExecutionSpec
 from felix.patterns.types import ChatMessage
 
@@ -55,7 +55,7 @@ async def start_durable_chat(
     execution: ExecutionSpec,
     pin: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Enqueue an invoke fiber and optionally start a Temporal workflow."""
+    """Enqueue an invoke fiber; the worker's fiber scheduler runs it."""
     ttl = _ttl_seconds(settings, execution)
     expires_at = now_ms() + ttl * 1000
     state: dict[str, Any] = {
@@ -121,35 +121,6 @@ async def start_durable_chat(
         # manifest naming an endpoint it may not use is refused at enqueue, not after the run.
         webhooks=endpoints_for_run(settings, tenant_id, list(execution.webhooks)),
     )
-    if getattr(settings, "durability", "fibers") == "temporal":
-        try:
-            from felix.durability.temporal import start_fiber_workflow
-
-            # Mark and persist BEFORE starting the workflow, not after. Starting first and
-            # saving second handed Temporal a snapshot of the row and then bumped the
-            # stored `version` behind it, so every write the activity made compared
-            # against a version that was already stale and was discarded — the workflow
-            # ran to completion, reported "completed", and the fiber row stayed `pending`
-            # forever. A durable chat that finishes invisibly is worse than one that fails.
-            state = dict(fiber.get("state_json") or state)
-            state["backend"] = "temporal"
-            fiber["state_json"] = state
-            await save_fiber(settings, fiber)
-            await start_fiber_workflow(settings, fiber)
-        except Exception:
-            # Record the fallback, not just log it. `backend` was set inside the `try`,
-            # so a failed start left the row indistinguishable from a run that never
-            # asked for Temporal -- and the feature was broken for long enough that
-            # nobody could tell from a fiber row which one they were looking at.
-            state = dict(fiber.get("state_json") or state)
-            state["backend"] = "fibers"
-            state["backend_fallback"] = "temporal_start_failed"
-            fiber["state_json"] = state
-            await save_fiber(settings, fiber)
-            logger.warning(
-                "temporal start failed; fiber scheduler will run this chat",
-                exc_info=True,
-            )
     return {
         "status": "accepted",
         "resume_token": fiber["id"],

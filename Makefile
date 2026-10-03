@@ -1,4 +1,4 @@
-.PHONY: help schema schema-check contract contract-check bundle toolkit eval e2e install install-full install-warehouse lint fmt type test test-cov check check-ci conformance dev dev-key up up-lite up-gcp up-full up-pooled up-replicas up-observability up-temporal up-self metrics-token down down-all cli seed migrate doctor docker-build
+.PHONY: help schema schema-check contract contract-check bundle toolkit eval e2e install install-full install-warehouse lint fmt type test test-cov check check-ci conformance dev dev-key up up-lite up-gcp up-full up-pooled up-replicas up-observability up-self metrics-token down down-all cli seed migrate doctor docker-build
 
 COMPOSE := docker compose -f deploy/docker/compose.yml --project-directory .
 COMPOSE_LITE := $(COMPOSE) -f deploy/docker/compose.lite.yml
@@ -6,7 +6,6 @@ COMPOSE_GCP := $(COMPOSE) -f deploy/docker/compose.gcp.yml -f deploy/docker/comp
 COMPOSE_PGB := $(COMPOSE) -f deploy/docker/compose.pgbouncer.yml
 COMPOSE_REPLICAS := $(COMPOSE) -f deploy/docker/compose.replicas.yml
 COMPOSE_OBS := $(COMPOSE) -f deploy/docker/compose.observability.yml
-COMPOSE_TEMPORAL := $(COMPOSE) -f deploy/docker/compose.temporal.yml
 COMPOSE_SELF := $(COMPOSE) -f deploy/docker/compose.self.yml
 
 help:
@@ -31,7 +30,6 @@ help:
 	@echo "  up-pooled         + PgBouncer in transaction mode (many workers, few connections)"
 	@echo "  up-replicas       + two API replicas behind one origin (cross-replica proof)"
 	@echo "  up-observability  + OTel Collector, Prometheus, Grafana, Jaeger, Loki, exporters"
-	@echo "  up-temporal       + Temporal server, UI :8233, and felix-temporal-worker"
 	@echo "  up-self           + the self-build stack (Felix working on this repo; docs/SELF.md)"
 	@echo "  schema            regenerate schemas/manifest.schema.json"
 	@echo "  down              stop the project (every overlay's services; --remove-orphans)"
@@ -59,9 +57,9 @@ type:
 	# Same scope as CI — tests are excluded on purpose (fakes and fixtures
 	# trip ty without adding production signal). Needs the optional extras:
 	# unresolved imports are errors by design, and a lean venv cannot resolve
-	# temporalio, boto3, duckdb, playwright, presidio, … CI installs
-	# --all-extras for exactly this reason.
-	@uv run --no-sync python -c "import temporalio" >/dev/null 2>&1 || { \
+	# boto3, duckdb, playwright, presidio, … CI installs --all-extras for
+	# exactly this reason. duckdb (warehouse) stands in for "the extras are there".
+	@uv run --no-sync python -c "import duckdb" >/dev/null 2>&1 || { \
 		echo ""; \
 		echo "ty needs the optional extras installed — run 'make install-full'."; \
 		echo "A lean venv ('make install') reports every optional import as an"; \
@@ -179,12 +177,6 @@ up-observability: dev-key metrics-token
 
 metrics-token:
 	@./scripts/metrics-token.sh
-
-# FELIX_DURABILITY=temporal is set inside the overlay for every process that has to
-# agree about it — api, worker and the temporal-worker. The extra is appended to the
-# image build there too, since durability/temporal.py raises without temporalio.
-up-temporal: dev-key
-	$(COMPOSE_TEMPORAL) up --build
 
 # Felix builds Felix (docs/SELF.md). The builder image is FROM felix:latest, so the base
 # image must exist before the overlay builds on top of it.

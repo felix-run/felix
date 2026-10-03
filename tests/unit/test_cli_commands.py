@@ -3,7 +3,7 @@
 `tests/unit/test_entrypoint_wiring.py` proves each `[project.scripts]` target resolves to a
 callable. That is where the console script ends and where this file starts: nothing ran the
 bodies. `doctor` and `validate-manifest` had tests of their own; `version`, `migrate`,
-`mint-jwt`, `bundle-manifests` and `temporal-worker` had none.
+`mint-jwt` and `bundle-manifests` had none (nor `temporal-worker`, since removed).
 
 Running them found five defects, four of them the same shape — a command that exits 0, looks
 right on screen, and hands back something nothing downstream accepts:
@@ -23,7 +23,6 @@ operator reading an error — rather than the exit code alone.
 
 from __future__ import annotations
 
-import inspect
 import json
 import pathlib
 import re
@@ -309,43 +308,3 @@ def test_migrate_upgrades_to_head_against_a_real_url(monkeypatch: pytest.MonkeyP
     assert result.exit_code == 0, result.output
     # "head" is the default argument, which is how every deploy invokes it.
     assert upgrades == ["head"], upgrades
-
-
-def test_temporal_worker_runs_the_worker_with_the_process_settings(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The seam between the CLI and the durability backend, which nothing else crosses.
-
-    The body is one `asyncio.run(run_worker(get_settings()))`, and it blocks on a Temporal
-    server — so the worker itself is replaced and what gets asserted is the wiring: that the
-    command reaches `run_worker` at all, and hands it the process settings rather than a
-    freshly constructed default.
-    """
-    from tests.optional_deps import require_optional
-
-    require_optional("temporalio", "temporal")
-    from felix.durability import temporal as temporal_module
-
-    monkeypatch.setenv("FELIX_DATABASE_URL", "memory://temporal-cli")
-    get_settings.cache_clear()
-    real_signature = inspect.signature(temporal_module.run_worker)
-    calls: list[inspect.BoundArguments] = []
-
-    async def _capture(*args: Any, **kwargs: Any) -> None:
-        # Bound against the *real* signature, so a parameter added to `run_worker` and not to
-        # the call site fails here instead of at a worker's first start. A fake with a fixed
-        # parameter list would accept the stale call forever.
-        calls.append(real_signature.bind(*args, **kwargs))
-
-    monkeypatch.setattr(temporal_module, "run_worker", _capture)
-
-    result = CliRunner().invoke(app, ["temporal-worker"])
-
-    assert result.exit_code == 0, result.output
-    assert len(calls) == 1, calls
-    settings = calls[0].arguments["settings"]
-    assert settings is get_settings(), "the worker was handed settings the process does not share"
-    # The property the stamp exists for. The root callback stamps "cli" and the stamp is
-    # first-write-wins, so this command used to run for days showing up in pg_stat_activity
-    # as felix-cli — indistinguishable from somebody's shell.
-    assert settings.process_role == "temporal-worker", settings.process_role

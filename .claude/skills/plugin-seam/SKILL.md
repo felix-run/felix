@@ -61,7 +61,7 @@ stack), and `Guardrails.providers` is closed — see `docs/ROADMAP.md` for the r
 The default install and the default Docker image must stay small enough for a 2–4 GiB VM.
 
 - Heavy dependencies — Playwright, sentence-transformers, DuckDB, ClickHouse/Doris clients,
-  Presidio, Temporal, boto3, google-cloud-* — go in an **optional extra**, never in core deps.
+  Presidio, boto3, google-cloud-* — go in an **optional extra**, never in core deps.
 - Import them **inside the function that needs them**, not at module top level:
 
   ```python
