@@ -307,6 +307,24 @@ First, because everything else governs it.
         `prepare_tenant_invoke` returning what it resolved, through its ~10 callers. A
         request-scoped cache is the tempting shortcut and the wrong one: worker tasks run
         fibers back to back, and a stale entry would compile the wrong child.
+- [~] **Skill authoring & library** — Felix can list and activate Agent Skills but nothing
+      can write one. Agents draft, operators review and publish, and chat-ui gets a library,
+      editor, diff and review queue; Skillist's skill-format, review, security scan, versioning
+      and improvement loop are ported rather than rebuilt (same owner; provenance in `NOTICE`).
+      Agent drafts are never live by default: `activate_skill` returns a body as
+      *instructions*, so an agent that absorbed injected tool output could otherwise persist it
+      into every future session in the tenant. One live PR at a time:
+      1. [~] `felix/skills/{format,binary,plugin,semver,review,security}.py` and the catalog
+         loader reading frontmatter as YAML (line-reader fallback for anything YAML refuses),
+         with Skillist's tests and `examples/skills/` as `fixtures/skills/`.
+      2. [ ] Data model, migration, stores with conformance, `felix/skills/library.py`
+         (draft / publish / rollback, publish policy), `create_skill` / `update_skill` tools,
+         `spec.skill_authoring`.
+      3. [ ] `/skill-library` routes, `skills:write` scope, wire contract, e2e.
+      4. [ ] Worker tasks: improvement from feedback, baseline-vs-with-skill evals.
+      5. [ ] felix-web: client, vendored skill-format, library / editor / diff / review queue /
+         inline chat card.
+      6. [ ] felix-web docs: skill authoring guide, management API reference.
 
 ### B. Close the durable loop
 
