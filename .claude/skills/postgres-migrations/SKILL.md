@@ -41,7 +41,7 @@ ls migrations/versions/ | sort | tail -3     # the head is the last one
 ```bash
 make up                        # ask the user first — starts Postgres+pgvector and Valkey
 uv run felix migrate head      # apply
-uv run felix migrate 000<N-1>  # prove downgrade works
+uv run felix migrate 000<N-1> --down  # prove downgrade works (without --down it refuses: upgrade can't go back)
 uv run felix migrate head      # back to head
 uv run felix doctor            # connectivity + config check
 ```

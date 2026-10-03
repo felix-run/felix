@@ -63,11 +63,18 @@ def version_cmd() -> None:
 @app.command("migrate")
 def migrate(
     revision: str = typer.Argument("head", help="Alembic revision target."),
+    down: bool = typer.Option(
+        False,
+        "--down",
+        help="Downgrade to REVISION. Destructive: each step's downgrade() drops what it added.",
+    ),
 ) -> None:
-    """Apply Alembic migrations."""
+    """Apply Alembic migrations, or with --down, roll them back to REVISION."""
+    import asyncio
+
     from alembic import command
     from felix.config import get_settings
-    from felix.db.migrations import alembic_config
+    from felix.db.migrations import alembic_config, passed_revision
     from felix.db.session import _use_memory
 
     # The friendly half of the refusal. `migrations/env.py:get_url` refuses it too, for the
@@ -85,7 +92,23 @@ def migrate(
         # command did not fail, it was asked to migrate something that cannot be migrated.
         raise typer.Exit(2)
 
-    command.upgrade(alembic_config(), revision)
+    cfg = alembic_config()
+    if down:
+        command.downgrade(cfg, revision)
+        rprint(f"[yellow]downgraded to {revision}[/yellow]")
+        return
+    # `command.upgrade` to a revision the database is already past does nothing and says
+    # nothing, so `felix migrate 0021` on a database at 0023 printed "migrated to 0021" and
+    # left it at 0023 — which is how the documented "prove the downgrade" step proved nothing.
+    behind = asyncio.run(passed_revision(get_settings(), revision))
+    if behind is not None:
+        typer.echo(
+            f"The database is at {behind}, past {revision}: upgrading would change nothing. "
+            f"To roll back, run `felix migrate {revision} --down` (destructive).",
+            err=True,
+        )
+        raise typer.Exit(2)
+    command.upgrade(cfg, revision)
     rprint(f"[green]migrated to {revision}[/green]")
 
 

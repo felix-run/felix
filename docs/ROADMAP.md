@@ -334,7 +334,7 @@ First, because everything else governs it.
         `prepare_tenant_invoke` returning what it resolved, through its ~10 callers. A
         request-scoped cache is the tempting shortcut and the wrong one: worker tasks run
         fibers back to back, and a stale entry would compile the wrong child.
-- [~] **Skill authoring & library** — Felix can list and activate Agent Skills but nothing
+- [x] **Skill authoring & library** — Felix can list and activate Agent Skills but nothing
       can write one. Agents draft, operators review and publish, and chat-ui gets a library,
       editor, diff and review queue; Skillist's skill-format, review, security scan, versioning
       and improvement loop are ported rather than rebuilt (same owner).
@@ -366,9 +366,11 @@ First, because everything else governs it.
          claim cuts its tenant scan after ordering by last claim. Open: the sweep is a once-a-minute cron (the API does not enqueue to
          the worker); a skill that persuades the answering model to talk up its own answer is a
          residual risk to an eval-gated publish; the job caps count then insert.
-      5. [~] felix-web: client, vendored skill-format, library / editor / diff / review queue /
-         inline chat card.
-      6. [ ] felix-web docs: skill authoring guide, management API reference.
+      5. [x] (web#327) felix-web: client, vendored skill-format, library / editor / diff / review
+         queue / inline chat card, evals, feedback and the policy form; publishes name the live
+         version they expect. Open: the inline card was verified against a scripted model only.
+      6. [x] (web#329, web#332) felix-web docs: concepts, manifest reference, management API,
+         persistence, governance, deploy and observability.
 
 ### B. Close the durable loop
 

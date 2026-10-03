@@ -84,4 +84,29 @@ async def migration_state(settings: Settings) -> MigrationState:
     return MigrationState(current=current, head=head)
 
 
-__all__ = ["MigrationState", "alembic_config", "migration_state", "script_head"]
+async def passed_revision(settings: Settings, target: str) -> str | None:
+    """The database's revision when it is strictly past `target`, else None.
+
+    `command.upgrade` to a revision the database has already passed does nothing and says
+    nothing, so the caller needs to ask first. Only a concrete revision can be passed:
+    `head`, `heads`, `base` and relative targets are left to Alembic, and so is an unknown
+    revision, so that its own error names it.
+    """
+    from alembic.script import ScriptDirectory
+    from alembic.util.exc import CommandError
+
+    if target in {"head", "heads", "base"} or target.startswith(("+", "-")):
+        return None
+    script = ScriptDirectory.from_config(alembic_config())
+    try:
+        wanted = script.get_revision(target)
+    except CommandError:
+        return None
+    current = (await migration_state(settings)).current
+    if wanted is None or current is None or wanted.revision == current:
+        return None
+    passed = {rev.revision for rev in script.iterate_revisions(current, "base")}
+    return current if wanted.revision in passed else None
+
+
+__all__ = ["MigrationState", "alembic_config", "migration_state", "passed_revision", "script_head"]
