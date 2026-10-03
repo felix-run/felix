@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Skill format, bundle validation, quality review and security scan.** These are the
+  groundwork for skill authoring and are not yet wired to a route or a tool. They are ported
+  from Skillist's `skill-format` package (MIT, same author; see `NOTICE`):
+  - `felix.skills.format` parses and serialises SKILL.md, with stable key order and no
+    line folding. Its strict `validate_skill_bundle` checks the frontmatter schema, the name
+    rules and every file path: traversal, absolute paths, NUL and drive letters are refused,
+    and binaries go only under `assets/`, as base64 within 5 MiB.
+  - `felix.skills.plugin` reads `plugin.json` and its egress allowlist, which refuses
+    catch-all hosts.
+  - `felix.skills.semver` handles skill versions.
+  - `felix.skills.review` gives a weighted 0-100 quality score.
+  - `felix.skills.security` scans for credentials, risky scripts, prompt-injection phrasing,
+    obfuscation, executable URLs and oversized files. Its scorer can be replaced with
+    `register_security_scorer`.
+
+  Skillist's example bundles ship as `fixtures/skills/`, and each one must validate and score
+  as the TypeScript scores it.
+
 - **Live-model eval in CI.** Every other eval in CI scores a canned answer, so nothing scored the
   agents themselves. `.github/workflows/eval-live.yml` runs `felix eval` in-process on the checked-out
   code against a real model, never on a pull request:
@@ -244,6 +262,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `pattern`, array-size constraints or recursion). A schema outside it falls back to the tool,
   and the warning names the keyword that cost the guarantee. Callers see no difference:
   `message.content` is the JSON document and `stop_reason` is `end_turn` on either route.
+
+- **SKILL.md frontmatter is read as YAML.** The catalog loader used to split each frontmatter
+  line on its first colon. Quoting, escapes and multi-line values are now read as the
+  agentskills.io spec writes them. A nested `metadata:` map merges into the skill's metadata,
+  so `metadata: {version: 1.2.0}` sets the version. A version keeps the text it was written
+  with, so `1.10` does not become `1.1`. Frontmatter that YAML refuses still loads through the
+  old line reader, with a warning naming the file, because an unquoted
+  `description: Use it: daily` was valid before and is a YAML error now. Every bundled skill
+  parses to the same skill as before. One visible difference: `/skills` metadata no longer
+  carries an empty `metadata` key for a skill with a nested block.
 
 ### Fixed
 

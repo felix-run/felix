@@ -10,11 +10,13 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from felix.skills.format import parse_skill_md as parse_skill_md_format
 from felix.skills.types import Skill, SkillCatalog
 
 logger = logging.getLogger("felix.skills.loader")
 
-_FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n(.*)$", re.DOTALL)
+# Looser than `format.FRONTMATTER_RE`: whitespace may trail a fence.
+_LEGACY_FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n(.*)$", re.DOTALL)
 _NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
 # A version may carry dots (`1.2.0`) which a name may not, but is otherwise the same
 # shape: one segment, no separators, not a traversal.
@@ -34,11 +36,17 @@ def _safe_segment(value: str, pattern: re.Pattern[str], *, limit: int = 64) -> b
     return bool(value) and len(value) <= limit and bool(pattern.match(value)) and value not in {".", ".."}
 
 
-def _parse_frontmatter(raw: str) -> tuple[dict[str, str], str]:
-    text = raw.lstrip("\ufeff")
-    m = _FRONTMATTER_RE.match(text)
+def _legacy_frontmatter(raw: str) -> tuple[dict[str, str], str]:
+    """The pre-YAML reader: every `key: value` line, split on the first colon.
+
+    Kept as the fallback for frontmatter that is not valid YAML. `description: Use it: daily`
+    read fine here and is a YAML error, so a skill written against this reader must not
+    vanish from the catalog when the YAML parser refuses it. Nested lines flatten into the
+    same map, which is how `metadata:` children always reached `Skill.metadata`.
+    """
+    m = _LEGACY_FRONTMATTER_RE.match(raw)
     if not m:
-        return {}, text.strip()
+        return {}, raw.strip()
     meta: dict[str, str] = {}
     for line in m.group(1).splitlines():
         if ":" not in line:
@@ -48,9 +56,48 @@ def _parse_frontmatter(raw: str) -> tuple[dict[str, str], str]:
     return meta, m.group(2).strip()
 
 
+def _scalar_text(value: object, raw: str | None) -> str:
+    """A YAML scalar as the string the legacy reader would have produced.
+
+    A string is taken as YAML parsed it, so quoting and escapes are honoured. Anything
+    else (`1.10`, `true`, `null`, a list) is taken from the line text: YAML would turn
+    the version `1.10` into the float `1.1`.
+    """
+    text = value if isinstance(value, str) else raw or ""
+    return text.strip()
+
+
+def _frontmatter(raw: str, *, source: str) -> tuple[dict[str, str], str]:
+    """Flat string frontmatter and the stripped body: YAML first, the legacy reader second.
+
+    Top-level keys are lowercased, as the legacy reader did, and the children of a nested
+    `metadata:` map merge in after them, so `metadata: {version: 1.2.0}` still sets the
+    version. A nested map under any other key keeps only its key, with an empty value.
+    """
+    text = raw.lstrip("\ufeff")
+    parsed = parse_skill_md_format(text)
+    legacy, legacy_body = _legacy_frontmatter(text)
+    if parsed is None or not isinstance(parsed.frontmatter, dict):
+        if legacy:
+            logger.warning("skill %s: frontmatter is not spec YAML; read line by line instead", source)
+        return legacy, legacy_body
+    flat: dict[str, object] = {str(k).strip().lower(): v for k, v in parsed.frontmatter.items()}
+    nested = flat.get("metadata")
+    if isinstance(nested, dict):
+        del flat["metadata"]
+        flat.update({str(k).strip().lower(): v for k, v in nested.items()})
+    meta = {k: _scalar_text(v, legacy.get(k)) for k, v in flat.items()}
+    return meta, parsed.body.strip()
+
+
 def parse_skill_md(raw: str, *, fallback_name: str, path: str | None = None) -> Skill | None:
-    """Parse a SKILL.md body into a Skill. Returns None if description is missing."""
-    meta, body = _parse_frontmatter(raw)
+    """Parse a SKILL.md body into a Skill. Returns None if description is missing.
+
+    Lenient on purpose: this is the read path for skills already on disk or in the store,
+    so a bad name only warns. `felix.skills.format.validate_skill_bundle` is the strict check,
+    and it belongs to the authoring path.
+    """
+    meta, body = _frontmatter(raw, source=path or fallback_name)
     name = (meta.get("name") or fallback_name).strip().lower()
     description = (meta.get("description") or "").strip()
     if not description:
