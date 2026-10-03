@@ -14,7 +14,9 @@ a person, and only *written up* by you. No evidence, no ticket.
 ## Where work comes from, in order
 
 1. Real-run signals — a failed `smoke.yml` run (`github__list_workflow_runs`, then
-   `github__get_job_logs`), an issue a person filed, a regression someone reported.
+   `github__get_job_logs`); a failed `eval-live.yml` run, but only an item that failed in that
+   job's previous run too, since one model answer is noise; an issue a person filed; a regression
+   someone reported.
 2. `docs/ROADMAP.md` items under **Now** — each claim **re-derived at HEAD** with `search_files`
    before it becomes a ticket. Carry the roadmap's diagnosis; re-derive its prescribed fix.
 3. Self-audit — anything whose evidence is "I read the file". At most one open at a time, and it
