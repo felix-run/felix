@@ -1,0 +1,26 @@
+{
+  "name": "live",
+  "description": "Scored against a real model by .github/workflows/eval-live.yml, so every item is one the `quick` manifest can actually pass: no mock answers, no tools it does not bind. Each pins a behaviour a model or prompt change could break.",
+  "items": [
+    {
+      "item_id": "exact-reply",
+      "user_input": "Reply with exactly: ok",
+      "rubric": { "expect": "ok", "max_tool_calls": 0 }
+    },
+    {
+      "item_id": "uses-the-calculator",
+      "user_input": "Use the calculator tool to compute 1234 * 5678, then reply with just the number, with no commas or spaces.",
+      "rubric": { "tools_called": ["calculator"], "contains": "7006652", "max_tool_calls": 3, "max_errors": 0 }
+    },
+    {
+      "item_id": "no-tool-when-none-is-needed",
+      "user_input": "What is the capital of France? Answer in one word.",
+      "rubric": { "contains": "paris", "max_tool_calls": 0 }
+    },
+    {
+      "item_id": "activates-a-skill",
+      "user_input": "Activate the calculator-help skill, then say in one sentence what it covers.",
+      "rubric": { "tools_called": ["activate_skill"], "min_chars": 20, "max_errors": 0 }
+    }
+  ]
+}

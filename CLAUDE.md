@@ -133,6 +133,11 @@ run passes by construction and a scorer rewritten to `return True` would leave i
 so the run must exit non-zero. CI runs both, and `tests/unit/test_eval_gate_can_fail.py` asserts the
 same pair locally. Neither fixture means anything without the other.
 
+Neither scores the agent; `.github/workflows/eval-live.yml` does, against a real model and never on a
+PR: `quick` on `fixtures/eval/live.json` nightly, `contributor` on `fixtures/eval/contributor.json`
+weekly (on this checkout). `scripts/eval-live.sh <fixture> <manifest>` runs the same thing locally and
+spends real money — it needs a model key and refuses to run without one.
+
 ## Architecture
 
 ### Workspace layout
