@@ -1066,6 +1066,17 @@ turn, leaving the text and any clean images; `block` refuses the turn with 422.
 
   Pillow opens only png, jpeg, gif and webp, as sniffed from the bytes, so no other parser is
   reachable: EPS, and the Ghostscript it would invoke, are not.
+- **A2A and MCP carry images too.** All of the screening below is under content screening; with it
+  off, these images reach the model unscreened, as their text does.
+  - **A2A inbound.** A FilePart is a user turn's image. It is held to the upload rules and stored
+    like an upload, under the quota, so the log keeps a reference. It is screened at ingest when
+    `image_model` is set, under `on_flag` in full.
+  - **A2A peers and remote MCP servers.** Their images are an untrusted tool's. They are checked
+    against the upload rules, and capped at 4 per call, before the screener reads them. They are
+    quarantined without `image_model`.
+  - **Felix's own MCP server.** It returns a tool's governed images to the caller as bytes: at
+    most 4, each one an image by its bytes, and only stored images that this same call made. A
+    reference a tool merely names may be any upload in the tenant.
 - **Secrets and PII in a tool's image are not caught.** Secret masking, PII guardrails and
   judges read text only. A screenshot of a page showing a credential reaches the model and is
   stored for the attachment retention period.

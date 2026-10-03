@@ -259,7 +259,10 @@ First, because everything else governs it.
       - Landed: **image tools** (`spec.image_tools`, `image` extra). The model names an image as
         `latest`, `#n` or a stored reference, since it sees pixels and not file ids; results are
         stored and chain.
-      - Next: **A2A FileParts and MCP image content**, both dropped silently today.
+      - Landed: **A2A FileParts and MCP image content**, both directions. Inbound A2A images are held
+        to the upload rules and screened like a turn's; a peer's or a remote MCP server's images are
+        untrusted tool images. The vision program is complete: routing (#435), tool-result images
+        (#438), image tools (#441), and this.
       - Open, and a change to a security control rather than a feature: uploads are bounded by the
         single global `BodyLimitMiddleware` limit, so a larger ceiling means per-route limits.
         That middleware has a bypass in its history; it should not be widened as a side effect of

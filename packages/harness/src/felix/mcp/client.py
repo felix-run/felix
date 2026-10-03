@@ -7,6 +7,8 @@ from dataclasses import replace
 from typing import Any
 
 import httpx
+from felix_ai.types import ImageAttachment
+from felix_ai.wire.base import data_url
 
 from felix.manifests.schema import McpServerRef
 from felix.manifests.tool_match import matches_any, unmatched_patterns
@@ -14,7 +16,7 @@ from felix.observability.metrics import record_counter
 from felix.security.egress import safe_async_client
 from felix.security.ssrf import assert_safe_outbound_url
 from felix.timeouts import DEFAULT_CONNECT_TIMEOUT_S, timeout_seconds
-from felix.tools.types import Tool, ToolInvocationCtx, define_tool
+from felix.tools.types import Tool, ToolInvocationCtx, ToolOutput, ToolOutputDict, define_tool
 
 logger = logging.getLogger("felix.mcp.client")
 
@@ -154,7 +156,7 @@ def _bind_remote_tool(
         }
     )
 
-    async def handler(args: dict[str, Any], _ctx: ToolInvocationCtx | None = None) -> str:
+    async def handler(args: dict[str, Any], _ctx: ToolInvocationCtx | None = None) -> ToolOutput:
         if ref.transport == "stdio":
             from felix.mcp.stdio import stdio_rpc
 
@@ -170,21 +172,7 @@ def _bind_remote_tool(
                 allow_http=allow_http,
                 wait_s=_timeout_s(ref),
             )
-        if isinstance(result, dict):
-            content = result.get("content")
-            if isinstance(content, list):
-                texts = [
-                    str(c.get("text") or "")
-                    for c in content
-                    if isinstance(c, dict) and c.get("type") == "text"
-                ]
-                joined = "\n".join(t for t in texts if t)
-                if joined:
-                    if result.get("isError"):
-                        return f"[mcp_error] {joined}"
-                    return joined
-            return str(result)
-        return str(result)
+        return _tool_result(result, tool_name=local_name)
 
     return define_tool(
         name=local_name,
@@ -194,6 +182,37 @@ def _bind_remote_tool(
         source=f"mcp:{ref.name}",
         transport="mcp",
     )
+
+
+def _tool_result(result: Any, *, tool_name: str = "mcp") -> ToolOutput:
+    """A `tools/call` result: its text blocks, and its image blocks as images the model sees.
+
+    An image block used to be dropped, and a result with no text fell through to `str()` of the
+    whole result -- base64 in the transcript. As a tool image it is checked here, before the
+    screener reads it (`screenable_tool_images`), and then goes the way of any untrusted tool's.
+    """
+    from felix.tools.tool_images import screenable_tool_images
+
+    if not isinstance(result, dict) or not isinstance(result.get("content"), list):
+        return str(result)
+    texts: list[str] = []
+    found: list[ImageAttachment] = []
+    for block in result["content"]:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "text" and block.get("text"):
+            texts.append(str(block["text"]))
+        elif block.get("type") == "image" and isinstance(block.get("data"), str) and block["data"]:
+            # The label is not trusted: the check reads the type from the bytes.
+            found.append(ImageAttachment(url=data_url("application/octet-stream", block["data"])))
+    if not texts and not found:
+        return str(result)
+    images, notes = screenable_tool_images(found, tool_name=tool_name)
+    text = "\n".join([*texts, *notes])
+    if result.get("isError"):
+        # Kept with or without text: an error that returned only an image is still an error.
+        text = f"[mcp_error] {text}".rstrip()
+    return ToolOutputDict(content=text, attachments=images) if images else text
 
 
 # Instructions reach the system prompt; a server's is at most this long there.

@@ -31,7 +31,7 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
 from felix_ai.types import ImageAttachment, file_ref_url, split_file_ref
-from felix_ai.wire.base import split_data_url
+from felix_ai.wire.base import data_url, split_data_url
 
 from felix.logging_setup import loggable
 
@@ -88,7 +88,7 @@ async def store_tool_images(
                 budget.remaining -= 1
             kept.append(replace(image, filename=None))
             continue
-        raw, media_type, problem = _decoded(image.url)
+        raw, media_type, problem = check_inline_image(image.url)
         if problem:
             notes.append(f"[image dropped: {name} returned an image that {problem}]")
             continue
@@ -137,7 +137,7 @@ async def store_image_bytes(raw: bytes, media_type: str, *, tool_name: str) -> t
     budget.remaining -= 1
     request = current_tenant()
     if request is None:
-        return f"data:{media_type};base64,{base64.b64encode(raw).decode('ascii')}", ""
+        return data_url(media_type, raw), ""
     stored = await _put(raw, media_type, *request)
     if stored is None:
         return None, f"[image dropped: {name} produced an image that could not be stored]"
@@ -146,7 +146,7 @@ async def store_image_bytes(raw: bytes, media_type: str, *, tool_name: str) -> t
     return ref, ""
 
 
-def _decoded(url: str) -> tuple[bytes | None, str | None, str]:
+def check_inline_image(url: str) -> tuple[bytes | None, str | None, str]:
     """`(bytes, media type, "")` for an image a caller could have uploaded, else a reason."""
     from felix.attachments import AttachmentError, image_media_type
 
@@ -160,6 +160,72 @@ def _decoded(url: str) -> tuple[bytes | None, str | None, str]:
         return None, None, "is not valid base64"
     except AttachmentError as exc:
         return None, None, str(exc)
+
+
+def screenable_tool_images(
+    images: Sequence[ImageAttachment], *, tool_name: str
+) -> tuple[list[ImageAttachment], list[str]]:
+    """A remote tool's images held to the upload rules *before* anything reads them.
+
+    For the binders of tools whose images come from another server (A2A peers, remote MCP).
+    The content-screening wrapper runs before the runner's `store_tool_images`, and it sends
+    each image to the paid `image_model`: unchecked, a hostile server could have it transcribe
+    any number of images of any size, labelled anything. Checked here, the screener and the
+    store see the same bytes under the type the bytes declare.
+    """
+    name = loggable(tool_name, limit=64)
+    kept: list[ImageAttachment] = []
+    notes: list[str] = []
+    for index, image in enumerate(images):
+        if index >= MAX_IMAGES_PER_CALL:
+            notes.append(f"[image dropped: {name} returned more images than the per call limit]")
+            continue
+        raw, media_type, problem = check_inline_image(image.url)
+        if problem or raw is None or media_type is None:
+            notes.append(f"[image dropped: {name} returned an image that {problem or 'cannot be read'}]")
+            continue
+        kept.append(ImageAttachment(url=data_url(media_type, raw), media_type=media_type))
+    return kept, notes
+
+
+async def stored_image(file_id: str) -> tuple[bytes, str] | None:
+    """A stored image's bytes and sniffed type, read under the request's tenant, or None.
+
+    None too for bytes that do not sniff as an image the wires can show -- the same rule
+    `attachments.resolve_file_refs` applies before the wire.
+    """
+    from felix.attachments import read_attachment, sniff_media_type
+    from felix.context import current_tenant
+    from felix.storage import get_object_store
+
+    request = current_tenant()
+    if request is None:
+        return None
+    settings, tenant = request
+    raw = await read_attachment(get_object_store(settings), tenant_id=tenant, file_id=file_id)
+    media_type = sniff_media_type(raw) if raw else None
+    return (raw, media_type) if raw and media_type else None
+
+
+async def outgoing_tool_images(images: Sequence[ImageAttachment]) -> list[tuple[str, bytes]]:
+    """`(media type, bytes)` for each of a tool's images that may leave the harness.
+
+    For Felix's own MCP server, which answers `tools/call` without the runner: the per-call cap,
+    the upload rules on inline bytes, and only references this request stored itself
+    (`store_image_bytes`). A reference a tool merely names may be any upload in the tenant.
+    """
+    paid = request_budget().paid
+    out: list[tuple[str, bytes]] = []
+    for image in list(images)[:MAX_IMAGES_PER_CALL]:
+        file_id = split_file_ref(image.url)
+        if file_id:
+            if image.url in paid and (stored := await stored_image(file_id)) is not None:
+                out.append((stored[1], stored[0]))
+            continue
+        raw, media_type, problem = check_inline_image(image.url)
+        if not problem and raw is not None and media_type is not None:
+            out.append((media_type, raw))
+    return out
 
 
 async def _put(raw: bytes, media_type: str, settings: Settings, tenant_id: str) -> str | None:
@@ -185,7 +251,11 @@ __all__ = [
     "MAX_IMAGES_PER_CALL",
     "MAX_IMAGES_PER_RUN",
     "ImageBudget",
+    "check_inline_image",
+    "outgoing_tool_images",
     "request_budget",
+    "screenable_tool_images",
     "store_image_bytes",
     "store_tool_images",
+    "stored_image",
 ]

@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Images over A2A and MCP.** Each of these used to drop images without a word.
+  - **A2A `message/send`:**
+    - It takes image FileParts carrying their bytes. `mimeType` is optional and read from the
+      bytes when absent. An image-only message is valid.
+    - A FilePart is held to the `/files` upload rules and stored like an upload, under the
+      quota, so the session log keeps a reference rather than base64.
+    - One that fails the rules, or arrives as a `uri`, refuses the message with `-32602`.
+    - The image is screened like any user turn's, and a text-only route with no vision route
+      answers `-32602` naming the route.
+    - A refused message's task is recorded `failed`. It used to stay `working`.
+  - **A2A peers:** a peer's image FileParts reach the calling agent as tool images.
+  - **MCP server:** `tools/call` returns a tool's images as `image` content, at most 4, each
+    sniffed, and only stored images the call itself made.
+  - **MCP client:** a remote server's `image` blocks become tool images. An image-only result
+    used to reach the model as the `str()` of the whole result, and an image-only error now
+    keeps its `[mcp_error]` marker.
+
+  Peer and remote-MCP images are checked against the upload rules, and capped, before the paid
+  `image_model` reads them. They are untrusted tool images, quarantined when `image_model` is
+  unset.
+
 - **`GET /auth/methods` says how to get in, without spending anything to find out.** It answers
   `{"github_device": bool, "bearer_required": bool}` to any caller, credential or not, in every
   auth mode — an exact public path beside the probes, but still counted by the global rate
@@ -479,6 +500,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - A list such as `tags: [a, b]` reads as `a, b`.
 
 ### Fixed
+
+- **A Felix-to-Felix A2A peer call answered with a Python dict repr.** The peer client read the
+  answer only from `status.message`, and Felix's own A2A server puts it in `artifacts`. The client
+  now reads `artifacts`, falling back to the status message, and never says the answer twice.
 
 - **A plan's steps keep their titles whatever key the model used.** `plan_create` declared `steps`
   as a bare array, so models guessed a step's shape, and one sent `{"description": …}` for every
