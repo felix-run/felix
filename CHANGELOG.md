@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`felix migrate <revision>` no longer reports success for a revision the database has
+  passed.** Alembic's upgrade to an older revision is a silent no-op, so `felix migrate 0021` on
+  a database at 0023 printed "migrated to 0021" and changed nothing — and the documented
+  "prove the downgrade works" step proved nothing. It now refuses (exit 2), naming the
+  database's revision, and `felix migrate <revision> --down` performs the downgrade.
 - **One skill-job sweep at a time now holds behind PgBouncer.** The `skill_jobs` sweep guarded
   itself with a session advisory lock. Under transaction pooling (`compose.pgbouncer.yml`) the
   lock stayed on whichever server session took it, and the unlock usually ran on another session

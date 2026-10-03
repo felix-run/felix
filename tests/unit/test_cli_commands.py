@@ -308,3 +308,62 @@ def test_migrate_upgrades_to_head_against_a_real_url(monkeypatch: pytest.MonkeyP
     assert result.exit_code == 0, result.output
     # "head" is the default argument, which is how every deploy invokes it.
     assert upgrades == ["head"], upgrades
+
+
+def _alembic_spy(monkeypatch: pytest.MonkeyPatch, *, passed: str | None) -> dict[str, list[str]]:
+    """Substitute Alembic and the passed-revision probe, and record what the command asks for.
+
+    Port 1 for the same reason as above: a slipped substitution must fail to connect.
+    """
+    from alembic import command as alembic_command
+    from felix.db import migrations
+
+    monkeypatch.setenv("FELIX_DATABASE_URL", "postgresql+psycopg://felix:felix@127.0.0.1:1/felix")
+    get_settings.cache_clear()
+    calls: dict[str, list[str]] = {"upgrade": [], "downgrade": []}
+    monkeypatch.setattr(alembic_command, "upgrade", lambda _cfg, rev: calls["upgrade"].append(rev))
+    monkeypatch.setattr(alembic_command, "downgrade", lambda _cfg, rev: calls["downgrade"].append(rev))
+
+    async def fake_passed(_settings: Settings, _target: str) -> str | None:
+        return passed
+
+    monkeypatch.setattr(migrations, "passed_revision", fake_passed)
+    return calls
+
+
+def test_migrate_to_a_revision_already_passed_refuses_rather_than_reporting_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """It printed "migrated to 0021" on a database at 0023 and left it there.
+
+    That was the postgres-migrations skill's "prove downgrade works" step: it proved nothing,
+    because `command.upgrade` to a revision already passed is a silent no-op.
+    """
+    calls = _alembic_spy(monkeypatch, passed="0023_skill_feedback_evals")
+
+    result = CliRunner().invoke(app, ["migrate", "0021_push_subscriptions"])
+
+    assert result.exit_code == 2, result.output
+    assert "0023_skill_feedback_evals" in result.output, result.output
+    assert "--down" in result.output, result.output
+    assert calls == {"upgrade": [], "downgrade": []}, calls
+
+
+def test_migrate_down_downgrades_and_says_so(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _alembic_spy(monkeypatch, passed="0023_skill_feedback_evals")
+
+    result = CliRunner().invoke(app, ["migrate", "0021_push_subscriptions", "--down"])
+
+    assert result.exit_code == 0, result.output
+    assert calls == {"upgrade": [], "downgrade": ["0021_push_subscriptions"]}, calls
+    assert "downgraded to 0021_push_subscriptions" in result.output, result.output
+
+
+def test_migrate_to_a_revision_not_yet_reached_still_upgrades(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The other side of the refusal, so a guard that fired on every target would fail here."""
+    calls = _alembic_spy(monkeypatch, passed=None)
+
+    result = CliRunner().invoke(app, ["migrate", "0024_skill_job_lease"])
+
+    assert result.exit_code == 0, result.output
+    assert calls == {"upgrade": ["0024_skill_job_lease"], "downgrade": []}, calls
