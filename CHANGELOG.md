@@ -14,6 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a database at 0023 printed "migrated to 0021" and changed nothing — and the documented
   "prove the downgrade works" step proved nothing. It now refuses (exit 2), naming the
   database's revision, and `felix migrate <revision> --down` performs the downgrade.
+- **`/v1/chat/completions` dropped tool-call history.** The request model declared no
+  `tool_calls`, and pydantic ignores an undeclared field, so an assistant turn's calls were
+  dropped without a word, and the `tool` messages after them answered ids the model was never
+  shown. They now reach the model, read by the same parser as `/chat`. Arguments that are not a
+  JSON object are a `400 invalid_request_error` naming the call.
+
 - **One skill-job sweep at a time now holds behind PgBouncer.** The `skill_jobs` sweep guarded
   itself with a session advisory lock. Under transaction pooling (`compose.pgbouncer.yml`) the
   lock stayed on whichever server session took it, and the unlock usually ran on another session
