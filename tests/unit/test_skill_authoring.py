@@ -206,7 +206,9 @@ async def test_create_skill_saves_a_draft_the_catalog_does_not_list(
 
     assert result["status"] == "draft" and result["version"] == "0.1.0"
     assert result["security_status"] == "pass" and isinstance(result["quality_score"], int)
-    assert "review_hint" in result
+    # No license, compatibility, scripts or references: the hint says to add them.
+    assert result["review_hint"].startswith("To raise the quality score: ")
+    assert "Add a license or metadata for discoverability" in result["review_hint"]
     row = await get_skill_library_store(settings).get_version("acme", "invoice-triage", "0.1.0")
     assert row is not None
     assert (row["source"], row["author"], row["origin_manifest_id"], row["session_id"]) == (

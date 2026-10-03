@@ -99,29 +99,41 @@ def review_skill_bundle(
 
 
 def _review_frontmatter(fm: SkillFrontmatter) -> list[ReviewCheck]:
-    described = len(fm.description) >= 20
+    length = len(fm.description)
+    licensed = bool(fm.license or fm.metadata)
+    compatible = bool(fm.compatibility)
+    # A failed check's message is what to do, not what passed: `authoring._review_hint`
+    # hands the failed ones to the agent as "To raise the quality score: ...".
+    if length < 20:
+        description_message = "Expand the description to at least 20 characters"
+    elif length > 500:
+        description_message = "Shorten the description to 500 characters or fewer"
+    else:
+        description_message = "Description is substantive"
     return [
         ReviewCheck(
             id="description-length",
             label="Description length",
-            passed=20 <= len(fm.description) <= 500,
-            message="Description is substantive"
-            if described
-            else "Description should be at least 20 characters",
+            passed=20 <= length <= 500,
+            message=description_message,
             weight=15,
         ),
         ReviewCheck(
             id="license-metadata",
             label="License or metadata",
-            passed=bool(fm.license or fm.metadata),
-            message="Includes license or metadata for discoverability",
+            passed=licensed,
+            message="Includes license or metadata for discoverability"
+            if licensed
+            else "Add a license or metadata for discoverability",
             weight=5,
         ),
         ReviewCheck(
             id="compatibility",
             label="Compatibility notes",
-            passed=bool(fm.compatibility),
-            message="Documents agent/environment compatibility",
+            passed=compatible,
+            message="Documents agent/environment compatibility"
+            if compatible
+            else "Document agent/environment compatibility",
             weight=5,
         ),
     ]
@@ -130,6 +142,8 @@ def _review_frontmatter(fm: SkillFrontmatter) -> list[ReviewCheck]:
 def _review_body(body: str) -> list[ReviewCheck]:
     trimmed = body.strip()
     substantive = len(trimmed) >= 100
+    headed = bool(_HEADING_RE.search(trimmed))
+    stepped = bool(_STEP_RE.search(trimmed))
     return [
         ReviewCheck(
             id="body-length",
@@ -137,21 +151,23 @@ def _review_body(body: str) -> list[ReviewCheck]:
             passed=substantive,
             message="Body has sufficient instruction content"
             if substantive
-            else "Body should be at least 100 characters",
+            else "Expand the body to at least 100 characters of instructions",
             weight=15,
         ),
         ReviewCheck(
             id="headings",
             label="Structured headings",
-            passed=bool(_HEADING_RE.search(trimmed)),
-            message="Uses markdown headings for structure",
+            passed=headed,
+            message="Uses markdown headings for structure"
+            if headed
+            else "Add markdown headings for structure",
             weight=10,
         ),
         ReviewCheck(
             id="actionable-steps",
             label="Actionable steps",
-            passed=bool(_STEP_RE.search(trimmed)),
-            message="Includes numbered or bulleted steps",
+            passed=stepped,
+            message="Includes numbered or bulleted steps" if stepped else "Add numbered or bulleted steps",
             weight=10,
         ),
     ]
@@ -166,25 +182,21 @@ def _review_structure(files: Mapping[str, str]) -> list[ReviewCheck]:
             id="scripts-dir",
             label="Scripts directory",
             passed=has_scripts,
-            message="Includes executable scripts"
-            if has_scripts
-            else "Optional scripts/ directory not present",
+            message="Includes executable scripts" if has_scripts else "Add a scripts/ directory (optional)",
             weight=5,
         ),
         ReviewCheck(
             id="references-dir",
             label="References directory",
             passed=has_references,
-            message="Includes reference docs"
-            if has_references
-            else "Optional references/ directory not present",
+            message="Includes reference docs" if has_references else "Add a references/ directory (optional)",
             weight=5,
         ),
         ReviewCheck(
             id="plugin-manifest",
             label="Plugin manifest",
             passed=has_plugin,
-            message="plugin.json present for bundled context" if has_plugin else "No plugin.json (optional)",
+            message="plugin.json present for bundled context" if has_plugin else "Add plugin.json (optional)",
             weight=5,
         ),
     ]

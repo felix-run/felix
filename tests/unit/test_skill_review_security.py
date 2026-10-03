@@ -99,24 +99,43 @@ def test_an_invalid_bundle_scores_zero_with_only_the_validity_check() -> None:
     assert 'name must match skill slug "roll-dice"' in review.checks[0].message
 
 
-@pytest.mark.parametrize(
-    ("check", "files"),
-    [
-        ("description-length", {"SKILL.md": _skill_md(description="Too short.")}),
-        ("description-length", {"SKILL.md": _skill_md(description="x" * 501)}),
-        ("license-metadata", {"SKILL.md": _skill_md()}),
-        ("compatibility", {"SKILL.md": _skill_md()}),
-        ("body-length", {"SKILL.md": "---\nname: roll-dice\ndescription: d\n---\n# Short\n1. one\n"}),
-        ("headings", {"SKILL.md": _skill_md().replace("# Roll dice", "Roll dice")}),
-        ("actionable-steps", {"SKILL.md": _skill_md().replace("1. ", "").replace("2. ", "")}),
-        ("scripts-dir", {"SKILL.md": _skill_md()}),
-        ("references-dir", {"SKILL.md": _skill_md()}),
-        ("plugin-manifest", {"SKILL.md": _skill_md()}),
-    ],
-)
+_FAILING = [
+    ("description-length", {"SKILL.md": _skill_md(description="Too short.")}),
+    ("description-length", {"SKILL.md": _skill_md(description="x" * 501)}),
+    ("license-metadata", {"SKILL.md": _skill_md()}),
+    ("compatibility", {"SKILL.md": _skill_md()}),
+    ("body-length", {"SKILL.md": "---\nname: roll-dice\ndescription: d\n---\n# Short\n1. one\n"}),
+    ("headings", {"SKILL.md": _skill_md().replace("# Roll dice", "Roll dice")}),
+    ("actionable-steps", {"SKILL.md": _skill_md().replace("1. ", "").replace("2. ", "")}),
+    ("scripts-dir", {"SKILL.md": _skill_md()}),
+    ("references-dir", {"SKILL.md": _skill_md()}),
+    ("plugin-manifest", {"SKILL.md": _skill_md()}),
+]
+
+
+@pytest.mark.parametrize(("check", "files"), _FAILING)
 def test_each_check_can_fail(check: str, files: dict[str, str]) -> None:
     assert _checks(_full_bundle())[check] is True
     assert _checks(files)[check] is False
+
+
+# The first word of every failure message. `_review_hint` hands the failed messages to the
+# agent as "To raise the quality score: ...", so each must say what to do; a pass-phrased
+# message there ("Includes license or metadata") reads as if the skill already does it.
+_IMPERATIVES = {"Add", "Document", "Expand", "Shorten"}
+
+
+@pytest.mark.parametrize(("check", "files"), _FAILING)
+def test_a_failed_check_says_what_to_do(check: str, files: dict[str, str]) -> None:
+    passing = {c.id: c.message for c in review_skill_bundle(_full_bundle(), "roll-dice").checks}
+    failed = next(c for c in review_skill_bundle(files, "roll-dice").checks if c.id == check)
+    assert not failed.passed
+    assert failed.message != passing[check]
+    assert failed.message.split()[0] in _IMPERATIVES, failed.message
+
+
+def test_every_check_has_a_failure_case() -> None:
+    assert {check for check, _ in _FAILING} == set(_checks(_full_bundle())) - {"valid-bundle"}
 
 
 @pytest.mark.parametrize(("length", "passed"), [(19, False), (20, True), (500, True), (501, False)])
