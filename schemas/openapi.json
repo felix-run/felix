@@ -16,6 +16,30 @@
         "title": "AbortRequest",
         "type": "object"
       },
+      "AcceptFeedbackIn": {
+        "additionalProperties": false,
+        "properties": {
+          "improve": {
+            "default": true,
+            "title": "Improve",
+            "type": "boolean"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          }
+        },
+        "title": "AcceptFeedbackIn",
+        "type": "object"
+      },
       "ActionsTokenRequest": {
         "additionalProperties": false,
         "properties": {
@@ -580,6 +604,108 @@
         "title": "EvalRunRequest",
         "type": "object"
       },
+      "EvalScenarioOut": {
+        "properties": {
+          "criteria": {
+            "title": "Criteria",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "prompt": {
+            "title": "Prompt",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "prompt",
+          "criteria"
+        ],
+        "title": "EvalScenarioOut",
+        "type": "object"
+      },
+      "EvalScenarioResultOut": {
+        "properties": {
+          "baseline_reason": {
+            "default": "",
+            "title": "Baseline Reason",
+            "type": "string"
+          },
+          "baseline_score": {
+            "title": "Baseline Score",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "uplift": {
+            "title": "Uplift",
+            "type": "integer"
+          },
+          "with_skill_reason": {
+            "default": "",
+            "title": "With Skill Reason",
+            "type": "string"
+          },
+          "with_skill_score": {
+            "title": "With Skill Score",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "baseline_score",
+          "with_skill_score",
+          "uplift"
+        ],
+        "title": "EvalScenarioResultOut",
+        "type": "object"
+      },
+      "FeedbackIn": {
+        "additionalProperties": false,
+        "properties": {
+          "body": {
+            "maxLength": 8000,
+            "minLength": 1,
+            "title": "Body",
+            "type": "string"
+          },
+          "suggested_patch": {
+            "anyOf": [
+              {
+                "maxLength": 32000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Suggested Patch"
+          },
+          "target_version": {
+            "anyOf": [
+              {
+                "maxLength": 32,
+                "pattern": "^\\d{1,6}\\.\\d{1,6}\\.\\d{1,6}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Version"
+          }
+        },
+        "required": [
+          "body"
+        ],
+        "title": "FeedbackIn",
+        "type": "object"
+      },
       "FeedbackRequest": {
         "additionalProperties": false,
         "properties": {
@@ -957,6 +1083,27 @@
         "title": "LoginTokenOut",
         "type": "object"
       },
+      "MakeLiveIn": {
+        "additionalProperties": false,
+        "description": "Optional body of a publish or rollback. Send `expected_live_version` -- the live version\nthe page showed, or null for \"nothing was live\" -- and the move is refused with 409\n`live_changed` if another version is live by the time it lands. Leave it out to move\nwhatever is live.",
+        "properties": {
+          "expected_live_version": {
+            "anyOf": [
+              {
+                "maxLength": 32,
+                "pattern": "^\\d{1,6}\\.\\d{1,6}\\.\\d{1,6}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Live Version"
+          }
+        },
+        "title": "MakeLiveIn",
+        "type": "object"
+      },
       "ManifestUpsert": {
         "additionalProperties": false,
         "properties": {
@@ -1217,6 +1364,44 @@
           "plan"
         ],
         "title": "PlanUpsert",
+        "type": "object"
+      },
+      "PolicyPatchIn": {
+        "additionalProperties": false,
+        "description": "The fields of the tenant's own policy to change; the rest keep the tenant's value (or, on\nthe first PATCH, the settings'). Only the fields sent are applied, so the defaults here are\nnever written. Only `min_eval_uplift` takes null, which removes the tenant's floor; the\nothers must be a value.",
+        "properties": {
+          "block_on_advisory": {
+            "default": false,
+            "title": "Block On Advisory",
+            "type": "boolean"
+          },
+          "min_eval_uplift": {
+            "anyOf": [
+              {
+                "maximum": 100.0,
+                "minimum": -100.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Eval Uplift"
+          },
+          "min_quality": {
+            "default": 0,
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Min Quality",
+            "type": "integer"
+          },
+          "require_eval": {
+            "default": false,
+            "title": "Require Eval",
+            "type": "boolean"
+          }
+        },
+        "title": "PolicyPatchIn",
         "type": "object"
       },
       "RejectIn": {
@@ -1707,6 +1892,453 @@
         "title": "SkillDetailOut",
         "type": "object"
       },
+      "SkillEvalListOut": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/SkillEvalOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "SkillEvalListOut",
+        "type": "object"
+      },
+      "SkillEvalOut": {
+        "description": "One baseline-versus-with-skill evaluation. Scores are 0-100 from the judge; uplift is\n`with_skill_score - baseline_score`. Null until it has `succeeded`.",
+        "properties": {
+          "attempts": {
+            "title": "Attempts",
+            "type": "integer"
+          },
+          "baseline_score": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Baseline Score"
+          },
+          "counts_for_gate": {
+            "title": "Counts For Gate",
+            "type": "boolean"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "integer"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "gate_note": {
+            "title": "Gate Note",
+            "type": "string"
+          },
+          "heartbeat_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Heartbeat At"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "judge_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Judge Model"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "requested_by": {
+            "title": "Requested By",
+            "type": "string"
+          },
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/EvalScenarioResultOut"
+            },
+            "title": "Results",
+            "type": "array"
+          },
+          "scenario_source": {
+            "anyOf": [
+              {
+                "enum": [
+                  "bundle",
+                  "generated",
+                  "default"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scenario Source"
+          },
+          "scenarios": {
+            "items": {
+              "$ref": "#/components/schemas/EvalScenarioOut"
+            },
+            "title": "Scenarios",
+            "type": "array"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "status": {
+            "enum": [
+              "queued",
+              "running",
+              "succeeded",
+              "failed"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "uplift": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uplift"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          },
+          "with_skill_score": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "With Skill Score"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "version",
+          "status",
+          "scenario_source",
+          "scenarios",
+          "baseline_score",
+          "with_skill_score",
+          "uplift",
+          "results",
+          "model",
+          "judge_model",
+          "error",
+          "requested_by",
+          "created_at",
+          "started_at",
+          "heartbeat_at",
+          "attempts",
+          "finished_at",
+          "counts_for_gate",
+          "gate_note"
+        ],
+        "title": "SkillEvalOut",
+        "type": "object"
+      },
+      "SkillFeedbackListOut": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/SkillFeedbackOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "SkillFeedbackListOut",
+        "type": "object"
+      },
+      "SkillFeedbackOut": {
+        "description": "Feedback on one version of a skill. Every text field is secret-redacted.",
+        "properties": {
+          "attempts": {
+            "title": "Attempts",
+            "type": "integer"
+          },
+          "author": {
+            "title": "Author",
+            "type": "string"
+          },
+          "body": {
+            "title": "Body",
+            "type": "string"
+          },
+          "claimed_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claimed At"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "integer"
+          },
+          "decided_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided At"
+          },
+          "decided_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided By"
+          },
+          "decision_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Note"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "heartbeat_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Heartbeat At"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "improve": {
+            "title": "Improve",
+            "type": "boolean"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "principal": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Principal"
+          },
+          "result_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Version"
+          },
+          "source": {
+            "enum": [
+              "human",
+              "agent"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "accepted",
+              "rejected",
+              "applied",
+              "failed"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "suggested_patch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Suggested Patch"
+          },
+          "target_version": {
+            "title": "Target Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "target_version",
+          "source",
+          "author",
+          "principal",
+          "body",
+          "suggested_patch",
+          "status",
+          "improve",
+          "result_version",
+          "model",
+          "error",
+          "created_at",
+          "claimed_at",
+          "heartbeat_at",
+          "attempts",
+          "decided_at",
+          "decided_by",
+          "decision_note"
+        ],
+        "title": "SkillFeedbackOut",
+        "type": "object"
+      },
       "SkillFileMetaOut": {
         "properties": {
           "path": {
@@ -1848,32 +2480,122 @@
         "type": "object"
       },
       "SkillPolicyOut": {
+        "description": "The publish gate in force: the deployment's `FELIX_SKILL_PUBLISH_*` settings, tightened by\nthe tenant's own policy (`PATCH /-/policy`) when it has one. A tenant can raise the bar and\nnever lower it. `source`: `settings` (no tenant policy), `tenant` (the tenant's policy is at\nleast as strict as the settings everywhere), or `tenant+settings` (a setting outvoted a\nlooser tenant value; `tenant_values` shows what the tenant set).",
         "properties": {
           "block_on_advisory": {
             "title": "Block On Advisory",
             "type": "boolean"
           },
+          "min_eval_uplift": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Eval Uplift"
+          },
           "min_quality": {
             "title": "Min Quality",
             "type": "integer"
+          },
+          "require_eval": {
+            "title": "Require Eval",
+            "type": "boolean"
           },
           "security_fail_blocks": {
             "title": "Security Fail Blocks",
             "type": "boolean"
           },
           "source": {
-            "const": "settings",
+            "enum": [
+              "settings",
+              "tenant",
+              "tenant+settings"
+            ],
             "title": "Source",
             "type": "string"
+          },
+          "tenant_values": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SkillPolicyValuesOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          },
+          "updated_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated By"
           }
         },
         "required": [
           "min_quality",
           "block_on_advisory",
           "security_fail_blocks",
+          "require_eval",
+          "min_eval_uplift",
           "source"
         ],
         "title": "SkillPolicyOut",
+        "type": "object"
+      },
+      "SkillPolicyValuesOut": {
+        "description": "The four fields a tenant sets, as it set them.",
+        "properties": {
+          "block_on_advisory": {
+            "title": "Block On Advisory",
+            "type": "boolean"
+          },
+          "min_eval_uplift": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Eval Uplift"
+          },
+          "min_quality": {
+            "title": "Min Quality",
+            "type": "integer"
+          },
+          "require_eval": {
+            "title": "Require Eval",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "min_quality",
+          "block_on_advisory",
+          "require_eval",
+          "min_eval_uplift"
+        ],
+        "title": "SkillPolicyValuesOut",
         "type": "object"
       },
       "SkillPreviewOut": {
@@ -8055,9 +8777,392 @@
         ]
       }
     },
-    "/skill-library/-/policy": {
+    "/skill-library/-/feedback": {
       "get": {
-        "description": "The gate every publish and rollback passes. From settings for now\n(`FELIX_SKILL_PUBLISH_MIN_QUALITY`, `FELIX_SKILL_PUBLISH_BLOCK_ON_ADVISORY`).",
+        "description": "Feedback across every skill in one status (`pending` by default), oldest first: the one\nthat has waited longest is the one to read next.",
+        "operationId": "feedback_inbox_skill_library___feedback_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "default": "pending",
+              "enum": [
+                "pending",
+                "accepted",
+                "rejected",
+                "applied",
+                "failed"
+              ],
+              "title": "Status",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 96,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillFeedbackListOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Feedback Inbox",
+        "tags": [
+          "Skill library"
+        ]
+      }
+    },
+    "/skill-library/-/feedback/{feedback_id}/accept": {
+      "post": {
+        "description": "Accept pending feedback. With `improve` (the default) the worker rewrites the skill from\nit into a draft for review; the feedback moves to `applied` with `result_version`, or to\n`failed` with `error`. 409 `feedback_conflict` when it was already decided; 429\n`skill_jobs_cap_reached` when `improve` would pass the tenant's job caps.",
+        "operationId": "accept_feedback_skill_library___feedback__feedback_id__accept_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "feedback_id",
+            "required": true,
+            "schema": {
+              "title": "Feedback Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/AcceptFeedbackIn"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillFeedbackOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Accept Feedback",
+        "tags": [
+          "Skill library"
+        ]
+      }
+    },
+    "/skill-library/-/feedback/{feedback_id}/reject": {
+      "post": {
+        "description": "Reject pending feedback, recording the note. Nothing runs.",
+        "operationId": "reject_feedback_skill_library___feedback__feedback_id__reject_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "feedback_id",
+            "required": true,
+            "schema": {
+              "title": "Feedback Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RejectIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillFeedbackOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Reject Feedback",
+        "tags": [
+          "Skill library"
+        ]
+      }
+    },
+    "/skill-library/-/policy": {
+      "delete": {
+        "description": "Drop the tenant's own policy, so the settings alone decide; returns the policy now in force.",
+        "operationId": "delete_publish_policy_route_skill_library___policy_delete",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillPolicyOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Delete Publish Policy Route",
+        "tags": [
+          "Skill library"
+        ]
+      },
+      "get": {
+        "description": "The gate every publish and rollback passes: the deployment's `FELIX_SKILL_PUBLISH_*`\nsettings, tightened by the tenant's own policy when it has one. `source` says which.",
         "operationId": "get_publish_policy_skill_library___policy_get",
         "responses": {
           "200": {
@@ -8122,6 +9227,86 @@
           }
         },
         "summary": "Get Publish Policy",
+        "tags": [
+          "Skill library"
+        ]
+      },
+      "patch": {
+        "description": "Set fields of the tenant's own publish policy; returns the policy now in force.\n\nOnly the fields sent change. Any value in range is stored, but the policy in force is the\ndeployment's settings tightened by it: a value looser than a setting is outvoted, and\n`source` is then `tenant+settings`. A failing security scan blocks whatever this says.",
+        "operationId": "patch_publish_policy_skill_library___policy_patch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PolicyPatchIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillPolicyOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Patch Publish Policy",
         "tags": [
           "Skill library"
         ]
@@ -8394,6 +9579,453 @@
         ]
       }
     },
+    "/skill-library/{name}/evals": {
+      "get": {
+        "description": "One skill's evaluations, newest first, optionally of one version.",
+        "operationId": "list_skill_evals_skill_library__name__evals_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "version",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 32,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Version"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 96,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillEvalListOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "List Skill Evals",
+        "tags": [
+          "Skill library"
+        ]
+      }
+    },
+    "/skill-library/{name}/evals/{eval_id}": {
+      "get": {
+        "description": "One evaluation, with each scenario's prompt, both scores and the judge's reasons.",
+        "operationId": "get_skill_eval_skill_library__name__evals__eval_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "eval_id",
+            "required": true,
+            "schema": {
+              "title": "Eval Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillEvalOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Get Skill Eval",
+        "tags": [
+          "Skill library"
+        ]
+      }
+    },
+    "/skill-library/{name}/feedback": {
+      "get": {
+        "description": "One skill's feedback, newest first, optionally in one status.",
+        "operationId": "list_skill_feedback_skill_library__name__feedback_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "pending",
+                    "accepted",
+                    "rejected",
+                    "applied",
+                    "failed"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 96,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillFeedbackListOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "List Skill Feedback",
+        "tags": [
+          "Skill library"
+        ]
+      },
+      "post": {
+        "description": "File feedback on a skill as the caller (`source: human`), on `target_version` or the live\nversion. It waits as `pending` until someone accepts or rejects it.",
+        "operationId": "submit_feedback_skill_library__name__feedback_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FeedbackIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillFeedbackOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Submit Feedback",
+        "tags": [
+          "Skill library"
+        ]
+      }
+    },
     "/skill-library/{name}/versions": {
       "put": {
         "description": "Save a new version of an existing skill, edited from `parent_version`.\n\n`parent_version` must be the skill's newest version (409 `parent_changed` otherwise). The\nnew version is `version` if given -- it must be newer than every existing one -- or the\nnewest bumped by `bump` (default patch).",
@@ -8574,6 +10206,98 @@
           }
         },
         "summary": "Get Library Version",
+        "tags": [
+          "Skill library"
+        ]
+      }
+    },
+    "/skill-library/{name}/versions/{version}/eval": {
+      "post": {
+        "description": "Queue an evaluation of a version; the worker runs it within a minute. Poll\n`GET /{name}/evals/{id}`. 409 `eval_in_progress` while one is queued or running; 429\n`skill_jobs_cap_reached` past the tenant's job caps.",
+        "operationId": "queue_skill_eval_skill_library__name__versions__version__eval_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "title": "Version",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillEvalOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Queue Skill Eval",
         "tags": [
           "Skill library"
         ]
@@ -8774,7 +10498,7 @@
     },
     "/skill-library/{name}/versions/{version}/publish": {
       "post": {
-        "description": "Publish a draft: it becomes the live version, and the version it replaces is archived.\n422 `publish_blocked` with the gate's reasons when the policy refuses it.",
+        "description": "Publish a draft: it becomes the live version, and the version it replaces is archived.\n422 `publish_blocked` with the gate's reasons when the policy refuses it; 409 `live_changed`\nwhen `expected_live_version` was sent and another version is live.",
         "operationId": "publish_library_version_skill_library__name__versions__version__publish_post",
         "parameters": [
           {
@@ -8796,6 +10520,23 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/MakeLiveIn"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "content": {
@@ -8968,7 +10709,7 @@
     },
     "/skill-library/{name}/versions/{version}/rollback": {
       "post": {
-        "description": "Make a version that was once live, live again -- through the same gate as a publish.",
+        "description": "Make a version that was once live, live again -- through the same gate as a publish,\nwithout its evaluation requirement. 409 `live_changed` as for a publish.",
         "operationId": "rollback_library_version_skill_library__name__versions__version__rollback_post",
         "parameters": [
           {
@@ -8990,6 +10731,23 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/MakeLiveIn"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "content": {

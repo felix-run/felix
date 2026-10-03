@@ -796,7 +796,8 @@ class SkillSuggestionSpec(_Strict):
 
 
 class SkillAuthoringSpec(_Strict):
-    """Let the agent write skills: binds `create_skill` and `update_skill`.
+    """Let the agent write skills: binds `create_skill`, `update_skill` and
+    `submit_skill_feedback` (feedback on a library skill in its catalog, which a person decides).
 
     Drafts by default. `activate_skill` hands a skill body to the model as instructions, so a
     skill an agent wrote from a turn that carried injected tool output would steer every later
@@ -810,6 +811,9 @@ class SkillAuthoringSpec(_Strict):
     #: Undecided agent drafts this manifest may hold in the tenant's library before
     #: `create_skill` and `update_skill` refuse, so a looping agent cannot flood the review queue.
     max_pending: int = Field(default=20, ge=1, le=200)
+    #: Queue an evaluation (`FELIX_SKILL_EVAL_MODEL`) of every draft this agent saves, so a
+    #: reviewer sees its uplift beside the diff. Model calls on the tenant's bill; off by default.
+    auto_eval: bool = False
 
 
 class DeciderSpec(_Strict):

@@ -31,6 +31,7 @@ SCHEDULED_TASKS = {
     "continuous_eval",
     "fiber_scheduler",
     "webhook_delivery",
+    "skill_jobs",
 }
 
 

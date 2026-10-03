@@ -35,6 +35,7 @@ from felix.observability.metrics import record_counter
 from felix.observability.tracing import manifest_span
 from felix.patterns.registry import get_pattern, honours_output_schema, list_patterns
 from felix.patterns.types import Agent
+from felix.skills.types import SkillCatalog
 from felix.tools.executor import wrap_executor
 from felix.tools.provider import ToolProvider
 from felix.tools.types import (
@@ -1460,22 +1461,36 @@ def _warn_policies_cannot_be_satisfied(m: Manifest, settings: Any) -> None:
     record_counter("felix_policy_unsatisfiable", {"manifest_id": m.metadata.name})
 
 
-def _bind_skill_authoring(resolved: list[Tool], m: Manifest, deps: BuildDeps, tenant_id: str) -> None:
-    """`create_skill` / `update_skill`, bound before the governance block like every tool, so
-    an approvals rule on them holds the save until a person has read the SKILL.md."""
-    from felix.skills.authoring import make_skill_authoring_tools
+def _bind_skill_authoring(
+    resolved: list[Tool], m: Manifest, deps: BuildDeps, tenant_id: str, catalog: SkillCatalog
+) -> None:
+    """`create_skill` / `update_skill` / `submit_skill_feedback`, bound before the governance
+    block like every tool, so an approvals rule on them holds the call until a person has read
+    what the harness renders as its preview. Feedback is restricted to the library skills in
+    ``catalog`` -- the ones this agent was actually given."""
+    from felix.skills.authoring import make_skill_authoring_tools, make_skill_feedback_tool
 
     spec = m.spec.skill_authoring
     _append_unique_tools(
         resolved,
-        make_skill_authoring_tools(
-            deps.settings,
-            tenant_id=tenant_id,
-            manifest_id=m.metadata.name,
-            mode=spec.mode,
-            max_pending=spec.max_pending,
-            object_store=deps.object_store,
-        ),
+        [
+            *make_skill_authoring_tools(
+                deps.settings,
+                tenant_id=tenant_id,
+                manifest_id=m.metadata.name,
+                mode=spec.mode,
+                max_pending=spec.max_pending,
+                object_store=deps.object_store,
+                auto_eval=spec.auto_eval,
+            ),
+            make_skill_feedback_tool(
+                deps.settings,
+                tenant_id=tenant_id,
+                manifest_id=m.metadata.name,
+                catalog=catalog,
+                max_pending=spec.max_pending,
+            ),
+        ],
     )
 
 
@@ -1831,7 +1846,7 @@ async def build_agent(
                 if name not in have and (m.spec.skills or authoring or name == "read_skill_file"):
                     resolved.append(tool)
             if authoring:
-                _bind_skill_authoring(resolved, m, deps, tenant_id)
+                _bind_skill_authoring(resolved, m, deps, tenant_id, catalog)
             if m.spec.skill_suggestion.enabled and decider is not None and catalog.list_public():
                 from felix.skills.suggest import SkillSuggester
 

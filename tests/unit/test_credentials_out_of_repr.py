@@ -25,6 +25,8 @@ NOT_SECRET = {
     "secret_names": "names of secrets, not their values",
     "secrets_backend": "a backend name",
     "secrets_dir": "a path",
+    "skill_eval_max_tokens": "a count of model output tokens",
+    "skill_improve_max_tokens": "a count of model output tokens",
 }
 
 SENTINEL = "SENTINEL-do-not-print"

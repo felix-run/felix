@@ -268,6 +268,18 @@ async def fiber_scheduler() -> None:
 
 
 @broker.task(schedule=[{"cron": "* * * * *"}])
+@_instrumented("skill_jobs")
+async def skill_jobs() -> None:
+    """Rewrite skills from feedback a person accepted (each into a draft for review), and run
+    queued skill evaluations. Bounded per tick; a job's failure is recorded on its row."""
+    from felix.skills.jobs import run_skill_jobs
+
+    counts = await run_skill_jobs(_settings)
+    if counts["improvements"] or counts["evals"]:
+        logger.info("skill_jobs %s", counts)
+
+
+@broker.task(schedule=[{"cron": "* * * * *"}])
 @_instrumented("webhook_delivery")
 async def webhook_delivery() -> None:
     """Announce finished durable runs to their `spec.execution.webhooks` endpoints."""

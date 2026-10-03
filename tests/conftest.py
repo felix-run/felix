@@ -143,6 +143,7 @@ def _isolate_process_global_stores():
     from felix.session.thread_state import reset_thread_meta_for_tests
     from felix.session.tree import _leaf_by_thread
     from felix.skills import library_store as skill_library_store
+    from felix.skills import quality_store as skill_quality_store
     from felix.skills import store as skills_store
     from felix.usage import store as usage_store
 
@@ -160,6 +161,9 @@ def _isolate_process_global_stores():
         # The skill library is the same shape: a draft one test saved would be another test's
         # pending count, and a skill it published would sit in every later catalog.
         skill_library_store.clear_memory()
+        # Feedback, evaluations and the tenant policy: a policy one test set would gate every
+        # later test's publish.
+        skill_quality_store.clear_memory()
         # The session search index is another module-level list, and now that the in-memory
         # store actually writes to it, a thread's events would otherwise be found by every
         # later test that searched for them.

@@ -336,3 +336,38 @@ async def test_the_audit_export_binds_the_tenant_on_every_read_itself(
         audit_store.pending_buffer().reset_for_tests()
 
     assert len(rows) == 5, f"the export ended early: {len(rows)} of 5"
+
+
+async def test_the_skill_job_sweeps_cross_tenants_and_the_reads_do_not(rls_settings: Any) -> None:
+    """The worker's skill sweep claims across every tenant under an enforcing policy.
+
+    `claim_next` on both stores declares `rls_bypass()`, as the fiber sweep does; without it the
+    claim runs with no tenant bound and the policy returns nothing -- every queued evaluation and
+    accepted improvement would wait forever, with the sweep reporting an empty queue. The
+    per-tenant reads, heartbeats and finishes stay bound: one tenant cannot touch the other's row.
+    """
+    from felix.skills.eval_store import get_skill_eval_store
+    from felix.skills.feedback_store import get_skill_feedback_store
+
+    evals, feedback = get_skill_eval_store(rls_settings), get_skill_feedback_store(rls_settings)
+    for n, tenant in enumerate((TENANT, OTHER), start=1):
+        row_id = f"00000000-0000-4000-8000-{n:012d}"
+        base = {"id": row_id, "name": "s", "created_at": n}
+        await evals.insert(tenant, {**base, "version": "0.1.0", "status": "queued"})
+        await feedback.insert(
+            tenant,
+            {**base, "target_version": "0.1.0", "source": "human", "body": "b", "status": "pending"},
+        )
+        await feedback.decide(tenant, row_id, status="accepted", improve=True, by="ops", note=None, at=n)
+
+    claimed = [await evals.claim_next(now=1_000), await evals.claim_next(now=1_001)]
+    taken = [await feedback.claim_next(now=1_000), await feedback.claim_next(now=1_001)]
+
+    assert sorted(r["tenant_id"] for r in claimed if r) == [TENANT, OTHER], claimed
+    assert sorted(r["tenant_id"] for r in taken if r) == [TENANT, OTHER], taken
+    mine = next(r for r in claimed if r and r["tenant_id"] == TENANT)
+    assert await evals.get(TENANT, mine["id"]) is not None
+    assert await evals.get(OTHER, mine["id"]) is None, "a bound tenant read another tenant's evaluation"
+    assert await feedback.get(OTHER, mine["id"]) is None, "a bound tenant read another tenant's feedback"
+    assert not await evals.heartbeat(OTHER, mine["id"], token=mine["claim_token"], now=1_002)
+    assert await evals.heartbeat(TENANT, mine["id"], token=mine["claim_token"], now=1_002)

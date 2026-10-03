@@ -295,7 +295,7 @@ async def test_reject_and_archive(app: App) -> None:
 
 
 async def test_every_library_error_code_has_a_status() -> None:
-    from felix_api.routes.skill_library import _STATUS
+    from felix_api.routes._skill_library_http import STATUS as _STATUS
 
     def codes(cls: type) -> set[str]:
         return {cls.code} | {c for sub in cls.__subclasses__() for c in codes(sub)}
@@ -304,7 +304,7 @@ async def test_every_library_error_code_has_a_status() -> None:
 
 
 async def test_an_unmapped_refusal_is_a_server_error() -> None:
-    from felix_api.routes.skill_library import _refusal
+    from felix_api.routes._skill_library_http import refusal as _refusal
 
     class Novel(library.SkillLibraryError):
         code = "something_new"
@@ -424,7 +424,12 @@ async def test_the_policy_route_reports_the_settings(tmp_path: Path) -> None:
         "min_quality": 40,
         "block_on_advisory": True,
         "security_fail_blocks": True,
+        "require_eval": False,
+        "min_eval_uplift": None,
         "source": "settings",
+        "tenant_values": None,
+        "updated_at": None,
+        "updated_by": None,
     }
 
 
