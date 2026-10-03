@@ -21,6 +21,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   GitHub user the token was minted for (already in the `github_login` audit row), so a client
   can show it without decoding the token. `POST /auth/github/actions` sends it empty: a workflow
   is not a person.
+- **Image tools** (`spec.image_tools`, needs the new `image` extra for Pillow). Each entry binds
+  one op: `list`, `info`, `resize`, `crop`, `rotate`, `convert` or `thumbnail`.
+  - **Naming an image.** The model names an image in the thread's active branch as `latest`,
+    `#n` (as a `list` tool numbers them), or a `felix-file://` reference the thread holds. A tool
+    whose entry sets `allow_path` can read a workspace file instead.
+  - **Results.** The model sees the result as an image. The result is stored under the
+    request's per-request image budget (charged before anything is written), and its reference
+    appears in the reply, so ops chain.
+  - **Screening by input.** Under content screening with `image_model`, every result is
+    screened. Without `image_model`, a result made from a workspace file is quarantined.
+  - **Bounds.**
+    - Pillow parses only png, jpeg, gif and webp, as sniffed from the bytes.
+    - Input is limited to 20 MiB, and to 4096×4096 pixels checked before decoding.
+    - Output is at most 4096 px a side, downscaled to fit the 600 KiB attachment limit.
+    - At most two decodes run at once.
+  - **Without the extra,** each tool answers with what to install, and `list` still works.
+
 - **Images in tool results.** A tool can return images for the model to see, through
   `ToolOutputDict.attachments`, rather than as base64 text.
   - **How each wire sends them:**

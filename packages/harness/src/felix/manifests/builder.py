@@ -45,6 +45,7 @@ from felix.tools.types import (
     ToolOutput,
     deny_output,
     is_wrapper_deny,
+    output_metadata,
     replace_tool_output,
     tool_output_content,
     tool_output_images,
@@ -519,10 +520,14 @@ def apply_content_screening(
         # renamed: turning screening off for untrusted output is the thing screening exists to
         # prevent. `matches_any([], name)` is False, so a manifest that never sets `tools`
         # behaves exactly as before.
-        if not (matches_any(named, tool.name) or _is_untrusted_tool(tool)):
+        untrusted = _is_untrusted_tool(tool)
+        text_covered = matches_any(named, tool.name) or untrusted
+        # An image tool's *results* are screened by where their input came from, its summary
+        # text is not: it is a size and a reference the tool wrote itself.
+        image_tool = tool.source == "image"
+        if not (text_covered or image_tool):
             return tool
         inner = tool.executor
-        untrusted = _is_untrusted_tool(tool)
         # The paid scoring, by `model_tools`; the markers below run regardless.
         paid = not scored_only or matches_any(scored_only, tool.name)
 
@@ -530,6 +535,8 @@ def apply_content_screening(
             out = await inner.execute(args, ctx)
             if is_wrapper_deny(out):
                 return out
+            if not text_covered:
+                return await screen_images(out)
             content = tool_output_content(out)
             flagged = any(rx.search(content) for rx in _INJECTION)
             unavailable = False
@@ -569,23 +576,27 @@ def apply_content_screening(
                 # AttributeError there, so quarantine silently became "tool crashed".
                 # A quarantined output shows the model nothing: its images go with its text.
                 return replace_tool_output(out, content=notice, images=[])
-            if tool_output_images(out):
-                if images is not None:
-                    out = await _screen_tool_images(out, images(), tool.name)
-                elif untrusted:
-                    # Fail closed. Text from an untrusted tool is always marker-scanned; its
-                    # pixels have no screener without `image_model`, and a page can draw its
-                    # payload rather than write it. A trusted tool named in `tools` keeps its
-                    # images: the bytes are the deployment's own.
-                    record_counter(
-                        "felix_content_screening",
-                        {"manifest_id": manifest_id, "tool": tool.name, "action": "image_unscreened"},
-                    )
-                    out = replace_tool_output(
-                        out,
-                        content=f"{tool_output_content(out)}\n{TOOL_IMAGE_UNSCREENED}",
-                        images=[],
-                    )
+            return await screen_images(out)
+
+        async def screen_images(out: ToolOutput) -> ToolOutput:
+            if not tool_output_images(out):
+                return out
+            if images is not None:
+                return await _screen_tool_images(out, images(), tool.name)
+            if untrusted or _image_from_workspace(out):
+                # Fail closed. Text from an untrusted tool is always marker-scanned; its pixels
+                # have no screener without `image_model`, and a page can draw its payload rather
+                # than write it. An image tool's result from a workspace file is the same case:
+                # nothing screened those bytes. A trusted tool named in `tools` keeps its images,
+                # and so does an image tool's result from a thread image -- screened, if at all,
+                # when it entered the thread, and no less so for being cropped.
+                record_counter(
+                    "felix_content_screening",
+                    {"manifest_id": manifest_id, "tool": tool.name, "action": "image_unscreened"},
+                )
+                return replace_tool_output(
+                    out, content=f"{tool_output_content(out)}\n{TOOL_IMAGE_UNSCREENED}", images=[]
+                )
             return out
 
         return _clone_tool(tool, wrap_executor(inner, execute))
@@ -1340,6 +1351,12 @@ TOOL_IMAGE_UNSCREENED = (
 )
 
 
+def _image_from_workspace(out: ToolOutput) -> bool:
+    from felix.tools.image_tools import IMAGE_INPUT_KEY
+
+    return (output_metadata(out) or {}).get(IMAGE_INPUT_KEY) == "workspace"
+
+
 def _warn_screenshots_are_quarantined(m: Manifest) -> None:
     """Say so at compile time when a browser screenshot can never reach the model.
 
@@ -1616,6 +1633,16 @@ async def build_agent(
                 )
             except Exception:
                 logger.warning("browser tool binding failed", exc_info=True)
+
+        # Pillow image tools (optional extra). Bound even without Pillow installed: each one
+        # then answers that the extra is missing, which says more than a tool that is absent.
+        if m.spec.image_tools:
+            try:
+                from felix.tools.image_tools import tools_from_image_refs
+
+                _append_unique_tools(resolved, tools_from_image_refs(list(m.spec.image_tools)))
+            except Exception:
+                logger.warning("image tool binding failed", exc_info=True)
 
         # Fetch tools: the model names the URL, the egress guard pins the address.
         if m.spec.http_tools:

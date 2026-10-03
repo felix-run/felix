@@ -903,6 +903,51 @@
       "title": "HttpFetchToolRef",
       "type": "object"
     },
+    "ImageToolRef": {
+      "additionalProperties": false,
+      "description": "One image operation, bound as a tool (`felix.tools.image_tools`; needs the `image` extra).\n\nOne op per tool, like the browser: a manifest grants exactly the operations it names. The\nmodel picks an image in the thread (`latest`, `#n` from a `list` tool, or a stored\n`felix-file://` reference in it), or a workspace `path` where `allow_path` grants it, and\ngets the result back as an image it sees, stored so a later call can work on it.",
+      "properties": {
+        "name": {
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "op": {
+          "enum": [
+            "list",
+            "info",
+            "resize",
+            "crop",
+            "rotate",
+            "convert",
+            "thumbnail"
+          ],
+          "title": "Op",
+          "type": "string"
+        },
+        "allow_path": {
+          "default": false,
+          "title": "Allow Path",
+          "type": "boolean"
+        },
+        "fatal": {
+          "default": false,
+          "title": "Fatal",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "op"
+      ],
+      "title": "ImageToolRef",
+      "type": "object"
+    },
     "InboundAuth": {
       "additionalProperties": false,
       "properties": {
@@ -2119,6 +2164,14 @@
           },
           "maxItems": 64,
           "title": "Browser Tools",
+          "type": "array"
+        },
+        "image_tools": {
+          "items": {
+            "$ref": "#/$defs/ImageToolRef"
+          },
+          "maxItems": 64,
+          "title": "Image Tools",
           "type": "array"
         },
         "http_tools": {

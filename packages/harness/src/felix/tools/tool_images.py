@@ -27,12 +27,16 @@ import base64
 import binascii
 import logging
 from collections.abc import Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
+from typing import TYPE_CHECKING
 
 from felix_ai.types import ImageAttachment, file_ref_url, split_file_ref
 from felix_ai.wire.base import split_data_url
 
 from felix.logging_setup import loggable
+
+if TYPE_CHECKING:
+    from felix.config import Settings
 
 logger = logging.getLogger("felix.tools.images")
 
@@ -50,6 +54,8 @@ class ImageBudget:
     """
 
     remaining: int = MAX_IMAGES_PER_RUN
+    # References already charged, by `store_image_bytes`, so the runner does not charge again.
+    paid: set[str] = field(default_factory=set)
 
 
 _BUDGET_KEY = "tool_image_budget"
@@ -64,13 +70,10 @@ async def store_tool_images(
     stays inline. It is held to every other rule all the same. Governed tools never get
     here without one: `apply_limits` refuses a call outside a request.
     """
-    from felix.context import try_get_context
+    from felix.context import current_tenant
 
-    ctx = try_get_context()
-    if ctx is not None:
-        budget = ctx.extras.setdefault(_BUDGET_KEY, budget)
-    tenant_id = getattr(getattr(ctx, "auth", None), "tenant_id", None) if ctx else None
-    settings = getattr(ctx, "settings", None) if ctx else None
+    budget = request_budget(budget)
+    request = current_tenant()
     name = loggable(tool_name, limit=64)
     kept: list[ImageAttachment] = []
     notes: list[str] = []
@@ -80,7 +83,9 @@ async def store_tool_images(
             notes.append(f"[image dropped: {name} returned more images than the {limit} limit]")
             continue
         if split_file_ref(image.url):
-            budget.remaining -= 1
+            # A reference a tool stored itself through `store_image_bytes` was paid for then.
+            if image.url not in budget.paid:
+                budget.remaining -= 1
             kept.append(replace(image, filename=None))
             continue
         raw, media_type, problem = _decoded(image.url)
@@ -89,11 +94,11 @@ async def store_tool_images(
             continue
         assert raw is not None and media_type is not None
         budget.remaining -= 1
-        if not tenant_id:
+        if request is None:
             kept.append(replace(image, media_type=media_type, filename=None))
             continue
         # No filename: a tool's own label would reach the ledger and the log unmasked.
-        stored = await _put(raw, media_type, tenant_id=str(tenant_id), settings=settings)
+        stored = await _put(raw, media_type, *request)
         if stored is None:
             # Dropped, not kept inline: inline would put the bytes the store just refused into
             # the log anyway. The reason stays in the server log -- a quota message carries the
@@ -102,6 +107,43 @@ async def store_tool_images(
             continue
         kept.append(replace(image, url=file_ref_url(stored), media_type=media_type, filename=None))
     return kept, notes
+
+
+def request_budget(fallback: ImageBudget | None = None) -> ImageBudget:
+    """The request's image budget, shared by every agent and tool it runs; `fallback` outside one."""
+    from felix.context import try_get_context
+
+    ctx = try_get_context()
+    if ctx is None:
+        return fallback or ImageBudget()
+    return ctx.extras.setdefault(_BUDGET_KEY, fallback or ImageBudget())
+
+
+async def store_image_bytes(raw: bytes, media_type: str, *, tool_name: str) -> tuple[str | None, str]:
+    """`(url, "")` for an image a tool produced itself, or `(None, note)` saying why it was not kept.
+
+    For a tool that must name its result's reference in its reply (`image_tools`), so it stores
+    the bytes itself -- through the same budget and store as `store_tool_images`, drawn *before*
+    the write, so a spent budget never costs quota. `url` is a stored reference, or inline bytes
+    when there is no request tenant to store for. The runner then counts a stored reference as
+    already paid for.
+    """
+    from felix.context import current_tenant
+
+    name = loggable(tool_name, limit=64)
+    budget = request_budget()
+    if budget.remaining <= 0:
+        return None, f"[image dropped: {name} returned more images than the per run limit]"
+    budget.remaining -= 1
+    request = current_tenant()
+    if request is None:
+        return f"data:{media_type};base64,{base64.b64encode(raw).decode('ascii')}", ""
+    stored = await _put(raw, media_type, *request)
+    if stored is None:
+        return None, f"[image dropped: {name} produced an image that could not be stored]"
+    ref = file_ref_url(stored)
+    budget.paid.add(ref)
+    return ref, ""
 
 
 def _decoded(url: str) -> tuple[bytes | None, str | None, str]:
@@ -120,20 +162,18 @@ def _decoded(url: str) -> tuple[bytes | None, str | None, str]:
         return None, None, str(exc)
 
 
-async def _put(raw: bytes, media_type: str, *, tenant_id: str, settings: object | None) -> str | None:
+async def _put(raw: bytes, media_type: str, settings: Settings, tenant_id: str) -> str | None:
     from felix.attachments import put_attachment
-    from felix.config import Settings, get_settings
     from felix.storage import get_object_store
 
-    bound = settings if isinstance(settings, Settings) else get_settings()
     try:
         stored = await put_attachment(
-            get_object_store(bound),
+            get_object_store(settings),
             tenant_id=tenant_id,
             data=raw,
             media_type=media_type,
             filename="",
-            settings=bound,
+            settings=settings,
         )
     except Exception as exc:
         logger.warning("tool image not stored for tenant %s: %s", loggable(tenant_id, limit=64), exc)
@@ -141,4 +181,11 @@ async def _put(raw: bytes, media_type: str, *, tenant_id: str, settings: object 
     return stored.file_id
 
 
-__all__ = ["MAX_IMAGES_PER_CALL", "MAX_IMAGES_PER_RUN", "ImageBudget", "store_tool_images"]
+__all__ = [
+    "MAX_IMAGES_PER_CALL",
+    "MAX_IMAGES_PER_RUN",
+    "ImageBudget",
+    "request_budget",
+    "store_image_bytes",
+    "store_tool_images",
+]

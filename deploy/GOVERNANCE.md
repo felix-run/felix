@@ -1054,6 +1054,18 @@ turn, leaving the text and any clean images; `block` refuses the turn with 422.
   only, so a tool's images follow its result as a user message. The message labels them as tool
   output to be treated as data, but a user turn still carries more weight than a tool result.
   Anthropic keeps them inside the `tool_result`.
+- **Image tools are screened by where their input came from.** `spec.image_tools` can name only
+  images in the thread's active branch: `latest`, `#n`, or a `felix-file://` reference that the
+  thread holds. A reference to any other upload the tenant owns is refused, because it never passed
+  a turn's screen. A workspace file is readable only by a tool whose entry sets `allow_path`. Under
+  content screening:
+  - With `image_model`, every image-tool result is screened on the `tool_image` surface. That
+    covers an image the replay screen had quarantined.
+  - Without it, a result made from a workspace file is quarantined. A result made from a thread
+    image passes, since it was no less screened than the image it came from.
+
+  Pillow opens only png, jpeg, gif and webp, as sniffed from the bytes, so no other parser is
+  reachable: EPS, and the Ghostscript it would invoke, are not.
 - **Secrets and PII in a tool's image are not caught.** Secret masking, PII guardrails and
   judges read text only. A screenshot of a page showing a credential reaches the model and is
   stored for the attachment retention period.

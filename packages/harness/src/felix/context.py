@@ -81,6 +81,18 @@ def try_get_context() -> RequestContext | None:
     return _ctx.get()
 
 
+def current_tenant() -> tuple[Settings, str] | None:
+    """The request's settings and tenant, or None outside a request or for a tenantless one.
+
+    Typed, so a caller stops spelling `getattr(getattr(ctx, "auth", None), "tenant_id", None)`
+    and choosing its own fallback when settings are missing: there are none to miss here.
+    """
+    ctx = _ctx.get()
+    if ctx is None or not ctx.auth.tenant_id:
+        return None
+    return ctx.settings, str(ctx.auth.tenant_id)
+
+
 @contextmanager
 def run_with_context(ctx: RequestContext) -> Iterator[RequestContext]:
     from felix.db.session import rls_tenant

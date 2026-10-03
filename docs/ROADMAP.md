@@ -256,8 +256,10 @@ First, because everything else governs it.
         the `tool_image` surface, then by `ref:` on the next turn's replay -- and seeding the
         transcript cache under the stored ref would halve that. And `/chat` parses an OpenAI-shaped
         `tool_calls[].function.arguments` (a JSON string) with `dict()`, which is a 500.
-      - Next, in order, one PR live at a time: **Pillow image tools** behind an `image` extra, then
-        **A2A FileParts and MCP image content**, both dropped silently today.
+      - Landed: **image tools** (`spec.image_tools`, `image` extra). The model names an image as
+        `latest`, `#n` or a stored reference, since it sees pixels and not file ids; results are
+        stored and chain.
+      - Next: **A2A FileParts and MCP image content**, both dropped silently today.
       - Open, and a change to a security control rather than a feature: uploads are bounded by the
         single global `BodyLimitMiddleware` limit, so a larger ceiling means per-route limits.
         That middleware has a bypass in its history; it should not be widened as a side effect of

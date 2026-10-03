@@ -631,6 +631,7 @@ Outbound integrations, all declared on the manifest:
 | `spec.mcp_servers` | HTTP or stdio MCP client → `server__tool` tools |
 | `spec.peers` | A2A peers → `peer__name` tools |
 | `spec.browser_tools` | Playwright (via the `browser` extra) |
+| `spec.image_tools` | Pillow resize, crop, rotate, convert, thumbnail, info and list (via the `image` extra) |
 | `spec.sandboxes` / `spec.containers` | Isolated execution |
 | `spec.shell_tools` | Allowlisted argv on the API host, in the workspace checkout — no shell interpreter |
 | `spec.queues` | Redis list enqueue and dequeue |
