@@ -76,7 +76,8 @@ frame, run `make contract` and read the diff.
 `tests/unit/test_invariants.py` turns the rules below into failures: `.env.example` covers every
 `Settings` field, no optional dependency is imported at module scope, every Postgres-touching module
 has a `memory://` path, the governance wrapper order is unchanged, `schemas/manifest.schema.json`
-still matches the pydantic models, and the CI test job installs every extra the tests gate on.
+still matches the pydantic models, the CI test job installs every extra the tests gate on, and the
+API stays headless (no `StaticFiles`, templates, `.mount()` or web assets in any source tree).
 Change a rule deliberately and you update the test with it.
 
 `tests/unit/test_ordering_rule.py` holds every ordered-then-truncated listing — SQL `order_by`
@@ -224,7 +225,8 @@ New optional features belong behind that seam, not in `felix` core.
 ### Request path and state
 
 `create_app` (apps/api) stacks request-id → security-headers → body-limit → rate-limit →
-`AuthMiddleware` (outermost first; there is deliberately no CORS layer, see the README), stores
+`AuthMiddleware` (outermost first; there is deliberately no CORS layer and no web UI, see the
+README), stores
 `settings`/`tools`/`plugins` on `app.state`, and mounts route modules plus plugin routers.
 Management endpoints gate on scopes via `auth/mgmt.py:require_mgmt_scopes` (skipped entirely
 when `auth_mode=none`; `admin`/`*` bypass; `x:write` implies `x:read`).

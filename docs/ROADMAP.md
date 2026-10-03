@@ -925,10 +925,13 @@ rather than from re-reading a file. The wave itself is written up in [HISTORY.md
       `tenant_id` (allowlist: `memory_vector_config`), one Alembic head. `oauth_token_cache`,
       tenant-less and never read or written, is dropped in `0013` with its setting and helper.
 
-- [ ] **Headless invariant is prose only** — CLAUDE.md asserts it; nothing fails when it stops
+- [x] **Headless invariant is prose only** — CLAUDE.md asserts it; nothing fails when it stops
       being true. An AST/file check over `apps/api` for `StaticFiles`, `Jinja2Templates` and
       `app.mount`, plus a tracked-file check for asset extensions, is ~20 lines in the existing
-      idiom. Cheapest item here.
+      idiom. Cheapest item here. Done 2026-10-02: two tests in `test_invariants.py`, an AST scan
+      of every source root (`StaticFiles`, `Jinja2Templates`, `TemplateResponse`, any `.mount()`)
+      and an asset-extension scan, each proven by a planted violation. The rule had in fact
+      dropped out of CLAUDE.md entirely; it is back there and in the README.
 - [x] **No-CORS contract undocumented** — the stack is body-limit → rate-limit → auth with no CORS
       layer, so a browser on another origin cannot call Felix directly. Deliberate, written down
       nowhere; the requirement survives only inside felix-web's `worker/index.ts`. A self-hoster
