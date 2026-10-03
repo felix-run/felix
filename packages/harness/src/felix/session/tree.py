@@ -6,6 +6,8 @@ import time
 import uuid
 from typing import Any
 
+from felix_ai.types import ImageAttachment
+
 from felix.session.types import AppendableEvent, Session, SessionEvent
 
 # In-process leaf pointers for memory sessions (and cache for postgres).
@@ -212,9 +214,30 @@ async def fork_thread(
     }
 
 
+async def branch_images(session: Session) -> list[tuple[ImageAttachment, str]]:
+    """Every image the model's view of this thread holds, oldest first, with where it came from.
+
+    The same events a session strategy renders -- the active branch, in-context events only --
+    so a rewind or a fork does not leave an abandoned branch's image nameable, and the images
+    are read through `event_to_chat_message`, the one reader of how the log stores them.
+    """
+    from felix.session.types import event_to_chat_message, include_in_llm_context
+
+    events = active_branch_events(await session.get_events(), session_id=getattr(session, "id", ""))
+    found: list[tuple[ImageAttachment, str]] = []
+    for event in events:
+        if not include_in_llm_context(event):
+            continue
+        message = event_to_chat_message(event)
+        origin = "from the user" if message.role == "user" else f"returned by {message.name or 'a tool'}"
+        found.extend((image, origin) for image in message.attachments or () if image.url)
+    return found
+
+
 __all__ = [
     "active_branch_events",
     "annotate_and_append",
+    "branch_images",
     "ensure_event_metadata",
     "fork_thread",
     "get_event_id",
