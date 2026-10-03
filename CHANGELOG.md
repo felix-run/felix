@@ -37,6 +37,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `contributor` drafts skills; `governed` puts `create_skill` and `update_skill` behind an
     approval whose preview is the SKILL.md that would be saved. The management routes for
     reviewing and publishing come next; until then publishing is `felix.skills.library.publish`.
+- **Vision routing.** A turn that carries an image, bound for a model the catalog vouches is
+  text-only (the `gpt-oss`, GLM Flash, Llama 3.3 and Qwen3 Workers AI routes), now goes to
+  `spec.model.vision_model`, or to the new `FELIX_DEFAULT_VISION_MODEL_ID` when the manifest
+  names none. Before this, the image reached a model that ignored it, and the reply said it
+  could not see images. With neither setting, `/chat` and `/v1/chat/completions` refuse the
+  turn with a 422 naming the route, before any model is called. An image that reaches a
+  text-only route mid-run, through a fallback for instance, is replaced by a line saying it
+  was omitted. A `FELIX_MODEL_ROUTES` entry can declare `"modalities": ["text", "image"]` for
+  a model the catalog does not know. A model the catalog cannot vouch for either way is sent
+  the image as before. `felix doctor` notes a text-only default with no vision route.
 
 - **Skill format, bundle validation, quality review and security scan.** These are the
   groundwork for skill authoring and are not yet wired to a route or a tool. They are ported

@@ -152,6 +152,10 @@ class ModelSpec(_Strict):
     # Discrete thinking level; when set, overrides thinking_budget via level map.
     thinking_level: Literal["off", "minimal", "low", "medium", "high", "xhigh", "max"] | None = None
     fallbacks: list[str] = Field(default_factory=list)
+    # Route for any call that carries an image, when `id` is a text-only model; unset falls
+    # back to `FELIX_DEFAULT_VISION_MODEL_ID`. A route the catalog cannot vouch for either way
+    # is left to answer its own images. See `patterns/model_vision.py`.
+    vision_model: str | None = None
     confidence_escalation: ConfidenceEscalation = Field(default_factory=ConfidenceEscalation)
     # Optional USD / 1M token price overrides for usage cost attribution.
     price: dict[str, float] = Field(default_factory=dict)

@@ -112,6 +112,11 @@ class ModelCatalogEntry:
     # records the capability and `usage.catalog` expands it into level names.
     supports_thinking: bool = False
     input_modalities: tuple[str, ...] = ("text",)
+    # Vouched for as *unable* to take an image, which `("text",)` above does not say: that
+    # is the default every entry inherits, including family keys like `llama` that also
+    # match `llama3.2-vision`. Only this flag lets the harness reroute or drop an image
+    # (`accepts_images`), so an entry sets it only for weights known to be text-only.
+    text_only: bool = False
     # The wire dialect this model natively speaks. It is not the dialect it is *reached*
     # through: an Anthropic model behind a LiteLLM shim is addressed with OpenAI
     # chat-completions but still wants Anthropic's `thinking` block, and that is the only
@@ -328,18 +333,21 @@ _CATALOG: dict[str, ModelCatalogEntry] = {
         max_output_tokens=128_000,
         pricing=ModelPricing(input=0.35, output=0.75, cache_read=0.35, cache_write=0.35),
         quirks=ModelQuirks(**_UNVOUCHED),
+        text_only=True,
     ),
     "@cf/openai/gpt-oss-20b": ModelCatalogEntry(
         context_window=128_000,
         max_output_tokens=128_000,
         pricing=ModelPricing(input=0.2, output=0.3, cache_read=0.2, cache_write=0.2),
         quirks=ModelQuirks(**_UNVOUCHED),
+        text_only=True,
     ),
     "@cf/zai-org/glm-4.7-flash": ModelCatalogEntry(
         context_window=131_072,
         max_output_tokens=131_072,
         pricing=ModelPricing(input=0.0605, output=0.4, cache_read=0.0605, cache_write=0.0605),
         quirks=ModelQuirks(**_UNVOUCHED),
+        text_only=True,
     ),
     "@cf/meta/llama-4-scout-17b-16e-instruct": ModelCatalogEntry(
         context_window=131_000,
@@ -355,12 +363,14 @@ _CATALOG: dict[str, ModelCatalogEntry] = {
         max_output_tokens=24_000,
         pricing=ModelPricing(input=0.293, output=2.253, cache_read=0.293, cache_write=0.293),
         quirks=ModelQuirks(**_UNVOUCHED),
+        text_only=True,
     ),
     "@cf/qwen/qwen3-30b-a3b-fp8": ModelCatalogEntry(
         context_window=32_768,
         max_output_tokens=32_768,
         pricing=ModelPricing(input=0.0509, output=0.335, cache_read=0.0509, cache_write=0.0509),
         quirks=ModelQuirks(**_UNVOUCHED),
+        text_only=True,
     ),
     # --- Decision models ---
     # TypeSafe Jev answers typed questions and generates no text; output is not billed.
@@ -370,6 +380,7 @@ _CATALOG: dict[str, ModelCatalogEntry] = {
         # No generated text to bound; the floor every entry shares, not a real limit.
         max_output_tokens=1_024,
         pricing=ModelPricing(input=0.042, output=0.0, cache_read=0.0, cache_write=0.0),
+        text_only=True,
     ),
     # --- Local ---
     # Unpriced, not free. Llama runs locally *and* is served for money by Workers AI,
@@ -494,6 +505,25 @@ def known_entry_for(model_id: str | None) -> ModelCatalogEntry | None:
     return best[1] if best else None
 
 
+def accepts_images(model_id: str | None, modalities: tuple[str, ...] | None = None) -> bool | None:
+    """Whether a model takes image input: True, False, or `None` for not known.
+
+    `modalities` is the route's own declaration (`FELIX_MODEL_ROUTES`) and wins, because
+    the operator knows what is behind a custom route and the catalog matches by substring.
+    Otherwise False only for an entry vouched `text_only`, and `None` for everything Felix
+    cannot vouch for either way -- which callers treat as "send it", the behaviour before
+    this check existed, rather than stripping images from a vision model it failed to name.
+    """
+    if modalities is not None:
+        return "image" in modalities
+    entry = known_entry_for(model_id)
+    if entry is None:
+        return None
+    if "image" in entry.input_modalities:
+        return True
+    return False if entry.text_only else None
+
+
 def is_priced(model_id: str | None) -> bool:
     """Whether Felix knows this model's rates well enough to enforce a spend cap."""
     return entry_for(model_id).pricing is not None
@@ -504,6 +534,7 @@ __all__ = [
     "ModelCatalogEntry",
     "ModelPricing",
     "ModelQuirks",
+    "accepts_images",
     "all_entries",
     "clamp_effort",
     "effort_for_budget",

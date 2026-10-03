@@ -200,6 +200,10 @@ class Settings(BaseSettings):
     # Sonnet tier by default, matching the prior posture. `claude-opus` and
     # `claude-fable` are available routes; changing this changes every run's cost.
     default_model_id: str = "claude-sonnet"
+    # Route that answers a call carrying an image when the agent's own model is text-only.
+    # Empty means such a turn is refused with a 422 that names the route; the manifest's
+    # `spec.model.vision_model` overrides it.
+    default_vision_model_id: str = ""
     anthropic_api_key: str = Field(default="", repr=False)
     openai_api_key: str = Field(default="", repr=False)
     ollama_base_url: str = "http://localhost:11434"

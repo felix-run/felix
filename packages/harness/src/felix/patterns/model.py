@@ -64,12 +64,14 @@ from felix.observability.tracing import timed_span
 from felix.patterns.model_composites import (
     _EscalationClient,
     _FallbackClient,
+    _VisionRoutingClient,
 )
 from felix.patterns.model_registry import (
     get_model_provider,
     list_model_providers,
     register_model_provider,
 )
+from felix.patterns.model_vision import route_accepts_images, vision_plan, without_images
 
 logger = logging.getLogger("felix.patterns.model")
 
@@ -96,15 +98,27 @@ def parse_route_overlay(
     table is read is made once. Malformed JSON degrades to the defaults with a warning; a
     provider nobody registered is caught at boot by `Settings.validate_runtime`.
     """
-    routes = {k: ModelRoute(provider=v["provider"], model=v["model"]) for k, v in defaults.items()}
+    routes = {k: _route_from(v) for k, v in defaults.items()}
     if raw.strip():
         try:
             override = json.loads(raw)
             for k, v in override.items():
-                routes[k] = ModelRoute(provider=v["provider"], model=v["model"])
+                routes[k] = _route_from(v)
         except Exception:
             logger.warning("invalid %s; using defaults", setting_name)
     return routes
+
+
+def _route_from(v: dict[str, Any]) -> ModelRoute:
+    """One route entry. `modalities` is optional and says what the route accepts, for a model
+    the catalog cannot vouch for: `{"provider": "ollama", "model": "llava", "modalities":
+    ["text", "image"]}`."""
+    modalities = v.get("modalities")
+    return ModelRoute(
+        provider=v["provider"],
+        model=v["model"],
+        modalities=tuple(str(x) for x in modalities) if isinstance(modalities, list) else None,
+    )
 
 
 def parse_model_routes(settings: Settings | None = None) -> dict[str, ModelRoute]:
@@ -271,11 +285,13 @@ def record_model_usage(
     if manifest_id is None:
         ctx = try_get_context()
         manifest_id = (ctx.manifest_id if ctx is not None else "") or ""
+    # `getattr`: a plugin provider's result may predate these fields.
+    served = getattr(result, "served_route", None)
     return record_usage(
         result,
         manifest_id=manifest_id,
-        model_id=getattr(model, "model_id", "") or "",
-        wire_model_id=wire_model_id(model),
+        model_id=getattr(result, "served_model_id", None) or getattr(model, "model_id", "") or "",
+        wire_model_id=served.model if served is not None else wire_model_id(model),
         meta=meta,
         price_override=getattr(model, "price_override", None),
     )
@@ -362,7 +378,7 @@ class _TracedClient:
         tools: Sequence[ToolSchema],
         opts: ModelChatOptions | None = None,
     ) -> ModelChatResult:
-        messages = await resolve_for_current_request(messages)
+        messages = await self._prepare(messages)
         async with timed_span(
             f"chat {self._wire_model()}",
             self._span_attrs(),
@@ -382,8 +398,15 @@ class _TracedClient:
     ) -> AsyncIterator[str]:
         # An async generator rather than the plain forward this used to be, because the
         # expansion is a coroutine. `async for` over the result is identical either way.
-        async for chunk in self.inner.stream(await resolve_for_current_request(messages), tools, opts):
+        async for chunk in self.inner.stream(await self._prepare(messages), tools, opts):
             yield chunk
+
+    async def _prepare(self, messages: list[ChatMessage]) -> list[ChatMessage]:
+        # Images go before references are expanded, so a route that cannot see them never
+        # pays to fetch their bytes from the object store.
+        if route_accepts_images(self.route) is False:
+            messages = without_images(messages, self.model_id)
+        return await resolve_for_current_request(messages)
 
     def __getattr__(self, name: str) -> Any:
         # Providers carry extra attributes the harness reads by name (`wire_model_id`
@@ -418,7 +441,7 @@ class _TracedStreamingClient(_TracedClient):
         tools: Sequence[ToolSchema],
         opts: ModelChatOptions | None = None,
     ) -> AsyncIterator[StreamDelta | ModelChatResult]:
-        messages = await resolve_for_current_request(messages)
+        messages = await self._prepare(messages)
         async with timed_span(
             f"chat {self._wire_model()}",
             {**self._span_attrs(), "felix.streamed": True},
@@ -661,6 +684,20 @@ def build_model(settings: Settings | None, spec: Any, *, decider: Any = None) ->
             route=client.route,
             price_override=price_override,
             decider=decider if getattr(esc, "decider", False) else None,
+        )
+    # Outermost, so it decides per call which whole chain answers: the primary's, with its
+    # fallbacks and escalation, or the vision route's. Decided by the same plan the request
+    # routes' 422 reads, so the two cannot disagree about a route.
+    plan = vision_plan(settings, spec)
+    if plan.misconfigured:
+        raise ValueError(plan.problem)
+    if plan.vision_id:
+        client = _VisionRoutingClient(
+            primary=client,
+            vision=build_one_model(settings, spec, plan.vision_id),
+            model_id=client.model_id,
+            route=client.route,
+            price_override=price_override,
         )
     return client
 

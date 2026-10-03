@@ -260,6 +260,21 @@ def _auth_from_request(request: Request) -> AuthContext:
     return AuthContext()
 
 
+def _refuse_unseeable_images(
+    manifest: Any, model_id: str | None, messages: list[ChatMessage], settings: Any
+) -> None:
+    """422 for a turn carrying an image that no route of this agent can see.
+
+    Before the agent is built and before a stream opens, so the person who attached the
+    picture hears that it cannot be read rather than getting an answer about something else.
+    """
+    from felix.patterns.model_vision import unseeable_image_problem
+
+    problem = unseeable_image_problem(manifest, messages, settings, model_id)
+    if problem:
+        raise HTTPException(status_code=422, detail=problem)
+
+
 def _allowlisted_model(manifest: Any, model_id: str | None, settings: Any = None) -> str | None:
     if not model_id:
         return None
@@ -398,6 +413,7 @@ async def _chat_turn(body: ChatRequest, request: Request) -> tuple[int, dict[str
     )
     if not messages:
         raise HTTPException(status_code=400, detail="messages_or_template_required")
+    _refuse_unseeable_images(resolved.manifest, model_id, messages, settings)
     try:
         from felix.governance.inbound import apply_inbound_screening
 
@@ -614,6 +630,7 @@ async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
     )
     if not messages:
         raise HTTPException(status_code=400, detail="messages_or_template_required")
+    _refuse_unseeable_images(resolved.manifest, model_id, messages, settings)
     try:
         from felix.governance.inbound import apply_inbound_screening
 

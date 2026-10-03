@@ -429,8 +429,19 @@ override) or by the built-in defaults:
 | `gpt-4.1` / `gpt-4.1-mini` | openai | same |
 | `llama-3-pro` / `llama-3-fast` | ollama | `llama3.3:70b` / `llama3.2` |
 | `kimi-k2-cf` | workers_ai | `@cf/moonshotai/kimi-k2.6` (262K, vision) |
-| `gpt-oss-120b-cf` / `gpt-oss-20b-cf` | workers_ai | `@cf/openai/gpt-oss-120b` / `@cf/openai/gpt-oss-20b` |
-| `glm-flash-cf` | workers_ai | `@cf/zai-org/glm-4.7-flash` |
+| `gpt-oss-120b-cf` / `gpt-oss-20b-cf` | workers_ai | `@cf/openai/gpt-oss-120b` / `@cf/openai/gpt-oss-20b` (text only) |
+| `glm-flash-cf` | workers_ai | `@cf/zai-org/glm-4.7-flash` (text only) |
+
+A turn that carries an image and is bound for a model the catalog marks text-only goes to
+`spec.model.vision_model`, or `FELIX_DEFAULT_VISION_MODEL_ID` when the manifest names none — so a
+cheap text route can stay the default and a picture still gets looked at. The image stays in the
+thread's history, so every later turn of that thread also goes to the vision route, until compaction
+or a window drops it. The vision route is a single route: it has no fallbacks or escalation of its own. With neither set, the
+request is refused with a 422 naming the route instead of reaching a model that would answer that
+it cannot see. A custom route declares what it accepts with a `modalities` key, which the catalog
+cannot know for an arbitrary model:
+`{"vision":{"provider":"ollama","model":"llava","modalities":["text","image"]}}`. A model the
+catalog cannot vouch for either way is sent the image as before.
 
 Every `-cf` route supports tool calling and is priced, so `limits.max_cost_usd` is enforced on
 it. `@cf/meta/llama-3.3-70b-instruct-fp8-fast` is priced too but has no default route: Workers
