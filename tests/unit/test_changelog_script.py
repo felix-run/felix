@@ -128,10 +128,13 @@ def test_cut_refuses_a_version_already_written_and_an_empty_release(cl: Any) -> 
 
 
 def test_the_current_unreleased_section_carries_over(cl: Any) -> None:
-    """The entries written by hand before the switch must parse, or the first cut fails."""
+    """Entries written by hand under [Unreleased] must parse, or the next cut fails.
+
+    Not that there are any: a cut leaves the section empty, so asserting it held entries
+    failed the very release (0.6.1) that consumed the ones written before the switch.
+    """
     text = (ROOT / "CHANGELOG.md").read_text()
     _, _, entries = cl._unreleased(text)
-    assert entries, "the current [Unreleased] section reads as entries"
     assert all(e.category in cl.CATEGORIES for e in entries)
 
 
