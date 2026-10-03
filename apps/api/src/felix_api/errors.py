@@ -52,6 +52,7 @@ def _relayable() -> tuple[type[BaseException], ...]:
     from felix.manifests.loader import ManifestParseError
     from felix.manifests.pin import ManifestDriftError
     from felix.patterns.model import ModelGatewayError
+    from felix.secrets import SecretNotFoundError
     from felix_ai.providers.base import ProviderConfigError
     from felix_ai.types import MessageFormatError
 
@@ -59,8 +60,13 @@ def _relayable() -> tuple[type[BaseException], ...]:
         ModelGatewayError,
         # Names the provider and the *option* it lacks, never a value: `workers_ai` with no
         # `account_id` answered `internal error (request …)` until this was listed, which
-        # sent the operator to the logs for a fact the message already stated.
+        # sent the operator to the logs for a fact the message already stated. Decision
+        # providers raise it too (`typesafe` with no `api_key`).
         ProviderConfigError,
+        # Names the secret a manifest's `secret:` ref points at, never its value. `/chat`
+        # mapped it to a 503 by message prefix, but `/chat/stream` compiles inside the
+        # generator, so a missing `GITHUB_MCP_TOKEN` answered `internal error (request …)`.
+        SecretNotFoundError,
         ManifestDriftError,
         InboundAuthError,
         # Rendered by felix.manifests.loader without the offending value, precisely so it

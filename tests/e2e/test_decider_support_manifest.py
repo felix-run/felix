@@ -74,8 +74,10 @@ async def test_every_consumer_the_example_switches_on_is_asked(boot: Any, asked:
 async def test_without_a_route_the_example_refuses_to_compile_and_says_why(boot: Any) -> None:
     """The documented failure: no key, no compile — never an agent that decides nothing."""
     async with boot() as app:
-        with pytest.raises(ValueError, match="api_key"):
-            await app.client.post(
-                "/v1/chat/completions",
-                json={"model": "decider-support", "messages": [{"role": "user", "content": "hi"}]},
-            )
+        resp = await app.client.post(
+            "/v1/chat/completions",
+            json={"model": "decider-support", "messages": [{"role": "user", "content": "hi"}]},
+        )
+    # Unavailable, not a server fault: the deployment has not configured the provider.
+    assert resp.status_code == 503, resp.text
+    assert "decision provider 'typesafe' needs api_key" in resp.text

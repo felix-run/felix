@@ -15,6 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with a smaller window was handed history it could not take. With a vision route composed, the
   window is now the smaller of the two. A declared `context_window_tokens` still wins.
 
+- **A manifest the deployment cannot compile now says why instead of `internal error`.** A
+  `secret:` ref naming a secret the secrets backend does not hold, or a decision provider with
+  no credential (`typesafe` without `api_key`, `workers_ai` without `account_id`), reached
+  `/chat/stream` and the `/v1` stream as `internal error (request …)`. These failures now name
+  the missing secret or option, and `/v1/chat/completions` answers 503 like `/chat` does. They
+  are typed (`SecretNotFoundError`, `ProviderConfigError`), so they no longer depend on
+  matching the message text.
 - **`felix migrate <revision>` no longer reports success for a revision the database has
   passed.** Alembic's upgrade to an older revision is a silent no-op, so `felix migrate 0021` on
   a database at 0023 printed "migrated to 0021" and changed nothing — and the documented

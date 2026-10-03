@@ -17,6 +17,15 @@ from felix.logging_setup import loggable
 
 logger = logging.getLogger("felix.secrets")
 
+
+class SecretNotFoundError(ValueError):
+    """A secret ref names a secret the configured backend does not hold.
+
+    The message carries the secret's *name*, never a value, and is written for the operator
+    who has to create it — so the API relays it rather than answering `internal error`.
+    """
+
+
 # Values resolved via hydrate_secrets — used for output masking.
 _resolved_secret_values: list[str] = []
 
@@ -562,7 +571,7 @@ async def resolve_secret_value(
         return normalize_secret_ref(value) if isinstance(value, dict) else str(value)
     resolved = await provider.get(name)
     if resolved is None:
-        raise ValueError(f"secret not found: {name}")
+        raise SecretNotFoundError(f"secret not found: {name}")
     if register:
         register_resolved_secret(resolved)
     return resolved

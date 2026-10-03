@@ -36,6 +36,7 @@ from felix_ai.decide.types import (
     ScoreAnswer,
 )
 from felix_ai.decide.typesafe import JevDecider
+from felix_ai.providers.base import ProviderConfigError
 
 # Jev answers in well under a second; a decision that takes longer than this has failed,
 # and the caller's fallback is better than waiting out the model timeout meant for
@@ -54,7 +55,7 @@ def _typesafe(model_id: str, wire_model: str, options: Mapping[str, str], settin
     # Refused at build rather than sent: TypeSafe has no unauthenticated mode, so a missing
     # key is a 401 on every turn that the consumer quietly falls back from.
     if not options.get("api_key") and not options.get("base_url"):
-        raise ValueError(
+        raise ProviderConfigError(
             "decision provider 'typesafe' needs api_key — set it in "
             'FELIX_MODEL_PROVIDER_OPTIONS, e.g. {"typesafe": {"api_key": "..."}}'
         )
