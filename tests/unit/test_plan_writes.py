@@ -120,3 +120,28 @@ async def test_the_agent_step_update_keeps_an_operator_edit_made_under_it(
     body = json.loads(out if isinstance(out, str) else out.content)
     assert body["plan"]["title"] == "Ship carefully"
     assert body["plan"]["steps"][0]["status"] == "done"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key", ["title", "text", "description", "name"])
+async def test_plan_create_keeps_a_step_title_under_any_key_a_model_uses(
+    settings: Settings, key: str
+) -> None:
+    # A model sent `{"description": ...}` for every step and the plan was stored with
+    # empty titles; the words have to survive whichever key carried them.
+    tools = {t.name: t for t in _plan_tools()}
+    auth = AuthContext(tenant_id="t1", principal_sub="tester", anonymous=False)
+    req = RequestContext(settings=settings, auth=auth, manifest_id="deep", thread_id="th1")
+    async with async_run_with_context(req):
+        out = await tools["plan_create"].executor.execute(
+            {"plan_id": _id(), "title": "Ship", "steps": [{"id": "s1", key: "Collect merged PRs"}]}
+        )
+    body = json.loads(out if isinstance(out, str) else out.content)
+    assert body["plan"]["steps"][0]["title"] == "Collect merged PRs"
+
+
+def test_plan_create_tells_the_model_what_a_step_is() -> None:
+    schema = {t.name: t for t in _plan_tools()}["plan_create"].args_schema
+    items = schema["properties"]["steps"]["items"]["anyOf"]
+    assert {"type": "string"} in items
+    assert any(i.get("properties", {}).get("title") for i in items)

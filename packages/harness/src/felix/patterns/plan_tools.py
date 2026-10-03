@@ -16,6 +16,22 @@ from felix.tools.types import Tool, define_tool
 _UPDATE_ATTEMPTS = 3
 
 
+# The keys a model reaches for when it names a step. `steps` was declared as a bare
+# array, so models guessed: one sent `description` for every step, and the plan was
+# stored with three empty titles (measured on a local deployment, 2026-10-03). The
+# schema now says `title`; the handler still accepts the other spellings, because a
+# step whose words are dropped is worse than one spelled unexpectedly.
+_STEP_TITLE_KEYS = ("title", "text", "description", "name")
+
+
+def _step_title(step: dict[str, Any]) -> str:
+    for key in _STEP_TITLE_KEYS:
+        value = step.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
+
+
 def _plan_tools() -> list[Tool]:
     async def plan_create(args: dict[str, Any], _ctx: Any = None) -> str:
         import json
@@ -39,7 +55,7 @@ def _plan_tools() -> list[Tool]:
                     steps.append(
                         {
                             "id": str(s.get("id") or i + 1),
-                            "title": str(s.get("title") or s.get("text") or ""),
+                            "title": _step_title(s),
                             "status": str(s.get("status") or "pending"),
                         }
                     )
@@ -140,7 +156,24 @@ def _plan_tools() -> list[Tool]:
                     "title": {"type": "string"},
                     "goal": {"type": "string"},
                     "plan_id": {"type": "string"},
-                    "steps": {"type": "array"},
+                    "steps": {
+                        "type": "array",
+                        "description": "The steps in order: each a string, or an object with a title.",
+                        "items": {
+                            "anyOf": [
+                                {"type": "string"},
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "id": {"type": "string"},
+                                        "title": {"type": "string"},
+                                        "status": {"type": "string"},
+                                    },
+                                    "required": ["title"],
+                                },
+                            ]
+                        },
+                    },
                 },
             },
             handler=plan_create,
