@@ -123,3 +123,21 @@ def test_the_base_stack_can_be_pointed_at_an_external_otlp_backend(env_var: str,
     assert f"${{{env_var}" in str(env[env_var]), (
         f"{service} pins {env_var} to a literal instead of taking it from the environment"
     )
+
+
+# Routing a model, and the credentials the route needs, are one setting split three ways.
+# `FELIX_MODEL_PROVIDER_OPTIONS` was missing from `x-felix-env`, so on any Compose deployment
+# a `workers_ai` or `typesafe` route reached the container with its route and no key: the
+# operator set the variable in `.env`, the container never saw it, and the compile refused
+# with "needs api_key" for a key that was plainly set.
+MODEL_ROUTING = ("FELIX_MODEL_ROUTES", "FELIX_DECISION_ROUTES", "FELIX_MODEL_PROVIDER_OPTIONS")
+
+
+@pytest.mark.parametrize("service", ["api", "worker"])
+@pytest.mark.parametrize("env_var", MODEL_ROUTING)
+def test_every_model_routing_setting_reaches_the_process(env_var: str, service: str) -> None:
+    from tests.compose_yaml import load_compose
+
+    env = load_compose(COMPOSE)["services"][service]["environment"]
+    assert env_var in env, f"{env_var} does not reach {service}; a route that needs it cannot be configured"
+    assert f"${{{env_var}" in str(env[env_var]), f"{service} pins {env_var} to a literal"
