@@ -98,6 +98,82 @@ def test_no_optional_dependency_imported_at_module_scope() -> None:
 
 
 # --------------------------------------------------------------------------
+# Headless: Felix serves an API, never a web UI. Frontends live in felix-run/web and reach it
+# through a same-origin proxy (the README's no-CORS paragraph says why). The one HTML response,
+# the `/docs` API reference, is generated in code with its own CSP; it mounts nothing.
+# --------------------------------------------------------------------------
+_UI_NAMES = frozenset({"StaticFiles", "Jinja2Templates", "TemplateResponse"})
+_ASSET_SUFFIXES = frozenset(
+    {
+        ".html",
+        ".htm",
+        ".css",
+        ".js",
+        ".mjs",
+        ".map",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".svg",
+        ".ico",
+        ".woff",
+        ".woff2",
+        ".ttf",
+        ".jinja",
+        ".jinja2",
+        ".j2",
+    }
+)
+
+
+def test_the_api_serves_no_static_files_or_templates() -> None:
+    """A `StaticFiles` mount or a template directory is a web UI arriving by the back door, and
+    it would also be the first thing in the app answering outside the auth middleware's model of
+    a JSON API. `.mount()` is banned outright: plugins add routers, and an ASGI sub-app mounted
+    here is exactly how a static directory gets served."""
+    calls = 0
+    offenders: list[str] = []
+    for root in SOURCE_ROOTS:
+        for path in _python_files(root):
+            rel = path.relative_to(ROOT)
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"), str(path))):
+                if isinstance(node, ast.Call):
+                    calls += 1
+                    if isinstance(node.func, ast.Attribute) and node.func.attr == "mount":
+                        offenders.append(f"{rel}:{node.lineno} calls .mount()")
+                name = (
+                    node.id
+                    if isinstance(node, ast.Name)
+                    else node.attr
+                    if isinstance(node, ast.Attribute)
+                    else None
+                )
+                if name in _UI_NAMES:
+                    offenders.append(f"{rel}:{node.lineno} uses {name}")
+                if isinstance(node, ast.ImportFrom):
+                    offenders += [
+                        f"{rel}:{node.lineno} imports {a.name}" for a in node.names if a.name in _UI_NAMES
+                    ]
+    assert calls > 1000, f"only {calls} calls inspected — the walk has broken and would pass anything"
+    assert offenders == [], "Felix is headless; serve UI from felix-run/web:\n  " + "\n  ".join(offenders)
+
+
+def test_no_web_assets_ship_in_the_source_trees() -> None:
+    """The other half: an asset directory with nothing serving it yet is the same UI, one
+    `StaticFiles` away."""
+    assets = sorted(
+        str(p.relative_to(ROOT))
+        for root in SOURCE_ROOTS
+        for p in root.rglob("*")
+        if p.is_file() and p.suffix.lower() in _ASSET_SUFFIXES and "__pycache__" not in p.parts
+    )
+    assert assets == [], "web assets in a headless harness (they belong in felix-run/web):\n  " + "\n  ".join(
+        assets
+    )
+
+
+# --------------------------------------------------------------------------
 # Every module that talks to Postgres also has a memory:// path, which is the
 # only way the suite runs without infrastructure.
 # --------------------------------------------------------------------------

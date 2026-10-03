@@ -321,7 +321,9 @@ recorded in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 | Liveness / readiness | `GET /live` (also `/health`), `GET /ready` |
 | Metrics | `GET /metrics` — **authenticated**, see below |
 
-**Browsers on another origin cannot call Felix directly, by design.** There is no CORS layer.
+**Felix serves an API, not a web UI, and browsers on another origin cannot call it directly, by
+design.** The chat UI and docs live in felix-run/web; `test_invariants.py` fails on any static
+file, template or mounted sub-app here. There is no CORS layer.
 A preflight `OPTIONS` gets a 401 (or a 405 under `auth_mode=none`) with no
 `Access-Control-Allow-*` headers, so the browser blocks the request before it is sent. A plain
 `GET` does reach Felix, but the page is not allowed to read the answer. Felix has no browser
