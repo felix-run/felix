@@ -12,6 +12,7 @@ from typing import Any
 
 import httpx
 import pytest
+import typer
 from felix.config import Settings
 from felix_cli.main import app as cli
 from typer.testing import CliRunner
@@ -146,8 +147,10 @@ def test_outdated_diff_and_update_follow_an_imported_skill(served: FakeRepos) ->
 
 
 def test_update_has_no_way_to_publish(served: FakeRepos) -> None:
-    result = _run("update", "invoice-triage", "--publish")
-    assert result.exit_code == 2 and "No such option: --publish" in result.output, result.output
+    # The declared options, not the rendered error: Rich colours that in CI, splitting the text.
+    update = typer.main.get_command(cli).commands["skills"].commands["update"]
+    assert not any("publish" in opt for p in update.params for opt in p.opts), update.params
+    assert _run("update", "invoice-triage", "--publish").exit_code == 2
 
 
 def test_a_diff_reaches_the_terminal_without_its_control_characters_but_keeps_its_lines(
