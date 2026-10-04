@@ -326,7 +326,7 @@ allowlist entry names a tenant and a literal owner. `FELIX_SKILL_IMPORT_MIN_AGE_
 a supply-chain cooldown counted from when the tenant first saw a skill's exact files (never from a
 commit date, which the pusher sets): until then an import is refused outright, and a tenant can
 raise the bar (`import_min_age_days` in its policy) but not lower it. Every GitHub call is charged
-against `FELIX_SKILL_IMPORT_CALLS_PER_HOUR` (per tenant, 1000) and
+against `FELIX_SKILL_IMPORT_CALLS_PER_HOUR` (per tenant, 500) and
 `FELIX_SKILL_IMPORT_CALLS_PER_HOUR_TOTAL` (4000).
 
 **[`examples/felix-plugin-example/`](examples/felix-plugin-example/)** is a working package that

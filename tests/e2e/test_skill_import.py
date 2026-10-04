@@ -183,15 +183,15 @@ async def test_a_skill_inside_the_cooldown_is_refused_over_http(boot: Any, gh: F
 
 
 async def test_browses_and_imports_are_charged_per_github_call(boot: Any, gh: FakeRepos) -> None:
-    """A browse of two skills is six calls (repository, tag, branch, tree, two SKILL.md heads); a
-    budget of eight serves one and stops the second two calls in."""
+    """A browse of two skills is five calls (repository, the default branch's ref, tree, two
+    SKILL.md heads); a budget of eight serves one and stops the second three calls in."""
     async with boot([], env={**ENV, "FELIX_SKILL_IMPORT_CALLS_PER_HOUR": "8"}) as app:
         params = {"source": "github:acme/skills"}
         assert (await app.client.get("/skill-library/-/browse", params=params)).status_code == 200
         before = len(gh.requests)
         limited = await app.client.get("/skill-library/-/browse", params=params)
         assert (limited.status_code, limited.json()["error"]) == (429, "rate_limited")
-        assert len(gh.requests) - before == 2, "charged per call, refused at the first over budget"
+        assert len(gh.requests) - before == 3, "charged per call, refused at the first over budget"
 
 
 async def test_a_source_bound_to_one_tenant_is_refused_to_another(boot: Any, gh: FakeRepos) -> None:
@@ -224,8 +224,9 @@ async def test_a_source_bound_to_one_tenant_is_refused_to_another(boot: Any, gh:
         assert own.status_code == 201, own.text
 
 
+@pytest.mark.parametrize("screening", [True, False], ids=["screening-on", "screening-off-markers-floor"])
 async def test_an_imported_skill_is_screened_on_activation_and_an_operators_is_not(
-    boot: Any, gh: FakeRepos
+    screening: bool, boot: Any, gh: FakeRepos
 ) -> None:
     """Both skills say the same hostile thing, and both went live without the gate (straight
     through the store, as a version published before a rule tightened would be). Screening is on;
@@ -248,7 +249,8 @@ async def test_an_imported_skill_is_screened_on_activation_and_an_operators_is_n
         ScriptedTurn(tool_calls=[ToolCall(id="c3", name="activate_skill", args={"name": "house-rules"})]),
         ScriptedTurn(content="done"),
     ]
-    manifest = _manifest(content_screening={"enabled": True})
+    # Off, the imported skill still gets the free marker scan; the operator's gets nothing.
+    manifest = _manifest(content_screening={"enabled": screening})
     async with boot(script, env=ENV, manifests={"e2e-importer": manifest}) as app:
         assert (await app.client.post("/skill-library/-/import", json={"source": SOURCE})).status_code == 201
         await library.save_draft(

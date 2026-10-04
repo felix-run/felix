@@ -377,11 +377,13 @@ First, because everything else governs it.
       pasted into the editor. Imports land as library drafts through the existing gate; nothing
       resolves a GitHub ref at manifest compile time (`spec.skills` and the loader are untouched),
       so a compile never depends on GitHub being up. Ported from Skillist's mirror sync.
-      1. [ ] (#471) `felix/skills/{github,importer,sighting_store}.py`, `GET /skill-library/-/browse`,
+      1. [ ] (#471, #476) `felix/skills/{github,importer,sighting_store}.py`, `GET /skill-library/-/browse`,
          `POST /skill-library/-/import`, `felix skills browse|add`, migration `0026` (source
          `import`, origin columns and `lineage_import` on the version, `skill_import_sighting`,
          `skill_policy.import_min_age_days`). `github:owner/repo[/path]` plus a separate ref: a
-         commit id is only a commit, accepted only on the default branch (`commit_not_in_repo`);
+         commit id (any case) is only a commit, must be what GitHub resolves it to (a hex-named
+         branch is `ambiguous_ref`), and is accepted only on the default branch
+         (`commit_not_in_repo`); migration `0028` indexes `skill_file(tenant_id, sha256)`;
          `refs/heads|tags/<name>` and bare names resolve through the repository's own refs, a bare
          name that is both a tag and a branch is `ambiguous_ref`; every file read by blob id and
          checked against its git object id, through the egress-pinned client to `api.github.com`
@@ -404,8 +406,8 @@ First, because everything else governs it.
          own first sighting of the exact files (on any ref, stamped on every browse and import
          attempt, cooldown on or off; pruned after 366 days), never from a commit date the pusher
          sets. Open: a tree GitHub truncates (past ~100k entries) is refused rather than walked;
-         a manifest without content screening activates imported bodies unscreened (warned at
-         compile); the suggester's decision model reads imported descriptions; nothing clears
+         a manifest without content screening gets only the free marker floor over imported text
+         (warned at compile), which a paraphrase passes; the suggester's decision model reads imported descriptions; nothing clears
          `lineage_import` once set; laundering is caught only for byte-identical files.
       2. [ ] An explicit update check (route + `felix skills outdated`/`diff`): what the source's
          tree digest is now against the live version, with a file diff before re-importing; and

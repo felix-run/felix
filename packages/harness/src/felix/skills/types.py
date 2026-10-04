@@ -10,6 +10,13 @@ from typing import Literal
 SkillSource = Literal["bundled", "store", "library"]
 
 
+def looks_injected(text: str) -> bool:
+    """Whether ``text`` carries the injection markers content screening quarantines output for."""
+    from felix.governance.content_screening import _INJECTION
+
+    return any(rx.search(text) for rx in _INJECTION)
+
+
 @dataclass(slots=True)
 class Skill:
     """A discovered skill (progressive disclosure: name+description always; body on activate)."""
@@ -25,6 +32,14 @@ class Skill:
     # Imported third-party text, or built on it (`skill_version.lineage_import`): what the skill
     # tools return of it is marked untrusted output, so content screening covers it.
     untrusted: bool = False
+
+    def listed_description(self) -> str:
+        """The description as the model is shown it -- in the system-prompt catalog and by
+        `list_skills` alike: as written, except an imported skill's is withheld (empty) when it
+        carries the markers content screening quarantines tool output for."""
+        if self.untrusted and looks_injected(self.description):
+            return ""
+        return self.description
 
 
 @dataclass(slots=True)
@@ -43,4 +58,4 @@ class SkillCatalog:
         return sorted(self.skills)
 
 
-__all__ = ["Skill", "SkillCatalog", "SkillSource"]
+__all__ = ["Skill", "SkillCatalog", "SkillSource", "looks_injected"]

@@ -492,6 +492,7 @@ def apply_content_screening(
     *,
     decider: MeteredDecider | None = None,
     images: Callable[[], ImageScreener] | None = None,
+    imported_skills: bool = False,
 ) -> list[Tool]:
     """Screen what a tool returns before the model reads it -- its text, and any image.
 
@@ -499,13 +500,23 @@ def apply_content_screening(
     `image_model` is set. Without it an *untrusted* tool's images are quarantined: the text
     screeners cannot read pixels, and a manifest that turned screening on to make a browser
     safe must not read as covered while a screenshot carries a payload past it.
+
+    `imported_skills`: the catalog holds a skill built on a GitHub import. With screening off,
+    this still installs the free marker scan -- no model, no decider -- on what the relaying
+    tools (`relays_untrusted`: `activate_skill`, `read_skill_file`, `list_skills`) return of it,
+    and quarantines a match: third-party instructions are not left wholly unread because a
+    manifest never turned screening on. Everything else stays as off as the manifest says.
     """
-    if screening is None or not screening.enabled:
+    enabled = screening is not None and screening.enabled
+    if not enabled and not imported_skills:
         return tools
-    on_flag = screening.on_flag
-    named = list(screening.tools)
-    model_id = screening.model.strip()
-    scored_only = list(screening.model_tools)
+    # The relayed-only floor: the markers alone, on relayed results alone, quarantining.
+    markers_only = not enabled
+    floor = screening if screening is not None and enabled else ContentScreening()
+    on_flag = floor.on_flag
+    named = list(floor.tools)
+    model_id = floor.model.strip()
+    scored_only = list(floor.model_tools)
 
     def wrap_one(tool: Tool) -> Tool:
         # Additive: what `tools` names, *plus* every untrusted tool, always.
@@ -521,16 +532,19 @@ def apply_content_screening(
         # renamed: turning screening off for untrusted output is the thing screening exists to
         # prevent. `matches_any([], name)` is False, so a manifest that never sets `tools`
         # behaves exactly as before.
-        untrusted = _is_untrusted_tool(tool)
-        text_covered = matches_any(named, tool.name) or untrusted
+        if markers_only and not tool.relays_untrusted:
+            return tool
+        untrusted = _is_untrusted_tool(tool) and not markers_only
+        text_covered = (matches_any(named, tool.name) or untrusted) and not markers_only
         # An image tool's *results* are screened by where their input came from, its summary
         # text is not: it is a size and a reference the tool wrote itself.
         image_tool = tool.source == "image"
         if not (text_covered or image_tool or tool.relays_untrusted):
             return tool
         inner = tool.executor
-        # The paid scoring, by `model_tools`; the markers below run regardless.
-        paid = not scored_only or matches_any(scored_only, tool.name)
+        # The paid scoring, by `model_tools`; the markers below run regardless. Never on the
+        # relayed-only floor: it is the free scan a manifest gets without asking.
+        paid = not markers_only and (not scored_only or matches_any(scored_only, tool.name))
 
         async def execute(args: ToolInput, ctx: ToolInvocationCtx | None = None) -> ToolOutput:
             out = await inner.execute(args, ctx)
@@ -1419,14 +1433,14 @@ def _warn_untrusted_tools_are_unscreened(m: Manifest, untrusted: list[str]) -> N
 
 
 def _warn_imported_skills_are_unscreened(m: Manifest, catalog: Any) -> None:
-    """Say so when a skill built on an import is in the catalog and nothing screens it.
+    """Say so when a skill built on an import is in the catalog and only the marker floor screens it.
 
     What `activate_skill`, `read_skill_file` and `list_skills` return of such a skill is marked as
-    relayed from an untrusted author, but only content screening reads that mark -- off, the third
-    party's text reaches the model as a trusted tool's would. The same warning, for the same
-    reason, as `_warn_untrusted_tools_are_unscreened`. Keyed on the catalog rather than on the
-    skill tools being bound: those are bound on every manifest with skills, and a warning that
-    fires on every bundled manifest is noise.
+    relayed from an untrusted author. With content screening off, only the free marker scan reads
+    that mark (`apply_content_screening(imported_skills=True)`): no scoring model, no decider.
+    The same warning, for the same reason, as `_warn_untrusted_tools_are_unscreened`. Keyed on
+    the catalog rather than on the skill tools being bound: those are bound on every manifest
+    with skills, and a warning that fires on every bundled manifest is noise.
     """
     if m.spec.content_screening.enabled:
         return
@@ -1435,7 +1449,7 @@ def _warn_imported_skills_are_unscreened(m: Manifest, catalog: Any) -> None:
         return
     logger.warning(
         "manifest %r offers imported skill(s) %s with content_screening disabled, so what the skill "
-        "tools return of them reaches the model unscreened",
+        "tools return of them is checked only by the injection markers",
         m.metadata.name,
         _summarise(imported),
         extra={"manifest_id": m.metadata.name},
@@ -1836,6 +1850,8 @@ async def build_agent(
         _bind_artifact_reader(resolved, m, deps, tenant_id)
 
         skill_suggester = None
+        # Whether the catalog offers a skill built on an import (`apply_content_screening`).
+        imported_skills = False
 
         # Wire Agent Skills (progressive disclosure + bound skill tools).
         from felix.skills import (
@@ -1876,6 +1892,7 @@ async def build_agent(
                 if name not in have and (m.spec.skills or authoring or name == "read_skill_file"):
                     resolved.append(tool)
             _warn_imported_skills_are_unscreened(m, catalog)
+            imported_skills = any(s.untrusted for s in catalog.skills.values())
             if authoring:
                 _bind_skill_authoring(resolved, m, deps, tenant_id, catalog)
             if m.spec.skill_suggestion.enabled and decider is not None and catalog.list_public():
@@ -1949,13 +1966,16 @@ async def build_agent(
             resolved = apply_policies(resolved, m.spec.policies, m.metadata.name)
         if m.spec.command_screening.enabled:
             resolved = apply_command_screening(resolved, m.spec.command_screening, m.metadata.name)
-        if m.spec.content_screening.enabled:
+        if m.spec.content_screening.enabled or imported_skills:
+            # One slot for both: with screening off and an imported skill in the catalog, the same
+            # wrapper installs only the free marker scan over what the skill tools relay of it.
             resolved = apply_content_screening(
                 resolved,
                 m.spec.content_screening,
                 m.metadata.name,
                 decider=decider if m.spec.content_screening.decider else None,
-                images=tool_image_screener(m, deps.settings),
+                images=tool_image_screener(m, deps.settings) if m.spec.content_screening.enabled else None,
+                imported_skills=imported_skills,
             )
         # Always installed. Previously gated on any_limit(), so a manifest that declared
         # no limits got no tool-call cap, no wall clock, no token or spend ceiling —
