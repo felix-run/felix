@@ -46,7 +46,7 @@ async def browse_source(
     name and description its frontmatter declares. Each item's `source` is what to import it by."""
     ctx = library_request(request, SCOPE_SKILLS_READ)
     try:
-        listing = await importer.browse(ctx.settings, source, ref)
+        listing = await importer.browse(ctx.settings, ctx.tenant_id, source, ref)
     except library.SkillLibraryError as exc:
         return refusal(exc)
     return ctx.redact(listing)

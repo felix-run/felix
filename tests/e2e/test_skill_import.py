@@ -156,6 +156,27 @@ async def test_refusals_carry_stable_codes(boot: Any, gh: FakeRepos) -> None:
         assert (browse.status_code, browse.json()["error"]) == (502, "upstream_rate_limited")
 
 
+async def test_a_skill_inside_the_cooldown_is_refused_over_http(boot: Any, gh: FakeRepos) -> None:
+    import time
+
+    fresh = {f"skills/{NAME}/SKILL.md": skill_md(NAME, "Route incoming invoices.", BODY)}
+    gh.push("acme/fresh", fresh, at=int(time.time() * 1000) - 60_000)
+    async with boot([], env={**ENV, "FELIX_SKILL_IMPORT_MIN_AGE_DAYS": "7"}) as app:
+        refused = await app.client.post(
+            "/skill-library/-/import", json={"source": f"github:acme/fresh/skills/{NAME}"}
+        )
+        assert (refused.status_code, refused.json()["error"]) == (403, "too_recent")
+        assert "can be imported from" in refused.json()["message"]
+        assert (await app.client.get(f"/skill-library/{NAME}")).status_code == 404
+
+        browsed = await app.client.get("/skill-library/-/browse", params={"source": "github:acme/skills"})
+        listing = browsed.json()
+        assert listing["min_age_days"] == 7 and all(i["eligible"] for i in listing["items"])
+        imported = await app.client.post("/skill-library/-/import", json={"source": SOURCE})
+        assert imported.status_code == 201, imported.text
+        assert imported.json()["origin_committed_at"] == listing["items"][0]["committed_at"]
+
+
 async def test_browse_needs_skills_read_and_import_needs_skills_write(boot: Any, gh: FakeRepos) -> None:
     keys = {
         "sk-e2e-none": {"tenant_id": "default", "sub": "nobody", "scopes": ["chat:write"]},

@@ -411,6 +411,10 @@ class Settings(BaseSettings):
     # Comma-separated globs over canonical sources (`github:anthropics/*,github:myorg/skills`); an
     # entry without a glob also allows everything under it. Empty allows any GitHub source.
     skill_import_sources: str = ""
+    # Refuse to import a skill whose folder last changed fewer than this many days ago (0 = off): a
+    # cooldown so a compromised upstream commit can be noticed first. A tenant can raise it with
+    # PATCH /skill-library/-/policy (`import_min_age_days`), never lower it.
+    skill_import_min_age_days: int = Field(default=0, ge=0, le=365)
     memory_embedding_model: str = "bge-base-en-v1.5"
     memory_recall_limit: int = 8
 

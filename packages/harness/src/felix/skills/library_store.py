@@ -182,6 +182,7 @@ _VERSION_DEFAULTS: dict[str, Any] = {
     "origin_commit": None,
     "origin_tree_hash": None,
     "origin_license": None,
+    "origin_committed_at": None,
 }
 
 

@@ -68,7 +68,13 @@ def browse_cmd(
     )
     for item in listing["items"]:
         description = " ".join(str(item.get("description") or "").split())
-        typer.echo(f"{item['source']}\t{item['name']}\t{description[:100]}")
+        waiting = ""
+        if not item.get("eligible", True) and item.get("eligible_at"):
+            from datetime import UTC, datetime
+
+            when = datetime.fromtimestamp(item["eligible_at"] / 1000, tz=UTC).date().isoformat()
+            waiting = f"\t(too recent to import until {when})"
+        typer.echo(f"{item['source']}\t{item['name']}\t{description[:100]}{waiting}")
     if listing.get("truncated"):
         typer.echo("…more skills than one listing holds; name a path to narrow it.", err=True)
     if not listing["items"]:

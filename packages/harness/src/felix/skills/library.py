@@ -63,7 +63,14 @@ now_ms = lambda: int(time.time() * 1000)
 SkillSourceKind = Literal["agent", "operator", "import"]
 
 # The `skill_version` columns an import's origin fills; null on every other version.
-ORIGIN_COLUMNS = ("origin_source", "origin_ref", "origin_commit", "origin_tree_hash", "origin_license")
+ORIGIN_COLUMNS = (
+    "origin_source",
+    "origin_ref",
+    "origin_commit",
+    "origin_tree_hash",
+    "origin_license",
+    "origin_committed_at",
+)
 
 # Strict `major.minor.patch`: a version is interpolated into an object key, and the loader's
 # own key-segment rule (`loader._VERSION_RE`) is looser than this.
@@ -160,20 +167,22 @@ class SkillVersionCorrupt(SkillLibraryError):
 class ImportOrigin:
     """Where an imported version came from: the canonical source (`github:owner/repo/path`),
     the ref that was asked for, the commit it resolved to, a digest of the skill folder's tree
-    at that commit (what decides whether a re-import changed anything), and the repository's
-    SPDX license, when it declares one."""
+    at that commit (what decides whether a re-import changed anything), the repository's SPDX
+    license when it declares one, and when the skill's folder last changed at that commit (epoch
+    ms; what the import cooldown measures)."""
 
     source: str
     ref: str
     commit: str
     tree_hash: str
     license: str | None = None
+    committed_at: int | None = None
 
     def as_row(self) -> dict[str, Any]:
         return dict(
             zip(
                 ORIGIN_COLUMNS,
-                (self.source, self.ref, self.commit, self.tree_hash, self.license),
+                (self.source, self.ref, self.commit, self.tree_hash, self.license, self.committed_at),
                 strict=True,
             )
         )

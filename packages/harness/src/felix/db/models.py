@@ -194,6 +194,8 @@ class SkillVersionRow(Base):
     origin_commit: Mapped[str | None] = mapped_column(Text, nullable=True)
     origin_tree_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
     origin_license: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # When the newest commit touching the skill's folder at `origin_commit` was committed (ms).
+    origin_committed_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
     __table_args__ = (
         CheckConstraint("status IN ('draft', 'published', 'archived')", name="ck_skill_version_status"),
@@ -299,6 +301,8 @@ class SkillPolicyRow(Base):
     block_on_advisory: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=false())
     require_eval: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=false())
     min_eval_uplift: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Days a skill's folder must have been unchanged on GitHub before it may be imported.
+    import_min_age_days: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0", default=0)
     updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
     updated_by: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
 

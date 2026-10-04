@@ -165,7 +165,7 @@ async def test_a_refused_source_never_reaches_github(
         await _import(strict, store, gh)
     async with gh.client() as http:
         with pytest.raises(github.ImportSourceNotAllowed):
-            await importer.browse(strict, f"github:{REPO}", http=http)
+            await importer.browse(strict, "acme", f"github:{REPO}", http=http)
     assert gh.requests == []
 
 
@@ -331,10 +331,13 @@ async def test_every_file_is_read_at_the_resolved_commit_not_the_ref(
 
     assert result.version["origin_commit"] == first
     assert result.version["description"] == "Route invoices to the right queue."
-    after = gh.paths()[gh.paths().index(f"/repos/{REPO}/commits/main") + 1 :]
-    assert after[0] == f"/repos/{REPO}/git/trees/{first}"
-    assert all("main" not in p for p in after), after
-    assert all(p.startswith(f"/repos/{REPO}/git/") for p in after)
+    resolved_at = gh.paths().index(f"/repos/{REPO}/commits/main")
+    after = gh.requests[resolved_at + 1 :]
+    assert str(after[0].url).endswith(f"/repos/{REPO}/git/trees/{first}?recursive=1")
+    assert all("main" not in str(r.url) for r in after), [str(r.url) for r in after]
+    dated = [r for r in after if r.url.path == f"/repos/{REPO}/commits"]
+    assert [r.url.params["sha"] for r in dated] == [first], "the folder is dated at the commit too"
+    assert all(r.url.path.startswith(f"/repos/{REPO}/git/") for r in after if r not in dated)
 
 
 async def test_a_reimport_of_the_same_files_saves_nothing_even_across_commits(
@@ -540,6 +543,121 @@ def test_only_bundle_scenarios_count_for_an_imported_version() -> None:
     assert policy_for_source(PublishPolicy(), "operator") == PublishPolicy()
 
 
+# -- the import cooldown ---------------------------------------------------------------------------
+
+
+DAY = importer.DAY_MS
+# When the skill's folder last changed, in every cooldown test.
+T0 = 1_750_000_000_000
+
+
+def _iso(ms: int) -> str:
+    from datetime import UTC, datetime
+
+    return datetime.fromtimestamp(ms / 1000, tz=UTC).isoformat(timespec="seconds")
+
+
+def _aged(fake: FakeRepos, *, head_touches_skill: bool = False) -> None:
+    """The skill folder changed at T0; HEAD, nine days later, is a commit to the README -- or,
+    with ``head_touches_skill``, to the skill itself."""
+    files = {"skills/invoice-triage/SKILL.md": skill_md(NAME), "README.md": b"v1\n"}
+    fake.push(REPO, files, at=T0)
+    later = {**files, "README.md": b"v2\n"}
+    if head_touches_skill:
+        later["skills/invoice-triage/references/new.md"] = b"# New\n"
+    fake.push(REPO, later, at=T0 + 9 * DAY)
+
+
+async def test_a_skill_younger_than_the_minimum_age_is_refused_and_nothing_is_saved(
+    store: MemoryObjectStore, gh: FakeRepos
+) -> None:
+    settings = Settings(database_url="memory://skill-import-cooldown", skill_import_min_age_days=10)
+    _aged(gh)
+    with pytest.raises(github.ImportTooRecent) as caught:
+        await _import(settings, store, gh, clock=lambda: T0 + 10 * DAY - 1)
+    assert caught.value.code == "too_recent"
+    assert _iso(T0) in str(caught.value) and _iso(T0 + 10 * DAY) in str(caught.value)
+    assert await get_skill_library_store(settings).version_ids("acme", NAME) == []
+    assert not any("/git/blobs/" in p for p in gh.paths()), "refused before any file is read"
+
+
+async def test_at_exactly_the_minimum_age_a_skill_is_old_enough(
+    store: MemoryObjectStore, gh: FakeRepos
+) -> None:
+    settings = Settings(database_url="memory://skill-import-cooldown", skill_import_min_age_days=10)
+    _aged(gh)
+    result = await _import(settings, store, gh, clock=lambda: T0 + 10 * DAY)
+    assert result.version["origin_committed_at"] == T0
+    stored = await get_skill_library_store(settings).get_version("acme", NAME, "0.1.0")
+    assert stored is not None and stored["origin_committed_at"] == T0
+
+
+async def test_the_age_is_the_skill_folders_not_the_repository_heads(
+    store: MemoryObjectStore, gh: FakeRepos
+) -> None:
+    """HEAD is a day old and the skill ten: imported. When HEAD touches the skill, refused."""
+    settings = Settings(database_url="memory://skill-import-cooldown", skill_import_min_age_days=5)
+    now = T0 + 10 * DAY
+    _aged(gh)
+    assert (await _import(settings, store, gh, clock=lambda: now)).version["origin_committed_at"] == T0
+
+    touched = FakeRepos()
+    _aged(touched, head_touches_skill=True)
+    with pytest.raises(github.ImportTooRecent):
+        await _import(
+            settings, store, touched, source=f"github:{REPO}/skills/invoice-triage", clock=lambda: now
+        )
+
+
+async def test_a_tenant_can_raise_the_minimum_age_and_never_lower_it(
+    store: MemoryObjectStore, gh: FakeRepos
+) -> None:
+    from felix.skills.policy import set_publish_policy
+
+    _aged(gh)
+    now = T0 + 10 * DAY
+    # The deployment has no cooldown; the tenant sets thirty days, and a ten-day-old skill waits.
+    open_deployment = Settings(database_url="memory://skill-import-cooldown")
+    await set_publish_policy(open_deployment, "acme", {"import_min_age_days": 30}, by="ops")
+    with pytest.raises(github.ImportTooRecent):
+        await _import(open_deployment, store, gh, clock=lambda: now)
+
+    # The deployment asks for twenty; the tenant's one day does not shorten it.
+    strict = Settings(database_url="memory://skill-import-cooldown", skill_import_min_age_days=20)
+    await set_publish_policy(strict, "acme", {"import_min_age_days": 1}, by="ops")
+    with pytest.raises(github.ImportTooRecent, match="minimum import age is 20 days"):
+        await _import(strict, store, gh, clock=lambda: now)
+
+
+async def test_browse_dates_each_skill_only_under_a_cooldown(store: MemoryObjectStore, gh: FakeRepos) -> None:
+    files = {"skills/old/SKILL.md": skill_md("old"), "skills/young/SKILL.md": skill_md("young")}
+    gh.push(REPO, files, at=T0)
+    gh.push(REPO, {**files, "skills/young/SKILL.md": skill_md("young", "Changed.")}, at=T0 + 9 * DAY)
+
+    async with gh.client() as http:
+        off = await importer.browse(Settings(database_url="memory://x"), "acme", f"github:{REPO}", http=http)
+    assert off["min_age_days"] == 0
+    assert {(i["name"], i["committed_at"], i["eligible"]) for i in off["items"]} == {
+        ("old", None, True),
+        ("young", None, True),
+    }
+    assert not any(r.url.path == f"/repos/{REPO}/commits" for r in gh.requests), (
+        "no dating without a cooldown"
+    )
+
+    cooled = Settings(database_url="memory://x", skill_import_min_age_days=10)
+    async with gh.client() as http:
+        on = await importer.browse(cooled, "acme", f"github:{REPO}", http=http, clock=lambda: T0 + 10 * DAY)
+    items = {i["name"]: i for i in on["items"]}
+    assert on["min_age_days"] == 10
+    assert (items["old"]["committed_at"], items["old"]["eligible_at"], items["old"]["eligible"]) == (
+        T0,
+        T0 + 10 * DAY,
+        True,
+    )
+    assert (items["young"]["eligible_at"], items["young"]["eligible"]) == (T0 + 19 * DAY, False)
+
+
 # -- browse --------------------------------------------------------------------------------------
 
 
@@ -555,8 +673,8 @@ async def test_browse_lists_each_skill_at_one_commit(settings: Settings, gh: Fak
         license="NOASSERTION",
     )
     async with gh.client() as http:
-        listing = await importer.browse(settings, f"github:{REPO}", http=http)
-        narrowed = await importer.browse(settings, f"github:{REPO}/plugins", http=http)
+        listing = await importer.browse(settings, "acme", f"github:{REPO}", http=http)
+        narrowed = await importer.browse(settings, "acme", f"github:{REPO}/plugins", http=http)
 
     assert listing["commit"] == gh.repos[REPO].refs["main"] and listing["ref"] == "main"
     assert listing["license"] is None, "NOASSERTION is no license"
@@ -578,6 +696,6 @@ async def test_browse_caps_how_many_skills_it_reads(
     monkeypatch.setattr(importer, "MAX_BROWSE_SKILLS", 2)
     gh.push(REPO, {f"skills/s{i}/SKILL.md": skill_md(f"s{i}") for i in range(4)})
     async with gh.client() as http:
-        listing = await importer.browse(settings, f"github:{REPO}", http=http)
+        listing = await importer.browse(settings, "acme", f"github:{REPO}", http=http)
     assert [i["name"] for i in listing["items"]] == ["s0", "s1"] and listing["truncated"] is True
     assert sum("/git/blobs/" in p for p in gh.paths()) == 2

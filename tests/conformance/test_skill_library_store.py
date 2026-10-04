@@ -475,6 +475,8 @@ ORIGIN = {
     "origin_commit": "c" * 40,
     "origin_tree_hash": "d" * 64,
     "origin_license": "MIT",
+    # Past 2**31: a BigInteger column, as every epoch-ms column here is.
+    "origin_committed_at": 1_750_000_000_000,
 }
 
 

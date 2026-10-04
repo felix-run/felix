@@ -106,6 +106,9 @@ class SkillVersionOut(BaseModel):
     origin_commit: str | None = None
     origin_tree_hash: str | None = None
     origin_license: str | None = None
+    # When the skill's folder last changed at `origin_commit` (epoch ms): what the minimum import
+    # age is measured on.
+    origin_committed_at: int | None = None
 
 
 class SkillFileMetaOut(BaseModel):
@@ -172,12 +175,13 @@ class SkillPreviewOut(BaseModel):
 
 
 class SkillPolicyValuesOut(BaseModel):
-    """The four fields a tenant sets, as it set them."""
+    """The fields a tenant sets, as it set them."""
 
     min_quality: int
     block_on_advisory: bool
     require_eval: bool
     min_eval_uplift: int | None
+    import_min_age_days: int = 0
 
 
 class SkillPolicyOut(BaseModel):
@@ -196,6 +200,10 @@ class SkillPolicyOut(BaseModel):
     # Block a publish unless the version's latest succeeded evaluation has at least this uplift.
     # Null is no floor. Set without `require_eval`, a version with no evaluation is blocked too.
     min_eval_uplift: int | None
+    # Refuse an import whose skill folder on GitHub changed fewer than this many days ago
+    # (`FELIX_SKILL_IMPORT_MIN_AGE_DAYS`, raised by the tenant): 403 `too_recent`, and nothing is
+    # saved. 0 is off.
+    import_min_age_days: int = 0
     source: PolicySource
     # What the tenant itself set; null while `source` is `settings`.
     tenant_values: SkillPolicyValuesOut | None = None
@@ -333,6 +341,12 @@ class BrowseItemOut(BaseModel):
     path: str
     # What to import it by: `github:owner/repo/path`.
     source: str
+    # Under a minimum import age only (null otherwise): when the skill's folder last changed at
+    # `commit`, and when it becomes old enough to import (epoch ms).
+    committed_at: int | None = None
+    eligible_at: int | None = None
+    # Whether an import now would pass the minimum age; always true when there is none.
+    eligible: bool = True
 
 
 class SkillBrowseOut(BaseModel):
@@ -344,6 +358,8 @@ class SkillBrowseOut(BaseModel):
     # The commit `ref` resolved to; every listed SKILL.md was read at it.
     commit: str
     license: str | None
+    # The minimum import age in force for the caller's tenant; 0 is none.
+    min_age_days: int = 0
     items: list[BrowseItemOut]
     # More skills were found than one browse lists; name a path to narrow it.
     truncated: bool
@@ -446,6 +462,7 @@ class PolicyPatchIn(BaseModel):
     block_on_advisory: bool = False
     require_eval: bool = False
     min_eval_uplift: int | None = Field(default=None, ge=-100, le=100)
+    import_min_age_days: int = Field(default=0, ge=0, le=365)
 
 
 __all__ = [

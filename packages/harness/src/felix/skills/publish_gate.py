@@ -49,6 +49,10 @@ class PublishPolicy:
     # score minus baseline, -100..100). Set without `require_eval`, a version with no evaluation
     # is blocked too: there is no uplift to compare.
     min_eval_uplift: int | None = None
+    # Refuse an import (`skills/importer.py`) whose skill folder changed fewer than this many days
+    # ago: a supply-chain cooldown. Not a publish rule -- an import it refuses saves nothing -- but
+    # it lives on the same row, under the same tighten-only rule.
+    import_min_age_days: int = 0
     source: PolicySource = "settings"
 
     @property
@@ -64,6 +68,7 @@ class PublishPolicy:
             block_on_advisory=bool(row.get("block_on_advisory")),
             require_eval=bool(row.get("require_eval")),
             min_eval_uplift=None if uplift is None else int(uplift),
+            import_min_age_days=int(row.get("import_min_age_days") or 0),
             source=source,
         )
 
@@ -75,6 +80,7 @@ class PublishPolicy:
             block_on_advisory=bool(settings.skill_publish_block_on_advisory),
             require_eval=bool(settings.skill_publish_require_eval),
             min_eval_uplift=None if uplift is None else int(uplift),
+            import_min_age_days=int(settings.skill_import_min_age_days or 0),
         )
 
     def to_row(self) -> dict[str, Any]:
@@ -90,6 +96,7 @@ class PublishPolicy:
             block_on_advisory=self.block_on_advisory or other.block_on_advisory,
             require_eval=self.require_eval or other.require_eval,
             min_eval_uplift=max(floors) if floors else None,
+            import_min_age_days=max(self.import_min_age_days, other.import_min_age_days),
         )
 
     def without_eval(self) -> PublishPolicy:

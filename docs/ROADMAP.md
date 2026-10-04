@@ -387,7 +387,13 @@ First, because everything else governs it.
          agent or an operator is `origin_mismatch`. An import is held to a stricter gate: an
          advisory scan blocks whatever the policy says, `evals/` are dropped and only bundle
          scenarios count, and an agent's edit of an imported skill needs a person.
-         `FELIX_SKILL_IMPORT_SOURCES` (allowlist) and `FELIX_SKILL_IMPORT_GITHUB_TOKEN`. Open: a
+         `FELIX_SKILL_IMPORT_SOURCES` (allowlist) and `FELIX_SKILL_IMPORT_GITHUB_TOKEN`. A
+         supply-chain cooldown ported from Skillist's install policy (`minReleaseAgeDays`):
+         `FELIX_SKILL_IMPORT_MIN_AGE_DAYS`, raised per tenant by `import_min_age_days` on the
+         policy row (tighten-only), measured on the newest commit touching the skill's folder at
+         the resolved SHA (not HEAD), recorded as `origin_committed_at`; a younger skill is a hard
+         403 `too_recent` that saves nothing, and browse dates each skill only under a cooldown
+         (one call per listed skill, within the 200 cap). Open: a
          tree GitHub truncates (past ~100k entries) is refused rather than walked; browse reads
          at most 200 SKILL.md files; the token has no per-tenant scoping beyond the allowlist.
       2. [ ] An explicit update check (route + `felix skills outdated`/`diff`): what the source's

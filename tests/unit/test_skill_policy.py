@@ -106,34 +106,61 @@ async def test_without_a_tenant_row_the_settings_decide(settings: Settings) -> N
     assert (state.tenant, state.updated_at) == (None, None)
 
 
+# The fixture's settings (`_SETTINGS`) as a whole row: what a tenant row matching them holds.
+_BARS: dict[str, Any] = {
+    "min_quality": 30,
+    "block_on_advisory": True,
+    "require_eval": False,
+    "min_eval_uplift": None,
+    "import_min_age_days": 0,
+}
+
+
 @pytest.mark.parametrize(
     ("row", "settings_kw", "effective", "source"),
     [
         # The tenant raises every bar: its row is the policy.
         (
-            {"min_quality": 60, "block_on_advisory": True, "require_eval": True, "min_eval_uplift": 5},
-            {},
-            {"min_quality": 60, "block_on_advisory": True, "require_eval": True, "min_eval_uplift": 5},
+            {
+                **_BARS,
+                "min_quality": 60,
+                "require_eval": True,
+                "min_eval_uplift": 5,
+                "import_min_age_days": 30,
+            },
+            {"skill_import_min_age_days": 7},
+            {
+                **_BARS,
+                "min_quality": 60,
+                "require_eval": True,
+                "min_eval_uplift": 5,
+                "import_min_age_days": 30,
+            },
             "tenant",
         ),
-        # The tenant tries to lower every bar: the settings outvote it on each.
+        # The tenant tries to lower every bar: the settings outvote it on each -- the import
+        # cooldown included, so a tenant cannot shorten the deployment's.
         (
             {"min_quality": 0, "block_on_advisory": False, "require_eval": False, "min_eval_uplift": None},
-            {"skill_publish_require_eval": True, "skill_publish_min_eval_uplift": 3},
-            {"min_quality": 30, "block_on_advisory": True, "require_eval": True, "min_eval_uplift": 3},
+            {
+                "skill_publish_require_eval": True,
+                "skill_publish_min_eval_uplift": 3,
+                "skill_import_min_age_days": 14,
+            },
+            {**_BARS, "require_eval": True, "min_eval_uplift": 3, "import_min_age_days": 14},
             "tenant+settings",
         ),
         # Uplift floors: the higher wins; a null on one side is no floor, not a zero.
         (
-            {"min_quality": 30, "block_on_advisory": True, "require_eval": False, "min_eval_uplift": -10},
+            {**_BARS, "min_eval_uplift": -10},
             {"skill_publish_min_eval_uplift": -20},
-            {"min_quality": 30, "block_on_advisory": True, "require_eval": False, "min_eval_uplift": -10},
+            {**_BARS, "min_eval_uplift": -10},
             "tenant",
         ),
         (
-            {"min_quality": 30, "block_on_advisory": True, "require_eval": False, "min_eval_uplift": None},
+            {**_BARS, "min_eval_uplift": None},
             {"skill_publish_min_eval_uplift": -20},
-            {"min_quality": 30, "block_on_advisory": True, "require_eval": False, "min_eval_uplift": -20},
+            {**_BARS, "min_eval_uplift": -20},
             "tenant+settings",
         ),
     ],

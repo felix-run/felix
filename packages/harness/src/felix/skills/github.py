@@ -25,6 +25,7 @@ import re
 from collections.abc import AsyncIterator, Iterable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 from urllib.parse import quote
 
@@ -95,6 +96,14 @@ class ImportRateLimited(ImportUpstreamError):
 
 class ImportEgressBlocked(ImportUpstreamError):
     code = "egress_blocked"
+
+
+class ImportTooRecent(SkillImportError):
+    """The skill's folder changed more recently than the minimum import age allows: a cooldown
+    so a compromised upstream commit has time to be noticed before anyone pulls it. Nothing
+    overrides it; waiting does."""
+
+    code = "too_recent"
 
 
 # -- sources -----------------------------------------------------------------------------------
@@ -349,6 +358,23 @@ class GitHubReader:
             raise ImportUpstreamError(f"GitHub resolved {ref!r} to something that is not a commit SHA")
         return sha
 
+    async def last_changed(self, source: GitHubSource, commit: str, path: str) -> int:
+        """When the newest commit touching ``path`` at ``commit`` was committed, in epoch ms --
+        the age of the skill, not of the repository, whose HEAD in a busy monorepo is always new."""
+        query = f"sha={commit}&per_page=1" + (f"&path={quote(path, safe='/')}" if path else "")
+        what = f"the history of {path or 'the repository'}"
+        try:
+            data = json.loads(
+                await self._get(
+                    f"/repos/{source.owner}/{source.repo}/commits?{query}", what=what, limit=1024 * 1024
+                )
+            )
+            stamp = data[0]["commit"]["committer"]["date"]
+            return int(datetime.fromisoformat(stamp).timestamp() * 1000)
+        except ValueError, LookupError, TypeError:
+            # Fail closed: a skill that cannot be dated cannot be shown to be old enough.
+            raise ImportUpstreamError(f"GitHub gave no commit date for {what}") from None
+
     async def tree(self, source: GitHubSource, commit: str) -> list[TreeEntry]:
         data = await self._json(
             f"/repos/{source.owner}/{source.repo}/git/trees/{commit}?recursive=1",
@@ -436,6 +462,7 @@ __all__ = [
     "ImportSourceNotAllowed",
     "ImportSourceNotFound",
     "ImportSourceTooLarge",
+    "ImportTooRecent",
     "ImportUpstreamError",
     "RepoMeta",
     "Resolved",

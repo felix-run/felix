@@ -317,7 +317,9 @@ source, ref, commit and license on the version. A re-import saves a new version 
 skill's files changed. Imported text is third-party instructions, so an advisory scan blocks its
 publish whatever the policy says. `FELIX_SKILL_IMPORT_SOURCES` (empty = any GitHub source) limits
 which repositories may be named, and `FELIX_SKILL_IMPORT_GITHUB_TOKEN` (optional) reaches private
-ones and lifts the anonymous rate limit.
+ones and lifts the anonymous rate limit. `FELIX_SKILL_IMPORT_MIN_AGE_DAYS` (0 = off) is a
+supply-chain cooldown: a skill whose folder changed more recently is refused outright, and a
+tenant can raise the bar (`import_min_age_days` in its policy) but not lower it.
 
 **[`examples/felix-plugin-example/`](examples/felix-plugin-example/)** is a working package that
 exercises every seam above.

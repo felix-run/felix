@@ -13,6 +13,7 @@ import base64
 import hashlib
 import json
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import unquote
 
@@ -39,6 +40,26 @@ class Repo:
     license: str | None = "MIT"
     refs: dict[str, str] = field(default_factory=dict)
     commits: dict[str, dict[str, bytes]] = field(default_factory=dict)
+    # Every commit in push order (one linear history), and when each was committed (epoch ms).
+    history: list[str] = field(default_factory=list)
+    dates: dict[str, int] = field(default_factory=dict)
+
+    def last_changed(self, commit: str, path: str) -> str | None:
+        """The newest commit up to ``commit`` that changed anything under ``path``."""
+
+        def folder(sha: str) -> dict[str, bytes]:
+            files = self.commits[sha]
+            return {p: d for p, d in files.items() if not path or p == path or p.startswith(f"{path}/")}
+
+        upto = self.history[: self.history.index(commit) + 1]
+        for i in range(len(upto) - 1, -1, -1):
+            if folder(upto[i]) and (i == 0 or folder(upto[i]) != folder(upto[i - 1])):
+                return upto[i]
+        return None
+
+
+# When a push without `at` is committed: long ago, so no cooldown a test sets refuses it.
+EPOCH_MS = 1_600_000_000_000
 
 
 @dataclass
@@ -56,14 +77,22 @@ class FakeRepos:
     _counter: int = 0
 
     def push(
-        self, repo: str, files: dict[str, bytes], *, ref: str = "main", license: str | None = "MIT"
+        self,
+        repo: str,
+        files: dict[str, bytes],
+        *,
+        ref: str = "main",
+        license: str | None = "MIT",
+        at: int | None = None,
     ) -> str:
-        """Commit ``files`` (the whole tree) to ``repo`` and point ``ref`` at it."""
+        """Commit ``files`` (the whole tree) to ``repo`` at ``at`` (epoch ms) and point ``ref`` at it."""
         state = self.repos.setdefault(repo.lower(), Repo())
         state.license = license
         self._counter += 1
         sha = hashlib.sha1(f"{repo}:{self._counter}".encode(), usedforsecurity=False).hexdigest()
         state.commits[sha] = dict(files)
+        state.history.append(sha)
+        state.dates[sha] = EPOCH_MS + self._counter * 1000 if at is None else at
         state.refs[ref] = sha
         return sha
 
@@ -99,6 +128,14 @@ class FakeRepos:
         if not rest:
             license = {"spdx_id": state.license} if state.license else None
             return httpx.Response(200, json={"default_branch": state.default_branch, "license": license})
+        if rest == ["commits"]:
+            params = request.url.params
+            assert params["per_page"] == "1"
+            found = state.last_changed(params["sha"], params.get("path", ""))
+            if found is None:
+                return httpx.Response(200, json=[])
+            stamp = datetime.fromtimestamp(state.dates[found] / 1000, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+            return httpx.Response(200, json=[{"sha": found, "commit": {"committer": {"date": stamp}}}])
         if rest[0] == "commits":
             sha = self._commit_of(state, unquote(rest[1]))
             if sha is None:

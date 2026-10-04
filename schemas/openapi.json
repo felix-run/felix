@@ -90,9 +90,36 @@
       },
       "BrowseItemOut": {
         "properties": {
+          "committed_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Committed At"
+          },
           "description": {
             "title": "Description",
             "type": "string"
+          },
+          "eligible": {
+            "default": true,
+            "title": "Eligible",
+            "type": "boolean"
+          },
+          "eligible_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Eligible At"
           },
           "name": {
             "title": "Name",
@@ -1452,6 +1479,13 @@
             "title": "Block On Advisory",
             "type": "boolean"
           },
+          "import_min_age_days": {
+            "default": 0,
+            "maximum": 365.0,
+            "minimum": 0.0,
+            "title": "Import Min Age Days",
+            "type": "integer"
+          },
           "min_eval_uplift": {
             "anyOf": [
               {
@@ -1602,6 +1636,17 @@
               }
             ],
             "title": "Origin Commit"
+          },
+          "origin_committed_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Committed At"
           },
           "origin_license": {
             "anyOf": [
@@ -1996,6 +2041,11 @@
               }
             ],
             "title": "License"
+          },
+          "min_age_days": {
+            "default": 0,
+            "title": "Min Age Days",
+            "type": "integer"
           },
           "ref": {
             "title": "Ref",
@@ -2662,6 +2712,17 @@
             ],
             "title": "Origin Commit"
           },
+          "origin_committed_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Committed At"
+          },
           "origin_license": {
             "anyOf": [
               {
@@ -2937,6 +2998,11 @@
             "title": "Block On Advisory",
             "type": "boolean"
           },
+          "import_min_age_days": {
+            "default": 0,
+            "title": "Import Min Age Days",
+            "type": "integer"
+          },
           "min_eval_uplift": {
             "anyOf": [
               {
@@ -3014,11 +3080,16 @@
         "type": "object"
       },
       "SkillPolicyValuesOut": {
-        "description": "The four fields a tenant sets, as it set them.",
+        "description": "The fields a tenant sets, as it set them.",
         "properties": {
           "block_on_advisory": {
             "title": "Block On Advisory",
             "type": "boolean"
+          },
+          "import_min_age_days": {
+            "default": 0,
+            "title": "Import Min Age Days",
+            "type": "integer"
           },
           "min_eval_uplift": {
             "anyOf": [
@@ -3279,6 +3350,17 @@
             ],
             "title": "Origin Commit"
           },
+          "origin_committed_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Committed At"
+          },
           "origin_license": {
             "anyOf": [
               {
@@ -3514,6 +3596,17 @@
             ],
             "title": "Origin Commit"
           },
+          "origin_committed_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Committed At"
+          },
           "origin_license": {
             "anyOf": [
               {
@@ -3732,6 +3825,17 @@
               }
             ],
             "title": "Origin Commit"
+          },
+          "origin_committed_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Committed At"
           },
           "origin_license": {
             "anyOf": [

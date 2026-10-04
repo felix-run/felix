@@ -25,8 +25,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from collections.abc import Awaitable, Iterable, Mapping
+import time
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -47,6 +49,7 @@ from felix.skills.github import (
     GitHubSource,
     ImportSourceNotFound,
     ImportSourceTooLarge,
+    ImportTooRecent,
     ImportUpstreamError,
     Resolved,
     TreeEntry,
@@ -75,6 +78,9 @@ MAX_BROWSE_SKILLS = 200
 # Wall clock for one whole import or browse, every GitHub call included.
 DEADLINE_SECONDS = 120.0
 _FETCH_CONCURRENCY = 8
+DAY_MS = 86_400_000
+
+now_ms = lambda: int(time.time() * 1000)
 
 _FRONTMATTER_RE = re.compile(r"^---\r?\n([\s\S]*?)\r?\n---(\r?\n[\s\S]*)\Z")
 _DESCRIPTION_RE = re.compile(r"^description:[ \t]*(.*)$", re.MULTILINE)
@@ -86,14 +92,51 @@ def _checked_request(settings: Settings, source: str, ref: str | None) -> tuple[
     return parsed, validate_ref(ref) if ref else None
 
 
-async def _gather_limited(calls: Iterable[Awaitable[bytes]]) -> list[bytes]:
+async def _gather_limited[T](calls: Iterable[Awaitable[T]]) -> list[T]:
     gate = asyncio.Semaphore(_FETCH_CONCURRENCY)
 
-    async def one(call: Awaitable[bytes]) -> bytes:
+    async def one(call: Awaitable[T]) -> T:
         async with gate:
             return await call
 
     return await asyncio.gather(*(one(c) for c in calls))
+
+
+# -- the cooldown --------------------------------------------------------------------------------
+
+
+@dataclass(slots=True, frozen=True)
+class Cooldown:
+    """The minimum import age in force for a tenant (`FELIX_SKILL_IMPORT_MIN_AGE_DAYS`, tightened by
+    the tenant's policy row), and the moment it is judged at."""
+
+    days: int
+    now: int
+
+    def eligible_at(self, committed_at: int) -> int:
+        return committed_at + self.days * DAY_MS
+
+    def check(self, what: str, committed_at: int) -> None:
+        """Refuse ``what`` when its folder changed less than ``days`` ago. At exactly the boundary
+        it is old enough. A hard refusal: nothing is saved, and no flag overrides it."""
+        if self.days and self.now < self.eligible_at(committed_at):
+            raise ImportTooRecent(
+                f"{what} last changed {_iso(committed_at)}; the minimum import age is {self.days} days, "
+                f"so it can be imported from {_iso(self.eligible_at(committed_at))}"
+            )
+
+
+def _iso(ms: int) -> str:
+    return datetime.fromtimestamp(ms / 1000, tz=UTC).isoformat(timespec="seconds")
+
+
+async def _cooldown(settings: Settings, tenant_id: str, clock: Callable[[], int]) -> Cooldown:
+    """The tenant's minimum import age: the policy row tightens the setting, never loosens it."""
+    from felix.skills.policy import load_publish_policy
+
+    return Cooldown(
+        days=(await load_publish_policy(settings, tenant_id)).policy.import_min_age_days, now=clock()
+    )
 
 
 # -- sanitising --------------------------------------------------------------------------------
@@ -194,13 +237,41 @@ async def _listing_body(gh: GitHubReader, source: GitHubSource, entry: TreeEntry
     return b"" if entry.size > MAX_SKILL_MD_CHARS * 4 else await gh.blob(source, entry)
 
 
+def _listing_item(
+    parsed: GitHubSource, skill: Any, body: bytes, committed_at: int | None, cooldown: Cooldown
+) -> dict[str, Any]:
+    meta = _frontmatter(body)
+    name, description = meta.get("name"), meta.get("description")
+    eligible_at = cooldown.eligible_at(committed_at) if committed_at is not None else None
+    return {
+        "name": name if isinstance(name, str) else skill.slug,
+        "description": description[:MAX_DESCRIPTION_CHARS] if isinstance(description, str) else "",
+        "path": skill.source_path,
+        "source": parsed.at(skill.source_path).canonical,
+        "committed_at": committed_at,
+        "eligible_at": eligible_at,
+        "eligible": eligible_at is None or cooldown.now >= eligible_at,
+    }
+
+
 async def browse(
-    settings: Settings, source: str, ref: str | None = None, *, http: httpx.AsyncClient | None = None
+    settings: Settings,
+    tenant_id: str,
+    source: str,
+    ref: str | None = None,
+    *,
+    http: httpx.AsyncClient | None = None,
+    clock: Callable[[], int] = now_ms,
 ) -> dict[str, Any]:
     """The skills a repository offers at one commit: each one's path, name and description, read
     from its SKILL.md alone. With a path in ``source``, only the skills under it -- and the path
-    itself counts as a root, so a layout no default root covers can still be listed."""
+    itself counts as a root, so a layout no default root covers can still be listed.
+
+    Under a minimum import age, each listed skill is dated (one more GitHub call per skill, so
+    only then) and says when it becomes eligible; with no cooldown nothing is dated and every
+    skill is eligible."""
     parsed, wanted_ref = _checked_request(settings, source, ref)
+    cooldown = await _cooldown(settings, tenant_id, clock)
     prefix = f"{parsed.path}/"
     try:
         async with reader(settings, http) as gh, asyncio.timeout(DEADLINE_SECONDS):
@@ -216,26 +287,27 @@ async def browse(
             bodies = await _gather_limited(
                 _listing_body(gh, parsed, by_path[d.skill_md_path]) for d in listed
             )
+            dates: list[int | None] = (
+                list(
+                    await _gather_limited(
+                        gh.last_changed(parsed, resolved.commit, d.source_path) for d in listed
+                    )
+                )
+                if cooldown.days
+                else [None] * len(listed)
+            )
     except TimeoutError:
         raise ImportUpstreamError(f"GitHub took longer than {DEADLINE_SECONDS:.0f}s") from None
-    items = []
-    for skill, body in zip(listed, bodies, strict=True):
-        meta = _frontmatter(body)
-        name, description = meta.get("name"), meta.get("description")
-        items.append(
-            {
-                "name": name if isinstance(name, str) else skill.slug,
-                "description": description[:MAX_DESCRIPTION_CHARS] if isinstance(description, str) else "",
-                "path": skill.source_path,
-                "source": parsed.at(skill.source_path).canonical,
-            }
-        )
     return {
         "source": parsed.canonical,
         "ref": resolved.ref,
         "commit": resolved.commit,
         "license": resolved.license,
-        "items": items,
+        "min_age_days": cooldown.days,
+        "items": [
+            _listing_item(parsed, skill, body, at, cooldown)
+            for skill, body, at in zip(listed, bodies, dates, strict=True)
+        ],
         "truncated": len(found) > len(listed),
     }
 
@@ -257,6 +329,7 @@ class _Fetched:
     files: dict[str, str]
     dropped: list[str]
     parent: str | None
+    committed_at: int
 
 
 async def _prior(
@@ -285,15 +358,24 @@ async def _prior(
 
 
 async def _fetch(
-    settings: Settings, tenant_id: str, gh: GitHubReader, source: GitHubSource, ref: str | None
+    settings: Settings,
+    tenant_id: str,
+    gh: GitHubReader,
+    source: GitHubSource,
+    ref: str | None,
+    cooldown: Cooldown,
 ) -> _Fetched | ImportResult:
-    """Resolve, list the skill folder, and download it -- unless the library already holds
-    exactly this tree, which needs only the SKILL.md (for its name) to find out."""
+    """Resolve, date and list the skill folder, and download it -- unless it is too recent to
+    import (refused before any file is read), or the library already holds exactly this tree,
+    which needs only the SKILL.md (for its name) to find out."""
     resolved = await resolve(gh, source, ref)
     entries = skill_file_entries(resolved.tree, source.path)
     skill_md_entry = next((e for e in entries if e.path == "SKILL.md"), None)
     if skill_md_entry is None:
         raise ImportSourceNotFound(f"{source.canonical} holds no SKILL.md at {resolved.commit[:12]}")
+    # The folder's own last change at the commit, not the repository HEAD's.
+    committed_at = await gh.last_changed(source, resolved.commit, source.path)
+    cooldown.check(source.canonical, committed_at)
     tree_hash = hash_tree_snapshot(entries)
     kept = [e for e in entries if keeps_path(e.path)]
     _check_caps(kept, source.canonical)
@@ -308,7 +390,14 @@ async def _fetch(
         {"SKILL.md": skill_md, **dict(zip((e.path for e in rest), bodies, strict=True))}
     )
     dropped = sorted({*dropped, *(e.path for e in entries if not keeps_path(e.path))})
-    return _Fetched(resolved=resolved, tree_hash=tree_hash, files=files, dropped=dropped, parent=parent)
+    return _Fetched(
+        resolved=resolved,
+        tree_hash=tree_hash,
+        files=files,
+        dropped=dropped,
+        parent=parent,
+        committed_at=committed_at,
+    )
 
 
 async def import_skill(
@@ -320,16 +409,19 @@ async def import_skill(
     by: str,
     object_store: Any | None = None,
     http: httpx.AsyncClient | None = None,
+    clock: Callable[[], int] = now_ms,
 ) -> ImportResult:
     """Fetch the skill at ``source`` (pinned to the commit ``ref`` resolves to) and save it as a
     draft by ``by``, or return the newest version unchanged when its files are the same.
 
-    ``http`` is a client to reach GitHub with, left open; None is the egress-pinned production
-    one (`github.github_client`)."""
+    Refused (`too_recent`) when the skill's folder changed within the tenant's minimum import
+    age, judged at ``clock()``. ``http`` is a client to reach GitHub with, left open; None is the
+    egress-pinned production one (`github.github_client`)."""
     parsed, wanted_ref = _checked_request(settings, source, ref)
+    cooldown = await _cooldown(settings, tenant_id, clock)
     try:
         async with reader(settings, http) as gh, asyncio.timeout(DEADLINE_SECONDS):
-            fetched = await _fetch(settings, tenant_id, gh, parsed, wanted_ref)
+            fetched = await _fetch(settings, tenant_id, gh, parsed, wanted_ref, cooldown)
     except TimeoutError:
         raise ImportUpstreamError(f"GitHub took longer than {DEADLINE_SECONDS:.0f}s") from None
     if isinstance(fetched, ImportResult):
@@ -350,6 +442,7 @@ async def import_skill(
                 commit=resolved.commit,
                 tree_hash=fetched.tree_hash,
                 license=resolved.license,
+                committed_at=fetched.committed_at,
             ),
         ),
         parent=fetched.parent,
@@ -369,11 +462,13 @@ async def import_skill(
 
 
 __all__ = [
+    "DAY_MS",
     "DEADLINE_SECONDS",
     "KEPT_DIRS",
     "KEPT_ROOT_FILES",
     "MAX_BROWSE_SKILLS",
     "MAX_DESCRIPTION_CHARS",
+    "Cooldown",
     "ImportResult",
     "browse",
     "import_skill",
