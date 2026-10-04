@@ -51,6 +51,10 @@ REPO_URL = "https://github.com/felix-run/felix"
 
 _SECTION = re.compile(r"^##\s+Changelog\s*$", re.M | re.I)
 _NEXT_H2 = re.compile(r"^##\s(?!#)", re.M)
+# The attribution line Claude Code appends to every pull request it opens. It sits under the
+# last heading of a description, so a `## Changelog` written last swallowed it and failed as
+# "text outside a `- ` entry" (#462). Matched exactly, so other stray text still fails.
+_TRAILER = re.compile(r"^🤖 Generated with \[Claude Code\]", re.M)
 _H3 = re.compile(r"^###\s+(.+?)\s*$")
 _NONE = re.compile(r"^none\b\s*[:\-—–]?\s*(.*)$", re.I)
 _COMMENT = re.compile(r"<!--.*?-->", re.S)
@@ -79,8 +83,8 @@ def parse(body: str) -> list[Entry]:
     if match is None:
         raise ChangelogError("no `## Changelog` section; add one, or `none: <reason>` under it")
     rest = body[match.end() :]
-    end = _NEXT_H2.search(rest)
-    section = (rest[: end.start()] if end else rest).strip()
+    ends = [m.start() for m in (_NEXT_H2.search(rest), _TRAILER.search(rest)) if m]
+    section = rest[: min(ends, default=len(rest))].strip()
     if not section:
         raise ChangelogError("the `## Changelog` section is empty; write an entry or `none: <reason>`")
     first = section.splitlines()[0].strip()
