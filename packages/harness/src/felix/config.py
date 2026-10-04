@@ -111,6 +111,21 @@ class Settings(BaseSettings):
     # refuses every new login until the hour turns (issued tokens are unaffected). Per process
     # without Redis.
     github_device_starts_per_hour_total: int = Field(default=300, ge=1, le=100_000)
+    # Browser sign-in by redirect (`/auth/github/authorize` → GitHub → `/auth/github/callback`).
+    # On while the client secret, the token key and at least one redirect origin are all set.
+    # FELIX_GITHUB_CLIENT_ID is then a GitHub App's client id; the device flow keeps working
+    # with it, since GitHub serves the same device endpoints for an App.
+    github_client_secret: str = Field(default="", repr=False)
+    # 32 bytes, base64. Seals the sign-in cookies and, at rest, each person's GitHub refresh
+    # and access tokens (`felix.auth.github_connections`). Rotating it signs nobody out of
+    # Felix, but every stored GitHub connection must then be re-made.
+    github_token_key: str = Field(default="", repr=False)
+    # Comma-separated origins a sign-in may return to, e.g. `https://chat.felix.run`. The
+    # callback GitHub redirects to is `<origin><FELIX_GITHUB_CALLBACK_PATH>`, and each such URL
+    # must be registered on the App. Nothing outside this list is ever a redirect target.
+    github_redirect_origins: str = ""
+    # The callback's path *as the browser sees it*: behind chat-ui's proxy that carries `/api`.
+    github_callback_path: str = "/api/auth/github/callback"
 
     # --- HTTP posture ---
     # `/docs` and `/openapi.json` describe every route and are behind auth in `api_key`

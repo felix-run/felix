@@ -81,6 +81,11 @@ _HYDRATE_MAP: dict[str, tuple[str, ...]] = {
     # Listed for masking: a tool result that echoes it is redacted like any credential. It must
     # still be in the environment, since `validate_runtime` checks it before hydration runs.
     "shell_runner_token": ("SHELL_RUNNER_TOKEN", "shell_runner_token", "felix/shell_runner_token"),
+    # GitHub sign-in by redirect: the App's client secret, and the key that seals the sign-in
+    # cookies and every stored GitHub token. Hydrated after `Settings` validates, which is why
+    # `felix.auth.github.redirect_enabled` is asked per request rather than decided at boot.
+    "github_client_secret": ("GITHUB_CLIENT_SECRET", "github_client_secret", "felix/github_client_secret"),
+    "github_token_key": ("GITHUB_TOKEN_KEY", "github_token_key", "felix/github_token_key"),
 }
 
 

@@ -319,6 +319,7 @@ def create_app(
     app.include_router(well_known.router)
     app.include_router(auth_github.router, prefix=GITHUB_LOGIN_PREFIX)
     app.include_router(auth_github.methods_router, prefix="/auth")
+    app.include_router(auth_github.connection_router, prefix="/github")
 
     for plugin in plugin_list:
         routes_fn = getattr(plugin, "routes", None)
