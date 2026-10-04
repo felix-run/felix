@@ -66,6 +66,45 @@ async def test_a_turn_shows_up_in_the_session_list_and_snapshot(boot: Any) -> No
         assert ("assistant", "noted") in roles, roles
 
 
+async def test_reading_an_unknown_thread_does_not_add_it_to_the_session_list(boot: Any) -> None:
+    """A GET is not a write: asking about a thread nobody created must not create it.
+
+    On `memory://` the snapshot read used to get-or-create the thread's metadata, so every
+    unknown id a client looked up joined `GET /chat/sessions` as an empty, id-titled
+    session -- which Postgres, listing `thread_state` rows only a write inserts, never did.
+    The seeded thread is the control: the list is not simply empty.
+    """
+    import uuid
+
+    async with boot([_answer()]) as app:
+        seeded = (await _seed(app, "e2e-known"))["thread_id"]
+        unknown = f"e2e-{uuid.uuid4().hex}"
+
+        for path in (
+            f"/chat/history/{unknown}",
+            f"/chat/sessions/{unknown}",
+            f"/chat/sessions/{unknown}/export",
+        ):
+            resp = await app.client.get(path)
+            assert resp.status_code == 200, f"{path}: {resp.text}"
+        held = await app.client.post(
+            "/chat/sessions/lease",
+            json={"thread_id": unknown, "holder_id": "holder-a", "mode": "exclusive"},
+        )
+        assert held.status_code == 200, held.text
+        released = await app.client.post(
+            "/chat/sessions/lease/release",
+            json={"thread_id": unknown, "holder_id": "holder-a"},
+        )
+        assert released.status_code == 200, released.text
+
+        listing = await app.client.get("/chat/sessions")
+        assert listing.status_code == 200, listing.text
+        threads = [str(s.get("id")) for s in listing.json()["sessions"]]
+        assert seeded in threads, threads
+        assert not [t for t in threads if t.endswith(f":{unknown}")], threads
+
+
 async def test_search_finds_a_thread_by_its_content(boot: Any) -> None:
     """The search index is fed by the turn, not by a separate write the test performs."""
     async with boot([_answer()]) as app:

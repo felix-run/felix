@@ -14,19 +14,31 @@ from felix.session.tree import set_leaf as _mem_set_leaf
 _meta_by_thread: dict[str, dict[str, Any]] = {}
 
 
+def _default_meta() -> dict[str, Any]:
+    now_ms = int(time.time() * 1000)
+    return {
+        "session_name": None,
+        "phase": "idle",
+        "thinking_level": "off",
+        "model_id": None,
+        "parent_session_id": None,
+        "labels": {},
+        "created_at": now_ms,
+        "updated_at": now_ms,
+        "revision": 0,
+    }
+
+
 def _mem_meta(thread_id: str) -> dict[str, Any]:
+    """Get-or-create a thread's entry. Write paths only -- the entry is what lists a session.
+
+    `list_thread_metadata` on `memory://` lists exactly these keys, the way the Postgres arm
+    lists `thread_state` rows, so creating one is creating a session. A read that called this
+    turned every unknown id it was asked about into an empty, id-titled session; reads use
+    `_meta_by_thread.get` instead.
+    """
     if thread_id not in _meta_by_thread:
-        _meta_by_thread[thread_id] = {
-            "session_name": None,
-            "phase": "idle",
-            "thinking_level": "off",
-            "model_id": None,
-            "parent_session_id": None,
-            "labels": {},
-            "created_at": int(time.time() * 1000),
-            "updated_at": int(time.time() * 1000),
-            "revision": 0,
-        }
+        _meta_by_thread[thread_id] = _default_meta()
     return _meta_by_thread[thread_id]
 
 
@@ -193,7 +205,10 @@ async def get_thread_meta(
                         meta["labels"] = dict(v)
                     else:
                         meta[k] = v
-    return dict(_mem_meta(thread_id))
+    # A read: an unknown thread answers defaults without gaining an entry, as Postgres
+    # answers a missing `thread_state` row without inserting one.
+    meta = _meta_by_thread.get(thread_id)
+    return dict(meta) if meta is not None else _default_meta()
 
 
 async def list_thread_metadata(

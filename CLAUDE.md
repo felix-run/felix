@@ -263,6 +263,12 @@ cron labels). `felix-scheduler` must run alongside `felix-worker` or nothing fir
   Do not edit `CHANGELOG.md`: the release step writes it from the merged descriptions
   (`scripts/changelog.py cut`), and the `changelog` workflow fails a description without a usable
   section. Every PR inserting at the top of one file conflicted on each merge.
+- The section runs from `## Changelog` to the next `## ` heading or the end of the description
+  (HTML comments are dropped). Every non-blank line in it must be a `### <category>` heading, a
+  `- ` entry, or an indented continuation of one, unless the first line is `none: <reason>`;
+  `scripts/changelog.py check` fails anything else as "text outside a `- ` entry". A trailing
+  attribution line (`🤖 Generated with …`) counts, so put it, and any other text, above
+  `## Changelog` or under a later `## ` heading.
 
 ## Claude Code toolkit
 
