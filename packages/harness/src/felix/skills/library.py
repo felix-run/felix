@@ -32,7 +32,9 @@ from felix.skills.format import ValidationIssue, validate_skill_bundle
 from felix.skills.library_store import (
     ANY_LIVE,
     MAX_VERSIONS_PER_SKILL,
+    ORIGIN_COLUMNS,
     ExpectedLive,
+    ImportOrigin,
     SkillLibraryStore,
     SkillLiveMismatch,
     SkillPendingFull,
@@ -62,16 +64,6 @@ now_ms = lambda: int(time.time() * 1000)
 # Third-party text, so the gate treats it at least as strictly as an agent's draft
 # (`publish_gate.policy_for_source`, `publish_gate.gate_scenario_source`).
 SkillSourceKind = Literal["agent", "operator", "import"]
-
-# The `skill_version` columns an import's origin fills; null on every other version.
-ORIGIN_COLUMNS = (
-    "origin_source",
-    "origin_ref",
-    "origin_commit",
-    "origin_tree_hash",
-    "origin_license",
-    "origin_committed_at",
-)
 
 # Strict `major.minor.patch`: a version is interpolated into an object key, and the loader's
 # own key-segment rule (`loader._VERSION_RE`) is looser than this.
@@ -162,31 +154,6 @@ class SkillVersionCorrupt(SkillLibraryError):
     recorded when it was saved."""
 
     code = "version_corrupt"
-
-
-@dataclass(slots=True, frozen=True)
-class ImportOrigin:
-    """Where an imported version came from: the canonical source (`github:owner/repo/path`),
-    the ref that was asked for, the commit it resolved to, a digest of the skill folder's tree
-    at that commit (what decides whether a re-import changed anything), the repository's SPDX
-    license when it declares one, and when the skill's folder last changed at that commit (epoch
-    ms; what the import cooldown measures)."""
-
-    source: str
-    ref: str
-    commit: str
-    tree_hash: str
-    license: str | None = None
-    committed_at: int | None = None
-
-    def as_row(self) -> dict[str, Any]:
-        return dict(
-            zip(
-                ORIGIN_COLUMNS,
-                (self.source, self.ref, self.commit, self.tree_hash, self.license, self.committed_at),
-                strict=True,
-            )
-        )
 
 
 @dataclass(slots=True, frozen=True)
@@ -532,7 +499,7 @@ async def save_draft(
         "reason": (provenance.reason or "")[:_REASON_LIMIT],
         "description": validation.frontmatter.description,
         **(provenance.origin.as_row() if provenance.origin else {}),
-        "lineage_import": await _lineage_import(lib, tenant_id, skill_name, parent, provenance),
+        "lineage_import": await _lineage_import(lib, tenant_id, skill_name, parent, provenance, files),
         **(await asyncio.to_thread(assess, files, skill_name)).as_row(),
         "created_at": now_ms(),
     }
@@ -579,18 +546,29 @@ async def save_draft(
 
 
 async def _lineage_import(
-    lib: SkillLibraryStore, tenant_id: str, name: str, parent: str | None, provenance: DraftProvenance
+    lib: SkillLibraryStore,
+    tenant_id: str,
+    name: str,
+    parent: str | None,
+    provenance: DraftProvenance,
+    files: Mapping[str, str],
 ) -> bool:
     """Whether the version being saved carries imported text: it is an import, or the version it
     was edited from does -- the named parent, else the skill's newest version, which is what a
-    save that names none still starts from."""
+    save that names none still starts from.
+
+    For an agent's save, also when any of its files is byte-for-byte a file of an import-lineage
+    version anywhere in the tenant: an agent can read an imported skill and write its text into a
+    new one under another name, and the copy is as much a third party's as the original."""
     if provenance.source == "import":
         return True
     basis = parent or newest_version(await lib.version_ids(tenant_id, name))
-    if basis is None:
+    if basis is not None and gate_source(await lib.get_version(tenant_id, name, basis)) == "import":
+        return True
+    if provenance.source != "agent":
         return False
-    row = await lib.get_version(tenant_id, name, basis) or {}
-    return row.get("source") == "import" or bool(row.get("lineage_import"))
+    digests = {hashlib.sha256(_stored_bytes(p, c)).hexdigest() for p, c in files.items()}
+    return await lib.holds_imported_file(tenant_id, digests)
 
 
 async def _evals_only_inherited(

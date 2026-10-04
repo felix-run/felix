@@ -216,6 +216,8 @@ async def test_sweep_removes_only_rows_older_than_each_ttl(
         "attachments": 0,
         # Its own step for the same reason as uploads: objects plus a ledger row.
         "artifacts": 0,
+        # Skill-import sightings go through their store on both backends; none here.
+        "skill_import_sighting": 0,
     }
     assert await _audit_ids(settings) == {new_audit}, f"{old_audit=} should be gone"
     assert await _usage_ids(settings) == {new_usage}, f"{old_usage=} should be gone"

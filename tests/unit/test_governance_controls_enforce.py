@@ -722,6 +722,32 @@ def test_untrusted_tools_bound_without_screening_are_named(caplog, spec_extra, u
         assert "github__read_issue" in caplog.text, "the warning does not name the tool"
 
 
+@pytest.mark.parametrize(
+    ("spec_extra", "untrusted", "should_warn"),
+    [
+        ({}, True, True),
+        ({"content_screening": {"enabled": True}}, True, False),
+        ({}, False, False),
+    ],
+    ids=["imported-unscreened", "imported-screened", "no-imported-skill"],
+)
+def test_an_imported_skill_offered_without_screening_is_named(caplog, spec_extra, untrusted, should_warn):
+    """What the skill tools return of an imported skill is marked untrusted, and only content
+    screening reads the mark: off, the third party's text reaches the model unscreened."""
+    import logging
+
+    from felix.manifests.builder import _warn_imported_skills_are_unscreened
+    from felix.skills.types import Skill, SkillCatalog
+
+    catalog = SkillCatalog(skills={"refunds": Skill(name="refunds", description="d", untrusted=untrusted)})
+    with caplog.at_level(logging.WARNING):
+        _warn_imported_skills_are_unscreened(_bare_manifest(**spec_extra), catalog)
+
+    assert bool(caplog.text) is should_warn, caplog.text
+    if should_warn:
+        assert "refunds" in caplog.text, "the warning does not name the skill"
+
+
 def test_no_bundled_manifest_binds_untrusted_tools_without_screening() -> None:
     """A warning that fires on the manifests we ship is noise on arrival.
 

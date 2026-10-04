@@ -7,7 +7,8 @@ stamp, as Skillist's `publishedAt` is -- and the cooldown counts from there.
 
 Recorded on every browse and every import attempt, whatever the cooldown is (even off), so turning
 one on later honours what was already seen rather than holding every skill for its full length.
-Insert-if-absent: the first stamp for a `(tenant, source, digest)` is the one that stays.
+Insert-if-absent: the first stamp for a `(tenant, source, digest)` is the one that stays. The
+retention sweep drops rows older than `SIGHTING_RETENTION_DAYS`.
 """
 
 from __future__ import annotations
@@ -28,6 +29,10 @@ class SightingStore(Protocol):
         seen before, and return when each was first seen."""
         ...
 
+    async def prune(self, *, before: int) -> int:
+        """Drop every tenant's sightings first seen before ``before``; how many went."""
+        ...
+
 
 class InMemorySightingStore:
     """The `memory://` twin."""
@@ -45,6 +50,12 @@ class InMemorySightingStore:
         for source, digest in pairs:
             out[(source, digest)] = self._rows.setdefault((tenant_id, source, digest), at)
         return copy.deepcopy(out)
+
+    async def prune(self, *, before: int) -> int:
+        stale = [k for k, at in self._rows.items() if at < before]
+        for key in stale:
+            del self._rows[key]
+        return len(stale)
 
 
 class PostgresSightingStore:
@@ -84,6 +95,25 @@ class PostgresSightingStore:
             ).all()
         return {(r[0], r[1]): int(r[2]) for r in found}
 
+    async def prune(self, *, before: int) -> int:
+        from sqlalchemy import delete
+
+        from felix.db.models import SkillImportSightingRow
+        from felix.db.session import get_session_factory, rls_bypass
+
+        # Cross-tenant maintenance: without the bypass RLS makes the DELETE a silent no-op.
+        with rls_bypass():
+            async with get_session_factory(settings=self._settings)() as db:
+                gone = await db.execute(
+                    delete(SkillImportSightingRow).where(SkillImportSightingRow.first_seen_at < before)
+                )
+                await db.commit()
+                return int(getattr(gone, "rowcount", 0) or 0)
+
+
+# How long a sighting is kept: past the longest cooldown a setting allows (365 days), so pruning
+# never makes a skill seen long ago look new -- and if it did, it would only restart its clock.
+SIGHTING_RETENTION_DAYS = 366
 
 _memory = InMemorySightingStore()
 
@@ -100,6 +130,7 @@ def clear_memory() -> None:
 
 
 __all__ = [
+    "SIGHTING_RETENTION_DAYS",
     "InMemorySightingStore",
     "PostgresSightingStore",
     "SightingStore",

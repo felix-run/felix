@@ -401,38 +401,69 @@ non-SKILL.md file only ever originates from an operator's save. An agent's draft
 file only unchanged from its parent, so the descendant's extra files are ones an operator wrote.
 Reject the descendants too when the rejected file must not come back.
 
-**Third-party imports.** `POST /skill-library/-/import` (`felix skills add`) fetches a skill from
-GitHub as a draft (`source: import`); it is never published in the same request (`publish: true` is
-422 `publish_not_allowed`), so a person reads it first. The fetch is pinned: the ref resolves once,
-through the repository's own branch or tag refs or, for a commit id, only when that commit is on
-the default branch (`compare`), because GitHub serves a fork's commit under the upstream's name
-(422 `commit_not_in_repo`). Every file is read by blob id and checked against its git object id.
+**Third-party imports.** `POST /skill-library/-/import` (`felix skills add`, `skills:write`) fetches
+a skill from GitHub as a draft (`source: import`); it is never published in the same request
+(`publish: true` is 422 `publish_not_allowed`), so a person reads it first. `GET
+/skill-library/-/browse` needs only `skills:read`, and reaches GitHub on the same token, so the
+allowlist bounds it too. The fetch is pinned:
+
+- A commit id (full or abbreviated hex) is a commit and only that -- never looked up as a branch
+  of that name -- and is accepted only when `compare` puts it on the default branch, because
+  GitHub serves a fork's commit under the upstream's name (422 `commit_not_in_repo`). A compare too
+  large for its size cap, or one GitHub cannot answer, fails closed the same way.
+- `refs/heads/<name>` and `refs/tags/<name>` resolve through the repository's own refs. A bare
+  name is looked up as a tag and as a branch, as git does; one naming both is refused (422
+  `ambiguous_ref`), so a branch cannot shadow a release tag.
+- Every file is read by blob id and checked against its git object id, and every commit is
+  reported in full, never abbreviated.
+
 The skill's name must be its folder's; an import never takes over a name another source, an agent
 or an operator holds (409 `origin_mismatch`), and it is refused where an operator upload holds the
 name.
 
-**Lineage taint.** An import, and every version built on one by anyone, carries
-`lineage_import`. The publish gate judges such a version as an import whoever saved it: an advisory
-scan blocks it whatever the policy says (tighten only), only the bundle's own `evals/` scenarios
-count toward an evaluation requirement (an import drops its `evals/`), and an agent's edit of one
-always waits for a person. Rolling back to one passes the same gate.
+**Lineage taint.** An import, and every version built on one by anyone, carries `lineage_import`:
+an agent's or operator's edit, an edit of that edit, an operator save naming no parent, and an
+agent's save of any file whose bytes match a file of an import-lineage version anywhere in the
+tenant (an agent copying imported text under another name). The publish gate judges such a version
+as an import whoever saved it: an advisory scan blocks it whatever the policy says (tighten only),
+only the bundle's own `evals/` scenarios count toward an evaluation requirement (an import drops
+its `evals/`), and an agent's edit of one always waits for a person. Rolling back to one passes the
+same gate. Nothing clears the mark.
 
-**Activation screening.** When an agent activates a live skill with that lineage, `activate_skill`
-and `read_skill_file` mark their output as relayed from an untrusted author, and content screening
-(`spec.content_screening.enabled`) screens that output exactly as it screens an untrusted tool's:
-markers, the optional scoring model, quarantine or block. Operator and agent skills are not
-screened this way. The wrapper order is unchanged; the screening wrapper decides per call as well
-as per tool. A manifest without content screening gets no screening of skill bodies, imported or
-not, so turn it on for agents that activate imported skills.
+**Imported text in front of the model.** When an agent works with a live skill of that lineage,
+`activate_skill`, `read_skill_file` and `list_skills` mark their output as relayed from an
+untrusted author, and content screening (`spec.content_screening.enabled`) screens that output
+exactly as it screens an untrusted tool's: markers, the optional scoring model, quarantine or
+block. Operator and agent skills are not screened this way. The wrapper order is unchanged; the
+screening wrapper decides per call as well as per tool. A manifest without content screening gets
+no screening of skill bodies, imported or not, and the compile says so
+(`felix_imported_skills_unscreened`), so turn it on for agents that activate imported skills. In the
+system prompt's skill catalog an imported skill is listed with `untrusted="true"` under a preamble
+that says its description is a third party's text, and a description carrying the injection
+markers is withheld (the name is still listed). The skill suggester (`spec.skill_suggestion`) gives
+the decision model each skill's description and the start of its body to rank on, so imported text
+can steer which skill is hinted; the hint the agent sees carries only the skill's name, and the
+agent still activates it -- through the screening above.
 
-**Allowlist, token and cooldown.** `FELIX_SKILL_IMPORT_SOURCES` globs the repositories browse and
-import may name (403 `source_not_allowed`). `FELIX_SKILL_IMPORT_GITHUB_TOKEN` without an allowlist
-refuses to boot outside development: every tenant's `skills:write` principal could otherwise read
-any repository the token reaches. `FELIX_SKILL_IMPORT_MIN_AGE_DAYS`, raised per tenant by
-`import_min_age_days`, refuses (403 `too_recent`, nothing saved) files this tenant first saw fewer
-than that many days ago. The clock is Felix's own (`skill_import_sighting`, stamped on every browse
-and import attempt, even with the cooldown off), never a commit date, which the pusher sets.
-Browses and imports are limited per tenant per hour (`FELIX_SKILL_IMPORT_PER_HOUR`).
+**Allowlist, token and budget.** `FELIX_SKILL_IMPORT_SOURCES` globs the repositories a browse or an
+import may name, per tenant: `acme=github:acme/*` serves tenant `acme` only, and an entry with no
+tenant serves every tenant (403 `source_not_allowed` otherwise). With
+`FELIX_SKILL_IMPORT_GITHUB_TOKEN` set, boot refuses -- unless `FELIX_AUTH_MODE=none` in
+development, which is a single person's box (`FELIX_ENVIRONMENT` alone is not: Compose defaults it
+to development) -- an empty list, any entry naming no tenant, and any entry whose owner is a glob
+(`github:*`): each would let one tenant read whatever the token reads, another org's private
+repositories included. Every GitHub call is charged to the tenant's hourly budget and then the
+deployment's (`FELIX_SKILL_IMPORT_CALLS_PER_HOUR[_TOTAL]`, 429 `rate_limited`), which protects the
+shared token's own GitHub limit; a browse lists at most 50 skills and says how many it found.
+
+**The cooldown is time since this tenant first saw these exact files.**
+`FELIX_SKILL_IMPORT_MIN_AGE_DAYS`, raised per tenant by `import_min_age_days`, refuses (403
+`too_recent`, nothing saved) a skill whose kept files -- by their tree digest -- this tenant first
+saw fewer than that many days ago, on any branch, tag or commit, in a browse or an import attempt,
+with the cooldown on or off. The clock is Felix's own (`skill_import_sighting`), never a commit
+date, which the pusher sets: a commit backdated years is still new to Felix. Any change to a kept
+file is a new digest and starts its own clock. Sightings older than 366 days are pruned by the
+retention sweep, past the longest cooldown a setting allows.
 
 ## Outbound egress
 

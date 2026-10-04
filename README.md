@@ -319,14 +319,15 @@ saves a new version only when the skill's files changed. Imported text is third-
 instructions, so it -- and every version built on it -- is held to a stricter gate (an advisory
 scan blocks its publish whatever the policy says), and what `activate_skill` returns of it is
 screened as untrusted tool output where the manifest enables content screening.
-`FELIX_SKILL_IMPORT_SOURCES` (empty = any GitHub source) limits which repositories may be named;
-`FELIX_SKILL_IMPORT_GITHUB_TOKEN` (optional) reaches private ones and lifts the anonymous rate
-limit, and outside development refuses to boot without an allowlist.
-`FELIX_SKILL_IMPORT_MIN_AGE_DAYS` (0 = off) is a supply-chain cooldown counted from when the
-tenant first saw a skill's exact files (never from a commit date, which the pusher sets): until
-then an import is refused outright, and a tenant can raise the bar (`import_min_age_days` in its
-policy) but not lower it. `FELIX_SKILL_IMPORT_PER_HOUR` (60) bounds browses plus imports per
-tenant.
+`FELIX_SKILL_IMPORT_SOURCES` (empty = any GitHub source) limits which repositories may be named,
+per tenant (`acme=github:acme/*`); `FELIX_SKILL_IMPORT_GITHUB_TOKEN` (optional) reaches private
+ones and lifts the anonymous rate limit, and outside a development box refuses to boot unless every
+allowlist entry names a tenant and a literal owner. `FELIX_SKILL_IMPORT_MIN_AGE_DAYS` (0 = off) is
+a supply-chain cooldown counted from when the tenant first saw a skill's exact files (never from a
+commit date, which the pusher sets): until then an import is refused outright, and a tenant can
+raise the bar (`import_min_age_days` in its policy) but not lower it. Every GitHub call is charged
+against `FELIX_SKILL_IMPORT_CALLS_PER_HOUR` (per tenant, 1000) and
+`FELIX_SKILL_IMPORT_CALLS_PER_HOUR_TOTAL` (4000).
 
 **[`examples/felix-plugin-example/`](examples/felix-plugin-example/)** is a working package that
 exercises every seam above.

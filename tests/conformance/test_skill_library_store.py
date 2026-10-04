@@ -529,3 +529,34 @@ async def test_a_sighting_keeps_its_first_stamp_and_is_tenant_scoped(store_setti
         (src, a): 1_770_000_000_000
     }
     assert await sightings.first_seen("acme", [], at=1) == {}
+
+
+@parametrized
+async def test_a_file_of_an_import_lineage_version_is_found_by_its_digest(store_settings: Any) -> None:
+    store = get_skill_library_store(store_settings)
+    imported = {**_row("0.1.0", at=1, source="import", origin=None), **ORIGIN, "lineage_import": True}
+    await store.insert_version("acme", imported, FILES, created_by="ops", at=1)
+    own = [{"path": "SKILL.md", "sha256": "e" * 64, "size": 4}]
+    await store.insert_version(
+        "acme", {**_row("0.1.0", at=2), "name": "own-notes"}, own, created_by="c", at=2
+    )
+
+    assert await store.holds_imported_file("acme", ["b" * 64, "f" * 64]) is True
+    assert await store.holds_imported_file("acme", ["e" * 64]) is False, "a file of a version not imported"
+    assert await store.holds_imported_file("globex", ["b" * 64]) is False
+    assert await store.holds_imported_file("acme", []) is False
+
+
+@parametrized
+async def test_pruning_sightings_drops_every_tenants_old_rows_only(store_settings: Any) -> None:
+    from felix.skills.sighting_store import get_sighting_store
+
+    sightings = get_sighting_store(store_settings)
+    src = "github:acme/skills/skills/invoice-triage"
+    await sightings.first_seen("acme", [(src, "a" * 64)], at=1_000)
+    await sightings.first_seen("globex", [(src, "a" * 64)], at=2_000)
+    await sightings.first_seen("acme", [(src, "b" * 64)], at=9_000)
+
+    assert await sightings.prune(before=5_000) == 2
+    again = await sightings.first_seen("acme", [(src, "a" * 64), (src, "b" * 64)], at=10_000)
+    assert again == {(src, "a" * 64): 10_000, (src, "b" * 64): 9_000}
