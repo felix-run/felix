@@ -154,7 +154,7 @@ def github_call_budget(
     return charge
 
 
-async def gather_limited[T](calls: Iterable[Callable[[], Awaitable[T]]]) -> list[T]:
+async def _gather_limited[T](calls: Iterable[Callable[[], Awaitable[T]]]) -> list[T]:
     """Run each call, at most `_FETCH_CONCURRENCY` at once, in order. A task group, so the first
     failure cancels the rest rather than leaving them fetching for an import already refused."""
     gate = asyncio.Semaphore(_FETCH_CONCURRENCY)
@@ -190,6 +190,11 @@ class Cooldown:
         """At exactly the boundary it is old enough."""
         return self.now >= self.eligible_at(first_seen_at)
 
+    def allows(self, first_seen_at: int) -> bool:
+        """Whether files first seen at ``first_seen_at`` may be imported now: always, with no
+        cooldown in force."""
+        return not self.days or self.eligible(first_seen_at)
+
     def check(self, what: str, first_seen_at: int) -> None:
         """Refuse ``what`` when this tenant first saw its files less than ``days`` ago. A hard
         refusal: nothing is saved, and no flag overrides it."""
@@ -201,6 +206,14 @@ class Cooldown:
                 first_seen_at=first_seen_at,
                 eligible_at=eligible_at,
             )
+
+
+async def cooldown_for(settings: Settings, tenant_id: str, now: int) -> Cooldown:
+    """The cooldown in force for ``tenant_id``, judged at ``now``: `FELIX_SKILL_IMPORT_MIN_AGE_DAYS`
+    tightened by the tenant's publish policy. The one place the policy is read for it."""
+    from felix.skills.policy import load_publish_policy
+
+    return Cooldown(days=(await load_publish_policy(settings, tenant_id)).policy.import_min_age_days, now=now)
 
 
 def _iso(ms: int) -> str:
@@ -224,13 +237,10 @@ async def github_session(
     The source and ref are validated and the allowlist judged for ``tenant_id`` before anything
     reaches GitHub; the reader's client is closed on the way out; a deadline overrun is an
     upstream failure with a code, not a timeout the caller has to interpret."""
-    from felix.skills.policy import load_publish_policy
-
     parsed = parse_source(source)
     check_allowed(settings, parsed, tenant_id)
     wanted_ref = validate_ref(ref) if ref else None
-    days = (await load_publish_policy(settings, tenant_id)).policy.import_min_age_days
-    cooldown = Cooldown(days=days, now=deps.clock())
+    cooldown = await cooldown_for(settings, tenant_id, deps.clock())
     try:
         async with reader(settings, deps.http, deps.charge) as gh, asyncio.timeout(DEADLINE_SECONDS):
             yield Session(parsed, wanted_ref, cooldown, gh)
@@ -285,7 +295,7 @@ def _bundle_size(path: str, size: int) -> int:
     return base64_encoded_size(size) if is_binary_asset_path(path) else size
 
 
-def check_caps(kept: list[TreeEntry], source: str) -> None:
+def _check_caps(kept: list[TreeEntry], source: str) -> None:
     """Refuse, before any blob is fetched, a skill the bundle format would refuse anyway."""
     if len(kept) > MAX_BUNDLE_FILES:
         raise ImportSourceTooLarge(f"{source} has {len(kept)} files; a skill may hold {MAX_BUNDLE_FILES}")
@@ -335,7 +345,7 @@ def _listing_item(
         "source": source,
         "first_seen_at": first_seen_at,
         "eligible_at": cooldown.eligible_at(first_seen_at),
-        "eligible": not cooldown.days or cooldown.eligible(first_seen_at),
+        "eligible": cooldown.allows(first_seen_at),
     }
 
 
@@ -363,7 +373,7 @@ async def browse(
         ]
         listed = found[:MAX_BROWSE_SKILLS]
         by_path = {e.path: e for e in resolved.tree}
-        metas = await gather_limited(
+        metas = await _gather_limited(
             (lambda d=d: _listing_meta(gh, parsed, by_path[d.skill_md_path])) for d in listed
         )
     sources = {d.source_path: parsed.at(d.source_path).canonical for d in listed}
@@ -415,7 +425,7 @@ class _Fetched:
 @dataclass(slots=True, frozen=True)
 class Snapshot:
     """A skill folder at one resolved commit: its blobs, the ones an import keeps, their digest,
-    and when this tenant first saw that digest (stamped by `snapshot`)."""
+    and when this tenant first saw that digest (stamped by `checked_snapshot`)."""
 
     resolved: Resolved
     entries: list[TreeEntry]
@@ -456,7 +466,7 @@ async def _prior(
     return None, newest
 
 
-async def snapshot(
+async def _snapshot(
     settings: Settings, tenant_id: str, session: Session, resolved: Resolved | None = None
 ) -> Snapshot:
     """Resolve (unless ``resolved`` is given) and list the skill folder, and record the sighting
@@ -477,6 +487,34 @@ async def snapshot(
     return Snapshot(resolved, entries, kept, tree_hash, first_seen)
 
 
+async def checked_snapshot(
+    settings: Settings,
+    tenant_id: str,
+    session: Session,
+    *,
+    resolved: Resolved | None = None,
+    cooldown: bool = False,
+) -> Snapshot:
+    """The skill folder at the resolved commit (sighting stamped), past every refusal an import
+    makes before reading a file: the cooldown when ``cooldown`` -- an import's choice; a check
+    reports eligibility instead -- and the bundle caps (`source_too_large`). What an import, a
+    check and the sweep share, so none of them offers what another would refuse."""
+    snap = await _snapshot(settings, tenant_id, session, resolved)
+    if cooldown:
+        session.cooldown.check(session.source.canonical, snap.first_seen)
+    _check_caps(snap.kept, session.source.canonical)
+    return snap
+
+
+async def read_text_files(session: Session, entries: list[TreeEntry]) -> dict[str, bytes]:
+    """The text files among ``entries`` as an import would store them (`sanitize_bundle`): a
+    clamped SKILL.md description, and text that is not UTF-8 left out. Each read is checked
+    against its git object id and charged, as an import's is."""
+    bodies = await _gather_limited((lambda e=e: session.gh.blob(session.source, e)) for e in entries)
+    texts, _ = sanitize_bundle(dict(zip((e.path for e in entries), bodies, strict=True)))
+    return {path: text.encode("utf-8") for path, text in texts.items()}
+
+
 async def _fetch(
     settings: Settings, tenant_id: str, session: Session
 ) -> tuple[Snapshot, _Fetched | ImportResult]:
@@ -484,13 +522,11 @@ async def _fetch(
     cooldown (refused before any file is read), or the library already holds exactly these
     files, which the digest alone shows."""
     source, gh = session.source, session.gh
-    snap = await snapshot(settings, tenant_id, session)
-    session.cooldown.check(source.canonical, snap.first_seen)
-    check_caps(snap.kept, source.canonical)
+    snap = await checked_snapshot(settings, tenant_id, session, cooldown=True)
     unchanged, parent = await _prior(settings, tenant_id, _slug(source), source.canonical, snap.tree_hash)
     if unchanged is not None:
         return snap, ImportResult(version=unchanged, unchanged=True)
-    bodies = await gather_limited((lambda e=e: gh.blob(source, e)) for e in snap.kept)
+    bodies = await _gather_limited((lambda e=e: gh.blob(source, e)) for e in snap.kept)
     files, dropped = sanitize_bundle(dict(zip((e.path for e in snap.kept), bodies, strict=True)))
     dropped = sorted({*dropped, *(e.path for e in snap.entries if not keeps_path(e.path))})
     return snap, _Fetched(
@@ -568,6 +604,20 @@ async def import_skill(
     return ImportResult(version=saved, unchanged=False, dropped_files=fetched.dropped, parent=fetched.parent)
 
 
+def state_of_snapshot(source: GitHubSource, snap: Snapshot, now: int) -> dict[str, Any]:
+    """The `upstream_store` row a successful check of ``source`` records (`state_of`)."""
+    from felix.skills.upstream_store import state_of
+
+    return state_of(
+        origin_source=source.canonical,
+        origin_ref=snap.resolved.ref,
+        commit=snap.resolved.commit,
+        tree_hash=snap.tree_hash,
+        first_seen_at=snap.first_seen,
+        checked_at=now,
+    )
+
+
 async def record_upstream(
     settings: Settings, tenant_id: str, source: GitHubSource, snap: Snapshot, now: int
 ) -> None:
@@ -578,17 +628,7 @@ async def record_upstream(
 
     try:
         await get_upstream_store(settings).record(
-            tenant_id,
-            _slug(source),
-            {
-                "origin_source": source.canonical,
-                "origin_ref": snap.resolved.ref,
-                "upstream_commit": snap.resolved.commit,
-                "upstream_tree_hash": snap.tree_hash,
-                "first_seen_at": snap.first_seen,
-                "checked_at": now,
-                "error": None,
-            },
+            tenant_id, _slug(source), state_of_snapshot(source, snap, now)
         )
     except Exception:
         logger.warning("recording the upstream state of %s failed", source.canonical, exc_info=True)
@@ -606,14 +646,15 @@ __all__ = [
     "Session",
     "Snapshot",
     "browse",
-    "check_caps",
-    "gather_limited",
+    "checked_snapshot",
+    "cooldown_for",
     "github_call_budget",
     "github_session",
     "import_skill",
     "keeps_path",
+    "read_text_files",
     "record_upstream",
     "sanitize_bundle",
-    "snapshot",
+    "state_of_snapshot",
     "uncharged",
 ]

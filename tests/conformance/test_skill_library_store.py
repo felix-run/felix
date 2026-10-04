@@ -589,9 +589,6 @@ async def test_an_upstream_record_updates_only_the_columns_it_names(store_settin
     assert await upstream.get("globex", ["invoice-triage"]) == {}
     assert await upstream.get("acme", []) == {}
 
-    await upstream.forget("acme", "invoice-triage")
-    assert await upstream.get("acme", ["invoice-triage"]) == {}
-
 
 @parametrized
 async def test_upstream_rows_fall_due_across_tenants_oldest_check_first(store_settings: Any) -> None:

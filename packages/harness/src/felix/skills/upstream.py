@@ -103,13 +103,13 @@ async def diff_versions(
 
 
 async def _diff_upstream(
-    session: Any, kept: list[TreeEntry], base: Mapping[str, bytes], base_version: str
+    session: importer.Session, kept: list[TreeEntry], base: Mapping[str, bytes], base_version: str
 ) -> dict[str, Any]:
     """The kept files at the resolved commit against the stored ``base``, fetching only what the
     tree's blob ids say changed -- and of that, only text, in path order, until the diff budget is
     spent; a binary asset is compared by id and reported by size.
 
-    A fetched file is sanitised as an import would save it (`importer.sanitize_bundle`): a
+    A fetched file is sanitised as an import would save it (`importer.read_text_files`): a
     SKILL.md whose description an import would clamp is compared clamped, and text that is not
     UTF-8, which an import drops, counts as absent."""
     upstream = {e.path: e for e in kept}
@@ -130,7 +130,7 @@ async def _diff_upstream(
             to_read.append(entry)
     for at in range(0, len(to_read), _FETCH_BATCH):
         batch = to_read[at : at + _FETCH_BATCH]
-        texts = await _read_text(session, batch) if not builder.exhausted else {}
+        texts = await importer.read_text_files(session, batch) if not builder.exhausted else {}
         for entry in batch:
             stored = base.get(entry.path)
             old = Content.of(entry.path, stored) if stored is not None else None
@@ -142,13 +142,6 @@ async def _diff_upstream(
                 new = Content.of(entry.path, data) if data is not None else None
                 await asyncio.to_thread(builder.add, entry.path, old, new)
     return {"compared_with": base_version, **builder.result()}
-
-
-async def _read_text(session: Any, batch: list[TreeEntry]) -> dict[str, bytes]:
-    """The text files of ``batch`` as an import would store them; one that is not UTF-8 is absent."""
-    bodies = await importer.gather_limited((lambda e=e: session.gh.blob(session.source, e)) for e in batch)
-    texts, _ = importer.sanitize_bundle(dict(zip((e.path for e in batch), bodies, strict=True)))
-    return {path: text.encode("utf-8") for path, text in texts.items()}
 
 
 # -- what the library holds ----------------------------------------------------------------------
@@ -167,15 +160,36 @@ async def imported_head(
     """The skill and its newest version that was not rejected, which must be an import: it names
     the origin a check or an update reads. `SkillNotFound` for a skill the library does not hold,
     `SkillNotImported` (409 `not_imported`) for one whose newest version came from anywhere else."""
-    lib = get_skill_library_store(settings)
-    skill = await lib.get_skill(tenant_id, name)
+    skill, head = await _head(settings, tenant_id, name)
     if skill is None:
         raise library.SkillNotFound(f"{name} is not in the library")
-    newest = library.newest_version((await lib.buildable_versions(tenant_id, [name])).get(name, []))
-    head = await lib.get_version(tenant_id, name, newest) if newest is not None else None
     if head is None or not is_import_head(head):
         raise SkillNotImported(f"{name} was not imported, so it has no origin to check")
     return skill, head
+
+
+async def _head(
+    settings: Settings, tenant_id: str, name: str
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """The skill, and its newest version that was not rejected -- `buildable_versions`, then
+    `newest_version`, as an import judges a name. Either is None when there is none."""
+    lib = get_skill_library_store(settings)
+    skill = await lib.get_skill(tenant_id, name)
+    if skill is None:
+        return None, None
+    newest = library.newest_version((await lib.buildable_versions(tenant_id, [name])).get(name, []))
+    return skill, await lib.get_version(tenant_id, name, newest) if newest is not None else None
+
+
+async def recorded_state(settings: Settings, tenant_id: str, name: str, *, now: int) -> dict[str, Any] | None:
+    """The last recorded check of an imported skill's origin, judged against its head and the
+    tenant's cooldown at ``now`` (`describe`); None for a skill that is not an import. Read from
+    the record alone: no GitHub call. What the library detail shows."""
+    _, head = await _head(settings, tenant_id, name)
+    if head is None or not is_import_head(head):
+        return None
+    state = (await get_upstream_store(settings).get(tenant_id, [name])).get(name)
+    return describe(head, state, await importer.cooldown_for(settings, tenant_id, now))
 
 
 async def _imported_page(
@@ -216,21 +230,20 @@ def _current(skill: Mapping[str, Any], head: Mapping[str, Any]) -> dict[str, Any
 
 
 def describe(
-    head: Mapping[str, Any], state: Mapping[str, Any] | None, *, min_age_days: int, now: int
+    head: Mapping[str, Any], state: Mapping[str, Any] | None, cooldown: importer.Cooldown
 ) -> dict[str, Any]:
     """What the last recorded check of ``head``'s origin found: the upstream commit and digest,
-    whether that is an update (a digest other than the newest version's), and when the tenant's
-    cooldown lets it in. Fields the record does not hold are null."""
+    whether that is an update (a digest other than the newest version's), and when ``cooldown``
+    lets it in. Fields the record does not hold are null, and an unseen digest is not eligible."""
     state = state or {}
     tree_hash, first_seen = state.get("upstream_tree_hash"), state.get("first_seen_at")
-    eligible_at = first_seen + min_age_days * importer.DAY_MS if first_seen is not None else None
     return {
         "upstream_commit": state.get("upstream_commit"),
         "upstream_tree_hash": tree_hash,
         "update_available": tree_hash is not None and tree_hash != head.get("origin_tree_hash"),
         "first_seen_at": first_seen,
-        "eligible_at": eligible_at,
-        "eligible": eligible_at is not None and (not min_age_days or now >= eligible_at),
+        "eligible_at": cooldown.eligible_at(first_seen) if first_seen is not None else None,
+        "eligible": first_seen is not None and cooldown.allows(first_seen),
         "checked_at": state.get("checked_at"),
         "error": state.get("error"),
     }
@@ -261,8 +274,7 @@ async def check_upstream(
     async with importer.github_session(
         settings, tenant_id, head["origin_source"], other_ref or head["origin_ref"], deps
     ) as session:
-        snap = await importer.snapshot(settings, tenant_id, session)
-        importer.check_caps(snap.kept, session.source.canonical)
+        snap = await importer.checked_snapshot(settings, tenant_id, session)
         committed_at = await session.gh.last_changed(
             session.source, snap.resolved.commit, session.source.path
         )
@@ -283,7 +295,7 @@ async def check_upstream(
             "committed_at": committed_at,
             "first_seen_at": snap.first_seen,
             "eligible_at": eligible_at,
-            "eligible": not cooldown.days or cooldown.eligible(snap.first_seen),
+            "eligible": cooldown.allows(snap.first_seen),
         },
         "update_available": snap.tree_hash != head.get("origin_tree_hash"),
         "min_age_days": cooldown.days,
@@ -336,16 +348,9 @@ async def _check_one(
         key = (session.source.owner, session.source.repo, session.ref)
         if key not in resolved:
             resolved[key] = await resolve(session.gh, session.source, session.ref)
-        snap = await importer.snapshot(settings, tenant_id, session, resolved[key])
-        importer.check_caps(snap.kept, session.source.canonical)
+        snap = await importer.checked_snapshot(settings, tenant_id, session, resolved=resolved[key])
     await importer.record_upstream(settings, tenant_id, session.source, snap, session.cooldown.now)
-    return {
-        "upstream_commit": snap.resolved.commit,
-        "upstream_tree_hash": snap.tree_hash,
-        "first_seen_at": snap.first_seen,
-        "checked_at": session.cooldown.now,
-        "error": None,
-    }
+    return importer.state_of_snapshot(session.source, snap, session.cooldown.now)
 
 
 async def _record_failure(
@@ -406,10 +411,8 @@ async def outdated(
     budget ends the listing there -- `stopped: rate_limited`, with the cursor at the first skill
     not checked -- or, before any skill was, refuses it (`rate_limited`). So does running long:
     no check starts `LISTING_SECONDS` after the first (`stopped: deadline`)."""
-    from felix.skills.policy import load_publish_policy
-
     heads, next_cursor = await _imported_page(settings, tenant_id, after, max(1, min(limit, MAX_OUTDATED)))
-    days = (await load_publish_policy(settings, tenant_id)).policy.import_min_age_days
+    cooldown = await importer.cooldown_for(settings, tenant_id, deps.clock())
     stopped: str | None = None
     if refresh:
         states, stopped = await _check_page(settings, tenant_id, heads, deps)
@@ -418,7 +421,6 @@ async def outdated(
     else:
         recorded = await get_upstream_store(settings).get(tenant_id, [str(h["name"]) for _, h in heads])
         states = [recorded.get(str(h["name"])) for _, h in heads]
-    now = deps.clock()
     items = [
         {
             "name": head["name"],
@@ -427,7 +429,7 @@ async def outdated(
             "origin_source": head["origin_source"],
             "origin_ref": head["origin_ref"],
             "origin_commit": head["origin_commit"],
-            **describe(head, state, min_age_days=days, now=now),
+            **describe(head, state, cooldown),
         }
         for (skill, head), state in zip(heads, states, strict=True)
     ]
@@ -435,7 +437,7 @@ async def outdated(
         "items": items,
         "next_cursor": next_cursor,
         "refreshed": refresh,
-        "min_age_days": days,
+        "min_age_days": cooldown.days,
         "stopped": stopped,
     }
 
@@ -597,6 +599,7 @@ __all__ = [
     "imported_head",
     "is_import_head",
     "outdated",
+    "recorded_state",
     "run_upstream_checks",
     "update_skill",
 ]

@@ -12,6 +12,7 @@ from typing import Any
 
 import httpx
 import pytest
+import typer
 from felix.config import Settings
 from felix_cli.main import app as cli
 from typer.testing import CliRunner
@@ -146,6 +147,9 @@ def test_outdated_diff_and_update_follow_an_imported_skill(served: FakeRepos) ->
 
 
 def test_update_has_no_way_to_publish(served: FakeRepos) -> None:
+    # The declared options, not the rendered error: Rich colours that in CI, splitting the text.
+    update = typer.main.get_command(cli).commands["skills"].commands["update"]
+    assert not any("publish" in opt for p in update.params for opt in p.opts), update.params
     assert _run("update", "invoice-triage", "--publish").exit_code == 2
 
 
@@ -179,9 +183,29 @@ def test_a_files_own_text_cannot_pass_for_a_file_header(served: FakeRepos) -> No
     assert "  +++ b/SKILL.md" in lines and "  +-- a/SKILL.md" in lines
 
 
-def test_a_diff_of_a_skill_that_was_not_imported_says_so(served: FakeRepos) -> None:
+def test_a_diff_of_a_skill_the_library_does_not_hold_is_not_found(served: FakeRepos) -> None:
     result = _run("diff", "never-imported")
-    assert result.exit_code == 1 and "not_found:" in result.output
+    assert result.exit_code == 1 and "not_found: never-imported is not in the library" in result.output
+
+
+def test_a_diff_or_update_of_a_skill_that_was_not_imported_says_so(served: FakeRepos) -> None:
+    import asyncio
+
+    from felix.skills import library
+
+    asyncio.run(
+        library.save_draft(
+            Settings(database_url="memory://cli-skills"),
+            "default",
+            files={"SKILL.md": skill_md("house-rules").decode()},
+            provenance=library.DraftProvenance(source="operator", author="ops"),
+        )
+    )
+    for command in ("diff", "update"):
+        result = _run(command, "house-rules")
+        assert result.exit_code == 1, result.output
+        assert "not_imported: house-rules was not imported, so it has no origin to check" in result.output
+    assert served.requests == [], "refused before GitHub is asked"
 
 
 def test_clean_strips_bidi_and_zero_width_characters() -> None:
