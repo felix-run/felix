@@ -4,7 +4,8 @@ A lease is keyed by thread and holds two kinds of entry, each with its own token
 expiry:
 
 - **the exclusive hold**, at most one. Another holder's exclusive acquire is `lease_held`
-  (409) while it lives. Its holder re-acquiring renews it.
+  (409) while it lives. Re-acquiring with its token renews it; its holder id alone does not,
+  because holder ids are published and a duplicated browser tab shares one.
 - **observer holds**, any number. A `shared` acquire always succeeds, whoever holds the
   thread exclusively: it is how a second tab watches a thread the first one is driving.
 
@@ -198,39 +199,53 @@ def _status(data: dict[str, Any] | None) -> dict[str, Any]:
 def _acquire(
     data: dict[str, Any] | None, now: float, *, holder_id: str, mode: str, ttl: float, token: str | None
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """Take or renew a hold. A renewal proves itself with the hold's token, never its holder id.
+
+    The holder id is published — every status carries it, and `GET /chat/sessions/{id}/lease`
+    lists every observer's — and a duplicated browser tab copies its own. So a holder id that
+    matches is no proof: without the token it is refused as anyone else would be, and it
+    never learns the token.
+    """
     lease = data or _empty(now)
     holder = lease["holder_id"]
+    observer = lease["observers"].get(holder_id)
+    refused = {"ok": False, "error": "lease_held", "status": _status(data)}
     if mode == EXCLUSIVE:
-        if holder and holder != holder_id:
-            return data, {"ok": False, "error": "lease_held", "status": _status(data)}
-        renewed = holder == holder_id
-        if renewed:
-            if token:
-                lease["token"] = token
+        if holder:
+            if holder != holder_id or not token or token != lease["token"]:
+                return data, refused
+            renewed = True
         else:
             # Free, or held only by observers — who never block it. An observer taking the
-            # exclusive hold stops being an observer.
-            lease["observers"].pop(holder_id, None)
+            # exclusive hold with its own token stops being an observer.
+            if observer is not None and token and token == observer["token"]:
+                lease["observers"].pop(holder_id)
             lease.update(holder_id=holder_id, token=token or secrets.token_urlsafe(16), acquired_at=now)
+            renewed = False
         lease["expires_at"] = now + ttl
         granted = lease["token"]
         held_by_other = False
+    elif holder and holder == holder_id and token and token == lease["token"]:
+        # The exclusive holder asking to watch steps down to an observer, keeping its token,
+        # as a renew in the other mode always took the mode it asked for.
+        lease["observers"][holder_id] = {"token": lease["token"], "expires_at": now + ttl}
+        lease.update(holder_id=None, token=None, expires_at=0.0)
+        granted, renewed, held_by_other = lease["observers"][holder_id]["token"], True, False
     else:
-        if holder == holder_id:
-            # The exclusive holder asking to watch steps down to an observer, keeping its
-            # token, as a renew in the other mode always took the mode it asked for.
-            lease["observers"][holder_id] = {"token": lease["token"], "expires_at": now + ttl}
-            lease.update(holder_id=None, token=None, expires_at=0.0)
+        if observer is not None:
+            # Renewing an observer hold is the same proof: its own token.
+            if not token or token != observer["token"]:
+                return data, refused
             renewed = True
+            granted = observer["token"]
         else:
-            entry = lease["observers"].get(holder_id)
-            renewed = entry is not None
-            # Always the server's own: a caller-chosen token could be the exclusive one.
-            obs_token = entry["token"] if entry and entry["token"] else secrets.token_urlsafe(16)
-            # Its own entry and nothing else: the exclusive hold's expiry is not this
-            # holder's to extend.
-            lease["observers"][holder_id] = {"token": obs_token, "expires_at": now + ttl}
-        granted = lease["observers"][holder_id]["token"]
+            # A new observer, possibly under the exclusive holder's own id — a duplicated tab.
+            # Always the server's token: a caller-chosen one could be the exclusive one.
+            renewed = False
+            granted = secrets.token_urlsafe(16)
+        # Its own entry and nothing else: the exclusive hold's expiry is not this holder's
+        # to extend.
+        lease["observers"][holder_id] = {"token": granted, "expires_at": now + ttl}
         held_by_other = bool(lease["holder_id"])
     pruned = _prune(lease, now)
     return pruned, {
@@ -246,30 +261,28 @@ def _acquire(
 def _release(
     data: dict[str, Any] | None, now: float, *, holder_id: str | None, token: str | None
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """Drop the one hold `token` names. `holder_id`, when given, must be that hold's holder.
+
+    The token is required: a holder id is published, so it cannot be what releases a hold.
+    """
     if data is None:
         return None, {"ok": True, "released": False, "status": _status(None)}
-    if not holder_id and not token:
-        # Neither says which hold: the whole lease, as it always was.
-        return None, {"ok": True, "released": True, "status": _status(None)}
+    if not token:
+        return data, {"ok": False, "error": "token_required", "status": _status(data)}
     holder = data["holder_id"]
     observers = data["observers"]
-    owned = {h: e["token"] for h, e in observers.items()}
-    if holder:
-        owned[holder] = data["token"]
-    if token and token not in owned.values():
-        return data, {"ok": False, "error": "token_mismatch", "status": _status(data)}
-    if holder_id:
-        if holder_id not in owned:
-            return data, {"ok": False, "error": "not_holder", "status": _status(data)}
-        if token and owned[holder_id] != token:
-            return data, {"ok": False, "error": "token_mismatch", "status": _status(data)}
-        target = holder_id
+    if holder and token == data["token"]:
+        target, is_exclusive = holder, True
     else:
-        # The token alone says which hold: the exclusive one's first, then an observer's.
-        target = (
-            holder if holder and token == data["token"] else next(h for h, t in owned.items() if t == token)
-        )
-    if target == holder:
+        target = next((h for h, e in observers.items() if e["token"] and e["token"] == token), None)
+        is_exclusive = False
+    if target is None:
+        known = holder_id is None or holder_id == holder or holder_id in observers
+        error = "token_mismatch" if known else "not_holder"
+        return data, {"ok": False, "error": error, "status": _status(data)}
+    if holder_id and holder_id != target:
+        return data, {"ok": False, "error": "token_mismatch", "status": _status(data)}
+    if is_exclusive:
         # Observers stay observers: nobody is promoted to drive the thread.
         data.update(holder_id=None, token=None, expires_at=0.0)
     else:
@@ -418,7 +431,7 @@ async def release_lease(
     holder_id: str | None = None,
     token: str | None = None,
 ) -> dict[str, Any]:
-    """Drop one hold — the one `token` (else `holder_id`) names — leaving every other in place."""
+    """Drop the one hold `token` names, leaving every other in place. The token is required."""
     _assert_tenant_scoped(thread_id)
 
     def transition(data: dict[str, Any] | None, now: float) -> tuple[dict[str, Any] | None, dict[str, Any]]:

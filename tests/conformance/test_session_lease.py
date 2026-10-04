@@ -279,6 +279,83 @@ async def test_an_observer_token_cannot_release_or_drive_as_the_holder(arm: Arm)
     assert (await _status(thread))["holder_id"] == "tab-a", "an observer's token released the holder"
 
 
+# --- a renewal proves itself with the token -------------------------------------------------
+#
+# The holder id is published: every status carries the exclusive holder's, `GET …/lease` lists
+# every observer's, and a duplicated browser tab copies its own. A renewal keyed on it alone
+# handed the exclusive token to anyone who read it.
+
+
+async def test_the_holder_id_alone_neither_renews_nor_reveals_the_exclusive_hold(arm: Arm) -> None:
+    thread = _thread()
+    a = await _acquire(thread, "tab-a", "exclusive", ttl=30)
+    await _acquire(thread, "tab-b", "shared")
+    arm.at(10)
+
+    for token in (None, "not-the-token"):
+        posing = await _acquire(thread, "tab-a", "exclusive", ttl=300, token=token)
+        assert (posing["ok"], posing["error"]) == (False, "lease_held"), posing
+        assert "token" not in posing, "a refused renewal handed out the exclusive token"
+    status = await _status(thread)
+    assert status["expires_at"] == int((T0 + 30) * 1000), "a refused renewal extended the hold"
+    assert status["token_hint"] == a["token"][:6], "a refused renewal replaced the token"
+
+    renewed = await _acquire(thread, "tab-a", "exclusive", ttl=30, token=a["token"])
+    assert (renewed["ok"], renewed["renewed"], renewed["token"]) == (True, True, a["token"])
+
+
+async def test_an_observer_renewal_needs_that_observers_token(arm: Arm) -> None:
+    thread = _thread()
+    await _acquire(thread, "tab-a", "exclusive")
+    b = await _acquire(thread, "tab-b", "shared", ttl=30)
+    arm.at(10)
+
+    for token in (None, "not-the-token"):
+        posing = await _acquire(thread, "tab-b", "shared", ttl=300, token=token)
+        assert (posing["ok"], posing["error"]) == (False, "lease_held"), posing
+        assert "token" not in posing
+    assert (await _status(thread))["observer_holds"][0]["expires_at"] == int((T0 + 30) * 1000)
+
+    renewed = await _acquire(thread, "tab-b", "shared", ttl=30, token=b["token"])
+    assert (renewed["ok"], renewed["renewed"], renewed["token"]) == (True, True, b["token"])
+
+
+async def test_a_duplicated_tab_with_the_same_holder_id_falls_back_to_observing(arm: Arm) -> None:
+    """chat-ui keeps its holder id in `sessionStorage`, which duplicating a tab copies."""
+    from felix.session.lease import lease_write_refusal
+
+    thread = _thread()
+    original = await _acquire(thread, "tab-x", "exclusive")
+
+    duplicate = await _acquire(thread, "tab-x", "exclusive")
+    assert (duplicate["ok"], duplicate["error"]) == (False, "lease_held"), duplicate
+    watching = await _acquire(thread, "tab-x", "shared")
+    assert (watching["ok"], watching["mode"], watching["held_by_other"]) == (True, "shared", True), watching
+    assert watching["token"] != original["token"]
+    assert await lease_write_refusal(thread, watching["token"]) == "lease_read_only"
+
+    status = await _status(thread)
+    assert (status["holder_id"], _observers(status)) == ("tab-x", ["tab-x"])
+    kept = await _acquire(thread, "tab-x", "exclusive", token=original["token"])
+    assert (kept["ok"], kept["renewed"]) == (True, True), "the original tab lost its hold"
+
+
+async def test_a_release_needs_the_holds_token(arm: Arm) -> None:
+    from felix.session.lease import release_lease
+
+    thread = _thread()
+    await _acquire(thread, "tab-a", "exclusive")
+    await _acquire(thread, "tab-b", "shared")
+
+    for kwargs in ({"holder_id": "tab-a"}, {"holder_id": "tab-b"}, {}):
+        refused = await release_lease(thread, **kwargs)
+        assert (refused["ok"], refused["error"]) == (False, "token_required"), (kwargs, refused)
+    status = await _status(thread)
+    assert (status["holder_id"], _observers(status)) == ("tab-a", ["tab-b"]), (
+        "a token-less release dropped a hold"
+    )
+
+
 # --- the stored shape ------------------------------------------------------------------------
 
 

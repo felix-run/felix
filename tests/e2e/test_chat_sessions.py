@@ -94,7 +94,7 @@ async def test_reading_an_unknown_thread_does_not_add_it_to_the_session_list(boo
         assert held.status_code == 200, held.text
         released = await app.client.post(
             "/chat/sessions/lease/release",
-            json={"thread_id": unknown, "holder_id": "holder-a"},
+            json={"thread_id": unknown, "holder_id": "holder-a", "token": held.json()["token"]},
         )
         assert released.status_code == 200, released.text
 
@@ -360,7 +360,7 @@ async def test_an_exclusive_lease_locks_out_a_second_holder_until_released(boot:
 
         released = await app.client.post(
             "/chat/sessions/lease/release",
-            json={"thread_id": thread, "holder_id": "holder-a"},
+            json={"thread_id": thread, "holder_id": "holder-a", "token": first.json()["token"]},
         )
         assert released.status_code == 200, released.text
 
@@ -395,10 +395,11 @@ async def test_the_lock_a_lease_takes_is_visible_and_is_given_back(boot: Any) ->
         assert during.status_code == 200, during.text
         assert during.json()["locked"] is True, during.json()
 
-        await app.client.post(
+        released = await app.client.post(
             "/chat/sessions/lease/release",
-            json={"thread_id": thread, "holder_id": "holder-a"},
+            json={"thread_id": thread, "holder_id": "holder-a", "token": held.json()["token"]},
         )
+        assert released.status_code == 200, released.text
         after = await app.client.get(f"/chat/sessions/{thread}")
         assert after.json()["locked"] is False, after.json()
 
@@ -482,6 +483,32 @@ async def test_a_second_tab_observes_a_thread_another_drives_and_cannot_drive_it
             "/chat/sessions/name", json={"thread_id": thread, "name": "no lease"}
         )
         assert unleased.status_code == 200, unleased.text
+
+
+async def test_a_contended_release_is_a_conflict_not_a_refusal(boot: Any, monkeypatch: Any) -> None:
+    """`lease_contended` means the release lost a race on Redis and may land on a retry.
+
+    Answered as `403` it read as "you do not hold this", which sends a client to give up on a
+    lease it does hold. The Redis transaction is replaced to lose every race; the e2e app has
+    no Redis of its own.
+    """
+    from felix.session import lease
+
+    async def a_client() -> object:
+        return object()
+
+    async def always_contended(client: Any, thread_id: str, transition: Any) -> dict[str, Any]:
+        return {"ok": False, "error": "lease_contended", "status": lease._status(None)}
+
+    async with boot([_answer()]) as app:
+        monkeypatch.setattr(lease, "_get_redis", a_client)
+        monkeypatch.setattr(lease, "_redis_apply", always_contended)
+        resp = await app.client.post(
+            "/chat/sessions/lease/release",
+            json={"thread_id": "e2e-lease-contended", "holder_id": "tab-a", "token": "t"},
+        )
+        assert resp.status_code == 409, resp.text
+        assert resp.json()["detail"] == "lease_contended"
 
 
 # --- tenant scoping ------------------------------------------------------------------------

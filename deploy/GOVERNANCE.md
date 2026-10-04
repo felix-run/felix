@@ -1466,10 +1466,16 @@ its own token and its own expiry.
 - A `shared` acquire always succeeds, with a token of its own — never the exclusive hold's —
   and `held_by_other: true` when someone else is driving. This is what a second browser tab
   falls back to on `409`.
-- Re-acquiring renews the caller's own hold and nothing else. An observer's renewal does not
-  extend the exclusive hold, so an observer that keeps renewing cannot keep a closed tab's
-  exclusive hold alive.
-- Releasing drops the one hold the token (else `holder_id`) names. When the exclusive hold is
+- Re-acquiring renews the caller's own hold and nothing else, and only with that hold's
+  `token`. A holder id is no proof — every status publishes the exclusive holder's and
+  `GET …/lease` every observer's, and a duplicated browser tab copies its own — so a
+  re-acquire by holder id alone is `409 lease_held` and learns no token. (A duplicated tab
+  then falls back to `shared` and observes.) An observer's renewal does not extend the
+  exclusive hold, so an observer that keeps renewing cannot keep a closed tab's exclusive hold
+  alive.
+- Releasing drops the one hold the token names, and needs it: no token is `403
+  token_required`, and a `holder_id` sent alongside must be that hold's. `409 lease_contended`
+  means concurrent changes kept the release from landing; retry. When the exclusive hold is
   released or lapses its observers stay observers; none is promoted, and a client that wants
   to drive takes the exclusive hold itself.
 - `GET /chat/sessions/{id}/lease` reports the exclusive holder (`holder_id`, `expires_at`) and

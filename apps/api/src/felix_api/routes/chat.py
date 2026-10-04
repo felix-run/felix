@@ -244,6 +244,12 @@ class LeaseReleaseRequest(BaseModel):
     token: str | None = None
 
 
+class ChatRefusalOut(BaseModel):
+    """A refusal from a chat route: `detail` is a stable code, as every chat refusal's is."""
+
+    detail: str
+
+
 class LeaseObserverOut(BaseModel):
     holder_id: str
     expires_at: int = Field(description="Epoch milliseconds when this observer's own hold lapses.")
@@ -288,7 +294,9 @@ class LeaseReleaseOut(BaseModel):
 # never took one -- a script, the OpenAI surface, an older client -- keeps working as it did.
 # Checked on every route below that starts a turn, answers one, or writes the thread's log or
 # settings. Not on `/chat/fork`, which only reads its source (forking is how an observer takes
-# its own branch), nor on `/chat/sessions/feedback`, which rates a reply without touching the log.
+# its own branch), nor on `/chat/sessions/feedback`: it writes the rating into thread metadata
+# and the audit log, but appends nothing to the session log and moves no leaf -- a rating of a
+# reply, not a turn, so an observer may give one.
 LEASE_TOKEN_HEADER = "x-felix-lease-token"
 LeaseToken = Annotated[
     str | None,
@@ -298,6 +306,16 @@ LeaseToken = Annotated[
         "(409 `lease_read_only` / `lease_held`) unless it is the thread's exclusive hold.",
     ),
 ]
+
+
+# The refusal every route that checks `X-Felix-Lease-Token` can answer, said once.
+LEASE_REFUSALS: dict[int | str, dict[str, Any]] = {
+    409: {
+        "model": ChatRefusalOut,
+        "description": "`lease_read_only`: the `X-Felix-Lease-Token` presented is an observer's. "
+        "`lease_held`: another holder has the thread exclusively. Only sent when the header is.",
+    }
+}
 
 
 async def _refuse_unless_driver(thread: str | None, lease_token: str | None) -> None:
@@ -423,8 +441,8 @@ async def _apply_template(
 IDEMPOTENCY_HEADER = "idempotency-key"
 
 
-@router.post("")
-@router.post("/")
+@router.post("", responses=LEASE_REFUSALS)
+@router.post("/", responses=LEASE_REFUSALS)
 async def chat(body: ChatRequest, request: Request, lease_token: LeaseToken = None) -> Any:
     """Run a turn. With an `Idempotency-Key`, run it once per key per principal.
 
@@ -686,7 +704,7 @@ async def chat_stream_resume(request: Request, thread_id: str) -> StreamingRespo
     )
 
 
-@router.post("/stream")
+@router.post("/stream", responses=LEASE_REFUSALS)
 async def chat_stream(
     body: ChatRequest, request: Request, lease_token: LeaseToken = None
 ) -> StreamingResponse:
@@ -860,7 +878,7 @@ async def chat_stream(
     return sse_response(event_gen())
 
 
-@router.post("/steer")
+@router.post("/steer", responses=LEASE_REFUSALS)
 async def chat_steer(body: SteerRequest, request: Request, lease_token: LeaseToken = None) -> dict[str, Any]:
     """Queue a steer (interrupt remaining tools) or follow-up (after idle) message."""
     auth = _auth_from_request(request)
@@ -871,7 +889,7 @@ async def chat_steer(body: SteerRequest, request: Request, lease_token: LeaseTok
     return await enqueue(auth.tenant_id, thread, kind=body.kind, text=body.text)
 
 
-@router.post("/tool_result")
+@router.post("/tool_result", responses=LEASE_REFUSALS)
 async def chat_tool_result(
     body: ToolResultRequest, request: Request, lease_token: LeaseToken = None
 ) -> dict[str, Any]:
@@ -896,12 +914,6 @@ async def chat_tool_result(
         "thread_id": thread,
         "tool_call_id": body.tool_call_id,
     }
-
-
-class ChatRefusalOut(BaseModel):
-    """A refusal from a chat route: `detail` is a stable code, as every chat refusal's is."""
-
-    detail: str
 
 
 @router.post(
@@ -942,7 +954,7 @@ async def chat_fork(body: ForkRequest, request: Request) -> dict[str, Any]:
     return result
 
 
-@router.post("/rewind")
+@router.post("/rewind", responses=LEASE_REFUSALS)
 async def chat_rewind(
     body: RewindRequest, request: Request, lease_token: LeaseToken = None
 ) -> dict[str, Any]:
@@ -1060,7 +1072,7 @@ async def chat_history(
     }
 
 
-@router.delete("/history/{thread_id}")
+@router.delete("/history/{thread_id}", responses=LEASE_REFUSALS)
 async def chat_history_delete(
     thread_id: str, request: Request, lease_token: LeaseToken = None
 ) -> dict[str, str]:
@@ -1079,14 +1091,19 @@ async def chat_history_delete(
     "/sessions/lease",
     response_model=LeaseAcquireOut,
     responses={
-        409: {"model": ChatRefusalOut, "description": "`lease_held`: another holder has it exclusively."}
+        409: {
+            "model": ChatRefusalOut,
+            "description": "`lease_held`: another holder has it exclusively, or this renewal did not "
+            "present the hold's token. `lease_contended`: concurrent changes kept it from landing.",
+        }
     },
 )
 async def acquire_session_lease(body: LeaseRequest, request: Request) -> dict[str, Any]:
     """Take or renew a hold: `exclusive` drives the thread, `shared` observes it read-only.
 
-    `exclusive` is `409 lease_held` while another holder has it. `shared` always succeeds,
-    with its own token: on a thread someone else drives, `held_by_other` is true. An
+    `exclusive` is `409 lease_held` while another holder has it. `shared` succeeds with a
+    token of its own: on a thread someone else drives, `held_by_other` is true. Renewing
+    either kind needs that hold's `token` -- the holder id alone is `lease_held` -- and an
     observer's renewal extends only its own hold.
     """
     from felix.session.lease import acquire_lease
@@ -1115,12 +1132,24 @@ async def acquire_session_lease(body: LeaseRequest, request: Request) -> dict[st
 @router.post(
     "/sessions/lease/release",
     response_model=LeaseReleaseOut,
-    responses={403: {"model": ChatRefusalOut, "description": "`token_mismatch` or `not_holder`."}},
+    responses={
+        403: {
+            "model": ChatRefusalOut,
+            "description": "`token_required`, `token_mismatch` or `not_holder`: this caller does not hold "
+            "what it asked to release.",
+        },
+        409: {
+            "model": ChatRefusalOut,
+            "description": "`lease_contended`: concurrent changes to the lease kept the release from "
+            "landing. Nothing was released; retry.",
+        },
+    },
 )
 async def release_session_lease(body: LeaseReleaseRequest, request: Request) -> dict[str, Any]:
-    """Drop the one hold the token (else `holder_id`) names; every other hold stays.
+    """Drop the one hold `token` names; every other hold stays. The token is required.
 
-    Releasing the exclusive hold leaves observers observing -- none is promoted.
+    `holder_id`, when sent, must be that hold's holder. Releasing the exclusive hold leaves
+    observers observing -- none is promoted.
     """
     from felix.session.lease import release_lease
 
@@ -1130,7 +1159,9 @@ async def release_session_lease(body: LeaseReleaseRequest, request: Request) -> 
         raise HTTPException(status_code=400, detail="invalid_thread_id")
     result = await release_lease(thread, holder_id=body.holder_id, token=body.token)
     if not result.get("ok"):
-        raise HTTPException(status_code=403, detail=result.get("error") or "release_failed")
+        error = result.get("error") or "release_failed"
+        # Contention is not a refusal: this caller may well hold the lease, and a retry can land.
+        raise HTTPException(status_code=409 if error == "lease_contended" else 403, detail=error)
     snapshot = await gather_thread_snapshot(
         settings=request.app.state.settings,
         tenant_id=auth.tenant_id,
@@ -1139,7 +1170,7 @@ async def release_session_lease(body: LeaseReleaseRequest, request: Request) -> 
     return {**result, "snapshot": snapshot}
 
 
-@router.post("/ui")
+@router.post("/ui", responses=LEASE_REFUSALS)
 async def chat_ui_response(
     body: UiResponseRequest, request: Request, lease_token: LeaseToken = None
 ) -> dict[str, Any]:
@@ -1186,7 +1217,7 @@ async def export_session(thread_id: str, request: Request) -> Any:
     )
 
 
-@router.post("/sessions/custom")
+@router.post("/sessions/custom", responses=LEASE_REFUSALS)
 async def append_custom_entry(
     body: CustomEntryRequest, request: Request, lease_token: LeaseToken = None
 ) -> dict[str, Any]:
@@ -1266,7 +1297,7 @@ async def get_session_snapshot(thread_id: str, request: Request) -> dict[str, An
     )
 
 
-@router.post("/sessions/name")
+@router.post("/sessions/name", responses=LEASE_REFUSALS)
 async def set_session_name(
     body: SessionNameRequest, request: Request, lease_token: LeaseToken = None
 ) -> dict[str, Any]:
@@ -1300,7 +1331,7 @@ async def set_session_name(
     return {"ok": True, "thread_id": thread, "name": body.name, "meta": meta}
 
 
-@router.post("/sessions/label")
+@router.post("/sessions/label", responses=LEASE_REFUSALS)
 async def set_session_label(
     body: LabelRequest, request: Request, lease_token: LeaseToken = None
 ) -> dict[str, Any]:
@@ -1401,7 +1432,7 @@ async def set_session_feedback(body: FeedbackRequest, request: Request) -> dict[
     return {"ok": True, "thread_id": thread, "event_id": body.event_id, "feedback": entry}
 
 
-@router.post("/abort")
+@router.post("/abort", responses=LEASE_REFUSALS)
 async def chat_abort(body: AbortRequest, request: Request, lease_token: LeaseToken = None) -> dict[str, Any]:
     from felix.session.thread_state import update_thread_meta
     from felix.steer import request_abort
@@ -1426,7 +1457,7 @@ async def chat_abort(body: AbortRequest, request: Request, lease_token: LeaseTok
     return {**result, "snapshot": snapshot}
 
 
-@router.post("/continue")
+@router.post("/continue", responses=LEASE_REFUSALS)
 async def chat_continue(body: ContinueRequest, request: Request, lease_token: LeaseToken = None) -> Any:
     """Resume after abort/error without a new user message (wake-based)."""
     from felix.session.types import analyze_wake
@@ -1516,7 +1547,7 @@ async def chat_continue(body: ContinueRequest, request: Request, lease_token: Le
     }
 
 
-@router.post("/thinking")
+@router.post("/thinking", responses=LEASE_REFUSALS)
 async def chat_thinking(
     body: ThinkingRequest, request: Request, lease_token: LeaseToken = None
 ) -> dict[str, Any]:
@@ -1558,7 +1589,7 @@ async def chat_thinking(
     return {"ok": True, "thread_id": thread, "thinking_level": level}
 
 
-@router.post("/compact")
+@router.post("/compact", responses=LEASE_REFUSALS)
 async def chat_compact(
     body: CompactRequest, request: Request, lease_token: LeaseToken = None
 ) -> dict[str, Any]:
