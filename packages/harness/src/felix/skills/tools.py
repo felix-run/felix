@@ -17,7 +17,7 @@ from felix.skills.binary import is_binary_asset_path
 from felix.skills.format import ALLOWED_ROOT_FILES, BUNDLE_DIRS, MAX_BUNDLE_FILES, bundle_path_issue
 from felix.skills.store import SkillActivationStore
 from felix.skills.types import Skill, SkillCatalog
-from felix.tools.types import Tool, ToolInvocationCtx, define_tool
+from felix.tools.types import Tool, ToolInvocationCtx, ToolOutput, define_tool, untrusted_output
 
 logger = logging.getLogger("felix.skills.tools")
 
@@ -118,6 +118,12 @@ async def read_bundle_file(
     return None if root is None else await asyncio.to_thread(_read_host_file, root, path)
 
 
+def _relayed(skill: Skill, text: str) -> ToolOutput:
+    """What a skill tool returns of ``skill``'s text: marked untrusted when it is imported or built
+    on an import, so content screening reads it as it reads an untrusted tool's output."""
+    return untrusted_output(text) if skill.untrusted else text
+
+
 def make_skill_tools(
     catalog: SkillCatalog,
     *,
@@ -204,7 +210,7 @@ def make_skill_tools(
         # Also surface disable_model_invocation skills as inactive-only via list? skip per spec.
         return json.dumps(payload)
 
-    async def _activate(args: _SkillNameArgs, _ctx: ToolInvocationCtx | None = None) -> str:
+    async def _activate(args: _SkillNameArgs, _ctx: ToolInvocationCtx | None = None) -> ToolOutput:
         skill = catalog.get(args.name)
         if skill is None:
             _audit("activate", args.name, status="unknown_skill", ctx=_ctx)
@@ -229,9 +235,9 @@ def make_skill_tools(
             newest = (await _newest([skill.name])).get(skill.name)
             if newest:
                 result["newest_version"] = newest
-        return json.dumps(result)
+        return _relayed(skill, json.dumps(result))
 
-    async def _read_file(args: _ReadFileArgs, _ctx: ToolInvocationCtx | None = None) -> str:
+    async def _read_file(args: _ReadFileArgs, _ctx: ToolInvocationCtx | None = None) -> ToolOutput:
         skill = catalog.get(args.name)
         if skill is None:
             return json.dumps({"error": "unknown_skill", "name": args.name})
@@ -250,13 +256,16 @@ def make_skill_tools(
         if data is None:
             return json.dumps({"error": "file_not_found", "name": skill.name, "path": args.path})
         text = data.decode("utf-8", errors="replace")
-        return json.dumps(
-            {
-                "name": skill.name,
-                "path": args.path,
-                "content": text[:MAX_READ_CHARS],
-                "truncated": len(text) > MAX_READ_CHARS,
-            }
+        return _relayed(
+            skill,
+            json.dumps(
+                {
+                    "name": skill.name,
+                    "path": args.path,
+                    "content": text[:MAX_READ_CHARS],
+                    "truncated": len(text) > MAX_READ_CHARS,
+                }
+            ),
         )
 
     async def _deactivate(args: _SkillNameArgs, _ctx: ToolInvocationCtx | None = None) -> str:
@@ -286,6 +295,7 @@ def make_skill_tools(
             ),
             args=_SkillNameArgs,
             handler=_activate,
+            relays_untrusted=True,
         ),
         define_tool(
             name="deactivate_skill",
@@ -302,6 +312,7 @@ def make_skill_tools(
             args=_ReadFileArgs,
             handler=_read_file,
             replay_safe=True,
+            relays_untrusted=True,
         ),
     ]
 

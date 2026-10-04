@@ -79,13 +79,61 @@
           "github_device": {
             "title": "Github Device",
             "type": "boolean"
+          },
+          "github_redirect": {
+            "title": "Github Redirect",
+            "type": "boolean"
           }
         },
         "required": [
           "github_device",
+          "github_redirect",
           "bearer_required"
         ],
         "title": "AuthMethodsOut",
+        "type": "object"
+      },
+      "BrowseItemOut": {
+        "properties": {
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "eligible": {
+            "default": true,
+            "title": "Eligible",
+            "type": "boolean"
+          },
+          "eligible_at": {
+            "title": "Eligible At",
+            "type": "integer"
+          },
+          "first_seen_at": {
+            "title": "First Seen At",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "path",
+          "source",
+          "first_seen_at",
+          "eligible_at"
+        ],
+        "title": "BrowseItemOut",
         "type": "object"
       },
       "BundleIssueOut": {
@@ -796,6 +844,88 @@
         "title": "ForkRequest",
         "type": "object"
       },
+      "GitHubConnectionList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/GitHubConnectionOut"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "GitHubConnectionList",
+        "type": "object"
+      },
+      "GitHubConnectionOut": {
+        "description": "Who the connection is for and whether it still works. Never a token.",
+        "properties": {
+          "created_at": {
+            "title": "Created At",
+            "type": "integer"
+          },
+          "github_login": {
+            "title": "Github Login",
+            "type": "string"
+          },
+          "github_user_id": {
+            "title": "Github User Id",
+            "type": "integer"
+          },
+          "refresh_expires_at": {
+            "title": "Refresh Expires At",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "active",
+              "revoked"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "github_user_id",
+          "github_login",
+          "status",
+          "created_at",
+          "updated_at",
+          "refresh_expires_at"
+        ],
+        "title": "GitHubConnectionOut",
+        "type": "object"
+      },
+      "GitHubConnectionState": {
+        "properties": {
+          "connected": {
+            "title": "Connected",
+            "type": "boolean"
+          },
+          "connection": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GitHubConnectionOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "connected"
+        ],
+        "title": "GitHubConnectionState",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -807,6 +937,40 @@
           }
         },
         "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "ImportIn": {
+        "additionalProperties": false,
+        "properties": {
+          "publish": {
+            "default": false,
+            "title": "Publish",
+            "type": "boolean"
+          },
+          "ref": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ref"
+          },
+          "source": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source"
+        ],
+        "title": "ImportIn",
         "type": "object"
       },
       "JobUpsert": {
@@ -1404,6 +1568,13 @@
             "title": "Block On Advisory",
             "type": "boolean"
           },
+          "import_min_age_days": {
+            "default": 0,
+            "maximum": 365.0,
+            "minimum": 0.0,
+            "title": "Import Min Age Days",
+            "type": "integer"
+          },
           "min_eval_uplift": {
             "anyOf": [
               {
@@ -1529,6 +1700,11 @@
             "title": "Description",
             "type": "string"
           },
+          "lineage_import": {
+            "default": false,
+            "title": "Lineage Import",
+            "type": "boolean"
+          },
           "live_version": {
             "anyOf": [
               {
@@ -1544,6 +1720,39 @@
             "title": "Name",
             "type": "string"
           },
+          "origin_commit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Commit"
+          },
+          "origin_committed_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Committed At"
+          },
+          "origin_license": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin License"
+          },
           "origin_manifest_id": {
             "anyOf": [
               {
@@ -1554,6 +1763,39 @@
               }
             ],
             "title": "Origin Manifest Id"
+          },
+          "origin_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Ref"
+          },
+          "origin_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Source"
+          },
+          "origin_tree_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Tree Hash"
           },
           "parent_version": {
             "anyOf": [
@@ -1608,7 +1850,8 @@
           "source": {
             "enum": [
               "agent",
-              "operator"
+              "operator",
+              "import"
             ],
             "title": "Source",
             "type": "string"
@@ -1866,6 +2109,60 @@
           "live_version"
         ],
         "title": "SkillArchivedOut",
+        "type": "object"
+      },
+      "SkillBrowseOut": {
+        "description": "The skills a repository offers at one commit.",
+        "properties": {
+          "commit": {
+            "title": "Commit",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/BrowseItemOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "license": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "License"
+          },
+          "min_age_days": {
+            "default": 0,
+            "title": "Min Age Days",
+            "type": "integer"
+          },
+          "ref": {
+            "title": "Ref",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "source",
+          "ref",
+          "commit",
+          "license",
+          "items",
+          "truncated"
+        ],
+        "title": "SkillBrowseOut",
         "type": "object"
       },
       "SkillDetailOut": {
@@ -2433,6 +2730,291 @@
         "title": "SkillFileOut",
         "type": "object"
       },
+      "SkillImportOut": {
+        "properties": {
+          "author": {
+            "title": "Author",
+            "type": "string"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "integer"
+          },
+          "decided_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided At"
+          },
+          "decided_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided By"
+          },
+          "decision_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Note"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "dropped_files": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Dropped Files",
+            "type": "array"
+          },
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/SkillFileMetaOut"
+            },
+            "title": "Files",
+            "type": "array"
+          },
+          "lineage_import": {
+            "default": false,
+            "title": "Lineage Import",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "origin_commit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Commit"
+          },
+          "origin_committed_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Committed At"
+          },
+          "origin_license": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin License"
+          },
+          "origin_manifest_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Manifest Id"
+          },
+          "origin_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Ref"
+          },
+          "origin_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Source"
+          },
+          "origin_tree_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Tree Hash"
+          },
+          "parent_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Version"
+          },
+          "publish_blocked": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SkillLibraryErrorOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "published": {
+            "title": "Published",
+            "type": "boolean"
+          },
+          "published_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published At"
+          },
+          "quality_score": {
+            "title": "Quality Score",
+            "type": "integer"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "review_checks": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewCheckOut"
+            },
+            "title": "Review Checks",
+            "type": "array"
+          },
+          "security_issues": {
+            "items": {
+              "$ref": "#/components/schemas/SecurityIssueOut"
+            },
+            "title": "Security Issues",
+            "type": "array"
+          },
+          "security_status": {
+            "enum": [
+              "pass",
+              "advisory",
+              "fail"
+            ],
+            "title": "Security Status",
+            "type": "string"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          },
+          "shadows_operator_upload": {
+            "title": "Shadows Operator Upload",
+            "type": "boolean"
+          },
+          "source": {
+            "enum": [
+              "agent",
+              "operator",
+              "import"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "draft",
+              "published",
+              "archived"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "unchanged": {
+            "title": "Unchanged",
+            "type": "boolean"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "version",
+          "parent_version",
+          "status",
+          "source",
+          "author",
+          "origin_manifest_id",
+          "session_id",
+          "reason",
+          "description",
+          "quality_score",
+          "security_status",
+          "decided_by",
+          "decision_note",
+          "created_at",
+          "decided_at",
+          "published_at",
+          "review_checks",
+          "security_issues",
+          "files",
+          "shadows_operator_upload",
+          "published",
+          "unchanged",
+          "dropped_files"
+        ],
+        "title": "SkillImportOut",
+        "type": "object"
+      },
       "SkillLibraryErrorOut": {
         "description": "Every refusal. `issues` accompanies `invalid_bundle`; `reasons` accompanies `publish_blocked`.",
         "properties": {
@@ -2515,6 +3097,11 @@
             "title": "Block On Advisory",
             "type": "boolean"
           },
+          "import_min_age_days": {
+            "default": 0,
+            "title": "Import Min Age Days",
+            "type": "integer"
+          },
           "min_eval_uplift": {
             "anyOf": [
               {
@@ -2592,11 +3179,16 @@
         "type": "object"
       },
       "SkillPolicyValuesOut": {
-        "description": "The four fields a tenant sets, as it set them.",
+        "description": "The fields a tenant sets, as it set them.",
         "properties": {
           "block_on_advisory": {
             "title": "Block On Advisory",
             "type": "boolean"
+          },
+          "import_min_age_days": {
+            "default": 0,
+            "title": "Import Min Age Days",
+            "type": "integer"
           },
           "min_eval_uplift": {
             "anyOf": [
@@ -2842,9 +3434,47 @@
             "title": "Files",
             "type": "array"
           },
+          "lineage_import": {
+            "default": false,
+            "title": "Lineage Import",
+            "type": "boolean"
+          },
           "name": {
             "title": "Name",
             "type": "string"
+          },
+          "origin_commit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Commit"
+          },
+          "origin_committed_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Committed At"
+          },
+          "origin_license": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin License"
           },
           "origin_manifest_id": {
             "anyOf": [
@@ -2856,6 +3486,39 @@
               }
             ],
             "title": "Origin Manifest Id"
+          },
+          "origin_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Ref"
+          },
+          "origin_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Source"
+          },
+          "origin_tree_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Tree Hash"
           },
           "parent_version": {
             "anyOf": [
@@ -2928,7 +3591,8 @@
           "source": {
             "enum": [
               "agent",
-              "operator"
+              "operator",
+              "import"
             ],
             "title": "Source",
             "type": "string"
@@ -3021,9 +3685,47 @@
             "title": "Description",
             "type": "string"
           },
+          "lineage_import": {
+            "default": false,
+            "title": "Lineage Import",
+            "type": "boolean"
+          },
           "name": {
             "title": "Name",
             "type": "string"
+          },
+          "origin_commit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Commit"
+          },
+          "origin_committed_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Committed At"
+          },
+          "origin_license": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin License"
           },
           "origin_manifest_id": {
             "anyOf": [
@@ -3035,6 +3737,39 @@
               }
             ],
             "title": "Origin Manifest Id"
+          },
+          "origin_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Ref"
+          },
+          "origin_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Source"
+          },
+          "origin_tree_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Tree Hash"
           },
           "parent_version": {
             "anyOf": [
@@ -3089,7 +3824,8 @@
           "source": {
             "enum": [
               "agent",
-              "operator"
+              "operator",
+              "import"
             ],
             "title": "Source",
             "type": "string"
@@ -3184,9 +3920,47 @@
             "title": "Files",
             "type": "array"
           },
+          "lineage_import": {
+            "default": false,
+            "title": "Lineage Import",
+            "type": "boolean"
+          },
           "name": {
             "title": "Name",
             "type": "string"
+          },
+          "origin_commit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Commit"
+          },
+          "origin_committed_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Committed At"
+          },
+          "origin_license": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin License"
           },
           "origin_manifest_id": {
             "anyOf": [
@@ -3198,6 +3972,39 @@
               }
             ],
             "title": "Origin Manifest Id"
+          },
+          "origin_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Ref"
+          },
+          "origin_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Source"
+          },
+          "origin_tree_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Tree Hash"
           },
           "parent_version": {
             "anyOf": [
@@ -3284,7 +4091,8 @@
           "source": {
             "enum": [
               "agent",
-              "operator"
+              "operator",
+              "import"
             ],
             "title": "Source",
             "type": "string"
@@ -3647,7 +4455,8 @@
           "source": {
             "enum": [
               "agent",
-              "operator"
+              "operator",
+              "import"
             ],
             "title": "Source",
             "type": "string"
@@ -4698,6 +5507,129 @@
         ]
       }
     },
+    "/auth/github/authorize": {
+      "get": {
+        "description": "Send a browser to GitHub to sign in, returning to `return_to` (an allowed origin).\n\n`state` and the PKCE verifier live in a sealed HttpOnly cookie, so only the browser that\nstarted this sign-in can finish it: a callback carrying someone else's `state` is refused.",
+        "operationId": "start_github_redirect_auth_github_authorize_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "return_to",
+            "required": true,
+            "schema": {
+              "title": "Return To",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tenant"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Start Github Redirect Auth Github Authorize Get"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Start Github Redirect",
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/auth/github/callback": {
+      "get": {
+        "description": "GitHub's return. Checks `state` against this browser's flow cookie, exchanges the code,\nmints, and redirects back to the app with the token waiting in a one-load cookie.",
+        "operationId": "finish_github_redirect_auth_github_callback_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "State",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "code",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Code",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "error",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Error",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Finish Github Redirect Auth Github Callback Get"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Finish Github Redirect",
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
     "/auth/github/device": {
       "post": {
         "operationId": "start_github_login_auth_github_device_post",
@@ -4784,6 +5716,38 @@
           }
         },
         "summary": "Start Github Login",
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/auth/github/exchange": {
+      "post": {
+        "description": "The app collects the token its sign-in left waiting, once. The cookie is cleared whether\nor not it opened, so a second call \u2014 a reload, a replay \u2014 finds nothing.",
+        "operationId": "collect_github_redirect_auth_github_exchange_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginTokenOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginErrorOut"
+                }
+              }
+            },
+            "description": "Bad Request"
+          }
+        },
+        "summary": "Collect Github Redirect",
         "tags": [
           "Auth"
         ]
@@ -4902,7 +5866,7 @@
     },
     "/auth/methods": {
       "get": {
-        "description": "Which ways in this deployment offers, for a client that holds no credential yet.\n\nPublic in every auth mode (`felix.auth.middleware`), because it is how an anonymous caller\nlearns how to get a credential. It reads settings only \u2014 no database, no call to GitHub \u2014\nand sits under the global rate limit like any other request; asking it never starts a\ndevice flow or spends from `/device`'s hourly budget.\n\n- `github_device`: `POST /auth/github/device` and `/token` are served (login configured).\n- `bearer_required`: this deployment verifies bearer credentials (`auth_mode` is not\n  `none`). A proxy in front of the harness that would accept a browser's own\n  `Authorization: Bearer` in place of its shared key must accept it only while this is\n  true: under `none` the harness verifies nothing, so any bearer at all would walk past the\n  proxy's only lock.",
+        "description": "Which ways in this deployment offers, for a client that holds no credential yet.\n\nPublic in every auth mode (`felix.auth.middleware`), because it is how an anonymous caller\nlearns how to get a credential. It reads settings only \u2014 no database, no call to GitHub \u2014\nand sits under the global rate limit like any other request; asking it never starts a\ndevice flow or spends from `/device`'s hourly budget.\n\n- `github_device`: `POST /auth/github/device` and `/token` are served (login configured).\n- `github_redirect`: browser sign-in by redirect is served (`GET /auth/github/authorize`).\n- `bearer_required`: this deployment verifies bearer credentials (`auth_mode` is not\n  `none`). A proxy in front of the harness that would accept a browser's own\n  `Authorization: Bearer` in place of its shared key must accept it only while this is\n  true: under `none` the harness verifies nothing, so any bearer at all would walk past the\n  proxy's only lock.",
         "operationId": "auth_methods_auth_methods_get",
         "responses": {
           "200": {
@@ -6855,6 +7819,99 @@
         ]
       }
     },
+    "/github/connection": {
+      "delete": {
+        "description": "Forget your GitHub connection here and withdraw the App's authorization at GitHub.\nSigning out of chat-ui calls this. Your Felix token is unaffected until it expires.",
+        "operationId": "remove_my_github_connection_github_connection_delete",
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Remove My Github Connection",
+        "tags": [
+          "Auth"
+        ]
+      },
+      "get": {
+        "description": "Whether Felix holds a GitHub connection for you in this tenant.",
+        "operationId": "my_github_connection_github_connection_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GitHubConnectionState"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "My Github Connection",
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/github/connections": {
+      "get": {
+        "description": "Every stored GitHub connection in your tenant (`github:admin`).",
+        "operationId": "list_github_connections_github_connections_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GitHubConnectionList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Github Connections",
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/github/connections/{github_user_id}": {
+      "delete": {
+        "description": "Revoke anyone's GitHub connection in your tenant (`github:admin`).",
+        "operationId": "remove_github_connection_github_connections__github_user_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "github_user_id",
+            "required": true,
+            "schema": {
+              "title": "Github User Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Remove Github Connection",
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
     "/health": {
       "get": {
         "description": "Liveness. Kept at this path because deploys and smoke tests point here.",
@@ -8652,7 +9709,7 @@
             }
           },
           {
-            "description": "Who wrote the newest version.",
+            "description": "Who wrote the newest version (`import`: fetched from GitHub).",
             "in": "query",
             "name": "source",
             "required": false,
@@ -8661,7 +9718,8 @@
                 {
                   "enum": [
                     "agent",
-                    "operator"
+                    "operator",
+                    "import"
                   ],
                   "type": "string"
                 },
@@ -8669,7 +9727,7 @@
                   "type": "null"
                 }
               ],
-              "description": "Who wrote the newest version.",
+              "description": "Who wrote the newest version (`import`: fetched from GitHub).",
               "title": "Source"
             }
           },
@@ -8846,6 +9904,133 @@
           }
         },
         "summary": "Create Library Skill",
+        "tags": [
+          "Skill library"
+        ]
+      }
+    },
+    "/skill-library/-/browse": {
+      "get": {
+        "description": "The skills a GitHub repository offers at one commit: every directory with a `SKILL.md`\nunder the usual roots (`skills/`, `.claude/skills/`, Claude Code plugin layouts, \u2026), with the\nname and description its frontmatter declares. Each item's `source` is what to import it by,\nand `eligible_at` when the minimum import age lets it in -- counted from the first time this\ntenant saw those files, which a browse records.",
+        "operationId": "browse_source_skill_library___browse_get",
+        "parameters": [
+          {
+            "description": "`github:owner/repo[/path]`.",
+            "in": "query",
+            "name": "source",
+            "required": true,
+            "schema": {
+              "description": "`github:owner/repo[/path]`.",
+              "maxLength": 512,
+              "minLength": 1,
+              "title": "Source",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Branch, tag or commit; default branch if omitted.",
+            "in": "query",
+            "name": "ref",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Branch, tag or commit; default branch if omitted.",
+              "title": "Ref"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillBrowseOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          }
+        },
+        "summary": "Browse Source",
         "tags": [
           "Skill library"
         ]
@@ -9159,6 +10344,118 @@
           }
         },
         "summary": "Reject Feedback",
+        "tags": [
+          "Skill library"
+        ]
+      }
+    },
+    "/skill-library/-/import": {
+      "post": {
+        "description": "Fetch the skill at `source`, pinned to the commit `ref` resolves to, and save it as a draft.\n\nA new skill starts at 0.1.0. A skill the library already imported from the same source gets\na new version -- unless its files are unchanged, which answers 200 with `unchanged: true`\nand the existing version, saving nothing. A name the library holds from anywhere else is 409\n`origin_mismatch`. `dropped_files` lists what the import left out.\n\nNever published here: `publish: true` is 422 `publish_not_allowed`. Third-party text is\nreviewed first, then published with `POST /skill-library/{name}/versions/{version}/publish`.",
+        "operationId": "import_from_source_skill_library___import_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillImportOut"
+                }
+              }
+            },
+            "description": "Unchanged: the newest version already holds these files, and nothing was saved."
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillImportOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          }
+        },
+        "summary": "Import From Source",
         "tags": [
           "Skill library"
         ]

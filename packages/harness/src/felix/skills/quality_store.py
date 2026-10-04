@@ -567,9 +567,11 @@ async def sweep_lock(settings: Settings | None) -> AsyncIterator[SweepLease | No
 def clear_memory() -> None:
     """Drop every in-memory row of the quality loop. Test seam, matching the other `memory://`
     stores; the feedback and evaluation twins live in their own modules."""
-    from felix.skills import eval_store, feedback_store
+    from felix.skills import eval_store, feedback_store, sighting_store
 
     feedback_store.clear_memory()
+    # Import sightings gate the cooldown: one test's sighting would be another's early eligibility.
+    sighting_store.clear_memory()
     eval_store.clear_memory()
     _memory_policy.clear()
     _memory_lease.clear()

@@ -373,6 +373,40 @@ First, because everything else governs it.
          version they expect. Open: the inline card was verified against a scripted model only.
       6. [x] (web#329, web#332) felix-web docs: concepts, manifest reference, management API,
          persistence, governance, deploy and observability.
+- [ ] **Skill import from GitHub** — a skill someone already published should not have to be
+      pasted into the editor. Imports land as library drafts through the existing gate; nothing
+      resolves a GitHub ref at manifest compile time (`spec.skills` and the loader are untouched),
+      so a compile never depends on GitHub being up. Ported from Skillist's mirror sync.
+      1. [ ] `felix/skills/{github,importer,sighting_store}.py`, `GET /skill-library/-/browse`,
+         `POST /skill-library/-/import`, `felix skills browse|add`, migration `0026` (source
+         `import`, origin columns and `lineage_import` on the version, `skill_import_sighting`,
+         `skill_policy.import_min_age_days`). `github:owner/repo[/path]` plus a separate ref,
+         resolved once through the repository's own branch or tag refs, or for a commit id only
+         when it is on the default branch (a fork's commit is `commit_not_in_repo`); every file
+         read by blob id and checked against its git object id, through the egress-pinned client
+         to `api.github.com` only. A re-import saves a new version only when the digest of the
+         kept files moved; a name whose newest non-rejected version came from another origin, an
+         agent or an operator is `origin_mismatch`; the name must be the folder's; an operator
+         upload's name is refused. Imports are never published in the import request. An import
+         and every version built on it (`lineage_import`) is held to a stricter gate (advisory
+         blocks, only bundle scenarios count, an agent's edit needs a person), and what
+         `activate_skill`/`read_skill_file` return of a live one is screened as untrusted tool
+         output where content screening is on. `FELIX_SKILL_IMPORT_SOURCES` (a token without one
+         refuses to boot outside development), `FELIX_SKILL_IMPORT_GITHUB_TOKEN`,
+         `FELIX_SKILL_IMPORT_PER_HOUR` (per tenant). A supply-chain cooldown ported from
+         Skillist's install policy (`minReleaseAgeDays`): `FELIX_SKILL_IMPORT_MIN_AGE_DAYS`,
+         raised per tenant (tighten-only), counted from Felix's own first sighting of the exact
+         files (stamped on every browse and import attempt, cooldown on or off), never from a
+         commit date the pusher sets; inside it an import is a hard 403 `too_recent`.
+         `origin_committed_at` is provenance only. Open: a tree GitHub truncates (past ~100k
+         entries) is refused rather than walked; browse reads at most 200 SKILL.md heads (64 KiB
+         each); the token has no per-tenant scoping beyond the allowlist; skill descriptions
+         from an import still reach the catalog in the system prompt unscreened; a manifest
+         without content screening activates imported bodies unscreened; nothing clears
+         `lineage_import` once set.
+      2. [ ] An explicit update check (route + `felix skills outdated`/`diff`): what the source's
+         tree digest is now against the live version, with a file diff before re-importing; and
+         the felix-web docs (management API, concepts, deploy settings).
 
 ### B. Close the durable loop
 

@@ -12,12 +12,13 @@ org's GitHub Actions workflows trade their OIDC token for one too (`felix.auth.g
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import re
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from functools import lru_cache
 from types import MappingProxyType
@@ -71,6 +72,20 @@ class DeviceCode:
 
 
 @dataclass(frozen=True, slots=True)
+class GitHubGrant:
+    """What GitHub's token endpoint hands back. A GitHub App with expiring user tokens sends a
+    refresh token beside an 8h access token; an OAuth app sends a non-expiring access token and
+    nothing else, so `refresh_token` is empty and there is nothing worth storing."""
+
+    # Out of `repr`: a LoginToken carrying this is logged and raised through, and neither token
+    # may reach a log line or a traceback.
+    access_token: str = field(repr=False)
+    refresh_token: str = field(default="", repr=False)
+    expires_in: int = 0
+    refresh_token_expires_in: int = 0
+
+
+@dataclass(frozen=True, slots=True)
 class GitHubUser:
     id: int
     login: str
@@ -85,6 +100,10 @@ class LoginToken:
     subject: str
     # The GitHub user who authenticated; empty for a workflow, which is not one.
     github_login: str = ""
+    github_user_id: int = 0
+    # GitHub's own grant, kept only so the route can store it (`github_connections`) when it
+    # can be refreshed. Never serialized: `LoginTokenOut` names its fields.
+    github: GitHubGrant | None = None
 
 
 class LoginErrorCode(StrEnum):
@@ -139,6 +158,11 @@ _GITHUB_POLL_ERRORS: dict[str, LoginErrorCode] = {
     "expired_token": LoginErrorCode.EXPIRED_TOKEN,
     "incorrect_device_code": LoginErrorCode.INVALID_DEVICE_CODE,
     "access_denied": LoginErrorCode.ACCESS_DENIED,
+    # The code a redirect brought back was already used, expired, or minted for another
+    # redirect_uri or verifier: the same answer as a spent device code — start again.
+    "bad_verification_code": LoginErrorCode.EXPIRED_TOKEN,
+    # A stored refresh token GitHub no longer honours: revoked, expired or already rotated.
+    "bad_refresh_token": LoginErrorCode.EXPIRED_TOKEN,
 }
 
 
@@ -190,6 +214,27 @@ def is_enabled(settings: Settings) -> bool:
 
 
 GITHUB_ACTIONS_LOGIN_PATH = f"{GITHUB_LOGIN_PREFIX}/actions"
+# Browser sign-in by redirect: start, GitHub's return, and the SPA collecting its token.
+GITHUB_REDIRECT_PATHS = frozenset(
+    {f"{GITHUB_LOGIN_PREFIX}/authorize", f"{GITHUB_LOGIN_PREFIX}/callback", f"{GITHUB_LOGIN_PREFIX}/exchange"}
+)
+
+
+def redirect_enabled(settings: Settings) -> bool:
+    """Redirect sign-in needs the client secret (the code exchange), the token key (the sealed
+    cookies) and somewhere to return to. Asked per request: the two secrets may be hydrated from
+    a secrets backend after `Settings` validates."""
+    return bool(
+        settings.github_client_id.strip()
+        and settings.github_client_secret.strip()
+        and settings.github_token_key.strip()
+        and redirect_origins(settings)
+    )
+
+
+def redirect_origins(settings: Settings) -> tuple[str, ...]:
+    """FELIX_GITHUB_REDIRECT_ORIGINS, each normalised to `scheme://host[:port]`."""
+    return tuple(o.strip().rstrip("/") for o in settings.github_redirect_origins.split(",") if o.strip())
 
 
 def actions_enabled(settings: Settings) -> bool:
@@ -200,6 +245,8 @@ def actions_enabled(settings: Settings) -> bool:
 def public_login_paths(settings: Settings) -> frozenset[str]:
     """The paths that need no credential because they are how a caller gets one."""
     paths = GITHUB_LOGIN_PATHS if is_enabled(settings) else frozenset()
+    if redirect_enabled(settings):
+        paths |= GITHUB_REDIRECT_PATHS
     if actions_enabled(settings):
         paths |= {GITHUB_ACTIONS_LOGIN_PATH}
     return paths
@@ -330,8 +377,8 @@ def _github_error_text(body: dict[str, Any]) -> str:
 
 async def poll_device_flow(
     settings: Settings, device_code: str, *, client: httpx.AsyncClient | None = None
-) -> str:
-    """One poll. Returns GitHub's access token, or raises — `authorization_pending` included."""
+) -> GitHubGrant:
+    """One poll. Returns GitHub's grant, or raises — `authorization_pending` included."""
     async with client_scope(client, settings) as http:
         body = await _post_form(
             http,
@@ -342,6 +389,11 @@ async def poll_device_flow(
                 "grant_type": DEVICE_GRANT_TYPE,
             },
         )
+    return _grant_from(body)
+
+
+def _grant_from(body: dict[str, Any]) -> GitHubGrant:
+    """GitHub's token endpoint answer — device poll, code exchange or refresh — as a grant."""
     if "error" in body:
         code = _GITHUB_POLL_ERRORS.get(str(body["error"]))
         if code is None:
@@ -355,7 +407,103 @@ async def poll_device_flow(
     token = body.get("access_token")
     if not isinstance(token, str) or not token:
         raise unavailable("GitHub returned no access token")
-    return token
+    refresh = body.get("refresh_token")
+    return GitHubGrant(
+        access_token=token,
+        refresh_token=refresh if isinstance(refresh, str) else "",
+        expires_in=_seconds(body.get("expires_in")),
+        refresh_token_expires_in=_seconds(body.get("refresh_token_expires_in")),
+    )
+
+
+def _seconds(value: Any) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
+
+
+def authorize_url(settings: Settings, *, redirect_uri: str, state: str, code_challenge: str) -> str:
+    """Where a browser goes to sign in. No `scope`: a GitHub App's access is its permissions."""
+    from urllib.parse import urlencode
+
+    query = urlencode(
+        {
+            "client_id": settings.github_client_id.strip(),
+            "redirect_uri": redirect_uri,
+            "state": state,
+            "code_challenge": code_challenge,
+            "code_challenge_method": "S256",
+            "allow_signup": "false",
+        }
+    )
+    return f"{GITHUB_URL}/login/oauth/authorize?{query}"
+
+
+async def exchange_web_code(
+    settings: Settings,
+    code: str,
+    *,
+    code_verifier: str,
+    redirect_uri: str,
+    tenant: str | None = None,
+    client: httpx.AsyncClient | None = None,
+) -> LoginToken:
+    """Trade the code GitHub returned to the callback for a Felix token: the redirect twin of
+    `exchange_device_code`, through the same membership checks and the same minting."""
+    async with client_scope(client, settings) as http:
+        body = await _post_form(
+            http,
+            f"{GITHUB_URL}/login/oauth/access_token",
+            {
+                "client_id": settings.github_client_id.strip(),
+                "client_secret": settings.github_client_secret.strip(),
+                "code": code,
+                "redirect_uri": redirect_uri,
+                "code_verifier": code_verifier,
+            },
+        )
+        return await _login_with(settings, _grant_from(body), tenant, http)
+
+
+async def refresh_github_grant(
+    settings: Settings, refresh_token: str, *, client: httpx.AsyncClient | None = None
+) -> GitHubGrant:
+    """A fresh access token for a stored refresh token. GitHub rotates the refresh token on
+    every use, so the caller stores the one returned and never uses the old one again."""
+    async with client_scope(client, settings) as http:
+        body = await _post_form(
+            http,
+            f"{GITHUB_URL}/login/oauth/access_token",
+            {
+                "client_id": settings.github_client_id.strip(),
+                "client_secret": settings.github_client_secret.strip(),
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token,
+            },
+        )
+    return _grant_from(body)
+
+
+async def revoke_github_grant(
+    settings: Settings, access_token: str, *, client: httpx.AsyncClient | None = None
+) -> bool:
+    """Withdraw the App's authorization for this person at GitHub, every token it issued them
+    included. Best effort: True when GitHub confirmed, False on any refusal or failure."""
+    url = f"{GITHUB_API_URL}/applications/{settings.github_client_id.strip()}/grant"
+    try:
+        async with client_scope(client, settings) as http:
+            resp = await http.request(
+                "DELETE",
+                url,
+                json={"access_token": access_token},
+                auth=(settings.github_client_id.strip(), settings.github_client_secret.strip()),
+                headers=_API_HEADERS,
+            )
+    except httpx.HTTPError as exc:
+        logger.warning("github grant revoke failed: %s", exc)
+        return False
+    if resp.status_code != 204:
+        logger.warning("github grant revoke answered %s", resp.status_code)
+        return False
+    return True
 
 
 async def _api_get(client: httpx.AsyncClient, path: str, gh_token: str) -> httpx.Response:
@@ -536,9 +684,16 @@ async def exchange_device_code(
 ) -> LoginToken:
     """Poll once and, when GitHub has approved, turn the approval into a Felix token."""
     async with client_scope(client, settings) as http:
-        gh_token = await poll_device_flow(settings, device_code, client=http)
-        user = await fetch_user(gh_token, client=http)
-        grants, restricted = await active_grants(settings, gh_token, client=http)
+        grant = await poll_device_flow(settings, device_code, client=http)
+        return await _login_with(settings, grant, tenant, http)
+
+
+async def _login_with(
+    settings: Settings, gh: GitHubGrant, tenant: str | None, http: httpx.AsyncClient
+) -> LoginToken:
+    """GitHub's grant, however it was obtained, into a Felix token: who, which orgs, which tenant."""
+    user = await fetch_user(gh.access_token, client=http)
+    grants, restricted = await active_grants(settings, gh.access_token, client=http)
     try:
         grant = choose_grant(grants, restricted, tenant)
     except GitHubLoginError as exc:
@@ -552,7 +707,7 @@ async def exchange_device_code(
         grant.tenant,
         ",".join(grant.scopes),
     )
-    return minted
+    return dataclasses.replace(minted, github_user_id=user.id, github=gh)
 
 
 def validate_login_config(settings: Settings) -> None:
@@ -563,6 +718,7 @@ def validate_login_config(settings: Settings) -> None:
     a `fixed:` verifier that would override the minted tenant, FELIX_ALLOWED_TENANTS — is
     one more way to ship the failure `felix mint-jwt` already guards its own output against.
     """
+    _validate_redirect_config(settings)
     device, actions = is_enabled(settings), actions_enabled(settings)
     if not (device or actions):
         if settings.github_org_tenants.strip():
@@ -596,6 +752,37 @@ def validate_login_config(settings: Settings) -> None:
             from felix.auth.github_actions import mint_probe
 
             _verify_probe(settings, tenant, lambda found=actions_grants: mint_probe(settings, found))
+
+
+def _validate_redirect_config(settings: Settings) -> None:
+    """The shapes redirect sign-in depends on, checked whenever they are set.
+
+    Presence is not checked here: the client secret and token key may arrive from a secrets
+    backend after this runs (`redirect_enabled` asks per request). A malformed value is a
+    different matter — it would fail on the first sign-in, so it fails at boot instead.
+    """
+    from urllib.parse import urlsplit
+
+    if settings.github_token_key.strip():
+        from felix.auth.github_connections import token_key
+
+        try:
+            token_key(settings)
+        except ValueError as exc:
+            raise RuntimeError(f"FELIX_GITHUB_TOKEN_KEY: {exc}") from exc
+    for origin in redirect_origins(settings):
+        parts = urlsplit(origin)
+        if parts.scheme not in {"https", "http"} or not parts.netloc or parts.path or parts.query:
+            raise RuntimeError(
+                f"FELIX_GITHUB_REDIRECT_ORIGINS: {origin!r} is not an origin (scheme://host[:port])"
+            )
+        if parts.scheme == "http" and parts.hostname not in {"localhost", "127.0.0.1", "::1"}:
+            raise RuntimeError(
+                f"FELIX_GITHUB_REDIRECT_ORIGINS: {origin!r} is plain http; only localhost may be, "
+                "since the sign-in cookies and the token cross that connection"
+            )
+    if not settings.github_callback_path.startswith("/"):
+        raise RuntimeError("FELIX_GITHUB_CALLBACK_PATH must start with '/'")
 
 
 def _probe_tenant(settings: Settings, grant: OrgGrant) -> None:

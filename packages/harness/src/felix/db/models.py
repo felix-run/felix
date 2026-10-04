@@ -187,10 +187,24 @@ class SkillVersionRow(Base):
     # Set the first time this version goes live, and never cleared. What separates a version
     # a rollback may return to from a draft that was rejected: both are `archived`.
     published_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # Where an imported version came from (`skills/importer.py`); null unless `source` is
+    # `import`. The tree hash is what a re-import compares to decide nothing changed.
+    origin_source: Mapped[str | None] = mapped_column(Text, nullable=True)
+    origin_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    origin_commit: Mapped[str | None] = mapped_column(Text, nullable=True)
+    origin_tree_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
+    origin_license: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # When the newest commit touching the skill's folder at `origin_commit` was committed (ms).
+    origin_committed_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # True for an import and for every version built on one: third-party text is still in it, so
+    # the publish gate judges it as an import and activation screens it as untrusted output.
+    lineage_import: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=false(), default=False
+    )
 
     __table_args__ = (
         CheckConstraint("status IN ('draft', 'published', 'archived')", name="ck_skill_version_status"),
-        CheckConstraint("source IN ('agent', 'operator')", name="ck_skill_version_source"),
+        CheckConstraint("source IN ('agent', 'operator', 'import')", name="ck_skill_version_source"),
     )
 
 
@@ -292,8 +306,22 @@ class SkillPolicyRow(Base):
     block_on_advisory: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=false())
     require_eval: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=false())
     min_eval_uplift: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Days a skill's folder must have been unchanged on GitHub before it may be imported.
+    import_min_age_days: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0", default=0)
     updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
     updated_by: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+
+
+class SkillImportSightingRow(Base):
+    """When this tenant first saw a source's skill folder with this tree digest: the import
+    cooldown's clock (`skills/sighting_store.py`), which an upstream committer cannot set."""
+
+    __tablename__ = "skill_import_sighting"
+
+    tenant_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    origin_source: Mapped[str] = mapped_column(Text, primary_key=True)
+    tree_hash: Mapped[str] = mapped_column(Text, primary_key=True)
+    first_seen_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
 
 class ManifestRow(Base):
@@ -654,6 +682,31 @@ class PushSubscriptionRow(Base):
     failures: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
 
 
+class GitHubConnectionRow(Base):
+    """One person's GitHub connection in a tenant: their refresh token, sealed.
+
+    Both tokens are AES-GCM sealed with FELIX_GITHUB_TOKEN_KEY, the tenant, the user id and the
+    column bound in, so a value copied to another row or column does not open
+    (`felix.auth.github_connections`). `status` is `active` or `revoked` (GitHub refused a
+    refresh); a removed connection is a deleted row.
+    """
+
+    __tablename__ = "github_connections"
+
+    tenant_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    github_user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    github_login: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    refresh_token_sealed: Mapped[str] = mapped_column(Text, nullable=False)
+    # Epoch ms; 0 when GitHub did not say.
+    refresh_expires_at: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
+    access_token_sealed: Mapped[str | None] = mapped_column(Text, nullable=True)
+    access_expires_at: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
+    principal_subj: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+
 __all__ = [
     "A2ATask",
     "Approval",
@@ -666,6 +719,7 @@ __all__ = [
     "EvalDatasetItem",
     "EvalRun",
     "Fiber",
+    "GitHubConnectionRow",
     "Job",
     "JobRun",
     "ManifestActive",
