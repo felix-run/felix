@@ -27,7 +27,7 @@ from felix.patterns.types import ChatMessage, InvokeInput
 from felix.runtime import build_tenant_agent, prepare_tenant_invoke, resolve_tenant_manifest
 from felix.session.snapshot import gather_thread_snapshot
 from felix.session.store import get_session_store
-from felix.session.tree import fork_thread, get_leaf, rewind_to, stored_leaf, sync_leaf
+from felix.session.tree import get_leaf, stored_leaf, sync_leaf
 from felix.session.types import GetEventsOpts
 from felix.steer import enqueue
 from felix.thread_ids import effective_thread_id
@@ -825,18 +825,16 @@ async def chat_fork(body: ForkRequest, request: Request) -> dict[str, Any]:
     if source_id is None or dest_id is None:
         raise HTTPException(status_code=400, detail="invalid_thread_id")
     store = get_session_store(settings, tenant_id=auth.tenant_id)
-    result = await fork_thread(
+    from felix.session.branch import fork_and_persist
+    from felix.session.thread_state import update_thread_meta
+
+    # The copy and the destination's stored leaf are one hold of its leaf lock.
+    result = await fork_and_persist(
         store.open(source_id),
         store.open(dest_id),
-        from_event_id=body.from_event_id,
-    )
-    from felix.session.thread_state import persist_leaf, update_thread_meta
-
-    await persist_leaf(
         settings=settings,
         tenant_id=auth.tenant_id,
-        thread_id=dest_id,
-        leaf_event_id=result.get("leaf_id"),
+        from_event_id=body.from_event_id,
     )
     await update_thread_meta(
         settings=settings,
@@ -854,28 +852,10 @@ async def chat_rewind(body: RewindRequest, request: Request) -> dict[str, Any]:
     thread = effective_thread_id(auth.tenant_id, body.thread_id)
     if thread is None:
         raise HTTPException(status_code=400, detail="invalid_thread_id")
-    from felix.session.thread_state import persist_leaf, update_thread_meta
-
     session = get_session_store(settings, tenant_id=auth.tenant_id).open(thread)
-    # The leaf the rewind abandons, which the branch summary describes. Read, not synced:
-    # only the rewind itself moves this process's leaf.
-    old_leaf = await stored_leaf(session)
-    result = await rewind_to(session, body.event_id)
-    if not result.get("ok"):
-        raise HTTPException(status_code=404, detail=result.get("error", "rewind_failed"))
-    await persist_leaf(
-        settings=settings,
-        tenant_id=auth.tenant_id,
-        thread_id=thread,
-        leaf_event_id=result.get("leaf_id"),
-    )
-    await update_thread_meta(
-        settings=settings,
-        tenant_id=auth.tenant_id,
-        thread_id=thread,
-        phase="idle",
-    )
-
+    # The summariser is resolved before the rewind starts: the rewind holds the thread's leaf
+    # lock from reading the leaf it abandons to storing the new one, and a manifest lookup has
+    # no business inside that hold.
     summarize = body.summarize
     model = None
     if body.manifest:
@@ -894,50 +874,20 @@ async def chat_rewind(body: RewindRequest, request: Request) -> dict[str, Any]:
             model = None
     if summarize is None:
         summarize = True
-    branch_summary = None
-    if summarize and old_leaf and old_leaf != body.event_id:
-        try:
-            from felix.session.branch import summarize_abandoned_branch
-            from felix.session.thread_state import update_thread_meta as _utm
+    from felix.session.branch import rewind_and_persist
 
-            await _utm(
-                settings=settings,
-                tenant_id=auth.tenant_id,
-                thread_id=thread,
-                phase="branch_summary",
-            )
-            branch_summary = await summarize_abandoned_branch(
-                session,
-                old_leaf_id=old_leaf,
-                new_leaf_id=body.event_id,
-                model=model,
-                instructions=body.instructions,
-            )
-            if branch_summary:
-                await persist_leaf(
-                    settings=settings,
-                    tenant_id=auth.tenant_id,
-                    thread_id=thread,
-                    leaf_event_id=branch_summary.get("event_id") or result.get("leaf_id"),
-                )
-            await update_thread_meta(
-                settings=settings,
-                tenant_id=auth.tenant_id,
-                thread_id=thread,
-                phase="idle",
-            )
-        except Exception:
-            branch_summary = None
-            await update_thread_meta(
-                settings=settings,
-                tenant_id=auth.tenant_id,
-                thread_id=thread,
-                phase="idle",
-            )
-    out = dict(result)
-    if branch_summary:
-        out["branch_summary"] = branch_summary
-    return out
+    result = await rewind_and_persist(
+        session,
+        body.event_id,
+        settings=settings,
+        tenant_id=auth.tenant_id,
+        summarize=summarize,
+        model=model,
+        instructions=body.instructions,
+    )
+    if not result.get("ok"):
+        raise HTTPException(status_code=404, detail=result.get("error", "rewind_failed"))
+    return result
 
 
 # The most events one `GET /chat/history` response may carry.
