@@ -22,16 +22,10 @@ from pathlib import Path
 
 ROUTES = Path(__file__).resolve().parents[2] / "apps" / "api" / "src" / "felix_api" / "routes"
 
-# (route module, function) sites returning exception text that predate this check. Most read as
-# messages about the caller's own input (a manifest that does not validate, an upload refused) —
-# which is what each must be shown to be, one by one, before it leaves this list.
-KNOWN_OPEN = {
-    ("documents.py", "ingest_document"),
-    ("files.py", "upload_file"),
-    ("manifests.py", "set_canary"),
-    ("manifests.py", "upsert_manifest"),
-    ("openai_compat.py", "chat_completions"),
-}
+# (route module, function) sites that return exception text and predate this check. Empty since
+# every one was routed through `client_safe_message`; it stays so a site that cannot be fixed at
+# once has somewhere honest to be recorded, rather than the check being loosened for it.
+KNOWN_OPEN: set[tuple[str, str]] = set()
 
 _LOGGER_NAMES = {"logger", "log", "logging"}
 

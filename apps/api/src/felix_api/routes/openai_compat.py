@@ -376,7 +376,7 @@ async def chat_completions(body: ChatCompletionsRequest, request: Request) -> An
     except InvalidOutputSchema as exc:
         # 400 like every other client error on this surface: an OpenAI SDK maps it to
         # `BadRequestError`, where 422 lands in a generic `APIStatusError`.
-        return _error_json(str(exc), "invalid_request_error", "invalid_response_format", 400)
+        return _error_json(client_safe_message(exc), "invalid_request_error", "invalid_response_format", 400)
     options = (
         ModelChatOptions(
             temperature=body.temperature,
