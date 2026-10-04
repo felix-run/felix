@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from felix.patterns.types import ChatMessage
 from felix.session.compaction import (
@@ -11,8 +11,18 @@ from felix.session.compaction import (
     extract_file_ops_from_events,
     serialize_conversation,
 )
-from felix.session.tree import active_branch_events, get_event_id
+from felix.session.tree import (
+    active_branch_events,
+    fork_thread,
+    get_event_id,
+    leaf_lock,
+    rewind_to,
+    stored_leaf,
+)
 from felix.session.types import AppendableEvent, Session, SessionEvent
+
+if TYPE_CHECKING:
+    from felix.config import Settings
 
 logger = logging.getLogger("felix.session.branch")
 
@@ -71,8 +81,12 @@ async def summarize_abandoned_branch(
     new_leaf_id: str,
     model: Any | None = None,
     instructions: str | None = None,
+    lock_held: bool = False,
 ) -> dict[str, Any] | None:
-    """Append a branch_summary event at the new leaf if there is abandoned work."""
+    """Append a branch_summary event at the new leaf if there is abandoned work.
+
+    ``lock_held``: the caller is inside `tree.leaf_lock` for this thread (`rewind_and_persist`).
+    """
     events = await session.get_events()
     abandoned = abandoned_events(
         events,
@@ -146,6 +160,7 @@ async def summarize_abandoned_branch(
                 metadata=md,
             )
         ],
+        lock_held=lock_held,
     )
     return {
         "ok": True,
@@ -156,8 +171,113 @@ async def summarize_abandoned_branch(
     }
 
 
+async def rewind_and_persist(
+    session: Session,
+    target_event_id: str,
+    *,
+    settings: Settings | None,
+    tenant_id: str,
+    summarize: bool,
+    model: Any | None = None,
+    instructions: str | None = None,
+) -> dict[str, Any]:
+    """Rewind ``session`` to ``target_event_id`` and store the leaf -- `/chat/rewind`'s sequence.
+
+    Every step runs under the thread's `leaf_lock`: reading the leaf the rewind abandons,
+    moving this process's leaf, the optional branch summary appended at the target, and each
+    `persist_leaf`. Split, a turn's append on this replica could land between them and either
+    parent on the pre-rewind leaf, or run its `store_leaf` after the rewind's `persist_leaf` and
+    leave the row on the turn's event while this process's leaf says the target. Under the
+    lock a concurrent turn's append lands wholly before the rewind (which then moves past it)
+    or wholly after (parented on the target, or on the summary); the row and this process's
+    leaf agree either way. The summary's model call is inside the hold, so a turn on the
+    thread waits for it -- the summary describes a branch that must not move under it.
+
+    Known cross-replica limit: a turn on *another* replica is not serialised by an in-process
+    lock. If its append is parented before the rewind commits and its `store_leaf` lands
+    after, that `UPDATE` overwrites the rewound leaf in the row (`_PostgresSession.store_leaf`
+    is unconditional). The cross-replica fix is a compare-and-set on the parent the append
+    was linked to; it is not done here because a set that fails once (a transient write
+    error) would then fail for every later append of the turn and strand it off the branch.
+
+    Returns `rewind_to`'s result, with ``branch_summary`` when one was written; an unknown
+    target returns ``{"ok": False, ...}`` and moves nothing.
+    """
+    from felix.session.thread_state import persist_leaf, update_thread_meta
+
+    thread_id = session.id
+    async with leaf_lock(session):
+        # The leaf the rewind abandons, which the branch summary describes. Read, not synced:
+        # only the rewind itself moves this process's leaf.
+        old_leaf = await stored_leaf(session)
+        result = await rewind_to(session, target_event_id)
+        if not result.get("ok"):
+            return result
+        await persist_leaf(
+            settings=settings, tenant_id=tenant_id, thread_id=thread_id, leaf_event_id=target_event_id
+        )
+        await update_thread_meta(settings=settings, tenant_id=tenant_id, thread_id=thread_id, phase="idle")
+        if not (summarize and old_leaf and old_leaf != target_event_id):
+            return dict(result)
+        branch_summary = None
+        try:
+            await update_thread_meta(
+                settings=settings, tenant_id=tenant_id, thread_id=thread_id, phase="branch_summary"
+            )
+            branch_summary = await summarize_abandoned_branch(
+                session,
+                old_leaf_id=old_leaf,
+                new_leaf_id=target_event_id,
+                model=model,
+                instructions=instructions,
+                lock_held=True,
+            )
+            if branch_summary:
+                await persist_leaf(
+                    settings=settings,
+                    tenant_id=tenant_id,
+                    thread_id=thread_id,
+                    leaf_event_id=branch_summary.get("event_id") or target_event_id,
+                )
+        except Exception:
+            logger.warning("branch summary failed for thread=%s", thread_id, exc_info=True)
+            branch_summary = None
+        await update_thread_meta(settings=settings, tenant_id=tenant_id, thread_id=thread_id, phase="idle")
+    out = dict(result)
+    if branch_summary:
+        out["branch_summary"] = branch_summary
+    return out
+
+
+async def fork_and_persist(
+    source: Session,
+    dest: Session,
+    *,
+    settings: Settings | None,
+    tenant_id: str,
+    from_event_id: str | None = None,
+) -> dict[str, Any]:
+    """Fork ``source`` into ``dest`` and store ``dest``'s leaf -- `/chat/fork`'s sequence.
+
+    The destination is named by the caller and may be a live thread, so its append, its index
+    move and its `persist_leaf` are one `leaf_lock` hold on it, for the reason
+    `rewind_and_persist` gives. The source is only read (`stored_leaf`), never moved, so it is
+    not locked: a turn mid-append there is copied up to the leaf its row held.
+    """
+    from felix.session.thread_state import persist_leaf
+
+    async with leaf_lock(dest):
+        result = await fork_thread(source, dest, from_event_id=from_event_id)
+        await persist_leaf(
+            settings=settings, tenant_id=tenant_id, thread_id=dest.id, leaf_event_id=result.get("leaf_id")
+        )
+    return result
+
+
 __all__ = [
     "abandoned_events",
     "extract_file_ops",
+    "fork_and_persist",
+    "rewind_and_persist",
     "summarize_abandoned_branch",
 ]

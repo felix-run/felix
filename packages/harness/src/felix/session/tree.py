@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 from weakref import WeakValueDictionary
 
@@ -18,9 +20,12 @@ _leaf_by_thread: dict[str, str] = {}
 _label_by_event: dict[str, str] = {}
 
 # One lock per thread, held while this process reads the stored leaf into the index
-# (`sync_leaf`) and while it appends and moves the leaf (`annotate_and_append`). Without it a
-# sync could read the row between an append's `set_leaf` and its `store_leaf`, and set the
-# index back to the row's older leaf -- parenting the turn's next event off its own branch.
+# (`sync_leaf`), while it appends and moves the leaf (`annotate_and_append`), and across a
+# whole rewind or a fork's write into its destination (`leaf_lock`). Without it a sync could
+# read the row between an append's `set_leaf` and its `store_leaf`, and set the index back to
+# the row's older leaf -- parenting the turn's next event off its own branch -- and a rewind
+# landing there would be overwritten in the row by the append's `store_leaf`. Not reentrant:
+# an append made while `leaf_lock` is held passes `lock_held=True`.
 # Weak values: a lock lives only while some coroutine holds or waits on it.
 _thread_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 
@@ -30,6 +35,24 @@ def _thread_lock(thread_id: str) -> asyncio.Lock:
     if lock is None:
         lock = _thread_locks[thread_id] = asyncio.Lock()
     return lock
+
+
+@asynccontextmanager
+async def leaf_lock(session: Session) -> AsyncIterator[None]:
+    """Hold ``session``'s thread lock across a multi-step leaf write outside a turn.
+
+    A rewind reads the leaf it abandons, moves this process's leaf, may append a branch
+    summary, and stores the result; a fork appends into its destination and stores that leaf.
+    Each step alone is safe, the sequence is not: a turn's append landing between them parents
+    on the pre-rewind leaf, or stores its own event over the rewind in the row. Appends inside
+    the hold go through `annotate_and_append(..., lock_held=True)` -- the lock is not
+    reentrant, and taking it again would wait on itself.
+
+    Same process only. A turn on another replica is not serialised by this, see
+    `branch.rewind_and_persist`.
+    """
+    async with _thread_lock(getattr(session, "id", "") or ""):
+        yield
 
 
 def new_event_id() -> str:
@@ -162,18 +185,33 @@ async def annotate_and_append(
     events: list[AppendableEvent],
     *,
     sync: bool = False,
+    lock_held: bool = False,
 ) -> list[str]:
     """Append events with tree linkage; returns new event_ids.
 
     ``sync`` takes the leaf from the store first, for an append made outside a turn (a route
     adding a label, a name, a custom entry) -- inside the same lock hold as the append, so it
     neither parents on a leaf another replica has moved nor lands inside a turn's append.
+
+    ``lock_held`` is for a caller already inside `leaf_lock` for this thread (a rewind's branch
+    summary): the append runs in that hold rather than waiting on the lock it holds.
     """
     thread_id = getattr(session, "id", "") or ""
+    if lock_held:
+        if not _thread_lock(thread_id).locked():
+            # A caller claiming a hold it does not have would append unserialised, silently.
+            raise RuntimeError(f"annotate_and_append(lock_held=True) outside leaf_lock for {thread_id!r}")
+        return await _append_under_lock(session, thread_id, events, sync=sync)
     async with _thread_lock(thread_id):
-        if sync:
-            set_leaf(thread_id, await stored_leaf(session))
-        return await _append_linked(session, thread_id, events)
+        return await _append_under_lock(session, thread_id, events, sync=sync)
+
+
+async def _append_under_lock(
+    session: Session, thread_id: str, events: list[AppendableEvent], *, sync: bool
+) -> list[str]:
+    if sync:
+        set_leaf(thread_id, await stored_leaf(session))
+    return await _append_linked(session, thread_id, events)
 
 
 async def _append_linked(session: Session, thread_id: str, events: list[AppendableEvent]) -> list[str]:
@@ -209,7 +247,11 @@ async def _append_linked(session: Session, thread_id: str, events: list[Appendab
 
 
 async def rewind_to(session: Session, target_event_id: str) -> dict[str, Any]:
-    """Move the leaf pointer to ``target_event_id`` (must exist on the session)."""
+    """Move this process's leaf pointer to ``target_event_id`` (must exist on the session).
+
+    One step of a rewind, and it stores nothing: `branch.rewind_and_persist` is the whole
+    sequence, under the thread's `leaf_lock`, and what a route calls.
+    """
     events = await session.get_events()
     ids = {get_event_id(e) for e in events}
     if target_event_id not in ids:
@@ -309,6 +351,7 @@ __all__ = [
     "get_label",
     "get_leaf",
     "get_parent_id",
+    "leaf_lock",
     "new_event_id",
     "rewind_to",
     "set_label",
