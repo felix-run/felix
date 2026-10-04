@@ -109,9 +109,9 @@ class RedisConnection:
 
         self._connecting = fut = loop.create_future()
         try:
-            from felix.config import get_settings
+            from felix.config import get_settings, redis_url_in_use
 
-            url = (getattr(get_settings(), "redis_url", "") or "").strip()
+            url = redis_url_in_use(get_settings())
             if not url:
                 self._failed_until = time.monotonic() + UNCONFIGURED_RETRY_SECONDS
                 return None

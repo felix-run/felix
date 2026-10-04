@@ -859,7 +859,17 @@ def doctor_cmd() -> None:
         # answers cross from the API to the worker through it, and the in-process fallback
         # that takes over when it is missing or down cannot deliver them.
         redis_label = "redis (cross-process approvals, prompts, rate limits)"
-        if not settings.redis_url.strip():
+        from felix.config import redis_url_in_use
+
+        if settings.redis_url.strip() and not redis_url_in_use(settings):
+            # The `/ready` rule: under memory:// the default URL is a placeholder, not a
+            # configured Redis, and every store is process-local anyway.
+            check(
+                redis_label,
+                True,
+                "not in use — memory:// with FELIX_REDIS_URL unset; set it to require one",
+            )
+        elif not settings.redis_url.strip():
             if settings.environment == "development":
                 check(
                     redis_label,

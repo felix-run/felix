@@ -103,7 +103,9 @@ async def _probe_database(settings: Any) -> str:
 
 
 async def probe_redis(settings: Any) -> str:
-    url = (getattr(settings, "redis_url", "") or "").strip()
+    from felix.config import redis_url_in_use
+
+    url = redis_url_in_use(settings)
     if not url:
         return "not configured"
     import redis.asyncio as redis
