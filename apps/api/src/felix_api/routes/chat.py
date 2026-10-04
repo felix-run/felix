@@ -6,9 +6,9 @@ import asyncio
 import logging
 import time
 from dataclasses import replace
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from felix.auth.mgmt import SCOPE_APPROVALS_READ, holds_mgmt_scopes
 from felix.context import AuthContext, RequestContext, async_run_with_context, get_context, try_get_context
@@ -244,6 +244,91 @@ class LeaseReleaseRequest(BaseModel):
     token: str | None = None
 
 
+class ChatRefusalOut(BaseModel):
+    """A refusal from a chat route: `detail` is a stable code, as every chat refusal's is."""
+
+    detail: str
+
+
+class LeaseObserverOut(BaseModel):
+    holder_id: str
+    expires_at: int = Field(description="Epoch milliseconds when this observer's own hold lapses.")
+
+
+class LeaseStatusOut(BaseModel):
+    locked: bool = Field(description="An exclusive holder is driving the thread.")
+    attached: bool = Field(description="Anyone holds the thread, exclusively or as an observer.")
+    holder_id: str | None = Field(description="The exclusive holder; null when only observers hold it.")
+    mode: Literal["exclusive", "shared"] | None
+    observers: int = Field(description="How many observer holds are live.")
+    observer_holds: list[LeaseObserverOut] = Field(description="Every live observer, by holder id.")
+    expires_at: int | None = Field(
+        description="Epoch ms: the exclusive hold's expiry, or the last observer's when there is none."
+    )
+    token_hint: str | None = Field(description="The exclusive hold's token prefix.")
+
+
+class LeaseAcquireOut(BaseModel):
+    ok: bool
+    renewed: bool = Field(description="This holder already had this hold; its expiry was extended.")
+    token: str = Field(description="This hold's own token. An observer's is never the exclusive one.")
+    mode: Literal["exclusive", "shared"] = Field(description="The mode this hold was granted in.")
+    held_by_other: bool = Field(
+        description="Another holder drives the thread: a `shared` hold granted here is read-only."
+    )
+    status: LeaseStatusOut
+    snapshot: dict[str, Any]
+
+
+class LeaseReleaseOut(BaseModel):
+    ok: bool
+    released: bool
+    status: LeaseStatusOut
+    snapshot: dict[str, Any]
+
+
+# A client that holds a lease may present its token on the routes that drive a thread, and
+# the server then refuses it unless the token is the exclusive hold's: an observer's is
+# `409 lease_read_only`, one whose hold another holder has since taken is `409 lease_held`.
+# Optional on purpose. Leases were advisory before this header existed, and a caller that
+# never took one -- a script, the OpenAI surface, an older client -- keeps working as it did.
+# Checked on every route below that starts a turn, answers one, or writes the thread's log or
+# settings. Not on `/chat/fork`, which only reads its source (forking is how an observer takes
+# its own branch), nor on `/chat/sessions/feedback`: it writes the rating into thread metadata
+# and the audit log, but appends nothing to the session log and moves no leaf -- a rating of a
+# reply, not a turn, so an observer may give one.
+LEASE_TOKEN_HEADER = "x-felix-lease-token"
+LeaseToken = Annotated[
+    str | None,
+    Header(
+        alias=LEASE_TOKEN_HEADER,
+        description="This caller's session-lease token. When present, the request is refused "
+        "(409 `lease_read_only` / `lease_held`) unless it is the thread's exclusive hold.",
+    ),
+]
+
+
+# The refusal every route that checks `X-Felix-Lease-Token` can answer, said once.
+LEASE_REFUSALS: dict[int | str, dict[str, Any]] = {
+    409: {
+        "model": ChatRefusalOut,
+        "description": "`lease_read_only`: the `X-Felix-Lease-Token` presented is an observer's. "
+        "`lease_held`: another holder has the thread exclusively. Only sent when the header is.",
+    }
+}
+
+
+async def _refuse_unless_driver(thread: str | None, lease_token: str | None) -> None:
+    """409 when the caller presented a lease token that does not drive `thread`."""
+    if not thread or not lease_token:
+        return
+    from felix.session.lease import lease_write_refusal
+
+    refusal = await lease_write_refusal(thread, lease_token)
+    if refusal:
+        raise HTTPException(status_code=409, detail=refusal)
+
+
 class UiResponseRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
@@ -356,9 +441,9 @@ async def _apply_template(
 IDEMPOTENCY_HEADER = "idempotency-key"
 
 
-@router.post("")
-@router.post("/")
-async def chat(body: ChatRequest, request: Request) -> Any:
+@router.post("", responses=LEASE_REFUSALS)
+@router.post("/", responses=LEASE_REFUSALS)
+async def chat(body: ChatRequest, request: Request, lease_token: LeaseToken = None) -> Any:
     """Run a turn. With an `Idempotency-Key`, run it once per key per principal.
 
     A client that times out and retries otherwise runs the turn twice — two model
@@ -368,13 +453,18 @@ async def chat(body: ChatRequest, request: Request) -> Any:
     is `422 idempotency_key_reused`; a retry while the first is still running is
     `409 idempotency_in_progress`. A failed attempt releases the key so the retry runs.
     """
+    auth = _auth_from_request(request)
+    thread = effective_thread_id(auth.tenant_id, body.thread_id)
+    if body.thread_id and thread is None:
+        raise HTTPException(status_code=400, detail="invalid_thread_id")
+    # Before the idempotency claim: an observer's request is refused, not stored as the key's answer.
+    await _refuse_unless_driver(thread, lease_token)
     key = request.headers.get(IDEMPOTENCY_HEADER)
     if key is None:
         status, payload = await _chat_turn(body, request)
         return JSONResponse(payload, status_code=status)
     if not valid_key(key):
         raise HTTPException(status_code=400, detail="invalid_idempotency_key")
-    auth = _auth_from_request(request)
 
     async def run() -> StoredResponse:
         status, payload = await _chat_turn(body, request)
@@ -614,14 +704,17 @@ async def chat_stream_resume(request: Request, thread_id: str) -> StreamingRespo
     )
 
 
-@router.post("/stream")
-async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
+@router.post("/stream", responses=LEASE_REFUSALS)
+async def chat_stream(
+    body: ChatRequest, request: Request, lease_token: LeaseToken = None
+) -> StreamingResponse:
     settings = request.app.state.settings
     tools = request.app.state.tools
     auth = _auth_from_request(request)
     thread = effective_thread_id(auth.tenant_id, body.thread_id)
     if body.thread_id and thread is None:
         raise HTTPException(status_code=400, detail="invalid_thread_id")
+    await _refuse_unless_driver(thread, lease_token)
     if not (body.manifest or "").strip():
         raise HTTPException(status_code=400, detail="manifest_required")
 
@@ -785,18 +878,21 @@ async def chat_stream(body: ChatRequest, request: Request) -> StreamingResponse:
     return sse_response(event_gen())
 
 
-@router.post("/steer")
-async def chat_steer(body: SteerRequest, request: Request) -> dict[str, Any]:
+@router.post("/steer", responses=LEASE_REFUSALS)
+async def chat_steer(body: SteerRequest, request: Request, lease_token: LeaseToken = None) -> dict[str, Any]:
     """Queue a steer (interrupt remaining tools) or follow-up (after idle) message."""
     auth = _auth_from_request(request)
     thread = effective_thread_id(auth.tenant_id, body.thread_id)
     if thread is None:
         raise HTTPException(status_code=400, detail="invalid_thread_id")
+    await _refuse_unless_driver(thread, lease_token)
     return await enqueue(auth.tenant_id, thread, kind=body.kind, text=body.text)
 
 
-@router.post("/tool_result")
-async def chat_tool_result(body: ToolResultRequest, request: Request) -> dict[str, Any]:
+@router.post("/tool_result", responses=LEASE_REFUSALS)
+async def chat_tool_result(
+    body: ToolResultRequest, request: Request, lease_token: LeaseToken = None
+) -> dict[str, Any]:
     """Complete a client-executed tool that paused the active agent run."""
     from felix.tools.client_bridge import client_tool_result_json, complete_result
 
@@ -804,6 +900,7 @@ async def chat_tool_result(body: ToolResultRequest, request: Request) -> dict[st
     thread = effective_thread_id(auth.tenant_id, body.thread_id)
     if thread is None:
         raise HTTPException(status_code=400, detail="invalid_thread_id")
+    await _refuse_unless_driver(thread, lease_token)
     content = client_tool_result_json(body.content)
     signaled = await complete_result(
         thread,
@@ -817,12 +914,6 @@ async def chat_tool_result(body: ToolResultRequest, request: Request) -> dict[st
         "thread_id": thread,
         "tool_call_id": body.tool_call_id,
     }
-
-
-class ChatRefusalOut(BaseModel):
-    """A refusal from a chat route: `detail` is a stable code, as every chat refusal's is."""
-
-    detail: str
 
 
 @router.post(
@@ -863,13 +954,16 @@ async def chat_fork(body: ForkRequest, request: Request) -> dict[str, Any]:
     return result
 
 
-@router.post("/rewind")
-async def chat_rewind(body: RewindRequest, request: Request) -> dict[str, Any]:
+@router.post("/rewind", responses=LEASE_REFUSALS)
+async def chat_rewind(
+    body: RewindRequest, request: Request, lease_token: LeaseToken = None
+) -> dict[str, Any]:
     auth = _auth_from_request(request)
     settings = request.app.state.settings
     thread = effective_thread_id(auth.tenant_id, body.thread_id)
     if thread is None:
         raise HTTPException(status_code=400, detail="invalid_thread_id")
+    await _refuse_unless_driver(thread, lease_token)
     session = get_session_store(settings, tenant_id=auth.tenant_id).open(thread)
     # The summariser is resolved before the rewind starts: the rewind holds the thread's leaf
     # lock from reading the leaf it abandons to storing the new one, and a manifest lookup has
@@ -978,21 +1072,40 @@ async def chat_history(
     }
 
 
-@router.delete("/history/{thread_id}")
-async def chat_history_delete(thread_id: str, request: Request) -> dict[str, str]:
+@router.delete("/history/{thread_id}", responses=LEASE_REFUSALS)
+async def chat_history_delete(
+    thread_id: str, request: Request, lease_token: LeaseToken = None
+) -> dict[str, str]:
     auth = _auth_from_request(request)
     settings = request.app.state.settings
     thread = effective_thread_id(auth.tenant_id, thread_id)
     if thread is None:
         raise HTTPException(status_code=400, detail="invalid_thread_id")
+    await _refuse_unless_driver(thread, lease_token)
     store = get_session_store(settings, tenant_id=auth.tenant_id)
     await store.open(thread).reset()
     return {"status": "deleted", "thread_id": thread}
 
 
-@router.post("/sessions/lease")
+@router.post(
+    "/sessions/lease",
+    response_model=LeaseAcquireOut,
+    responses={
+        409: {
+            "model": ChatRefusalOut,
+            "description": "`lease_held`: another holder has it exclusively, or this renewal did not "
+            "present the hold's token. `lease_contended`: concurrent changes kept it from landing.",
+        }
+    },
+)
 async def acquire_session_lease(body: LeaseRequest, request: Request) -> dict[str, Any]:
-    """Acquire an exclusive or shared lease (maps to snapshot locked/attached)."""
+    """Take or renew a hold: `exclusive` drives the thread, `shared` observes it read-only.
+
+    `exclusive` is `409 lease_held` while another holder has it. `shared` succeeds with a
+    token of its own: on a thread someone else drives, `held_by_other` is true. Renewing
+    either kind needs that hold's `token` -- the holder id alone is `lease_held` -- and an
+    observer's renewal extends only its own hold.
+    """
     from felix.session.lease import acquire_lease
 
     auth = _auth_from_request(request)
@@ -1016,8 +1129,28 @@ async def acquire_session_lease(body: LeaseRequest, request: Request) -> dict[st
     return {**result, "snapshot": snapshot}
 
 
-@router.post("/sessions/lease/release")
+@router.post(
+    "/sessions/lease/release",
+    response_model=LeaseReleaseOut,
+    responses={
+        403: {
+            "model": ChatRefusalOut,
+            "description": "`token_required`, `token_mismatch` or `not_holder`: this caller does not hold "
+            "what it asked to release.",
+        },
+        409: {
+            "model": ChatRefusalOut,
+            "description": "`lease_contended`: concurrent changes to the lease kept the release from "
+            "landing. Nothing was released; retry.",
+        },
+    },
+)
 async def release_session_lease(body: LeaseReleaseRequest, request: Request) -> dict[str, Any]:
+    """Drop the one hold `token` names; every other hold stays. The token is required.
+
+    `holder_id`, when sent, must be that hold's holder. Releasing the exclusive hold leaves
+    observers observing -- none is promoted.
+    """
     from felix.session.lease import release_lease
 
     auth = _auth_from_request(request)
@@ -1026,7 +1159,9 @@ async def release_session_lease(body: LeaseReleaseRequest, request: Request) -> 
         raise HTTPException(status_code=400, detail="invalid_thread_id")
     result = await release_lease(thread, holder_id=body.holder_id, token=body.token)
     if not result.get("ok"):
-        raise HTTPException(status_code=403, detail=result.get("error") or "release_failed")
+        error = result.get("error") or "release_failed"
+        # Contention is not a refusal: this caller may well hold the lease, and a retry can land.
+        raise HTTPException(status_code=409 if error == "lease_contended" else 403, detail=error)
     snapshot = await gather_thread_snapshot(
         settings=request.app.state.settings,
         tenant_id=auth.tenant_id,
@@ -1035,8 +1170,10 @@ async def release_session_lease(body: LeaseReleaseRequest, request: Request) -> 
     return {**result, "snapshot": snapshot}
 
 
-@router.post("/ui")
-async def chat_ui_response(body: UiResponseRequest, request: Request) -> dict[str, Any]:
+@router.post("/ui", responses=LEASE_REFUSALS)
+async def chat_ui_response(
+    body: UiResponseRequest, request: Request, lease_token: LeaseToken = None
+) -> dict[str, Any]:
     """Resolve a pending select/confirm/input prompt from the web client."""
     from felix.ui import resolve_ui_response
 
@@ -1044,6 +1181,7 @@ async def chat_ui_response(body: UiResponseRequest, request: Request) -> dict[st
     thread = effective_thread_id(auth.tenant_id, body.thread_id)
     if thread is None:
         raise HTTPException(status_code=400, detail="invalid_thread_id")
+    await _refuse_unless_driver(thread, lease_token)
     return await resolve_ui_response(
         thread,
         body.request_id,
@@ -1079,8 +1217,10 @@ async def export_session(thread_id: str, request: Request) -> Any:
     )
 
 
-@router.post("/sessions/custom")
-async def append_custom_entry(body: CustomEntryRequest, request: Request) -> dict[str, Any]:
+@router.post("/sessions/custom", responses=LEASE_REFUSALS)
+async def append_custom_entry(
+    body: CustomEntryRequest, request: Request, lease_token: LeaseToken = None
+) -> dict[str, Any]:
     """Persist a custom (UI/plugin) entry. Set ``in_context`` to include it in the LLM."""
     from felix.session.tree import annotate_and_append
     from felix.session.types import AppendableEvent
@@ -1090,6 +1230,7 @@ async def append_custom_entry(body: CustomEntryRequest, request: Request) -> dic
     thread = effective_thread_id(auth.tenant_id, body.thread_id)
     if thread is None:
         raise HTTPException(status_code=400, detail="invalid_thread_id")
+    await _refuse_unless_driver(thread, lease_token)
     md = dict(body.metadata or {})
     md["in_context"] = bool(body.in_context)
     md["type"] = "custom"
@@ -1131,6 +1272,18 @@ async def search_sessions_route(request: Request, q: str = "", limit: int = 20) 
     return {"query": q, "hits": hits}
 
 
+@router.get("/sessions/{thread_id}/lease", response_model=LeaseStatusOut)
+async def get_session_lease(thread_id: str, request: Request) -> dict[str, Any]:
+    """Who holds the thread: the exclusive holder, if any, and every observer."""
+    from felix.session.lease import lease_status
+
+    auth = _auth_from_request(request)
+    thread = effective_thread_id(auth.tenant_id, thread_id)
+    if thread is None:
+        raise HTTPException(status_code=400, detail="invalid_thread_id")
+    return await lease_status(thread)
+
+
 @router.get("/sessions/{thread_id}")
 async def get_session_snapshot(thread_id: str, request: Request) -> dict[str, Any]:
     auth = _auth_from_request(request)
@@ -1144,8 +1297,10 @@ async def get_session_snapshot(thread_id: str, request: Request) -> dict[str, An
     )
 
 
-@router.post("/sessions/name")
-async def set_session_name(body: SessionNameRequest, request: Request) -> dict[str, Any]:
+@router.post("/sessions/name", responses=LEASE_REFUSALS)
+async def set_session_name(
+    body: SessionNameRequest, request: Request, lease_token: LeaseToken = None
+) -> dict[str, Any]:
     from felix.session.thread_state import update_thread_meta
     from felix.session.tree import annotate_and_append
     from felix.session.types import AppendableEvent
@@ -1155,6 +1310,7 @@ async def set_session_name(body: SessionNameRequest, request: Request) -> dict[s
     thread = effective_thread_id(auth.tenant_id, body.thread_id)
     if thread is None:
         raise HTTPException(status_code=400, detail="invalid_thread_id")
+    await _refuse_unless_driver(thread, lease_token)
     meta = await update_thread_meta(
         settings=settings,
         tenant_id=auth.tenant_id,
@@ -1175,8 +1331,10 @@ async def set_session_name(body: SessionNameRequest, request: Request) -> dict[s
     return {"ok": True, "thread_id": thread, "name": body.name, "meta": meta}
 
 
-@router.post("/sessions/label")
-async def set_session_label(body: LabelRequest, request: Request) -> dict[str, Any]:
+@router.post("/sessions/label", responses=LEASE_REFUSALS)
+async def set_session_label(
+    body: LabelRequest, request: Request, lease_token: LeaseToken = None
+) -> dict[str, Any]:
     from felix.session.thread_state import update_thread_meta
     from felix.session.tree import annotate_and_append, set_label
     from felix.session.types import AppendableEvent
@@ -1186,6 +1344,7 @@ async def set_session_label(body: LabelRequest, request: Request) -> dict[str, A
     thread = effective_thread_id(auth.tenant_id, body.thread_id)
     if thread is None:
         raise HTTPException(status_code=400, detail="invalid_thread_id")
+    await _refuse_unless_driver(thread, lease_token)
     set_label(body.event_id, body.label)
     await update_thread_meta(
         settings=settings,
@@ -1273,8 +1432,8 @@ async def set_session_feedback(body: FeedbackRequest, request: Request) -> dict[
     return {"ok": True, "thread_id": thread, "event_id": body.event_id, "feedback": entry}
 
 
-@router.post("/abort")
-async def chat_abort(body: AbortRequest, request: Request) -> dict[str, Any]:
+@router.post("/abort", responses=LEASE_REFUSALS)
+async def chat_abort(body: AbortRequest, request: Request, lease_token: LeaseToken = None) -> dict[str, Any]:
     from felix.session.thread_state import update_thread_meta
     from felix.steer import request_abort
 
@@ -1282,6 +1441,7 @@ async def chat_abort(body: AbortRequest, request: Request) -> dict[str, Any]:
     thread = effective_thread_id(auth.tenant_id, body.thread_id)
     if thread is None:
         raise HTTPException(status_code=400, detail="invalid_thread_id")
+    await _refuse_unless_driver(thread, lease_token)
     result = await request_abort(auth.tenant_id, thread)
     await update_thread_meta(
         settings=request.app.state.settings,
@@ -1297,8 +1457,8 @@ async def chat_abort(body: AbortRequest, request: Request) -> dict[str, Any]:
     return {**result, "snapshot": snapshot}
 
 
-@router.post("/continue")
-async def chat_continue(body: ContinueRequest, request: Request) -> Any:
+@router.post("/continue", responses=LEASE_REFUSALS)
+async def chat_continue(body: ContinueRequest, request: Request, lease_token: LeaseToken = None) -> Any:
     """Resume after abort/error without a new user message (wake-based)."""
     from felix.session.types import analyze_wake
     from felix.steer import clear_abort
@@ -1309,6 +1469,7 @@ async def chat_continue(body: ContinueRequest, request: Request) -> Any:
     thread = effective_thread_id(auth.tenant_id, body.thread_id)
     if thread is None:
         raise HTTPException(status_code=400, detail="invalid_thread_id")
+    await _refuse_unless_driver(thread, lease_token)
     await clear_abort(auth.tenant_id, thread)
     store = get_session_store(settings, tenant_id=auth.tenant_id)
     session = store.open(thread)
@@ -1386,8 +1547,10 @@ async def chat_continue(body: ContinueRequest, request: Request) -> Any:
     }
 
 
-@router.post("/thinking")
-async def chat_thinking(body: ThinkingRequest, request: Request) -> dict[str, Any]:
+@router.post("/thinking", responses=LEASE_REFUSALS)
+async def chat_thinking(
+    body: ThinkingRequest, request: Request, lease_token: LeaseToken = None
+) -> dict[str, Any]:
     from felix.session.thinking import parse_thinking_level
     from felix.session.thread_state import update_thread_meta
     from felix.session.tree import annotate_and_append
@@ -1398,6 +1561,7 @@ async def chat_thinking(body: ThinkingRequest, request: Request) -> dict[str, An
     thread = effective_thread_id(auth.tenant_id, body.thread_id)
     if thread is None:
         raise HTTPException(status_code=400, detail="invalid_thread_id")
+    await _refuse_unless_driver(thread, lease_token)
     try:
         level = parse_thinking_level(body.thinking_level)
     except ValueError as exc:
@@ -1425,13 +1589,16 @@ async def chat_thinking(body: ThinkingRequest, request: Request) -> dict[str, An
     return {"ok": True, "thread_id": thread, "thinking_level": level}
 
 
-@router.post("/compact")
-async def chat_compact(body: CompactRequest, request: Request) -> dict[str, Any]:
+@router.post("/compact", responses=LEASE_REFUSALS)
+async def chat_compact(
+    body: CompactRequest, request: Request, lease_token: LeaseToken = None
+) -> dict[str, Any]:
     auth = _auth_from_request(request)
     settings = request.app.state.settings
     thread = effective_thread_id(auth.tenant_id, body.thread_id)
     if thread is None:
         raise HTTPException(status_code=400, detail="invalid_thread_id")
+    await _refuse_unless_driver(thread, lease_token)
     try:
         resolved = await resolve_tenant_manifest(settings, auth.tenant_id, body.manifest, thread_id=thread)
     except (LookupError, ValueError) as exc:

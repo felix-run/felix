@@ -348,7 +348,7 @@ recorded in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 | Thinking level | `POST /chat/thinking` |
 | Session snapshot | `GET /chat/sessions`, `GET /chat/sessions/{id}` |
 | Session search (FTS) | `GET /chat/sessions/search?q=` |
-| Session lease | `POST /chat/sessions/lease`, `…/lease/release` |
+| Session lease | `POST /chat/sessions/lease`, `…/lease/release`, `GET /chat/sessions/{id}/lease` |
 | Session name / label / export | `POST /chat/sessions/name`, `…/label`, `GET …/export` |
 | Compact / UI prompt | `POST /chat/compact`, `POST /chat/ui` |
 | Session fork / rewind | `POST /chat/fork`, `POST /chat/rewind` |
