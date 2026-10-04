@@ -279,6 +279,32 @@ class _PostgresSession:
         # After the commit, so a rolled-back append reports nothing allocated.
         return allocated
 
+    async def store_leaf(self, event_id: str) -> None:
+        """Move the stored leaf to an event just appended -- `tree.annotate_and_append` calls it.
+
+        `thread_state.load_leaf` reads the row on Postgres, so the row has to follow every
+        append or it answers the leaf of the last rewind. An `UPDATE` and nothing more: no
+        row means no session metadata yet, and an append does not create a session (the
+        listing is rows), nor is it a metadata write that moves `revision`.
+        """
+        from sqlalchemy import update
+
+        from felix.db.models import ThreadState
+
+        try:
+            async with self.session_factory() as db:
+                db.info["tenant_id"] = self.tenant_id
+                await db.execute(
+                    update(ThreadState)
+                    .where(ThreadState.tenant_id == self.tenant_id, ThreadState.thread_id == self.id)
+                    .values(leaf_event_id=event_id)
+                )
+                await db.commit()
+        except Exception:
+            # The events are committed; a stale stored leaf is the lesser failure, and
+            # raising here would report the append itself as lost.
+            logger.warning("leaf write failed for thread=%s", self.id, exc_info=True)
+
     async def get_events(self, opts: GetEventsOpts | None = None) -> list[SessionEvent]:
         if not self.id:
             return []

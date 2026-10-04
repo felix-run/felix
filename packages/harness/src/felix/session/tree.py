@@ -141,6 +141,11 @@ async def annotate_and_append(
     await session.append_batch(annotated)
     if ids and thread_id:
         set_leaf(thread_id, ids[-1])
+        # A store that keeps the leaf durably (Postgres) moves it too. Optional, so a
+        # plugin checkpointer's `Session` need not grow a method to keep working.
+        store_leaf = getattr(session, "store_leaf", None)
+        if store_leaf is not None:
+            await store_leaf(ids[-1])
     return ids
 
 
