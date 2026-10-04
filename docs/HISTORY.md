@@ -12,6 +12,42 @@ not fail. Keep that habit: a wave entry that lists only wins is not worth writin
 
 ## Waves
 
+### v0.6.1: compiling every manifest in production (Oct 2026, #451, #454–#457)
+
+This started from a user report, "internal error (request …)" on `contributor`, and grew once we
+compiled all twelve bundled manifests inside the production container. That compile costs one
+script and no model calls. Three of the twelve had never compiled in production, and nothing had
+said so.
+
+- **The surface users read was the one that hid the cause.** `/chat` mapped a missing secret to
+  a 503 by matching the message prefix. `/chat/stream`, which the chat UI uses, compiles inside
+  its generator, after that mapping. So `secret not found: GITHUB_MCP_TOKEN` reached the browser
+  as `internal error`. The fix was a type, not another prefix match: `SecretNotFoundError`, and
+  `ProviderConfigError` for decision providers, both on the relay list (#451).
+- **Compose dropped a setting the docs told operators to set.** `x-felix-env` passed the routes
+  but not `FELIX_MODEL_PROVIDER_OPTIONS`, so every hosted provider without a settings field
+  failed under Compose with "needs api_key" while `.env` held the key. We only found it because
+  `printenv` in the container showed one of two lines we had just written (#454).
+- **The docs, the fixture and the parser agreed, and all three were wrong.** Cloudflare's page
+  for `typesafe/jev` shows one envelope. The conformance fixture copied it, and the parser
+  unwrapped it. The live reply nests the answers inside a completed run one level further in, so
+  correct answers (p=0.98) were reported as none (#455). Only a live call could show it, and
+  that call had been an open roadmap item since the feature shipped. Before that, the live call
+  returned a 402: partner models on Workers AI bill against prepaid AI Gateway credits, not usage.
+  `typesafe/jev` is also missing from `wrangler ai models`, which nearly read as "the model does
+  not exist".
+- **A test pinned to the live file failed the release it was written for.** #456 moved
+  changelog entries into PR descriptions, merged in the middle of this release, and changed step
+  5 of the procedure under it. Its test asserted that the real `CHANGELOG.md` still had
+  `[Unreleased]` entries. The first `cut` empties that section, so the test failed the release
+  commit (fixed in #457). A test about one moment in a file's life is a test with an expiry date.
+- **Moving the VM between projects surfaced two things nobody had set up on purpose.** The
+  startup script reinstalled Docker on every boot and reset the daemon in the middle of a
+  `compose up`. It now exits when Docker is present. And `roll.sh` takes the GCP project from
+  gcloud's default, which still points at the old project, where the stopped VM sits with the
+  same tunnel credentials. 0.6.1 rolled with the project set by hand, and fixing the script is
+  on the roadmap.
+
 ### v0.5.0 and the first scripted production roll (Sep 2026, #363, #368, #370, #372–#375)
 
 Not an audit wave: one release, cut and rolled to production in a day, with most of what went

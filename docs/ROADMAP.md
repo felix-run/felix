@@ -5,8 +5,8 @@ concrete enough to pick up in a single session.
 
 **Repos:** `felix-run/felix` (harness) · `felix-run/web` (chat-ui + docs)
 **Live:** [api.felix.run](https://api.felix.run) · [chat.felix.run](https://chat.felix.run) · [docs.felix.run](https://docs.felix.run)
-**Last reviewed:** 2026-09-29 (every open item checked against `main` after 0.5.0; the 2026-09-02
-product-depth audit before it)
+**Last reviewed:** 2026-10-04 (after 0.6.1 rolled to production; the full open-item check was
+2026-09-29, after 0.5.0)
 
 Completed waves and what they taught now live in [HISTORY.md](HISTORY.md).
 
@@ -298,7 +298,11 @@ First, because everything else governs it.
       5. [x] Injection screening as a `Noul` battery. It is *additive* to the regex and the
          LLM scorer, because Jev is not adversarially robust. Needs a security review.
 
-      Not yet verified: the Workers AI response envelope, against a live call.
+      Verified live on 2026-10-03, and the check was needed: Workers AI returns the answers inside a
+      completed run, one level deeper than the envelope the model page documents and the fixture
+      encoded, so every call was read as carrying no answers (#455, in 0.6.1). Production now routes
+      `jev` to Workers AI through the `felix-prod` AI Gateway. Partner models bill against prepaid,
+      account-level AI Gateway credits (a 402, code 2021, when empty), not Workers AI usage.
 
 - [x] **Sub-agents are compiled from bundled YAML only.** Found in a real run of the router
       e2e test: `runtime.py:build_tenant_agent` never sets `BuildDeps.sub_agent_builder`, so
@@ -1486,6 +1490,19 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       found and fixed a real usage-flush bug (#341); the dogfood itself — a non-prod deployment
       with `FELIX_DATABASE_RLS=true` — has not happened, and no test covers a mixed-tenant *audit*
       flush through `audit/store.py`.)
+- [x] **Production in its own GCP project.** The VM moved from an unrelated project to
+      `felix-507018` on 2026-10-03, by machine image. The Cloudflare Tunnel meant no DNS change,
+      and the cutover took about 15 minutes. Secrets now live in that project's Secret Manager
+      (`GITHUB_MCP_TOKEN`, `CLOUDFLARE_API_TOKEN` and the Anthropic key), so `contributor`,
+      `triage` and `decider-support` compile in production. 0.6.1 is the first roll there.
+      Open:
+      - [ ] **`deploy/gcp/roll.sh` takes the project from gcloud's default.** It names the VM and
+        zone but no project, so on a machine whose default is another project it reaches whatever
+        VM of that name lives there. 0.6.1 was rolled with `CLOUDSDK_CORE_PROJECT=felix-507018` set
+        by hand. Add `FELIX_GCP_PROJECT` beside `FELIX_VM`, and print the project in the preflight.
+      - [ ] **Delete the old VM and its machine image** (`felix-api-cutover-20261003`). Both are
+        kept for rollback. Never start that VM: it holds the same tunnel credentials, so Cloudflare
+        would split traffic between two databases.
 - [!] **Rotate Anthropic API key** — only when you say go. Then Secret Manager
       `felix-anthropic-api-key` + recreate API/worker.
 
