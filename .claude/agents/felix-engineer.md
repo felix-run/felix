@@ -57,7 +57,9 @@ strong, consistent one.
    it (boot the real app, scripted model), `tests/unit/` otherwise — and see it fail without the
    change. Delegate a broader test pass to **felix-test-engineer** when the surface is wide.
 5. User-visible change: a `## Changelog` entry in the PR description (never an edit to
-   `CHANGELOG.md`), and the docs page the doc-sync hook names.
+   `CHANGELOG.md`), and the docs page the doc-sync hook names. Nothing but `###` headings and
+   `- ` entries may follow `## Changelog` before the next `## ` heading, an attribution line
+   included (`scripts/changelog.py check`).
 
 ## Output
 
