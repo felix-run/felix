@@ -108,6 +108,12 @@ class SkillLibraryStore(Protocol):
 
     async def get_version(self, tenant_id: str, name: str, version: str) -> dict[str, Any] | None: ...
 
+    async def get_versions(
+        self, tenant_id: str, keys: Collection[tuple[str, str]]
+    ) -> dict[tuple[str, str], dict[str, Any]]:
+        """The versions named by ``keys`` (`(name, version)`) that exist, in one read."""
+        ...
+
     async def list_versions(
         self, tenant_id: str, name: str, *, limit: int = MAX_VERSIONS_LISTED
     ) -> list[dict[str, Any]]: ...
@@ -288,6 +294,12 @@ class InMemorySkillLibraryStore:
     async def get_version(self, tenant_id: str, name: str, version: str) -> dict[str, Any] | None:
         row = self._versions.get((tenant_id, name, version))
         return copy.deepcopy(row) if row is not None else None
+
+    async def get_versions(
+        self, tenant_id: str, keys: Collection[tuple[str, str]]
+    ) -> dict[tuple[str, str], dict[str, Any]]:
+        found = {(n, v): self._versions.get((tenant_id, n, v)) for n, v in set(keys)}
+        return {k: copy.deepcopy(r) for k, r in found.items() if r is not None}
 
     async def list_versions(
         self, tenant_id: str, name: str, *, limit: int = MAX_VERSIONS_LISTED
@@ -605,6 +617,25 @@ class PostgresSkillLibraryStore:
         async with self._session(tenant_id) as db:
             row = await db.get(SkillVersionRow, (tenant_id, name, version))
             return self._row(row) if row is not None else None
+
+    async def get_versions(
+        self, tenant_id: str, keys: Collection[tuple[str, str]]
+    ) -> dict[tuple[str, str], dict[str, Any]]:
+        from sqlalchemy import select, tuple_
+
+        from felix.db.models import SkillVersionRow
+
+        wanted = sorted(set(keys))
+        if not wanted:
+            return {}
+        R = SkillVersionRow
+        async with self._session(tenant_id) as db:
+            rows = (
+                await db.scalars(
+                    select(R).where(R.tenant_id == tenant_id, tuple_(R.name, R.version).in_(wanted))
+                )
+            ).all()
+            return {(r.name, r.version): self._row(r) for r in rows}
 
     async def list_versions(
         self, tenant_id: str, name: str, *, limit: int = MAX_VERSIONS_LISTED

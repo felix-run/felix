@@ -688,6 +688,51 @@ class FelixClient:
             resp.raise_for_status()
             return resp.json()
 
+    async def check_skill_upstream(self, name: str, *, ref: str | None = None) -> dict[str, Any]:
+        """An imported skill against its origin now: `{current, upstream, update_available, diff}`,
+        the diff against the live version. Starts the cooldown clock of what it finds."""
+        params = {"ref": ref} if ref else {}
+        async with httpx.AsyncClient(timeout=self._import_timeout()) as client:
+            resp = await client.get(
+                f"{self.base_url.rstrip('/')}/skill-library/{quote(name, safe='')}/-/upstream",
+                headers=self._headers(),
+                params=params,
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+    async def update_skill(self, name: str, *, ref: str | None = None) -> dict[str, Any]:
+        """Re-import an imported skill from its origin as a draft for review -- never published
+        here. The version, with `unchanged`, `dropped_files` and `diff`."""
+        body: dict[str, Any] = {"ref": ref} if ref else {}
+        async with httpx.AsyncClient(timeout=self._import_timeout()) as client:
+            resp = await client.post(
+                f"{self.base_url.rstrip('/')}/skill-library/{quote(name, safe='')}/-/update",
+                headers=self._headers(),
+                json=body,
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+    async def list_skill_upstreams(
+        self, *, cursor: str | None = None, refresh: bool = True
+    ) -> dict[str, Any]:
+        """One page of the tenant's imported skills against their origins:
+        `{items, next_cursor, refreshed, stopped}`. ``refresh=False`` reads the last
+        recorded checks and makes no GitHub call."""
+        params: dict[str, Any] = {
+            "refresh": "true" if refresh else "false",
+            **({"cursor": cursor} if cursor else {}),
+        }
+        async with httpx.AsyncClient(timeout=self._import_timeout()) as client:
+            resp = await client.get(
+                f"{self.base_url.rstrip('/')}/skill-library/-/upstream",
+                headers=self._headers(),
+                params=params,
+            )
+            resp.raise_for_status()
+            return resp.json()
+
 
 __all__ = [
     "RUN_POLL_CEILING_SECONDS",

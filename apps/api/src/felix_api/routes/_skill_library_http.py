@@ -78,6 +78,9 @@ STATUS: dict[str, int] = {
     "rate_limited": 429,
     # An import is a draft for review; publishing it is a separate request after that review.
     "publish_not_allowed": 422,
+    # An upstream check or update of a skill whose newest version was not imported: the library's
+    # state, not the request, is what has no origin to check.
+    "not_imported": 409,
     # ...the deployment's FELIX_SKILL_IMPORT_SOURCES does not cover it, or this tenant first saw
     # its files within the minimum import age (a policy refusal like the allowlist's; waiting
     # lifts it)...

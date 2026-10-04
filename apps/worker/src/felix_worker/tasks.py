@@ -291,6 +291,19 @@ async def skill_jobs() -> None:
         logger.info("skill_jobs %s", counts)
 
 
+@broker.task(schedule=[{"cron": "*/10 * * * *"}])
+@_instrumented("skill_upstream_checks")
+async def skill_upstream_checks() -> None:
+    """Check imported skills against their origins every `FELIX_SKILL_IMPORT_CHECK_HOURS` (off at
+    0): records whether an update is waiting and starts each one's cooldown clock. Bounded per
+    tick, and to half of each GitHub call budget."""
+    from felix.skills.upstream import run_upstream_checks
+
+    counts = await run_upstream_checks(_settings)
+    if counts["checked"] or counts["failed"] or counts["budget_stopped"]:
+        logger.info("skill_upstream_checks %s", counts)
+
+
 @broker.task(schedule=[{"cron": "* * * * *"}])
 @_instrumented("webhook_delivery")
 async def webhook_delivery() -> None:
