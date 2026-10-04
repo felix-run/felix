@@ -10,6 +10,35 @@ Each release section is written from the `## Changelog` sections of the pull req
 
 ## [Unreleased]
 
+## [0.6.2] — 2026-10-03
+
+### Added
+
+- **`GET /plans?thread_id=<suffix>` lists one conversation's plans.** Each plan now records the thread it was written in (`thread_id`, `''` for a plan written outside a chat or before this release). The parameter takes the same thread suffix the chat routes take; an empty value lists plans with no thread. (#463)
+
+### Fixed
+
+- **A skill's review hint says what to add, not what it already has.** `create_skill`'s "To raise the quality score:" hint listed failed checks in their passing wording ("Includes license or metadata for discoverability", "Optional scripts/ directory not present"), so it read as if the skill already did them. Each failed check now says what to do ("Add a license or metadata for discoverability", "Document agent/environment compatibility", "Add a scripts/ directory (optional)"). A description over 500 characters now says to shorten it instead of reporting "Description is substantive". (#459)
+
+- **Looking at a session no longer creates it on `memory://`.** Opening the snapshot, history,
+  export or a lease for a thread id that did not exist added that id to `GET /chat/sessions` as an
+  empty session titled with its id. Reads are now side-effect free, as they already were on
+  Postgres; only a write (a turn, a rename, a label, `/chat/abort`) lists a thread. (#461)
+
+- **An agent's `plan_get` with no id no longer reads another conversation's plan.** It returned the tenant's most recently updated plan, so one thread could pick up, and go on to update, the plan another thread was following. It now returns the newest plan on its own thread, and stays tenant-wide only outside a chat. (#463)
+
+- **`deploy/gcp/roll.sh` pins the GCP project.** It took the project from gcloud's default, so on a machine whose default was another project it could reach a different VM with the same name. `FELIX_GCP_PROJECT` now sets it explicitly, defaulting to the reference deployment like `FELIX_VM` and `FELIX_ZONE`, and the preflight prints it. (#462)
+
+- On Postgres, a write to a session's metadata no longer resets the fields it did not change when it lands on a replica that had not seen the session. Name, phase, labels, feedback, model and created time were all reset to defaults. (#466)
+
+- On Postgres, a replica now reads a session's name, phase, labels and leaf from the database on every read, so it sees another replica's rename, rewind or fork instead of what it had cached. (#466)
+
+- On Postgres, concurrent writes to one session's metadata no longer lose each other's fields, `revision` counts every write, and two first writes to a new session no longer fail with an IntegrityError. (#466)
+
+- Session metadata reads and writes now bind the tenant for row-level security themselves, so they work outside a request when `FELIX_DATABASE_RLS` is on. (#466)
+
+- **GitHub login and Web Push can now be turned on under Compose.** `deploy/docker/compose.yml` passes the containers an explicit list of settings, and none of the ones these features need were on it, so setting them in `.env` did nothing. `FELIX_AUTH_MODE` was on it, so setting `jwt` switched every request to a verifier that never arrived. Every process now receives `FELIX_JWT_VERIFIERS`, `FELIX_JWKS_PUBLIC`, `FELIX_ALLOWED_TENANTS` and `FELIX_PUSH_VAPID_*`. Only `api` receives `FELIX_JWKS_PRIVATE` and the `FELIX_GITHUB_*` settings: the key signs a token for any tenant, and the worker runs agents' tools. A PEM written across lines in double quotes in `.env` arrives intact. (#465)
+
 ## [0.6.1] — 2026-10-03
 
 ### Changed
@@ -4183,3 +4212,4 @@ A hotfix on 0.4.0, branched from its tag, carrying one fix. Everything else unde
 [0.5.1]: https://github.com/felix-run/felix/releases/tag/v0.5.1
 [0.6.0]: https://github.com/felix-run/felix/releases/tag/v0.6.0
 [0.6.1]: https://github.com/felix-run/felix/releases/tag/v0.6.1
+[0.6.2]: https://github.com/felix-run/felix/releases/tag/v0.6.2
