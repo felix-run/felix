@@ -1723,16 +1723,29 @@ async def build_agent(
         # stack, so approvals — with the diff preview the tool computes — gate it like any write.
         if m.spec.github_publish is not None:
             try:
-                if deps.settings is None:
-                    raise ValueError("no settings to resolve github_publish.auth with")
-                from felix.secrets import build_secrets, resolve_secret_value
-                from felix.tools.github_publish import tool_from_github_publish
+                from felix.manifests.schema import PERSON_AUTH
 
-                token = await resolve_secret_value(build_secrets(deps.settings), m.spec.github_publish.auth)
-                _append_unique_tools(
-                    resolved,
-                    [tool_from_github_publish(m.spec.github_publish, token=token, allow_http=allow_http)],
-                )
+                if m.spec.github_publish.auth == PERSON_AUTH:
+                    from felix.tools.github_publish import tool_from_thread_publish
+
+                    # Nothing to resolve now: the repository and the token are the thread's,
+                    # looked up on each call (`_ThreadPublishExecutor`).
+                    _append_unique_tools(
+                        resolved, [tool_from_thread_publish(m.spec.github_publish, allow_http=allow_http)]
+                    )
+                else:
+                    if deps.settings is None:
+                        raise ValueError("no settings to resolve github_publish.auth with")
+                    from felix.secrets import build_secrets, resolve_secret_value
+                    from felix.tools.github_publish import tool_from_github_publish
+
+                    token = await resolve_secret_value(
+                        build_secrets(deps.settings), m.spec.github_publish.auth
+                    )
+                    _append_unique_tools(
+                        resolved,
+                        [tool_from_github_publish(m.spec.github_publish, token=token, allow_http=allow_http)],
+                    )
             except Exception:
                 # The message names the secret, never its value: `resolve_secret_value` raises
                 # `secret not found: NAME`, and the binder raises before a token exists.

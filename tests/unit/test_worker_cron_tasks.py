@@ -32,6 +32,8 @@ EXPECTED_SCHEDULES = {
     "run_scheduled_jobs": "* * * * *",
     "consolidate_memory": "*/15 * * * *",
     "retention_sweep": "0 3 * * *",
+    # Removes threads' repository checkouts unused for FELIX_REPO_CHECKOUT_TTL_DAYS (#470).
+    "repo_checkout_sweep": "30 3 * * *",
     "anomaly_scan": "*/30 * * * *",
     "continuous_eval": "*/10 * * * *",
     "fiber_scheduler": "* * * * *",
@@ -115,7 +117,7 @@ def test_the_set_of_scheduled_tasks_does_not_change_silently() -> None:
     """
     declared = _declared_schedules()
 
-    assert len(declared) == 10, declared
+    assert len(declared) == 11, declared
     for name in EXPECTED_SCHEDULES:
         assert callable(getattr(worker_tasks, name, None)), f"{name} is not exported"
 

@@ -126,6 +126,20 @@ class Settings(BaseSettings):
     github_redirect_origins: str = ""
     # The callback's path *as the browser sees it*: behind chat-ui's proxy that carries `/api`.
     github_callback_path: str = "/api/auth/github/callback"
+    # The GitHub App's URL slug (github.com/apps/<slug>), so a client can link a person to
+    # installing it on more repositories. Empty: no install link is offered.
+    github_app_slug: str = ""
+
+    # --- Per-person repos: a thread's checkout (`felix.repos.checkouts`) ---
+    # Where threads' checkouts live: one directory per (tenant, thread). Deliberately not under
+    # FELIX_WORKSPACE_ROOT, which every thread without a checkout can read. Empty: under
+    # FELIX_DATA_DIR/checkouts. API and worker must see the same directory.
+    repo_checkout_root: str = ""
+    # A repository larger than this (GitHub's own `size`) is refused before cloning.
+    repo_clone_max_mb: int = Field(default=500, ge=1, le=50_000)
+    # A checkout whose thread has not used it for this long is removed by the worker.
+    repo_checkout_ttl_days: int = Field(default=14, ge=1, le=365)
+    repo_clone_timeout_seconds: float = Field(default=600.0, gt=0, le=3600.0)
 
     # --- HTTP posture ---
     # `/docs` and `/openapi.json` describe every route and are behind auth in `api_key`

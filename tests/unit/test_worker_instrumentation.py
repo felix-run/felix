@@ -27,6 +27,7 @@ SCHEDULED_TASKS = {
     "run_scheduled_jobs",
     "consolidate_memory",
     "retention_sweep",
+    "repo_checkout_sweep",
     "anomaly_scan",
     "continuous_eval",
     "fiber_scheduler",

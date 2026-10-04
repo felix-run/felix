@@ -492,7 +492,11 @@ class _PublishExecutor:
         api_base: str = GITHUB_API,
         web_base: str = GITHUB_WEB,
     ) -> None:
+        if spec.repo is None:
+            # `auth: person` resolves its repository per call and binds `_ThreadPublishExecutor`.
+            raise ValueError("github_publish: a fixed publish executor needs a repo")
         self._spec = spec
+        self._repo: str = spec.repo
         self._token = token
         self._allow_http = allow_http
         self._api_base = api_base
@@ -516,8 +520,8 @@ class _PublishExecutor:
         """The approval preview: computed from `head_sha` in the workspace, never from the model."""
         root = workspace_root()
         async with self._client() as client:
-            plan = await _plan(root, _GitHub(client, self._api_base, self._spec.repo), self._spec, args)
-        return await _preview_text(root, plan, self._spec.repo)
+            plan = await _plan(root, _GitHub(client, self._api_base, self._repo), self._spec, args)
+        return await _preview_text(root, plan, self._repo)
 
     async def execute(self, args: ToolInput, ctx: ToolInvocationCtx | None = None) -> ToolOutput:
         _ = ctx
@@ -528,7 +532,7 @@ class _PublishExecutor:
         title = str(args.get("title") or "")[:200] or None
         try:
             async with asyncio.timeout(_PUBLISH_TIMEOUT_S), self._client() as client:
-                gh = _GitHub(client, self._api_base, self._spec.repo)
+                gh = _GitHub(client, self._api_base, self._repo)
                 plan = await _plan(root, gh, self._spec, args)
                 if plan.parent == plan.head:
                     return f"nothing to publish: {plan.branch} is already at {plan.head}"
@@ -538,17 +542,15 @@ class _PublishExecutor:
         except PublishRefused as exc:
             return tool_error_output(ToolErrorCode.INVALID_ARGUMENTS, f"[publish refused] {exc}")
         except PublishFailed as exc:
-            logger.warning("publish_commits failed repo=%s: %s", self._spec.repo, exc)
+            logger.warning("publish_commits failed repo=%s: %s", self._repo, exc)
             return tool_error_output(ToolErrorCode.PROVIDER_ERROR, f"[publish failed] {exc}")
         except TimeoutError:
             return tool_error_output(
                 ToolErrorCode.TIMEOUT, f"[publish failed] timed out after {_PUBLISH_TIMEOUT_S:.0f}s"
             )
-        compare = (
-            f"{self._web_base}/{self._spec.repo}/compare/{self._spec.base}...{quote(plan.branch, safe='/')}"
-        )
+        compare = f"{self._web_base}/{self._repo}/compare/{self._spec.base}...{quote(plan.branch, safe='/')}"
         return (
-            f"published {files} file(s) to {self._spec.repo}:{plan.branch} as {sha} "
+            f"published {files} file(s) to {self._repo}:{plan.branch} as {sha} "
             f"({'fast-forward' if plan.branch_exists else 'new branch'}, parent {plan.parent})\n"
             f"compare: {compare}"
         )
@@ -587,6 +589,90 @@ def tool_from_github_publish(
     )
 
 
+class _ThreadPublishExecutor:
+    """`publish_commits` with `auth: person`: the repository, base and token are the thread's.
+
+    Resolved per call, never at bind time: the checkout is opened after the agent is built, and
+    the access token is minted fresh from the stored connection of whoever opened it — so the
+    commit is theirs, and a connection they have since revoked publishes nothing.
+    """
+
+    transport = "github"
+
+    def __init__(self, spec: GithubPublishSpec, *, allow_http: bool = False) -> None:
+        self._spec = spec
+        self._allow_http = allow_http
+
+    async def _resolve(self) -> _PublishExecutor | str:
+        from felix.auth import github_connections
+        from felix.auth.github import GitHubLoginError
+        from felix.context import try_get_context
+        from felix.repos import checkouts
+
+        ctx = try_get_context()
+        thread_id = getattr(ctx, "thread_id", None) if ctx is not None else None
+        tenant_id = getattr(getattr(ctx, "auth", None), "tenant_id", None) if ctx is not None else None
+        if ctx is None or not thread_id or not tenant_id:
+            return "[publish refused] this run has no thread, so no repository to publish to"
+        state = checkouts.read_checkout(ctx.settings, tenant_id, thread_id)
+        if state is None:
+            return "[publish refused] this thread has no repository; open one for it first"
+        if state.get("state") != checkouts.READY:
+            return f"[publish refused] this thread's checkout of {state.get('repo')} is {state.get('state')}"
+        base = str(state.get("base") or "")
+        if base.startswith(self._spec.branch_prefix):
+            return f"[publish refused] the checkout's base {base!r} is inside branch_prefix"
+        try:
+            token = await github_connections.access_token(
+                ctx.settings, tenant_id, int(state["github_user_id"])
+            )
+        except github_connections.GitHubNotConnected, github_connections.GitHubConnectionRevoked:
+            return (
+                f"[github disconnected] {state.get('opened_by')}'s GitHub connection is gone or no longer "
+                "works; they must reconnect GitHub before anything can be published"
+            )
+        except GitHubLoginError as exc:
+            return f"[publish failed] GitHub could not be reached to authorize the publish: {exc}"
+        spec = self._spec.model_copy(update={"repo": state["repo"], "base": base})
+        return _PublishExecutor(spec, token=token, allow_http=self._allow_http)
+
+    async def preview(self, args: ToolInput) -> str:
+        resolved = await self._resolve()
+        if isinstance(resolved, str):
+            return resolved
+        return await resolved.preview(args)
+
+    async def execute(self, args: ToolInput, ctx: ToolInvocationCtx | None = None) -> ToolOutput:
+        resolved = await self._resolve()
+        if isinstance(resolved, str):
+            code = (
+                ToolErrorCode.TRANSPORT_UNAVAILABLE
+                if resolved.startswith(("[github disconnected]", "[publish failed]"))
+                else ToolErrorCode.INVALID_ARGUMENTS
+            )
+            return tool_error_output(code, resolved)
+        return await resolved.execute(args, ctx)
+
+
+def tool_from_thread_publish(spec: GithubPublishSpec, *, allow_http: bool = False) -> Tool:
+    """Bind `publish_commits` for `auth: person`: to the thread's own repository, as its opener."""
+    executor = _ThreadPublishExecutor(spec, allow_http=allow_http)
+    return define_tool_with_executor(
+        name=TOOL_NAME,
+        description=(
+            "Publish commits you made in this thread's repository checkout to GitHub, as the person "
+            f"who opened it. Pass the branch (must start with {spec.branch_prefix!r}) and the full sha "
+            "from git rev-parse HEAD. A new branch starts from the checkout's base branch; an existing "
+            "one is fast-forwarded. Several local commits are published as one; title names it."
+        ),
+        args=PublishArgs,
+        executor=executor,
+        source="github",
+        replay_safe=False,
+        approval_preview=executor.preview,
+    )
+
+
 __all__ = [
     "GITHUB_API",
     "MAX_FILES",
@@ -595,4 +681,5 @@ __all__ = [
     "TOOL_NAME",
     "PublishArgs",
     "tool_from_github_publish",
+    "tool_from_thread_publish",
 ]

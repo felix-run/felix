@@ -11,8 +11,12 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import pytest
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 # Variables that redirect git away from the repository a command names. `git -C <dir>` does
 # NOT override these — the environment wins — so a fixture building a throwaway repo with
@@ -232,3 +236,11 @@ def _reset_app_globals():
 
     get_settings.cache_clear()
     felix_plugins._registry = felix_plugins.PluginRegistry()
+
+
+@pytest.fixture
+def git_server(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Any]:
+    """A bare `acme/widgets.git` served over dumb HTTP for the checkout tests (`tests/git_server.py`)."""
+    from tests.git_server import serve
+
+    yield from serve(tmp_path, monkeypatch)

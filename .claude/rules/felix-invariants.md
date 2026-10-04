@@ -78,6 +78,24 @@ line, re-validate it against *that* grammar's separators. Details: the **securit
 - **Postgres is the system of record**; the warehouse is optional append-only spill written after
   the Postgres write.
 - **`felix-scheduler` runs alongside `felix-worker`**, or no periodic job fires.
+- **A caller's error answer is written, never forwarded from an exception.** No `str(exc)`,
+  `repr(exc)`, `exc.args` or `f"...{exc}"` in an `HTTPException` detail, a JSON body, a stored
+  state a route returns, or any helper that builds one. An exception's text is the operator's
+  business — an egress proxy's name, a DNS failure, a filesystem path, an upstream's own error — and
+  CodeQL reports it as `py/stack-trace-exposure` (#475 shipped six in one file). Choose the message
+  by the error's *code*, build it only from values the route already validated, and log the detail:
+  `routes/repos.py` is the pattern (`GITHUB_UNAVAILABLE`, `_checkout_refusal_message`), and
+  `felix.auth.github`'s curated `UNAVAILABLE_MESSAGE` / `CONFIG_ERROR_MESSAGE` are the same idea one
+  layer down. `tests/unit/test_route_error_text.py` fails a route that does it; its `KNOWN_OPEN`
+  only shrinks. The scan covers route modules only, so a message a route stores and later returns
+  (a checkout's `error`) is held to this by review — classify it where it is written.
+- **A caller-supplied value reaches a log line only through `felix.logging_setup.loggable()`.** A
+  request body field, a path or query parameter, a header, a thread id: wrap it, with a `limit`
+  that fits what it should be (`loggable(body.full_name, limit=200)`). The formatter escapes too,
+  but CodeQL's `py/log-injection` reads the call site, not the formatter, and #475's fix for the
+  rule above introduced one by logging a request field bare. A value already validated by a pattern
+  still goes through it: the pattern is invisible to the scanner and to the next person who
+  loosens it.
 - Commit and push only when the user asks; branch first. Details: the **branch-pr-workflow** skill.
 
 ## What the work is for

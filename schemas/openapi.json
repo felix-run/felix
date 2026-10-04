@@ -330,6 +330,100 @@
         "title": "ChatRequest",
         "type": "object"
       },
+      "CheckoutOut": {
+        "properties": {
+          "ahead": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ahead"
+          },
+          "base": {
+            "title": "Base",
+            "type": "string"
+          },
+          "branch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Branch"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "dirty": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dirty"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "opened_by": {
+            "default": "",
+            "title": "Opened By",
+            "type": "string"
+          },
+          "private": {
+            "default": false,
+            "title": "Private",
+            "type": "boolean"
+          },
+          "repo": {
+            "title": "Repo",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "cloning",
+              "ready",
+              "failed",
+              "expired"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "repo",
+          "base"
+        ],
+        "title": "CheckoutOut",
+        "type": "object"
+      },
       "CompactRequest": {
         "additionalProperties": false,
         "properties": {
@@ -973,6 +1067,34 @@
         "title": "ImportIn",
         "type": "object"
       },
+      "InstallationOut": {
+        "properties": {
+          "account": {
+            "title": "Account",
+            "type": "string"
+          },
+          "account_type": {
+            "title": "Account Type",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "repository_selection": {
+            "title": "Repository Selection",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "account",
+          "account_type",
+          "repository_selection"
+        ],
+        "title": "InstallationOut",
+        "type": "object"
+      },
       "JobUpsert": {
         "additionalProperties": false,
         "properties": {
@@ -1517,6 +1639,36 @@
         "title": "OpenAIMessage",
         "type": "object"
       },
+      "OpenRepoRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "full_name": {
+            "maxLength": 200,
+            "minLength": 3,
+            "pattern": "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$",
+            "title": "Full Name",
+            "type": "string"
+          },
+          "ref": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ref"
+          }
+        },
+        "required": [
+          "full_name"
+        ],
+        "title": "OpenRepoRequest",
+        "type": "object"
+      },
       "PlanUpsert": {
         "additionalProperties": false,
         "properties": {
@@ -1618,6 +1770,113 @@
           "note"
         ],
         "title": "RejectIn",
+        "type": "object"
+      },
+      "RepoErrorOut": {
+        "properties": {
+          "error": {
+            "title": "Error",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "error",
+          "message"
+        ],
+        "title": "RepoErrorOut",
+        "type": "object"
+      },
+      "RepoOut": {
+        "properties": {
+          "archived": {
+            "title": "Archived",
+            "type": "boolean"
+          },
+          "can_write": {
+            "title": "Can Write",
+            "type": "boolean"
+          },
+          "default_branch": {
+            "title": "Default Branch",
+            "type": "string"
+          },
+          "full_name": {
+            "title": "Full Name",
+            "type": "string"
+          },
+          "installation_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Installation Id"
+          },
+          "private": {
+            "title": "Private",
+            "type": "boolean"
+          },
+          "size_kb": {
+            "title": "Size Kb",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "full_name",
+          "private",
+          "archived",
+          "default_branch",
+          "can_write",
+          "size_kb"
+        ],
+        "title": "RepoOut",
+        "type": "object"
+      },
+      "ReposOut": {
+        "properties": {
+          "install_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Install Url"
+          },
+          "installations": {
+            "items": {
+              "$ref": "#/components/schemas/InstallationOut"
+            },
+            "title": "Installations",
+            "type": "array"
+          },
+          "repositories": {
+            "items": {
+              "$ref": "#/components/schemas/RepoOut"
+            },
+            "title": "Repositories",
+            "type": "array"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "installations",
+          "repositories",
+          "truncated"
+        ],
+        "title": "ReposOut",
         "type": "object"
       },
       "ReviewCheckOut": {
@@ -6792,6 +7051,204 @@
         ]
       }
     },
+    "/chat/sessions/{thread_id}/workspace/repo": {
+      "delete": {
+        "description": "Delete this thread's checkout. Commits not yet published are lost with it.",
+        "operationId": "remove_thread_repo_chat_sessions__thread_id__workspace_repo_delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "thread_id",
+            "required": true,
+            "schema": {
+              "title": "Thread Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Remove Thread Repo",
+        "tags": [
+          "Repos"
+        ]
+      },
+      "get": {
+        "description": "This thread's checkout: its state, and once ready, its branch, commits ahead and whether\nit has uncommitted changes.",
+        "operationId": "get_thread_repo_chat_sessions__thread_id__workspace_repo_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "thread_id",
+            "required": true,
+            "schema": {
+              "title": "Thread Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckoutOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Thread Repo",
+        "tags": [
+          "Repos"
+        ]
+      },
+      "post": {
+        "description": "Clone a repository you can reach into this thread's checkout. Answers at once with\n`cloning`; poll `GET` on the same path until it is `ready` (or `failed`).",
+        "operationId": "open_thread_repo_chat_sessions__thread_id__workspace_repo_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "thread_id",
+            "required": true,
+            "schema": {
+              "title": "Thread Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpenRepoRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckoutOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoErrorOut"
+                }
+              }
+            },
+            "description": "Content Too Large"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoErrorOut"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          }
+        },
+        "summary": "Open Thread Repo",
+        "tags": [
+          "Repos"
+        ]
+      }
+    },
     "/chat/steer": {
       "post": {
         "description": "Queue a steer (interrupt remaining tools) or follow-up (after idle) message.",
@@ -7914,6 +8371,70 @@
         "summary": "Remove Github Connection",
         "tags": [
           "Auth"
+        ]
+      }
+    },
+    "/github/repos": {
+      "get": {
+        "description": "The repositories you can open: where the App is installed and you have access.",
+        "operationId": "list_my_repos_github_repos_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Q",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReposOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoErrorOut"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          }
+        },
+        "summary": "List My Repos",
+        "tags": [
+          "Repos"
         ]
       }
     },

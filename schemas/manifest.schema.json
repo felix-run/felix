@@ -676,8 +676,16 @@
       "description": "Bind `publish_commits`: publish commits already made in the workspace, from the harness.\n\nThe workspace commits locally and holds no credential; this tool reads those commits with\nread-only git and writes them through GitHub's Git Data API from the harness process, so Felix\nuses the token in one HTTP client and passes it to no process that runs repository code (which\nis not the same as that code being unable to read it \u2014 deploy/GOVERNANCE.md, \"Publishing\ncommits\"). Everything here is operator-fixed \u2014 the model chooses a branch under\n`branch_prefix` and a commit sha, and nothing else. See `felix/tools/github_publish.py`.",
       "properties": {
         "repo": {
-          "title": "Repo",
-          "type": "string"
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Repo"
         },
         "auth": {
           "minLength": 1,
@@ -696,7 +704,6 @@
         }
       },
       "required": [
-        "repo",
         "auth",
         "branch_prefix"
       ],

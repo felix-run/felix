@@ -50,6 +50,7 @@ from felix_api.routes import (
     openai_compat,
     plans,
     push,
+    repos,
     skill_import,
     skill_library,
     skill_quality,
@@ -324,6 +325,8 @@ def create_app(
     app.include_router(auth_github.router, prefix=GITHUB_LOGIN_PREFIX)
     app.include_router(auth_github.methods_router, prefix="/auth")
     app.include_router(auth_github.connection_router, prefix="/github")
+    app.include_router(repos.github_router, prefix="/github")
+    app.include_router(repos.checkout_router, prefix="/chat/sessions")
 
     for plugin in plugin_list:
         routes_fn = getattr(plugin, "routes", None)
