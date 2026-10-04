@@ -1503,6 +1503,11 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       (2026-09-29: done — export JSONL (web #66), reconnect-to-snapshot after refresh (web #156,
       the thread in the URL), empty and search states; still open: lease contention falls back to a
       shared lease silently, with no copy saying another tab holds it.)
+      (2026-10-04: the harness half is done — that fallback was itself a `409 lease_held`, so the
+      second tab held nothing. A `shared` acquire now observes an exclusively held thread with its
+      own token and `held_by_other: true`, renews only its own hold, and is refused on the driving
+      routes when it sends `X-Felix-Lease-Token`. Still open in chat-ui: the copy, renewing the
+      observer hold, and sending the header.)
 - [x] **Labels name the thing, not the wire key** — `agent-sheet.tsx` says "Reply limit",
       "Conversation state" and "every turn replayed" (felix-run/web#139); raw values stay mono.
 - [ ] **Prune leftover TS-harness skills/copy** in the docs sync sources. The getting-started

@@ -1453,6 +1453,45 @@ takes the replica out of rotation — and is logged at warning once per subsyste
 (waiters, steer, thread notifications, session leases), on the first failed connection and
 again when a command fails on a client that had connected, rather than silently degraded.
 The same channel carries UI prompts and client-tool answers.
+
+## Session leases
+
+A lease keeps two clients from driving one thread at once. It holds **one exclusive hold**
+(`mode: exclusive` — the client driving the thread, reported as `locked`) and **any number of
+observer holds** (`mode: shared` — read-only watchers, reported as `attached`). Each hold has
+its own token and its own expiry.
+
+- An `exclusive` acquire by another holder while the exclusive hold lives is `409 lease_held`.
+  Observers never block one: a thread held only by observers is free to drive.
+- A `shared` acquire always succeeds, with a token of its own — never the exclusive hold's —
+  and `held_by_other: true` when someone else is driving. This is what a second browser tab
+  falls back to on `409`.
+- Re-acquiring renews the caller's own hold and nothing else. An observer's renewal does not
+  extend the exclusive hold, so an observer that keeps renewing cannot keep a closed tab's
+  exclusive hold alive.
+- Releasing drops the one hold the token (else `holder_id`) names. When the exclusive hold is
+  released or lapses its observers stay observers; none is promoted, and a client that wants
+  to drive takes the exclusive hold itself.
+- `GET /chat/sessions/{id}/lease` reports the exclusive holder (`holder_id`, `expires_at`) and
+  every observer (`observer_holds`, each with its own `expires_at`).
+
+**Leases are advisory unless a client opts in.** The routes that drive a thread — `/chat`,
+`/chat/stream`, `/chat/continue`, `/chat/abort`, `/chat/rewind`, `/chat/steer`,
+`/chat/tool_result`, `/chat/ui`, `/chat/compact`, `/chat/thinking`, `/chat/sessions/name`,
+`/chat/sessions/label`, `/chat/sessions/custom` and `DELETE /chat/history/{id}` — accept an
+`X-Felix-Lease-Token` header. When it is present the request is refused unless it is the
+exclusive hold's token: an observer's is `409 lease_read_only`, and a token whose hold another
+holder has since taken is `409 lease_held`. A request without the header is not checked, so a
+caller that never takes a lease (a script, `/v1`, A2A) is unaffected — which also means the
+header protects a client from its own mistakes, not the thread from a caller that omits it.
+`/chat/fork` only reads its source and `/chat/sessions/feedback` rates a reply without writing
+the log, so neither checks it. Approvals are decided through `/approvals`, gated on the
+`approvals:write` scope, not on a lease.
+
+Leases live in Redis so they hold across replicas, and every transition is one `WATCH`/`MULTI`
+transaction, so two replicas cannot both grant the exclusive hold. Without Redis they fall back
+to per-process state, where each replica can grant its own.
+
 ## Browser-facing posture
 
 Every response carries `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`,
