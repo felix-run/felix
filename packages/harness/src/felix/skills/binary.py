@@ -58,6 +58,11 @@ def base64_decoded_size(text: str) -> int:
     return len(text) // 4 * 3 - padding
 
 
+def base64_encoded_size(size: int) -> int:
+    """How long ``size`` bytes are as padded base64 text: what a bundle holds for a binary asset."""
+    return (size + 2) // 3 * 4
+
+
 def is_valid_base64(value: str) -> bool:
     return bool(_BASE64_RE.match(value)) and len(value) % 4 == 0
 
@@ -67,6 +72,7 @@ __all__ = [
     "BINARY_ASSET_MIME_TYPES",
     "MAX_BINARY_ASSET_BYTES",
     "base64_decoded_size",
+    "base64_encoded_size",
     "binary_asset_mime_type",
     "decode_base64",
     "encode_base64",

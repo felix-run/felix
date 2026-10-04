@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import copy
 from collections.abc import Collection
+from dataclasses import dataclass, fields
 from typing import Any, Literal, Protocol, runtime_checkable
 
 from felix.config import Settings
@@ -117,6 +118,10 @@ class SkillLibraryStore(Protocol):
 
     async def count_pending(self, tenant_id: str, origin_manifest_id: str) -> int: ...
 
+    async def holds_imported_file(self, tenant_id: str, digests: Collection[str]) -> bool:
+        """Whether any file of an import-lineage version in the tenant has one of ``digests``."""
+        ...
+
     async def insert_version(
         self,
         tenant_id: str,
@@ -161,6 +166,30 @@ def is_rejected(row: dict[str, Any]) -> bool:
     return row.get("status") == "archived" and row.get("published_at") is None
 
 
+@dataclass(slots=True, frozen=True)
+class ImportOrigin:
+    """Where an imported version came from: the canonical source (`github:owner/repo/path`),
+    the ref that was asked for, the commit it resolved to, a digest of the kept files' tree
+    entries at that commit (what decides whether a re-import changed anything), the repository's
+    SPDX license when it declares one, and the committer date GitHub reports for the skill's
+    folder (epoch ms; provenance only, since the pusher sets it). Each field is the
+    `skill_version` column `origin_<field>`."""
+
+    source: str
+    ref: str
+    commit: str
+    tree_hash: str
+    license: str | None = None
+    committed_at: int | None = None
+
+    def as_row(self) -> dict[str, Any]:
+        return {f"origin_{f.name}": getattr(self, f.name) for f in fields(self)}
+
+
+# The `skill_version` columns an import's origin fills; null on every other version.
+ORIGIN_COLUMNS: tuple[str, ...] = tuple(f"origin_{f.name}" for f in fields(ImportOrigin))
+
+
 # Every `skill_version` column a caller may leave out, at the value Postgres would give it, so
 # a row read back from the twin has the same keys as one read back from the table.
 _VERSION_DEFAULTS: dict[str, Any] = {
@@ -177,12 +206,7 @@ _VERSION_DEFAULTS: dict[str, Any] = {
     "decision_note": None,
     "decided_at": None,
     "published_at": None,
-    "origin_source": None,
-    "origin_ref": None,
-    "origin_commit": None,
-    "origin_tree_hash": None,
-    "origin_license": None,
-    "origin_committed_at": None,
+    **dict.fromkeys(ORIGIN_COLUMNS),
     "lineage_import": False,
 }
 
@@ -282,6 +306,15 @@ class InMemorySkillLibraryStore:
 
     async def count_pending(self, tenant_id: str, origin_manifest_id: str) -> int:
         return self._pending(tenant_id, origin_manifest_id)
+
+    async def holds_imported_file(self, tenant_id: str, digests: Collection[str]) -> bool:
+        wanted = set(digests)
+        return any(
+            f["sha256"] in wanted
+            for (t, n, v), files in self._files.items()
+            if t == tenant_id and self._versions.get((t, n, v), {}).get("lineage_import")
+            for f in files
+        )
 
     def _pending(self, tenant_id: str, origin_manifest_id: str) -> int:
         return sum(
@@ -627,6 +660,31 @@ class PostgresSkillLibraryStore:
         async with self._session(tenant_id) as db:
             return await self._pending(db, tenant_id, origin_manifest_id)
 
+    async def holds_imported_file(self, tenant_id: str, digests: Collection[str]) -> bool:
+        from sqlalchemy import and_, exists, select
+
+        from felix.db.models import SkillFileRow, SkillVersionRow
+
+        wanted = sorted(set(digests))
+        if not wanted:
+            return False
+        query = select(
+            exists().where(
+                SkillFileRow.tenant_id == tenant_id,
+                SkillFileRow.sha256.in_(wanted),
+                exists().where(
+                    and_(
+                        SkillVersionRow.tenant_id == SkillFileRow.tenant_id,
+                        SkillVersionRow.name == SkillFileRow.name,
+                        SkillVersionRow.version == SkillFileRow.version,
+                        SkillVersionRow.lineage_import.is_(True),
+                    )
+                ),
+            )
+        )
+        async with self._session(tenant_id) as db:
+            return bool(await db.scalar(query))
+
     @staticmethod
     async def _pending(db: Any, tenant_id: str, origin_manifest_id: str) -> int:
         from sqlalchemy import func, select
@@ -885,9 +943,11 @@ __all__ = [
     "MAX_LIBRARY_SKILLS",
     "MAX_VERSIONS_LISTED",
     "MAX_VERSIONS_PER_SKILL",
+    "ORIGIN_COLUMNS",
     "SUMMARY_COLUMNS",
     "DraftCursor",
     "ExpectedLive",
+    "ImportOrigin",
     "InMemorySkillLibraryStore",
     "PostgresSkillLibraryStore",
     "SkillLibraryStore",

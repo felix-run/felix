@@ -101,6 +101,7 @@ worth having at all — each one means a control did not do what the manifest im
 | `felix_rule_targets_nothing` | `manifest_id`, `rule`, `kind` | A rule matches no tool. Looks like a control; is not one. |
 | `felix_shell_denied` | `tool`, `reason` | A shell tool refused an argv outside its prefixes (`argv`) or a `cwd` outside the workspace (`cwd`). A model probing the allowlist shows here, not only in the transcript. |
 | `felix_untrusted_tools_unscreened` | `manifest_id` | Untrusted tool output reached the model without content screening. |
+| `felix_imported_skills_unscreened` | `manifest_id` | A manifest offers a skill built on a GitHub import, and content screening is off, so what the skill tools return of it reaches the model unscreened. |
 | `felix_content_screening` | `manifest_id`, `tool`, `action` | Screening ran; `action` says what it did. `image_unscreened`: an untrusted tool returned images with no `image_model` to screen them, and they were quarantined. |
 | `felix_inbound_screening` | `manifest_id`, `surface`, `action` | Inbound screening acted on a user turn (`surface=turn`) or on MCP tool-call arguments (`surface=tool_arguments`); `action` is `denied`, `quarantined` or `unavailable`. |
 | `felix_secret_masking` | `manifest_id`, `tool` | A secret was masked out of tool output. |

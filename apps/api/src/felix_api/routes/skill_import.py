@@ -5,17 +5,19 @@ import is only ever a draft -- it waits in the review queue, and is published by
 request after review, through a gate that holds imported text to a stricter bar
 (`publish_gate.gate_source`). The fetch is `skills/importer.py`: pinned to one commit of the
 repository's own history, to `api.github.com` only, through the egress guard. Both routes are
-rate limited per tenant (`FELIX_SKILL_IMPORT_PER_HOUR`).
+charged per GitHub call against per-tenant and deployment-wide hourly budgets
+(`FELIX_SKILL_IMPORT_CALLS_PER_HOUR[_TOTAL]`, 429 `rate_limited`).
 
 Browsing reads with `skills:read`, as every library read does; importing changes the library and
-needs `skills:write`. `FELIX_SKILL_IMPORT_SOURCES` bounds both, so a reader cannot use the
-server's GitHub token to list a repository the deployment never meant to reach.
+needs `skills:write`. `FELIX_SKILL_IMPORT_SOURCES` bounds both per tenant, so a reader cannot use
+the server's GitHub token to list a repository the deployment never bound to its tenant.
 
 Refusals are `SkillLibraryErrorOut` with a stable code (`_skill_library_http.STATUS`): a source
-that can never be fetched is 422, one the allowlist or the cooldown refuses 403 (`source_not_allowed`,
-`too_recent`), one GitHub does not have 404, a
-name the library holds from another origin 409 `origin_mismatch`, and GitHub itself failing --
-rate limited, unreachable, answering in error -- 502.
+that can never be fetched is 422 (as is a commit off the repository's own history and an
+ambiguous ref), one the allowlist or the cooldown refuses 403 (`source_not_allowed`, `too_recent`),
+one GitHub does not have 404, a name the library holds from another origin 409 `origin_mismatch`,
+a spent call budget 429 `rate_limited`, and GitHub itself failing -- rate limited, unreachable,
+answering in error -- 502.
 """
 
 from __future__ import annotations
@@ -23,7 +25,6 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Query, Request, Response
-from fastapi.responses import JSONResponse
 from felix.auth.mgmt import SCOPE_SKILLS_READ, SCOPE_SKILLS_WRITE, subject_from_request
 from felix.skills import importer, library
 
@@ -39,27 +40,13 @@ from felix_api.routes._skill_library_models import ImportIn, SkillBrowseOut, Ski
 
 router = APIRouter()
 
-# One hour: the bucket `FELIX_SKILL_IMPORT_PER_HOUR` counts in.
-_WINDOW_S = 3600
 
-
-async def _throttled(request: Request, ctx: LibraryRequest) -> JSONResponse | None:
-    """A 429 when the caller's tenant has started its hour's browses and imports, else None.
-
-    Per tenant, on a store of its own (`app.state.skill_import_limiter`): each request spends the
-    deployment's GitHub token and rate limit, and the global limiter is keyed per client address,
-    so one tenant's many clients could otherwise drain it for every tenant."""
-    limiter = request.app.state.skill_import_limiter
-    allowed = await limiter.hit(
-        f"skill-import:{ctx.tenant_id}", limit=ctx.settings.skill_import_per_hour, window_seconds=_WINDOW_S
-    )
-    if allowed:
-        return None
-    return error(
-        429,
-        "rate_limited",
-        f"this tenant has started {ctx.settings.skill_import_per_hour} skill browses and imports this hour",
-    )
+def _deps(request: Request, ctx: LibraryRequest) -> importer.ImportDeps:
+    """The production seams: the request's object store, and a budget charged per GitHub call on
+    a limiter store of its own (`app.state.skill_import_limiter`) -- per tenant and for the whole
+    deployment, since every call spends the deployment's token and GitHub's limit for it."""
+    budget = importer.github_call_budget(request.app.state.skill_import_limiter, ctx.settings, ctx.tenant_id)
+    return importer.ImportDeps(object_store=ctx.store, charge=budget)
 
 
 @router.get("/-/browse", response_model=SkillBrowseOut, responses=IMPORT_ERRORS)
@@ -79,10 +66,8 @@ async def browse_source(
     and `eligible_at` when the minimum import age lets it in -- counted from the first time this
     tenant saw those files, which a browse records."""
     ctx = library_request(request, SCOPE_SKILLS_READ)
-    if (limited := await _throttled(request, ctx)) is not None:
-        return limited
     try:
-        listing = await importer.browse(ctx.settings, ctx.tenant_id, source, ref)
+        listing = await importer.browse(ctx.settings, ctx.tenant_id, source, ref, deps=_deps(request, ctx))
     except library.SkillLibraryError as exc:
         return refusal(exc)
     return ctx.redact(listing)
@@ -119,12 +104,10 @@ async def import_from_source(body: ImportIn, request: Request, response: Respons
             "an import is saved as a draft for review; publish it with "
             "POST /skill-library/{name}/versions/{version}/publish once it has been read",
         )
-    if (limited := await _throttled(request, ctx)) is not None:
-        return limited
     by = subject_from_request(request)
     try:
         result = await importer.import_skill(
-            ctx.settings, ctx.tenant_id, source=body.source, ref=body.ref, by=by, object_store=ctx.store
+            ctx.settings, ctx.tenant_id, source=body.source, ref=body.ref, by=by, deps=_deps(request, ctx)
         )
     except library.SkillLibraryError as exc:
         return refusal(exc)

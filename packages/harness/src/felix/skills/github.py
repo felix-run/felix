@@ -23,7 +23,7 @@ import hashlib
 import json
 import logging
 import re
-from collections.abc import AsyncIterator, Iterable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -112,6 +112,22 @@ class ImportTooRecent(SkillImportError):
 
     code = "too_recent"
 
+    def __init__(self, message: str, *, first_seen_at: int, eligible_at: int) -> None:
+        super().__init__(message)
+        self.first_seen_at, self.eligible_at = first_seen_at, eligible_at
+
+
+class ImportRefAmbiguous(SkillImportError):
+    """A bare ref names both a tag and a branch. Spell it `refs/tags/<name>` or `refs/heads/<name>`."""
+
+    code = "ambiguous_ref"
+
+
+class ImportBudgetExhausted(SkillImportError):
+    """The tenant's, or the deployment's, hourly budget of GitHub calls is spent."""
+
+    code = "rate_limited"
+
 
 class ImportCommitNotInRepo(SkillImportError):
     """The ref names a commit GitHub serves under this repository's name but that is not on its
@@ -144,6 +160,13 @@ class GitHubSource:
 
 def _segment_ok(segment: str) -> bool:
     return bool(_SEGMENT_RE.match(segment)) and segment not in {".", ".."}
+
+
+def valid_source_path(path: str) -> bool:
+    """Whether ``path`` may follow `github:owner/repo/` in a source: what `parse_source` accepts. A
+    folder a tree names outside that grammar is never offered as one."""
+    segments = path.split("/") if path else []
+    return len(segments) <= _MAX_PATH_SEGMENTS and all(_segment_ok(s) for s in segments)
 
 
 def parse_source(text: str) -> GitHubSource:
@@ -181,24 +204,69 @@ def validate_ref(ref: str) -> str:
     return ref
 
 
-def allowed_patterns(settings: Settings) -> list[str]:
-    return [p.strip().lower() for p in settings.skill_import_sources.split(",") if p.strip()]
+@dataclass(slots=True, frozen=True)
+class SourceGrant:
+    """One `FELIX_SKILL_IMPORT_SOURCES` entry: a glob over canonical sources, and the tenant it is
+    bound to (`acme=github:acme/*`), or None for an unbound entry any tenant may use."""
+
+    pattern: str
+    tenant: str | None = None
+
+    def covers(self, canonical: str) -> bool:
+        """A glob over the canonical source; one without a glob also covers everything under it:
+        `github:myorg/skills` allows `github:myorg/skills/pdf`."""
+        return fnmatch.fnmatchcase(canonical, self.pattern) or fnmatch.fnmatchcase(
+            canonical, self.pattern.rstrip("/") + "/*"
+        )
+
+    @property
+    def owner_is_literal(self) -> bool:
+        """Whether the owner is spelled out rather than globbed: a token's reach is then bounded
+        by an owner someone chose, not by whatever the token can read."""
+        owner = self.pattern.removeprefix(GITHUB_PREFIX).split("/", 1)[0]
+        return bool(owner) and not any(c in owner for c in "*?[]")
 
 
-def check_allowed(settings: Settings, source: GitHubSource) -> None:
-    """Refuse a source `FELIX_SKILL_IMPORT_SOURCES` does not cover. Empty covers every GitHub
-    source. An entry is a glob over the canonical source, and one without a glob also covers
-    everything under it: `github:myorg/skills` allows `github:myorg/skills/pdf`."""
-    patterns = allowed_patterns(settings)
-    if not patterns:
+def parse_import_sources(raw: str) -> list[SourceGrant]:
+    """`FELIX_SKILL_IMPORT_SOURCES`: comma-separated `[<tenant>=]github:<owner>[/<repo>[/<path>]]`,
+    globs allowed. Raises ValueError on an entry that is not that shape, so a typo is a boot failure
+    rather than an entry that silently matches nothing.
+
+    The comma list of globs the setting already was, with an optional tenant in front -- rather
+    than the JSON object `FELIX_GITHUB_ORG_TENANTS` is -- so an unbound list keeps its meaning."""
+    from felix.auth.context import assert_valid_tenant_id
+
+    grants: list[SourceGrant] = []
+    for entry in (e.strip() for e in raw.split(",")):
+        if not entry:
+            continue
+        tenant, sep, pattern = entry.partition("=")
+        if not sep:
+            tenant, pattern = "", entry
+        tenant, pattern = tenant.strip(), pattern.strip().lower()
+        owner = pattern.removeprefix(GITHUB_PREFIX).split("/", 1)[0]
+        if not pattern.startswith(GITHUB_PREFIX) or not owner:
+            raise ValueError(f"{entry!r} must be [<tenant>=]github:<owner>[/<repo>[/<path>]], globs allowed")
+        if sep:
+            try:
+                assert_valid_tenant_id(tenant)
+            except ValueError as exc:
+                raise ValueError(f"{entry!r}: {tenant!r} is not a tenant id ({exc})") from exc
+        grants.append(SourceGrant(pattern=pattern, tenant=tenant if sep else None))
+    return grants
+
+
+def check_allowed(settings: Settings, source: GitHubSource, tenant_id: str) -> None:
+    """Refuse a source `FELIX_SKILL_IMPORT_SOURCES` does not cover for ``tenant_id``: an entry bound
+    to the tenant, or an unbound one. An empty list covers every source -- which boot allows only
+    where no token reaches anything private (`config._validate_skill_import`)."""
+    grants = parse_import_sources(settings.skill_import_sources)
+    if not grants:
         return
     canonical = source.canonical.lower()
-    for pattern in patterns:
-        if fnmatch.fnmatchcase(canonical, pattern) or fnmatch.fnmatchcase(
-            canonical, pattern.rstrip("/") + "/*"
-        ):
-            return
-    raise ImportSourceNotAllowed(f"{source.canonical} is not a source FELIX_SKILL_IMPORT_SOURCES allows")
+    if any(g.covers(canonical) for g in grants if g.tenant in (None, tenant_id)):
+        return
+    raise ImportSourceNotAllowed(f"{source.canonical} is not a source this tenant may import from")
 
 
 # -- the tree ----------------------------------------------------------------------------------
@@ -315,9 +383,15 @@ class GitHubReader:
     """The GitHub calls an import makes. Every path is built from validated parts; the token,
     when there is one, goes in a header and nowhere else."""
 
-    def __init__(self, http: httpx.AsyncClient, token: str = "") -> None:
+    def __init__(
+        self, http: httpx.AsyncClient, token: str = "", charge: Callable[[], Awaitable[None]] | None = None
+    ) -> None:
         self._http = http
         self._token = token
+        # Called before every request: the caller's budget of GitHub calls, which refuses
+        # (`ImportBudgetExhausted`) once it is spent. The cost of a browse or an import is its
+        # calls, not the request that asked for them.
+        self._charge = charge
 
     def _headers(self, accept: str = "application/vnd.github+json") -> dict[str, str]:
         headers = {
@@ -336,6 +410,8 @@ class GitHubReader:
         ``truncate``, cut off there and the rest never read."""
         from felix.security.ssrf import EgressBlocked
 
+        if self._charge is not None:
+            await self._charge()
         headers = self._headers(accept) if accept else self._headers()
         try:
             async with self._http.stream("GET", f"{GITHUB_API}{path}", headers=headers) as resp:
@@ -424,24 +500,41 @@ class GitHubReader:
     async def commit(self, source: GitHubSource, ref: str, *, default_branch: str) -> str:
         """The full SHA ``ref`` names now -- provably *this* repository's commit.
 
-        GitHub answers `commits/{sha}` for any commit in the repository's fork network, so a
-        SHA pushed only to a fork would read as the upstream's, under the upstream's name and
-        past an allowlist that trusts the upstream. A branch or tag resolved through the
-        repository's own refs (`git/ref/heads|tags`) is its own by construction; a commit id is
-        accepted only when it is on the default branch (`compare`).
+        GitHub answers `commits/{sha}` for any commit in the repository's fork network, so a SHA
+        pushed only to a fork would read as the upstream's, under the upstream's name and past an
+        allowlist that trusts the upstream.
+
+        - A commit id (hex, 7-64) is a commit and nothing else -- never looked up as a branch, so a
+          branch someone names `deadbeef1234` cannot stand in for that commit -- and is accepted only
+          when `compare` puts it on the default branch.
+        - `refs/heads/<name>` and `refs/tags/<name>` resolve through the repository's own refs.
+        - A bare name is looked up as a tag and as a branch, as git resolves one; naming both is
+          refused as ambiguous rather than letting a branch shadow a release tag.
         """
-        for kind in ("heads", "tags"):
-            sha = await self._named_ref(source, kind, ref)
-            if sha is not None:
+        if _COMMIT_ID_RE.match(ref):
+            sha = await self._commit_by_sha(source, ref)
+            if not await self._reachable(source, default_branch, sha):
+                raise ImportCommitNotInRepo(
+                    f"commit {sha} is not on {source.owner}/{source.repo}'s {default_branch} branch; "
+                    "import a branch or tag of the repository itself"
+                )
+            return sha
+        for prefix, kind in (("refs/heads/", "heads"), ("refs/tags/", "tags")):
+            if ref.startswith(prefix):
+                sha = await self._named_ref(source, kind, ref.removeprefix(prefix))
+                if sha is None:
+                    raise ImportSourceNotFound(f"{source.owner}/{source.repo} has no {ref!r}")
                 return sha
-        if not _COMMIT_ID_RE.match(ref):
-            raise ImportSourceNotFound(f"{source.owner}/{source.repo} has no branch or tag {ref!r}")
-        sha = await self._commit_by_sha(source, ref)
-        if not await self._reachable(source, default_branch, sha):
-            raise ImportCommitNotInRepo(
-                f"commit {sha[:12]} is not on {source.owner}/{source.repo}'s {default_branch} branch; "
-                "import a branch or tag of the repository itself"
+        tag = await self._named_ref(source, "tags", ref)
+        head = await self._named_ref(source, "heads", ref)
+        if tag is not None and head is not None:
+            raise ImportRefAmbiguous(
+                f"{ref!r} is both a tag and a branch of {source.owner}/{source.repo}; "
+                f"name refs/tags/{ref} or refs/heads/{ref}"
             )
+        sha = tag or head
+        if sha is None:
+            raise ImportSourceNotFound(f"{source.owner}/{source.repo} has no branch or tag {ref!r}")
         return sha
 
     async def last_changed(self, source: GitHubSource, commit: str, path: str) -> int | None:
@@ -536,13 +629,18 @@ class Resolved:
 
 
 @asynccontextmanager
-async def reader(settings: Settings, http: httpx.AsyncClient | None) -> AsyncIterator[GitHubReader]:
-    """A reader over ``http`` (the caller's, left open), or over the production client."""
+async def reader(
+    settings: Settings,
+    http: httpx.AsyncClient | None,
+    charge: Callable[[], Awaitable[None]] | None = None,
+) -> AsyncIterator[GitHubReader]:
+    """A reader over ``http`` (the caller's, left open), or over the production client, which is
+    closed on the way out whatever happened inside."""
     if http is not None:
-        yield GitHubReader(http, settings.skill_import_github_token)
+        yield GitHubReader(http, settings.skill_import_github_token, charge)
         return
     async with github_client(settings) as client:
-        yield GitHubReader(client, settings.skill_import_github_token)
+        yield GitHubReader(client, settings.skill_import_github_token, charge)
 
 
 async def resolve(gh: GitHubReader, source: GitHubSource, ref: str | None) -> Resolved:
@@ -559,9 +657,11 @@ __all__ = [
     "DiscoveredSkill",
     "GitHubReader",
     "GitHubSource",
+    "ImportBudgetExhausted",
     "ImportCommitNotInRepo",
     "ImportEgressBlocked",
     "ImportRateLimited",
+    "ImportRefAmbiguous",
     "ImportSourceInvalid",
     "ImportSourceNotAllowed",
     "ImportSourceNotFound",
@@ -571,15 +671,17 @@ __all__ = [
     "RepoMeta",
     "Resolved",
     "SkillImportError",
+    "SourceGrant",
     "TreeEntry",
-    "allowed_patterns",
     "check_allowed",
     "discover_skills",
     "github_client",
     "hash_tree_snapshot",
+    "parse_import_sources",
     "parse_source",
     "reader",
     "resolve",
     "skill_file_entries",
+    "valid_source_path",
     "validate_ref",
 ]

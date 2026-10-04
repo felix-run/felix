@@ -52,6 +52,10 @@ ALLOWED_ROOT_FILES = ("plugin.json",)
 _SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}\Z")
 
 FRONTMATTER_RE = re.compile(r"^---[ \t]*\r?\n(.*?)\r?\n---[ \t]*\r?\n(.*)\Z", re.DOTALL)
+# One `description:` line of the frontmatter, its value without the line ending.
+_DESCRIPTION_LINE_RE = re.compile(r"^description:[ \t]*([^\r\n]*)", re.MULTILINE)
+# agentskills.io's limit on a description.
+MAX_DESCRIPTION_CHARS = 1024
 
 # Bounds on what a parse or a validation will take on. The frontmatter cap applies before
 # YAML sees the text; the depth cap stops a `[[[[…]]]]` bomb inside the composer.
@@ -175,7 +179,7 @@ class SkillFrontmatter(BaseModel):
     model_config = ConfigDict(extra="allow", validate_by_name=True, validate_by_alias=True)
 
     name: Annotated[str, AfterValidator(_skill_name)]
-    description: str = Field(min_length=1, max_length=1024)
+    description: str = Field(min_length=1, max_length=MAX_DESCRIPTION_CHARS)
     license: str | None = None
     compatibility: str | None = Field(default=None, max_length=500)
     metadata: dict[str, str] | None = None
@@ -207,6 +211,35 @@ class ValidationResult:
     @property
     def valid(self) -> bool:
         return self.frontmatter is not None and not self.errors
+
+
+def clamp_description(content: str, max_len: int = MAX_DESCRIPTION_CHARS) -> str:
+    """``content`` with a one-line `description:` cut to ``max_len`` characters (an ellipsis
+    last), and every other byte -- fences, line endings, other keys, the body -- unchanged.
+
+    For text written elsewhere (an import), where a long description is a reason to clamp rather
+    than to refuse. Fences as `FRONTMATTER_RE` reads them; a quoted value stays quoted. A block
+    scalar (`description: >`) is left alone, and validation judges it.
+    """
+    match = FRONTMATTER_RE.match(content)
+    if not match:
+        return content
+    found = _DESCRIPTION_LINE_RE.search(match.group(1))
+    if not found:
+        return content
+    value = found.group(1).rstrip(" \t")
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        quote, inner = value[0], value[1:-1]
+        if len(inner) <= max_len:
+            return content
+        value = f"{quote}{inner[: max_len - 1]}…{quote}"
+    elif len(value) > max_len:
+        value = f"{value[: max_len - 1]}…"
+    else:
+        return content
+    start = match.start(1) + found.start(1)
+    end = match.start(1) + found.end(1)
+    return f"{content[:start]}{value}{content[end:]}"
 
 
 def split_frontmatter(content: str) -> tuple[str, str] | None:
@@ -408,6 +441,7 @@ __all__ = [
     "BUNDLE_DIRS",
     "MAX_BUNDLE_BYTES",
     "MAX_BUNDLE_FILES",
+    "MAX_DESCRIPTION_CHARS",
     "MAX_FRONTMATTER_CHARS",
     "MAX_FRONTMATTER_DEPTH",
     "MAX_SKILL_MD_CHARS",
@@ -417,6 +451,7 @@ __all__ = [
     "ValidationIssue",
     "ValidationResult",
     "bundle_path_issue",
+    "clamp_description",
     "create_skill_template",
     "extract_discovery_meta",
     "is_valid_skill_name",

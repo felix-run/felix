@@ -365,7 +365,9 @@ class SkillBrowseOut(BaseModel):
     # The minimum import age in force for the caller's tenant; 0 is none.
     min_age_days: int = 0
     items: list[BrowseItemOut]
-    # More skills were found than one browse lists; name a path to narrow it.
+    # How many skills the repository (or the path) holds; `items` lists at most 50 of them.
+    found: int
+    # More skills were found than one browse lists (`found` > len(items)); name a path to narrow it.
     truncated: bool
 
 

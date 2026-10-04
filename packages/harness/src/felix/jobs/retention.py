@@ -214,8 +214,22 @@ async def run_retention_sweep(settings: Settings) -> dict[str, int]:
     # prefix. Its own step also means one implementation rather than one per backend.
     counts["attachments"] = await _sweep_attachments(settings, cutoffs.attachment)
     counts["artifacts"] = await _sweep_artifacts(settings, cutoffs.artifact)
+    counts["skill_import_sighting"] = await _sweep_sightings(settings, cutoffs.now)
     logger.info("retention_sweep %s", counts)
     return counts
+
+
+async def _sweep_sightings(settings: Settings, now: int) -> int:
+    """Skill-import sightings past `SIGHTING_RETENTION_DAYS`, every tenant's. Both backends go
+    through the store, so the twin and the table share one rule. A failure is logged, not raised:
+    the rest of the sweep has run, and the count line must still say what happened."""
+    from felix.skills.sighting_store import SIGHTING_RETENTION_DAYS, get_sighting_store
+
+    try:
+        return await get_sighting_store(settings).prune(before=now - SIGHTING_RETENTION_DAYS * 86_400_000)
+    except Exception:
+        logger.warning("retention: skill_import_sighting sweep failed", exc_info=True)
+        return 0
 
 
 #: How many expired rows one ledger read returns, and how many such reads one sweep makes,

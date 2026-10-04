@@ -9,6 +9,7 @@ Every request is recorded.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -44,12 +45,16 @@ class Repo:
     history: list[str] = field(default_factory=list)
     dates: dict[str, int] = field(default_factory=dict)
     tags: dict[str, str] = field(default_factory=dict)
+    # A commit off the linear history, and the history commit it was built on.
+    parents: dict[str, str] = field(default_factory=dict)
+    # An annotated tag's object id, and the commit it points at.
+    annotated: dict[str, str] = field(default_factory=dict)
 
     def compare(self, base: str, head: str) -> str:
-        """The `compare` status of ``head`` against ``base`` over one linear history: a
-        commit off it (a fork's) has diverged."""
+        """The `compare` status of ``head`` against ``base`` over one linear history. A commit
+        built on it but off it (a fork's, say) is ahead; one with no ancestor in it has diverged."""
         if head not in self.history:
-            return "diverged"
+            return "ahead" if self.parents.get(head) in self.history else "diverged"
         at, of = self.history.index(head), self.history.index(base)
         return "identical" if at == of else "behind" if at < of else "ahead"
 
@@ -89,6 +94,8 @@ class FakeRepos:
     no_history: bool = False
     # Pad the JSON answer for these paths' blobs by this many bytes.
     padding: dict[str, int] = field(default_factory=dict)
+    # Every blob read waits here first, when set (`_handle_async`).
+    blob_barrier: asyncio.Barrier | None = None
     _counter: int = 0
 
     def push(
@@ -109,12 +116,21 @@ class FakeRepos:
 
     def fork_commit(self, repo: str, files: dict[str, bytes]) -> str:
         """A commit GitHub serves under ``repo``'s name -- it is in the fork network -- that no
-        branch or tag of ``repo`` reaches: one pushed only to a fork."""
+        branch or tag of ``repo`` reaches: one pushed only to a fork, built on the default
+        branch's tip."""
         state = self.repos[repo.lower()]
-        return self._commit(repo, files, license=state.license, at=None)
+        sha = self._commit(repo, files, license=state.license, at=None)
+        state.parents[sha] = state.refs[state.default_branch]
+        return sha
 
-    def tag(self, repo: str, name: str, sha: str) -> None:
-        self.repos[repo.lower()].tags[name] = sha
+    def tag(self, repo: str, name: str, sha: str, *, annotated: bool = False) -> None:
+        """Tag ``sha``: lightweight (the ref names the commit) or annotated (a tag object does)."""
+        state = self.repos[repo.lower()]
+        if annotated:
+            obj = hashlib.sha1(f"tag:{name}:{sha}".encode(), usedforsecurity=False).hexdigest()
+            state.annotated[obj] = sha
+            sha = obj
+        state.tags[name] = sha
 
     def _commit(self, repo: str, files: dict[str, bytes], *, license: str | None, at: int | None) -> str:
         state = self.repos.setdefault(repo.lower(), Repo())
@@ -128,7 +144,14 @@ class FakeRepos:
     def client(self) -> httpx.AsyncClient:
         # The class as imported, not as looked up now: a test that rebinds `httpx.AsyncClient`
         # to reach the app must not reroute GitHub to the app as well.
-        return _AsyncClient(transport=httpx.MockTransport(self.handle))
+        return _AsyncClient(transport=httpx.MockTransport(self._handle_async))
+
+    async def _handle_async(self, request: httpx.Request) -> httpx.Response:
+        # A blob read waits at the barrier, when one is set: what lets a test hold two imports
+        # until both have read the library and neither has saved.
+        if self.blob_barrier is not None and "/git/blobs/" in request.url.path:
+            await self.blob_barrier.wait()
+        return self.handle(request)
 
     def serve(self, monkeypatch: Any) -> None:
         """Answer the production path's GitHub client (`github.github_client`) from this fake."""
@@ -169,9 +192,15 @@ class FakeRepos:
             if sha is None:
                 return httpx.Response(404, json={"message": "Not Found"})
             self._resolved(name)
+            kind_of = "tag" if sha in state.annotated else "commit"
             return httpx.Response(
-                200, json={"ref": f"refs/{kind}/{ref}", "object": {"type": "commit", "sha": sha}}
+                200, json={"ref": f"refs/{kind}/{ref}", "object": {"type": kind_of, "sha": sha}}
             )
+        if rest[:2] == ["git", "tags"]:
+            target = state.annotated.get(rest[2])
+            if target is None:
+                return httpx.Response(404, json={"message": "Not Found"})
+            return httpx.Response(200, json={"sha": rest[2], "object": {"type": "commit", "sha": target}})
         if rest[0] == "compare":
             base, _, head = "/".join(rest[1:]).partition("...")
             return httpx.Response(200, json={"status": state.compare(state.refs[base], head), "files": []})
