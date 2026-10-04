@@ -82,11 +82,14 @@ line, re-validate it against *that* grammar's separators. Details: the **securit
   `repr(exc)`, `exc.args` or `f"...{exc}"` in an `HTTPException` detail, a JSON body, a stored
   state a route returns, or any helper that builds one. An exception's text is the operator's
   business — an egress proxy's name, a DNS failure, a filesystem path, an upstream's own error — and
-  CodeQL reports it as `py/stack-trace-exposure` (#475 shipped six in one file). Choose the message
-  by the error's *code*, build it only from values the route already validated, and log the detail:
-  `routes/repos.py` is the pattern (`GITHUB_UNAVAILABLE`, `_checkout_refusal_message`), and
-  `felix.auth.github`'s curated `UNAVAILABLE_MESSAGE` / `CONFIG_ERROR_MESSAGE` are the same idea one
-  layer down. `tests/unit/test_route_error_text.py` fails a route that does it; its `KNOWN_OPEN`
+  CodeQL reports it as `py/stack-trace-exposure` (#475 shipped six in one file). Reach first for
+  `felix_api.errors.client_safe_message(exc)`: it relays only the exception types listed in
+  `_relayable()` — each one's message written for a client — and answers anything else with a fixed
+  string and the request id. A message a call site wrote for the caller itself passes
+  `authored_for_clients=True`, and is caught by its *own* exception type, never a bare `ValueError`
+  or `LookupError` that something deeper could raise next. Where there is no exception type to lean
+  on, choose the message by the error's code from values the route already validated and log the
+  detail: `routes/repos.py` (`GITHUB_UNAVAILABLE`, `_checkout_refusal_message`). `tests/unit/test_route_error_text.py` fails a route that does it; its `KNOWN_OPEN`
   only shrinks. The scan covers route modules only, so a message a route stores and later returns
   (a checkout's `error`) is held to this by review — classify it where it is written.
 - **A caller-supplied value reaches a log line only through `felix.logging_setup.loggable()`.** A
