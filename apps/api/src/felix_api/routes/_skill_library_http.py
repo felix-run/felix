@@ -63,9 +63,38 @@ STATUS: dict[str, int] = {
     # fixes that and a retry does not either: a server-side integrity failure, so a 5xx that
     # pages someone, under a code that says which.
     "version_corrupt": 500,
+    # An import that names a skill the library holds from another origin, or one an agent or an
+    # operator wrote: the import never takes over a name.
+    "origin_mismatch": 409,
+    # Imports (`skills/importer.py`). The source as written can never be fetched...
+    "invalid_source": 422,
+    "source_too_large": 422,
+    # The ref names a commit outside the repository's own history (a fork's, say).
+    "commit_not_in_repo": 422,
+    # An import is a draft for review; publishing it is a separate request after that review.
+    "publish_not_allowed": 422,
+    # ...the deployment's FELIX_SKILL_IMPORT_SOURCES does not cover it, or this tenant first saw
+    # its files within the minimum import age (a policy refusal like the allowlist's; waiting
+    # lifts it)...
+    "source_not_allowed": 403,
+    "too_recent": 403,
+    # ...GitHub has no such repository, ref, path or SKILL.md (or it is private and unread)...
+    "source_not_found": 404,
+    # ...or GitHub could not be asked: rate limited, unreachable, or answering in error. Upstream
+    # failures, so a 502 under a code that says which.
+    "upstream_rate_limited": 502,
+    "upstream_error": 502,
+    "egress_blocked": 502,
 }
 
+# Statuses only the import routes (`skill_import.py`) answer with a library code: GitHub failing,
+# and the allowlist and cooldown refusals. Every other library route documents neither.
+_IMPORT_ONLY_STATUSES = frozenset({403, 502})
 ERRORS: dict[int | str, dict[str, Any]] = {
+    status: {"model": SkillLibraryErrorOut}
+    for status in sorted({*STATUS.values(), 422} - _IMPORT_ONLY_STATUSES)
+}
+IMPORT_ERRORS: dict[int | str, dict[str, Any]] = {
     status: {"model": SkillLibraryErrorOut} for status in sorted({*STATUS.values(), 422})
 }
 
@@ -106,6 +135,12 @@ STRUCTURAL_FIELDS = frozenset(
         "content_type",
         "files",
         "latest",
+        # An import's origin: validated by `skills/github.py` (the source and ref) or minted by git
+        # (the commit and the tree digest). The license is GitHub's text, and is redacted.
+        "origin_source",
+        "origin_ref",
+        "origin_commit",
+        "origin_tree_hash",
     }
 )
 
@@ -180,6 +215,33 @@ class LibraryRequest:
         )
 
 
+async def written_version(
+    ctx: LibraryRequest, by: str, saved: dict[str, Any], *, publish: bool
+) -> dict[str, Any]:
+    """The response to a save: the version as stored, its files, and -- with ``publish`` -- the
+    outcome of publishing it through the gate. A refused publish leaves the draft saved, and
+    ``publish_blocked`` says why it did not also go live."""
+    name, version = str(saved["name"]), str(saved["version"])
+    published, blocked = False, None
+    if publish:
+        try:
+            await library.publish(ctx.settings, ctx.tenant_id, name, version, by=by, object_store=ctx.store)
+            published = True
+        except library.SkillLibraryError as exc:
+            blocked = refusal_body(exc)
+    # Read back, so the response carries every column the store defaults, as a later GET would.
+    row = await ctx.lib.get_version(ctx.tenant_id, name, version) or saved
+    files = await ctx.lib.list_files(ctx.tenant_id, name, version)
+    shadows = saved.get("shadows_operator_upload")
+    return {
+        **ctx.redact(row),
+        "files": files,
+        "shadows_operator_upload": await ctx.shadows(name, [version]) if shadows is None else shadows,
+        "published": published,
+        "publish_blocked": blocked,
+    }
+
+
 def library_request(request: Request, scope: str) -> LibraryRequest:
     """Check ``scope`` and resolve the caller's view of the library."""
     from felix.secrets import collected_secret_values
@@ -219,6 +281,7 @@ def row_page(ctx: LibraryRequest, rows: list[dict[str, Any]], limit: int) -> dic
 
 __all__ = [
     "ERRORS",
+    "IMPORT_ERRORS",
     "ROW_ID_RE",
     "STATUS",
     "STRUCTURAL_FIELDS",
@@ -234,4 +297,5 @@ __all__ = [
     "refusal",
     "refusal_body",
     "row_page",
+    "written_version",
 ]

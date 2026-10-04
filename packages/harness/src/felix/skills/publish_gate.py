@@ -49,6 +49,10 @@ class PublishPolicy:
     # score minus baseline, -100..100). Set without `require_eval`, a version with no evaluation
     # is blocked too: there is no uplift to compare.
     min_eval_uplift: int | None = None
+    # Refuse an import (`skills/importer.py`) of files the tenant first saw fewer than this many
+    # days ago (`sighting_store`): a supply-chain cooldown. Not a publish rule -- an import it
+    # refuses saves nothing -- but it lives on the same row, under the same tighten-only rule.
+    import_min_age_days: int = 0
     source: PolicySource = "settings"
 
     @property
@@ -64,6 +68,7 @@ class PublishPolicy:
             block_on_advisory=bool(row.get("block_on_advisory")),
             require_eval=bool(row.get("require_eval")),
             min_eval_uplift=None if uplift is None else int(uplift),
+            import_min_age_days=int(row.get("import_min_age_days") or 0),
             source=source,
         )
 
@@ -75,6 +80,7 @@ class PublishPolicy:
             block_on_advisory=bool(settings.skill_publish_block_on_advisory),
             require_eval=bool(settings.skill_publish_require_eval),
             min_eval_uplift=None if uplift is None else int(uplift),
+            import_min_age_days=int(settings.skill_import_min_age_days or 0),
         )
 
     def to_row(self) -> dict[str, Any]:
@@ -90,6 +96,7 @@ class PublishPolicy:
             block_on_advisory=self.block_on_advisory or other.block_on_advisory,
             require_eval=self.require_eval or other.require_eval,
             min_eval_uplift=max(floors) if floors else None,
+            import_min_age_days=max(self.import_min_age_days, other.import_min_age_days),
         )
 
     def without_eval(self) -> PublishPolicy:
@@ -114,29 +121,59 @@ def publish_policy(settings: Settings, row: Mapping[str, Any] | None) -> Publish
     return replace(effective, source="tenant" if effective == tenant else "tenant+settings")
 
 
+# Who wrote a version, when its own text could steer the test it is graded on: an agent, or a
+# third party whose skill was imported. Neither's generated or default scenarios count.
+_UNTRUSTED_AUTHORS = {"agent": "an agent wrote this version", "import": "this version was imported"}
+
+
 def eval_counts_for_gate(version_source: str | None, evaluation: Mapping[str, Any]) -> tuple[bool, str]:
     """Whether ``evaluation`` can satisfy `require_eval` and `min_eval_uplift` for a version
     written by ``version_source``, and why not when it cannot.
 
-    For an agent's version only an evaluation on the bundle's own scenarios counts. Generated
-    and default scenarios are written from the skill's text -- the text the agent wrote -- so an
-    agent could steer the test it is graded on. A bundle's `evals/` files come only from an
-    operator's save: an agent's save may only carry them unchanged from its parent
-    (`library.save_draft`).
+    For an agent's or an imported version only an evaluation on the bundle's own scenarios
+    counts. Generated and default scenarios are written from the skill's text -- the text the
+    agent, or the third party, wrote -- so its author could steer the test it is graded on. A
+    bundle's `evals/` files come only from an operator's save: an agent's save may only carry
+    them unchanged from its parent (`library.save_draft`), and an import drops them
+    (`importer.sanitize_bundle`).
     """
     if evaluation.get("status") != "succeeded":
         return False, f"the evaluation has not succeeded (it is {evaluation.get('status')})"
-    if version_source == "agent" and evaluation.get("scenario_source") != "bundle":
+    who = _UNTRUSTED_AUTHORS.get(version_source or "")
+    if who is not None and evaluation.get("scenario_source") != "bundle":
         return False, (
-            f"an agent wrote this version, and these scenarios were {evaluation.get('scenario_source')}: "
-            "only the bundle's own evals/ scenarios count for an agent's version"
+            f"{who}, and these scenarios were {evaluation.get('scenario_source')}: "
+            "only the bundle's own evals/ scenarios count for it"
         )
     return True, "counts toward the publish policy"
 
 
 def gate_scenario_source(version_source: str | None) -> str | None:
     """The scenario source an evaluation must have to count for this version, or None for any."""
-    return "bundle" if version_source == "agent" else None
+    return "bundle" if version_source in _UNTRUSTED_AUTHORS else None
+
+
+def gate_source(row: Mapping[str, Any] | None) -> str | None:
+    """Who the gate judges a version as having been written by: `import` for an import and for
+    every version built on one (`lineage_import`) -- an agent's or an operator's edit of
+    third-party text still carries it -- else the version's own source."""
+    if row is None:
+        return None
+    if row.get("source") == "import" or row.get("lineage_import"):
+        return "import"
+    return row.get("source")
+
+
+def policy_for_source(policy: PublishPolicy, version_source: str | None) -> PublishPolicy:
+    """``policy`` as it applies to a version written by ``version_source``: only ever tighter.
+
+    An imported version is third-party instructions nobody in the tenant wrote, so an advisory
+    scan (an executable link, remote content piped to a shell) blocks it whatever the tenant's
+    policy says about advisories -- the bar a public registry holds mirrored skills to.
+    """
+    if version_source == "import" and not policy.block_on_advisory:
+        return replace(policy, block_on_advisory=True)
+    return policy
 
 
 @dataclass(slots=True, frozen=True)
@@ -241,6 +278,8 @@ __all__ = [
     "eval_counts_for_gate",
     "evaluate_files",
     "gate_scenario_source",
+    "gate_source",
+    "policy_for_source",
     "policy_reasons",
     "publish_policy",
 ]

@@ -65,6 +65,8 @@ WrapperSource = Literal["policy", "limits", "guardrails", "approvals", "command"
 
 # Module-private marker — never a string key. Only deny_output can stamp it.
 _WRAPPER_DENY_MARKER: object = object()
+# The same, for output relayed from an untrusted author. Only `untrusted_output` stamps it.
+_UNTRUSTED_OUTPUT_MARKER: object = object()
 
 
 @dataclass(slots=True)
@@ -125,6 +127,10 @@ class Tool:
     # reference (a commit sha) rather than the content itself, this is what makes the approval
     # row show what is about to happen. A preview that raises never blocks the approval.
     approval_preview: Callable[[ToolInput], Awaitable[str]] | None = None
+    # A trusted tool that may return text an untrusted author wrote, marking each such result
+    # (`untrusted_output`): content screening wraps it so those results are screened, and only
+    # those (`builder.apply_content_screening`). `activate_skill` relaying an imported skill.
+    relays_untrusted: bool = False
 
     def __post_init__(self) -> None:
         if self.peer and not self.is_peer:
@@ -162,6 +168,19 @@ def deny_output(content: str, source: WrapperSource) -> ToolOutputDict:
         content=content,
         metadata={"source": source, _WRAPPER_DENY_MARKER: True},
     )
+
+
+def untrusted_output(content: str) -> ToolOutputDict:
+    """An output whose text an in-process tool relays from an untrusted author -- an imported
+    skill's body, say. Content screening covers it as it covers an untrusted tool's, though the
+    tool that returned it is trusted (`builder.apply_content_screening`). The marker is a private
+    object, so a remote tool cannot stamp it; and stamping it could only add screening."""
+    return ToolOutputDict(content=content, metadata={_UNTRUSTED_OUTPUT_MARKER: True})
+
+
+def is_untrusted_output(output: ToolOutput) -> bool:
+    md = output_metadata(output)
+    return md is not None and md.get(_UNTRUSTED_OUTPUT_MARKER) is True
 
 
 def output_metadata(output: ToolOutput) -> dict[Any, Any] | None:
@@ -296,6 +315,7 @@ def define_tool(
     replay_safe: bool = False,
     prompt_guidance: str = "",
     validate: Callable[[ToolInput], ToolInput | Mapping[str, Any]] | None = None,
+    relays_untrusted: bool = False,
 ) -> Tool:
     from felix.tools.errors import tool_error_output
     from felix.tools.executor import local_executor
@@ -341,6 +361,7 @@ def define_tool(
         fatal=fatal,
         replay_safe=replay_safe,
         prompt_guidance=prompt_guidance,
+        relays_untrusted=relays_untrusted,
         executor=local_executor(_execute, transport=transport),
     )
 
@@ -393,10 +414,12 @@ __all__ = [
     "deny_output",
     "deny_source",
     "is_failure_content",
+    "is_untrusted_output",
     "is_wrapper_deny",
     "output_metadata",
     "output_text",
     "replace_tool_output",
     "tool_output_content",
     "tool_output_images",
+    "untrusted_output",
 ]

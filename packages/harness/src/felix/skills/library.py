@@ -43,14 +43,35 @@ from felix.skills.library_store import (
     is_rejected,
     library_object_key,
 )
-from felix.skills.publish_gate import PublishPolicy, Verdict, assess, evaluate_files, gate_scenario_source
+from felix.skills.publish_gate import (
+    PublishPolicy,
+    Verdict,
+    assess,
+    evaluate_files,
+    gate_scenario_source,
+    gate_source,
+    policy_for_source,
+)
 from felix.skills.semver import SemverBump, compare_semver, resolve_next_semver
 
 logger = logging.getLogger("felix.skills.library")
 
 now_ms = lambda: int(time.time() * 1000)
 
-SkillSourceKind = Literal["agent", "operator"]
+# `import`: fetched from an external source (`skills/importer.py`) at a person's request.
+# Third-party text, so the gate treats it at least as strictly as an agent's draft
+# (`publish_gate.policy_for_source`, `publish_gate.gate_scenario_source`).
+SkillSourceKind = Literal["agent", "operator", "import"]
+
+# The `skill_version` columns an import's origin fills; null on every other version.
+ORIGIN_COLUMNS = (
+    "origin_source",
+    "origin_ref",
+    "origin_commit",
+    "origin_tree_hash",
+    "origin_license",
+    "origin_committed_at",
+)
 
 # Strict `major.minor.patch`: a version is interpolated into an object key, and the loader's
 # own key-segment rule (`loader._VERSION_RE`) is looser than this.
@@ -144,6 +165,31 @@ class SkillVersionCorrupt(SkillLibraryError):
 
 
 @dataclass(slots=True, frozen=True)
+class ImportOrigin:
+    """Where an imported version came from: the canonical source (`github:owner/repo/path`),
+    the ref that was asked for, the commit it resolved to, a digest of the skill folder's tree
+    at that commit (what decides whether a re-import changed anything), the repository's SPDX
+    license when it declares one, and when the skill's folder last changed at that commit (epoch
+    ms; what the import cooldown measures)."""
+
+    source: str
+    ref: str
+    commit: str
+    tree_hash: str
+    license: str | None = None
+    committed_at: int | None = None
+
+    def as_row(self) -> dict[str, Any]:
+        return dict(
+            zip(
+                ORIGIN_COLUMNS,
+                (self.source, self.ref, self.commit, self.tree_hash, self.license, self.committed_at),
+                strict=True,
+            )
+        )
+
+
+@dataclass(slots=True, frozen=True)
 class DraftProvenance:
     """Who saved a draft, from where, and why.
 
@@ -158,6 +204,15 @@ class DraftProvenance:
     origin_manifest_id: str | None = None
     session_id: str | None = None
     principal: str | None = None
+    # Set exactly when ``source="import"``.
+    origin: ImportOrigin | None = None
+
+
+class SkillOriginMismatch(SkillLibraryError):
+    """An import named a skill the library holds from somewhere else: another source, or a
+    version an agent or an operator wrote. An import never takes over a name."""
+
+    code = "origin_mismatch"
 
 
 class SkillPublishBlocked(SkillLibraryError):
@@ -196,6 +251,7 @@ def _audit(
         "author": row.get("author"),
         "quality_score": row.get("quality_score"),
         "security_status": row.get("security_status"),
+        **{k: row[k] for k in ORIGIN_COLUMNS if row.get(k) is not None},
         **extra,
     }
     record_offline_event(
@@ -442,8 +498,14 @@ async def save_draft(
 
     The returned row carries ``shadows_operator_upload`` (`shadows_operator_upload`), which
     the audit event records too. It is a warning, not a refusal: the loader decides who
-    answers each ref, and that decision is the reviewer's to know about.
+    answers each ref, and that decision is the reviewer's to know about -- except for an
+    import, which is refused rather than let third-party text split a name an operator chose.
+
+    The row's ``lineage_import`` is set for an import and for any version built on one
+    (`_lineage_import`): an edit of third-party text is still judged as one.
     """
+    if (provenance.source == "import") != (provenance.origin is not None):
+        raise ValueError("an import's provenance carries its origin, and only an import's does")
     validation = await asyncio.to_thread(validate_skill_bundle, files, name)
     if not validation.valid or validation.frontmatter is None:
         raise SkillBundleInvalid(validation.errors)
@@ -469,6 +531,8 @@ async def save_draft(
         "session_id": provenance.session_id,
         "reason": (provenance.reason or "")[:_REASON_LIMIT],
         "description": validation.frontmatter.description,
+        **(provenance.origin.as_row() if provenance.origin else {}),
+        "lineage_import": await _lineage_import(lib, tenant_id, skill_name, parent, provenance),
         **(await asyncio.to_thread(assess, files, skill_name)).as_row(),
         "created_at": now_ms(),
     }
@@ -480,7 +544,9 @@ async def save_draft(
         explicit=version,
         bump=bump,
         expect_newest=expect_newest,
-        buildable=provenance.source == "agent",
+        # An import builds on the newest version that was not rejected, as an agent does: a
+        # rejected draft is not the version it replaces (`importer._prior`).
+        buildable=provenance.source in {"agent", "import"},
         max_pending=_pending_cap(provenance, max_pending),
     )
     try:
@@ -493,6 +559,11 @@ async def save_draft(
     shadows = await shadows_operator_upload(
         settings, tenant_id, skill_name, [row["version"]], object_store=store
     )
+    if shadows and provenance.source == "import":
+        await _discard(lib, store, tenant_id, row, files)
+        raise SkillNameShadowed(
+            f"{skill_name!r} is an operator upload's name; an import cannot share it with an upload"
+        )
     _audit(
         settings,
         tenant_id,
@@ -505,6 +576,21 @@ async def save_draft(
         **({"principal": provenance.principal} if provenance.principal else {}),
     )
     return {**row, "tenant_id": tenant_id, "shadows_operator_upload": shadows}
+
+
+async def _lineage_import(
+    lib: SkillLibraryStore, tenant_id: str, name: str, parent: str | None, provenance: DraftProvenance
+) -> bool:
+    """Whether the version being saved carries imported text: it is an import, or the version it
+    was edited from does -- the named parent, else the skill's newest version, which is what a
+    save that names none still starts from."""
+    if provenance.source == "import":
+        return True
+    basis = parent or newest_version(await lib.version_ids(tenant_id, name))
+    if basis is None:
+        return False
+    row = await lib.get_version(tenant_id, name, basis) or {}
+    return row.get("source") == "import" or bool(row.get("lineage_import"))
 
 
 async def _evals_only_inherited(
@@ -616,15 +702,18 @@ async def evaluate_version(
         from felix.skills.policy import load_publish_policy
 
         policy = (await load_publish_policy(settings, tenant_id)).policy
+    # Who wrote the version can only tighten the policy (`policy_for_source`), and decides which
+    # evaluations count (`publish_gate.eval_counts_for_gate`).
+    row = await get_skill_library_store(settings).get_version(tenant_id, name, version)
+    source = gate_source(row)
+    policy = policy_for_source(policy, source)
     latest_eval = None
     if policy.needs_eval:
-        # Only a policy that reads the evaluation pays for the lookup. Which evaluations count
-        # depends on who wrote the version (`publish_gate.eval_counts_for_gate`).
+        # Only a policy that reads the evaluation pays for the lookup.
         from felix.skills.eval_store import get_skill_eval_store
 
-        row = await get_skill_library_store(settings).get_version(tenant_id, name, version)
         latest_eval = await get_skill_eval_store(settings).latest_succeeded(
-            tenant_id, name, version, scenario_source=gate_scenario_source((row or {}).get("source"))
+            tenant_id, name, version, scenario_source=gate_scenario_source(source)
         )
     try:
         files = await read_version_files(settings, tenant_id, name, version, object_store=object_store)
@@ -799,14 +888,17 @@ async def archive_skill(settings: Settings, tenant_id: str, name: str, *, by: st
 
 __all__ = [
     "MUST_NOT_EXIST",
+    "ORIGIN_COLUMNS",
     "VERSION_RE",
     "DraftProvenance",
+    "ImportOrigin",
     "SkillBundleInvalid",
     "SkillExists",
     "SkillLibraryError",
     "SkillLiveChanged",
     "SkillNameShadowed",
     "SkillNotFound",
+    "SkillOriginMismatch",
     "SkillParentChanged",
     "SkillParentRejected",
     "SkillPendingCapReached",

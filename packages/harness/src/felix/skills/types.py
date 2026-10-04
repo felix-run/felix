@@ -22,6 +22,9 @@ class Skill:
     metadata: dict[str, str] = field(default_factory=dict)
     disable_model_invocation: bool = False
     source: SkillSource = "bundled"
+    # Imported third-party text, or built on it (`skill_version.lineage_import`): what the skill
+    # tools return of it is marked untrusted output, so content screening covers it.
+    untrusted: bool = False
 
 
 @dataclass(slots=True)

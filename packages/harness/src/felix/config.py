@@ -405,6 +405,20 @@ class Settings(BaseSettings):
     # per UTC day. Past either, queueing one is refused (429 `skill_jobs_cap_reached`).
     skill_jobs_max_queued: int = Field(default=20, ge=1, le=10000)
     skill_jobs_daily_limit: int = Field(default=200, ge=1, le=100000)
+    # Importing skills from GitHub into the library (`felix/skills/importer.py`). A token reaches
+    # private repositories and lifts the anonymous rate limit; it is sent only to api.github.com.
+    skill_import_github_token: str = Field(default="", repr=False)
+    # Comma-separated globs over canonical sources (`github:anthropics/*,github:myorg/skills`); an
+    # entry without a glob also allows everything under it. Empty allows any GitHub source.
+    skill_import_sources: str = ""
+    # Refuse to import a skill's files fewer than this many days after the tenant first saw them on
+    # a browse or an import attempt (0 = off): a cooldown so a compromised upstream commit can be
+    # noticed first. Felix's own clock (`skills/sighting_store.py`), never a commit date. A tenant
+    # can raise it with PATCH /skill-library/-/policy (`import_min_age_days`), never lower it.
+    skill_import_min_age_days: int = Field(default=0, ge=0, le=365)
+    # Browses and imports one tenant may start per hour, together: each is a handful of GitHub
+    # calls on the deployment's token and rate limit.
+    skill_import_per_hour: int = Field(default=60, ge=1, le=10_000)
     memory_embedding_model: str = "bge-base-en-v1.5"
     memory_recall_limit: int = 8
 
@@ -836,6 +850,26 @@ class Settings(BaseSettings):
             except ValueError as exc:
                 raise RuntimeError(f"{label} is not a usable tenant id: {exc}") from exc
 
+    def _validate_skill_import(self) -> None:
+        """A malformed allowlist entry is a boot failure, not an entry that silently matches
+        nothing. A token with no allowlist is refused outside development: the token reads whatever
+        its owner can, and every tenant's `skills:write` principal could then import from any of it
+        -- one org's private repository into another org's library."""
+        entries = [e.strip() for e in self.skill_import_sources.split(",") if e.strip()]
+        for entry in entries:
+            owner = entry.removeprefix("github:").split("/", 1)[0]
+            if not entry.startswith("github:") or not owner:
+                raise RuntimeError(
+                    f"FELIX_SKILL_IMPORT_SOURCES entry {entry!r} must be github:<owner>[/<repo>[/<path>]], "
+                    "globs allowed"
+                )
+        if self.skill_import_github_token and not entries and self.environment != "development":
+            raise RuntimeError(
+                "FELIX_SKILL_IMPORT_GITHUB_TOKEN is set with no FELIX_SKILL_IMPORT_SOURCES: any "
+                "skills:write principal, in any tenant, could import from every repository the token "
+                "reads. Name the repositories it may reach (github:myorg/*), or unset the token."
+            )
+
     def _validate_shell_runner(self) -> None:
         """A runner URL without a token would be an unauthenticated exec endpoint's client."""
         url = self.shell_runner_url.strip()
@@ -880,6 +914,7 @@ class Settings(BaseSettings):
                 "ones included — anonymously on an authenticated deployment"
             )
 
+        self._validate_skill_import()
         self._validate_shell_runner()
         self._validate_configured_tenant_ids()
         self._validate_jwt_tenant_posture()

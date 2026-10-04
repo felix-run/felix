@@ -441,6 +441,7 @@ async def test_the_policy_row_is_replaced_whole_tenant_scoped_and_deletable(stor
         "block_on_advisory": True,
         "require_eval": True,
         "min_eval_uplift": 5,
+        "import_min_age_days": 14,
         "updated_at": 1,
         "updated_by": "ops",
     }
