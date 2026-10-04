@@ -77,6 +77,9 @@ def _plan_tools() -> list[Tool]:
             plan_id,
             plan=body,
             manifest_id=req.manifest_id or "",
+            # The conversation it was written in, so `GET /plans?thread_id=` and a bare
+            # `plan_get` can answer for this thread rather than for the whole tenant.
+            thread_id=req.thread_id or "",
         )
         return json.dumps({"id": row["id"], "plan": row["plan"]}, separators=(",", ":"))
 
@@ -117,6 +120,8 @@ def _plan_tools() -> list[Tool]:
                     plan=plan,
                     # Backfills a plan stored without one; otherwise it is what is stored.
                     manifest_id=row.get("manifest_id") or req.manifest_id or "",
+                    # Same backfill, for a plan written before plans named their thread.
+                    thread_id=row.get("thread_id") or req.thread_id or "",
                     expected_updated_at=row["updated_at"],
                 )
             except plans_store.PlanConflict as conflict:
@@ -140,9 +145,14 @@ def _plan_tools() -> list[Tool]:
             if row is None:
                 return f"error: plan not found: {plan_id}"
             return json.dumps({"id": row["id"], "plan": row["plan"]}, separators=(",", ":"))
-        items = await plans_store.list_plans(req.settings, req.auth.tenant_id, limit=1)
+        # The newest plan on *this* conversation. It was the tenant's newest, so an agent
+        # in one thread could read, and go on to update, a plan another thread was
+        # following. Outside a chat there is no thread to scope to, and it stays tenant-wide.
+        items = await plans_store.list_plans(
+            req.settings, req.auth.tenant_id, limit=1, thread_id=req.thread_id or None
+        )
         if not items:
-            return "error: no plans for tenant"
+            return "error: no plans on this thread" if req.thread_id else "error: no plans for tenant"
         row = items[0]
         return json.dumps({"id": row["id"], "plan": row["plan"]}, separators=(",", ":"))
 
@@ -194,7 +204,7 @@ def _plan_tools() -> list[Tool]:
         ),
         define_tool(
             name="plan_get",
-            description="Fetch a plan by id, or the most recently updated plan.",
+            description="Fetch a plan by id, or the most recently updated plan in this conversation.",
             args_schema={
                 "type": "object",
                 "properties": {"plan_id": {"type": "string"}},

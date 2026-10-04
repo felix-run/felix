@@ -36,13 +36,31 @@ class PlanUpsert(BaseModel):
 async def list_plans(
     request: Request,
     limit: int = Query(default=50, ge=1, le=200),
+    thread_id: str | None = Query(default=None),
 ) -> dict[str, Any]:
+    """Plans, most recently updated first.
+
+    `thread_id` narrows to one conversation, and takes the **suffix** a client holds — the
+    same form every chat route takes — composed into `{tenant}:{suffix}` here, so a caller
+    can never name another tenant's thread. It is applied in the store before `LIMIT`.
+    `?thread_id=` (empty) is a real value meaning "plans written outside a chat", distinct
+    from omitting it; a suffix that cannot be a thread id answers 400 `invalid_thread_id`.
+    Each row's `thread_id` is the stored `{tenant}:{suffix}` form, `''` for none.
+    """
     from felix.plans import store as plans_store
+    from felix.thread_ids import effective_thread_id
 
     require_mgmt_scopes(request, SCOPE_PLANS_READ)
-    items = await plans_store.list_plans(
-        request.app.state.settings, tenant_id_from_request(request), limit=limit
-    )
+    tenant_id = tenant_id_from_request(request)
+    scoped: str | None = None
+    if thread_id is not None:
+        if thread_id == "":
+            scoped = ""
+        else:
+            scoped = effective_thread_id(tenant_id, thread_id)
+            if scoped is None:
+                raise HTTPException(status_code=400, detail="invalid_thread_id")
+    items = await plans_store.list_plans(request.app.state.settings, tenant_id, limit=limit, thread_id=scoped)
     return {"items": items, "plans": items}
 
 
