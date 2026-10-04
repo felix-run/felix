@@ -141,8 +141,8 @@ async def gather_thread_snapshot(*, settings: Any, tenant_id: str, thread: str) 
 
     from felix.session.lease import lease_status
     from felix.session.store import get_session_store
-    from felix.session.thread_state import get_thread_meta, load_leaf
-    from felix.session.tree import get_leaf
+    from felix.session.thread_state import get_thread_meta
+    from felix.session.tree import stored_leaf
     from felix.steer import peek_steer_count
 
     store = get_session_store(settings, tenant_id=tenant_id)
@@ -153,15 +153,17 @@ async def gather_thread_snapshot(*, settings: Any, tenant_id: str, thread: str) 
     #
     # `gather` holds more pool connections at once, which is why it waited for the pool
     # to become a setting rather than a hardcoded 5 + 10.
-    events, meta, stored_leaf, steer_n, lease = await asyncio.gather(
-        store.open(thread).get_events(),
+    session = store.open(thread)
+    events, meta, leaf, steer_n, lease = await asyncio.gather(
+        session.get_events(),
         get_thread_meta(settings=settings, tenant_id=tenant_id, thread_id=thread),
-        load_leaf(settings=settings, tenant_id=tenant_id, thread_id=thread),
+        # Resolved the way a turn resolves it -- a legacy row's stale leaf yields to the newest
+        # event -- but as a value: a snapshot must not move this process's leaf, and it
+        # creates no row (`resolve_leaf` only updates one that exists).
+        stored_leaf(session),
         peek_steer_count(tenant_id, thread),
         lease_status(thread),
     )
-    # `get_leaf` is synchronous and in-process, so it stays out of the fan-out.
-    leaf = stored_leaf or get_leaf(thread)
     return build_snapshot(
         thread_id=thread,
         events=events,

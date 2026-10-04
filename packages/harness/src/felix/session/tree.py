@@ -2,17 +2,34 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 from typing import Any
+from weakref import WeakValueDictionary
 
 from felix_ai.types import ImageAttachment
 
 from felix.session.types import AppendableEvent, Session, SessionEvent
 
-# In-process leaf pointers for memory sessions (and cache for postgres).
+# In-process leaf pointers: the store itself for memory sessions; on Postgres this process's
+# working pointer, set from the row by `sync_leaf` at the start of each turn.
 _leaf_by_thread: dict[str, str] = {}
 _label_by_event: dict[str, str] = {}
+
+# One lock per thread, held while this process reads the stored leaf into the index
+# (`sync_leaf`) and while it appends and moves the leaf (`annotate_and_append`). Without it a
+# sync could read the row between an append's `set_leaf` and its `store_leaf`, and set the
+# index back to the row's older leaf -- parenting the turn's next event off its own branch.
+# Weak values: a lock lives only while some coroutine holds or waits on it.
+_thread_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
+
+
+def _thread_lock(thread_id: str) -> asyncio.Lock:
+    lock = _thread_locks.get(thread_id)
+    if lock is None:
+        lock = _thread_locks[thread_id] = asyncio.Lock()
+    return lock
 
 
 def new_event_id() -> str:
@@ -55,6 +72,34 @@ def set_leaf(thread_id: str, event_id: str | None) -> None:
         _leaf_by_thread.pop(thread_id, None)
     else:
         _leaf_by_thread[thread_id] = event_id
+
+
+async def stored_leaf(session: Session) -> str | None:
+    """The thread's leaf as its store holds it, without touching this process's index.
+
+    For callers that only read the branch: an export, a fork's source, the snapshot, the leaf
+    a rewind abandons. A store keeping the leaf durably exposes `resolve_leaf`; one that does
+    not (`memory://`, where the index is the store, or a plugin checkpointer) answers the index.
+    """
+    resolve = getattr(session, "resolve_leaf", None)
+    if resolve is None:
+        return get_leaf(getattr(session, "id", "") or "")
+    return await resolve()
+
+
+async def sync_leaf(session: Session) -> str | None:
+    """Set this process's leaf for ``session`` from its store, and return it.
+
+    Once per turn, before the first append or branch read: `annotate_and_append` parents new
+    events on the in-process leaf and `active_branch_events` draws the branch from it, and on
+    Postgres that index is per process. Under the thread's lock, so it cannot land inside an
+    append that has moved the index but not yet the row.
+    """
+    thread_id = getattr(session, "id", "") or ""
+    async with _thread_lock(thread_id):
+        leaf = await stored_leaf(session)
+        set_leaf(thread_id, leaf)
+        return leaf
 
 
 def set_label(event_id: str, label: str | None) -> None:
@@ -115,9 +160,23 @@ def active_branch_events(
 async def annotate_and_append(
     session: Session,
     events: list[AppendableEvent],
+    *,
+    sync: bool = False,
 ) -> list[str]:
-    """Append events with tree linkage; returns new event_ids."""
+    """Append events with tree linkage; returns new event_ids.
+
+    ``sync`` takes the leaf from the store first, for an append made outside a turn (a route
+    adding a label, a name, a custom entry) -- inside the same lock hold as the append, so it
+    neither parents on a leaf another replica has moved nor lands inside a turn's append.
+    """
     thread_id = getattr(session, "id", "") or ""
+    async with _thread_lock(thread_id):
+        if sync:
+            set_leaf(thread_id, await stored_leaf(session))
+        return await _append_linked(session, thread_id, events)
+
+
+async def _append_linked(session: Session, thread_id: str, events: list[AppendableEvent]) -> list[str]:
     parent = get_leaf(thread_id)
     ids: list[str] = []
     annotated: list[AppendableEvent] = []
@@ -166,8 +225,9 @@ async def fork_thread(
     from_event_id: str | None = None,
 ) -> dict[str, Any]:
     """Copy the active branch (or path to ``from_event_id``) into ``dest`` as a new linear tree."""
+    source_leaf = from_event_id or await stored_leaf(source)
     events = await source.get_events()
-    branch = active_branch_events(events, session_id=source.id, leaf_id=from_event_id or get_leaf(source.id))
+    branch = active_branch_events(events, session_id=source.id, leaf_id=source_leaf)
     if from_event_id:
         # Truncate branch at from_event_id
         trimmed: list[SessionEvent] = []
@@ -253,4 +313,6 @@ __all__ = [
     "rewind_to",
     "set_label",
     "set_leaf",
+    "stored_leaf",
+    "sync_leaf",
 ]

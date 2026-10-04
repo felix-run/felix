@@ -9,6 +9,10 @@ the cache is per process. A replica that had never seen a thread wrote defaults 
 field it was not changing; one that had seen it never saw another replica's writes again;
 `revision` counted that process's writes; and two first-inserts of one thread raced into an
 IntegrityError. A primary-key read costs less than any of those.
+
+The tree module's in-process leaf is still what new events parent on and what the active
+branch is drawn from, so on Postgres it is set from the row at the start of every turn
+(`tree.sync_leaf` -> `_PostgresSession.resolve_leaf`) and moved by the turn's own appends.
 """
 
 from __future__ import annotations
@@ -33,6 +37,20 @@ _meta_by_thread: dict[str, dict[str, Any]] = {}
 
 # Fields a caller clears by passing `None`; any other `None` is "leave it alone".
 _NULLABLE = frozenset({"session_name", "parent_session_id", "model_id"})
+
+# Set in a row's `labels_json` by every writer that keeps `leaf_event_id` current: an append
+# (`_PostgresSession.store_leaf`), a fork or a rewind (`persist_leaf`). A row without it was
+# written before the stored leaf followed appends, when only fork and rewind wrote it -- so its
+# leaf can be a rewind target the conversation has since moved past, and only a marked row's
+# leaf is the leaf. A key rather than a comparison with the log because the log cannot tell
+# the two apart: after a deliberate rewind the newest event is on the abandoned branch too.
+LEAF_TRACKED_KEY = "leaf_v"
+LEAF_TRACKED_VERSION = 2
+
+
+def leaf_is_tracked(labels_json: dict[str, Any] | None) -> bool:
+    """Whether a row's `leaf_event_id` was written by a writer that keeps it current."""
+    return (labels_json or {}).get(LEAF_TRACKED_KEY) == LEAF_TRACKED_VERSION
 
 
 def _default_meta() -> dict[str, Any]:
@@ -113,6 +131,8 @@ def _row_meta(stored: dict[str, Any] | None) -> dict[str, Any]:
     """Defaults under a row's own keys, so a key added to `_default_meta` later still answers."""
     meta = _default_meta()
     meta.update(stored or {})
+    # Bookkeeping for the leaf column, not session metadata.
+    meta.pop(LEAF_TRACKED_KEY, None)
     for key in ("labels", "feedback"):
         if isinstance(meta.get(key), dict):
             meta[key] = dict(meta[key])
@@ -187,6 +207,7 @@ async def persist_leaf(
         row = await _locked_row(db, tenant_id=tenant_id, thread_id=thread_id, leaf_event_id=leaf_event_id)
         stored = dict(row.labels_json or {})
         _bump(stored)
+        stored[LEAF_TRACKED_KEY] = LEAF_TRACKED_VERSION
         row.leaf_event_id = leaf_event_id
         row.labels_json = stored
         row.updated_at = int(time.time())
@@ -225,7 +246,9 @@ async def update_thread_meta(
 
     async with tenant_session(settings, tenant_id) as db:
         # A new row starts at this process's leaf: no replica has stored one for the thread,
-        # so the one this process holds is all there is. An existing row keeps its own.
+        # so the one this process holds is all there is. It is not marked tracked -- this
+        # process may not have served the thread's latest append -- so the next turn's
+        # `resolve_leaf` takes the log's newest event over it. An existing row keeps its own.
         row = await _locked_row(
             db, tenant_id=tenant_id, thread_id=thread_id, leaf_event_id=_mem_get_leaf(thread_id)
         )
@@ -302,7 +325,10 @@ def reset_thread_meta_for_tests() -> None:
 
 
 __all__ = [
+    "LEAF_TRACKED_KEY",
+    "LEAF_TRACKED_VERSION",
     "get_thread_meta",
+    "leaf_is_tracked",
     "list_thread_metadata",
     "load_leaf",
     "persist_leaf",
