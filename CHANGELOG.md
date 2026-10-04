@@ -10,17 +10,6 @@ Each release section is written from the `## Changelog` sections of the pull req
 
 ## [Unreleased]
 
-### Fixed
-
-- **GitHub login and Web Push can now be turned on under Compose.** `deploy/docker/compose.yml`
-  passes the container an explicit list of settings, and none of the ones these features need
-  were on it, so setting them in `.env` did nothing. Worse, `FELIX_AUTH_MODE` *was* on it:
-  setting `jwt` with the rest unread switched every request to a verifier that did not exist.
-  Every process now receives `FELIX_JWT_VERIFIERS`, `FELIX_JWKS_PUBLIC`,
-  `FELIX_ALLOWED_TENANTS` and `FELIX_PUSH_VAPID_*`. Only `api` receives `FELIX_JWKS_PRIVATE`
-  and the `FELIX_GITHUB_*` settings: the key signs a token for any tenant, and the worker
-  runs agents' tools. A PEM written across lines in double quotes in `.env` arrives intact.
-
 ## [0.6.1] — 2026-10-03
 
 ### Changed
