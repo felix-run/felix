@@ -1,7 +1,7 @@
 """Keep each person's GitHub refresh token, sealed, so Felix can act as them after sign-in.
 
-Revision ID: 0026_github_connections
-Revises: 0025_plan_thread_id
+Revision ID: 0027_github_connections
+Revises: 0026_skill_import_origin
 Create Date: 2026-10-04
 
 GitHub login read two things with the person's GitHub token and dropped it. Per-person repo
@@ -21,8 +21,8 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0026_github_connections"
-down_revision: str | None = "0025_plan_thread_id"
+revision: str = "0027_github_connections"
+down_revision: str | None = "0026_skill_import_origin"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

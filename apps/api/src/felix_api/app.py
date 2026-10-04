@@ -50,6 +50,7 @@ from felix_api.routes import (
     openai_compat,
     plans,
     push,
+    skill_import,
     skill_library,
     skill_quality,
     skills,
@@ -209,6 +210,8 @@ def create_app(
     # GitHub device-flow starts have an hourly bucket, so a store of their own: sharing the
     # middleware's 60 s store let its eviction drop the hourly key (`build_rate_limiter_backend`).
     app.state.github_device_limiter = build_rate_limiter_backend(cfg)
+    # Skill browses and imports count per tenant per hour, on a store of their own for the same reason.
+    app.state.skill_import_limiter = build_rate_limiter_backend(cfg)
     # Per app, not per process: two apps in one process (tests) must not share claims.
     app.state.idempotency_store = build_idempotency_store(cfg)
 
@@ -312,6 +315,7 @@ def create_app(
     app.include_router(memory.router, prefix="/memory")
     app.include_router(documents.router, prefix="/documents")
     app.include_router(skills.router, prefix="/skills")
+    app.include_router(skill_import.router, prefix="/skill-library", tags=["Skill library"])
     app.include_router(skill_library.router, prefix="/skill-library", tags=["Skill library"])
     app.include_router(skill_quality.router, prefix="/skill-library", tags=["Skill library"])
     app.include_router(a2a.router, prefix="/a2a")

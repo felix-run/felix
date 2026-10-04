@@ -216,7 +216,7 @@ async def test_list_live_carries_the_skill_md_digest(store_settings: Any) -> Non
     assert await store.list_live("acme") == []
     await store.publish("acme", "invoice-triage", "0.1.0", from_statuses={"draft"}, by="ops", at=2)
     assert await store.list_live("acme") == [
-        {"name": "invoice-triage", "version": "0.1.0", "sha256": "a" * 64}
+        {"name": "invoice-triage", "version": "0.1.0", "sha256": "a" * 64, "lineage_import": False}
     ]
     assert await store.list_live("globex") == []
 
@@ -467,3 +467,65 @@ async def test_buildable_versions_leave_out_rejected_drafts_only(store_settings:
     }
     assert await store.buildable_versions("globex", ["invoice-triage"]) == {"invoice-triage": ["0.1.0"]}
     assert await store.buildable_versions("acme", []) == {}
+
+
+ORIGIN = {
+    "origin_source": "github:acme/skills/skills/invoice-triage",
+    "origin_ref": "main",
+    "origin_commit": "c" * 40,
+    "origin_tree_hash": "d" * 64,
+    "origin_license": "MIT",
+    # Past 2**31: a BigInteger column, as every epoch-ms column here is.
+    "origin_committed_at": 1_750_000_000_000,
+}
+
+
+@parametrized
+async def test_an_imported_version_keeps_its_origin_and_others_read_back_null(store_settings: Any) -> None:
+    """The `import` source and its five origin columns: written and read back alike on both arms
+    (the check constraint admits the source), and null -- not missing -- on a version that is
+    not an import, as Postgres returns them."""
+    store = get_skill_library_store(store_settings)
+    row = {**_row("0.1.0", at=1, source="import", origin=None), **ORIGIN}
+    await store.insert_version("acme", row, FILES, created_by="ops", at=1)
+    await _save(store, "0.1.1", at=2)
+
+    imported = await store.get_version("acme", "invoice-triage", "0.1.0")
+    assert imported is not None and imported["source"] == "import"
+    assert {k: imported[k] for k in ORIGIN} == ORIGIN
+    agent = await store.get_version("acme", "invoice-triage", "0.1.1")
+    assert agent is not None and {k: agent[k] for k in ORIGIN} == dict.fromkeys(ORIGIN)
+    newest, oldest = await store.list_versions("acme", "invoice-triage")
+    assert oldest["origin_commit"] == "c" * 40 and newest["origin_commit"] is None
+    assert await store.count_pending("acme", "contributor") == 1, "an import is not an agent draft"
+
+
+@parametrized
+async def test_lineage_reads_back_on_the_version_and_on_the_live_listing(store_settings: Any) -> None:
+    store = get_skill_library_store(store_settings)
+    imported = {**_row("0.1.0", at=1, source="import", origin=None), **ORIGIN, "lineage_import": True}
+    await store.insert_version("acme", imported, FILES, created_by="ops", at=1)
+    await _save(store, "0.1.1", at=2)
+    await store.publish("acme", "invoice-triage", "0.1.0", from_statuses={"draft"}, by="ops", at=3)
+
+    assert (await store.get_version("acme", "invoice-triage", "0.1.0") or {})["lineage_import"] is True
+    assert (await store.get_version("acme", "invoice-triage", "0.1.1") or {})["lineage_import"] is False
+    (live,) = await store.list_live("acme")
+    assert (live["version"], live["lineage_import"]) == ("0.1.0", True)
+
+
+@parametrized
+async def test_a_sighting_keeps_its_first_stamp_and_is_tenant_scoped(store_settings: Any) -> None:
+    from felix.skills.sighting_store import get_sighting_store
+
+    sightings = get_sighting_store(store_settings)
+    src = "github:acme/skills/skills/invoice-triage"
+    a, b, c = "a" * 64, "b" * 64, "c" * 64
+    first = await sightings.first_seen("acme", [(src, a), (src, b)], at=1_750_000_000_000)
+    assert first == {(src, a): 1_750_000_000_000, (src, b): 1_750_000_000_000}
+    again = await sightings.first_seen("acme", [(src, a), (src, c)], at=1_760_000_000_000)
+    assert again == {(src, a): 1_750_000_000_000, (src, c): 1_760_000_000_000}
+    assert await sightings.first_seen("globex", [(src, a)], at=1_770_000_000_000) == {
+        (src, a): 1_770_000_000_000
+    }
+    assert await sightings.first_seen("acme", [], at=1) == {}

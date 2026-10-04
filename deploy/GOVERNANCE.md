@@ -37,7 +37,7 @@ turn the demo into an account system, and that is not what it is for.
 |-------|-----------|
 | Platform (model keys, consumer secret) | `FELIX_SECRETS_BACKEND=env\|file\|aws\|gcp` + `hydrate_secrets()` at API/worker startup |
 | Manifest outbound (`mcp_servers.auth`, `env`, peer/container `auth`) | `secret:NAME` or `{secret: NAME}` resolved at compile; **never** store resolved values in `manifest_json` |
-| Redaction | Known secrets scrubbed from tool output, session events, audit payloads, fiber state, skill bodies read over `/skills`, and every `/skill-library` read and write response — file text, and the reason, description, decision note, review-check and security-issue messages a saver or the scan wrote, and feedback bodies, suggested patches, evaluation scenarios, judge reasons and job errors |
+| Redaction | Known secrets scrubbed from tool output, session events, audit payloads, fiber state, skill bodies read over `/skills`, and every `/skill-library` read and write response — file text, and the reason, description, decision note, review-check and security-issue messages a saver or the scan wrote, and feedback bodies, suggested patches, evaluation scenarios, judge reasons and job errors. `FELIX_SKILL_IMPORT_GITHUB_TOKEN` is hydrated from the secrets backend and masked like any credential; it is sent only as a header to `api.github.com`, never in a URL, a log line or a response |
 
 Production (`FELIX_ENVIRONMENT=production`) or `governance.forbid_plaintext_secrets: true`
 rejects Bearer/long-token auth and non-ref MCP `env` values.
@@ -400,6 +400,39 @@ one that is later rejected keeps its files and stays reviewable. The impact is l
 non-SKILL.md file only ever originates from an operator's save. An agent's draft can carry such a
 file only unchanged from its parent, so the descendant's extra files are ones an operator wrote.
 Reject the descendants too when the rejected file must not come back.
+
+**Third-party imports.** `POST /skill-library/-/import` (`felix skills add`) fetches a skill from
+GitHub as a draft (`source: import`); it is never published in the same request (`publish: true` is
+422 `publish_not_allowed`), so a person reads it first. The fetch is pinned: the ref resolves once,
+through the repository's own branch or tag refs or, for a commit id, only when that commit is on
+the default branch (`compare`), because GitHub serves a fork's commit under the upstream's name
+(422 `commit_not_in_repo`). Every file is read by blob id and checked against its git object id.
+The skill's name must be its folder's; an import never takes over a name another source, an agent
+or an operator holds (409 `origin_mismatch`), and it is refused where an operator upload holds the
+name.
+
+**Lineage taint.** An import, and every version built on one by anyone, carries
+`lineage_import`. The publish gate judges such a version as an import whoever saved it: an advisory
+scan blocks it whatever the policy says (tighten only), only the bundle's own `evals/` scenarios
+count toward an evaluation requirement (an import drops its `evals/`), and an agent's edit of one
+always waits for a person. Rolling back to one passes the same gate.
+
+**Activation screening.** When an agent activates a live skill with that lineage, `activate_skill`
+and `read_skill_file` mark their output as relayed from an untrusted author, and content screening
+(`spec.content_screening.enabled`) screens that output exactly as it screens an untrusted tool's:
+markers, the optional scoring model, quarantine or block. Operator and agent skills are not
+screened this way. The wrapper order is unchanged; the screening wrapper decides per call as well
+as per tool. A manifest without content screening gets no screening of skill bodies, imported or
+not, so turn it on for agents that activate imported skills.
+
+**Allowlist, token and cooldown.** `FELIX_SKILL_IMPORT_SOURCES` globs the repositories browse and
+import may name (403 `source_not_allowed`). `FELIX_SKILL_IMPORT_GITHUB_TOKEN` without an allowlist
+refuses to boot outside development: every tenant's `skills:write` principal could otherwise read
+any repository the token reaches. `FELIX_SKILL_IMPORT_MIN_AGE_DAYS`, raised per tenant by
+`import_min_age_days`, refuses (403 `too_recent`, nothing saved) files this tenant first saw fewer
+than that many days ago. The clock is Felix's own (`skill_import_sighting`, stamped on every browse
+and import attempt, even with the cooldown off), never a commit date, which the pusher sets.
+Browses and imports are limited per tenant per hour (`FELIX_SKILL_IMPORT_PER_HOUR`).
 
 ## Outbound egress
 

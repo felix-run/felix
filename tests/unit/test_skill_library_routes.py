@@ -426,6 +426,7 @@ async def test_the_policy_route_reports_the_settings(tmp_path: Path) -> None:
         "security_fail_blocks": True,
         "require_eval": False,
         "min_eval_uplift": None,
+        "import_min_age_days": 0,
         "source": "settings",
         "tenant_values": None,
         "updated_at": None,
