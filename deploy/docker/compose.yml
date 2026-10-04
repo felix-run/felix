@@ -17,6 +17,15 @@ x-felix-env: &felix-env
   # Commands MCP stdio servers may spawn. Empty = stdio disabled (the default).
   FELIX_MCP_STDIO_ALLOWED_COMMANDS: ${FELIX_MCP_STDIO_ALLOWED_COMMANDS:-}
   FELIX_CONSUMER_SHARED_SECRET: ${FELIX_CONSUMER_SHARED_SECRET:-}
+  # Verifying a JWT, which every process may do. The signing half and GitHub login are on
+  # `api` alone (below): only the API mints, and the worker runs agents' tools.
+  FELIX_JWT_VERIFIERS: ${FELIX_JWT_VERIFIERS:-}
+  FELIX_JWKS_PUBLIC: ${FELIX_JWKS_PUBLIC:-}
+  FELIX_ALLOWED_TENANTS: ${FELIX_ALLOWED_TENANTS:-}
+  # Web Push. Here rather than on `api`: a durable run's approval is created in the worker,
+  # and that is what sends the push.
+  FELIX_PUSH_VAPID_PRIVATE_KEY: ${FELIX_PUSH_VAPID_PRIVATE_KEY:-}
+  FELIX_PUSH_VAPID_SUBJECT: ${FELIX_PUSH_VAPID_SUBJECT:-}
   FELIX_DATABASE_URL: postgresql+psycopg://felix:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (openssl rand -hex 32)}@postgres:5432/felix
   FELIX_REDIS_URL: redis://valkey:6379/0
   FELIX_ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
@@ -126,6 +135,18 @@ services:
       FELIX_S3_ACCESS_KEY: ${MINIO_ROOT_USER:-felix}
       FELIX_S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-}
       FELIX_S3_BUCKET: felix-bundles
+      # Minting and GitHub login, on this service only. The private key signs a token for any
+      # tenant, so it stays out of the worker, where agents' tools run. Settings validation
+      # mints a probe token whenever GitHub login is on, so the GitHub settings must not
+      # reach a process without the key: the worker would refuse to start.
+      FELIX_JWKS_PRIVATE: ${FELIX_JWKS_PRIVATE:-}
+      FELIX_GITHUB_CLIENT_ID: ${FELIX_GITHUB_CLIENT_ID:-}
+      FELIX_GITHUB_ORG_TENANTS: ${FELIX_GITHUB_ORG_TENANTS:-}
+      FELIX_GITHUB_LOGIN_TTL_SECONDS: ${FELIX_GITHUB_LOGIN_TTL_SECONDS:-28800}
+      FELIX_GITHUB_DEVICE_STARTS_PER_HOUR: ${FELIX_GITHUB_DEVICE_STARTS_PER_HOUR:-10}
+      FELIX_GITHUB_DEVICE_STARTS_PER_HOUR_TOTAL: ${FELIX_GITHUB_DEVICE_STARTS_PER_HOUR_TOTAL:-300}
+      FELIX_GITHUB_OIDC_AUDIENCE: ${FELIX_GITHUB_OIDC_AUDIENCE:-}
+      FELIX_GITHUB_OIDC_TTL_SECONDS: ${FELIX_GITHUB_OIDC_TTL_SECONDS:-900}
     volumes:
       - felix-data:/data
       - ${FELIX_WORKSPACE_HOST:-felix-workspace}:/workspace
