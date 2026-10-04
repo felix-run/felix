@@ -426,11 +426,19 @@ async def _make_legacy(settings: Any, thread: str, *, leaf: str) -> None:
 
 
 async def _turn_with_interleave(
-    settings: Any, thread: str, text: str, monkeypatch: pytest.MonkeyPatch, inject: Any
+    settings: Any,
+    thread: str,
+    text: str,
+    monkeypatch: pytest.MonkeyPatch,
+    inject: Any,
+    *,
+    at_reply: bool = False,
 ) -> None:
-    """Run a turn, starting ``inject`` between its first append's `set_leaf` and `store_leaf`.
+    """Run a turn, starting ``inject`` between an append's `set_leaf` and its `store_leaf`.
 
-    The injection runs as its own task, the way a concurrent request on this replica would. It
+    The first append's, or with ``at_reply`` the one that writes the model's answer -- the
+    turn's last, so nothing the turn does afterwards re-converges the row and the index. The
+    injection runs as its own task, the way a concurrent request on this replica would. It
     is given half a second to finish before the append's row write goes ahead: enough for a
     read that nothing blocks, and a timeout -- not a deadlock -- for one the thread's lock holds.
     """
@@ -441,8 +449,12 @@ async def _turn_with_interleave(
     real = _PostgresSession.store_leaf
     pending: list[asyncio.Task[Any]] = []
 
+    async def is_reply(session: _PostgresSession, event_id: str) -> bool:
+        appended = [e for e in await session.get_events() if (e.metadata or {}).get("event_id") == event_id]
+        return bool(appended) and appended[0].role == "assistant"
+
     async def interleaved(self: _PostgresSession, event_id: str) -> None:
-        if not pending and self.id == thread:
+        if not pending and self.id == thread and (not at_reply or await is_reply(self, event_id)):
             pending.append(asyncio.create_task(inject()))
             await asyncio.wait(pending, timeout=0.5)
         await real(self, event_id)
@@ -577,3 +589,152 @@ async def test_a_route_append_on_a_cold_replica_parents_on_the_stored_leaf(store
     events = await _events(store_settings, thread)
     appended = next(e for e in events if e.metadata.get("event_id") == label)
     assert appended.metadata.get("parent_id") == _by_content(events, "re: one").metadata["event_id"]
+
+
+# --- a rewind or a fork on the same replica as a turn -----------------------------------------
+#
+# Each is a sequence -- read the old leaf, move this process's leaf, maybe append a summary,
+# store the leaf -- and a turn's append on this replica could land inside it. Under the
+# thread's lock either may go first; what must hold is that the row and this process's leaf
+# agree afterwards and that the rewind is not silently undone.
+
+
+async def _assert_row_and_index_agree(settings: Any, thread: str) -> str | None:
+    from felix.session import tree
+    from felix.session.thread_state import load_leaf
+
+    stored = await load_leaf(settings=settings, tenant_id=TENANT, thread_id=thread)
+    assert stored == tree.get_leaf(thread), "the row and this process's leaf disagree"
+    return stored
+
+
+def _branch_ids(events: list[Any], leaf: str | None) -> list[str]:
+    from felix.session import tree
+
+    return [e.metadata["event_id"] for e in tree.active_branch_events(events, leaf_id=leaf)]
+
+
+def _rewind(settings: Any, thread: str, target: str, *, summarize: bool = False) -> Any:
+    """`/chat/rewind`'s sequence, as the route calls it."""
+    from felix.session.branch import rewind_and_persist
+    from felix.session.store import get_session_store
+
+    session = get_session_store(settings, tenant_id=TENANT).open(thread)
+    return rewind_and_persist(session, target, settings=settings, tenant_id=TENANT, summarize=summarize)
+
+
+@postgres_only
+@pytest.mark.asyncio
+async def test_a_rewind_inside_a_turns_append_is_not_overwritten_by_it(
+    store_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The rewind starts between the reply's `set_leaf` and its `store_leaf`.
+
+    Unlocked, the rewind stored its target and then the reply's `store_leaf` wrote the reply
+    over it: the row named the abandoned branch while this process's leaf named the target.
+    """
+    thread = _thread()
+    await _seed(store_settings, thread)
+    target = _by_content(await _events(store_settings, thread), "re: one").metadata["event_id"]
+
+    await _turn_with_interleave(
+        store_settings,
+        thread,
+        "two",
+        monkeypatch,
+        lambda: _rewind(store_settings, thread, target),
+        at_reply=True,
+    )
+
+    leaf = await _assert_row_and_index_agree(store_settings, thread)
+    events = await _events(store_settings, thread)
+    on_branch = _branch_ids(events, leaf)
+    assert target in on_branch
+    assert _by_content(events, "two").metadata["event_id"] not in on_branch, "the rewind was undone"
+
+
+@both_arms
+@pytest.mark.asyncio
+async def test_a_turn_starting_inside_a_rewind_waits_for_it(
+    store_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A turn arrives after the rewind has moved this process's leaf and before it stored it."""
+    import asyncio
+
+    from felix.session import thread_state
+
+    thread = _thread()
+    await _seed(store_settings, thread)
+    await _turn(store_settings, thread, "two")
+    target = _by_content(await _events(store_settings, thread), "re: one").metadata["event_id"]
+
+    real = thread_state.persist_leaf
+    turn: list[asyncio.Task[Any]] = []
+    finished_inside: list[bool] = []
+
+    async def paused(**kwargs: Any) -> None:
+        if not turn:
+            turn.append(asyncio.create_task(_turn(store_settings, thread, "three")))
+            done, _ = await asyncio.wait(turn, timeout=0.5)
+            finished_inside.append(bool(done))
+        await real(**kwargs)
+
+    monkeypatch.setattr(thread_state, "persist_leaf", paused)
+    await _rewind(store_settings, thread, target)
+    monkeypatch.setattr(thread_state, "persist_leaf", real)
+    await turn[0]
+
+    assert finished_inside == [False], "the turn ran inside the rewind instead of waiting for it"
+    leaf = await _assert_row_and_index_agree(store_settings, thread)
+    events = await _events(store_settings, thread)
+    assert _by_content(events, "three").metadata.get("parent_id") == target
+    assert leaf == _by_content(events, "re: three").metadata["event_id"]
+
+
+@both_arms
+@pytest.mark.asyncio
+async def test_a_summarising_rewind_completes_and_its_summary_is_on_the_new_branch(
+    store_settings: Any,
+) -> None:
+    """The summary is appended inside the rewind's hold of a lock that is not reentrant."""
+    import asyncio
+
+    thread = _thread()
+    await _seed(store_settings, thread)
+    await _turn(store_settings, thread, "two")
+    target = _by_content(await _events(store_settings, thread), "re: one").metadata["event_id"]
+
+    result = await asyncio.wait_for(_rewind(store_settings, thread, target, summarize=True), timeout=5)
+
+    summary_id = result["branch_summary"]["event_id"]
+    events = await _events(store_settings, thread)
+    [summary] = [e for e in events if e.metadata.get("event_id") == summary_id]
+    assert summary.kind == "branch_summary"
+    assert summary.metadata.get("parent_id") == target
+    assert await _assert_row_and_index_agree(store_settings, thread) == summary_id
+
+
+@postgres_only
+@pytest.mark.asyncio
+async def test_a_fork_into_a_live_thread_inside_its_turns_append_is_not_overwritten(
+    store_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`/chat/fork` names its destination, which may be a thread with a turn in flight."""
+    from felix.session.branch import fork_and_persist
+    from felix.session.store import get_session_store
+
+    source, dest = _thread(), _thread()
+    await _seed(store_settings, source)
+    await _seed(store_settings, dest)
+    store = get_session_store(store_settings, tenant_id=TENANT)
+
+    async def fork() -> Any:
+        return await fork_and_persist(
+            store.open(source), store.open(dest), settings=store_settings, tenant_id=TENANT
+        )
+
+    await _turn_with_interleave(store_settings, dest, "two", monkeypatch, fork, at_reply=True)
+
+    leaf = await _assert_row_and_index_agree(store_settings, dest)
+    [forked] = [e for e in await _events(store_settings, dest) if e.metadata.get("event_id") == leaf]
+    assert forked.metadata.get("forked_from"), "the fork's leaf was overwritten by the turn's reply"

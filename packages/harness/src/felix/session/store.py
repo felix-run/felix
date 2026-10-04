@@ -288,6 +288,13 @@ class _PostgresSession:
         listing is rows), nor is it a metadata write that moves `revision`. It marks the row
         tracked (`thread_state.LEAF_TRACKED_KEY`), merged in SQL so a concurrent metadata
         write under its row lock keeps the key.
+
+        Unconditional, which is a known cross-replica limit: a rewind committed by another
+        replica between this append's linking and this write is overwritten here, and the row
+        then names this append's event. On one replica the thread's `tree.leaf_lock` keeps a
+        rewind out of that window (`branch.rewind_and_persist`). A compare-and-set on the
+        parent the append was linked to would close it across replicas, at the cost of
+        stranding every later append of a turn whose first set failed.
         """
         from sqlalchemy import literal, update
         from sqlalchemy.dialects.postgresql import JSONB
