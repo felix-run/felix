@@ -89,6 +89,13 @@ line, re-validate it against *that* grammar's separators. Details: the **securit
   layer down. `tests/unit/test_route_error_text.py` fails a route that does it; its `KNOWN_OPEN`
   only shrinks. The scan covers route modules only, so a message a route stores and later returns
   (a checkout's `error`) is held to this by review — classify it where it is written.
+- **A caller-supplied value reaches a log line only through `felix.logging_setup.loggable()`.** A
+  request body field, a path or query parameter, a header, a thread id: wrap it, with a `limit`
+  that fits what it should be (`loggable(body.full_name, limit=200)`). The formatter escapes too,
+  but CodeQL's `py/log-injection` reads the call site, not the formatter, and #475's fix for the
+  rule above introduced one by logging a request field bare. A value already validated by a pattern
+  still goes through it: the pattern is invisible to the scanner and to the next person who
+  loosens it.
 - Commit and push only when the user asks; branch first. Details: the **branch-pr-workflow** skill.
 
 ## What the work is for

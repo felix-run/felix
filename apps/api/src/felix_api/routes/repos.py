@@ -17,6 +17,7 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
+from felix.logging_setup import loggable
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger("felix_api.repos")
@@ -176,7 +177,8 @@ async def open_thread_repo(thread_id: str, body: OpenRepoRequest, request: Reque
     try:
         repo = await github_api.get_repo(settings, token, body.full_name)
     except github_api.GitHubReadError as exc:
-        logger.warning("reading %s failed: %s", body.full_name, exc)
+        # Caller-supplied, so through `loggable` like any untrusted text that reaches a log line.
+        logger.warning("reading %s failed: %s", loggable(body.full_name, limit=200), exc)
         return _refusal(502, "github_unavailable", GITHUB_UNAVAILABLE)
     if repo is None:
         return _refusal(

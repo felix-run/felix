@@ -39,6 +39,8 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from felix.logging_setup import loggable
+
 if TYPE_CHECKING:
     from felix.config import Settings
 
@@ -285,7 +287,11 @@ async def _clone(settings: Settings, directory: Path, state: dict[str, Any], tok
         os.replace(tmp, directory / REPO_DIR)
         final.update(state=READY, ready_at=int(time.time() * 1000))
         (directory / USED_FILE).touch()
-        logger.info("checkout ready: %s for %s", state["repo"], state["opened_by"])
+        logger.info(
+            "checkout ready: %s for %s",
+            loggable(state["repo"], limit=200),
+            loggable(state["opened_by"], limit=80),
+        )
     except Exception as exc:
         shutil.rmtree(tmp, ignore_errors=True)
         detail = _scrub(str(exc), token)
@@ -294,7 +300,9 @@ async def _clone(settings: Settings, directory: Path, state: dict[str, Any], tok
         # Classified on git's whole message: its first line names the clone's path, and a long
         # checkout root once pushed the part that said why past a cut made before this.
         final.update(state=FAILED, error=_failure_reason(detail, settings))
-        logger.warning("checkout failed: %s: %s", state["repo"], detail[-600:])
+        logger.warning(
+            "checkout failed: %s: %s", loggable(state["repo"], limit=200), loggable(detail[-600:], limit=600)
+        )
     finally:
         _write_state(directory, final)
         with contextlib.suppress(OSError):
