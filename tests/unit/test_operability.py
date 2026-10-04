@@ -95,6 +95,83 @@ async def test_ready_endpoint_returns_503_when_not_ready() -> None:
     assert resp.json()["status"] == "not_ready"
 
 
+def _settings_from_env(monkeypatch: pytest.MonkeyPatch, redis_url: str | None) -> Settings:
+    """Settings the way production reads them: from the environment, with no `.env` file.
+
+    `redis_url=None` leaves FELIX_REDIS_URL unset, so the field keeps its default -- the
+    case `make dev` on memory:// is in, and one no constructor argument can express.
+    """
+    monkeypatch.setenv("FELIX_DATABASE_URL", "memory://ready-env")
+    monkeypatch.setenv("FELIX_OBJECT_STORE", "memory")
+    if redis_url is None:
+        monkeypatch.delenv("FELIX_REDIS_URL", raising=False)
+    else:
+        monkeypatch.setenv("FELIX_REDIS_URL", redis_url)
+    return Settings(_env_file=None)  # type: ignore[call-arg]
+
+
+@pytest.mark.asyncio
+async def test_ready_on_memory_with_no_redis_configured(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The no-infrastructure mode goes green: the default localhost URL is not a Redis anyone set.
+
+    Port 6379 is not assumed closed here -- the assertion is on the probe's detail, which says
+    the URL was never dialled, so a local Valkey cannot make this pass for the wrong reason.
+    """
+    from felix_api.app import create_app
+    from httpx import ASGITransport, AsyncClient
+
+    settings = _settings_from_env(monkeypatch, None)
+    app = create_app(settings=settings, plugins=[])
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/ready")
+    assert resp.status_code == 200, resp.json()
+    assert resp.json()["status"] == "ready"
+    report = await check_readiness(settings)
+    assert next(p for p in report.probes if p.name == "redis").detail == "not configured"
+
+
+@pytest.mark.asyncio
+async def test_not_ready_on_memory_when_a_configured_redis_is_down(monkeypatch: pytest.MonkeyPatch) -> None:
+    """memory:// relaxes only the default. A URL someone set is required, and down is down."""
+    from felix_api.app import create_app
+    from httpx import ASGITransport, AsyncClient
+
+    settings = _settings_from_env(monkeypatch, "redis://127.0.0.1:9/0")
+    app = create_app(settings=settings, plugins=[])
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/ready")
+    assert resp.status_code == 503
+    assert resp.json()["status"] == "not_ready"
+    assert resp.json()["checks"]["redis"]["ok"] is False
+
+
+def test_redis_default_still_counts_off_memory(monkeypatch: pytest.MonkeyPatch) -> None:
+    """On Postgres the default URL is the deployment's Redis, as it was: nothing is relaxed."""
+    from felix.config import redis_url_in_use
+
+    monkeypatch.delenv("FELIX_REDIS_URL", raising=False)
+    on_postgres = Settings(_env_file=None, database_url="postgresql+psycopg://u:p@db:5432/f")  # type: ignore[call-arg]
+    assert "redis_url" not in on_postgres.model_fields_set
+    assert redis_url_in_use(on_postgres) == on_postgres.redis_url
+
+
+def test_per_process_rate_limits_are_noted_once_at_info(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    from felix.security import rate_limit
+
+    monkeypatch.setattr(rate_limit, "_per_process_noted", False)
+    caplog.set_level(logging.DEBUG, logger="felix.security.rate_limit")
+    settings = _settings_from_env(monkeypatch, None)
+    for _ in range(3):
+        backend = rate_limit.build_rate_limiter_backend(settings)
+        assert isinstance(backend, rate_limit.InMemoryRateLimiter)
+
+    records = [r for r in caplog.records if r.name == "felix.security.rate_limit"]
+    assert [r.levelno for r in records] == [logging.INFO], [r.getMessage() for r in records]
+    assert "per process" in records[0].getMessage()
+
+
 @pytest.mark.asyncio
 async def test_live_does_no_io_and_stays_200_when_deps_are_down() -> None:
     """Liveness must not restart a healthy process because a database blipped."""
