@@ -466,8 +466,10 @@ repositories included. Every GitHub call is charged to the tenant's hourly budge
 deployment's (`FELIX_SKILL_IMPORT_CALLS_PER_HOUR`, 500, and `_TOTAL`, 4000; 429 `rate_limited`),
 which protects the shared token's own GitHub limit (5,000 calls an hour with a token): at the
 defaults, eight tenants spending their whole budget fill the deployment's, and one tenant can
-spend an eighth of it. A browse of 50 skills is about 54 calls, an import one per file plus
-about five. The buckets live in Redis when `FELIX_REDIS_URL` is set; when Redis is unreachable
+spend an eighth of it. A browse of 50 skills is 53 calls -- the repository, the branch, the tree
+and 50 SKILL.md heads -- and 54 when it names a bare branch or tag, which is looked up as both; an
+import is one call per file plus four (five for a bare name), and an upstream check without a diff
+three (four). The buckets live in Redis when `FELIX_REDIS_URL` is set; when Redis is unreachable
 each replica falls back to its own in-process buckets, so both budgets are multiplied by the
 number of API replicas until it recovers -- size `_TOTAL` for that, or keep Redis up. A browse
 lists at most 50 skills and says how many it found.
@@ -482,43 +484,69 @@ file is a new digest and starts its own clock. Sightings older than 366 days are
 retention sweep, past the longest cooldown a setting allows.
 
 **Update checks.** An imported skill keeps its origin -- source, ref, commit and kept-file digest --
-on its newest version. `GET /skill-library/{name}/-/upstream` (`felix skills diff`, `skills:read`)
-re-resolves that ref, or a `?ref=` the caller names, under the same rules as an import's ref (a
-commit id only on the default branch, `ambiguous_ref`, the egress-pinned client) and against the
-tenant's allowlist *as it is now*: a source the deployment has since unbound from the tenant is
-refused (403 `source_not_allowed`) before any GitHub call, whichever ref is named. It answers with
-the upstream commit and digest, whether that is an update, when the cooldown lets it in, and a
-per-file diff against the live version (the newest when nothing is live). Only changed files are
-fetched -- a stored file's git blob id is computed from its bytes and compared with the tree's --
-and only text: a binary asset is reported by size. The diff is capped per file (16 KiB) and in
-total (128 KiB), says when it was cut (`diff_truncated`), and is third-party text, so it is
-secret-redacted as a file read is, and `felix skills diff` strips control characters from it line
-by line. A skill whose newest non-rejected version was not imported is 409 `not_imported`.
+on its newest version. `GET /skill-library/{name}/-/upstream` (`felix skills diff`) re-resolves
+that ref under the same rules as an import's ref (a commit id only on the default branch,
+`ambiguous_ref`, the egress-pinned client; a stored ref that is the default branch's name resolves
+as that branch, whatever tag shares the name) and against the tenant's allowlist *as it is now*: a
+source the deployment has since unbound from the tenant is refused (403 `source_not_allowed`)
+before any GitHub call. Checking the stored ref needs `skills:read`; naming another one with
+`?ref=` needs `skills:write`, since it chooses what the deployment's token fetches, as an import
+does. The answer carries the upstream commit and digest, whether that is an update, when the
+cooldown lets it in, and a per-file diff against the live version (the newest when nothing is
+live). A skill whose newest non-rejected version was not imported is 409 `not_imported`.
+
 `POST /skill-library/{name}/-/update` (`felix skills update`, `skills:write`) is the import itself
 from the stored origin -- a new draft, `unchanged`, `too_recent` or `origin_mismatch`, the stricter
 gate and the lineage taint all as above -- and has no publish field: a person publishes it after
 review. Its `skill_draft_saved` audit event carries the reason `updated from <source>@<commit>`.
 Neither check nor update resolves anything at compile time.
 
-**Checks start the clock.** A check stamps the sighting of what it finds, as a browse does: asking
-whether an update exists starts that update's cooldown, deliberately, so an operator who sees an
-update today can take it once the cooldown has run from today. With
-`FELIX_SKILL_IMPORT_CHECK_HOURS` (0 = off, at most 168) the worker checks every imported skill on
-that cadence (`skill_upstream_checks`, every ten minutes for what is due, 50 a tick, one sweep at a
-time across workers), so the clock starts without anyone asking, and records the upstream commit,
-digest and check time per skill (`skill_upstream`). `GET /skill-library/-/upstream?refresh=false`
-and the library detail's `upstream` read that record and call GitHub not at all; a check that is
-refused records its code and keeps the last good state.
+**What a diff costs.** Only changed files are fetched: a stored file's git blob id is computed
+from its bytes and compared with the tree's, and of the files that moved only text is read -- a
+binary asset is reported by size. Two kinds of bound apply. The *answer* is capped at 16,384
+characters of diff per file and 131,072 in total, cut at a line boundary and flagged
+(`truncated`, `diff_truncated`); past the total a file is listed without a diff and not fetched.
+The *work* is capped separately, because difflib reads both whole sides before anything is cut: a
+side over 256 KiB (262,144 bytes) or 4,000 lines is never diffed -- listed by size, `truncated`,
+and when it is the upstream side, never fetched -- and the diff runs off the event loop. The diff
+is third-party text: it is secret-redacted as a file read is, and `felix skills diff` strips
+control and invisible characters from it line by line and writes the file headers itself,
+indenting every hunk line, so a line of the file cannot pass for a `---`/`+++` header.
 
-**Budget for checks.** Every GitHub call of a check, an update and the listing is charged as an
-import's is. The listing (`GET /skill-library/-/upstream`, `felix skills outdated`) checks at most
-25 skills a page, resolves a repository and ref once for every skill that shares them, starts no
-check 30 s after its first, and stops at a spent budget with the cursor at the first skill it did
-not check (`stopped`); a budget spent before its first check is 429. The worker's sweep charges
-the same tenant and deployment buckets but stops at half of each, so it never spends the hour
-people asking need: a tenant past its half is skipped for the rest of the tick, and the
-deployment's half ends it. It shares the API's buckets only through Redis (`FELIX_REDIS_URL`),
-which the worker already needs.
+**Checks start the clock, and read-scope checks spend.** A check stamps the sighting of what it
+finds, as a browse does: asking whether an update exists starts that update's cooldown,
+deliberately, so an operator who sees an update today can take it once the cooldown has run from
+today. Like a browse, a check under `skills:read` spends the tenant's GitHub budget, stamps
+sightings and -- for the stored ref -- records the upstream state; that is intended, and the
+budget is what bounds it. A check of another ref is a what-if and records nothing, and neither
+does an import or update of a ref other than the newest version's when nothing changed.
+
+**The periodic check.** With `FELIX_SKILL_IMPORT_CHECK_HOURS` (0 = off, at most 168) the worker
+checks every imported skill on that cadence (`skill_upstream_checks`, every ten minutes for what is
+due, at most 50 skills a tick, one sweep at a time across workers), so the clock starts without
+anyone asking, and records the upstream commit, digest and check time per skill
+(`skill_upstream`). `GET /skill-library/-/upstream?refresh=false` and the library detail's
+`upstream` read that record and call GitHub not at all. A refused check records its code and keeps
+the last good state; a folder past the import caps is recorded as `source_too_large` rather than
+offered as an update no import could take; a skill whose head is no longer an import is recorded
+as `not_imported` and checked again once it is one. The sweep runs in the worker, on the worker's
+environment: give it the same `FELIX_SKILL_IMPORT_SOURCES` and `FELIX_SKILL_IMPORT_GITHUB_TOKEN`
+as the API, or it judges origins against another allowlist and reads GitHub with another token (or
+none). `felix doctor` notes this whenever the checks are on, and says when the allowlist or the
+token is missing from the process it runs in.
+
+**Budget and fairness for checks.** Every GitHub call of a check, an update and the listing is
+charged as an import's is. The listing (`GET /skill-library/-/upstream`, `felix skills outdated`)
+checks at most 25 skills a page, resolves a repository and ref once for every skill that shares
+them, starts no check 30 seconds after its first, and stops at a spent budget with the cursor at
+the first skill it did not check (`stopped`); a budget spent before its first check is 429. The
+sweep charges the same tenant and deployment buckets but stops at half of each, so it never spends
+the hour people asking need. It is fair across tenants: a tenant past its half is left out of the
+rest of the tick and the due rows are read again without it, so one tenant's backlog cannot fill
+the batch and leave every other tenant unchecked. The deployment's half, or GitHub's own rate
+limit on the shared token, ends the tick. Within a tick a tenant's skills from one repository and
+ref resolve once. The sweep shares the API's buckets only through Redis (`FELIX_REDIS_URL`), which
+the worker already needs.
 
 ## Outbound egress
 

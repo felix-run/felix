@@ -410,23 +410,28 @@ First, because everything else governs it.
          (warned at compile), which a paraphrase passes; the suggester's decision model reads imported descriptions; nothing clears
          `lineage_import` once set; laundering is caught only for byte-identical files.
       2. [x] Update checks: `felix/skills/{upstream,upstream_store,bundle_diff}.py`,
-         `GET /skill-library/{name}/-/upstream` (the stored ref, or `?ref=` under the same
-         allowlist, re-resolved; a per-file diff against the live version, else the newest, fetching
-         only text files whose git blob ids moved, capped 16 KiB a file and 128 KiB in all and
-         redacted), `POST /skill-library/{name}/-/update` (the importer from the stored origin, a
-         draft, no publish field; `skill_draft_saved` with reason `updated from …`),
-         `GET /skill-library/-/upstream` (25 a page, a repository and ref resolved once, `stopped`
-         on a spent budget or past 30 s, `refresh=false` from the record), 409 `not_imported`,
-         `felix skills outdated|diff|update`, and `upstream` on the library detail. A check stamps
-         the sighting, so asking starts the cooldown. `FELIX_SKILL_IMPORT_CHECK_HOURS` (0 = off,
-         ≤168) runs `skill_upstream_checks` on the worker (50 due skills a tick, its own
-         `skill_job_lease` row, half of each budget) and records each skill's upstream state in
-         `skill_upstream` (migration `0029`, backfilled from imported versions). Open: the felix-web
-         docs (management API, concepts, deploy settings, persistence); a diff of a skill over the
-         import caps is refused (`source_too_large`) rather than summarised; a skill checked under
-         a `?ref=` is not recorded, so the listing never shows a what-if; the sweep shares the API's
-         budget only through Redis, so a worker without it would spend a budget of its own; nothing
-         notifies anyone of an update the sweep finds -- it is on the listing and the detail.
+         `GET /skill-library/{name}/-/upstream` (the stored ref with `skills:read`, or `?ref=` with
+         `skills:write`, re-resolved under the tenant's allowlist; a per-file diff against the live
+         version, else the newest, fetching only text files whose git blob ids moved; answers capped
+         at 16,384 characters a file and 131,072 in all, and no side over 256 KiB or 4,000 lines
+         diffed or fetched; redacted), `POST /skill-library/{name}/-/update` (the importer from the
+         stored origin, a draft, no publish field; `skill_draft_saved` with reason `updated from …`),
+         `GET /skill-library/-/upstream` (25 a page, a repository and ref resolved once, `stopped` on
+         a spent budget or past 30 s, `refresh=false` from the record), 409 `not_imported`,
+         `felix skills outdated|diff|update` (diff headers written by the CLI, hunks indented), and
+         `upstream` on the library detail. A check stamps the sighting, so asking starts the
+         cooldown; a stored default-branch ref resolves as the branch beside a tag of its name.
+         `FELIX_SKILL_IMPORT_CHECK_HOURS` (0 = off, ≤168) runs `skill_upstream_checks` on the worker
+         (50 skills a tick, its own `skill_job_lease` row, half of each budget, a spent tenant left
+         out of the rest of the tick, GitHub's own rate limit ending it) and records each skill's
+         upstream state in `skill_upstream` (migration `0029`, backfilled from imported versions);
+         `felix doctor` notes that the worker needs the API's allowlist and token. Open: the felix-web
+         docs (management API, concepts, deploy settings, persistence); a check of a skill over the
+         import caps is refused (`source_too_large`) rather than summarised; a skill checked under a
+         `?ref=` is not recorded, so the listing never shows a what-if; the sweep shares the API's
+         budget only through Redis, so a worker without it would spend a budget of its own; a spent
+         tenant's rows still lead the next tick's read (one refused call, then it is left out);
+         nothing notifies anyone of an update the sweep finds -- it is on the listing and the detail.
 
 ### B. Close the durable loop
 
