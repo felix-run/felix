@@ -15,6 +15,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from felix.skills.publish_gate import gate_source
 from felix.skills.types import SkillCatalog
 from felix.tools.types import Tool, ToolInput, ToolInvocationCtx, define_tool
 
@@ -220,7 +221,7 @@ class _SkillAuthor:
         return _Composed(
             files=files,
             parent=parent,
-            edits_operator_skill=parent_row.get("source") in {"operator", "import"},
+            edits_operator_skill=gate_source(parent_row) in {"operator", "import"},
             inherited=inherited,
         )
 

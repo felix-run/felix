@@ -44,6 +44,7 @@ from felix.tools.types import (
     ToolInvocationCtx,
     ToolOutput,
     deny_output,
+    is_untrusted_output,
     is_wrapper_deny,
     output_metadata,
     replace_tool_output,
@@ -525,7 +526,7 @@ def apply_content_screening(
         # An image tool's *results* are screened by where their input came from, its summary
         # text is not: it is a size and a reference the tool wrote itself.
         image_tool = tool.source == "image"
-        if not (text_covered or image_tool):
+        if not (text_covered or image_tool or tool.relays_untrusted):
             return tool
         inner = tool.executor
         # The paid scoring, by `model_tools`; the markers below run regardless.
@@ -535,8 +536,12 @@ def apply_content_screening(
             out = await inner.execute(args, ctx)
             if is_wrapper_deny(out):
                 return out
-            if not text_covered:
-                return await screen_images(out)
+            # Per call as well as per tool: a trusted tool may relay one result from an untrusted
+            # author (`untrusted_output` -- an imported skill's body from `activate_skill`), and
+            # that result is screened as an untrusted tool's is.
+            relayed = is_untrusted_output(out)
+            if not (text_covered or relayed):
+                return await screen_images(out) if image_tool else out
             content = tool_output_content(out)
             flagged = any(rx.search(content) for rx in _INJECTION)
             unavailable = False
@@ -583,7 +588,7 @@ def apply_content_screening(
                 return out
             if images is not None:
                 return await _screen_tool_images(out, images(), tool.name)
-            if untrusted or _image_from_workspace(out):
+            if untrusted or is_untrusted_output(out) or _image_from_workspace(out):
                 # Fail closed. Text from an untrusted tool is always marker-scanned; its pixels
                 # have no screener without `image_model`, and a page can draw its payload rather
                 # than write it. An image tool's result from a workspace file is the same case:

@@ -90,17 +90,6 @@
       },
       "BrowseItemOut": {
         "properties": {
-          "committed_at": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Committed At"
-          },
           "description": {
             "title": "Description",
             "type": "string"
@@ -111,15 +100,12 @@
             "type": "boolean"
           },
           "eligible_at": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Eligible At"
+            "title": "Eligible At",
+            "type": "integer"
+          },
+          "first_seen_at": {
+            "title": "First Seen At",
+            "type": "integer"
           },
           "name": {
             "title": "Name",
@@ -138,7 +124,9 @@
           "name",
           "description",
           "path",
-          "source"
+          "source",
+          "first_seen_at",
+          "eligible_at"
         ],
         "title": "BrowseItemOut",
         "type": "object"
@@ -1611,6 +1599,11 @@
             "title": "Description",
             "type": "string"
           },
+          "lineage_import": {
+            "default": false,
+            "title": "Lineage Import",
+            "type": "boolean"
+          },
           "live_version": {
             "anyOf": [
               {
@@ -2697,6 +2690,11 @@
             "title": "Files",
             "type": "array"
           },
+          "lineage_import": {
+            "default": false,
+            "title": "Lineage Import",
+            "type": "boolean"
+          },
           "name": {
             "title": "Name",
             "type": "string"
@@ -3335,6 +3333,11 @@
             "title": "Files",
             "type": "array"
           },
+          "lineage_import": {
+            "default": false,
+            "title": "Lineage Import",
+            "type": "boolean"
+          },
           "name": {
             "title": "Name",
             "type": "string"
@@ -3581,6 +3584,11 @@
             "title": "Description",
             "type": "string"
           },
+          "lineage_import": {
+            "default": false,
+            "title": "Lineage Import",
+            "type": "boolean"
+          },
           "name": {
             "title": "Name",
             "type": "string"
@@ -3810,6 +3818,11 @@
             },
             "title": "Files",
             "type": "array"
+          },
+          "lineage_import": {
+            "default": false,
+            "title": "Lineage Import",
+            "type": "boolean"
           },
           "name": {
             "title": "Name",
@@ -9399,16 +9412,6 @@
             },
             "description": "Successful Response"
           },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
-                }
-              }
-            },
-            "description": "Forbidden"
-          },
           "404": {
             "content": {
               "application/json": {
@@ -9489,16 +9492,6 @@
             },
             "description": "Successful Response"
           },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
-                }
-              }
-            },
-            "description": "Forbidden"
-          },
           "404": {
             "content": {
               "application/json": {
@@ -9558,7 +9551,7 @@
     },
     "/skill-library/-/browse": {
       "get": {
-        "description": "The skills a GitHub repository offers at one commit: every directory with a `SKILL.md`\nunder the usual roots (`skills/`, `.claude/skills/`, Claude Code plugin layouts, \u2026), with the\nname and description its frontmatter declares. Each item's `source` is what to import it by.",
+        "description": "The skills a GitHub repository offers at one commit: every directory with a `SKILL.md`\nunder the usual roots (`skills/`, `.claude/skills/`, Claude Code plugin layouts, \u2026), with the\nname and description its frontmatter declares. Each item's `source` is what to import it by,\nand `eligible_at` when the minimum import age lets it in -- counted from the first time this\ntenant saw those files, which a browse records.",
         "operationId": "browse_source_skill_library___browse_get",
         "parameters": [
           {
@@ -9746,16 +9739,6 @@
             },
             "description": "Successful Response"
           },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
-                }
-              }
-            },
-            "description": "Forbidden"
-          },
           "404": {
             "content": {
               "application/json": {
@@ -9856,16 +9839,6 @@
             },
             "description": "Successful Response"
           },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
-                }
-              }
-            },
-            "description": "Forbidden"
-          },
           "404": {
             "content": {
               "application/json": {
@@ -9959,16 +9932,6 @@
             },
             "description": "Successful Response"
           },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
-                }
-              }
-            },
-            "description": "Forbidden"
-          },
           "404": {
             "content": {
               "application/json": {
@@ -10028,7 +9991,7 @@
     },
     "/skill-library/-/import": {
       "post": {
-        "description": "Fetch the skill at `source`, pinned to the commit `ref` resolves to, and save it as a draft.\n\nA new skill starts at 0.1.0. A skill the library already imported from the same source gets\na new version -- unless its files are unchanged, which answers 200 with `unchanged: true`\nand the existing version, saving nothing (and publishing nothing). A name the library holds\nfrom anywhere else is 409 `origin_mismatch`. `dropped_files` lists what the import left out.",
+        "description": "Fetch the skill at `source`, pinned to the commit `ref` resolves to, and save it as a draft.\n\nA new skill starts at 0.1.0. A skill the library already imported from the same source gets\na new version -- unless its files are unchanged, which answers 200 with `unchanged: true`\nand the existing version, saving nothing. A name the library holds from anywhere else is 409\n`origin_mismatch`. `dropped_files` lists what the import left out.\n\nNever published here: `publish: true` is 422 `publish_not_allowed`. Third-party text is\nreviewed first, then published with `POST /skill-library/{name}/versions/{version}/publish`.",
         "operationId": "import_from_source_skill_library___import_post",
         "requestBody": {
           "content": {
@@ -10153,16 +10116,6 @@
             },
             "description": "Successful Response"
           },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
-                }
-              }
-            },
-            "description": "Forbidden"
-          },
           "404": {
             "content": {
               "application/json": {
@@ -10232,16 +10185,6 @@
               }
             },
             "description": "Successful Response"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
-                }
-              }
-            },
-            "description": "Forbidden"
           },
           "404": {
             "content": {
@@ -10322,16 +10265,6 @@
               }
             },
             "description": "Successful Response"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
-                }
-              }
-            },
-            "description": "Forbidden"
           },
           "404": {
             "content": {
@@ -10436,16 +10369,6 @@
             },
             "description": "Successful Response"
           },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
-                }
-              }
-            },
-            "description": "Forbidden"
-          },
           "404": {
             "content": {
               "application/json": {
@@ -10529,16 +10452,6 @@
             },
             "description": "Successful Response"
           },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
-                }
-              }
-            },
-            "description": "Forbidden"
-          },
           "404": {
             "content": {
               "application/json": {
@@ -10619,16 +10532,6 @@
               }
             },
             "description": "Successful Response"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
-                }
-              }
-            },
-            "description": "Forbidden"
           },
           "404": {
             "content": {
@@ -10759,16 +10662,6 @@
             },
             "description": "Successful Response"
           },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
-                }
-              }
-            },
-            "description": "Forbidden"
-          },
           "404": {
             "content": {
               "application/json": {
@@ -10860,16 +10753,6 @@
               }
             },
             "description": "Successful Response"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
-                }
-              }
-            },
-            "description": "Forbidden"
           },
           "404": {
             "content": {
@@ -11006,16 +10889,6 @@
             },
             "description": "Successful Response"
           },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
-                }
-              }
-            },
-            "description": "Forbidden"
-          },
           "404": {
             "content": {
               "application/json": {
@@ -11106,16 +10979,6 @@
               }
             },
             "description": "Successful Response"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
-                }
-              }
-            },
-            "description": "Forbidden"
           },
           "404": {
             "content": {
@@ -11210,16 +11073,6 @@
             },
             "description": "Successful Response"
           },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
-                }
-              }
-            },
-            "description": "Forbidden"
-          },
           "404": {
             "content": {
               "application/json": {
@@ -11312,16 +11165,6 @@
             },
             "description": "Successful Response"
           },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
-                }
-              }
-            },
-            "description": "Forbidden"
-          },
           "404": {
             "content": {
               "application/json": {
@@ -11413,16 +11256,6 @@
               }
             },
             "description": "Successful Response"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
-                }
-              }
-            },
-            "description": "Forbidden"
           },
           "404": {
             "content": {
@@ -11525,16 +11358,6 @@
             },
             "description": "Successful Response"
           },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
-                }
-              }
-            },
-            "description": "Forbidden"
-          },
           "404": {
             "content": {
               "application/json": {
@@ -11626,16 +11449,6 @@
               }
             },
             "description": "Successful Response"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
-                }
-              }
-            },
-            "description": "Forbidden"
           },
           "404": {
             "content": {
@@ -11746,16 +11559,6 @@
             },
             "description": "Successful Response"
           },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
-                }
-              }
-            },
-            "description": "Forbidden"
-          },
           "404": {
             "content": {
               "application/json": {
@@ -11857,16 +11660,6 @@
               }
             },
             "description": "Successful Response"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
-                }
-              }
-            },
-            "description": "Forbidden"
           },
           "404": {
             "content": {
@@ -11976,16 +11769,6 @@
               }
             },
             "description": "Successful Response"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
-                }
-              }
-            },
-            "description": "Forbidden"
           },
           "404": {
             "content": {

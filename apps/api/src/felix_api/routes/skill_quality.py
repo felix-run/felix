@@ -29,7 +29,7 @@ from felix.auth.mgmt import SCOPE_SKILLS_READ, SCOPE_SKILLS_WRITE, subject_from_
 from felix.skills import evaluate, feedback, library
 from felix.skills.eval_store import get_skill_eval_store
 from felix.skills.feedback_store import get_skill_feedback_store
-from felix.skills.publish_gate import eval_counts_for_gate
+from felix.skills.publish_gate import eval_counts_for_gate, gate_source
 from felix.skills.quality_store import FeedbackStatus
 
 from felix_api.routes._skill_library_http import (
@@ -175,7 +175,7 @@ async def _with_gate_standing(ctx: LibraryRequest, rows: list[dict[str, Any]]) -
         key = (str(row["name"]), str(row["version"]))
         if key not in sources:
             version = await ctx.lib.get_version(ctx.tenant_id, *key)
-            sources[key] = (version or {}).get("source")
+            sources[key] = gate_source(version)
     out = []
     for row in rows:
         counts, note = eval_counts_for_gate(sources[(str(row["name"]), str(row["version"]))], row)

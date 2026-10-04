@@ -22,6 +22,8 @@ RUN_TERMINAL = frozenset({"completed", "failed", "expired", "cancelled", "dead"}
 RUN_POLL_FLOOR_SECONDS = 0.5
 RUN_POLL_CEILING_SECONDS = 5.0
 RUN_POLL_FACTOR = 1.5
+# How long a skill browse or import may take: past the server's own 120 s deadline for one.
+SKILL_IMPORT_TIMEOUT_SECONDS = 180.0
 
 
 @dataclass
@@ -659,25 +661,27 @@ class FelixClient:
 
     # --- the skill library (`skills:read` / `skills:write`) -------------------------------
 
+    def _import_timeout(self) -> float:
+        # The server allows one browse or import 120 s of GitHub calls (`DEADLINE_SECONDS`); wait
+        # past that, so its own answer -- a refusal with a code -- arrives rather than a timeout.
+        return max(self.timeout, SKILL_IMPORT_TIMEOUT_SECONDS)
+
     async def browse_skills(self, source: str, *, ref: str | None = None) -> dict[str, Any]:
         """The skills a GitHub repository offers at one commit:
         `{source, ref, commit, license, items: [{name, description, path, source}], truncated}`."""
         params = {"source": source, **({"ref": ref} if ref else {})}
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with httpx.AsyncClient(timeout=self._import_timeout()) as client:
             resp = await client.get(
                 f"{self.base_url.rstrip('/')}/skill-library/-/browse", headers=self._headers(), params=params
             )
             resp.raise_for_status()
             return resp.json()
 
-    async def import_skill(
-        self, source: str, *, ref: str | None = None, publish: bool = False
-    ) -> dict[str, Any]:
-        """Import the skill at `source` (`github:owner/repo/path`) into the library as a draft,
-        and publish it through the gate if `publish`. The version, with `unchanged`,
-        `dropped_files`, `published` and `publish_blocked`."""
-        body: dict[str, Any] = {"source": source, "publish": publish, **({"ref": ref} if ref else {})}
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+    async def import_skill(self, source: str, *, ref: str | None = None) -> dict[str, Any]:
+        """Import the skill at `source` (`github:owner/repo/path`) into the library as a draft for
+        review -- never published here. The version, with `unchanged` and `dropped_files`."""
+        body: dict[str, Any] = {"source": source, **({"ref": ref} if ref else {})}
+        async with httpx.AsyncClient(timeout=self._import_timeout()) as client:
             resp = await client.post(
                 f"{self.base_url.rstrip('/')}/skill-library/-/import", headers=self._headers(), json=body
             )

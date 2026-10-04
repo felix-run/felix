@@ -5,19 +5,26 @@ The GitHub half -- source syntax, the allowlist, the pinned fetch -- is `skills/
 is what the library makes of it.
 
 What lands is a draft (`library.save_draft`, `source="import"`), never a live skill: publishing
-is a separate, explicit step through the same gate an operator's upload passes, and an imported
-version is held to a stricter one (`publish_gate.policy_for_source`: an advisory scan blocks).
+is a separate step a person takes after review, through the same gate an operator's upload
+passes -- and an imported version, and every version built on one, is held to a stricter one
+(`publish_gate.gate_source`, `policy_for_source`: an advisory scan blocks).
 
 The bundle is sanitised before it is validated, as Skillist's mirror does: `SKILL.md`,
 `plugin.json`, `scripts/`, `references/` and `assets/` are kept and everything else (examples,
-tests, a LICENSE file, dot-paths) is dropped and reported, and an over-long description is clamped.
+tests, `evals/`, a LICENSE file, dot-paths) is dropped and reported, and an over-long description
+is clamped. The skill's name must be its folder's.
 
-Change detection is a digest of the skill folder's tree entries (`github.hash_tree_snapshot`),
-not the commit SHA: a repository commits constantly, and an unrelated commit must not mint a new
-version. A re-import whose digest matches the newest version's saves nothing (`unchanged`).
+Change detection is a digest of the kept files' tree entries (`github.hash_tree_snapshot`), not
+the commit SHA: a repository commits constantly, and an unrelated commit -- or a change to a file
+the import drops -- must not mint a new version. A re-import whose digest matches the newest
+version's saves nothing (`unchanged`).
 
-An import never takes over a name: if the library holds the skill from another source, or an
-agent or an operator wrote its newest version, the import is refused (`origin_mismatch`).
+The cooldown counts from when this tenant first saw the digest (`sighting_store`), recorded on
+every browse and import attempt, never from a commit date the pusher chose.
+
+An import never takes over a name: if the newest version that was not rejected came from another
+source, or an agent or an operator wrote it, the import is refused (`origin_mismatch`); and a
+name an operator upload holds is refused too (`library.save_draft`).
 """
 
 from __future__ import annotations
@@ -36,15 +43,10 @@ import httpx
 from felix.config import Settings
 from felix.skills import library
 from felix.skills.binary import MAX_BINARY_ASSET_BYTES, encode_base64, is_binary_asset_path
-from felix.skills.format import (
-    MAX_BUNDLE_BYTES,
-    MAX_BUNDLE_FILES,
-    MAX_SKILL_MD_CHARS,
-    SKILL_NAME_RE,
-    parse_skill_md,
-)
+from felix.skills.format import MAX_BUNDLE_BYTES, MAX_BUNDLE_FILES, parse_skill_md
 from felix.skills.github import (
     DEFAULT_ROOTS,
+    DiscoveredSkill,
     GitHubReader,
     GitHubSource,
     ImportSourceNotFound,
@@ -63,6 +65,7 @@ from felix.skills.github import (
     validate_ref,
 )
 from felix.skills.library_store import get_skill_library_store
+from felix.skills.sighting_store import get_sighting_store
 
 logger = logging.getLogger("felix.skills.importer")
 
@@ -73,8 +76,10 @@ KEPT_ROOT_FILES = frozenset({"SKILL.md", "plugin.json"})
 KEPT_DIRS = frozenset({"scripts", "references", "assets"})
 # agentskills.io's limit; a longer description is clamped rather than refused, as Skillist does.
 MAX_DESCRIPTION_CHARS = 1024
-# Skills one browse reads a SKILL.md for.
+# Skills one browse reads a SKILL.md for, and how much of each: the frontmatter is at the top,
+# and a listing has no use for the rest.
 MAX_BROWSE_SKILLS = 200
+BROWSE_SKILL_MD_BYTES = 64 * 1024
 # Wall clock for one whole import or browse, every GitHub call included.
 DEADLINE_SECONDS = 120.0
 _FETCH_CONCURRENCY = 8
@@ -92,14 +97,22 @@ def _checked_request(settings: Settings, source: str, ref: str | None) -> tuple[
     return parsed, validate_ref(ref) if ref else None
 
 
-async def _gather_limited[T](calls: Iterable[Awaitable[T]]) -> list[T]:
+async def _gather_limited[T](calls: Iterable[Callable[[], Awaitable[T]]]) -> list[T]:
+    """Run each call, at most `_FETCH_CONCURRENCY` at once, in order. A task group, so the first
+    failure cancels the rest rather than leaving them fetching for an import already refused."""
     gate = asyncio.Semaphore(_FETCH_CONCURRENCY)
 
-    async def one(call: Awaitable[T]) -> T:
+    async def one(call: Callable[[], Awaitable[T]]) -> T:
         async with gate:
-            return await call
+            return await call()
 
-    return await asyncio.gather(*(one(c) for c in calls))
+    try:
+        async with asyncio.TaskGroup() as group:
+            tasks = [group.create_task(one(c)) for c in calls]
+    except* Exception as failed:
+        # The first refusal is the one the caller gets, as a gather would have raised it.
+        raise failed.exceptions[0] from None
+    return [t.result() for t in tasks]
 
 
 # -- the cooldown --------------------------------------------------------------------------------
@@ -113,16 +126,20 @@ class Cooldown:
     days: int
     now: int
 
-    def eligible_at(self, committed_at: int) -> int:
-        return committed_at + self.days * DAY_MS
+    def eligible_at(self, first_seen_at: int) -> int:
+        return first_seen_at + self.days * DAY_MS
 
-    def check(self, what: str, committed_at: int) -> None:
-        """Refuse ``what`` when its folder changed less than ``days`` ago. At exactly the boundary
-        it is old enough. A hard refusal: nothing is saved, and no flag overrides it."""
-        if self.days and self.now < self.eligible_at(committed_at):
+    def eligible(self, first_seen_at: int) -> bool:
+        """At exactly the boundary it is old enough."""
+        return self.now >= self.eligible_at(first_seen_at)
+
+    def check(self, what: str, first_seen_at: int) -> None:
+        """Refuse ``what`` when this tenant first saw its files less than ``days`` ago. A hard
+        refusal: nothing is saved, and no flag overrides it."""
+        if self.days and not self.eligible(first_seen_at):
             raise ImportTooRecent(
-                f"{what} last changed {_iso(committed_at)}; the minimum import age is {self.days} days, "
-                f"so it can be imported from {_iso(self.eligible_at(committed_at))}"
+                f"{what} was first seen {_iso(first_seen_at)}; the minimum import age is {self.days} "
+                f"days, so these files can be imported from {_iso(self.eligible_at(first_seen_at))}"
             )
 
 
@@ -231,27 +248,20 @@ def _frontmatter(skill_md: bytes) -> dict[str, Any]:
 # -- browse ------------------------------------------------------------------------------------
 
 
-async def _listing_body(gh: GitHubReader, source: GitHubSource, entry: TreeEntry) -> bytes:
-    # A SKILL.md past the bundle format's own limit lists with no description rather than
-    # costing a download nothing could save.
-    return b"" if entry.size > MAX_SKILL_MD_CHARS * 4 else await gh.blob(source, entry)
+def _folder_digest(tree: list[TreeEntry], source_path: str) -> str:
+    """The digest an import of this folder would record: over the files it keeps."""
+    return hash_tree_snapshot(e for e in skill_file_entries(tree, source_path) if keeps_path(e.path))
 
 
-def _listing_item(
-    parsed: GitHubSource, skill: Any, body: bytes, committed_at: int | None, cooldown: Cooldown
-) -> dict[str, Any]:
-    meta = _frontmatter(body)
+async def _listing_meta(gh: GitHubReader, source: GitHubSource, entry: TreeEntry) -> tuple[str | None, str]:
+    """A SKILL.md's (name, description), from its first `BROWSE_SKILL_MD_BYTES` alone, parsed as
+    it arrives so a listing holds two strings per skill rather than every file."""
+    meta = _frontmatter(await gh.blob_head(source, entry, BROWSE_SKILL_MD_BYTES))
     name, description = meta.get("name"), meta.get("description")
-    eligible_at = cooldown.eligible_at(committed_at) if committed_at is not None else None
-    return {
-        "name": name if isinstance(name, str) else skill.slug,
-        "description": description[:MAX_DESCRIPTION_CHARS] if isinstance(description, str) else "",
-        "path": skill.source_path,
-        "source": parsed.at(skill.source_path).canonical,
-        "committed_at": committed_at,
-        "eligible_at": eligible_at,
-        "eligible": eligible_at is None or cooldown.now >= eligible_at,
-    }
+    return (
+        name if isinstance(name, str) else None,
+        description[:MAX_DESCRIPTION_CHARS] if isinstance(description, str) else "",
+    )
 
 
 async def browse(
@@ -264,12 +274,12 @@ async def browse(
     clock: Callable[[], int] = now_ms,
 ) -> dict[str, Any]:
     """The skills a repository offers at one commit: each one's path, name and description, read
-    from its SKILL.md alone. With a path in ``source``, only the skills under it -- and the path
-    itself counts as a root, so a layout no default root covers can still be listed.
+    from the head of its SKILL.md alone. With a path in ``source``, only the skills under it --
+    and the path itself counts as a root, so a layout no default root covers can still be listed.
 
-    Under a minimum import age, each listed skill is dated (one more GitHub call per skill, so
-    only then) and says when it becomes eligible; with no cooldown nothing is dated and every
-    skill is eligible."""
+    Every listed skill's files are recorded as seen (`sighting_store`), so the cooldown can count
+    from here; each item says when it is first eligible. No call per skill beyond its SKILL.md: the
+    digest comes from the tree already read."""
     parsed, wanted_ref = _checked_request(settings, source, ref)
     cooldown = await _cooldown(settings, tenant_id, clock)
     prefix = f"{parsed.path}/"
@@ -284,20 +294,16 @@ async def browse(
             ]
             listed = found[:MAX_BROWSE_SKILLS]
             by_path = {e.path: e for e in resolved.tree}
-            bodies = await _gather_limited(
-                _listing_body(gh, parsed, by_path[d.skill_md_path]) for d in listed
-            )
-            dates: list[int | None] = (
-                list(
-                    await _gather_limited(
-                        gh.last_changed(parsed, resolved.commit, d.source_path) for d in listed
-                    )
-                )
-                if cooldown.days
-                else [None] * len(listed)
+            metas = await _gather_limited(
+                (lambda d=d: _listing_meta(gh, parsed, by_path[d.skill_md_path])) for d in listed
             )
     except TimeoutError:
         raise ImportUpstreamError(f"GitHub took longer than {DEADLINE_SECONDS:.0f}s") from None
+    sources = {d.source_path: parsed.at(d.source_path).canonical for d in listed}
+    digests = {d.source_path: _folder_digest(resolved.tree, d.source_path) for d in listed}
+    seen = await get_sighting_store(settings).first_seen(
+        tenant_id, [(sources[p], digests[p]) for p in sources], at=cooldown.now
+    )
     return {
         "source": parsed.canonical,
         "ref": resolved.ref,
@@ -305,10 +311,31 @@ async def browse(
         "license": resolved.license,
         "min_age_days": cooldown.days,
         "items": [
-            _listing_item(parsed, skill, body, at, cooldown)
-            for skill, body, at in zip(listed, bodies, dates, strict=True)
+            _listing_item(
+                skill,
+                meta,
+                sources[skill.source_path],
+                seen[(sources[skill.source_path], digests[skill.source_path])],
+                cooldown,
+            )
+            for skill, meta in zip(listed, metas, strict=True)
         ],
         "truncated": len(found) > len(listed),
+    }
+
+
+def _listing_item(
+    skill: DiscoveredSkill, meta: tuple[str | None, str], source: str, first_seen_at: int, cooldown: Cooldown
+) -> dict[str, Any]:
+    name, description = meta
+    return {
+        "name": name or skill.slug,
+        "description": description,
+        "path": skill.source_path,
+        "source": source,
+        "first_seen_at": first_seen_at,
+        "eligible_at": cooldown.eligible_at(first_seen_at),
+        "eligible": not cooldown.days or cooldown.eligible(first_seen_at),
     }
 
 
@@ -329,21 +356,28 @@ class _Fetched:
     files: dict[str, str]
     dropped: list[str]
     parent: str | None
-    committed_at: int
+    committed_at: int | None
+
+
+def _slug(source: GitHubSource) -> str:
+    """The skill's folder name, which its SKILL.md must name: the last path segment, or the
+    repository for a skill at its root."""
+    return source.path.rsplit("/", 1)[-1] if source.path else source.repo
 
 
 async def _prior(
-    settings: Settings, tenant_id: str, name: Any, origin: str, tree_hash: str
+    settings: Settings, tenant_id: str, name: str, origin: str, tree_hash: str
 ) -> tuple[dict[str, Any] | None, str | None]:
-    """(the newest version, when a re-import would change nothing; else None) and the version a
-    new one builds on (None for a skill the library does not hold, or a name that is not one).
+    """(the version a re-import would not change; else None) and the version a new one builds on
+    (None for a skill the library does not hold).
 
-    Refuses a name the library holds from anywhere but ``origin``: an import never takes over a
-    skill an agent or an operator wrote, or one imported from somewhere else."""
-    if not isinstance(name, str) or not SKILL_NAME_RE.match(name):
-        return None, None  # the save's validation says what is wrong with it
+    Judged against the newest version that was not rejected: a rejected draft is not what the
+    import replaces. Refuses a name whose newest such version came from anywhere but ``origin``:
+    an import never takes over a skill an agent or an operator wrote, or one imported from
+    somewhere else."""
     lib = get_skill_library_store(settings)
-    newest = library.newest_version(await lib.version_ids(tenant_id, name))
+    buildable = (await lib.buildable_versions(tenant_id, [name])).get(name, [])
+    newest = library.newest_version(buildable)
     if newest is None:
         return None, None
     row = await lib.get_version(tenant_id, name, newest) or {}
@@ -365,30 +399,28 @@ async def _fetch(
     ref: str | None,
     cooldown: Cooldown,
 ) -> _Fetched | ImportResult:
-    """Resolve, date and list the skill folder, and download it -- unless it is too recent to
-    import (refused before any file is read), or the library already holds exactly this tree,
-    which needs only the SKILL.md (for its name) to find out."""
+    """Resolve and list the skill folder, record the sighting, and download it -- unless it is
+    inside the cooldown (refused before any file is read), or the library already holds exactly
+    these files, which the digest alone shows."""
     resolved = await resolve(gh, source, ref)
     entries = skill_file_entries(resolved.tree, source.path)
-    skill_md_entry = next((e for e in entries if e.path == "SKILL.md"), None)
-    if skill_md_entry is None:
+    if not any(e.path == "SKILL.md" for e in entries):
         raise ImportSourceNotFound(f"{source.canonical} holds no SKILL.md at {resolved.commit[:12]}")
-    # The folder's own last change at the commit, not the repository HEAD's.
-    committed_at = await gh.last_changed(source, resolved.commit, source.path)
-    cooldown.check(source.canonical, committed_at)
-    tree_hash = hash_tree_snapshot(entries)
     kept = [e for e in entries if keeps_path(e.path)]
+    tree_hash = hash_tree_snapshot(kept)
+    # Recorded before it is judged, whatever the cooldown: a refused attempt still starts the clock.
+    first_seen = (
+        await get_sighting_store(settings).first_seen(
+            tenant_id, [(source.canonical, tree_hash)], at=cooldown.now
+        )
+    )[(source.canonical, tree_hash)]
+    cooldown.check(source.canonical, first_seen)
     _check_caps(kept, source.canonical)
-    skill_md = await gh.blob(source, skill_md_entry)
-    name = _frontmatter(skill_md).get("name")
-    unchanged, parent = await _prior(settings, tenant_id, name, source.canonical, tree_hash)
+    unchanged, parent = await _prior(settings, tenant_id, _slug(source), source.canonical, tree_hash)
     if unchanged is not None:
         return ImportResult(version=unchanged, unchanged=True)
-    rest = [e for e in kept if e.path != "SKILL.md"]
-    bodies = await _gather_limited(gh.blob(source, e) for e in rest)
-    files, dropped = sanitize_bundle(
-        {"SKILL.md": skill_md, **dict(zip((e.path for e in rest), bodies, strict=True))}
-    )
+    bodies = await _gather_limited((lambda e=e: gh.blob(source, e)) for e in kept)
+    files, dropped = sanitize_bundle(dict(zip((e.path for e in kept), bodies, strict=True)))
     dropped = sorted({*dropped, *(e.path for e in entries if not keeps_path(e.path))})
     return _Fetched(
         resolved=resolved,
@@ -396,7 +428,8 @@ async def _fetch(
         files=files,
         dropped=dropped,
         parent=parent,
-        committed_at=committed_at,
+        # Provenance only: the pusher sets it, so nothing decides on it.
+        committed_at=await gh.last_changed(source, resolved.commit, source.path),
     )
 
 
@@ -414,9 +447,9 @@ async def import_skill(
     """Fetch the skill at ``source`` (pinned to the commit ``ref`` resolves to) and save it as a
     draft by ``by``, or return the newest version unchanged when its files are the same.
 
-    Refused (`too_recent`) when the skill's folder changed within the tenant's minimum import
-    age, judged at ``clock()``. ``http`` is a client to reach GitHub with, left open; None is the
-    egress-pinned production one (`github.github_client`)."""
+    Refused (`too_recent`) while these files were first seen by this tenant within its minimum
+    import age, judged at ``clock()``. ``http`` is a client to reach GitHub with, left open; None
+    is the egress-pinned production one (`github.github_client`)."""
     parsed, wanted_ref = _checked_request(settings, source, ref)
     cooldown = await _cooldown(settings, tenant_id, clock)
     try:
@@ -431,6 +464,8 @@ async def import_skill(
         settings,
         tenant_id,
         files=fetched.files,
+        # The folder's name: a SKILL.md naming another skill is refused, not filed under its claim.
+        name=_slug(parsed),
         provenance=library.DraftProvenance(
             source="import",
             author=by,
@@ -446,7 +481,8 @@ async def import_skill(
             ),
         ),
         parent=fetched.parent,
-        # Optimistic concurrency against the version the origin check read.
+        # Optimistic concurrency against the version the origin check read: of two imports racing
+        # to the same skill, one saves and the other is refused rather than stacked on it.
         expect_newest=fetched.parent if fetched.parent is not None else library.MUST_NOT_EXIST,
         object_store=object_store,
     )
@@ -462,6 +498,7 @@ async def import_skill(
 
 
 __all__ = [
+    "BROWSE_SKILL_MD_BYTES",
     "DAY_MS",
     "DEADLINE_SECONDS",
     "KEPT_DIRS",

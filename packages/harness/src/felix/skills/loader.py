@@ -326,6 +326,7 @@ async def _library_skill(store: Any, *, tenant_id: str, row: dict[str, Any]) -> 
         return None
     skill.source = "library"
     skill.version = version
+    skill.untrusted = bool(row.get("lineage_import"))
     return skill
 
 

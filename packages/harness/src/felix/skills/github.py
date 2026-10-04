@@ -21,6 +21,7 @@ import binascii
 import fnmatch
 import hashlib
 import json
+import logging
 import re
 from collections.abc import AsyncIterator, Iterable, Sequence
 from contextlib import asynccontextmanager
@@ -60,7 +61,13 @@ _REPO_RE = re.compile(r"^[A-Za-z0-9._-]{1,100}\Z")
 _SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}\Z")
 _REF_RE = re.compile(r"^[A-Za-z0-9._/-]{1,200}\Z")
 _SHA_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
+# A ref that may be a commit id, full or abbreviated, once no branch or tag has its name.
+_COMMIT_ID_RE = re.compile(r"^[0-9a-f]{7,64}\Z")
 _SPDX_RE = re.compile(r"^[A-Za-z0-9.+-]{1,64}\Z")
+# Annotated tags may point at tags; this many hops, then it is refused.
+_MAX_TAG_HOPS = 4
+
+logger = logging.getLogger("felix.skills.github")
 
 
 # -- refusals ----------------------------------------------------------------------------------
@@ -99,11 +106,19 @@ class ImportEgressBlocked(ImportUpstreamError):
 
 
 class ImportTooRecent(SkillImportError):
-    """The skill's folder changed more recently than the minimum import age allows: a cooldown
+    """Felix first saw these files more recently than the minimum import age allows: a cooldown
     so a compromised upstream commit has time to be noticed before anyone pulls it. Nothing
     overrides it; waiting does."""
 
     code = "too_recent"
+
+
+class ImportCommitNotInRepo(SkillImportError):
+    """The ref names a commit GitHub serves under this repository's name but that is not on its
+    default branch -- one pushed only to a fork, say. The allowlist trusts a repository, not its
+    fork network."""
+
+    code = "commit_not_in_repo"
 
 
 # -- sources -----------------------------------------------------------------------------------
@@ -283,9 +298,22 @@ def _failure(resp: httpx.Response, what: str) -> SkillImportError:
     return ImportUpstreamError(f"GitHub answered {status} for {what}")
 
 
+async def _read_capped(resp: httpx.Response, limit: int, *, truncate: bool, what: str) -> bytes:
+    """Read at most ``limit`` bytes of a streamed body, stopping there: refused past it, or with
+    ``truncate`` cut off."""
+    body = bytearray()
+    async for chunk in resp.aiter_bytes():
+        body.extend(chunk)
+        if len(body) > limit:
+            if truncate:
+                return bytes(body[:limit])
+            raise ImportSourceTooLarge(f"GitHub's answer for {what} is over {limit} bytes")
+    return bytes(body)
+
+
 class GitHubReader:
-    """The four GitHub calls an import makes. Every path is built from validated parts; the
-    token, when there is one, goes in a header and nowhere else."""
+    """The GitHub calls an import makes. Every path is built from validated parts; the token,
+    when there is one, goes in a header and nowhere else."""
 
     def __init__(self, http: httpx.AsyncClient, token: str = "") -> None:
         self._http = http
@@ -301,7 +329,11 @@ class GitHubReader:
             headers["Authorization"] = f"Bearer {self._token}"
         return headers
 
-    async def _get(self, path: str, *, what: str, limit: int, accept: str | None = None) -> bytes:
+    async def _get(
+        self, path: str, *, what: str, limit: int, accept: str | None = None, truncate: bool = False
+    ) -> bytes:
+        """The body of one GET, at most ``limit`` bytes: past it, refused -- or, with
+        ``truncate``, cut off there and the rest never read."""
         from felix.security.ssrf import EgressBlocked
 
         headers = self._headers(accept) if accept else self._headers()
@@ -309,12 +341,7 @@ class GitHubReader:
             async with self._http.stream("GET", f"{GITHUB_API}{path}", headers=headers) as resp:
                 if resp.status_code != 200:
                     raise _failure(resp, what)
-                body = bytearray()
-                async for chunk in resp.aiter_bytes():
-                    body.extend(chunk)
-                    if len(body) > limit:
-                        raise ImportSourceTooLarge(f"GitHub's answer for {what} is over {limit} bytes")
-                return bytes(body)
+                return await _read_capped(resp, limit, truncate=truncate, what=what)
         except EgressBlocked as exc:
             raise ImportEgressBlocked(str(exc)) from None
         except httpx.TimeoutException:
@@ -331,10 +358,11 @@ class GitHubReader:
             raise ImportUpstreamError(f"GitHub's answer for {what} is not an object")
         return data
 
+    def _repo_path(self, source: GitHubSource) -> str:
+        return f"/repos/{source.owner}/{source.repo}"
+
     async def repo(self, source: GitHubSource) -> RepoMeta:
-        data = await self._json(
-            f"/repos/{source.owner}/{source.repo}", what=f"{GITHUB_PREFIX}{source.owner}/{source.repo}"
-        )
+        data = await self._json(self._repo_path(source), what=f"{GITHUB_PREFIX}{source.owner}/{source.repo}")
         branch = data.get("default_branch")
         if not isinstance(branch, str):
             raise ImportUpstreamError("GitHub named no default branch")
@@ -344,12 +372,35 @@ class GitHubReader:
         )
         return RepoMeta(default_branch=validate_ref(branch), license=license_id)
 
-    async def commit(self, source: GitHubSource, ref: str) -> str:
-        """The full SHA ``ref`` names now. The `.sha` media type answers with the SHA alone,
-        rather than a commit payload that carries every changed file's patch."""
+    async def _named_ref(self, source: GitHubSource, kind: str, name: str) -> str | None:
+        """The commit the repository's own branch or tag ``name`` points at, or None when it has
+        no such ref. An annotated tag is followed to its commit."""
+        try:
+            data = await self._json(
+                f"{self._repo_path(source)}/git/ref/{kind}/{quote(name, safe='/')}", what=f"ref {name!r}"
+            )
+        except ImportSourceNotFound:
+            return None
+        for _ in range(_MAX_TAG_HOPS):
+            target = data.get("object")
+            if not isinstance(target, dict):
+                raise ImportUpstreamError(f"GitHub named no commit for {name!r}")
+            sha, kind_of = target.get("sha"), target.get("type")
+            if not isinstance(sha, str) or not _SHA_RE.match(sha):
+                raise ImportUpstreamError(f"GitHub named no commit for {name!r}")
+            if kind_of == "commit":
+                return sha
+            if kind_of != "tag":
+                raise ImportSourceNotFound(f"{name!r} does not name a commit")
+            data = await self._json(f"{self._repo_path(source)}/git/tags/{sha}", what=f"tag {name!r}")
+        raise ImportUpstreamError(f"tag {name!r} nests deeper than {_MAX_TAG_HOPS} tags")
+
+    async def _commit_by_sha(self, source: GitHubSource, ref: str) -> str:
+        """The full SHA a (possibly abbreviated) commit id names. The `.sha` media type answers
+        with the SHA alone, rather than a commit payload that carries every changed file's patch."""
         body = await self._get(
-            f"/repos/{source.owner}/{source.repo}/commits/{quote(ref, safe='')}",
-            what=f"ref {ref!r}",
+            f"{self._repo_path(source)}/commits/{quote(ref, safe='')}",
+            what=f"commit {ref!r}",
             limit=256,
             accept="application/vnd.github.sha",
         )
@@ -358,26 +409,66 @@ class GitHubReader:
             raise ImportUpstreamError(f"GitHub resolved {ref!r} to something that is not a commit SHA")
         return sha
 
-    async def last_changed(self, source: GitHubSource, commit: str, path: str) -> int:
-        """When the newest commit touching ``path`` at ``commit`` was committed, in epoch ms --
-        the age of the skill, not of the repository, whose HEAD in a busy monorepo is always new."""
+    async def _reachable(self, source: GitHubSource, default_branch: str, sha: str) -> bool:
+        """Whether ``sha`` is on the repository's default branch: its ancestor, or its tip."""
+        try:
+            data = await self._json(
+                f"{self._repo_path(source)}/compare/{quote(default_branch, safe='/')}...{sha}?per_page=1",
+                what=f"commit {sha[:12]}",
+            )
+        except ImportSourceNotFound, ImportSourceTooLarge:
+            # A diff too large to answer is one with the commit far off the branch.
+            return False
+        return data.get("status") in {"behind", "identical"}
+
+    async def commit(self, source: GitHubSource, ref: str, *, default_branch: str) -> str:
+        """The full SHA ``ref`` names now -- provably *this* repository's commit.
+
+        GitHub answers `commits/{sha}` for any commit in the repository's fork network, so a
+        SHA pushed only to a fork would read as the upstream's, under the upstream's name and
+        past an allowlist that trusts the upstream. A branch or tag resolved through the
+        repository's own refs (`git/ref/heads|tags`) is its own by construction; a commit id is
+        accepted only when it is on the default branch (`compare`).
+        """
+        for kind in ("heads", "tags"):
+            sha = await self._named_ref(source, kind, ref)
+            if sha is not None:
+                return sha
+        if not _COMMIT_ID_RE.match(ref):
+            raise ImportSourceNotFound(f"{source.owner}/{source.repo} has no branch or tag {ref!r}")
+        sha = await self._commit_by_sha(source, ref)
+        if not await self._reachable(source, default_branch, sha):
+            raise ImportCommitNotInRepo(
+                f"commit {sha[:12]} is not on {source.owner}/{source.repo}'s {default_branch} branch; "
+                "import a branch or tag of the repository itself"
+            )
+        return sha
+
+    async def last_changed(self, source: GitHubSource, commit: str, path: str) -> int | None:
+        """When the newest commit touching ``path`` at ``commit`` says it was committed, in
+        epoch ms, or None when GitHub gives no date.
+
+        Provenance only. The committer date is whatever the pusher set, so nothing may decide
+        on it: the import cooldown counts from when Felix first saw the skill's files
+        (`sighting_store`)."""
         query = f"sha={commit}&per_page=1" + (f"&path={quote(path, safe='/')}" if path else "")
-        what = f"the history of {path or 'the repository'}"
         try:
             data = json.loads(
                 await self._get(
-                    f"/repos/{source.owner}/{source.repo}/commits?{query}", what=what, limit=1024 * 1024
+                    f"{self._repo_path(source)}/commits?{query}",
+                    what=f"the history of {path}",
+                    limit=1024 * 1024,
                 )
             )
             stamp = data[0]["commit"]["committer"]["date"]
             return int(datetime.fromisoformat(stamp).timestamp() * 1000)
-        except ValueError, LookupError, TypeError:
-            # Fail closed: a skill that cannot be dated cannot be shown to be old enough.
-            raise ImportUpstreamError(f"GitHub gave no commit date for {what}") from None
+        except ValueError, LookupError, TypeError, ImportUpstreamError, ImportSourceNotFound:
+            logger.info("no commit date for %s/%s:%s", source.owner, source.repo, path)
+            return None
 
     async def tree(self, source: GitHubSource, commit: str) -> list[TreeEntry]:
         data = await self._json(
-            f"/repos/{source.owner}/{source.repo}/git/trees/{commit}?recursive=1",
+            f"{self._repo_path(source)}/git/trees/{commit}?recursive=1",
             what=f"the tree at {commit[:12]}",
         )
         if data.get("truncated"):
@@ -403,7 +494,7 @@ class GitHubReader:
         # base64 is 4/3 the size, with a newline every 60 characters, plus the JSON around it.
         limit = (entry.size + 2) // 3 * 4 * 61 // 60 + 64 * 1024
         data = await self._json(
-            f"/repos/{source.owner}/{source.repo}/git/blobs/{entry.sha}", what=entry.path, limit=limit
+            f"{self._repo_path(source)}/git/blobs/{entry.sha}", what=entry.path, limit=limit
         )
         content, encoding = data.get("content"), data.get("encoding")
         if not isinstance(content, str):
@@ -421,6 +512,18 @@ class GitHubReader:
         if digest(header + raw, usedforsecurity=False).hexdigest() != entry.sha:
             raise ImportUpstreamError(f"{entry.path} does not match its git object id")
         return raw
+
+    async def blob_head(self, source: GitHubSource, entry: TreeEntry, limit: int) -> bytes:
+        """The first ``limit`` bytes of one file, raw, the rest never read: what a listing needs
+        from a SKILL.md (its frontmatter) without holding the whole file. Not checked against
+        its object id -- nothing is saved from it."""
+        return await self._get(
+            f"{self._repo_path(source)}/git/blobs/{entry.sha}",
+            what=entry.path,
+            limit=limit,
+            accept="application/vnd.github.raw",
+            truncate=True,
+        )
 
 
 @dataclass(slots=True, frozen=True)
@@ -445,7 +548,7 @@ async def reader(settings: Settings, http: httpx.AsyncClient | None) -> AsyncIte
 async def resolve(gh: GitHubReader, source: GitHubSource, ref: str | None) -> Resolved:
     meta = await gh.repo(source)
     requested = ref or meta.default_branch
-    commit = await gh.commit(source, requested)
+    commit = await gh.commit(source, requested, default_branch=meta.default_branch)
     return Resolved(source, requested, commit, meta.license, await gh.tree(source, commit))
 
 
@@ -456,6 +559,7 @@ __all__ = [
     "DiscoveredSkill",
     "GitHubReader",
     "GitHubSource",
+    "ImportCommitNotInRepo",
     "ImportEgressBlocked",
     "ImportRateLimited",
     "ImportSourceInvalid",

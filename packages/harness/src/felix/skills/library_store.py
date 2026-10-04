@@ -183,6 +183,7 @@ _VERSION_DEFAULTS: dict[str, Any] = {
     "origin_tree_hash": None,
     "origin_license": None,
     "origin_committed_at": None,
+    "lineage_import": False,
 }
 
 
@@ -254,7 +255,9 @@ class InMemorySkillLibraryStore:
                 continue
             files = self._files.get((t, name, version), [])
             digest = next((f["sha256"] for f in files if f["path"] == "SKILL.md"), None)
-            rows.append({"name": name, "version": version, "sha256": digest})
+            row = self._versions.get((t, name, version)) or {}
+            lineage = bool(row.get("lineage_import"))
+            rows.append({"name": name, "version": version, "sha256": digest, "lineage_import": lineage})
         rows = sorted(rows, key=lambda r: r["name"])
         return rows[:limit]
 
@@ -522,15 +525,29 @@ class PostgresSkillLibraryStore:
             return [self._row(r) for r in rows]
 
     async def list_live(self, tenant_id: str, *, limit: int = MAX_LIBRARY_SKILLS) -> list[dict[str, Any]]:
-        """Each live skill's version and SKILL.md digest, in one query for a catalog load."""
+        """Each live skill's version, SKILL.md digest and import lineage, in one query for a
+        catalog load."""
         from sqlalchemy import and_, collate, select
 
-        from felix.db.models import SkillFileRow, SkillRow
+        from felix.db.models import SkillFileRow, SkillRow, SkillVersionRow
 
         async with self._session(tenant_id) as db:
             rows = (
                 await db.execute(
-                    select(SkillRow.name, SkillRow.live_version, SkillFileRow.sha256)
+                    select(
+                        SkillRow.name,
+                        SkillRow.live_version,
+                        SkillFileRow.sha256,
+                        SkillVersionRow.lineage_import,
+                    )
+                    .outerjoin(
+                        SkillVersionRow,
+                        and_(
+                            SkillVersionRow.tenant_id == SkillRow.tenant_id,
+                            SkillVersionRow.name == SkillRow.name,
+                            SkillVersionRow.version == SkillRow.live_version,
+                        ),
+                    )
                     .outerjoin(
                         SkillFileRow,
                         and_(
@@ -545,7 +562,9 @@ class PostgresSkillLibraryStore:
                     .limit(limit)
                 )
             ).all()
-            return [{"name": r[0], "version": r[1], "sha256": r[2]} for r in rows]
+            return [
+                {"name": r[0], "version": r[1], "sha256": r[2], "lineage_import": bool(r[3])} for r in rows
+            ]
 
     async def get_version(self, tenant_id: str, name: str, version: str) -> dict[str, Any] | None:
         from felix.db.models import SkillVersionRow

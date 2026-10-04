@@ -8,6 +8,7 @@ egress-pinned one, since every test here hands in its own.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import httpx
@@ -331,7 +332,7 @@ async def test_every_file_is_read_at_the_resolved_commit_not_the_ref(
 
     assert result.version["origin_commit"] == first
     assert result.version["description"] == "Route invoices to the right queue."
-    resolved_at = gh.paths().index(f"/repos/{REPO}/commits/main")
+    resolved_at = gh.paths().index(f"/repos/{REPO}/git/ref/heads/main")
     after = gh.requests[resolved_at + 1 :]
     assert str(after[0].url).endswith(f"/repos/{REPO}/git/trees/{first}?recursive=1")
     assert all("main" not in str(r.url) for r in after), [str(r.url) for r in after]
@@ -344,17 +345,17 @@ async def test_a_reimport_of_the_same_files_saves_nothing_even_across_commits(
     settings: Settings, store: MemoryObjectStore, gh: FakeRepos
 ) -> None:
     await _import(settings, store, gh)
-    # An unrelated commit: new SHA, same skill folder.
+    # An unrelated commit -- new SHA, same skill -- and a change to a file the import drops.
     files = dict(gh.repos[REPO].commits[gh.repos[REPO].refs["main"]])
     gh.push(REPO, {**files, "README.md": b"# skills, now with more words\n"})
+    gh.push(REPO, {**files, "skills/invoice-triage/LICENSE": b"Apache-2.0\n"})
     before = len(gh.requests)
 
     again = await _import(settings, store, gh)
 
     assert again.unchanged and again.version["version"] == "0.1.0"
     assert await get_skill_library_store(settings).version_ids("acme", NAME) == ["0.1.0"]
-    blobs = [p for p in gh.paths()[before:] if "/git/blobs/" in p]
-    assert len(blobs) == 1, "only the SKILL.md is read, for its name"
+    assert not [p for p in gh.paths()[before:] if "/blobs/" in p], "the digest alone shows nothing changed"
 
 
 async def test_a_changed_skill_becomes_the_next_version(
@@ -547,7 +548,7 @@ def test_only_bundle_scenarios_count_for_an_imported_version() -> None:
 
 
 DAY = importer.DAY_MS
-# When the skill's folder last changed, in every cooldown test.
+# The moment a cooldown test starts at.
 T0 = 1_750_000_000_000
 
 
@@ -557,56 +558,80 @@ def _iso(ms: int) -> str:
     return datetime.fromtimestamp(ms / 1000, tz=UTC).isoformat(timespec="seconds")
 
 
-def _aged(fake: FakeRepos, *, head_touches_skill: bool = False) -> None:
-    """The skill folder changed at T0; HEAD, nine days later, is a commit to the README -- or,
-    with ``head_touches_skill``, to the skill itself."""
-    files = {"skills/invoice-triage/SKILL.md": skill_md(NAME), "README.md": b"v1\n"}
-    fake.push(REPO, files, at=T0)
-    later = {**files, "README.md": b"v2\n"}
-    if head_touches_skill:
-        later["skills/invoice-triage/references/new.md"] = b"# New\n"
-    fake.push(REPO, later, at=T0 + 9 * DAY)
+def _cooled(days: int = 10) -> Settings:
+    return Settings(database_url="memory://skill-import-cooldown", skill_import_min_age_days=days)
 
 
-async def test_a_skill_younger_than_the_minimum_age_is_refused_and_nothing_is_saved(
+async def test_a_first_sighting_under_a_cooldown_is_refused_and_nothing_is_saved(
     store: MemoryObjectStore, gh: FakeRepos
 ) -> None:
-    settings = Settings(database_url="memory://skill-import-cooldown", skill_import_min_age_days=10)
-    _aged(gh)
+    settings = _cooled()
     with pytest.raises(github.ImportTooRecent) as caught:
-        await _import(settings, store, gh, clock=lambda: T0 + 10 * DAY - 1)
+        await _import(settings, store, gh, clock=lambda: T0)
     assert caught.value.code == "too_recent"
     assert _iso(T0) in str(caught.value) and _iso(T0 + 10 * DAY) in str(caught.value)
     assert await get_skill_library_store(settings).version_ids("acme", NAME) == []
-    assert not any("/git/blobs/" in p for p in gh.paths()), "refused before any file is read"
+    assert not any("/blobs/" in p for p in gh.paths()), "refused before any file is read"
 
 
-async def test_at_exactly_the_minimum_age_a_skill_is_old_enough(
+async def test_at_exactly_the_minimum_age_after_the_first_sighting_it_is_old_enough(
     store: MemoryObjectStore, gh: FakeRepos
 ) -> None:
-    settings = Settings(database_url="memory://skill-import-cooldown", skill_import_min_age_days=10)
-    _aged(gh)
-    result = await _import(settings, store, gh, clock=lambda: T0 + 10 * DAY)
-    assert result.version["origin_committed_at"] == T0
-    stored = await get_skill_library_store(settings).get_version("acme", NAME, "0.1.0")
-    assert stored is not None and stored["origin_committed_at"] == T0
-
-
-async def test_the_age_is_the_skill_folders_not_the_repository_heads(
-    store: MemoryObjectStore, gh: FakeRepos
-) -> None:
-    """HEAD is a day old and the skill ten: imported. When HEAD touches the skill, refused."""
-    settings = Settings(database_url="memory://skill-import-cooldown", skill_import_min_age_days=5)
-    now = T0 + 10 * DAY
-    _aged(gh)
-    assert (await _import(settings, store, gh, clock=lambda: now)).version["origin_committed_at"] == T0
-
-    touched = FakeRepos()
-    _aged(touched, head_touches_skill=True)
+    settings = _cooled()
     with pytest.raises(github.ImportTooRecent):
-        await _import(
-            settings, store, touched, source=f"github:{REPO}/skills/invoice-triage", clock=lambda: now
+        await _import(settings, store, gh, clock=lambda: T0)
+    with pytest.raises(github.ImportTooRecent):
+        await _import(settings, store, gh, clock=lambda: T0 + 10 * DAY - 1)
+    result = await _import(settings, store, gh, clock=lambda: T0 + 10 * DAY)
+    assert result.version["version"] == "0.1.0"
+
+
+async def test_a_backdated_commit_is_still_refused(store: MemoryObjectStore) -> None:
+    """The committer date is the pusher's to set: a skill pushed today with a 2023 date waits."""
+    fake = FakeRepos()
+    backdated = T0 - 900 * DAY
+    fake.push(REPO, {"skills/invoice-triage/SKILL.md": skill_md(NAME)}, at=backdated)
+    settings = _cooled()
+    with pytest.raises(github.ImportTooRecent):
+        await _import(settings, store, fake, clock=lambda: T0)
+    # Once old enough by Felix's clock, the date it claims is recorded -- as provenance only.
+    result = await _import(settings, store, fake, clock=lambda: T0 + 10 * DAY)
+    assert result.version["origin_committed_at"] == backdated
+
+
+async def test_a_sighting_with_the_cooldown_off_counts_once_it_is_on(
+    store: MemoryObjectStore, gh: FakeRepos
+) -> None:
+    """Browsing with no cooldown still starts the clock, so turning one on later does not hold
+    everything already seen for its full length -- and only what was seen."""
+    gh.push(
+        REPO,
+        {"skills/invoice-triage/SKILL.md": skill_md(NAME), "skills/refunds/SKILL.md": skill_md("refunds")},
+    )
+    async with gh.client() as http:
+        await importer.browse(
+            Settings(database_url="memory://x"),
+            "acme",
+            f"github:{REPO}/skills/invoice-triage",
+            http=http,
+            clock=lambda: T0,
         )
+    later = T0 + 10 * DAY
+    assert (await _import(_cooled(), store, gh, clock=lambda: later)).version["version"] == "0.1.0"
+    with pytest.raises(github.ImportTooRecent):
+        await _import(_cooled(), store, gh, source=f"github:{REPO}/skills/refunds", clock=lambda: later)
+
+
+async def test_another_tenants_sighting_does_not_start_this_tenants_clock(gh: FakeRepos) -> None:
+    async with gh.client() as http:
+        await importer.browse(
+            Settings(database_url="memory://x"), "globex", f"github:{REPO}", http=http, clock=lambda: T0
+        )
+        listing = await importer.browse(
+            _cooled(), "acme", f"github:{REPO}", http=http, clock=lambda: T0 + 10 * DAY
+        )
+    item = next(i for i in listing["items"] if i["name"] == NAME)
+    assert (item["first_seen_at"], item["eligible"]) == (T0 + 10 * DAY, False)
 
 
 async def test_a_tenant_can_raise_the_minimum_age_and_never_lower_it(
@@ -614,48 +639,212 @@ async def test_a_tenant_can_raise_the_minimum_age_and_never_lower_it(
 ) -> None:
     from felix.skills.policy import set_publish_policy
 
-    _aged(gh)
     now = T0 + 10 * DAY
-    # The deployment has no cooldown; the tenant sets thirty days, and a ten-day-old skill waits.
+    # The deployment has no cooldown; the tenant sets thirty days, and files first seen ten ago wait.
     open_deployment = Settings(database_url="memory://skill-import-cooldown")
     await set_publish_policy(open_deployment, "acme", {"import_min_age_days": 30}, by="ops")
+    with pytest.raises(github.ImportTooRecent):
+        await _import(open_deployment, store, gh, clock=lambda: T0)
     with pytest.raises(github.ImportTooRecent):
         await _import(open_deployment, store, gh, clock=lambda: now)
 
     # The deployment asks for twenty; the tenant's one day does not shorten it.
-    strict = Settings(database_url="memory://skill-import-cooldown", skill_import_min_age_days=20)
+    strict = _cooled(20)
     await set_publish_policy(strict, "acme", {"import_min_age_days": 1}, by="ops")
     with pytest.raises(github.ImportTooRecent, match="minimum import age is 20 days"):
         await _import(strict, store, gh, clock=lambda: now)
 
 
-async def test_browse_dates_each_skill_only_under_a_cooldown(store: MemoryObjectStore, gh: FakeRepos) -> None:
+async def test_browse_reports_eligibility_from_the_tree_alone(gh: FakeRepos) -> None:
+    """No call per skill beyond its SKILL.md head: the digest is the tree's."""
     files = {"skills/old/SKILL.md": skill_md("old"), "skills/young/SKILL.md": skill_md("young")}
-    gh.push(REPO, files, at=T0)
-    gh.push(REPO, {**files, "skills/young/SKILL.md": skill_md("young", "Changed.")}, at=T0 + 9 * DAY)
-
+    gh.push(REPO, files)
     async with gh.client() as http:
-        off = await importer.browse(Settings(database_url="memory://x"), "acme", f"github:{REPO}", http=http)
-    assert off["min_age_days"] == 0
-    assert {(i["name"], i["committed_at"], i["eligible"]) for i in off["items"]} == {
-        ("old", None, True),
-        ("young", None, True),
-    }
-    assert not any(r.url.path == f"/repos/{REPO}/commits" for r in gh.requests), (
-        "no dating without a cooldown"
-    )
-
-    cooled = Settings(database_url="memory://x", skill_import_min_age_days=10)
-    async with gh.client() as http:
-        on = await importer.browse(cooled, "acme", f"github:{REPO}", http=http, clock=lambda: T0 + 10 * DAY)
-    items = {i["name"]: i for i in on["items"]}
-    assert on["min_age_days"] == 10
-    assert (items["old"]["committed_at"], items["old"]["eligible_at"], items["old"]["eligible"]) == (
+        await importer.browse(_cooled(), "acme", f"github:{REPO}/skills/old", http=http, clock=lambda: T0)
+        listing = await importer.browse(
+            _cooled(), "acme", f"github:{REPO}", http=http, clock=lambda: T0 + 10 * DAY
+        )
+    items = {i["name"]: i for i in listing["items"]}
+    assert listing["min_age_days"] == 10
+    assert (items["old"]["first_seen_at"], items["old"]["eligible_at"], items["old"]["eligible"]) == (
         T0,
         T0 + 10 * DAY,
         True,
     )
-    assert (items["young"]["eligible_at"], items["young"]["eligible"]) == (T0 + 19 * DAY, False)
+    assert (items["young"]["eligible_at"], items["young"]["eligible"]) == (T0 + 20 * DAY, False)
+    assert not any(r.url.path == f"/repos/{REPO}/commits" for r in gh.requests), "no history call in a browse"
+
+
+async def test_a_skill_github_cannot_date_still_imports(
+    settings: Settings, store: MemoryObjectStore, gh: FakeRepos
+) -> None:
+    """The commit date is provenance: missing, it is null, and nothing is refused for it."""
+    gh.no_history = True
+    result = await _import(settings, store, gh)
+    assert result.version["origin_committed_at"] is None
+
+
+# -- whose commit, whose name, whose text ----------------------------------------------------------
+
+
+async def test_a_commit_only_in_a_fork_is_refused(
+    settings: Settings, store: MemoryObjectStore, gh: FakeRepos
+) -> None:
+    """GitHub serves a fork's commit under the upstream's name; the allowlist trusts the upstream."""
+    planted = gh.fork_commit(REPO, {"skills/invoice-triage/SKILL.md": skill_md(NAME, "Planted.")})
+    for ref in (planted, planted[:12]):
+        with pytest.raises(github.ImportCommitNotInRepo) as caught:
+            await _import(settings, store, gh, ref=ref)
+        assert caught.value.code == "commit_not_in_repo"
+    assert await get_skill_library_store(settings).version_ids("acme", NAME) == []
+
+
+async def test_a_commit_on_the_default_branch_and_a_tag_are_the_repositorys_own(
+    settings: Settings, store: MemoryObjectStore, gh: FakeRepos
+) -> None:
+    first = gh.repos[REPO].refs["main"]
+    gh.push(REPO, {"skills/invoice-triage/SKILL.md": skill_md(NAME, "Second.")})
+    result = await _import(settings, store, gh, ref=first[:10])
+    assert (result.version["origin_commit"], result.version["origin_ref"]) == (first, first[:10])
+
+    # A tag off the default branch is the repository's own because its own ref names it.
+    tagged = gh.fork_commit(REPO, {"skills/refunds/SKILL.md": skill_md("refunds")})
+    gh.tag(REPO, "v1.0.0", tagged)
+    refunds = await _import(settings, store, gh, source=f"github:{REPO}/skills/refunds", ref="v1.0.0")
+    assert refunds.version["origin_commit"] == tagged
+
+
+async def test_a_skill_md_naming_another_skill_than_its_folder_is_refused(
+    settings: Settings, store: MemoryObjectStore, gh: FakeRepos
+) -> None:
+    gh.push(REPO, {"skills/invoice-triage/SKILL.md": skill_md("payroll-export")})
+    with pytest.raises(library.SkillBundleInvalid, match="invoice-triage"):
+        await _import(settings, store, gh)
+    assert await get_skill_library_store(settings).version_ids("acme", "payroll-export") == []
+
+
+async def test_an_import_is_refused_where_an_operator_upload_holds_the_name(
+    settings: Settings, store: MemoryObjectStore, gh: FakeRepos
+) -> None:
+    """A pinned upload at the version the import would take: an agent's save is warned, an
+    import is refused and taken back out."""
+    await store.put(f"skills/acme/{NAME}/0.1.0/SKILL.md", skill_md(NAME))
+    with pytest.raises(library.SkillNameShadowed, match="operator upload"):
+        await _import(settings, store, gh)
+    assert await get_skill_library_store(settings).version_ids("acme", NAME) == []
+
+
+async def test_a_rejected_draft_is_not_the_version_an_import_replaces(
+    settings: Settings, store: MemoryObjectStore, gh: FakeRepos
+) -> None:
+    await _import(settings, store, gh)
+    edit = await library.save_draft(
+        settings,
+        "acme",
+        files={"SKILL.md": skill_md(NAME, "An agent's edit.").decode()},
+        provenance=library.DraftProvenance(source="agent", author="contributor", origin_manifest_id="c"),
+        parent="0.1.0",
+        object_store=store,
+    )
+    await library.reject(settings, "acme", NAME, edit["version"], by="ops", note="no")
+    files = dict(gh.repos[REPO].commits[gh.repos[REPO].refs["main"]])
+    gh.push(REPO, {**files, "skills/invoice-triage/references/queues.md": b"# Queues\n\nlegal\n"})
+
+    result = await _import(settings, store, gh)
+    assert (result.version["version"], result.version["parent_version"]) == ("0.1.2", "0.1.0")
+
+
+async def test_of_two_imports_racing_to_one_skill_one_saves(
+    settings: Settings, store: MemoryObjectStore, gh: FakeRepos
+) -> None:
+    outcomes = await asyncio.gather(
+        _import(settings, store, gh), _import(settings, store, gh), return_exceptions=True
+    )
+    saved = [o for o in outcomes if isinstance(o, importer.ImportResult)]
+    refused = [o for o in outcomes if isinstance(o, library.SkillLibraryError)]
+    assert len(saved) == 1 and len(refused) == 1, outcomes
+    assert refused[0].code in {"skill_exists", "parent_changed"}
+    assert await get_skill_library_store(settings).version_ids("acme", NAME) == ["0.1.0"]
+
+
+async def test_a_redirect_is_never_followed_and_the_token_never_leaves(
+    store: MemoryObjectStore, gh: FakeRepos
+) -> None:
+    settings = Settings(
+        database_url="memory://skill-import-redirect", skill_import_github_token="ghp_" + "r" * 12
+    )
+    gh.redirect_to = "https://elsewhere.test/collect"
+    with pytest.raises(github.ImportSourceNotFound, match="moved"):
+        await _import(settings, store, gh)
+    assert len(gh.requests) == 1 and gh.requests[0].url.host == "api.github.com"
+
+
+async def test_an_answer_past_its_cap_is_cut_off_mid_stream(
+    settings: Settings, store: MemoryObjectStore, gh: FakeRepos
+) -> None:
+    gh.padding["skills/invoice-triage/references/queues.md"] = 2 * 1024 * 1024
+    with pytest.raises(github.ImportSourceTooLarge, match="over"):
+        await _import(settings, store, gh)
+    assert await get_skill_library_store(settings).version_ids("acme", NAME) == []
+
+
+def test_a_token_without_an_allowlist_refuses_to_boot_outside_development() -> None:
+    base: dict[str, Any] = {
+        "database_url": "memory://x",
+        "skill_import_github_token": "ghp_" + "b" * 12,
+        "auth_mode": "api_key",
+        "auth_api_keys": '{"sk-x": {"tenant_id": "acme", "scopes": ["admin"]}}',
+        "redis_url": "redis://127.0.0.1:9/0",
+    }
+    with pytest.raises(RuntimeError, match="FELIX_SKILL_IMPORT_SOURCES"):
+        Settings(**base, environment="production").validate_runtime()
+    Settings(**base, environment="production", skill_import_sources="github:acme/*").validate_runtime()
+    Settings(**base, environment="development").validate_runtime()
+
+
+# -- lineage --------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("editor", ["operator", "agent"])
+async def test_an_edit_of_an_import_keeps_the_import_gate(
+    editor: str, settings: Settings, store: MemoryObjectStore, gh: FakeRepos
+) -> None:
+    body = "# Triage\n\nUse this when an invoice arrives and must be routed.\n" + ADVISORY
+    gh.push(REPO, {"skills/invoice-triage/SKILL.md": skill_md(NAME, body=body)})
+    await _import(settings, store, gh)
+    who: dict[str, Any] = {"source": editor, "author": "someone"}
+    if editor == "agent":
+        who["origin_manifest_id"] = "contributor"
+    edit = await library.save_draft(
+        settings,
+        "acme",
+        files={"SKILL.md": skill_md(NAME, "Edited.", body=body).decode()},
+        provenance=library.DraftProvenance(**who),
+        parent="0.1.0",
+        object_store=store,
+    )
+    assert edit["lineage_import"] is True and edit["source"] == editor
+    with pytest.raises(library.SkillPublishBlocked, match="advisory"):
+        await library.publish(settings, "acme", NAME, edit["version"], by="ops", object_store=store)
+
+
+async def test_rolling_back_to_an_advisory_import_is_blocked(
+    settings: Settings, store: MemoryObjectStore, gh: FakeRepos
+) -> None:
+    """A version that went live before the bar rose -- published straight through the store here --
+    is judged by today's gate on the way back."""
+    body = "# Triage\n\nUse this when an invoice arrives and must be routed.\n" + ADVISORY
+    gh.push(REPO, {"skills/invoice-triage/SKILL.md": skill_md(NAME, body=body)})
+    await _import(settings, store, gh)
+    lib = get_skill_library_store(settings)
+    await lib.publish("acme", NAME, "0.1.0", from_statuses={"draft"}, by="ops", at=1)
+    gh.push(REPO, {"skills/invoice-triage/SKILL.md": skill_md(NAME)})
+    await _import(settings, store, gh)
+    await library.publish(settings, "acme", NAME, "0.1.1", by="ops", object_store=store)
+
+    with pytest.raises(library.SkillPublishBlocked, match="advisory"):
+        await library.rollback(settings, "acme", NAME, "0.1.0", by="ops", object_store=store)
+    assert (await lib.get_skill("acme", NAME) or {})["live_version"] == "0.1.1"
 
 
 # -- browse --------------------------------------------------------------------------------------

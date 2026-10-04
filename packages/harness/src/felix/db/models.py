@@ -196,6 +196,11 @@ class SkillVersionRow(Base):
     origin_license: Mapped[str | None] = mapped_column(Text, nullable=True)
     # When the newest commit touching the skill's folder at `origin_commit` was committed (ms).
     origin_committed_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # True for an import and for every version built on one: third-party text is still in it, so
+    # the publish gate judges it as an import and activation screens it as untrusted output.
+    lineage_import: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=false(), default=False
+    )
 
     __table_args__ = (
         CheckConstraint("status IN ('draft', 'published', 'archived')", name="ck_skill_version_status"),
@@ -305,6 +310,18 @@ class SkillPolicyRow(Base):
     import_min_age_days: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0", default=0)
     updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
     updated_by: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+
+
+class SkillImportSightingRow(Base):
+    """When this tenant first saw a source's skill folder with this tree digest: the import
+    cooldown's clock (`skills/sighting_store.py`), which an upstream committer cannot set."""
+
+    __tablename__ = "skill_import_sighting"
+
+    tenant_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    origin_source: Mapped[str] = mapped_column(Text, primary_key=True)
+    tree_hash: Mapped[str] = mapped_column(Text, primary_key=True)
+    first_seen_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
 
 class ManifestRow(Base):

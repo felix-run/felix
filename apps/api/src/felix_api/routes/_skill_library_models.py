@@ -106,9 +106,12 @@ class SkillVersionOut(BaseModel):
     origin_commit: str | None = None
     origin_tree_hash: str | None = None
     origin_license: str | None = None
-    # When the skill's folder last changed at `origin_commit` (epoch ms): what the minimum import
-    # age is measured on.
+    # The committer date GitHub reports for the skill's folder at `origin_commit` (epoch ms).
+    # Provenance only: the pusher sets it, so the import cooldown does not read it.
     origin_committed_at: int | None = None
+    # Imported, or built on an import: judged as an import by the publish gate, and screened as
+    # untrusted output when an agent activates it.
+    lineage_import: bool = False
 
 
 class SkillFileMetaOut(BaseModel):
@@ -200,7 +203,7 @@ class SkillPolicyOut(BaseModel):
     # Block a publish unless the version's latest succeeded evaluation has at least this uplift.
     # Null is no floor. Set without `require_eval`, a version with no evaluation is blocked too.
     min_eval_uplift: int | None
-    # Refuse an import whose skill folder on GitHub changed fewer than this many days ago
+    # Refuse an import of files this tenant first saw fewer than this many days ago
     # (`FELIX_SKILL_IMPORT_MIN_AGE_DAYS`, raised by the tenant): 403 `too_recent`, and nothing is
     # saved. 0 is off.
     import_min_age_days: int = 0
@@ -341,10 +344,11 @@ class BrowseItemOut(BaseModel):
     path: str
     # What to import it by: `github:owner/repo/path`.
     source: str
-    # Under a minimum import age only (null otherwise): when the skill's folder last changed at
-    # `commit`, and when it becomes old enough to import (epoch ms).
-    committed_at: int | None = None
-    eligible_at: int | None = None
+    # When this tenant first saw these exact files (this browse, if never before), and when the
+    # minimum import age lets them be imported (epoch ms). Felix's own clock: a commit date is
+    # whatever the pusher set.
+    first_seen_at: int
+    eligible_at: int
     # Whether an import now would pass the minimum age; always true when there is none.
     eligible: bool = True
 
@@ -410,8 +414,8 @@ class ImportIn(BaseModel):
     # A branch, tag or commit; the repository's default branch when omitted. Resolved to a
     # commit once, and every file is read at that commit.
     ref: str | None = Field(default=None, min_length=1, max_length=200)
-    # Publish in the same request, through the same gate as `POST .../publish` -- where an
-    # imported version's advisory scan blocks too. The draft is saved either way.
+    # Refused when true (422 `publish_not_allowed`): an import is reviewed as a draft, then
+    # published with `POST /skill-library/{name}/versions/{version}/publish`.
     publish: bool = False
 
 

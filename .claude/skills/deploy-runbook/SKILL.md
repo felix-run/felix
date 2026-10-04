@@ -65,6 +65,9 @@ Adding a heavy dependency to the base image is a regression. Extras only.
 - [ ] `felix-api`, `felix-worker`, **and** `felix-scheduler` all deployed.
 - [ ] Migrations applied (`felix migrate head`) before the new image serves traffic.
 - [ ] `FELIX_DATABASE_RLS=true` only after migration `0006_tenant_rls` is applied.
+- [ ] Rolling code back past `0026_skill_import_origin` (skill imports): its downgrade refuses while
+      any imported skill version exists. Archive the imported skills (`DELETE /skill-library/{name}`)
+      and remove their `skill_version` rows first, or stay on the newer code.
 
 ## Validate before proposing a change
 

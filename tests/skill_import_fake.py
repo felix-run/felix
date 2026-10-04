@@ -43,6 +43,15 @@ class Repo:
     # Every commit in push order (one linear history), and when each was committed (epoch ms).
     history: list[str] = field(default_factory=list)
     dates: dict[str, int] = field(default_factory=dict)
+    tags: dict[str, str] = field(default_factory=dict)
+
+    def compare(self, base: str, head: str) -> str:
+        """The `compare` status of ``head`` against ``base`` over one linear history: a
+        commit off it (a fork's) has diverged."""
+        if head not in self.history:
+            return "diverged"
+        at, of = self.history.index(head), self.history.index(base)
+        return "identical" if at == of else "behind" if at < of else "ahead"
 
     def last_changed(self, commit: str, path: str) -> str | None:
         """The newest commit up to ``commit`` that changed anything under ``path``."""
@@ -72,8 +81,14 @@ class FakeRepos:
     truncated: bool = False
     # Serve these bytes for a blob instead of the ones its id names.
     tampered: dict[str, bytes] = field(default_factory=dict)
-    # Called once a commit lookup has answered, with the repository: a test moves a ref here.
+    # Called once a ref or commit lookup has answered, with the repository: a test moves a ref here.
     after_resolve: Any = None
+    # Answer every call with a redirect to this URL.
+    redirect_to: str = ""
+    # Report no history for any path (`commits?path=`).
+    no_history: bool = False
+    # Pad the JSON answer for these paths' blobs by this many bytes.
+    padding: dict[str, int] = field(default_factory=dict)
     _counter: int = 0
 
     def push(
@@ -86,14 +101,28 @@ class FakeRepos:
         at: int | None = None,
     ) -> str:
         """Commit ``files`` (the whole tree) to ``repo`` at ``at`` (epoch ms) and point ``ref`` at it."""
+        sha = self._commit(repo, files, license=license, at=at)
+        state = self.repos[repo.lower()]
+        state.history.append(sha)
+        state.refs[ref] = sha
+        return sha
+
+    def fork_commit(self, repo: str, files: dict[str, bytes]) -> str:
+        """A commit GitHub serves under ``repo``'s name -- it is in the fork network -- that no
+        branch or tag of ``repo`` reaches: one pushed only to a fork."""
+        state = self.repos[repo.lower()]
+        return self._commit(repo, files, license=state.license, at=None)
+
+    def tag(self, repo: str, name: str, sha: str) -> None:
+        self.repos[repo.lower()].tags[name] = sha
+
+    def _commit(self, repo: str, files: dict[str, bytes], *, license: str | None, at: int | None) -> str:
         state = self.repos.setdefault(repo.lower(), Repo())
         state.license = license
         self._counter += 1
         sha = hashlib.sha1(f"{repo}:{self._counter}".encode(), usedforsecurity=False).hexdigest()
         state.commits[sha] = dict(files)
-        state.history.append(sha)
         state.dates[sha] = EPOCH_MS + self._counter * 1000 if at is None else at
-        state.refs[ref] = sha
         return sha
 
     def client(self) -> httpx.AsyncClient:
@@ -113,6 +142,10 @@ class FakeRepos:
     def _commit_of(self, state: Repo, ref: str) -> str | None:
         return state.refs.get(ref) or (ref if ref in state.commits else None)
 
+    def _resolved(self, name: str) -> None:
+        if self.after_resolve is not None:
+            self.after_resolve(self, name)
+
     def handle(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
         assert request.url.host == "api.github.com", request.url
@@ -120,7 +153,9 @@ class FakeRepos:
             return httpx.Response(
                 403, headers={"x-ratelimit-remaining": "0", "x-ratelimit-reset": "1700000000"}
             )
-        parts = request.url.raw_path.decode().split("?")[0].split("/")[1:]
+        if self.redirect_to:
+            return httpx.Response(301, headers={"location": self.redirect_to})
+        parts = [unquote(p) for p in request.url.raw_path.decode().split("?")[0].split("/")[1:]]
         if len(parts) < 3 or parts[0] != "repos" or f"{parts[1]}/{parts[2]}".lower() not in self.repos:
             return httpx.Response(404, json={"message": "Not Found"})
         name = f"{parts[1]}/{parts[2]}".lower()
@@ -128,39 +163,56 @@ class FakeRepos:
         if not rest:
             license = {"spdx_id": state.license} if state.license else None
             return httpx.Response(200, json={"default_branch": state.default_branch, "license": license})
+        if rest[:2] == ["git", "ref"]:
+            kind, ref = rest[2], "/".join(rest[3:])
+            sha = (state.refs if kind == "heads" else state.tags).get(ref)
+            if sha is None:
+                return httpx.Response(404, json={"message": "Not Found"})
+            self._resolved(name)
+            return httpx.Response(
+                200, json={"ref": f"refs/{kind}/{ref}", "object": {"type": "commit", "sha": sha}}
+            )
+        if rest[0] == "compare":
+            base, _, head = "/".join(rest[1:]).partition("...")
+            return httpx.Response(200, json={"status": state.compare(state.refs[base], head), "files": []})
         if rest == ["commits"]:
             params = request.url.params
             assert params["per_page"] == "1"
-            found = state.last_changed(params["sha"], params.get("path", ""))
+            found = None if self.no_history else state.last_changed(params["sha"], params.get("path", ""))
             if found is None:
                 return httpx.Response(200, json=[])
             stamp = datetime.fromtimestamp(state.dates[found] / 1000, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
             return httpx.Response(200, json=[{"sha": found, "commit": {"committer": {"date": stamp}}}])
         if rest[0] == "commits":
-            sha = self._commit_of(state, unquote(rest[1]))
-            if sha is None:
+            # Any commit in the fork network, by full or abbreviated id -- as GitHub answers.
+            matches = [s for s in state.commits if s.startswith(rest[1])]
+            if len(matches) != 1:
                 return httpx.Response(422, json={"message": "No commit found"})
             assert request.headers["accept"] == "application/vnd.github.sha"
-            if self.after_resolve is not None:
-                self.after_resolve(self, name)
-            return httpx.Response(200, text=sha)
+            self._resolved(name)
+            return httpx.Response(200, text=matches[0])
         if rest[:2] == ["git", "trees"]:
-            sha = self._commit_of(state, unquote(rest[2]))
+            sha = self._commit_of(state, rest[2])
             if sha is None:
                 return httpx.Response(404, json={"message": "Not Found"})
             return httpx.Response(
                 200, json={"sha": sha, "tree": _tree(state.commits[sha]), "truncated": self.truncated}
             )
         if rest[:2] == ["git", "blobs"]:
-            for files in state.commits.values():
-                for path, data in files.items():
-                    if blob_sha(data) == rest[2]:
-                        served = self.tampered.get(path, data)
-                        content = base64.encodebytes(served).decode()
-                        return httpx.Response(
-                            200, content=json.dumps({"content": content, "encoding": "base64"})
-                        )
-            return httpx.Response(404, json={"message": "Not Found"})
+            return self._blob(state, rest[2], raw=request.headers["accept"] == "application/vnd.github.raw")
+        return httpx.Response(404, json={"message": "Not Found"})
+
+    def _blob(self, state: Repo, sha: str, *, raw: bool) -> httpx.Response:
+        for files in state.commits.values():
+            for path, data in files.items():
+                if blob_sha(data) != sha:
+                    continue
+                served = self.tampered.get(path, data)
+                if raw:
+                    return httpx.Response(200, content=served)
+                body = json.dumps({"content": base64.encodebytes(served).decode(), "encoding": "base64"})
+                # Whitespace after the JSON: still valid, and longer than any cap on the answer.
+                return httpx.Response(200, content=body + " " * self.padding.get(path, 0))
         return httpx.Response(404, json={"message": "Not Found"})
 
 

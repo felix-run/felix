@@ -69,8 +69,13 @@ STATUS: dict[str, int] = {
     # Imports (`skills/importer.py`). The source as written can never be fetched...
     "invalid_source": 422,
     "source_too_large": 422,
-    # ...the deployment's FELIX_SKILL_IMPORT_SOURCES does not cover it, or its folder changed
-    # within the minimum import age (a policy refusal like the allowlist's; waiting lifts it)...
+    # The ref names a commit outside the repository's own history (a fork's, say).
+    "commit_not_in_repo": 422,
+    # An import is a draft for review; publishing it is a separate request after that review.
+    "publish_not_allowed": 422,
+    # ...the deployment's FELIX_SKILL_IMPORT_SOURCES does not cover it, or this tenant first saw
+    # its files within the minimum import age (a policy refusal like the allowlist's; waiting
+    # lifts it)...
     "source_not_allowed": 403,
     "too_recent": 403,
     # ...GitHub has no such repository, ref, path or SKILL.md (or it is private and unread)...
@@ -82,10 +87,12 @@ STATUS: dict[str, int] = {
     "egress_blocked": 502,
 }
 
-# GitHub failing is a status only the routes that reach GitHub (`skill_import.py`) answer with.
-_UPSTREAM_STATUSES = frozenset({502})
+# Statuses only the import routes (`skill_import.py`) answer with a library code: GitHub failing,
+# and the allowlist and cooldown refusals. Every other library route documents neither.
+_IMPORT_ONLY_STATUSES = frozenset({403, 502})
 ERRORS: dict[int | str, dict[str, Any]] = {
-    status: {"model": SkillLibraryErrorOut} for status in sorted({*STATUS.values(), 422} - _UPSTREAM_STATUSES)
+    status: {"model": SkillLibraryErrorOut}
+    for status in sorted({*STATUS.values(), 422} - _IMPORT_ONLY_STATUSES)
 }
 IMPORT_ERRORS: dict[int | str, dict[str, Any]] = {
     status: {"model": SkillLibraryErrorOut} for status in sorted({*STATUS.values(), 422})

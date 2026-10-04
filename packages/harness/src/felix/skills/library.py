@@ -49,6 +49,7 @@ from felix.skills.publish_gate import (
     assess,
     evaluate_files,
     gate_scenario_source,
+    gate_source,
     policy_for_source,
 )
 from felix.skills.semver import SemverBump, compare_semver, resolve_next_semver
@@ -497,7 +498,11 @@ async def save_draft(
 
     The returned row carries ``shadows_operator_upload`` (`shadows_operator_upload`), which
     the audit event records too. It is a warning, not a refusal: the loader decides who
-    answers each ref, and that decision is the reviewer's to know about.
+    answers each ref, and that decision is the reviewer's to know about -- except for an
+    import, which is refused rather than let third-party text split a name an operator chose.
+
+    The row's ``lineage_import`` is set for an import and for any version built on one
+    (`_lineage_import`): an edit of third-party text is still judged as one.
     """
     if (provenance.source == "import") != (provenance.origin is not None):
         raise ValueError("an import's provenance carries its origin, and only an import's does")
@@ -527,6 +532,7 @@ async def save_draft(
         "reason": (provenance.reason or "")[:_REASON_LIMIT],
         "description": validation.frontmatter.description,
         **(provenance.origin.as_row() if provenance.origin else {}),
+        "lineage_import": await _lineage_import(lib, tenant_id, skill_name, parent, provenance),
         **(await asyncio.to_thread(assess, files, skill_name)).as_row(),
         "created_at": now_ms(),
     }
@@ -538,7 +544,9 @@ async def save_draft(
         explicit=version,
         bump=bump,
         expect_newest=expect_newest,
-        buildable=provenance.source == "agent",
+        # An import builds on the newest version that was not rejected, as an agent does: a
+        # rejected draft is not the version it replaces (`importer._prior`).
+        buildable=provenance.source in {"agent", "import"},
         max_pending=_pending_cap(provenance, max_pending),
     )
     try:
@@ -551,6 +559,11 @@ async def save_draft(
     shadows = await shadows_operator_upload(
         settings, tenant_id, skill_name, [row["version"]], object_store=store
     )
+    if shadows and provenance.source == "import":
+        await _discard(lib, store, tenant_id, row, files)
+        raise SkillNameShadowed(
+            f"{skill_name!r} is an operator upload's name; an import cannot share it with an upload"
+        )
     _audit(
         settings,
         tenant_id,
@@ -563,6 +576,21 @@ async def save_draft(
         **({"principal": provenance.principal} if provenance.principal else {}),
     )
     return {**row, "tenant_id": tenant_id, "shadows_operator_upload": shadows}
+
+
+async def _lineage_import(
+    lib: SkillLibraryStore, tenant_id: str, name: str, parent: str | None, provenance: DraftProvenance
+) -> bool:
+    """Whether the version being saved carries imported text: it is an import, or the version it
+    was edited from does -- the named parent, else the skill's newest version, which is what a
+    save that names none still starts from."""
+    if provenance.source == "import":
+        return True
+    basis = parent or newest_version(await lib.version_ids(tenant_id, name))
+    if basis is None:
+        return False
+    row = await lib.get_version(tenant_id, name, basis) or {}
+    return row.get("source") == "import" or bool(row.get("lineage_import"))
 
 
 async def _evals_only_inherited(
@@ -677,7 +705,7 @@ async def evaluate_version(
     # Who wrote the version can only tighten the policy (`policy_for_source`), and decides which
     # evaluations count (`publish_gate.eval_counts_for_gate`).
     row = await get_skill_library_store(settings).get_version(tenant_id, name, version)
-    source = (row or {}).get("source")
+    source = gate_source(row)
     policy = policy_for_source(policy, source)
     latest_eval = None
     if policy.needs_eval:

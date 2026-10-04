@@ -49,9 +49,9 @@ class PublishPolicy:
     # score minus baseline, -100..100). Set without `require_eval`, a version with no evaluation
     # is blocked too: there is no uplift to compare.
     min_eval_uplift: int | None = None
-    # Refuse an import (`skills/importer.py`) whose skill folder changed fewer than this many days
-    # ago: a supply-chain cooldown. Not a publish rule -- an import it refuses saves nothing -- but
-    # it lives on the same row, under the same tighten-only rule.
+    # Refuse an import (`skills/importer.py`) of files the tenant first saw fewer than this many
+    # days ago (`sighting_store`): a supply-chain cooldown. Not a publish rule -- an import it
+    # refuses saves nothing -- but it lives on the same row, under the same tighten-only rule.
     import_min_age_days: int = 0
     source: PolicySource = "settings"
 
@@ -151,6 +151,17 @@ def eval_counts_for_gate(version_source: str | None, evaluation: Mapping[str, An
 def gate_scenario_source(version_source: str | None) -> str | None:
     """The scenario source an evaluation must have to count for this version, or None for any."""
     return "bundle" if version_source in _UNTRUSTED_AUTHORS else None
+
+
+def gate_source(row: Mapping[str, Any] | None) -> str | None:
+    """Who the gate judges a version as having been written by: `import` for an import and for
+    every version built on one (`lineage_import`) -- an agent's or an operator's edit of
+    third-party text still carries it -- else the version's own source."""
+    if row is None:
+        return None
+    if row.get("source") == "import" or row.get("lineage_import"):
+        return "import"
+    return row.get("source")
 
 
 def policy_for_source(policy: PublishPolicy, version_source: str | None) -> PublishPolicy:
@@ -267,6 +278,7 @@ __all__ = [
     "eval_counts_for_gate",
     "evaluate_files",
     "gate_scenario_source",
+    "gate_source",
     "policy_for_source",
     "policy_reasons",
     "publish_policy",

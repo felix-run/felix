@@ -210,6 +210,8 @@ def create_app(
     # GitHub device-flow starts have an hourly bucket, so a store of their own: sharing the
     # middleware's 60 s store let its eviction drop the hourly key (`build_rate_limiter_backend`).
     app.state.github_device_limiter = build_rate_limiter_backend(cfg)
+    # Skill browses and imports count per tenant per hour, on a store of their own for the same reason.
+    app.state.skill_import_limiter = build_rate_limiter_backend(cfg)
     # Per app, not per process: two apps in one process (tests) must not share claims.
     app.state.idempotency_store = build_idempotency_store(cfg)
 

@@ -411,10 +411,14 @@ class Settings(BaseSettings):
     # Comma-separated globs over canonical sources (`github:anthropics/*,github:myorg/skills`); an
     # entry without a glob also allows everything under it. Empty allows any GitHub source.
     skill_import_sources: str = ""
-    # Refuse to import a skill whose folder last changed fewer than this many days ago (0 = off): a
-    # cooldown so a compromised upstream commit can be noticed first. A tenant can raise it with
-    # PATCH /skill-library/-/policy (`import_min_age_days`), never lower it.
+    # Refuse to import a skill's files fewer than this many days after the tenant first saw them on
+    # a browse or an import attempt (0 = off): a cooldown so a compromised upstream commit can be
+    # noticed first. Felix's own clock (`skills/sighting_store.py`), never a commit date. A tenant
+    # can raise it with PATCH /skill-library/-/policy (`import_min_age_days`), never lower it.
     skill_import_min_age_days: int = Field(default=0, ge=0, le=365)
+    # Browses and imports one tenant may start per hour, together: each is a handful of GitHub
+    # calls on the deployment's token and rate limit.
+    skill_import_per_hour: int = Field(default=60, ge=1, le=10_000)
     memory_embedding_model: str = "bge-base-en-v1.5"
     memory_recall_limit: int = 8
 
@@ -848,9 +852,9 @@ class Settings(BaseSettings):
 
     def _validate_skill_import(self) -> None:
         """A malformed allowlist entry is a boot failure, not an entry that silently matches
-        nothing; a token with no allowlist is worth a warning. The token reads whatever its
-        owner can, and every tenant's `skills:write` principal may then import from any of it --
-        one org's private repository into another org's library."""
+        nothing. A token with no allowlist is refused outside development: the token reads whatever
+        its owner can, and every tenant's `skills:write` principal could then import from any of it
+        -- one org's private repository into another org's library."""
         entries = [e.strip() for e in self.skill_import_sources.split(",") if e.strip()]
         for entry in entries:
             owner = entry.removeprefix("github:").split("/", 1)[0]
@@ -860,9 +864,10 @@ class Settings(BaseSettings):
                     "globs allowed"
                 )
         if self.skill_import_github_token and not entries and self.environment != "development":
-            logger.warning(
+            raise RuntimeError(
                 "FELIX_SKILL_IMPORT_GITHUB_TOKEN is set with no FELIX_SKILL_IMPORT_SOURCES: any "
-                "skills:write principal, in any tenant, can import from every repository the token reads"
+                "skills:write principal, in any tenant, could import from every repository the token "
+                "reads. Name the repositories it may reach (github:myorg/*), or unset the token."
             )
 
     def _validate_shell_runner(self) -> None:

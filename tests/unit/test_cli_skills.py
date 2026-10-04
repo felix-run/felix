@@ -73,16 +73,31 @@ def test_add_saves_a_draft_and_says_what_it_dropped(served: FakeRepos) -> None:
         in result.output
     )
     assert "dropped examples/one.md" in result.output
+    assert "then publish with POST /skill-library/invoice-triage/versions/0.1.0/publish" in result.output
 
-    again = _run("add", SOURCE, "--publish")
+    again = _run("add", SOURCE)
     assert again.exit_code == 0, again.output
     assert "nothing saved" in again.output
 
 
-def test_add_publishes_through_the_gate(served: FakeRepos) -> None:
+def test_add_has_no_way_to_publish(served: FakeRepos) -> None:
     result = _run("add", SOURCE, "--publish")
+    assert result.exit_code == 2, "an import is published after review, never by the command that fetched it"
+
+
+def test_a_repositorys_text_reaches_the_terminal_without_its_control_characters(served: FakeRepos) -> None:
+    # YAML's own escapes, so the parsed description carries ESC, BEL and the 8-bit CSI.
+    escaped = r'"Routes invoices.\e]0;owned\a\e[2J\x9b31m done"'
+    served.push(
+        "acme/skills",
+        {
+            "skills/invoice-triage/SKILL.md": f"---\nname: invoice-triage\ndescription: {escaped}\n---\n\n# Body\n".encode()
+        },
+    )
+    result = _run("browse", "github:acme/skills")
     assert result.exit_code == 0, result.output
-    assert "invoice-triage@0.1.0 is live." in result.output
+    assert not any(c in result.output for c in "\x1b\x07\x9b")
+    assert "Routes invoices.]0;owned[2J31m done" in result.output
 
 
 def test_a_refusal_prints_its_code_and_exits_1(served: FakeRepos) -> None:
