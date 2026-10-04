@@ -199,10 +199,13 @@ def make_skill_tools(
         payload = [
             {
                 "name": s.name,
-                "description": s.description,
+                # The catalog's rule: an imported description carrying injection markers is
+                # withheld here too, not only in the system prompt.
+                "description": s.listed_description(),
                 "active": s.name in active,
                 "has_body": bool(s.body),
                 "source": s.source,
+                **({"untrusted": True} if s.untrusted else {}),
                 **({"newest_version": newest[s.name]} if s.name in newest else {}),
             }
             for s in public

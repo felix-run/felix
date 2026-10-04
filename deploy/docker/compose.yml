@@ -26,6 +26,13 @@ x-felix-env: &felix-env
   # and that is what sends the push.
   FELIX_PUSH_VAPID_PRIVATE_KEY: ${FELIX_PUSH_VAPID_PRIVATE_KEY:-}
   FELIX_PUSH_VAPID_SUBJECT: ${FELIX_PUSH_VAPID_SUBJECT:-}
+  # Per-person repos. The API clones into the checkout root and the worker sweeps it, so both
+  # need it; it lives on the data volume they already share, outside the workspace.
+  FELIX_REPO_CHECKOUT_ROOT: ${FELIX_REPO_CHECKOUT_ROOT:-}
+  FELIX_REPO_CLONE_MAX_MB: ${FELIX_REPO_CLONE_MAX_MB:-500}
+  FELIX_REPO_CHECKOUT_TTL_DAYS: ${FELIX_REPO_CHECKOUT_TTL_DAYS:-14}
+  FELIX_REPO_CLONE_TIMEOUT_SECONDS: ${FELIX_REPO_CLONE_TIMEOUT_SECONDS:-600}
+  FELIX_GITHUB_APP_SLUG: ${FELIX_GITHUB_APP_SLUG:-}
   FELIX_DATABASE_URL: postgresql+psycopg://felix:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (openssl rand -hex 32)}@postgres:5432/felix
   FELIX_REDIS_URL: redis://valkey:6379/0
   FELIX_ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}

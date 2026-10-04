@@ -229,7 +229,7 @@ async def check_upstream(
     name: str,
     *,
     ref: str | None = None,
-    deps: importer.ImportDeps | None = None,
+    deps: importer.ImportDeps,
 ) -> dict[str, Any]:
     """The skill's origin now against the library: the upstream commit and digest, when the
     tenant's cooldown lets it in, whether it is an update, and a per-file diff against the live
@@ -238,7 +238,6 @@ async def check_upstream(
     ``ref`` names another branch, tag or commit of the same source than the one stored, under the
     same allowlist and the same rules as an import's ref. A check of the stored ref is recorded
     (`upstream_store`); one of another ref is a what-if, and is not."""
-    deps = deps or importer.ImportDeps()
     skill, head = await imported_head(settings, tenant_id, name)
     other_ref = ref if ref and ref != head["origin_ref"] else None
     base_version = skill.get("live_version") or head["version"]
@@ -283,12 +282,11 @@ async def update_skill(
     *,
     by: str,
     ref: str | None = None,
-    deps: importer.ImportDeps | None = None,
+    deps: importer.ImportDeps,
 ) -> tuple[importer.ImportResult, dict[str, Any]]:
     """Re-import the skill from its stored origin (``ref`` instead of the stored one, if given),
     exactly as `importer.import_skill` would -- a new draft or `unchanged`, never a publish --
     and the diff between what was live (else the version the draft was built on) and the result."""
-    deps = deps or importer.ImportDeps()
     skill, head = await imported_head(settings, tenant_id, name)
     result = await importer.import_skill(
         settings,
@@ -377,7 +375,7 @@ async def outdated(
     after: str | None = None,
     limit: int = MAX_OUTDATED,
     refresh: bool = True,
-    deps: importer.ImportDeps | None = None,
+    deps: importer.ImportDeps,
 ) -> dict[str, Any]:
     """The tenant's imported skills after ``after`` (at most ``limit``), each against its origin:
     checked now (``refresh``), each GitHub call charged; or as last recorded, with no call at all.
@@ -388,7 +386,6 @@ async def outdated(
     no check starts `LISTING_SECONDS` after the first (`stopped: deadline`)."""
     from felix.skills.policy import load_publish_policy
 
-    deps = deps or importer.ImportDeps()
     heads, next_cursor = await _imported_page(settings, tenant_id, after, max(1, min(limit, MAX_OUTDATED)))
     days = (await load_publish_policy(settings, tenant_id)).policy.import_min_age_days
     recorded = await get_upstream_store(settings).get(tenant_id, [str(h["name"]) for _, h in heads])
@@ -459,7 +456,7 @@ async def run_upstream_checks(
     hours = settings.skill_import_check_hours
     if not hours:
         return counts
-    base = deps or importer.ImportDeps()
+    clock = deps.clock if deps is not None else importer.now_ms
     limiter = limiter or _limiter(settings)
     store = get_upstream_store(settings)
     async with sweep_lock(settings, name=SWEEP_LEASE, lease_ms=SWEEP_LEASE_MS) as lease:
@@ -467,7 +464,7 @@ async def run_upstream_checks(
             counts["skipped"] = 1
             return counts
         spent: set[str] = set()
-        for row in await store.due(checked_by=base.clock() - hours * HOUR_MS, limit=batch):
+        for row in await store.due(checked_by=clock() - hours * HOUR_MS, limit=batch):
             tenant_id, name = str(row["tenant_id"]), str(row["name"])
             if tenant_id in spent:
                 continue
@@ -480,9 +477,11 @@ async def run_upstream_checks(
                 await store.forget(tenant_id, name)
                 counts["forgotten"] += 1
                 continue
+            # Always the real budget, whatever ``deps`` carried: the sweep is never free.
             charge = importer.github_call_budget(limiter, settings, tenant_id, share=SWEEP_SHARE)
+            checked = replace(deps, charge=charge) if deps is not None else importer.ImportDeps(charge=charge)
             try:
-                state = await _check_one(settings, tenant_id, head, replace(base, charge=charge), {})
+                state = await _check_one(settings, tenant_id, head, checked, {})
             except ImportBudgetExhausted as exc:
                 counts["budget_stopped"] += 1
                 if exc.deployment:
@@ -491,7 +490,7 @@ async def run_upstream_checks(
                 continue
             except SkillImportError as exc:
                 logger.info("skill_upstream: %s/%s refused: %s", tenant_id, name, exc.code)
-                await _record_failure(settings, tenant_id, head, exc, base.clock())
+                await _record_failure(settings, tenant_id, head, exc, clock())
                 counts["failed"] += 1
                 continue
             counts["checked"] += 1

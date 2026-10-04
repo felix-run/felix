@@ -257,16 +257,31 @@ async def fork_and_persist(
     tenant_id: str,
     from_event_id: str | None = None,
 ) -> dict[str, Any]:
-    """Fork ``source`` into ``dest`` and store ``dest``'s leaf -- `/chat/fork`'s sequence.
+    """Fork ``source`` into a new thread ``dest`` and store its leaf -- `/chat/fork`'s sequence.
 
-    The destination is named by the caller and may be a live thread, so its append, its index
-    move and its `persist_leaf` are one `leaf_lock` hold on it, for the reason
-    `rewind_and_persist` gives. The source is only read (`stored_leaf`), never moved, so it is
-    not locked: a turn mid-append there is copied up to the leaf its row held.
+    The destination is named by the caller, so it must not exist yet: a fork into a live
+    thread overwrote its leaf and spliced a second conversation into its log. One that has an
+    event or a metadata row (`thread_state.thread_exists`) is refused with
+    ``{"ok": False, "error": "thread_exists"}`` and nothing is written.
+
+    The refusal is decided inside the destination's `leaf_lock` hold, with the copy and its
+    `persist_leaf`: two forks to one new id on this replica serialise, and the second finds
+    the first's thread. Across replicas the in-process lock serialises nothing, so the
+    metadata row is claimed (`thread_state.claim_thread`, an insert that only one writer wins)
+    before anything is copied. What that leaves open is a *turn* on another replica appending
+    to the same never-used id in the moment between the check and the copy: a turn creates no
+    row, so the claim does not see it. A client that names its own fresh id never does that.
+
+    The source is only read (`stored_leaf`), never moved, so it is not locked: a turn
+    mid-append there is copied up to the leaf its row held.
     """
-    from felix.session.thread_state import persist_leaf
+    from felix.session.thread_state import claim_thread, persist_leaf, thread_exists
 
     async with leaf_lock(dest):
+        if await thread_exists(dest, settings=settings, tenant_id=tenant_id) or not await claim_thread(
+            settings=settings, tenant_id=tenant_id, thread_id=dest.id, parent_session_id=source.id
+        ):
+            return {"ok": False, "error": "thread_exists", "thread_id": dest.id}
         result = await fork_thread(source, dest, from_event_id=from_event_id)
         await persist_leaf(
             settings=settings, tenant_id=tenant_id, thread_id=dest.id, leaf_event_id=result.get("leaf_id")

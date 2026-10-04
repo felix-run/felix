@@ -27,6 +27,7 @@ from functools import cmp_to_key
 from typing import Any, Literal
 
 from felix.config import Settings
+from felix.logging_setup import loggable
 from felix.skills.binary import decode_base64, encode_base64, is_binary_asset_path
 from felix.skills.format import ValidationIssue, validate_skill_bundle
 from felix.skills.library_store import (
@@ -254,7 +255,8 @@ async def host_owns(settings: Settings, tenant_id: str, name: str, object_store:
             if await store.exists(key):
                 return True
         except Exception:
-            logger.warning("object store probe failed for %s", key, exc_info=True)
+            # The key embeds a caller's skill name and version: escaped like any untrusted text.
+            logger.warning("object store probe failed for %s", loggable(key, limit=300), exc_info=True)
     return False
 
 
@@ -291,7 +293,8 @@ async def shadows_operator_upload(
             if await store.exists(key):
                 return True
         except Exception:
-            logger.warning("object store probe failed for %s", key, exc_info=True)
+            # The key embeds a caller's skill name and version: escaped like any untrusted text.
+            logger.warning("object store probe failed for %s", loggable(key, limit=300), exc_info=True)
     return False
 
 
@@ -610,7 +613,7 @@ async def _discard(
         try:
             await store.delete(library_object_key(tenant_id, row["name"], row["version"], path))
         except Exception:
-            logger.warning("could not remove %s of a failed save", path, exc_info=True)
+            logger.warning("could not remove %s of a failed save", loggable(path, limit=200), exc_info=True)
     await lib.delete_draft(tenant_id, row["name"], row["version"])
 
 

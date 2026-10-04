@@ -65,7 +65,10 @@ def gh(monkeypatch: pytest.MonkeyPatch) -> FakeRepos:
 
 def _deps(http: Any, store: Any, *, clock: Any = None, charge: Any = None) -> importer.ImportDeps:
     return importer.ImportDeps(
-        http=http, object_store=store, charge=charge, **({"clock": clock} if clock is not None else {})
+        http=http,
+        object_store=store,
+        charge=charge or importer.uncharged(),
+        **({"clock": clock} if clock is not None else {}),
     )
 
 
@@ -527,7 +530,8 @@ async def _sweep(settings: Settings, gh: FakeRepos, *, at: int, limiter: Any = N
     from felix.security.rate_limit import InMemoryRateLimiter
 
     async with gh.client() as http:
-        deps = importer.ImportDeps(http=http, clock=lambda: at)
+        # Uncharged here, and replaced by the sweep's own budget all the same.
+        deps = importer.ImportDeps(http=http, clock=lambda: at, charge=importer.uncharged())
         return await upstream.run_upstream_checks(
             settings, limiter=limiter or InMemoryRateLimiter(), deps=deps
         )

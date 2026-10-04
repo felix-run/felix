@@ -107,14 +107,25 @@ now_ms = lambda: int(time.time() * 1000)
 class ImportDeps:
     """What an import or a browse reaches outside itself, each replaceable in a test.
 
+    ``charge``: called before every GitHub call (`github_call_budget`). Required, with no
+    default: a seam left out must not quietly mean "free". `uncharged()` says so out loud.
     ``http``: a client for GitHub, left open; None is the egress-pinned production one
-    (`github.github_client`). ``clock``: now, in epoch ms. ``object_store``: the library's bytes.
-    ``charge``: called before every GitHub call (`github_call_budget`); None charges nothing."""
+    (`github.github_client`). ``clock``: now, in epoch ms. ``object_store``: the library's bytes."""
 
+    charge: Callable[[], Awaitable[None]]
     http: httpx.AsyncClient | None = None
     clock: Callable[[], int] = now_ms
     object_store: Any | None = None
-    charge: Callable[[], Awaitable[None]] | None = None
+
+
+def uncharged() -> Callable[[], Awaitable[None]]:
+    """A `charge` that spends nothing: for a caller with no budget to keep (a test, a CLI run
+    against its own token), named so that the choice is visible where it is made."""
+
+    async def charge() -> None:
+        return None
+
+    return charge
 
 
 def github_call_budget(
@@ -329,7 +340,7 @@ def _listing_item(
 
 
 async def browse(
-    settings: Settings, tenant_id: str, source: str, ref: str | None = None, *, deps: ImportDeps | None = None
+    settings: Settings, tenant_id: str, source: str, ref: str | None = None, *, deps: ImportDeps
 ) -> dict[str, Any]:
     """The skills a repository offers at one commit: each one's path, name and description, read
     from the head of its SKILL.md alone. With a path in ``source``, only the skills under it --
@@ -339,7 +350,6 @@ async def browse(
     Every listed skill's files are recorded as seen (`sighting_store`), so the cooldown can count
     from here; each item says when it is first eligible. At most `MAX_BROWSE_SKILLS` are listed;
     `found` says how many there were."""
-    deps = deps or ImportDeps()
     async with _github_session(settings, tenant_id, source, ref, deps) as session:
         parsed, cooldown, gh = session.source, session.cooldown, session.gh
         resolved = await resolve(gh, parsed, session.ref)
@@ -499,7 +509,7 @@ async def import_skill(
     source: str,
     ref: str | None = None,
     by: str,
-    deps: ImportDeps | None = None,
+    deps: ImportDeps,
     action: Literal["import", "update"] = "import",
 ) -> ImportResult:
     """Fetch the skill at ``source`` (pinned to the commit ``ref`` resolves to) and save it as a
@@ -509,7 +519,6 @@ async def import_skill(
     import age, judged at ``deps.clock()``. ``action`` is what the draft's reason -- and so its
     `skill_draft_saved` audit event -- calls it: an `update` re-imports a skill from its origin.
     Either way what the origin holds is recorded (`upstream_store`): an import is a check too."""
-    deps = deps or ImportDeps()
     async with _github_session(settings, tenant_id, source, ref, deps) as session:
         snap, fetched = await _fetch(settings, tenant_id, session)
     parsed, resolved = session.source, snap.resolved
@@ -595,4 +604,5 @@ __all__ = [
     "keeps_path",
     "sanitize_bundle",
     "snapshot",
+    "uncharged",
 ]

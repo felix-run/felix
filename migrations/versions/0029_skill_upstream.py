@@ -1,7 +1,7 @@
 """What an imported skill's origin held when Felix last looked.
 
-Revision ID: 0028_skill_upstream
-Revises: 0027_github_connections
+Revision ID: 0029_skill_upstream
+Revises: 0028_skill_file_digest_index
 Create Date: 2026-10-04
 
 `skills/upstream.py` checks an imported library skill against its origin -- on request, and
@@ -27,8 +27,8 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0028_skill_upstream"
-down_revision: str | None = "0027_github_connections"
+revision: str = "0029_skill_upstream"
+down_revision: str | None = "0028_skill_file_digest_index"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

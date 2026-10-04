@@ -62,7 +62,8 @@ _SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}\Z")
 _REF_RE = re.compile(r"^[A-Za-z0-9._/-]{1,200}\Z")
 _SHA_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 # A ref that may be a commit id, full or abbreviated, once no branch or tag has its name.
-_COMMIT_ID_RE = re.compile(r"^[0-9a-f]{7,64}\Z")
+# Case-insensitive, so `DEADBEEF1234` is a commit id too and never read as a branch of that name.
+_COMMIT_ID_RE = re.compile(r"^[0-9a-f]{7,64}\Z", re.IGNORECASE)
 _SPDX_RE = re.compile(r"^[A-Za-z0-9.+-]{1,64}\Z")
 # Annotated tags may point at tags; this many hops, then it is refused.
 _MAX_TAG_HOPS = 4
@@ -397,7 +398,7 @@ class GitHubReader:
     when there is one, goes in a header and nowhere else."""
 
     def __init__(
-        self, http: httpx.AsyncClient, token: str = "", charge: Callable[[], Awaitable[None]] | None = None
+        self, http: httpx.AsyncClient, token: str = "", *, charge: Callable[[], Awaitable[None]]
     ) -> None:
         self._http = http
         self._token = token
@@ -423,8 +424,7 @@ class GitHubReader:
         ``truncate``, cut off there and the rest never read."""
         from felix.security.ssrf import EgressBlocked
 
-        if self._charge is not None:
-            await self._charge()
+        await self._charge()
         headers = self._headers(accept) if accept else self._headers()
         try:
             async with self._http.stream("GET", f"{GITHUB_API}{path}", headers=headers) as resp:
@@ -499,14 +499,18 @@ class GitHubReader:
         return sha
 
     async def _reachable(self, source: GitHubSource, default_branch: str, sha: str) -> bool:
-        """Whether ``sha`` is on the repository's default branch: its ancestor, or its tip."""
+        """Whether ``sha`` is on the repository's default branch: its ancestor, or its tip. The
+        branch is resolved through its own ref first and compared by commit id, so a branch or tag
+        named like a commit cannot stand in for the base."""
+        tip = await self._named_ref(source, "heads", default_branch)
+        if tip is None:
+            return False
         try:
             data = await self._json(
-                f"{self._repo_path(source)}/compare/{quote(default_branch, safe='/')}...{sha}?per_page=1",
-                what=f"commit {sha[:12]}",
+                f"{self._repo_path(source)}/compare/{tip}...{sha}?per_page=1", what=f"commit {sha}"
             )
         except ImportSourceNotFound, ImportSourceTooLarge:
-            # A diff too large to answer is one with the commit far off the branch.
+            # A diff too large to answer is one with the commit far off the branch: fail closed.
             return False
         return data.get("status") in {"behind", "identical"}
 
@@ -517,15 +521,24 @@ class GitHubReader:
         pushed only to a fork would read as the upstream's, under the upstream's name and past an
         allowlist that trusts the upstream.
 
-        - A commit id (hex, 7-64) is a commit and nothing else -- never looked up as a branch, so a
-          branch someone names `deadbeef1234` cannot stand in for that commit -- and is accepted only
-          when `compare` puts it on the default branch.
+        - A commit id (hex, 7-64, any case) is a commit and nothing else -- never looked up as a
+          branch, and what GitHub resolves it to must start with it, since `commits/{ref}` also
+          answers for a branch or tag of that name -- and is accepted only when `compare` puts it on
+          the default branch.
         - `refs/heads/<name>` and `refs/tags/<name>` resolve through the repository's own refs.
         - A bare name is looked up as a tag and as a branch, as git resolves one; naming both is
           refused as ambiguous rather than letting a branch shadow a release tag.
         """
         if _COMMIT_ID_RE.match(ref):
-            sha = await self._commit_by_sha(source, ref)
+            commit_id = ref.lower()
+            sha = await self._commit_by_sha(source, commit_id)
+            if not sha.startswith(commit_id):
+                # `commits/{ref}` resolves a branch or tag of that name too: what came back is not
+                # the commit the hex names, so the ref is not the commit id it looks like.
+                raise ImportRefAmbiguous(
+                    f"{ref!r} reads as a commit id, but GitHub resolved it to {sha}: it names a branch "
+                    "or tag; spell it refs/heads/<name> or refs/tags/<name>"
+                )
             if not await self._reachable(source, default_branch, sha):
                 raise ImportCommitNotInRepo(
                     f"commit {sha} is not on {source.owner}/{source.repo}'s {default_branch} branch; "
@@ -645,21 +658,24 @@ class Resolved:
 async def reader(
     settings: Settings,
     http: httpx.AsyncClient | None,
-    charge: Callable[[], Awaitable[None]] | None = None,
+    charge: Callable[[], Awaitable[None]],
 ) -> AsyncIterator[GitHubReader]:
     """A reader over ``http`` (the caller's, left open), or over the production client, which is
     closed on the way out whatever happened inside."""
     if http is not None:
-        yield GitHubReader(http, settings.skill_import_github_token, charge)
+        yield GitHubReader(http, settings.skill_import_github_token, charge=charge)
         return
     async with github_client(settings) as client:
-        yield GitHubReader(client, settings.skill_import_github_token, charge)
+        yield GitHubReader(client, settings.skill_import_github_token, charge=charge)
 
 
 async def resolve(gh: GitHubReader, source: GitHubSource, ref: str | None) -> Resolved:
+    """The commit ``ref`` names -- or, with none, the default branch's tip, resolved as the branch
+    it is (`refs/heads/<default>`), so a default branch named like a commit id is still a branch."""
     meta = await gh.repo(source)
     requested = ref or meta.default_branch
-    commit = await gh.commit(source, requested, default_branch=meta.default_branch)
+    wanted = ref if ref else f"refs/heads/{meta.default_branch}"
+    commit = await gh.commit(source, wanted, default_branch=meta.default_branch)
     return Resolved(source, requested, commit, meta.license, await gh.tree(source, commit))
 
 

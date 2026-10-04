@@ -169,3 +169,6 @@ def test_clean_strips_bidi_and_zero_width_characters() -> None:
     # RLO makes `github:evil/x` display as something else; ZWSP and BOM hide in plain sight.
     shown = clean("github:\u202eevil/x\u202c \u2066a\u2069\u200bb\ufeffc\u200fd")
     assert shown == "github:evil/x abcd"
+    # The Arabic letter mark, word joiner and invisible operators, a soft hyphen, and the line and
+    # paragraph separators.
+    assert clean("a\u061cb\u2060c\u2064d\xade\u2028f\u2029g") == "abcdefg"

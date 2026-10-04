@@ -407,13 +407,17 @@ a skill from GitHub as a draft (`source: import`); it is never published in the 
 /skill-library/-/browse` needs only `skills:read`, and reaches GitHub on the same token, so the
 allowlist bounds it too. The fetch is pinned:
 
-- A commit id (full or abbreviated hex) is a commit and only that -- never looked up as a branch
-  of that name -- and is accepted only when `compare` puts it on the default branch, because
-  GitHub serves a fork's commit under the upstream's name (422 `commit_not_in_repo`). A compare too
-  large for its size cap, or one GitHub cannot answer, fails closed the same way.
-- `refs/heads/<name>` and `refs/tags/<name>` resolve through the repository's own refs. A bare
-  name is looked up as a tag and as a branch, as git does; one naming both is refused (422
-  `ambiguous_ref`), so a branch cannot shadow a release tag.
+- **Ref resolution.** A ref that is hex (7-64 characters, any case) is a commit id and only that:
+  it is never looked up as a branch or tag, and since GitHub's `commits/{ref}` answers for a branch
+  or tag of that name too, the commit GitHub returns must start with the hex given, or the ref is
+  refused (422 `ambiguous_ref`). A commit id is then accepted only when `compare` puts it on the
+  default branch -- itself resolved through `refs/heads/<default>`, so a default branch named like
+  a commit is still a branch -- because GitHub serves a fork's commit under the upstream's name
+  (422 `commit_not_in_repo`). A compare too large for its size cap, or one GitHub cannot answer,
+  fails closed the same way. `refs/heads/<name>` and `refs/tags/<name>` are explicit and resolve
+  through the repository's own refs. A bare name is looked up as a tag first, then as a branch, as
+  git does; one naming both is refused (422 `ambiguous_ref`), so a branch cannot shadow a release
+  tag. With no ref, the default branch is resolved as `refs/heads/<default>`.
 - Every file is read by blob id and checked against its git object id, and every commit is
   reported in full, never abbreviated.
 
@@ -435,26 +439,38 @@ same gate. Nothing clears the mark.
 untrusted author, and content screening (`spec.content_screening.enabled`) screens that output
 exactly as it screens an untrusted tool's: markers, the optional scoring model, quarantine or
 block. Operator and agent skills are not screened this way. The wrapper order is unchanged; the
-screening wrapper decides per call as well as per tool. A manifest without content screening gets
-no screening of skill bodies, imported or not, and the compile says so
-(`felix_imported_skills_unscreened`), so turn it on for agents that activate imported skills. In the
-system prompt's skill catalog an imported skill is listed with `untrusted="true"` under a preamble
-that says its description is a third party's text, and a description carrying the injection
-markers is withheld (the name is still listed). The skill suggester (`spec.skill_suggestion`) gives
+screening wrapper decides per call as well as per tool. A manifest without content screening still
+gets a floor for imported text: when its catalog offers an import-lineage skill, the same wrapper,
+in the same slot, runs the free injection markers (no scoring model, no decider) over what those
+three tools relay of it and quarantines a match; every other tool, and operator and agent skills,
+stay unscreened as the manifest says. The compile says so (`felix_imported_skills_unscreened`):
+turn screening on for agents that activate imported skills, since the markers alone miss a
+paraphrase. In the system prompt's skill catalog, and in `list_skills`, an imported skill is
+listed as untrusted (`untrusted="true"` under a preamble in the catalog, `"untrusted": true` in the
+listing), and a description carrying the injection markers is withheld from both (the name is
+still listed). The skill suggester (`spec.skill_suggestion`) gives
 the decision model each skill's description and the start of its body to rank on, so imported text
 can steer which skill is hinted; the hint the agent sees carries only the skill's name, and the
 agent still activates it -- through the screening above.
 
 **Allowlist, token and budget.** `FELIX_SKILL_IMPORT_SOURCES` globs the repositories a browse or an
 import may name, per tenant: `acme=github:acme/*` serves tenant `acme` only, and an entry with no
-tenant serves every tenant (403 `source_not_allowed` otherwise). With
+tenant serves every tenant (403 `source_not_allowed` otherwise). The tenant is the principal's: an
+API key with no `tenant_id`, and an anonymous caller, resolve to `default`, so a `default=` entry
+grants every such key -- give keys a tenant before binding sources to one. With
 `FELIX_SKILL_IMPORT_GITHUB_TOKEN` set, boot refuses -- unless `FELIX_AUTH_MODE=none` in
 development, which is a single person's box (`FELIX_ENVIRONMENT` alone is not: Compose defaults it
 to development) -- an empty list, any entry naming no tenant, and any entry whose owner is a glob
 (`github:*`): each would let one tenant read whatever the token reads, another org's private
 repositories included. Every GitHub call is charged to the tenant's hourly budget and then the
-deployment's (`FELIX_SKILL_IMPORT_CALLS_PER_HOUR[_TOTAL]`, 429 `rate_limited`), which protects the
-shared token's own GitHub limit; a browse lists at most 50 skills and says how many it found.
+deployment's (`FELIX_SKILL_IMPORT_CALLS_PER_HOUR`, 500, and `_TOTAL`, 4000; 429 `rate_limited`),
+which protects the shared token's own GitHub limit (5,000 calls an hour with a token): at the
+defaults, eight tenants spending their whole budget fill the deployment's, and one tenant can
+spend an eighth of it. A browse of 50 skills is about 54 calls, an import one per file plus
+about five. The buckets live in Redis when `FELIX_REDIS_URL` is set; when Redis is unreachable
+each replica falls back to its own in-process buckets, so both budgets are multiplied by the
+number of API replicas until it recovers -- size `_TOTAL` for that, or keep Redis up. A browse
+lists at most 50 skills and says how many it found.
 
 **The cooldown is time since this tenant first saw these exact files.**
 `FELIX_SKILL_IMPORT_MIN_AGE_DAYS`, raised per tenant by `import_min_age_days`, refuses (403
@@ -841,6 +857,29 @@ The preview on the row is `git diff --stat` and the unified diff between that pa
 publish carries at most 300 files and 8 MiB. Whole-file MCP writes (`push_files`,
 `create_or_update_file`) put every changed file into the model's context and the approval row —
 196 KiB for one CHANGELOG line — which is why `contributor.yaml` no longer binds them.
+
+### As the person, to the thread's repository (`auth: person`)
+
+`github_publish: {auth: person, branch_prefix: ...}` publishes to the repository a person opened in
+the thread (`POST /chat/sessions/{thread}/workspace/repo`), as that person, with an access token
+minted from their stored GitHub connection (`felix.auth.github_connections`) at the moment of the
+call. The properties above hold unchanged, with three additions:
+
+- **The checkout is the thread's own.** It lives under FELIX_REPO_CHECKOUT_ROOT, never under the
+  shared FELIX_WORKSPACE_ROOT, and every workspace tool in that thread works in it and nowhere else.
+  A checkout still cloning, failed or expired stops the tools rather than falling back to the shared
+  workspace. The remote shell runner cannot see a checkout, so shell calls in such a thread are
+  refused rather than sent to run in the shared workspace.
+- **The clone holds no credential.** The token reaches `git clone` as environment-only git
+  configuration scoped to github.com, in an environment built from nothing; it is in no argv, no
+  `.git/config`, no remote URL, and no environment of anything later run in the checkout. Hooks,
+  submodules and the `file`/`ext` transports are off during the clone.
+- **Bounded.** A repository over FELIX_REPO_CLONE_MAX_MB is refused before cloning; a checkout its
+  thread has not used for FELIX_REPO_CHECKOUT_TTL_DAYS is removed by the worker, and the thread is
+  told so.
+
+A publish whose opener's connection has lapsed or been revoked publishes nothing and returns
+`[github disconnected]`, naming who must reconnect.
 
 ## Sandbox confinement
 

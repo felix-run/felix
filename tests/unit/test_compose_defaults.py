@@ -39,6 +39,9 @@ PASSED_THROUGH = {
     "FELIX_GITHUB_DEVICE_STARTS_PER_HOUR_TOTAL": "github_device_starts_per_hour_total",
     "FELIX_GITHUB_OIDC_TTL_SECONDS": "github_oidc_ttl_seconds",
     "FELIX_GITHUB_CALLBACK_PATH": "github_callback_path",
+    "FELIX_REPO_CLONE_MAX_MB": "repo_clone_max_mb",
+    "FELIX_REPO_CHECKOUT_TTL_DAYS": "repo_checkout_ttl_days",
+    "FELIX_REPO_CLONE_TIMEOUT_SECONDS": "repo_clone_timeout_seconds",
 }
 
 # A tracing backend is something Felix sends to, so pointing at one must not require
@@ -169,6 +172,8 @@ EVERY_PROCESS = (
     "FELIX_ALLOWED_TENANTS",
     "FELIX_PUSH_VAPID_PRIVATE_KEY",
     "FELIX_PUSH_VAPID_SUBJECT",
+    "FELIX_REPO_CHECKOUT_ROOT",
+    "FELIX_REPO_CHECKOUT_TTL_DAYS",
 )
 
 

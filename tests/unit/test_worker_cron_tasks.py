@@ -32,6 +32,8 @@ EXPECTED_SCHEDULES = {
     "run_scheduled_jobs": "* * * * *",
     "consolidate_memory": "*/15 * * * *",
     "retention_sweep": "0 3 * * *",
+    # Removes threads' repository checkouts unused for FELIX_REPO_CHECKOUT_TTL_DAYS (#470).
+    "repo_checkout_sweep": "30 3 * * *",
     "anomaly_scan": "*/30 * * * *",
     "continuous_eval": "*/10 * * * *",
     "fiber_scheduler": "* * * * *",

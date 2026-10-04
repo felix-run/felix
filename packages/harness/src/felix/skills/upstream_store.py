@@ -95,7 +95,7 @@ class InMemorySkillUpstreamStore:
 
 
 class PostgresSkillUpstreamStore:
-    """The `skill_upstream` table (`0028`), tenant-scoped under the same RLS policy as every
+    """The `skill_upstream` table (`0029`), tenant-scoped under the same RLS policy as every
     other skill table."""
 
     def __init__(self, settings: Settings) -> None:

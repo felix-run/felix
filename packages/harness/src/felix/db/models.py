@@ -220,6 +220,9 @@ class SkillFileRow(Base):
     sha256: Mapped[str] = mapped_column(Text, nullable=False)
     size: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
+    # `holds_imported_file`: an agent's save looks its files' digests up across the tenant (0028).
+    __table_args__ = (Index("idx_skill_file_tenant_sha256", "tenant_id", "sha256"),)
+
 
 class SkillFeedbackRow(Base):
     """Feedback on one version of a library skill, from a person or an agent.

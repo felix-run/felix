@@ -534,6 +534,10 @@ def is_valid_branch_name(name: str) -> bool:
     return all(part and not part.startswith(".") and not part.endswith(".lock") for part in name.split("/"))
 
 
+# `github_publish.auth` for publishing to the thread's checkout as the person who opened it.
+PERSON_AUTH = "person"
+
+
 class GithubPublishSpec(_Strict):
     """Bind `publish_commits`: publish commits already made in the workspace, from the harness.
 
@@ -545,9 +549,12 @@ class GithubPublishSpec(_Strict):
     `branch_prefix` and a commit sha, and nothing else. See `felix/tools/github_publish.py`.
     """
 
-    # owner/name on github.com.
-    repo: str
-    # A `secret:NAME` ref, never a literal: the value is a write credential to `repo`.
+    # owner/name on github.com. Omitted with `auth: person`, where the repository is the thread's.
+    repo: str | None = None
+    # A `secret:NAME` ref, never a literal: the value is a write credential to `repo`. Or `person`:
+    # publish to the thread's own checkout (`felix.repos.checkouts`) as the person who opened it,
+    # with an access token from their stored GitHub connection; `repo` and `base` then come from
+    # the checkout, and a thread without one has nothing to publish to.
     auth: str = Field(min_length=1)
     # The branch a new branch starts from, and the one the tool will never write to.
     base: str = "main"
@@ -557,7 +564,9 @@ class GithubPublishSpec(_Strict):
 
     @field_validator("repo")
     @classmethod
-    def _repo_is_owner_name(cls, v: str) -> str:
+    def _repo_is_owner_name(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
         if not _REPO_RE.fullmatch(v) or v.split("/", 1)[1] in {".", ".."}:
             raise ValueError(f"github_publish.repo must be owner/name, got {v!r}")
         return v
@@ -567,9 +576,9 @@ class GithubPublishSpec(_Strict):
     def _auth_is_a_secret_ref(cls, v: str) -> str:
         from felix.secrets import is_secret_ref
 
-        if not is_secret_ref(v):
+        if v != PERSON_AUTH and not is_secret_ref(v):
             # Not echoed: the value may be the very token this refuses to store.
-            raise ValueError("github_publish.auth must be a secret ref (secret:NAME)")
+            raise ValueError(f"github_publish.auth must be a secret ref (secret:NAME) or {PERSON_AUTH!r}")
         return v
 
     @field_validator("base")
@@ -587,6 +596,14 @@ class GithubPublishSpec(_Strict):
         if not is_valid_branch_name(v + "x"):
             raise ValueError(f"github_publish.branch_prefix cannot start a valid branch name: {v!r}")
         return v
+
+    @model_validator(mode="after")
+    def _repo_matches_auth(self) -> GithubPublishSpec:
+        if self.auth == PERSON_AUTH and self.repo is not None:
+            raise ValueError("github_publish.repo must be omitted with auth: person (it is the thread's)")
+        if self.auth != PERSON_AUTH and self.repo is None:
+            raise ValueError("github_publish.repo is required with a secret ref")
+        return self
 
     @model_validator(mode="after")
     def _base_is_outside_the_prefix(self) -> GithubPublishSpec:

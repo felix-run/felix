@@ -22,6 +22,26 @@ Role = Literal["user", "assistant", "system", "tool"]
 
 logger = logging.getLogger("felix_ai.types")
 
+# Control characters escaped rather than dropped, as `felix.logging_setup.loggable` does. This
+# package never imports `felix`, so it carries its own copy of the small part it needs.
+_LOG_ESCAPES: dict[int, str] = {c: f"\\x{c:02x}" for c in range(0x20)} | {
+    0x09: "\\t",
+    0x0A: "\\n",
+    0x0D: "\\r",
+    0x7F: "\\x7f",
+}
+
+
+def _loggable(value: object, limit: int = 80) -> str:
+    """Caller-supplied text, safe to put in a log line: every character that could end or reorder
+    the line escaped (U+2028/U+2029/U+0085 and the bidi overrides included), and cut to `limit`."""
+    escaped = str(value).translate(_LOG_ESCAPES)
+    if not escaped.isprintable():
+        escaped = "".join(
+            ch if ch.isprintable() else ch.encode("unicode_escape").decode("ascii") for ch in escaped
+        )
+    return escaped if len(escaped) <= limit else escaped[:limit] + f"…(+{len(escaped) - limit})"
+
 
 @dataclass(slots=True)
 class ImageAttachment:
@@ -251,7 +271,8 @@ class ChatMessage:
                 logger.warning(
                     "dropping %d content part(s) of unrecognised type: %s",
                     len(unknown),
-                    ", ".join(sorted(set(unknown))),
+                    # The caller names these types, so each is escaped before it reaches the log.
+                    ", ".join(_loggable(t) for t in sorted(set(unknown))[:20]),
                 )
             text_content = "\n".join(p for p in parts if p)
             attachments = atts or None
