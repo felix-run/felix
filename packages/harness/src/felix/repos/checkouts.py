@@ -165,7 +165,7 @@ def _scrub(text: str, token: str) -> str:
     """git's own error, minus anything that could carry the credential."""
     out = text.replace(token, "[redacted]")
     basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
-    return out.replace(basic, "[redacted]")[:300]
+    return out.replace(basic, "[redacted]")
 
 
 async def open_checkout(
@@ -288,12 +288,31 @@ async def _clone(settings: Settings, directory: Path, state: dict[str, Any], tok
         logger.info("checkout ready: %s for %s", state["repo"], state["opened_by"])
     except Exception as exc:
         shutil.rmtree(tmp, ignore_errors=True)
-        final.update(state=FAILED, error=_scrub(str(exc), token))
-        logger.warning("checkout failed: %s: %s", state["repo"], final["error"])
+        detail = _scrub(str(exc), token)
+        # The state is what a client reads back, so it says what went wrong in words chosen here;
+        # git's own text names this server's paths and goes to the log only.
+        # Classified on git's whole message: its first line names the clone's path, and a long
+        # checkout root once pushed the part that said why past a cut made before this.
+        final.update(state=FAILED, error=_failure_reason(detail, settings))
+        logger.warning("checkout failed: %s: %s", state["repo"], detail[-600:])
     finally:
         _write_state(directory, final)
         with contextlib.suppress(OSError):
             (directory / LOCK_FILE).unlink()
+
+
+def _failure_reason(detail: str, settings: Settings) -> str:
+    """What a failed clone tells a client, classified from git's (scrubbed) error."""
+    lowered = detail.lower()
+    if "timed out" in lowered:
+        return f"the clone took longer than {settings.repo_clone_timeout_seconds:.0f}s"
+    if "remote branch" in lowered and "not found" in lowered:
+        return "that branch does not exist"
+    if "not found" in lowered or "authentication failed" in lowered or "could not read" in lowered:
+        return "GitHub refused the clone for this account"
+    if "no space left" in lowered:
+        return "this server ran out of disk space during the clone"
+    return "git could not clone the repository; the cause is in the server's log"
 
 
 async def describe(settings: Settings, tenant_id: str, thread_id: str) -> dict[str, Any] | None:

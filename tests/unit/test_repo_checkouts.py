@@ -130,6 +130,9 @@ async def test_a_failed_clone_leaves_no_half_checkout_and_stops_the_tools(
     state = checkouts.read_checkout(settings, "acme", "acme:t1")
     assert state is not None and state["state"] == "failed"
     assert TOKEN not in state["error"]
+    # What a client reads back is classified, not git's own text, which names this server's paths.
+    assert state["error"] == "GitHub refused the clone for this account"
+    assert "/" not in state["error"]
     directory = checkouts.thread_dir(settings, "acme", "acme:t1")
     assert not (directory / "repo").exists()
     assert not any(p.name.startswith(".clone-") for p in directory.iterdir())

@@ -159,3 +159,35 @@ async def test_an_operator_token_is_not_a_person_with_repositories(
         operator = mint_token(app.settings, sub="ops", tenant_id="acme", scopes=["jobs:read"], ttl_seconds=60)
         seen = await app.client.get("/github/repos", headers={"Authorization": f"Bearer {operator}"})
         assert seen.status_code == 403
+
+
+async def test_a_github_failure_answers_in_fixed_words_not_the_exception_s(
+    boot: Any, fake_github: FakeGitHub, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An exception's text can name what is the operator's business only — here an egress proxy.
+    The answer says whose problem it is; the detail goes to the log."""
+    import httpx
+
+    async with boot([], env=_env(tmp_path)) as app:
+        bearer = await _sign_in(app.client)
+
+        def unreachable(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("egress-proxy.internal.example:3128 refused the tunnel")
+
+        monkeypatch.setattr(
+            github,
+            "github_http_client",
+            lambda s: httpx.AsyncClient(transport=httpx.MockTransport(unreachable)),
+        )
+        for answer in (
+            await app.client.get("/github/repos", headers=bearer),
+            await app.client.post(
+                "/chat/sessions/t1/workspace/repo", json={"full_name": "acme/widgets"}, headers=bearer
+            ),
+        ):
+            assert answer.status_code == 502
+            assert answer.json() == {
+                "error": "github_unavailable",
+                "message": "GitHub could not be reached or answered unexpectedly; try again shortly",
+            }
+            assert "egress-proxy" not in answer.text
