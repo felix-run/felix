@@ -16,8 +16,11 @@ from felix.manifests.governance import GovernanceError, validate_for_write
 from felix.manifests.loader import ManifestParseError, parse_manifest
 from felix.manifests.schema import Manifest
 from felix.manifests.secret_refs import redact_manifest_secrets
+from felix.manifests.store import UnknownCanaryVersion
 from felix.thread_ids import effective_thread_id
 from pydantic import BaseModel, Field
+
+from felix_api.errors import client_safe_message
 
 router = APIRouter(tags=["Manifests"])
 # Mounted only when manifests are writable. Under `manifest_source=bundled` these are
@@ -162,7 +165,7 @@ async def upsert_manifest(name: str, body: ManifestUpsert, request: Request) -> 
     try:
         parsed: Manifest = parse_manifest(body.manifest)
     except ManifestParseError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        raise HTTPException(status_code=400, detail=client_safe_message(e)) from e
     if parsed.metadata.name != name:
         raise HTTPException(status_code=400, detail="name_mismatch")
     # Refuse at write time, once, for every rule a stored manifest must satisfy: a stdio
@@ -171,7 +174,7 @@ async def upsert_manifest(name: str, body: ManifestUpsert, request: Request) -> 
     try:
         validate_for_write(parsed, request.app.state.settings)
     except GovernanceError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        raise HTTPException(status_code=400, detail=client_safe_message(e)) from e
     row = await manifest_store.put_version(
         request.app.state.settings,
         tenant_id_from_request(request),
@@ -197,8 +200,12 @@ async def set_canary(name: str, body: CanaryRequest, request: Request) -> Any:
             canary_weight=body.canary_weight,
             updated_by=subject_from_request(request),
         )
-    except LookupError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except UnknownCanaryVersion as exc:
+        # Names the caller's own manifest and version, nothing else. Its own type, so a KeyError
+        # from somewhere deeper is not relayed as a repr under a 400.
+        raise HTTPException(
+            status_code=400, detail=client_safe_message(exc, authored_for_clients=True)
+        ) from exc
     if row is None:
         raise HTTPException(status_code=404, detail="not_found")
     return row

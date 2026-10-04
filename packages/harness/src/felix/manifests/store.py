@@ -22,6 +22,11 @@ _memory_manifests: dict[tuple[str, str, int], dict[str, Any]] = {}
 _memory_active: dict[tuple[str, str], dict[str, Any]] = {}
 
 
+class UnknownCanaryVersion(LookupError):
+    """`set_canary` named a version this manifest does not have. The message names the caller's
+    own manifest and version, nothing else."""
+
+
 def reset_memory_store() -> None:
     """Drop every manifest held by the in-memory twin.
 
@@ -288,7 +293,7 @@ async def set_canary(
     if canary_version is not None:
         version_row = await get_version(settings, tenant_id, name, canary_version)
         if version_row is None:
-            raise LookupError(f"Unknown canary version: {name}@{canary_version}")
+            raise UnknownCanaryVersion(f"Unknown canary version: {name}@{canary_version}")
 
     if _use_memory(settings):
         active = _memory_active.get((tenant_id, name))

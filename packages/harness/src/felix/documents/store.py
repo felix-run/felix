@@ -63,6 +63,11 @@ def document_id(source: str, title: str) -> str:
     return hashlib.sha256(f"{source}\x00{title}".encode()).hexdigest()[:32]
 
 
+class DocumentTooLarge(ValueError):
+    """A document past the per-document chunk ceiling. Its message names the limit and is written
+    for the caller who sent the document."""
+
+
 @dataclass(frozen=True, slots=True)
 class DocumentHit:
     doc_id: str
@@ -204,7 +209,9 @@ async def put_document(
     doc_id = document_id(source, title)
     chunks = chunk_text(text, max_chars=max_chars, overlap_chars=overlap_chars)
     if len(chunks) > MAX_CHUNKS_PER_DOC:
-        raise ValueError(f"document splits into {len(chunks)} chunks; the ceiling is {MAX_CHUNKS_PER_DOC}")
+        raise DocumentTooLarge(
+            f"document splits into {len(chunks)} chunks; the ceiling is {MAX_CHUNKS_PER_DOC}"
+        )
 
     vectors, model = await _embed_chunks(chunks, embedder, source=source)
 
