@@ -29,7 +29,9 @@ def _stub(bin_dir: Path, name: str, body: str) -> None:
     path.chmod(0o755)
 
 
-def _run(tmp_path: Path, *args: str, fibers: str = "") -> tuple[subprocess.CompletedProcess[str], str]:
+def _run(
+    tmp_path: Path, *args: str, fibers: str = "", env_extra: dict[str, str] | None = None
+) -> tuple[subprocess.CompletedProcess[str], str]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
     log = tmp_path / "calls.log"
@@ -47,13 +49,18 @@ def _run(tmp_path: Path, *args: str, fibers: str = "") -> tuple[subprocess.Compl
         '  *"from fibers"*) cat "$STUB_DIR/fibers" ;;\n'
         "esac\nexit 0",
     )
+    # The developer's own FELIX_GCP_PROJECT would decide the project these tests assert on.
+    inherited = {k: v for k, v in os.environ.items() if k != "FELIX_GCP_PROJECT"}
     env = {
-        **os.environ,
+        **inherited,
         "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
         "STUB_LOG": str(log),
         "STUB_DIR": str(tmp_path),
         # Port 9 (discard) on loopback: the health read fails fast and says "unreachable".
         "FELIX_HEALTH_URL": "http://127.0.0.1:9/health",
+        # gcloud's own default project, pointing somewhere else: the script must not inherit it.
+        "CLOUDSDK_CORE_PROJECT": "some-other-project",
+        **(env_extra or {}),
     }
     proc = subprocess.run(
         ["bash", str(ROLL), *args],
@@ -103,3 +110,28 @@ def test_an_unknown_option_is_refused(tmp_path: Path, args: tuple[str, ...]) -> 
     assert proc.returncode == 2
     assert "usage:" in proc.stderr
     assert calls == ""
+
+
+def _gcloud_calls(calls: str) -> list[str]:
+    return [line for line in calls.splitlines() if line.startswith("gcloud ")]
+
+
+def test_every_gcloud_call_names_the_project(tmp_path: Path) -> None:
+    """The VM's name is not unique across projects, so gcloud's default project must not pick it.
+
+    After production moved projects, the old one still held a stopped `felix-api` carrying the
+    same tunnel credentials; the 0.6.1 roll had to set `CLOUDSDK_CORE_PROJECT` by hand.
+    """
+    proc, calls = _run(tmp_path, "0.5.1", "--check")
+    assert proc.returncode == 0, proc.stderr
+    gcloud = _gcloud_calls(calls)
+    assert gcloud, "the preflight reached the VM through gcloud"
+    assert all("--project felix-507018" in line for line in gcloud), gcloud
+    assert "(felix-507018, us-central1-a)" in proc.stdout
+
+
+def test_the_project_can_be_overridden(tmp_path: Path) -> None:
+    proc, calls = _run(tmp_path, "0.5.1", "--check", env_extra={"FELIX_GCP_PROJECT": "my-project"})
+    assert proc.returncode == 0, proc.stderr
+    gcloud = _gcloud_calls(calls)
+    assert gcloud and all("--project my-project" in line for line in gcloud), gcloud
