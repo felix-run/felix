@@ -244,6 +244,61 @@ async def test_a_fork_copies_the_log_and_records_its_parent(boot: Any) -> None:
         assert "only on the branch" not in source_contents, source_contents
 
 
+async def test_a_fork_into_a_thread_with_events_is_refused_and_leaves_it_alone(boot: Any) -> None:
+    """`new_thread_id` is client-chosen: a fork into a live thread overwrote its leaf.
+
+    And copied a second conversation into its log. The destination's transcript and leaf are
+    read back, not just the status, since a refusal that wrote first would still say 409.
+    """
+    source, taken = "e2e-fork-into-src", "e2e-fork-into-taken"
+    async with boot([_answer("source answer"), _answer("taken answer")]) as app:
+        await _seed(app, source, "source question")
+        await _seed(app, taken, "taken question")
+        before = await _snapshot(app, taken)
+
+        fork = await app.client.post("/chat/fork", json={"thread_id": source, "new_thread_id": taken})
+        assert fork.status_code == 409, fork.text
+        assert fork.json()["detail"] == "thread_exists"
+
+        after = await _snapshot(app, taken)
+        assert after["transcript"] == before["transcript"]
+        assert after["leafId"] == before["leafId"]
+        assert after["parentSessionId"] is None, after
+
+
+async def test_a_fork_into_a_thread_with_only_metadata_is_refused(boot: Any) -> None:
+    """An abort writes session metadata and no event; that thread exists all the same.
+
+    (A rename would not do here: it also appends a `session_info` event.)
+    """
+    source, aborted = "e2e-fork-meta-src", "e2e-fork-meta-aborted"
+    async with boot([_answer()]) as app:
+        await _seed(app, source)
+        abort = await app.client.post("/chat/abort", json={"thread_id": aborted})
+        assert abort.status_code == 200, abort.text
+        before = await _snapshot(app, aborted)
+        assert before["transcript"] == [], before
+
+        fork = await app.client.post("/chat/fork", json={"thread_id": source, "new_thread_id": aborted})
+        assert fork.status_code == 409, fork.text
+        assert fork.json()["detail"] == "thread_exists"
+        after = await _snapshot(app, aborted)
+        assert after["transcript"] == [] and after["parentSessionId"] is None, after
+
+
+async def test_a_fork_into_its_own_source_is_refused(boot: Any) -> None:
+    thread = "e2e-fork-self"
+    async with boot([_answer()]) as app:
+        await _seed(app, thread)
+        before = await _snapshot(app, thread)
+
+        fork = await app.client.post("/chat/fork", json={"thread_id": thread, "new_thread_id": thread})
+        assert fork.status_code == 409, fork.text
+        assert fork.json()["detail"] == "thread_exists"
+        after = await _snapshot(app, thread)
+        assert (after["transcript"], after["leafId"]) == (before["transcript"], before["leafId"])
+
+
 async def test_a_rewind_moves_the_leaf_back_to_the_named_event(boot: Any) -> None:
     """Rewind is how a client undoes a turn, so the leaf must actually move."""
     thread = "e2e-rewind"
