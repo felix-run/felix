@@ -27,7 +27,7 @@ surface_page() {
       echo "internals/patterns.mdx (the Agent invoke/stream contract and the ReAct loop)." ;;
     packages/harness/src/felix/patterns/model*.py|packages/harness/src/felix/decisions.py|packages/ai/src/felix_ai/*)
       echo "internals/model-client.mdx (provider routing, wire formats, thinking/caching, fallback, decision models) and the DEFAULT_MODEL_ROUTES table in the README / getting-started if a logical model id changed. The model-layer skill has the procedure." ;;
-    packages/harness/src/felix/auth/*|packages/harness/src/felix/manifests/inbound_auth.py|apps/api/src/felix_api/routes/auth_github.py)
+    packages/harness/src/felix/auth/*|packages/harness/src/felix/manifests/inbound_auth.py|apps/api/src/felix_api/routes/auth_github.py|packages/harness/src/felix/repos/*|apps/api/src/felix_api/routes/repos.py)
       echo "internals/auth.mdx (auth modes, scopes, inbound manifest auth, GitHub login) and guide/deploy.mdx for production JWT/api_key requirements." ;;
     packages/harness/src/felix/governance/*|packages/harness/src/felix/manifests/governance.py|packages/harness/src/felix/security/*)
       echo "internals/governance.mdx AND deploy/GOVERNANCE.md in this repo (SOC2 / EU AI Act control mapping, secret refs, screening defaults)." ;;
