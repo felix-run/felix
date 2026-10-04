@@ -314,7 +314,12 @@ async def test_auth_methods_answers_an_anonymous_caller_in_every_mode(
             assert (await app.client.get("/jobs")).status_code == 401
     assert methods.status_code == 200, methods.text
     # Exactly these two keys: a proxy decides whether to honour a browser's bearer on the second.
-    assert methods.json() == {"github_device": login_on, "bearer_required": bearer_required}
+    # Redirect sign-in stays off here: no client secret, token key or redirect origin is set.
+    assert methods.json() == {
+        "github_device": login_on,
+        "github_redirect": False,
+        "bearer_required": bearer_required,
+    }
     # Asking never starts a flow, so it spends nothing at GitHub or from the hourly start budget.
     assert fake_github.issued == 0
 
