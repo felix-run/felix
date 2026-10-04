@@ -162,6 +162,34 @@ async def test_plans_crud_http(settings: Settings) -> None:
 
 
 @pytest.mark.asyncio
+async def test_plans_list_narrows_to_a_thread_by_its_suffix(settings: Settings) -> None:
+    from felix.plans import store as plans_store
+    from felix_api.app import create_app
+
+    app = create_app(settings=settings, plugins=[])
+    transport = ASGITransport(app=app)
+    # Anonymous under auth_mode=none is tenant `default`; rows store the composed id.
+    await plans_store.put_plan(settings, "default", "p-thr-a", plan={}, thread_id="default:thr-a")
+    await plans_store.put_plan(settings, "default", "p-thr-b", plan={}, thread_id="default:thr-b")
+    await plans_store.put_plan(settings, "default", "p-thr-none", plan={})
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        mine = await client.get("/plans", params={"thread_id": "thr-a"})
+        assert mine.status_code == 200
+        assert [p["id"] for p in mine.json()["items"]] == ["p-thr-a"]
+        assert mine.json()["items"][0]["thread_id"] == "default:thr-a"
+
+        none = await client.get("/plans", params={"thread_id": ""})
+        assert "p-thr-none" in [p["id"] for p in none.json()["items"]]
+        assert not {"p-thr-a", "p-thr-b"} & {p["id"] for p in none.json()["items"]}
+
+        # A suffix is all a client may send: a full id would name a tenant, and the
+        # route composes `{tenant}:{suffix}` itself so no caller can name another's.
+        bad = await client.get("/plans", params={"thread_id": "other:thr-a"})
+        assert bad.status_code == 400
+        assert bad.json()["detail"] == "invalid_thread_id"
+
+
+@pytest.mark.asyncio
 async def test_plan_put_is_conditional_and_keeps_what_it_was_not_sent(settings: Settings) -> None:
     from felix_api.app import create_app
 

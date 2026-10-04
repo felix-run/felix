@@ -51,6 +51,9 @@ class Plan(Base):
     tenant_id: Mapped[str] = mapped_column(Text, primary_key=True)
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     manifest_id: Mapped[str] = mapped_column(Text, server_default="", default="")
+    # The conversation the plan was written in, as `{tenant}:{suffix}`; `''` when it was
+    # written outside a chat context or before the column existed (`0025`).
+    thread_id: Mapped[str] = mapped_column(Text, server_default="", default="")
     created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
     updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
     expires_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
@@ -59,6 +62,13 @@ class Plan(Base):
     __table_args__ = (
         Index(
             "idx_plans_tenant_updated_id", "tenant_id", text("updated_at DESC"), text('id COLLATE "C" DESC')
+        ),
+        Index(
+            "idx_plans_tenant_thread_updated_id",
+            "tenant_id",
+            "thread_id",
+            text("updated_at DESC"),
+            text('id COLLATE "C" DESC'),
         ),
     )
 

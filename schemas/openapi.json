@@ -8202,6 +8202,7 @@
     },
     "/plans": {
       "get": {
+        "description": "Plans, most recently updated first.\n\n`thread_id` narrows to one conversation, and takes the **suffix** a client holds \u2014 the\nsame form every chat route takes \u2014 composed into `{tenant}:{suffix}` here, so a caller\ncan never name another tenant's thread. It is applied in the store before `LIMIT`.\n`?thread_id=` (empty) is a real value meaning \"plans written outside a chat\", distinct\nfrom omitting it; a suffix that cannot be a thread id answers 400 `invalid_thread_id`.\nEach row's `thread_id` is the stored `{tenant}:{suffix}` form, `''` for none.",
         "operationId": "list_plans_plans_get",
         "parameters": [
           {
@@ -8214,6 +8215,22 @@
               "minimum": 1,
               "title": "Limit",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "thread_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Thread Id"
             }
           }
         ],
@@ -8249,6 +8266,7 @@
     },
     "/plans/": {
       "get": {
+        "description": "Plans, most recently updated first.\n\n`thread_id` narrows to one conversation, and takes the **suffix** a client holds \u2014 the\nsame form every chat route takes \u2014 composed into `{tenant}:{suffix}` here, so a caller\ncan never name another tenant's thread. It is applied in the store before `LIMIT`.\n`?thread_id=` (empty) is a real value meaning \"plans written outside a chat\", distinct\nfrom omitting it; a suffix that cannot be a thread id answers 400 `invalid_thread_id`.\nEach row's `thread_id` is the stored `{tenant}:{suffix}` form, `''` for none.",
         "operationId": "list_plans_plans__get",
         "parameters": [
           {
@@ -8261,6 +8279,22 @@
               "minimum": 1,
               "title": "Limit",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "thread_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Thread Id"
             }
           }
         ],
