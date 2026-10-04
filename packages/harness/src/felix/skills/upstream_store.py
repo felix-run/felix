@@ -36,6 +36,28 @@ UPSTREAM_COLUMNS: tuple[str, ...] = (
 )
 
 
+def state_of(
+    *,
+    origin_source: str,
+    origin_ref: str,
+    commit: str,
+    tree_hash: str,
+    first_seen_at: int,
+    checked_at: int,
+) -> dict[str, Any]:
+    """The row a successful check records: the origin it read, what it found there, when this
+    tenant first saw those files, and when -- with no error. The one place the shape is built."""
+    return {
+        "origin_source": origin_source,
+        "origin_ref": origin_ref,
+        "upstream_commit": commit,
+        "upstream_tree_hash": tree_hash,
+        "first_seen_at": first_seen_at,
+        "checked_at": checked_at,
+        "error": None,
+    }
+
+
 @runtime_checkable
 class SkillUpstreamStore(Protocol):
     async def record(self, tenant_id: str, name: str, state: Mapping[str, Any]) -> None:
@@ -45,10 +67,6 @@ class SkillUpstreamStore(Protocol):
 
     async def get(self, tenant_id: str, names: Collection[str]) -> dict[str, dict[str, Any]]:
         """The rows of the named skills that have one, by name."""
-        ...
-
-    async def forget(self, tenant_id: str, name: str) -> None:
-        """Drop the skill's row: it is no longer an import."""
         ...
 
     async def due(
@@ -85,9 +103,6 @@ class InMemorySkillUpstreamStore:
     async def get(self, tenant_id: str, names: Collection[str]) -> dict[str, dict[str, Any]]:
         found = {n: self._rows.get((tenant_id, n)) for n in set(names)}
         return {n: copy.deepcopy(r) for n, r in found.items() if r is not None}
-
-    async def forget(self, tenant_id: str, name: str) -> None:
-        self._rows.pop((tenant_id, name), None)
 
     async def due(
         self, *, checked_by: int, limit: int, exclude: Collection[str] = ()
@@ -151,17 +166,6 @@ class PostgresSkillUpstreamStore:
             rows = (await db.scalars(select(R).where(R.tenant_id == tenant_id, R.name.in_(wanted)))).all()
             return {r.name: self._row(r) for r in rows}
 
-    async def forget(self, tenant_id: str, name: str) -> None:
-        from sqlalchemy import delete
-
-        from felix.db.models import SkillUpstreamRow
-        from felix.db.session import tenant_session
-
-        R = SkillUpstreamRow
-        async with tenant_session(self._settings, tenant_id) as db:
-            await db.execute(delete(R).where(R.tenant_id == tenant_id, R.name == name))
-            await db.commit()
-
     async def due(
         self, *, checked_by: int, limit: int, exclude: Collection[str] = ()
     ) -> list[dict[str, Any]]:
@@ -211,4 +215,5 @@ __all__ = [
     "SkillUpstreamStore",
     "clear_memory",
     "get_upstream_store",
+    "state_of",
 ]
