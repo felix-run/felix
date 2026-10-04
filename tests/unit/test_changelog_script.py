@@ -170,3 +170,18 @@ def test_check_command_exit_codes(cl: Any, tmp_path: pathlib.Path) -> None:
     bad.write_text("## Summary\n")
     assert cl.main(["check", "--body-file", str(good)]) == 0
     assert cl.main(["check", "--body-file", str(bad)]) == 1
+
+
+TRAILER = "🤖 Generated with [Claude Code](https://claude.com/claude-code)"
+
+
+def test_a_changelog_written_last_ends_at_the_attribution_trailer(cl: Any) -> None:
+    """#462 failed its check: the trailer under a final `## Changelog` read as a stray line."""
+    body = f"Summary.\n\n## Changelog\n\n### Fixed\n\n- **A fix.** Why it matters.\n\n{TRAILER}\n"
+    assert cl.parse(body) == [cl.Entry("Fixed", "- **A fix.** Why it matters.")]
+
+
+def test_other_text_after_the_entries_still_fails(cl: Any) -> None:
+    body = "## Changelog\n\n### Fixed\n\n- **A fix.**\n\nA stray paragraph.\n"
+    with pytest.raises(cl.ChangelogError, match="text outside"):
+        cl.parse(body)
