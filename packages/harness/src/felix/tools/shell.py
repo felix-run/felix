@@ -203,6 +203,15 @@ class _ShellExecutor:
         stdin_text = str(stdin)[:_MAX_STDIN_CHARS] if stdin is not None else None
         runner_url = str(getattr(settings, "shell_runner_url", "") or "").strip()
         if runner_url:
+            if _is_thread_checkout(root, settings):
+                # The runner resolves `cwd` under its own FELIX_WORKSPACE_ROOT and has no thread's
+                # checkout: sent there, the command would run in the shared workspace while the
+                # model believes it is in the repository.
+                return tool_error_output(
+                    ToolErrorCode.TRANSPORT_UNAVAILABLE,
+                    "[shell] this thread works in its own repository checkout, which the remote shell "
+                    "runner cannot reach; shell commands are unavailable here",
+                )
             # Remote mode. Every check above has run here, in the API, and the runner repeats
             # the allowlist and the cwd against its own configuration. What it must never do
             # is come back to the branch below: a runner that cannot be reached fails the call.
@@ -448,3 +457,14 @@ __all__ = [
     "resolve_cwd",
     "tools_from_shell_refs",
 ]
+
+
+def _is_thread_checkout(root: Path, settings: Any) -> bool:
+    """Whether `root` is a thread's checkout rather than the operator's shared workspace."""
+    shared = str(getattr(settings, "workspace_root", "") or "").strip()
+    if not shared:
+        return True
+    try:
+        return root != Path(shared).expanduser().resolve()
+    except OSError:
+        return True

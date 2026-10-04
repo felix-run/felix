@@ -59,6 +59,9 @@ class FakeGitHub:
     revoked_grants: list[str] = field(default_factory=list)
     # Access tokens api.github.com accepts. `gho_x` is the device flow's.
     access_tokens: set[str] = field(default_factory=lambda: {"gho_x"})
+    # Per-person repos (#470): what this person's App token reaches.
+    installations: list[dict[str, Any]] = field(default_factory=list)
+    installation_repos: dict[int, list[dict[str, Any]]] = field(default_factory=dict)
 
     def issue_web_code(self, code_challenge: str, answer: dict[str, Any] | None = None) -> str:
         """What github.com does when the person approves: a code bound to this PKCE challenge."""
@@ -111,6 +114,23 @@ class FakeGitHub:
             return httpx.Response(self.api_status, json={"message": "boom"})
         if path == "/user":
             return httpx.Response(200, json=self.user)
+        if path == "/user/installations":
+            return httpx.Response(
+                200, json={"total_count": len(self.installations), "installations": self.installations}
+            )
+        if path.startswith("/user/installations/") and path.endswith("/repositories"):
+            inst = int(path.split("/")[3])
+            page = int(request.url.params.get("page", "1"))
+            per = int(request.url.params.get("per_page", "30"))
+            repos = self.installation_repos.get(inst, [])
+            return httpx.Response(200, json={"repositories": repos[(page - 1) * per : page * per]})
+        if path.startswith("/repos/"):
+            full = path.removeprefix("/repos/")
+            for repos in self.installation_repos.values():
+                for repo in repos:
+                    if repo["full_name"] == full:
+                        return httpx.Response(200, json=repo)
+            return httpx.Response(404, json={"message": "Not Found"})
         if self.membership_status is not None:
             return httpx.Response(self.membership_status, json={"message": "boom"})
         org = path.removeprefix("/user/memberships/orgs/")
@@ -207,4 +227,16 @@ def app_grant(access: str, refresh: str, *, expires_in: int = 28_800) -> dict[st
         "refresh_token_expires_in": 15_897_600,
         "token_type": "bearer",
         "scope": "",
+    }
+
+
+def repo(full_name: str, *, push: bool = True, size: int = 12, archived: bool = False) -> dict[str, Any]:
+    """A repository as `GET /repos/{owner}/{name}` returns it to a person's App token."""
+    return {
+        "full_name": full_name,
+        "private": True,
+        "archived": archived,
+        "default_branch": "main",
+        "size": size,
+        "permissions": {"pull": True, "push": push, "admin": False},
     }

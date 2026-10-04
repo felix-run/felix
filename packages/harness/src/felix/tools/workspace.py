@@ -313,10 +313,17 @@ def _write_all(fd: int, payload: bytes) -> None:
 
 
 def workspace_root() -> Path:
-    """The checkout every workspace tool — and the shell tool — is confined to."""
+    """The checkout every workspace tool — and the shell tool — is confined to.
+
+    A thread with a repository of its own (`felix.repos.checkouts`) works in that checkout and
+    nowhere else; every other run works in the operator's FELIX_WORKSPACE_ROOT.
+    """
     ctx = try_get_context()
     root = ""
     if ctx is not None:
+        thread = _thread_checkout(ctx)
+        if thread is not None:
+            return thread
         root = str(getattr(ctx.settings, "workspace_root", "") or "")
     if not root:
         raise ValueError("workspace_root is not configured (set FELIX_WORKSPACE_ROOT)")
@@ -331,6 +338,28 @@ def workspace_root() -> Path:
     if not path.is_dir():
         raise ValueError(f"workspace_root is not a directory: {path}")
     return path
+
+
+def _thread_checkout(ctx: Any) -> Path | None:
+    """The run's thread's checkout, or None when the run has no thread or the thread no repo.
+
+    Raises ValueError (worded "workspace_root…") while the checkout exists but cannot be used, so
+    a thread whose repository is still cloning or was removed does not fall back to the shared
+    workspace and edit files the person never meant it to touch.
+    """
+    thread_id = getattr(ctx, "thread_id", None)
+    tenant_id = getattr(getattr(ctx, "auth", None), "tenant_id", None)
+    if not thread_id or not tenant_id:
+        return None
+    from felix.repos.checkouts import thread_workspace
+
+    try:
+        return thread_workspace(ctx.settings, tenant_id, thread_id)
+    except ValueError as exc:
+        message = str(exc)
+        raise ValueError(
+            message if message.startswith("workspace_root") else f"workspace_root: {message}"
+        ) from exc
 
 
 def _refuse(message: str) -> ToolOutputDict:

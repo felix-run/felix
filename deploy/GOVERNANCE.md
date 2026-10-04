@@ -803,6 +803,29 @@ publish carries at most 300 files and 8 MiB. Whole-file MCP writes (`push_files`
 `create_or_update_file`) put every changed file into the model's context and the approval row —
 196 KiB for one CHANGELOG line — which is why `contributor.yaml` no longer binds them.
 
+### As the person, to the thread's repository (`auth: person`)
+
+`github_publish: {auth: person, branch_prefix: ...}` publishes to the repository a person opened in
+the thread (`POST /chat/sessions/{thread}/workspace/repo`), as that person, with an access token
+minted from their stored GitHub connection (`felix.auth.github_connections`) at the moment of the
+call. The properties above hold unchanged, with three additions:
+
+- **The checkout is the thread's own.** It lives under FELIX_REPO_CHECKOUT_ROOT, never under the
+  shared FELIX_WORKSPACE_ROOT, and every workspace tool in that thread works in it and nowhere else.
+  A checkout still cloning, failed or expired stops the tools rather than falling back to the shared
+  workspace. The remote shell runner cannot see a checkout, so shell calls in such a thread are
+  refused rather than sent to run in the shared workspace.
+- **The clone holds no credential.** The token reaches `git clone` as environment-only git
+  configuration scoped to github.com, in an environment built from nothing; it is in no argv, no
+  `.git/config`, no remote URL, and no environment of anything later run in the checkout. Hooks,
+  submodules and the `file`/`ext` transports are off during the clone.
+- **Bounded.** A repository over FELIX_REPO_CLONE_MAX_MB is refused before cloning; a checkout its
+  thread has not used for FELIX_REPO_CHECKOUT_TTL_DAYS is removed by the worker, and the thread is
+  told so.
+
+A publish whose opener's connection has lapsed or been revoked publishes nothing and returns
+`[github disconnected]`, naming who must reconnect.
+
 ## Sandbox confinement
 
 `spec.sandboxes[].binding` names a container image and reaches `docker run`, so images
