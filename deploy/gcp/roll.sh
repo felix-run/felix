@@ -20,7 +20,7 @@
 #
 # Needs gcloud (with ssh access to the VM), gh, docker and curl locally, and sudo on the VM.
 # The defaults are the reference deployment's; override any of them:
-#   FELIX_VM, FELIX_ZONE, FELIX_REPO_DIR, FELIX_BACKUP_DIR, FELIX_HEALTH_URL, FELIX_IMAGE
+#   FELIX_GCP_PROJECT, FELIX_VM, FELIX_ZONE, FELIX_REPO_DIR, FELIX_BACKUP_DIR, FELIX_HEALTH_URL, FELIX_IMAGE
 set -euo pipefail
 
 # Only `confirm` reads the terminal. `gh` pages its output when stdout is a tty and waited at
@@ -28,6 +28,11 @@ set -euo pipefail
 # answers typed ahead of a prompt. Both happened on the first real roll (0.5.0).
 export GH_PAGER=cat PAGER=cat
 
+# Passed on every gcloud call rather than read from gcloud's default project. The VM's name is
+# not unique across projects: after production moved projects (2026-10-03), the old project
+# still held a stopped `felix-api` with the same tunnel credentials, and a machine whose default
+# still pointed there would have rolled, or started, that one.
+PROJECT="${FELIX_GCP_PROJECT:-felix-507018}"
 VM="${FELIX_VM:-felix-api}"
 ZONE="${FELIX_ZONE:-us-central1-a}"
 REPO_DIR="${FELIX_REPO_DIR:-/opt/felix}"
@@ -73,7 +78,7 @@ if [ "$CHECK_ONLY" = 0 ] && [ "$ASSUME_YES" = 0 ] && ! have_tty; then
   exit 2
 fi
 
-remote() { gcloud compute ssh "$VM" --zone "$ZONE" --quiet --command "$1" </dev/null; }
+remote() { gcloud compute ssh "$VM" --project "$PROJECT" --zone "$ZONE" --quiet --command "$1" </dev/null; }
 psql_q() {
   # One query against the deployment's own database, tab-separated, no headers.
   remote "sudo docker exec \$(sudo docker ps --format '{{.Names}}' | grep -m1 postgres) psql -U felix -d felix -tA -F\$'\\t' -c \"$1\""
@@ -81,7 +86,7 @@ psql_q() {
 
 # --- preflight: reads only ------------------------------------------------------------------
 
-bold "Target: $TAG on $VM ($ZONE)"
+bold "Target: $TAG on $VM ($PROJECT, $ZONE)"
 
 bold "Release and image"
 gh release view "$TAG" --repo felix-run/felix --json publishedAt -q '"   release published \(.publishedAt)"' </dev/null \
