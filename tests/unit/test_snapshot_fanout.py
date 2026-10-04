@@ -1,7 +1,7 @@
 """Independent reads on the reattach path run together, not one after another.
 
 `_build_thread_snapshot` issued five sequential awaits against four different stores —
-`get_events`, `get_thread_meta`, `load_leaf`, `peek_steer_count`, `lease_status` — none
+`get_events`, `get_thread_meta`, the stored leaf, `peek_steer_count`, `lease_status` — none
 of which depends on another. It runs on `GET /chat/sessions/{id}`, on both lease
 endpoints, and on every cold SSE reconnect, so it sits exactly where latency is most
 visible in the product.
@@ -49,13 +49,15 @@ async def test_the_snapshot_reads_run_concurrently(monkeypatch: pytest.MonkeyPat
         async def get_events(self) -> list[Any]:
             return await _rendezvous([])
 
+        async def resolve_leaf(self) -> str | None:
+            return await _rendezvous(None)
+
     class _Store:
         def open(self, _thread: str) -> _Session:
             return _Session()
 
     monkeypatch.setattr(store_mod, "get_session_store", lambda *a, **k: _Store())
     monkeypatch.setattr(ts_mod, "get_thread_meta", lambda **k: _rendezvous({}))
-    monkeypatch.setattr(ts_mod, "load_leaf", lambda **k: _rendezvous(None))
     monkeypatch.setattr(steer_mod, "peek_steer_count", lambda *a, **k: _rendezvous(0))
     monkeypatch.setattr(lease_mod, "lease_status", lambda *a, **k: _rendezvous({}))
 
@@ -79,15 +81,15 @@ async def test_the_snapshot_still_carries_what_each_read_provides(
         async def get_events(self) -> list[Any]:
             return []
 
+        async def resolve_leaf(self) -> str | None:
+            return "leaf-42"
+
     class _Store:
         def open(self, _thread: str) -> _Session:
             return _Session()
 
     async def _meta(**_k: Any) -> dict[str, Any]:
         return {"session_name": "named", "phase": "turn", "revision": 7}
-
-    async def _leaf(**_k: Any) -> str:
-        return "leaf-42"
 
     async def _steer(*_a: Any, **_k: Any) -> int:
         return 3
@@ -97,7 +99,6 @@ async def test_the_snapshot_still_carries_what_each_read_provides(
 
     monkeypatch.setattr(store_mod, "get_session_store", lambda *a, **k: _Store())
     monkeypatch.setattr(ts_mod, "get_thread_meta", _meta)
-    monkeypatch.setattr(ts_mod, "load_leaf", _leaf)
     monkeypatch.setattr(steer_mod, "peek_steer_count", _steer)
     monkeypatch.setattr(lease_mod, "lease_status", _lease)
 

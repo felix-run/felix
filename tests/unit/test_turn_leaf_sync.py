@@ -28,7 +28,6 @@ class _Session:
 
     async def resolve_leaf(self) -> str | None:
         self.log.append("resolve")
-        tree.set_leaf(self.id, self.stored_leaf)
         return self.stored_leaf
 
     async def append_batch(self, events: list[AppendableEvent]) -> list[int]:
@@ -110,5 +109,21 @@ async def test_a_session_without_a_durable_leaf_keeps_the_index() -> None:
     try:
         assert await tree.sync_leaf(InMemorySessionStore(tenant_id="default").open(thread)) == "kept"
         assert tree.get_leaf(thread) == "kept"
+    finally:
+        tree.set_leaf(thread, None)
+
+
+@pytest.mark.asyncio
+async def test_a_read_of_the_stored_leaf_leaves_the_index_alone() -> None:
+    """Export, a fork's source, the snapshot: they read the leaf and must not move it.
+
+    Moving it outside the thread's lock could land inside a turn's append and set the
+    index back to the row's older leaf.
+    """
+    thread = "default:leaf-read"
+    tree.set_leaf(thread, "this-process")
+    try:
+        assert await tree.stored_leaf(_Session(thread, [], "stored")) == "stored"
+        assert tree.get_leaf(thread) == "this-process"
     finally:
         tree.set_leaf(thread, None)

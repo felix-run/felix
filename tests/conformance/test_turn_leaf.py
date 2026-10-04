@@ -420,3 +420,160 @@ async def _make_legacy(settings: Any, thread: str, *, leaf: str) -> None:
         row.labels_json = _row_meta(row.labels_json)
         row.leaf_event_id = leaf
         await db.commit()
+
+
+# --- races inside one replica, and between two ------------------------------------------------
+
+
+async def _turn_with_interleave(
+    settings: Any, thread: str, text: str, monkeypatch: pytest.MonkeyPatch, inject: Any
+) -> None:
+    """Run a turn, starting ``inject`` between its first append's `set_leaf` and `store_leaf`.
+
+    The injection runs as its own task, the way a concurrent request on this replica would. It
+    is given half a second to finish before the append's row write goes ahead: enough for a
+    read that nothing blocks, and a timeout -- not a deadlock -- for one the thread's lock holds.
+    """
+    import asyncio
+
+    from felix.session.store import _PostgresSession
+
+    real = _PostgresSession.store_leaf
+    pending: list[asyncio.Task[Any]] = []
+
+    async def interleaved(self: _PostgresSession, event_id: str) -> None:
+        if not pending and self.id == thread:
+            pending.append(asyncio.create_task(inject()))
+            await asyncio.wait(pending, timeout=0.5)
+        await real(self, event_id)
+
+    monkeypatch.setattr(_PostgresSession, "store_leaf", interleaved)
+    await _turn(settings, thread, text)
+    monkeypatch.setattr(_PostgresSession, "store_leaf", real)
+    assert pending, "the turn never stored a leaf"
+    await pending[0]
+
+
+@postgres_only
+@pytest.mark.asyncio
+async def test_a_read_route_inside_a_turns_append_does_not_move_its_leaf(
+    store_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An export, a fork or a snapshot on this replica while a turn appends: the turn stays whole."""
+    from felix.session import tree
+    from felix.session.store import get_session_store
+
+    thread = _thread()
+    await _seed(store_settings, thread)
+    store = get_session_store(store_settings, tenant_id=TENANT)
+
+    await _turn_with_interleave(
+        store_settings, thread, "two", monkeypatch, lambda: tree.stored_leaf(store.open(thread))
+    )
+
+    events = await _events(store_settings, thread)
+    user = _by_content(events, "two").metadata["event_id"]
+    assert _by_content(events, "re: two").metadata.get("parent_id") == user
+
+
+@postgres_only
+@pytest.mark.asyncio
+async def test_a_sync_inside_a_turns_append_waits_for_it(
+    store_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A second sync on this replica -- a compaction, another turn starting -- waits on the lock."""
+    from felix.session import tree
+    from felix.session.store import get_session_store
+
+    thread = _thread()
+    await _seed(store_settings, thread)
+    store = get_session_store(store_settings, tenant_id=TENANT)
+
+    await _turn_with_interleave(
+        store_settings, thread, "two", monkeypatch, lambda: tree.sync_leaf(store.open(thread))
+    )
+
+    events = await _events(store_settings, thread)
+    user = _by_content(events, "two").metadata["event_id"]
+    assert _by_content(events, "re: two").metadata.get("parent_id") == user
+
+
+@postgres_only
+@pytest.mark.asyncio
+async def test_a_rewind_landing_during_a_legacy_fallback_wins(
+    store_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Replica Y rewinds while replica X is between reading an unmarked row and adopting a leaf."""
+    from felix.session import tree
+    from felix.session.store import _PostgresSession, get_session_store
+    from felix.session.thread_state import load_leaf, persist_leaf
+
+    thread = _thread()
+    await _seed(store_settings, thread)
+    await _turn(store_settings, thread, "two")
+    events = await _events(store_settings, thread)
+    target = _by_content(events, "re: one").metadata["event_id"]
+    await _make_legacy(store_settings, thread, leaf=_by_content(events, "one").metadata["event_id"])
+    _other_replica()
+
+    real = _PostgresSession.adopt_leaf
+
+    async def rewound_first(self: _PostgresSession, event_id: str) -> bool:
+        await persist_leaf(settings=store_settings, tenant_id=TENANT, thread_id=thread, leaf_event_id=target)
+        return await real(self, event_id)
+
+    monkeypatch.setattr(_PostgresSession, "adopt_leaf", rewound_first)
+    resolved = await tree.stored_leaf(get_session_store(store_settings, tenant_id=TENANT).open(thread))
+
+    assert await load_leaf(settings=store_settings, tenant_id=TENANT, thread_id=thread) == target
+    assert resolved == target
+
+
+@postgres_only
+@pytest.mark.asyncio
+async def test_the_snapshot_shows_a_legacy_threads_real_leaf(store_settings: Any) -> None:
+    from felix.session import tree
+    from felix.session.snapshot import gather_thread_snapshot
+
+    thread = _thread()
+    await _seed(store_settings, thread)
+    await _turn(store_settings, thread, "two")
+    events = await _events(store_settings, thread)
+    await _make_legacy(store_settings, thread, leaf=_by_content(events, "one").metadata["event_id"])
+    _other_replica()
+
+    snapshot = await gather_thread_snapshot(settings=store_settings, tenant_id=TENANT, thread=thread)
+
+    assert snapshot["leafId"] == _by_content(events, "re: two").metadata["event_id"]
+    assert tree.get_leaf(thread) is None, "a snapshot reads the leaf; it does not set it"
+
+
+async def _seed(settings: Any, thread: str) -> None:
+    """A thread with a session row and one turn ("one" / "re: one")."""
+    from felix.session.thread_state import update_thread_meta
+
+    await update_thread_meta(settings=settings, tenant_id=TENANT, thread_id=thread, session_name="n")
+    await _turn(settings, thread, "one")
+
+
+@postgres_only
+@pytest.mark.asyncio
+async def test_a_route_append_on_a_cold_replica_parents_on_the_stored_leaf(store_settings: Any) -> None:
+    """`/chat/sessions/label`, `/name`, `/custom`, `/thinking` append outside any turn."""
+    from felix.session.store import get_session_store
+    from felix.session.tree import annotate_and_append
+    from felix.session.types import AppendableEvent
+
+    thread = _thread()
+    await _seed(store_settings, thread)
+    _other_replica()
+
+    [label] = await annotate_and_append(
+        get_session_store(store_settings, tenant_id=TENANT).open(thread),
+        [AppendableEvent(kind="label", content="checkpoint", metadata={"type": "label"})],
+        sync=True,
+    )
+
+    events = await _events(store_settings, thread)
+    appended = next(e for e in events if e.metadata.get("event_id") == label)
+    assert appended.metadata.get("parent_id") == _by_content(events, "re: one").metadata["event_id"]

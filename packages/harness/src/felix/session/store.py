@@ -310,21 +310,60 @@ class _PostgresSession:
             # raising here would report the append itself as lost.
             logger.warning("leaf write failed for thread=%s", self.id, exc_info=True)
 
-    async def resolve_leaf(self) -> str | None:
-        """Set this process's leaf for the thread from the store, and return it.
+    async def adopt_leaf(self, event_id: str) -> bool:
+        """Store ``event_id`` as the leaf only while no tracked writer has stored one.
 
-        `tree.sync_leaf` calls it once at the start of a turn (and of each route that appends
-        or reads the branch outside one): new events parent on the in-process leaf, and that
-        index is per process, so a replica that had not served the thread parented the next
-        event at nothing and one that had served it before another replica's rewind extended
-        the abandoned branch.
+        The fallback in `resolve_leaf` decides on a row it read without a lock, so a rewind on
+        another replica can commit a tracked leaf between that read and this write. An
+        unconditional `UPDATE` would then overwrite the rewind with the branch it abandoned,
+        and mark it trusted. Conditional on the row still being untracked (or holding no
+        leaf), so the rewind wins; returns whether this write landed.
+        """
+        from sqlalchemy import literal, or_, update
+        from sqlalchemy.dialects.postgresql import JSONB
+
+        from felix.db.models import ThreadState
+        from felix.session.thread_state import LEAF_TRACKED_KEY, LEAF_TRACKED_VERSION
+
+        mark = literal({LEAF_TRACKED_KEY: LEAF_TRACKED_VERSION}, JSONB)
+        async with self.session_factory() as db:
+            db.info["tenant_id"] = self.tenant_id
+            result = await db.execute(
+                update(ThreadState)
+                .where(
+                    ThreadState.tenant_id == self.tenant_id,
+                    ThreadState.thread_id == self.id,
+                    or_(
+                        ~ThreadState.labels_json.has_key(LEAF_TRACKED_KEY),
+                        ThreadState.leaf_event_id.is_(None),
+                    ),
+                )
+                .values(leaf_event_id=event_id, labels_json=ThreadState.labels_json.op("||")(mark))
+            )
+            await db.commit()
+        return bool(getattr(result, "rowcount", 0))
+
+    async def resolve_leaf(self) -> str | None:
+        """The thread's leaf as the store holds it. Reads; never sets this process's index.
+
+        `tree.sync_leaf` sets the index from it, once at the start of a turn and under the
+        thread's lock, because new events parent on that index and it is per process: a
+        replica that had not served the thread parented the next event at nothing, and one
+        that had served it before another replica's rewind extended the abandoned branch.
+        Read-only callers (export, a fork's source, the snapshot, a rewind's old leaf) take the
+        return value instead: setting the index outside the lock could land between a turn's
+        append and its `store_leaf`, and move the turn's leaf back to the row's older one.
 
         A tracked row's leaf is the leaf, a deliberate rewind included -- one primary-key
         read. A missing row, a null leaf or an untracked row falls back to the log's newest
         event, one more indexed read: without a row no fork or rewind has happened, and an
         untracked row's leaf was written only by those, so any turn after it was never
-        recorded there. An untracked row is then rewritten with the leaf and the mark, so the
-        fallback runs once per legacy thread.
+        recorded there. An untracked row then adopts the leaf with the mark (`adopt_leaf`),
+        so the fallback runs once per thread; if a tracked leaf landed meanwhile, that wins.
+
+        The accepted cost: a thread rewound before the stored leaf was tracked -- with no
+        summary event, and no turn since -- has its newest event on the abandoned branch, so
+        the fallback takes that branch once, and logs a warning naming the thread.
         """
         if not self.id:
             return None
@@ -332,15 +371,12 @@ class _PostgresSession:
 
         from felix.db.models import SessionEventRow, ThreadState
         from felix.session.thread_state import leaf_is_tracked
-        from felix.session.tree import set_leaf
 
         async with self.session_factory() as db:
             db.info["tenant_id"] = self.tenant_id
             row = await db.get(ThreadState, (self.tenant_id, self.id))
             stored = row.leaf_event_id if row is not None else None
-            tracked = row is not None and leaf_is_tracked(row.labels_json)
-            if stored and tracked:
-                set_leaf(self.id, stored)
+            if stored and row is not None and leaf_is_tracked(row.labels_json):
                 return stored
             # The newest event that has a tree id -- `active_branch_events`' own default leaf.
             newest = await db.scalar(
@@ -353,16 +389,23 @@ class _PostgresSession:
                 .order_by(SessionEventRow.seq.desc())
                 .limit(1)
             )
-        if row is not None and newest is not None:
-            if stored and stored != newest:
-                logger.warning(
-                    "thread=%s stored leaf %s predates leaf tracking; using the newest event %s",
-                    self.id,
-                    stored,
-                    newest,
-                )
-            await self.store_leaf(newest)
-        set_leaf(self.id, newest)
+        if row is None or newest is None:
+            # No row: nothing to adopt into, and a read does not create a session.
+            return newest
+        if not await self.adopt_leaf(newest):
+            async with self.session_factory() as db:
+                db.info["tenant_id"] = self.tenant_id
+                current = await db.get(ThreadState, (self.tenant_id, self.id))
+                if current is not None and current.leaf_event_id and leaf_is_tracked(current.labels_json):
+                    return current.leaf_event_id
+            return newest
+        if stored and stored != newest:
+            logger.warning(
+                "thread=%s stored leaf %s predates leaf tracking; using the newest event %s",
+                self.id,
+                stored,
+                newest,
+            )
         return newest
 
     async def get_events(self, opts: GetEventsOpts | None = None) -> list[SessionEvent]:
