@@ -32,6 +32,7 @@ SCHEDULED_TASKS = {
     "fiber_scheduler",
     "webhook_delivery",
     "skill_jobs",
+    "skill_upstream_checks",
 }
 
 

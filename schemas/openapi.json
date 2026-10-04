@@ -796,6 +796,75 @@
         "title": "FeedbackRequest",
         "type": "object"
       },
+      "FileChangeOut": {
+        "properties": {
+          "binary": {
+            "title": "Binary",
+            "type": "boolean"
+          },
+          "change": {
+            "enum": [
+              "added",
+              "removed",
+              "modified"
+            ],
+            "title": "Change",
+            "type": "string"
+          },
+          "diff": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Diff"
+          },
+          "new_size": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "New Size"
+          },
+          "old_size": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Old Size"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "path",
+          "change",
+          "binary",
+          "old_size",
+          "new_size",
+          "diff",
+          "truncated"
+        ],
+        "title": "FileChangeOut",
+        "type": "object"
+      },
       "ForkRequest": {
         "additionalProperties": false,
         "properties": {
@@ -1503,6 +1572,134 @@
         "title": "OpenAIMessage",
         "type": "object"
       },
+      "OutdatedItemOut": {
+        "properties": {
+          "checked_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checked At"
+          },
+          "eligible": {
+            "default": false,
+            "title": "Eligible",
+            "type": "boolean"
+          },
+          "eligible_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Eligible At"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "first_seen_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Seen At"
+          },
+          "live_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Live Version"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "origin_commit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Commit"
+          },
+          "origin_ref": {
+            "title": "Origin Ref",
+            "type": "string"
+          },
+          "origin_source": {
+            "title": "Origin Source",
+            "type": "string"
+          },
+          "update_available": {
+            "default": false,
+            "title": "Update Available",
+            "type": "boolean"
+          },
+          "upstream_commit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Upstream Commit"
+          },
+          "upstream_tree_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Upstream Tree Hash"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "version",
+          "live_version",
+          "origin_source",
+          "origin_ref",
+          "origin_commit"
+        ],
+        "title": "OutdatedItemOut",
+        "type": "object"
+      },
       "PlanUpsert": {
         "additionalProperties": false,
         "properties": {
@@ -2189,6 +2386,16 @@
             "title": "Updated At",
             "type": "integer"
           },
+          "upstream": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UpstreamStateOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "versions": {
             "items": {
               "$ref": "#/components/schemas/SkillVersionOut"
@@ -2207,6 +2414,40 @@
           "versions"
         ],
         "title": "SkillDetailOut",
+        "type": "object"
+      },
+      "SkillDiffOut": {
+        "description": "The files that differ. Unchanged files are left out. Third-party text, redacted as a file\nread is: treat it as untrusted.",
+        "properties": {
+          "compared_with": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Compared With"
+          },
+          "diff_truncated": {
+            "title": "Diff Truncated",
+            "type": "boolean"
+          },
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/FileChangeOut"
+            },
+            "title": "Files",
+            "type": "array"
+          }
+        },
+        "required": [
+          "compared_with",
+          "files",
+          "diff_truncated"
+        ],
+        "title": "SkillDiffOut",
         "type": "object"
       },
       "SkillEvalListOut": {
@@ -3081,6 +3322,59 @@
         "title": "SkillListOut",
         "type": "object"
       },
+      "SkillOutdatedOut": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/OutdatedItemOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "min_age_days": {
+            "title": "Min Age Days",
+            "type": "integer"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "refreshed": {
+            "title": "Refreshed",
+            "type": "boolean"
+          },
+          "stopped": {
+            "anyOf": [
+              {
+                "enum": [
+                  "rate_limited",
+                  "deadline"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stopped"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor",
+          "refreshed",
+          "min_age_days"
+        ],
+        "title": "SkillOutdatedOut",
+        "type": "object"
+      },
       "SkillPolicyOut": {
         "description": "The publish gate in force: the deployment's `FELIX_SKILL_PUBLISH_*` settings, tightened by\nthe tenant's own policy (`PATCH /-/policy`) when it has one. A tenant can raise the bar and\nnever lower it. `source`: `settings` (no tenant policy), `tenant` (the tenant's policy is at\nleast as strict as the settings everywhere), or `tenant+settings` (a setting outvoted a\nlooser tenant value; `tenant_values` shows what the tenant set).",
         "properties": {
@@ -3369,6 +3663,331 @@
           "updated_at"
         ],
         "title": "SkillSummaryOut",
+        "type": "object"
+      },
+      "SkillUpdateOut": {
+        "properties": {
+          "author": {
+            "title": "Author",
+            "type": "string"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "integer"
+          },
+          "decided_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided At"
+          },
+          "decided_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided By"
+          },
+          "decision_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Note"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "diff": {
+            "$ref": "#/components/schemas/SkillDiffOut"
+          },
+          "dropped_files": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Dropped Files",
+            "type": "array"
+          },
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/SkillFileMetaOut"
+            },
+            "title": "Files",
+            "type": "array"
+          },
+          "lineage_import": {
+            "default": false,
+            "title": "Lineage Import",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "origin_commit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Commit"
+          },
+          "origin_committed_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Committed At"
+          },
+          "origin_license": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin License"
+          },
+          "origin_manifest_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Manifest Id"
+          },
+          "origin_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Ref"
+          },
+          "origin_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Source"
+          },
+          "origin_tree_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Tree Hash"
+          },
+          "parent_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Version"
+          },
+          "publish_blocked": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SkillLibraryErrorOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "published": {
+            "title": "Published",
+            "type": "boolean"
+          },
+          "published_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published At"
+          },
+          "quality_score": {
+            "title": "Quality Score",
+            "type": "integer"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "review_checks": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewCheckOut"
+            },
+            "title": "Review Checks",
+            "type": "array"
+          },
+          "security_issues": {
+            "items": {
+              "$ref": "#/components/schemas/SecurityIssueOut"
+            },
+            "title": "Security Issues",
+            "type": "array"
+          },
+          "security_status": {
+            "enum": [
+              "pass",
+              "advisory",
+              "fail"
+            ],
+            "title": "Security Status",
+            "type": "string"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          },
+          "shadows_operator_upload": {
+            "title": "Shadows Operator Upload",
+            "type": "boolean"
+          },
+          "source": {
+            "enum": [
+              "agent",
+              "operator",
+              "import"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "draft",
+              "published",
+              "archived"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "unchanged": {
+            "title": "Unchanged",
+            "type": "boolean"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "version",
+          "parent_version",
+          "status",
+          "source",
+          "author",
+          "origin_manifest_id",
+          "session_id",
+          "reason",
+          "description",
+          "quality_score",
+          "security_status",
+          "decided_by",
+          "decision_note",
+          "created_at",
+          "decided_at",
+          "published_at",
+          "review_checks",
+          "security_issues",
+          "files",
+          "shadows_operator_upload",
+          "published",
+          "unchanged",
+          "dropped_files",
+          "diff"
+        ],
+        "title": "SkillUpdateOut",
+        "type": "object"
+      },
+      "SkillUpstreamOut": {
+        "description": "An imported skill against its origin now.",
+        "properties": {
+          "current": {
+            "$ref": "#/components/schemas/UpstreamCurrentOut"
+          },
+          "diff": {
+            "$ref": "#/components/schemas/SkillDiffOut"
+          },
+          "min_age_days": {
+            "title": "Min Age Days",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "update_available": {
+            "title": "Update Available",
+            "type": "boolean"
+          },
+          "upstream": {
+            "$ref": "#/components/schemas/UpstreamNowOut"
+          }
+        },
+        "required": [
+          "name",
+          "current",
+          "upstream",
+          "update_available",
+          "min_age_days",
+          "diff"
+        ],
+        "title": "SkillUpstreamOut",
         "type": "object"
       },
       "SkillVersionDetailOut": {
@@ -4355,6 +4974,26 @@
         "title": "UnsubscribeRequest",
         "type": "object"
       },
+      "UpdateIn": {
+        "additionalProperties": false,
+        "properties": {
+          "ref": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ref"
+          }
+        },
+        "title": "UpdateIn",
+        "type": "object"
+      },
       "UploadRequest": {
         "additionalProperties": false,
         "properties": {
@@ -4381,6 +5020,225 @@
           "media_type"
         ],
         "title": "UploadRequest",
+        "type": "object"
+      },
+      "UpstreamCurrentOut": {
+        "properties": {
+          "commit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Commit"
+          },
+          "live_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Live Version"
+          },
+          "ref": {
+            "title": "Ref",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "draft",
+              "published",
+              "archived"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "tree_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tree Hash"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "status",
+          "source",
+          "ref",
+          "commit",
+          "tree_hash",
+          "live_version"
+        ],
+        "title": "UpstreamCurrentOut",
+        "type": "object"
+      },
+      "UpstreamNowOut": {
+        "properties": {
+          "commit": {
+            "title": "Commit",
+            "type": "string"
+          },
+          "committed_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Committed At"
+          },
+          "eligible": {
+            "title": "Eligible",
+            "type": "boolean"
+          },
+          "eligible_at": {
+            "title": "Eligible At",
+            "type": "integer"
+          },
+          "first_seen_at": {
+            "title": "First Seen At",
+            "type": "integer"
+          },
+          "license": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "License"
+          },
+          "ref": {
+            "title": "Ref",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "tree_hash": {
+            "title": "Tree Hash",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source",
+          "ref",
+          "commit",
+          "tree_hash",
+          "license",
+          "committed_at",
+          "first_seen_at",
+          "eligible_at",
+          "eligible"
+        ],
+        "title": "UpstreamNowOut",
+        "type": "object"
+      },
+      "UpstreamStateOut": {
+        "description": "The last check of an imported skill's origin, as recorded -- by an import, a check of the\nstored ref, the upstream listing or the worker's periodic check. Null fields were never seen.",
+        "properties": {
+          "checked_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checked At"
+          },
+          "eligible": {
+            "default": false,
+            "title": "Eligible",
+            "type": "boolean"
+          },
+          "eligible_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Eligible At"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "first_seen_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Seen At"
+          },
+          "update_available": {
+            "default": false,
+            "title": "Update Available",
+            "type": "boolean"
+          },
+          "upstream_commit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Upstream Commit"
+          },
+          "upstream_tree_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Upstream Tree Hash"
+          }
+        },
+        "title": "UpstreamStateOut",
         "type": "object"
       },
       "ValidationError": {
@@ -10766,6 +11624,141 @@
         ]
       }
     },
+    "/skill-library/-/upstream": {
+      "get": {
+        "description": "The tenant's imported skills, by name, each against its origin: the upstream commit,\nwhether its files moved from the newest version's (`update_available`), and when the cooldown\nlets them in. No diffs; `GET /{name}/-/upstream` has one.\n\nAt most 25 a page; follow `next_cursor` until null. With `refresh` each check costs a few\nGitHub calls, charged to the budget, and records what it found; a budget spent part way ends\nthe page there (`stopped`), as does running long, and one spent before the first check is 429.\nA refused check is listed with its code (`error`).",
+        "operationId": "list_upstream_skill_library___upstream_get",
+        "parameters": [
+          {
+            "description": "Check each origin now (GitHub calls, charged); false reads the last recorded checks.",
+            "in": "query",
+            "name": "refresh",
+            "required": false,
+            "schema": {
+              "default": true,
+              "description": "Check each origin now (GitHub calls, charged); false reads the last recorded checks.",
+              "title": "Refresh",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 25,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillOutdatedOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          }
+        },
+        "summary": "List Upstream",
+        "tags": [
+          "Skill library"
+        ]
+      }
+    },
     "/skill-library/{name}": {
       "delete": {
         "description": "Take a skill out of every catalog. Its versions and their bytes are kept, and a\nrollback brings one back.",
@@ -10925,6 +11918,259 @@
           }
         },
         "summary": "Get Library Skill",
+        "tags": [
+          "Skill library"
+        ]
+      }
+    },
+    "/skill-library/{name}/-/update": {
+      "post": {
+        "description": "Re-import an imported skill from its stored origin, exactly as `POST /-/import` would: a\nnew draft (201), or 200 `unchanged`; `too_recent` inside the cooldown, `origin_mismatch` if the\nname's newest version came from elsewhere. Never published: review the draft, then publish it.\n\n`diff` is the saved draft against the live version (else the version it was built on). 409\n`not_imported` for a skill whose newest version was not imported.",
+        "operationId": "update_from_upstream_skill_library__name____update_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/UpdateIn"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillUpdateOut"
+                }
+              }
+            },
+            "description": "Unchanged: the newest version already holds these files, and nothing was saved."
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillUpdateOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          }
+        },
+        "summary": "Update From Upstream",
+        "tags": [
+          "Skill library"
+        ]
+      }
+    },
+    "/skill-library/{name}/-/upstream": {
+      "get": {
+        "description": "An imported skill against its origin now: the commit the ref names, whether the kept files\nmoved, when this tenant first saw them and when the cooldown lets them in, and a per-file diff\nagainst the live version (the newest when nothing is live). Only changed files are fetched.\n\nChecking records the sighting, as a browse does: asking about an update starts its cooldown.\nThe diff is third-party text, redacted as a file read is. 409 `not_imported` for a skill whose\nnewest version was not imported; a `ref` passes the same allowlist and rules as an import's.",
+        "operationId": "check_upstream_skill_library__name____upstream_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Another branch, tag or commit of the skill's source; the stored ref if omitted.",
+            "in": "query",
+            "name": "ref",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Another branch, tag or commit of the skill's source; the stored ref if omitted.",
+              "title": "Ref"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillUpstreamOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          }
+        },
+        "summary": "Check Upstream",
         "tags": [
           "Skill library"
         ]

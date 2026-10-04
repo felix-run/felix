@@ -40,6 +40,9 @@ EXPECTED_SCHEDULES = {
     "webhook_delivery": "* * * * *",
     # Every minute: an operator who accepts feedback or queues an evaluation is waiting on it.
     "skill_jobs": "* * * * *",
+    # Every ten minutes, for skills whose last check is older than FELIX_SKILL_IMPORT_CHECK_HOURS
+    # (at least one): a finer cadence would only find nothing due.
+    "skill_upstream_checks": "*/10 * * * *",
 }
 
 TENANT = "cron-tenant"
@@ -115,7 +118,7 @@ def test_the_set_of_scheduled_tasks_does_not_change_silently() -> None:
     """
     declared = _declared_schedules()
 
-    assert len(declared) == 10, declared
+    assert len(declared) == 11, declared
     for name in EXPECTED_SCHEDULES:
         assert callable(getattr(worker_tasks, name, None)), f"{name} is not exported"
 

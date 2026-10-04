@@ -136,6 +136,8 @@ class SkillDetailOut(BaseModel):
     shadows_operator_upload: bool
     # Newest first.
     versions: list[SkillVersionOut]
+    # For an imported skill, the last recorded check of its origin; null for any other skill.
+    upstream: UpstreamStateOut | None = None
 
 
 class ReviewQueueItemOut(SkillVersionOut):
@@ -371,6 +373,117 @@ class SkillBrowseOut(BaseModel):
     truncated: bool
 
 
+class FileChangeOut(BaseModel):
+    path: str
+    change: Literal["added", "removed", "modified"]
+    # A binary asset under `assets/`: sizes only, never a diff.
+    binary: bool
+    old_size: int | None
+    new_size: int | None
+    # A unified diff of a text file; null for a binary asset, and for a text file past the
+    # answer's diff budget (`truncated` is then true).
+    diff: str | None
+    # The diff was cut short at a line boundary, or left out.
+    truncated: bool
+
+
+class SkillDiffOut(BaseModel):
+    """The files that differ. Unchanged files are left out. Third-party text, redacted as a file
+    read is: treat it as untrusted."""
+
+    # The library version the other side is compared with: the live one, else the newest (a
+    # check) or the version an update was built on. Null when there was none.
+    compared_with: str | None
+    files: list[FileChangeOut]
+    # Some diff was cut short or left out to stay within the per-file and total budgets.
+    diff_truncated: bool
+
+
+class UpstreamCurrentOut(BaseModel):
+    # The skill's newest version that was not rejected, which names the origin.
+    version: str
+    status: SkillStatus
+    source: str
+    ref: str
+    commit: str | None
+    tree_hash: str | None
+    live_version: str | None
+
+
+class UpstreamNowOut(BaseModel):
+    source: str
+    # The ref checked: the stored one, or the one the request named.
+    ref: str
+    commit: str
+    # The digest of the files an import keeps, at `commit`; an update is a digest that moved.
+    tree_hash: str
+    license: str | None
+    # The committer date GitHub reports for the skill's folder. Provenance only: the pusher sets it.
+    committed_at: int | None
+    # When this tenant first saw these exact files (this check, if never before), and when the
+    # minimum import age lets them be imported -- Felix's own clock.
+    first_seen_at: int
+    eligible_at: int
+    eligible: bool
+
+
+class SkillUpstreamOut(BaseModel):
+    """An imported skill against its origin now."""
+
+    name: str
+    current: UpstreamCurrentOut
+    upstream: UpstreamNowOut
+    # The kept files at the upstream commit differ from the newest version's.
+    update_available: bool
+    min_age_days: int
+    diff: SkillDiffOut
+
+
+class SkillUpdateOut(SkillImportOut):
+    # The draft the update saved (or the unchanged version) against the live version, else the
+    # version it was built on.
+    diff: SkillDiffOut
+
+
+class UpstreamStateOut(BaseModel):
+    """The last check of an imported skill's origin, as recorded -- by an import, a check of the
+    stored ref, the upstream listing or the worker's periodic check. Null fields were never seen."""
+
+    upstream_commit: str | None = None
+    upstream_tree_hash: str | None = None
+    # The recorded digest differs from the newest version's.
+    update_available: bool = False
+    first_seen_at: int | None = None
+    eligible_at: int | None = None
+    eligible: bool = False
+    checked_at: int | None = None
+    # The refusal code of the last check, when it failed (`source_not_found`, `upstream_error`, …);
+    # the upstream fields are then the last good check's.
+    error: str | None = None
+
+
+class OutdatedItemOut(UpstreamStateOut):
+    name: str
+    # The newest version that was not rejected, and its origin.
+    version: str
+    live_version: str | None
+    origin_source: str
+    origin_ref: str
+    origin_commit: str | None
+
+
+class SkillOutdatedOut(BaseModel):
+    items: list[OutdatedItemOut]
+    next_cursor: str | None
+    # Checked against GitHub by this request, or read from the last recorded checks.
+    refreshed: bool
+    min_age_days: int
+    # Why a refreshed page ended early: the GitHub call budget ran out (`rate_limited`), or the
+    # listing ran long (`deadline`). `items` stops there, and `next_cursor` resumes at the first
+    # skill not checked. Null when the page is whole.
+    stopped: Literal["rate_limited", "deadline"] | None = None
+
+
 class SkillArchivedOut(BaseModel):
     name: str
     live_version: str | None
@@ -419,6 +532,14 @@ class ImportIn(BaseModel):
     # Refused when true (422 `publish_not_allowed`): an import is reviewed as a draft, then
     # published with `POST /skill-library/{name}/versions/{version}/publish`.
     publish: bool = False
+
+
+class UpdateIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # Another branch, tag or commit of the skill's own source than the stored ref; the stored ref
+    # when omitted. An update is a draft for review: there is no `publish` here.
+    ref: str | None = Field(default=None, min_length=1, max_length=200)
 
 
 class MakeLiveIn(BaseModel):

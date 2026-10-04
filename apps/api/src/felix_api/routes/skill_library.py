@@ -230,7 +230,31 @@ async def get_library_skill(name: str, request: Request) -> Any:
     versions = await ctx.lib.list_versions(ctx.tenant_id, name, limit=MAX_VERSIONS_LISTED)
     newest = versions[0]["version"] if versions else None
     shadows = await ctx.shadows(name, [skill["live_version"], newest])
-    return {**skill, "versions": [ctx.redact(v) for v in versions], "shadows_operator_upload": shadows}
+    return {
+        **skill,
+        "versions": [ctx.redact(v) for v in versions],
+        "shadows_operator_upload": shadows,
+        "upstream": await _recorded_upstream(ctx, name, versions),
+    }
+
+
+async def _recorded_upstream(
+    ctx: LibraryRequest, name: str, versions: list[dict[str, Any]]
+) -> dict[str, Any] | None:
+    """The last recorded check of an imported skill's origin (`upstream_store`), judged against
+    its newest version that was not rejected; None when that version was not imported. Read from
+    the record alone: a detail never asks GitHub."""
+    from felix.skills.library_store import is_rejected
+    from felix.skills.upstream import describe
+    from felix.skills.upstream_store import get_upstream_store
+
+    head = library.newest_version(v["version"] for v in versions if not is_rejected(v))
+    row = next((v for v in versions if v["version"] == head), None)
+    if row is None or row.get("source") != "import":
+        return None
+    state = (await get_upstream_store(ctx.settings).get(ctx.tenant_id, [name])).get(name)
+    days = (await load_publish_policy(ctx.settings, ctx.tenant_id)).policy.import_min_age_days
+    return describe(row, state, min_age_days=days, now=library.now_ms())
 
 
 @router.get("/{name}/versions/{version}", response_model=SkillVersionDetailOut, responses=ERRORS)

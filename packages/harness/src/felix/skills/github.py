@@ -124,9 +124,22 @@ class ImportRefAmbiguous(SkillImportError):
 
 
 class ImportBudgetExhausted(SkillImportError):
-    """The tenant's, or the deployment's, hourly budget of GitHub calls is spent."""
+    """The tenant's, or the deployment's, hourly budget of GitHub calls is spent. ``deployment``
+    says which: a background sweep moves on to another tenant past a tenant's, and stops past the
+    deployment's."""
 
     code = "rate_limited"
+
+    def __init__(self, message: str, *, deployment: bool = False) -> None:
+        super().__init__(message)
+        self.deployment = deployment
+
+
+class SkillNotImported(SkillImportError):
+    """An upstream check or update named a skill whose newest version that was not rejected did
+    not come from an import: there is no origin to check it against."""
+
+    code = "not_imported"
 
 
 class ImportCommitNotInRepo(SkillImportError):
@@ -671,6 +684,7 @@ __all__ = [
     "RepoMeta",
     "Resolved",
     "SkillImportError",
+    "SkillNotImported",
     "SourceGrant",
     "TreeEntry",
     "check_allowed",

@@ -438,6 +438,10 @@ class Settings(BaseSettings):
     # deployment's token and GitHub's own limit (5,000/h with a token, 60/h without).
     skill_import_calls_per_hour: int = Field(default=1_000, ge=1, le=100_000)
     skill_import_calls_per_hour_total: int = Field(default=4_000, ge=1, le=1_000_000)
+    # Check every imported skill against its origin this often, in hours, on the worker (0 = off,
+    # max 168): records whether an update is waiting, and stamps the sighting its cooldown counts
+    # from. Spends at most half of each hourly budget above (`skills/upstream.py`).
+    skill_import_check_hours: int = Field(default=0, ge=0, le=168)
     memory_embedding_model: str = "bge-base-en-v1.5"
     memory_recall_limit: int = 8
 

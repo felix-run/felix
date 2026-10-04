@@ -1,14 +1,19 @@
-"""`felix skills` — browse a GitHub repository's skills and import one into a server's library.
+"""`felix skills` — browse a GitHub repository's skills, import one into a server's library, and
+keep it current: `outdated` lists imported skills against their origins, `diff` shows what one's
+origin changed against the live version, `update` re-imports it as a draft.
 
-Both talk to a running server (`/skill-library/-/browse`, `/skill-library/-/import`) through
+Each talks to a running server (`/skill-library/-/browse`, `/-/import`, `/-/upstream`,
+`/{name}/-/upstream`, `/{name}/-/update`) through
 `FelixClient`, authenticated the way `felix ingest-docs` is: `--api-key`/`FELIX_API_KEY`, else the
 token `felix login --save` kept for that server. The server does the fetching -- pinned to one
 commit, through its egress guard, within its `FELIX_SKILL_IMPORT_SOURCES` -- so nothing here
-reaches GitHub. An import is a draft: this prints how to publish it once someone has read it.
+reaches GitHub. An import or an update is a draft: this prints how to publish it once someone has
+read it.
 
 Every string that came from a repository is stripped of control characters before it reaches the
 terminal: a skill's name or description is the third party's text, and an escape sequence in it
-would otherwise be the third party's control of the operator's terminal.
+would otherwise be the third party's control of the operator's terminal. A diff is cleaned line by
+line (`clean_text`), keeping its newlines and nothing else.
 """
 
 from __future__ import annotations
@@ -21,7 +26,7 @@ from typing import Any
 import typer
 
 skills_app = typer.Typer(
-    name="skills", help="Browse and import Agent Skills from GitHub.", no_args_is_help=True
+    name="skills", help="Browse, import and update Agent Skills from GitHub.", no_args_is_help=True
 )
 
 _URL = typer.Option("http://localhost:8080", "--url", help="The Felix server.")
@@ -122,6 +127,10 @@ def add_cmd(
     typer.echo(f"{name}@{version} saved as a draft from {where}.")
     for path in row.get("dropped_files") or []:
         typer.echo(f"dropped {clean(path)}", err=True)
+    _review_hint(name, version)
+
+
+def _review_hint(name: str, version: str) -> None:
     typer.echo(
         f"Review it (GET /skill-library/{name}/versions/{version}/preview), then publish with "
         f"POST /skill-library/{name}/versions/{version}/publish.",
@@ -129,4 +138,122 @@ def add_cmd(
     )
 
 
-__all__ = ["clean", "skills_app"]
+def clean_text(value: Any) -> str:
+    """``value`` cleaned line by line (`clean`), its newlines kept: a diff read in a terminal."""
+    return "\n".join(clean(line) for line in str(value if value is not None else "").split("\n"))
+
+
+def _short(commit: Any) -> str:
+    return clean(commit)[:12] if commit else "-"
+
+
+def _print_diff(diff: dict[str, Any]) -> None:
+    """Each changed file, and its unified diff -- third-party text, cleaned of control characters."""
+    files = diff.get("files") or []
+    if not files:
+        typer.echo(f"no file differs from {clean(diff.get('compared_with') or 'nothing')}", err=True)
+        return
+    for item in files:
+        sizes = f"{item.get('old_size') if item.get('old_size') is not None else '-'} -> "
+        sizes += f"{item.get('new_size') if item.get('new_size') is not None else '-'} bytes"
+        typer.echo(f"{clean(item['change'])}\t{clean(item['path'])}\t{sizes}")
+        if item.get("diff"):
+            typer.echo(clean_text(item["diff"]).rstrip("\n"))
+        elif not item.get("binary"):
+            typer.echo("(diff left out: past the answer's diff budget)")
+    if diff.get("diff_truncated"):
+        typer.echo("…some diffs were cut short or left out.", err=True)
+
+
+@skills_app.command("outdated")
+def outdated_cmd(
+    cached: bool = typer.Option(
+        False, "--cached", help="Show the last recorded checks; ask GitHub nothing (and spend no budget)."
+    ),
+    url: str = _URL,
+    api_key: str | None = _API_KEY,
+) -> None:
+    """List the library's imported skills against their origins, and which have an update waiting.
+
+    Follows every page; each refreshed page spends GitHub calls from the server's budget."""
+    cursor: str | None = None
+    found = False
+    while True:
+        page = _call(
+            url, api_key, lambda c, after=cursor: c.list_skill_upstreams(cursor=after, refresh=not cached)
+        )
+        for item in page["items"]:
+            found = True
+            typer.echo(
+                f"{clean(item['name'])}\t{clean(item['version'])}\t{clean(item['origin_source'])} @ "
+                f"{clean(item['origin_ref'])}\t{_short(item.get('origin_commit'))} -> "
+                f"{_short(item.get('upstream_commit'))}\t{_upstream_state(item)}"
+            )
+        if page.get("stopped"):
+            typer.echo(f"stopped early ({clean(page['stopped'])}); run it again to check the rest.", err=True)
+        cursor = page.get("next_cursor")
+        if not cursor or page.get("stopped"):
+            break
+    if not found:
+        typer.echo("no imported skills", err=True)
+
+
+def _upstream_state(item: dict[str, Any]) -> str:
+    if item.get("error"):
+        return f"check failed: {clean(item['error'])}"
+    if item.get("update_available"):
+        if not item.get("eligible") and item.get("eligible_at"):
+            return f"update available, too recent to update until {_date(item['eligible_at'])}"
+        return "update available"
+    return "up to date" if item.get("upstream_commit") else "never checked"
+
+
+@skills_app.command("diff")
+def diff_cmd(
+    name: str = typer.Argument(..., help="The library skill's name."),
+    ref: str | None = typer.Option(
+        None, "--ref", help="Another branch, tag or commit; the stored ref if omitted."
+    ),
+    url: str = _URL,
+    api_key: str | None = _API_KEY,
+) -> None:
+    """Show what an imported skill's origin holds now against the live version, file by file."""
+    found = _call(url, api_key, lambda c: c.check_skill_upstream(name, ref=ref))
+    current, now = found["current"], found["upstream"]
+    typer.echo(
+        f"{clean(found['name'])}@{clean(current['version'])} from {clean(now['source'])} @ "
+        f"{clean(now['ref'])}: {_short(current.get('commit'))} -> {_short(now['commit'])}",
+        err=True,
+    )
+    if not found["update_available"]:
+        typer.echo("up to date: the origin's files are the newest version's.", err=True)
+    elif not now.get("eligible", True):
+        typer.echo(f"too recent to update until {_date(now['eligible_at'])}.", err=True)
+    _print_diff(found["diff"])
+
+
+@skills_app.command("update")
+def update_cmd(
+    name: str = typer.Argument(..., help="The library skill's name."),
+    ref: str | None = typer.Option(
+        None, "--ref", help="Another branch, tag or commit; the stored ref if omitted."
+    ),
+    url: str = _URL,
+    api_key: str | None = _API_KEY,
+) -> None:
+    """Re-import an imported skill from its origin as a draft. Never published here: read the
+    draft, then publish it with the route this prints."""
+    row = _call(url, api_key, lambda c: c.update_skill(name, ref=ref))
+    skill, version = clean(row["name"]), clean(row["version"])
+    where = f"{clean(row.get('origin_source'))} @ {clean(row.get('origin_commit'))}"
+    if row.get("unchanged"):
+        typer.echo(f"{skill}@{version} is already {where}; nothing saved.")
+        return
+    typer.echo(f"{skill}@{version} saved as a draft from {where}.")
+    for path in row.get("dropped_files") or []:
+        typer.echo(f"dropped {clean(path)}", err=True)
+    _print_diff(row.get("diff") or {})
+    _review_hint(skill, version)
+
+
+__all__ = ["clean", "clean_text", "skills_app"]
